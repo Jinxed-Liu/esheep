@@ -170,6 +170,11 @@ struct FarmSettingsView: View {
             Section("账户") {
                 LabeledContent("显示名称", value: account.displayName)
                 LabeledContent("登录绑定", value: account.serverBindingState == .verified ? "已验证" : "等待 AppleAuthBroker 验证")
+                NavigationLink {
+                    SubscriptionSettingsView(account: account)
+                } label: {
+                    Label("订阅与购买", systemImage: "creditcard")
+                }
                 Text("原始 Apple 登录标识只保存在本机 Keychain，不写入牧场数据。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
@@ -192,7 +197,7 @@ struct FarmSettingsView: View {
             }
             Section("隐私与安全") {
                 Text("第三方 AI 默认关闭；未得到用户同意不会发送牧场数据。应用不使用广告、跟踪或 ATT。")
-                Text("删除账户、成员共享、CloudKit 同步和订阅必须在完成 AppleAuthBroker、CloudKit Zone 与 StoreKit 配置后才会在发行版开放。")
+                Text("订阅交易由 App Store 验证并按当前 eSheep+ 账户绑定；切换账号不会串用其他账号的权益。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section("云端协作") {

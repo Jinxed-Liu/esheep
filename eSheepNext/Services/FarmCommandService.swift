@@ -202,8 +202,24 @@ final class FarmCommandService {
     init(historyRebuilder: FarmHistoryRebuilder = FarmHistoryRebuilder()) {
         self.historyRebuilder = historyRebuilder
     }
-    func createFarm(named name: String, account: AccountProfile, context: ModelContext) throws -> FarmRecord {
+    func createFarm(
+        named name: String,
+        account: AccountProfile,
+        entitlement: AccountEntitlement,
+        context: ModelContext
+    ) throws -> FarmRecord {
         let trimmedName = try required(name, label: "牧场名称")
+        let existingOwnedFarmCount = try context.fetch(FetchDescriptor<FarmRecord>()).count {
+            $0.ownerAccountID == account.effectiveAccountID &&
+            $0.deletedAt == nil &&
+            !$0.isDevelopmentTestFarm
+        }
+        guard SubscriptionCapabilityPolicy.canCreateFarm(
+            existingOwnedFarmCount: existingOwnedFarmCount,
+            entitlement: entitlement
+        ) else {
+            throw FarmCreationEntitlementError.additionalFarmRequiresFarmPro
+        }
         let farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: trimmedName)
         context.insert(farm)
         let payload = try JSONEncoder.cloud.encode(["name": trimmedName])

@@ -46,6 +46,7 @@ struct CreateFarmSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
+    @Environment(SubscriptionService.self) private var subscription
 
     let account: AccountProfile
 
@@ -99,7 +100,12 @@ struct CreateFarmSheet: View {
 
     private func createFarm() {
         do {
-            try session.createFarm(named: name, account: account, context: modelContext)
+            try session.createFarm(
+                named: name,
+                account: account,
+                entitlement: subscription.entitlement,
+                context: modelContext
+            )
             closeSheet()
         } catch {
             errorMessage = error.localizedDescription

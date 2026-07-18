@@ -112,8 +112,19 @@ final class AppSession {
     }
 
     @discardableResult
-    func createFarm(named name: String, account: AccountProfile, context: ModelContext, commandService: FarmCommandService = FarmCommandService()) throws -> FarmRecord {
-        let farm = try commandService.createFarm(named: name, account: account, context: context)
+    func createFarm(
+        named name: String,
+        account: AccountProfile,
+        entitlement: AccountEntitlement,
+        context: ModelContext,
+        commandService: FarmCommandService = FarmCommandService()
+    ) throws -> FarmRecord {
+        let farm = try commandService.createFarm(
+            named: name,
+            account: account,
+            entitlement: entitlement,
+            context: context
+        )
 
         selectedFarmID = farm.id
         selectedTab = .home

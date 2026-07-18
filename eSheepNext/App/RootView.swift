@@ -4,6 +4,7 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppSession.self) private var session
     @Environment(CloudCollaborationStore.self) private var collaboration
+    @Environment(SubscriptionService.self) private var subscription
     @Query private var accounts: [AccountProfile]
     @Query(sort: \FarmRecord.updatedAt, order: .reverse) private var farms: [FarmRecord]
     @Query private var cloudBindings: [CloudFarmBinding]
@@ -57,6 +58,11 @@ struct RootView: View {
                 credentialStatus = .requiresSignIn
             }
             await collaboration.refreshAccountAvailability()
+            if let account = activeAccount {
+                await subscription.activate(accountID: account.effectiveAccountID)
+            } else {
+                subscription.reset()
+            }
         }
         .task(id: maintenanceTaskID) {
             guard let account = activeAccount, account.serverBindingState == .verified else { return }

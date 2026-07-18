@@ -9,6 +9,7 @@ struct eSheepNextApp: App {
 
     @State private var session = AppSession()
     @State private var collaboration: CloudCollaborationStore
+    @State private var subscription = SubscriptionService()
 
     init() {
         do {
@@ -24,6 +25,7 @@ struct eSheepNextApp: App {
             RootView()
                 .environment(session)
                 .environment(collaboration)
+                .environment(subscription)
                 .tint(AppTheme.brand)
         }
         .modelContainer(modelContainer)

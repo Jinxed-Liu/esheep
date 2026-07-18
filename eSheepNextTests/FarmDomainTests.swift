@@ -12,6 +12,40 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertFalse(CapabilitySet(role: .worker).allows(.manageCatalogs))
     }
 
+    func testSubscriptionNeverBlocksAuthorizedProductionRecording() {
+        let basic = AccountEntitlement.basic(accountID: UUID(), state: .expired)
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canRecordProduction(role: .owner, entitlement: basic))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canRecordProduction(role: .administrator, entitlement: basic))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canRecordProduction(role: .worker, entitlement: basic))
+    }
+
+    func testAdditionalFarmRequiresMatchingOwnerProEntitlement() {
+        let accountID = UUID()
+        let active = AccountEntitlement(accountID: accountID, tier: .farmPro, state: .active, productID: SubscriptionProductID.yearly, validUntil: .now.addingTimeInterval(86_400))
+        let grace = AccountEntitlement(accountID: accountID, tier: .farmPro, state: .gracePeriod, productID: SubscriptionProductID.monthly, validUntil: .now)
+        let expired = AccountEntitlement(accountID: accountID, tier: .basic, state: .expired, productID: SubscriptionProductID.monthly, validUntil: .now)
+
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: active))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: grace))
+        XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: expired))
+        XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .worker, entitlement: active))
+    }
+
+    func testFirstFarmIsFreeButAdditionalFarmRequiresPro() {
+        let basic = AccountEntitlement.basic(accountID: UUID())
+        let pro = AccountEntitlement(
+            accountID: UUID(),
+            tier: .farmPro,
+            state: .active,
+            productID: SubscriptionProductID.yearly,
+            validUntil: .now.addingTimeInterval(86_400)
+        )
+
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 0, entitlement: basic))
+        XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 1, entitlement: basic))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 1, entitlement: pro))
+    }
+
     func testMigrationFarmIsRejectedByDevelopmentCloudGate() async throws {
         let container = try AppSchema.makeContainer(name: "migration-cloud-gate-\(UUID().uuidString)", isStoredInMemoryOnly: true)
         let context = ModelContext(container)

@@ -40,7 +40,12 @@ final class FarmSessionTests: XCTestCase {
         context.insert(account)
 
         let session = AppSession()
-        let farm = try session.createFarm(named: "北场", account: account, context: context)
+        let farm = try session.createFarm(
+            named: "北场",
+            account: account,
+            entitlement: .basic(accountID: account.effectiveAccountID),
+            context: context
+        )
 
         XCTAssertEqual(session.selectedFarmID, farm.id)
         XCTAssertEqual(farm.ownerAccountID, account.id)
