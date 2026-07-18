@@ -1,5 +1,44 @@
 import SwiftData
 import SwiftUI
+import UIKit
+
+private enum FarmInsightsSection: String, CaseIterable, Identifiable {
+    case overview
+    case assistant
+
+    var id: String { rawValue }
+    var title: String { self == .overview ? "分析" : "问助手" }
+}
+
+struct FarmInsightsView: View {
+    let farm: FarmRecord
+    @State private var section = FarmInsightsSection.overview
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("洞察内容", selection: $section) {
+                ForEach(FarmInsightsSection.allCases) { item in
+                    Text(item.title).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.bar)
+
+            switch section {
+            case .overview:
+                FarmAnalysisCenterView(farm: farm) {
+                    withAnimation(.snappy) { section = .assistant }
+                }
+            case .assistant:
+                AssistantStartView(farm: farm)
+            }
+        }
+        .background(AppTheme.pageBackground)
+        .navigationTitle("牧场洞察")
+    }
+}
 
 struct AssistantStartView: View {
     @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
@@ -30,60 +69,122 @@ struct AssistantStartView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    GlassCard {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("牧场本地助手", systemImage: "sparkles")
-                                .font(.headline)
-                            Text("回答只读取当前牧场的本地数据；不会虚构记录，也不会直接写入数据。")
-                                .font(.subheadline).foregroundStyle(.secondary)
-                        }
-                    }
-                    if let answer {
-                        GlassCard {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(answer.text)
-                                if !answer.sources.isEmpty { Text(answer.sources.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary) }
-                            }
-                        }
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                assistantHeader
+
+                if let answer {
+                    answerCard(answer)
+                } else {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("可查询").font(.headline)
-                        ForEach(["当前有多少只羊", "今天投喂了几次", "有多少个圈舍", "健康记录有多少条"], id: \.self) { prompt in
-                            Button(prompt) { ask(prompt) }.buttonStyle(.bordered)
+                        Text("直接问数据")
+                            .font(.title2.bold())
+                        Text("我会从当前牧场的真实记录里找答案，并标出计算来源。")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("可以这样问")
+                        .font(.headline)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], alignment: .leading, spacing: 8) {
+                        ForEach(suggestedQuestions, id: \.self) { prompt in
+                            Button(prompt) { ask(prompt) }
+                                .buttonStyle(.bordered)
+                                .tint(.secondary)
                         }
                     }
                 }
-                .padding(16)
             }
-            Divider()
-            assistantComposer
+            .padding(.horizontal, 18)
+            .padding(.top, 18)
+            .safeAreaPadding(.bottom, 100)
         }
         .background(AppTheme.pageBackground)
-        .navigationTitle("AI 助手")
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            assistantComposer
+        }
         .onAppear { analyticsSnapshot = makeAnalyticsSnapshot() }
         .onChange(of: sourceRevision) { _, _ in analyticsSnapshot = makeAnalyticsSnapshot() }
+    }
+
+    private var suggestedQuestions: [String] {
+        ["当前有多少只羊", "今天投喂了几次", "哪个圈舍羊最多", "查看一只羊的完整档案"]
+    }
+
+    private var assistantHeader: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "sparkles")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 48, height: 48)
+                .background(AppTheme.brand.gradient, in: .rect(cornerRadius: 15))
+            VStack(alignment: .leading, spacing: 5) {
+                Text("牧场本地助手")
+                    .font(.headline)
+                Label("只读 · 当前牧场 · 不上传", systemImage: "lock.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+
+    private func answerCard(_ answer: LocalFarmAnswer) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 7) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text("基于牧场记录")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            Text(answer.text)
+                .font(.body)
+                .textSelection(.enabled)
+            if !answer.sources.isEmpty {
+                Divider()
+                Text(answer.sources.joined(separator: " · "))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(18)
+        .background(.background, in: .rect(cornerRadius: 22))
+        .overlay { RoundedRectangle(cornerRadius: 22).stroke(.separator.opacity(0.45), lineWidth: 0.5) }
     }
 
     private var assistantComposer: some View {
         HStack(spacing: 10) {
             TextField("询问当前牧场", text: $question)
-                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(.fill.quaternary, in: .capsule)
                 .submitLabel(.send)
                 .onSubmit { ask(question) }
-            Button { ask(question) } label: { Image(systemName: "arrow.up.circle.fill") }
+            Button { ask(question) } label: {
+                Image(systemName: "arrow.up")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(AppTheme.brand, in: .circle)
+            }
+            .buttonStyle(.plain)
                 .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityLabel("发送问题")
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
     }
 
     private func ask(_ text: String) {
-        answer = LocalFarmAssistant.answer(question: text, activeSheep: farmSheep, pens: farmPens, feedRecords: farmFeeds, healthRecords: farmHealth, analyticsSnapshot: analyticsSnapshot)
+        let submitted = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !submitted.isEmpty else { return }
+        answer = LocalFarmAssistant.answer(question: submitted, activeSheep: farmSheep, pens: farmPens, feedRecords: farmFeeds, healthRecords: farmHealth, analyticsSnapshot: analyticsSnapshot)
         question = ""
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
     }
 }
 
@@ -167,13 +268,18 @@ struct FarmSettingsView: View {
 
     var body: some View {
         List {
+            Section {
+                AccountAvatarEditor(account: account)
+            }
             Section("账户") {
                 LabeledContent("显示名称", value: account.displayName)
-                LabeledContent("登录绑定", value: account.serverBindingState == .verified ? "已验证" : "等待 AppleAuthBroker 验证")
-                NavigationLink {
-                    SubscriptionSettingsView(account: account)
-                } label: {
-                    Label("订阅与购买", systemImage: "creditcard")
+                LabeledContent("登录绑定", value: account.serverBindingState == .verified ? "CloudBase 已验证" : "等待 CloudBase 验证")
+                if SubscriptionFeatureConfiguration.isEnabled {
+                    NavigationLink {
+                        SubscriptionSettingsView(account: account)
+                    } label: {
+                        Label("订阅与购买", systemImage: "creditcard")
+                    }
                 }
                 Text("原始 Apple 登录标识只保存在本机 Keychain，不写入牧场数据。")
                     .font(.footnote).foregroundStyle(.secondary)

@@ -3,43 +3,164 @@ import SwiftData
 import SwiftUI
 
 struct FarmAnalysisCenterView: View {
+    @Query(sort: \SheepRecord.updatedAt, order: .reverse) private var sheep: [SheepRecord]
+    @Query(sort: \PenRecord.updatedAt, order: .reverse) private var pens: [PenRecord]
+    @Query(sort: \WeightRecord.occurredAt, order: .reverse) private var weights: [WeightRecord]
+    @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproduction: [ReproductionRecord]
+    @Query(sort: \FeedRecord.occurredAt, order: .reverse) private var feeds: [FeedRecord]
+
     let farm: FarmRecord
+    let onAskAssistant: () -> Void
+
+    init(farm: FarmRecord, onAskAssistant: @escaping () -> Void) {
+        self.farm = farm
+        self.onAskAssistant = onAskAssistant
+    }
+
+    private var activeSheepCount: Int {
+        sheep.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active }
+    }
+
+    private var activePenCount: Int {
+        pens.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive }
+    }
+
+    private var currentMonthFeedCount: Int {
+        let interval = Calendar.current.dateInterval(of: .month, for: .now)
+        return feeds.count {
+            $0.farmID == farm.id && $0.deletedAt == nil && interval?.contains($0.occurredAt) == true
+        }
+    }
+
+    private var latestActivityDate: Date? {
+        let weightDate = weights.first { $0.farmID == farm.id && $0.deletedAt == nil }?.occurredAt
+        let reproductionDate = reproduction.first { $0.farmID == farm.id && $0.deletedAt == nil }?.occurredAt
+        let feedDate = feeds.first { $0.farmID == farm.id && $0.deletedAt == nil }?.occurredAt
+        return [weightDate, reproductionDate, feedDate].compactMap { $0 }.max()
+    }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                GlassCard {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("牧场分析", systemImage: "chart.xyaxis.line")
-                            .font(.headline)
-                            .foregroundStyle(AppTheme.brand)
-                        Text("把称重、产羔、繁殖和采食记录整理为可行动的生产指标。")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 18) {
+                analysisHero
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("牧场快照")
+                        .font(.headline)
+                    HStack(spacing: 0) {
+                        DashboardMetric(title: "在场羊只", value: "\(activeSheepCount)", unit: "只")
+                        Divider().frame(height: 46)
+                        DashboardMetric(title: "启用圈舍", value: "\(activePenCount)", unit: "个")
+                        Divider().frame(height: 46)
+                        DashboardMetric(title: "本月投喂", value: "\(currentMonthFeedCount)", unit: "次")
+                    }
+                    .padding(.vertical, 12)
+                    .background(.background, in: .rect(cornerRadius: 18))
+                    .overlay { RoundedRectangle(cornerRadius: 18).stroke(.separator.opacity(0.38), lineWidth: 0.5) }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("深度分析")
+                        .font(.headline)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 154), spacing: 12)], spacing: 12) {
+                        AnalysisDestination(title: "增重", detail: "体重与 ADG 趋势", symbol: "chart.line.uptrend.xyaxis", tint: .blue) {
+                            WeightGainAnalysisView(farm: farm)
+                        }
+                        AnalysisDestination(title: "羔羊", detail: "产羔与断奶质量", symbol: "figure.and.child.holdinghands", tint: .orange) {
+                            LambAnalysisView(farm: farm)
+                        }
+                        AnalysisDestination(title: "繁殖", detail: "胎均与繁殖节律", symbol: "heart.text.square", tint: .pink) {
+                            ReproductionAnalysisView(farm: farm)
+                        }
+                        AnalysisDestination(title: "采食", detail: "羊天与采食区间", symbol: "chart.bar.xaxis", tint: .green) {
+                            FarmAnalyticsView(farm: farm)
+                        }
                     }
                 }
-                Text("生产表现").font(.headline)
-                AnalysisDestination(title: "增重分析", detail: "体重、ADG 与回归趋势", symbol: "chart.line.uptrend.xyaxis", tint: .blue) {
-                    WeightGainAnalysisView(farm: farm)
-                }
-                AnalysisDestination(title: "羔羊分析", detail: "产羔、断奶与异常记录", symbol: "figure.and.child.holdinghands", tint: .orange) {
-                    LambAnalysisView(farm: farm)
-                }
-                AnalysisDestination(title: "繁殖表现", detail: "胎均、间隔与品种表现", symbol: "heart.text.square", tint: .pink) {
-                    ReproductionAnalysisView(farm: farm)
-                }
-                Text("饲喂表现").font(.headline).padding(.top, 4)
-                AnalysisDestination(title: "采食分析", detail: "真实羊天与自由采食区间", symbol: "chart.bar.xaxis", tint: .green) {
-                    FarmAnalyticsView(farm: farm)
-                }
+
+                assistantPrompt
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.top, 12)
             .safeAreaPadding(.bottom, 32)
         }
         .scrollIndicators(.hidden)
         .background(AppTheme.pageBackground)
-        .navigationTitle("牧场分析")
+    }
+
+    private var analysisHero: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "waveform.path.ecg")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(AppTheme.brand)
+                .frame(width: 38, height: 38)
+                .background(AppTheme.brand.opacity(0.10), in: .rect(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("今天的牧场")
+                    .font(.title3.bold())
+                Text(latestActivityText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var latestActivityText: String {
+        guard let latestActivityDate else { return "还没有可用于分析的生产记录" }
+        return "最近记录于 \(latestActivityDate.formatted(.relative(presentation: .named)))"
+    }
+
+    private var assistantPrompt: some View {
+        Button(action: onAskAssistant) {
+            HStack(spacing: 14) {
+                Image(systemName: "sparkles")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(AppTheme.brand)
+                    .frame(width: 44, height: 44)
+                    .background(AppTheme.brand.opacity(0.10), in: .rect(cornerRadius: 14))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("看不懂这些指标？")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text("让本地助手结合当前牧场记录回答")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "arrow.right")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.brand)
+            }
+            .padding(16)
+            .background(.background, in: .rect(cornerRadius: 22))
+            .overlay { RoundedRectangle(cornerRadius: 22).stroke(AppTheme.brand.opacity(0.16), lineWidth: 1) }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct DashboardMetric: View {
+    let title: String
+    let value: String
+    let unit: String
+
+    var body: some View {
+        VStack(spacing: 4) {
+            HStack(alignment: .lastTextBaseline, spacing: 2) {
+                Text(value)
+                    .font(.title2.bold())
+                Text(unit)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -80,23 +201,27 @@ private struct WeightGainAnalysisView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                AnalysisIntro(title: "增重分析", detail: "按样本范围、圈舍或生产批次查看增重表现", symbol: "chart.line.uptrend.xyaxis", tint: .blue)
-                AnalysisCard(title: "样本筛选") {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("按样本范围、圈舍或生产批次查看增重表现")
+                    .analysisPageSubtitle()
+                AnalysisFilterBar {
                     Picker("样本范围", selection: $scope) {
                         ForEach(WeightSampleScope.allCases, id: \.self) { Text(scopeName($0)).tag($0) }
                     }
                     .pickerStyle(.menu)
+                    .analysisFilterChip()
                     Picker("圈舍", selection: $selectedPenID) {
                         Text("全场").tag(UUID?.none)
                         ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
                     }
                     .pickerStyle(.menu)
+                    .analysisFilterChip()
                     Picker("批次", selection: $selectedBatchID) {
                         Text("不按批次").tag(UUID?.none)
                         ForEach(farmBatches, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
                     }
                     .pickerStyle(.menu)
+                    .analysisFilterChip()
                 }
                 if analytics.isCalculating && analytics.weightCohort == nil {
                     AnalysisLoading(title: "正在计算增重数据")
@@ -118,7 +243,7 @@ private struct WeightGainAnalysisView: View {
                                 PointMark(x: .value("日期", point.date), y: .value("体重", point.value))
                                     .foregroundStyle(AppTheme.brand)
                             }
-                            .frame(height: 190)
+                            .frame(height: 164)
                         }
                     }
                     if !cohort.adgTrend.isEmpty {
@@ -130,7 +255,7 @@ private struct WeightGainAnalysisView: View {
                                 PointMark(x: .value("日期", point.date), y: .value("ADG", point.value))
                                     .foregroundStyle(.orange)
                             }
-                            .frame(height: 180)
+                            .frame(height: 164)
                         }
                     }
                     if !cohort.scatter.isEmpty {
@@ -150,13 +275,13 @@ private struct WeightGainAnalysisView: View {
                                         .lineStyle(StrokeStyle(lineWidth: 2, dash: regressionKind == .linear ? [8, 5] : []))
                                 }
                             }
-                            .frame(height: 190)
+                            .frame(height: 164)
                         }
                     }
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.top, 8)
             .safeAreaPadding(.bottom, 32)
         }
         .scrollIndicators(.hidden)
@@ -197,13 +322,16 @@ private struct LambAnalysisView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                AnalysisIntro(title: "羔羊分析", detail: "聚焦每胎结构、断奶质量和缺失数据", symbol: "figure.and.child.holdinghands", tint: .orange)
-                AnalysisCard(title: "筛选") {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("聚焦每胎结构、断奶质量和缺失数据")
+                    .analysisPageSubtitle()
+                AnalysisFilterBar {
                     Picker("年份", selection: $selectedYear) { Text("全部").tag("全部"); ForEach(years, id: \.self) { Text($0).tag($0) } }
                         .pickerStyle(.menu)
+                        .analysisFilterChip()
                     Picker("断奶月份", selection: $selectedMonth) { Text("全部").tag("全部"); ForEach((1...12).map { String(format: "%02d", $0) }, id: \.self) { Text("\($0) 月").tag($0) } }
                         .pickerStyle(.menu)
+                        .analysisFilterChip()
                 }
                 if let result = analytics.lambResult {
                     if result.incompleteLambingCount > 0 { AnalysisNotice(text: "有 \(result.incompleteLambingCount) 胎缺少胎次、死胎数或逐只羔羊明细，未纳入对应指标。") }
@@ -235,7 +363,7 @@ private struct LambAnalysisView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.top, 8)
             .safeAreaPadding(.bottom, 32)
         }
         .scrollIndicators(.hidden)
@@ -274,11 +402,13 @@ private struct ReproductionAnalysisView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                AnalysisIntro(title: "繁殖表现", detail: "从胎均、繁殖间隔到品种维度查看繁殖效率", symbol: "heart.text.square", tint: .pink)
-                AnalysisCard(title: "筛选") {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("从胎均、繁殖间隔到品种维度查看繁殖效率")
+                    .analysisPageSubtitle()
+                AnalysisFilterBar {
                     Picker("年份", selection: $selectedYear) { Text("全部").tag("全部"); ForEach(years, id: \.self) { Text($0).tag($0) } }
                         .pickerStyle(.menu)
+                        .analysisFilterChip()
                 }
                 if let result = analytics.reproductionResult {
                     if result.incompleteLambingCount > 0 { AnalysisNotice(text: "有 \(result.incompleteLambingCount) 胎缺少完整原始字段，未纳入繁殖性能计算。") }
@@ -313,7 +443,7 @@ private struct ReproductionAnalysisView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.top, 8)
             .safeAreaPadding(.bottom, 32)
         }
         .scrollIndicators(.hidden)
@@ -337,42 +467,29 @@ private struct AnalysisDestination<Destination: View>: View {
 
     var body: some View {
         NavigationLink(destination: destination) {
-            HStack(spacing: 14) {
+            HStack(spacing: 10) {
                 Image(systemName: symbol)
-                    .font(.title3)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(tint)
-                    .frame(width: 42, height: 42)
-                    .background(tint.opacity(0.12), in: .circle)
+                    .frame(width: 34, height: 34)
+                    .background(tint.opacity(0.10), in: .rect(cornerRadius: 11))
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.headline).foregroundStyle(.primary)
-                    Text(detail).font(.footnote).foregroundStyle(.secondary)
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
                 }
-                Spacer()
-                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
             }
-            .padding(16)
-            .background(.background, in: .rect(cornerRadius: 20))
+            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
+            .background(.background, in: .rect(cornerRadius: 16))
+            .overlay { RoundedRectangle(cornerRadius: 16).stroke(.separator.opacity(0.38), lineWidth: 0.5) }
         }
         .buttonStyle(.plain)
-    }
-}
-
-private struct AnalysisIntro: View {
-    let title: String
-    let detail: String
-    let symbol: String
-    let tint: Color
-
-    var body: some View {
-        GlassCard {
-            HStack(spacing: 14) {
-                Image(systemName: symbol).font(.title2).foregroundStyle(tint).frame(width: 42)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.title3.bold())
-                    Text(detail).font(.subheadline).foregroundStyle(.secondary)
-                }
-            }
-        }
     }
 }
 
@@ -382,22 +499,26 @@ private struct AnalysisCard<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(.headline)
-                    if let caption { Text(caption).font(.footnote).foregroundStyle(.secondary) }
-                }
-                content()
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.semibold))
+                if let caption { Text(caption).font(.caption).foregroundStyle(.secondary) }
             }
+            content()
         }
+        .padding(16)
+        .background(.background, in: .rect(cornerRadius: 18))
+        .overlay { RoundedRectangle(cornerRadius: 18).stroke(.separator.opacity(0.38), lineWidth: 0.5) }
     }
 }
 
 private struct MetricGrid<Content: View>: View {
     @ViewBuilder let content: () -> Content
     var body: some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) { content() }
+        HStack(alignment: .top, spacing: 0) { content() }
+            .padding(.vertical, 12)
+            .background(.background, in: .rect(cornerRadius: 18))
+            .overlay { RoundedRectangle(cornerRadius: 18).stroke(.separator.opacity(0.38), lineWidth: 0.5) }
     }
 }
 
@@ -408,17 +529,20 @@ private struct AnalysisMetric: View {
     let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             HStack(alignment: .lastTextBaseline, spacing: 2) {
-                Text(value).font(.title3.bold()).foregroundStyle(tint)
+                Text(value).font(.headline).foregroundStyle(tint)
                 if let unit { Text(unit).font(.caption2).foregroundStyle(.secondary) }
             }
-            .minimumScaleFactor(0.75)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
         }
-        .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
-        .padding(12)
-        .background(.background.opacity(0.74), in: .rect(cornerRadius: 16))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
     }
 }
 
@@ -453,12 +577,44 @@ private struct AnalysisNotice: View {
 
 private struct AnalysisLoading: View {
     let title: String
-    var body: some View { GlassCard { ProgressView(title).frame(maxWidth: .infinity, minHeight: 100) } }
+    var body: some View {
+        ProgressView(title)
+            .frame(maxWidth: .infinity, minHeight: 72)
+            .background(.background, in: .rect(cornerRadius: 18))
+    }
 }
 
 private struct AnalysisEmpty: View {
     let text: String
     var body: some View { Text(text).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
+}
+
+private struct AnalysisFilterBar<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) { content() }
+        }
+        .scrollIndicators(.hidden)
+        .contentMargins(.horizontal, 0, for: .scrollContent)
+    }
+}
+
+private extension View {
+    func analysisPageSubtitle() -> some View {
+        font(.subheadline)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    func analysisFilterChip() -> some View {
+        controlSize(.small)
+            .padding(.leading, 8)
+            .padding(.trailing, 4)
+            .padding(.vertical, 3)
+            .background(.fill.quaternary, in: .capsule)
+    }
 }
 
 private func scopeName(_ scope: WeightSampleScope) -> String { switch scope { case .all: "全部样本"; case .inHerdOnly: "仅在群"; case .removedOnly: "仅离场" } }

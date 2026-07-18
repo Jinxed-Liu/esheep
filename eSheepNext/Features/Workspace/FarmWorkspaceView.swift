@@ -3,6 +3,7 @@ import SwiftUI
 struct FarmWorkspaceView: View {
     @Environment(AppSession.self) private var session
     @State private var searchQuery = ""
+    @State private var isWeatherDetailPresented = false
 
     let account: AccountProfile
     let farms: [FarmRecord]
@@ -18,17 +19,26 @@ struct FarmWorkspaceView: View {
             TabView(selection: $session.selectedTab) {
                 Tab("首页", systemImage: "house", value: .home) {
                     NavigationStack {
-                        FarmHomeView(account: account, farm: activeFarm)
+                        FarmHomeView(
+                            account: account,
+                            farm: activeFarm,
+                            isWeatherDetailPresented: $isWeatherDetailPresented
+                        )
                             .navigationTitle("首页")
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbar {
                                 FarmNavigationToolbar(account: account, farms: farms, activeFarm: activeFarm)
                             }
                     }
+                    .toolbarVisibility(
+                        isWeatherDetailPresented ? .hidden : .visible,
+                        for: .navigationBar,
+                        .tabBar
+                    )
                 }
-                Tab("助手", systemImage: "sparkles", value: .assistant) {
+                Tab("洞察", systemImage: "sparkles", value: .assistant) {
                     NavigationStack {
-                        AssistantStartView(farm: activeFarm)
+                        FarmInsightsView(farm: activeFarm)
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbar {
                                 FarmNavigationToolbar(account: account, farms: farms, activeFarm: activeFarm)
@@ -59,6 +69,7 @@ struct FarmWorkspaceView: View {
             }
             .tabViewSearchActivation(.searchTabSelection)
             .tabBarMinimizeBehavior(.onScrollDown)
+            .scrollEdgeEffectHidden(true, for: [.top, .bottom])
             .onChange(of: session.pendingSearchQuery, initial: true) { _, pendingQuery in
                 guard let pendingQuery else { return }
                 searchQuery = pendingQuery
@@ -87,7 +98,7 @@ private struct FarmNavigationToolbar: ToolbarContent {
             NavigationLink {
                 FarmSettingsView(account: account, farm: activeFarm)
             } label: {
-                Image(systemName: "person.crop.circle")
+                AccountAvatarView(account: account)
             }
             .accessibilityLabel("账户与牧场设置")
         }

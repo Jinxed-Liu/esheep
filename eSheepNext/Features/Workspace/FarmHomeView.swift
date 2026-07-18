@@ -12,6 +12,7 @@ struct FarmHomeView: View {
 
     let account: AccountProfile
     let farm: FarmRecord
+    @Binding var isWeatherDetailPresented: Bool
     @State private var testGenerationProgress: TestFarmGenerationProgress?
     @State private var testGenerationError: String?
 
@@ -100,7 +101,8 @@ struct FarmHomeView: View {
         FarmWeatherHero(
             farm: farm,
             syncSymbol: pendingOutboxCount == 0 ? "checkmark.icloud" : "arrow.triangle.2.circlepath.icloud",
-            syncText: pendingOutboxCount == 0 ? "本地记录已排队处理" : "有 \(pendingOutboxCount) 条本地记录等待同步"
+            syncText: pendingOutboxCount == 0 ? "本地记录已排队处理" : "有 \(pendingOutboxCount) 条本地记录等待同步",
+            isDetailPresented: $isWeatherDetailPresented
         )
     }
 
@@ -133,9 +135,10 @@ struct FarmHomeView: View {
             NavigationLink { PenManagementView(account: account, farm: farm) } label: {
                 StatusRow(title: "圈舍管理", detail: "当前 \(farmPens.count) 个启用圈舍", symbol: "building.2")
             }
-            NavigationLink { FarmAnalysisCenterView(farm: farm) } label: {
+            Button { session.selectedTab = .assistant } label: {
                 StatusRow(title: "牧场分析", detail: "增重、羔羊、繁殖与采食", symbol: "chart.bar.xaxis")
             }
+            .buttonStyle(.plain)
             if healthRecords.contains(where: { $0.farmID == farm.id && $0.deletedAt == nil }) {
                 StatusRow(title: "健康记录", detail: "已有 \(healthRecords.filter { $0.farmID == farm.id && $0.deletedAt == nil }.count) 条记录", symbol: "cross.case")
             }
@@ -150,12 +153,12 @@ private struct HomeMetric: View {
 
     var body: some View {
         GlassCard {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 Image(systemName: symbol).foregroundStyle(AppTheme.brand)
                 Text(value).font(.title3.bold())
                 Text(title).font(.caption).foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64, alignment: .leading)
         }
         .frame(maxWidth: .infinity)
     }

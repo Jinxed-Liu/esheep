@@ -1,130 +1,239 @@
+import OSLog
 import SwiftUI
 
 struct FarmWeatherHero: View {
     let farm: FarmRecord
     let syncSymbol: String
     let syncText: String
+    @Binding var isDetailPresented: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @State private var weather: FarmWeatherSnapshot?
     @State private var isLoading = false
+    @State private var weatherError: String?
+    @Namespace private var weatherTransition
 
+    @ViewBuilder
     var body: some View {
-        ZStack(alignment: .leading) {
+        if farm.locationSnapshot != nil {
+            Button {
+                isDetailPresented = true
+            } label: {
+                weatherCard
+                    .contentShape(.rect(cornerRadius: 28))
+                    .matchedTransitionSource(id: transitionID, in: weatherTransition) { source in
+                        source
+                            .background(AppTheme.pageBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: 28))
+                    }
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .navigationDestination(isPresented: $isDetailPresented) {
+                FarmWeatherDetailView(farm: farm, initialWeather: weather)
+                    .navigationTransition(.zoom(sourceID: transitionID, in: weatherTransition))
+            }
+        } else {
+            weatherCard
+        }
+    }
+
+    private var weatherCard: some View {
+        ZStack {
             MetalWeatherBackground(
                 kind: weather?.visualKind ?? .clear,
                 isDaylight: weather?.isDaylight ?? true,
                 isPaused: reduceMotion || scenePhase != .active
             )
 
-            LinearGradient(
-                colors: [.black.opacity(0.05), .black.opacity(0.34)],
-                startPoint: .topTrailing,
-                endPoint: .bottomLeading
-            )
+            readabilityGradient
 
-            content
-                .padding(20)
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                Spacer(minLength: 4)
+                primaryWeather
+                Spacer(minLength: 6)
+                footer
+            }
+            .padding(20)
         }
-        .frame(maxWidth: .infinity, minHeight: 210, alignment: .leading)
-        .clipShape(.rect(cornerRadius: 24))
+        .frame(maxWidth: .infinity, minHeight: 210, maxHeight: 210, alignment: .leading)
+        .clipShape(.rect(cornerRadius: 28))
         .overlay {
-            RoundedRectangle(cornerRadius: 24)
-                .stroke(.white.opacity(0.22), lineWidth: 0.8)
+            RoundedRectangle(cornerRadius: 28)
+                .stroke(
+                    LinearGradient(
+                        colors: [.white.opacity(0.48), .white.opacity(0.08)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.8
+                )
         }
-        .shadow(color: .black.opacity(0.12), radius: 18, y: 8)
+        .shadow(color: .black.opacity(0.18), radius: 24, y: 12)
         .task(id: farm.locationUpdatedAt) {
             await loadWeather()
         }
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(farm.locationSnapshot == nil ? [] : .isButton)
+        .accessibilityHint(farm.locationSnapshot == nil ? "" : "打开完整天气")
     }
 
-    private var content: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(farm.name)
-                        .font(.title2.bold())
-                    Text("当前角色：\(farm.role.displayName)")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.82))
+    private var transitionID: String {
+        "farm-weather-\(farm.id.uuidString)"
+    }
+
+    private var readabilityGradient: some View {
+        ZStack {
+            LinearGradient(
+                colors: [.black.opacity(0.24), .clear, .black.opacity(0.20)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.12)],
+                startPoint: .center,
+                endPoint: .bottom
+            )
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(farm.name)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Image(systemName: "location.fill")
+                        .font(.caption2)
+                    Text(farm.locationSnapshot?.displayName ?? "尚未设置牧场位置")
+                        .lineLimit(1)
                 }
-                Spacer()
-                weatherSummary
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.78))
             }
 
-            Spacer(minLength: 18)
+            Spacer(minLength: 8)
 
-            HStack(spacing: 8) {
-                Image(systemName: syncSymbol)
-                Text(syncText)
-                    .font(.subheadline)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(.black.opacity(0.16), in: .rect(cornerRadius: 14))
+            Label(farm.role.displayName, systemImage: "person.crop.circle.fill")
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .glassEffect(.regular, in: .capsule)
         }
         .foregroundStyle(.white)
-        .shadow(color: .black.opacity(0.28), radius: 3, y: 1)
+        .shadow(color: .black.opacity(0.30), radius: 3, y: 1)
     }
 
     @ViewBuilder
-    private var weatherSummary: some View {
+    private var primaryWeather: some View {
         if let weather {
-            VStack(alignment: .trailing, spacing: 4) {
-                HStack(spacing: 7) {
-                    Image(systemName: weather.symbolName)
-                        .symbolRenderingMode(.multicolor)
+            HStack(alignment: .bottom, spacing: 14) {
+                VStack(alignment: .leading, spacing: -1) {
                     Text(weather.temperatureText)
-                        .font(.title.bold())
+                        .font(.system(size: 50, weight: .ultraLight, design: .rounded))
+                        .tracking(-2)
                         .contentTransition(.numericText())
+                    Text(weather.visualKind.displayName)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.86))
                 }
-                Text("湿度 \(weather.humidityText)")
-                    .font(.caption)
-                if let location = farm.locationSnapshot {
-                    Text(location.displayName)
+                Spacer(minLength: 0)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("最高 / 最低")
                         .font(.caption2)
-                        .lineLimit(1)
-                        .frame(maxWidth: 130, alignment: .trailing)
+                        .foregroundStyle(.white.opacity(0.62))
+                    Text(weather.highLowText)
+                        .font(.subheadline.weight(.semibold))
+                    Text("湿度 \(weather.humidityText) · \(weather.windSpeedText)")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.74))
                 }
             }
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.32), radius: 5, y: 2)
         } else if isLoading {
-            ProgressView()
-                .tint(.white)
+            HStack(spacing: 12) {
+                ProgressView().tint(.white)
+                Text("正在读取牧场天气")
+                    .font(.subheadline)
+            }
+            .foregroundStyle(.white.opacity(0.86))
         } else {
-            Image(systemName: farm.locationSnapshot == nil ? "location.slash" : "cloud.sun")
-                .font(.title2)
+            VStack(alignment: .leading, spacing: 5) {
+                Label(
+                    farm.locationSnapshot == nil ? "设置牧场位置后显示实时天气" : "天气服务暂时不可用",
+                    systemImage: farm.locationSnapshot == nil ? "location.slash.fill" : "exclamationmark.icloud.fill"
+                )
+                .font(.headline)
+                if let weatherError {
+                    Text(weatherError)
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.68))
+                        .lineLimit(2)
+                }
+            }
+            .foregroundStyle(.white.opacity(0.88))
         }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 7) {
+            Image(systemName: syncSymbol)
+                .symbolRenderingMode(.hierarchical)
+            Text(syncText)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
+        .foregroundStyle(.white.opacity(0.80))
     }
 
     private func loadWeather() async {
         guard let location = farm.locationSnapshot else {
             weather = nil
+            weatherError = nil
             isLoading = false
             return
         }
         isLoading = true
+        weatherError = nil
         defer { isLoading = false }
-        weather = try? await FarmWeatherRepository.shared.currentWeather(for: farm.id, location: location)
+        do {
+            let snapshot = try await FarmWeatherRepository.shared.currentWeather(for: farm.id, location: location)
+            withAnimation(.smooth(duration: 0.7)) {
+                weather = snapshot
+            }
+        } catch {
+            weather = nil
+            weatherError = error.localizedDescription
+            Logger.weather.error("WeatherKit current request failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }
 
-private struct MetalWeatherBackground: View {
+private extension Logger {
+    static let weather = Logger(subsystem: Bundle.main.bundleIdentifier ?? "eSheepNext", category: "Weather")
+}
+
+struct MetalWeatherBackground: View {
     let kind: FarmWeatherSnapshot.VisualKind
     let isDaylight: Bool
     let isPaused: Bool
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: isPaused)) { timeline in
+            let animationTime = isPaused ? 0 : timeline.date.timeIntervalSinceReferenceDate
             Rectangle()
                 .fill(.white)
                 .visualEffect { content, proxy in
                     content.colorEffect(
                         ShaderLibrary.farmWeatherBackground(
                             .float2(proxy.size),
-                            .float(isPaused ? 0 : timeline.date.timeIntervalSinceReferenceDate),
+                            .float(animationTime),
                             .float(kind.rawValue),
                             .float(isDaylight ? 1 : 0)
                         )
@@ -133,5 +242,18 @@ private struct MetalWeatherBackground: View {
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+}
+
+extension FarmWeatherSnapshot.VisualKind {
+    var displayName: String {
+        switch self {
+        case .clear: "晴朗"
+        case .cloudy: "多云"
+        case .rain: "降雨"
+        case .snow: "降雪"
+        case .storm: "雷暴"
+        case .fog: "雾"
+        }
     }
 }

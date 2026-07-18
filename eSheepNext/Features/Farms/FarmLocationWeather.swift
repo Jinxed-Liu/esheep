@@ -1,8 +1,30 @@
 import CoreLocation
 import MapKit
+import OSLog
 import SwiftData
 import SwiftUI
 import WeatherKit
+
+enum FarmWeatherDataSource: Sendable, Equatable {
+    case appleWeather
+}
+
+struct FarmWeatherAlert: Identifiable, Sendable, Equatable {
+    enum Severity: Sendable, Equatable {
+        case minor
+        case moderate
+        case severe
+        case extreme
+        case unknown
+    }
+
+    let id: String
+    let summary: String
+    let region: String?
+    let source: String
+    let severity: Severity
+    let detailsURL: URL
+}
 
 struct FarmWeatherSnapshot: Sendable, Equatable {
     enum VisualKind: Float, Sendable {
@@ -30,16 +52,75 @@ struct FarmWeatherSnapshot: Sendable, Equatable {
         }
     }
 
+    let source: FarmWeatherDataSource
     let symbolName: String
     let temperatureText: String
     let humidityText: String
+    let windSpeedText: String
+    let windDirectionText: String
+    let windDirectionDegrees: Double
+    let windGustText: String
+    let highLowText: String
+    let apparentTemperatureText: String
+    let pressureText: String
+    let visibilityText: String
+    let uvIndexText: String
+    let sunriseText: String
+    let sunsetText: String
+    let moonPhaseText: String
+    let moonPhaseSymbol: String
+    let moonriseText: String
+    let moonsetText: String
     let visualKind: VisualKind
     let isDaylight: Bool
     let observedAt: Date
 }
 
+struct FarmHourlyWeather: Identifiable, Sendable, Equatable {
+    let date: Date
+    let symbolName: String
+    let temperatureText: String
+    let precipitationChanceText: String
+    let temperatureValue: Double
+    let precipitationChanceValue: Double
+    let windSpeedText: String
+    let windSpeedValue: Double
+
+    var id: Date { date }
+}
+
+struct FarmDailyWeather: Identifiable, Sendable, Equatable {
+    let date: Date
+    let symbolName: String
+    let highTemperatureText: String
+    let lowTemperatureText: String
+    let precipitationChanceText: String
+    let windSpeedText: String
+
+    var id: Date { date }
+}
+
+struct FarmWeatherDetailSnapshot: Sendable, Equatable {
+    let current: FarmWeatherSnapshot
+    let hourly: [FarmHourlyWeather]
+    let history: [FarmDailyWeather]
+    let forecast: [FarmDailyWeather]
+    let alerts: [FarmWeatherAlert]
+}
+
 actor FarmWeatherRepository {
     static let shared = FarmWeatherRepository()
+
+    private enum RepositoryError: LocalizedError {
+        case weatherKitFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .weatherKitFailed(let reason):
+                "WeatherKit：\(reason)"
+            }
+        }
+    }
 
     private struct CacheEntry {
         let snapshot: FarmWeatherSnapshot
@@ -48,6 +129,13 @@ actor FarmWeatherRepository {
 
     private var cache: [UUID: CacheEntry] = [:]
 
+    private struct DetailCacheEntry {
+        let snapshot: FarmWeatherDetailSnapshot
+        let locationUpdatedAt: Date
+        let fetchedAt: Date
+    }
+
+    private var detailCache: [UUID: DetailCacheEntry] = [:]
     func currentWeather(for farmID: UUID, location: FarmLocationSnapshot) async throws -> FarmWeatherSnapshot {
         if let cached = cache[farmID],
            cached.locationUpdatedAt == location.updatedAt,
@@ -55,20 +143,201 @@ actor FarmWeatherRepository {
             return cached.snapshot
         }
 
-        let weather = try await WeatherService.shared.weather(
-            for: CLLocation(latitude: location.latitude, longitude: location.longitude)
-        )
+        do {
+            let snapshot = try await appleCurrentWeather(for: location)
+            cache[farmID] = CacheEntry(snapshot: snapshot, locationUpdatedAt: location.updatedAt)
+            return snapshot
+        } catch {
+            let weatherKitFailure = Self.diagnosticDescription(for: error)
+            Self.logger.error("WeatherKit current request failed: \(weatherKitFailure, privacy: .public)")
+            #if DEBUG
+            print("[WeatherKit][current] \(weatherKitFailure)")
+            #endif
+            throw RepositoryError.weatherKitFailed(weatherKitFailure)
+        }
+    }
+
+    private func appleCurrentWeather(for location: FarmLocationSnapshot) async throws -> FarmWeatherSnapshot {
+        let weather = try await WeatherService.shared.weather(for: CLLocation(
+            latitude: location.latitude,
+            longitude: location.longitude
+        ))
+        return Self.currentSnapshot(from: weather, location: location)
+    }
+
+    private static func currentSnapshot(
+        from weather: WeatherKit.Weather,
+        location: FarmLocationSnapshot
+    ) -> FarmWeatherSnapshot {
         let current = weather.currentWeather
-        let snapshot = FarmWeatherSnapshot(
+        let today = weather.dailyForecast.forecast.first
+        var timeStyle = Date.FormatStyle(date: .omitted, time: .shortened)
+        timeStyle.timeZone = TimeZone(identifier: location.timeZoneIdentifier) ?? .current
+        return FarmWeatherSnapshot(
+            source: .appleWeather,
             symbolName: current.symbolName,
-            temperatureText: current.temperature.formatted(.measurement(width: .abbreviated)),
+            temperatureText: Self.temperatureText(current.temperature),
             humidityText: current.humidity.formatted(.percent.precision(.fractionLength(0))),
+            windSpeedText: current.wind.speed.formatted(.measurement(width: .abbreviated)),
+            windDirectionText: current.wind.compassDirection.description,
+            windDirectionDegrees: current.wind.direction.converted(to: .degrees).value,
+            windGustText: current.wind.gust?.formatted(.measurement(width: .abbreviated)) ?? "—",
+            highLowText: today.map {
+                "\(Self.temperatureText($0.highTemperature)) / \(Self.temperatureText($0.lowTemperature))"
+            } ?? "—",
+            apparentTemperatureText: Self.temperatureText(current.apparentTemperature),
+            pressureText: current.pressure.formatted(.measurement(width: .abbreviated)),
+            visibilityText: current.visibility.formatted(.measurement(width: .abbreviated)),
+            uvIndexText: "\(current.uvIndex.value)",
+            sunriseText: today?.sun.sunrise?.formatted(timeStyle) ?? "—",
+            sunsetText: today?.sun.sunset?.formatted(timeStyle) ?? "—",
+            moonPhaseText: today.map { Self.moonPhaseText($0.moon.phase) } ?? "—",
+            moonPhaseSymbol: today?.moon.phase.symbolName ?? "moon.stars.fill",
+            moonriseText: today?.moon.moonrise?.formatted(timeStyle) ?? "—",
+            moonsetText: today?.moon.moonset?.formatted(timeStyle) ?? "—",
             visualKind: .init(symbolName: current.symbolName),
             isDaylight: current.isDaylight,
             observedAt: .now
         )
-        cache[farmID] = CacheEntry(snapshot: snapshot, locationUpdatedAt: location.updatedAt)
+    }
+
+    func detailedWeather(for farmID: UUID, location: FarmLocationSnapshot) async throws -> FarmWeatherDetailSnapshot {
+        if let cached = detailCache[farmID],
+           cached.locationUpdatedAt == location.updatedAt,
+           cached.fetchedAt.addingTimeInterval(15 * 60) > .now {
+            return cached.snapshot
+        }
+
+        let coordinate = CLLocation(latitude: location.latitude, longitude: location.longitude)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: location.timeZoneIdentifier) ?? .current
+        let today = calendar.startOfDay(for: .now)
+        let historyStart = calendar.date(byAdding: .day, value: -7, to: today) ?? today
+        let forecastEnd = calendar.date(byAdding: .day, value: 7, to: today) ?? today
+
+        let snapshot: FarmWeatherDetailSnapshot
+        do {
+            async let aggregateWeather = WeatherService.shared.weather(for: coordinate)
+            async let hourlyForecast = WeatherService.shared.weather(for: coordinate, including: .hourly)
+            async let historicalForecast = WeatherService.shared.weather(
+                for: coordinate,
+                including: .daily(startDate: historyStart, endDate: today)
+            )
+            async let futureForecast = WeatherService.shared.weather(
+                for: coordinate,
+                including: .daily(startDate: today, endDate: forecastEnd)
+            )
+
+            let (aggregate, hourly, history, future) = try await (
+                aggregateWeather,
+                hourlyForecast,
+                historicalForecast,
+                futureForecast
+            )
+            snapshot = FarmWeatherDetailSnapshot(
+                current: Self.currentSnapshot(from: aggregate, location: location),
+                hourly: hourly.forecast.prefix(24).map {
+                    FarmHourlyWeather(
+                        date: $0.date,
+                        symbolName: $0.symbolName,
+                        temperatureText: Self.temperatureText($0.temperature),
+                        precipitationChanceText: $0.precipitationChance.formatted(.percent.precision(.fractionLength(0))),
+                        temperatureValue: $0.temperature.converted(to: .celsius).value,
+                        precipitationChanceValue: $0.precipitationChance,
+                        windSpeedText: $0.wind.speed.formatted(.measurement(width: .abbreviated)),
+                        windSpeedValue: $0.wind.speed.converted(to: .kilometersPerHour).value
+                    )
+                },
+                history: history.forecast.suffix(7).map(Self.dailySnapshot),
+                forecast: future.forecast.prefix(7).map(Self.dailySnapshot),
+                alerts: (aggregate.weatherAlerts ?? []).map(Self.alertSnapshot)
+            )
+        } catch {
+            let weatherKitFailure = Self.diagnosticDescription(for: error)
+            Self.logger.error("WeatherKit detail request failed: \(weatherKitFailure, privacy: .public)")
+            #if DEBUG
+            print("[WeatherKit][detail] \(weatherKitFailure)")
+            #endif
+            throw RepositoryError.weatherKitFailed(weatherKitFailure)
+        }
+        detailCache[farmID] = DetailCacheEntry(
+            snapshot: snapshot,
+            locationUpdatedAt: location.updatedAt,
+            fetchedAt: .now
+        )
+        cache[farmID] = CacheEntry(snapshot: snapshot.current, locationUpdatedAt: location.updatedAt)
         return snapshot
+    }
+
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "eSheepNext",
+        category: "WeatherRepository"
+    )
+
+    private static func diagnosticDescription(for error: Error) -> String {
+        let nsError = error as NSError
+        var result = "\(nsError.domain)(\(nsError.code)): \(nsError.localizedDescription)"
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+            result += " <- \(underlying.domain)(\(underlying.code)): \(underlying.localizedDescription)"
+        }
+        return result
+    }
+
+    private static func temperatureText(_ temperature: Measurement<UnitTemperature>) -> String {
+        temperature.formatted(
+            .measurement(
+                width: .abbreviated,
+                usage: .weather,
+                numberFormatStyle: .number.precision(.fractionLength(0))
+            )
+        )
+    }
+
+    private static func dailySnapshot(_ day: DayWeather) -> FarmDailyWeather {
+        FarmDailyWeather(
+            date: day.date,
+            symbolName: day.symbolName,
+            highTemperatureText: temperatureText(day.highTemperature),
+            lowTemperatureText: temperatureText(day.lowTemperature),
+            precipitationChanceText: day.precipitationChance.formatted(.percent.precision(.fractionLength(0))),
+            windSpeedText: day.wind.speed.formatted(.measurement(width: .abbreviated))
+        )
+    }
+
+    private static func alertSnapshot(_ alert: WeatherAlert) -> FarmWeatherAlert {
+        FarmWeatherAlert(
+            id: alert.detailsURL.absoluteString,
+            summary: alert.summary,
+            region: alert.region,
+            source: alert.source,
+            severity: alertSeverity(alert.severity),
+            detailsURL: alert.detailsURL
+        )
+    }
+
+    private static func alertSeverity(_ severity: WeatherSeverity) -> FarmWeatherAlert.Severity {
+        switch severity {
+        case .minor: .minor
+        case .moderate: .moderate
+        case .severe: .severe
+        case .extreme: .extreme
+        case .unknown: .unknown
+        @unknown default: .unknown
+        }
+    }
+
+    private static func moonPhaseText(_ phase: MoonPhase) -> String {
+        switch phase {
+        case .new: "新月"
+        case .waxingCrescent: "蛾眉月"
+        case .firstQuarter: "上弦月"
+        case .waxingGibbous: "盈凸月"
+        case .full: "满月"
+        case .waningGibbous: "亏凸月"
+        case .lastQuarter: "下弦月"
+        case .waningCrescent: "残月"
+        @unknown default: "月相"
+        }
     }
 }
 
