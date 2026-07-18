@@ -55,11 +55,17 @@ enum FarmWidgetSnapshotStore {
     static func load() -> FarmWidgetSnapshot {
         guard let defaults = sharedDefaults(),
               let data = defaults.data(forKey: key),
-              let snapshot = try? JSONDecoder().decode(FarmWidgetSnapshot.self, from: data),
+              let snapshot = try? decoder.decode(FarmWidgetSnapshot.self, from: data),
               snapshot.version == FarmWidgetSnapshot.currentVersion else {
             return .empty
         }
         return snapshot
+    }
+
+    private static var decoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }
 
     static func save(_ snapshot: FarmWidgetSnapshot) throws {

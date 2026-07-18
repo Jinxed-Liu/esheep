@@ -217,6 +217,13 @@ struct FarmSettingsView: View {
                     Label("通知与系统能力", systemImage: "bell.badge")
                 }
             }
+            Section("数据") {
+                NavigationLink {
+                    FarmDataInterchangeView(account: account, farm: farm)
+                } label: {
+                    Label("导入与导出", systemImage: "arrow.up.arrow.down.square")
+                }
+            }
             Section("账户操作") {
                 AccountSignOutButton()
             }

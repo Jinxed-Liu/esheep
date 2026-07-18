@@ -25,7 +25,9 @@ private enum WidgetSnapshotStore {
         guard let group = Bundle.main.object(forInfoDictionaryKey: "APP_GROUP_IDENTIFIER") as? String,
               let defaults = UserDefaults(suiteName: group),
               let data = defaults.data(forKey: "farm-widget-snapshot-v1") else { return nil }
-        return try? JSONDecoder().decode(WidgetSnapshot.self, from: data)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(WidgetSnapshot.self, from: data)
     }
 }
 

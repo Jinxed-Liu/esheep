@@ -55,7 +55,7 @@ struct HerdManagementView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { exportPresentSheep() } label: { Image(systemName: "square.and.arrow.up") }
-                    .accessibilityLabel("导出在群羊只 Excel")
+                    .accessibilityLabel("导出在群羊只 CSV")
                     .disabled(presentSheep.isEmpty)
             }
             ToolbarItem(placement: .topBarTrailing) {
