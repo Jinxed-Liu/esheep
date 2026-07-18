@@ -4,6 +4,13 @@ import XCTest
 
 @MainActor
 final class FarmSessionTests: XCTestCase {
+    func testDevelopmentBuildActuallyEmbedsCloudKitRuntimeConfiguration() throws {
+        XCTAssertTrue(CloudFeatureConfiguration.isEnabled)
+        let container = try XCTUnwrap(Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String)
+        XCTAssertFalse(container.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        XCTAssertEqual(container, "iCloud.com.sheepfarm.next.dev")
+    }
+
     func testIdentityEndpointPreservesGatewayBasePath() throws {
         let baseURL = try XCTUnwrap(URL(string: "https://example.com/identity"))
 

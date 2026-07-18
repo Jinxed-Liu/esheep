@@ -2,6 +2,17 @@ import XCTest
 @testable import eSheepNext
 
 final class AppleIdentityTests: XCTestCase {
+    func testDevelopmentCanEnterLocalWorkspaceWhileAppleCloudBaseBindingIsMigrating() {
+        let error = IdentityWorkerError.server(
+            code: "apple_cloudbase_migration_pending",
+            message: "账号在迁移"
+        )
+
+        XCTAssertTrue(AppleLoginCompatibilityPolicy.allowsLocalWorkspace(for: error, environment: .development))
+        XCTAssertFalse(AppleLoginCompatibilityPolicy.allowsLocalWorkspace(for: error, environment: .staging))
+        XCTAssertFalse(AppleLoginCompatibilityPolicy.allowsLocalWorkspace(for: error, environment: .production))
+    }
+
     func testNonceDigestUsesAppleCompatibleLowercaseHexSHA256() {
         XCTAssertEqual(
             AppleIdentityActor.hashedNonce("eSheepNext-apple-nonce"),

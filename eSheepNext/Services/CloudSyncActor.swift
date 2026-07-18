@@ -317,7 +317,9 @@ final class CloudCollaborationStore {
     init(container: ModelContainer) {
         let persistence = FarmPersistenceActor(container: container)
         self.persistence = persistence
-        let identifier = Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String
+        let configuredIdentifier = Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String
+        let identifier = configuredIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines)
+        precondition(!CloudFeatureConfiguration.isEnabled || identifier?.isEmpty == false, "启用 CloudKit 时必须配置 CLOUDKIT_CONTAINER_IDENTIFIER。")
         self.sync = CloudSyncActor(containerIdentifier: identifier, persistence: persistence)
         self.photoTransfers = PhotoTransferActor(modelContainer: container, containerIdentifier: identifier)
         self.checkpoints = FarmCheckpointActor(modelContainer: container, containerIdentifier: identifier)

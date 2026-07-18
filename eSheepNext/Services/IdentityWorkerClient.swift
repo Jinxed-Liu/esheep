@@ -25,6 +25,14 @@ enum CloudFeatureConfiguration {
     }
 }
 
+enum AppleLoginCompatibilityPolicy {
+    static func allowsLocalWorkspace(for error: IdentityWorkerError, environment: AppEnvironment = .current) -> Bool {
+        guard environment == .development else { return false }
+        guard case .server(let code, _) = error else { return false }
+        return code == "apple_cloudbase_migration_pending"
+    }
+}
+
 enum IdentityWorkerError: LocalizedError, Equatable {
     case notConfigured
     case missingSession

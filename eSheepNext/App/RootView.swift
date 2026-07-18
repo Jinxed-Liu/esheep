@@ -88,6 +88,13 @@ struct RootView: View {
                 subscription.reset()
             }
         }
+        .task(id: foregroundCloudSyncTaskID) {
+            guard scenePhase == .active,
+                  CloudFeatureConfiguration.isEnabled,
+                  activeAccount?.serverBindingState == .verified,
+                  activeCloudBindings.contains(where: { $0.state == .active }) else { return }
+            await collaboration.synchronizeNow()
+        }
         .task(id: maintenanceTaskID) {
             guard let account = activeAccount, account.serverBindingState == .verified else { return }
             while !Task.isCancelled {
@@ -137,6 +144,25 @@ struct RootView: View {
 
     private var authenticationTaskID: String {
         return "\(session.activeAccountProfileID?.uuidString ?? "none")|\(session.authenticationRevision)"
+    }
+
+    private var foregroundCloudSyncTaskID: String {
+        let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
+        let bindingPart = activeCloudBindings
+            .filter { $0.state == .active }
+            .map { "\($0.farmID.uuidString):\($0.updatedAt.timeIntervalSince1970)" }
+            .sorted()
+            .joined(separator: ",")
+        let activeFarmIDs = Set(activeCloudBindings.filter { $0.state == .active }.map(\.farmID))
+        let pendingPart = outbox
+            .filter {
+                activeFarmIDs.contains($0.farmID) &&
+                    ($0.status == .pending || $0.status == .retryableFailure)
+            }
+            .map { $0.id.uuidString }
+            .sorted()
+            .joined(separator: ",")
+        return "\(scenePhase)|\(accountPart)|\(bindingPart)|\(pendingPart)"
     }
 
     private var systemSnapshotRevision: String {

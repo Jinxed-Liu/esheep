@@ -11,6 +11,7 @@
 - Emoji 扫描通过。
 - App、Test、Widget、App Intents 与 Metal Shader 的通用 iOS 无签名 `build-for-testing` 通过。
 - CloudBase Gateway 7 项自动化测试、类型/语法检查与生产依赖审计通过；高危/严重漏洞为零。旧 Identity Worker 15 项协议回归测试继续通过，但不属于生产运行链路。
+- CloudKit 功能开关和容器名已写入实际 App `Info.plist`；前台启动、回到前台和新增 Outbox 会触发 `CKSyncEngine` 拉取/发送，不再只依赖手动按钮或后台任务。
 - 已跟踪文件的常见私钥和生产密钥模式扫描通过；`backups`、本地 xcconfig、Worker `.dev.vars` 均被忽略。
 - Cloud 准入、迁移隔离、跨牧场隔离、羊天、自由采食闭合区间、库存反向流水、繁殖不确定性、免费发布模式、云缓存 staging/回滚、XLSX/CSV/JSON 导入与幂等路径已有自动化覆盖。
 
