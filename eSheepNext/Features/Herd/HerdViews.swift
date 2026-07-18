@@ -15,13 +15,32 @@ struct HerdManagementView: View {
     @State private var exportDocument: InHerdSheepExportDocument?
     @State private var exportMessage: String?
     @State private var query = ""
+    @State private var sexFilter: SheepSex?
+    @State private var statusFilter: SheepStatus?
+    @State private var penFilter: UUID?
+    @State private var sortOrder = HerdSortOrder.earTag
+    @State private var visibleLimit = 100
+    @State private var selection = Set<UUID>()
+    @State private var isBatchTransferring = false
 
     private var farmSheep: [SheepRecord] {
-        sheep.filter {
+        let filtered = sheep.filter {
             $0.farmID == farm.id && $0.deletedAt == nil &&
-                (query.isEmpty || $0.earTag.localizedCaseInsensitiveContains(query) || $0.breed.localizedCaseInsensitiveContains(query))
+                (query.isEmpty || $0.earTag.localizedCaseInsensitiveContains(query) || $0.breed.localizedCaseInsensitiveContains(query)) &&
+                (sexFilter == nil || $0.sex == sexFilter) &&
+                (statusFilter == nil || $0.status == statusFilter) &&
+                (penFilter == nil || $0.currentPenID == penFilter)
+        }
+        return filtered.sorted {
+            switch sortOrder {
+            case .earTag: $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending
+            case .newestEntry: $0.enteredAt == $1.enteredAt ? $0.earTag < $1.earTag : $0.enteredAt > $1.enteredAt
+            case .breed: $0.breed == $1.breed ? $0.earTag < $1.earTag : $0.breed.localizedStandardCompare($1.breed) == .orderedAscending
+            }
         }
     }
+
+    private var visibleSheep: ArraySlice<SheepRecord> { farmSheep.prefix(visibleLimit) }
 
     private var penNames: [UUID: String] {
         Dictionary(uniqueKeysWithValues: pens.filter { $0.farmID == farm.id }.map { ($0.id, $0.name) })
@@ -32,11 +51,11 @@ struct HerdManagementView: View {
     }
 
     var body: some View {
-        List {
+        List(selection: $selection) {
             if farmSheep.isEmpty {
                 ContentUnavailableView.search(text: query)
             } else {
-                ForEach(farmSheep, id: \.id) { sheep in
+                ForEach(visibleSheep, id: \.id) { sheep in
                     NavigationLink {
                         SheepDetailView(account: account, farm: farm, sheep: sheep, penName: sheep.currentPenID.flatMap { penNames[$0] })
                     } label: {
@@ -47,12 +66,50 @@ struct HerdManagementView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    .tag(sheep.id)
+                }
+                if visibleSheep.count < farmSheep.count {
+                    Button("继续加载（剩余 \(farmSheep.count - visibleSheep.count) 只）") { visibleLimit += 100 }
                 }
             }
         }
         .navigationTitle("羊只")
         .searchable(text: $query, prompt: "耳号或品种")
+        .onChange(of: query) { _, _ in visibleLimit = 100 }
+        .onChange(of: sexFilter) { _, _ in visibleLimit = 100; selection.removeAll() }
+        .onChange(of: statusFilter) { _, _ in visibleLimit = 100; selection.removeAll() }
+        .onChange(of: penFilter) { _, _ in visibleLimit = 100; selection.removeAll() }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) { EditButton() }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Picker("性别", selection: $sexFilter) {
+                        Text("全部性别").tag(SheepSex?.none)
+                        ForEach(SheepSex.allCases, id: \.self) { Text($0.displayName).tag(SheepSex?.some($0)) }
+                    }
+                    Picker("状态", selection: $statusFilter) {
+                        Text("全部状态").tag(SheepStatus?.none)
+                        ForEach(SheepStatus.allCases, id: \.self) { Text($0.displayName).tag(SheepStatus?.some($0)) }
+                    }
+                    Picker("圈舍", selection: $penFilter) {
+                        Text("全部圈舍").tag(UUID?.none)
+                        ForEach(pens.filter { $0.farmID == farm.id && $0.deletedAt == nil }, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
+                    }
+                    Divider()
+                    Picker("排序", selection: $sortOrder) {
+                        ForEach(HerdSortOrder.allCases) { Text($0.title).tag($0) }
+                    }
+                    if sexFilter != nil || statusFilter != nil || penFilter != nil {
+                        Button("清除筛选") { sexFilter = nil; statusFilter = nil; penFilter = nil }
+                    }
+                } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
+                .accessibilityLabel("筛选与排序")
+            }
+            if !selection.isEmpty {
+                ToolbarItem(placement: .bottomBar) {
+                    Button("批量转群（\(selection.count)）") { isBatchTransferring = true }
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { exportPresentSheep() } label: { Image(systemName: "square.and.arrow.up") }
                     .accessibilityLabel("导出在群羊只 CSV")
@@ -65,6 +122,14 @@ struct HerdManagementView: View {
         }
         .sheet(isPresented: $isAddingSheep) {
             NavigationStack { AddSheepView(account: account, farm: farm) }
+        }
+        .sheet(isPresented: $isBatchTransferring) {
+            NavigationStack {
+                BatchTransferSheepView(account: account, farm: farm, sheepIDs: selection) { count in
+                    selection.removeAll()
+                    exportMessage = "已为 \(count) 只羊生成转群记录。"
+                }
+            }
         }
         .fileExporter(
             isPresented: $isExportingSheep,
@@ -91,6 +156,62 @@ struct HerdManagementView: View {
             data: InHerdSheepExport.csvData(farmID: farm.id, sheep: presentSheep, pens: pens)
         )
         isExportingSheep = true
+    }
+}
+
+private enum HerdSortOrder: String, CaseIterable, Identifiable {
+    case earTag, newestEntry, breed
+    var id: String { rawValue }
+    var title: String {
+        switch self { case .earTag: "耳号"; case .newestEntry: "最近入场"; case .breed: "品种" }
+    }
+}
+
+private struct BatchTransferSheepView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
+    let account: AccountProfile
+    let farm: FarmRecord
+    let sheepIDs: Set<UUID>
+    let completion: (Int) -> Void
+    private let commandService = FarmCommandService()
+    @State private var targetPenID: UUID?
+    @State private var occurredAt = Date.now
+    @State private var note = "批量转群"
+    @State private var errorMessage: String?
+
+    private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
+
+    var body: some View {
+        Form {
+            Section("影响摘要") { Text("将为 \(sheepIDs.count) 只羊分别创建可同步、可追溯的转群记录。") }
+            Section("目标") {
+                Picker("目标圈舍", selection: $targetPenID) {
+                    Text("未分圈").tag(UUID?.none)
+                    ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
+                }
+                DatePicker("发生时间", selection: $occurredAt)
+                TextField("备注", text: $note)
+            }
+        }
+        .navigationTitle("批量转群")
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) { Button("确认保存", action: save).disabled(sheepIDs.isEmpty) }
+        }
+        .recordErrorAlert($errorMessage)
+    }
+
+    private func save() {
+        do {
+            let farmContext = FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role)
+            for sheepID in sheepIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                try commandService.execute(.transferSheep(sheepID: sheepID, toPenID: targetPenID, occurredAt: occurredAt, note: note), in: farmContext, context: modelContext)
+            }
+            completion(sheepIDs.count)
+            dismiss()
+        } catch { errorMessage = error.localizedDescription }
     }
 }
 
