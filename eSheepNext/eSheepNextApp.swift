@@ -10,6 +10,7 @@ struct eSheepNextApp: App {
     @State private var session = AppSession()
     @State private var collaboration: CloudCollaborationStore
     @State private var subscription = SubscriptionService()
+    @State private var notifications = FarmNotificationService()
 
     init() {
         do {
@@ -17,7 +18,9 @@ struct eSheepNextApp: App {
         } catch {
             fatalError("无法初始化本地数据存储：\(error.localizedDescription)")
         }
-        _collaboration = State(initialValue: CloudCollaborationStore(container: modelContainer))
+        let collaboration = CloudCollaborationStore(container: modelContainer)
+        _collaboration = State(initialValue: collaboration)
+        FarmBackgroundRefresh.register(collaboration: collaboration)
     }
 
     var body: some Scene {
@@ -26,6 +29,7 @@ struct eSheepNextApp: App {
                 .environment(session)
                 .environment(collaboration)
                 .environment(subscription)
+                .environment(notifications)
                 .tint(AppTheme.brand)
         }
         .modelContainer(modelContainer)

@@ -46,6 +46,45 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 1, entitlement: pro))
     }
 
+    func testWidgetSnapshotKeepsEveryEntityFarmScoped() {
+        let ownerID = UUID()
+        let first = FarmRecord(ownerAccountID: ownerID, name: "北场")
+        let second = FarmRecord(ownerAccountID: ownerID, name: "南场")
+        let firstPen = PenRecord(farmID: first.id, name: "一号圈")
+        let secondPen = PenRecord(farmID: second.id, name: "二号圈")
+        let firstSheep = SheepRecord(farmID: first.id, earTag: "A001", breed: "湖羊", sex: .ewe, penID: firstPen.id, enteredAt: .now)
+        let secondSheep = SheepRecord(farmID: second.id, earTag: "B001", breed: "杜泊", sex: .ram, penID: secondPen.id, enteredAt: .now)
+        let pending = OutboxItem(farmID: first.id, accountID: ownerID, operationID: UUID())
+
+        let snapshot = FarmSystemIntegrationService.makeSnapshot(
+            farms: [first, second],
+            sheep: [firstSheep, secondSheep],
+            pens: [firstPen, secondPen],
+            feeds: [],
+            outbox: [pending],
+            selectedFarmID: second.id
+        )
+
+        XCTAssertEqual(snapshot.version, FarmWidgetSnapshot.currentVersion)
+        XCTAssertEqual(snapshot.selectedFarmID, second.id)
+        XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == first.id })?.sheep.map(\.farmID), [first.id])
+        XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == second.id })?.pens.map(\.farmID), [second.id])
+        XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == first.id })?.pendingOperationCount, 1)
+    }
+
+    func testSpotlightDeepLinkPreservesFarmAndEntityIdentity() throws {
+        let farmID = UUID()
+        let sheepID = UUID()
+        let url = try XCTUnwrap(URL(string: "esheep://farm/\(farmID.uuidString)/sheep/\(sheepID.uuidString)?q=A001"))
+
+        let target = try XCTUnwrap(FarmSystemIntegrationService.target(from: url))
+
+        XCTAssertEqual(target.farmID, farmID)
+        XCTAssertEqual(target.entityID, sheepID)
+        XCTAssertEqual(target.kind, .searchSheep)
+        XCTAssertEqual(target.query, "A001")
+    }
+
     func testMigrationFarmIsRejectedByDevelopmentCloudGate() async throws {
         let container = try AppSchema.makeContainer(name: "migration-cloud-gate-\(UUID().uuidString)", isStoredInMemoryOnly: true)
         let context = ModelContext(container)

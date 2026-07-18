@@ -3,6 +3,7 @@ import Foundation
 import Observation
 import SwiftData
 import UIKit
+import UserNotifications
 
 enum CloudAccountAvailability: Equatable, Sendable {
     case checking
@@ -440,7 +441,35 @@ final class CloudCollaborationStore {
     }
 }
 
-final class CloudShareAppDelegate: NSObject, UIApplicationDelegate {
+final class CloudShareAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        guard let route = FarmNotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
+        FarmSystemNavigationStore.enqueue(.init(
+            farmID: route.farmID,
+            kind: route.kind,
+            entityID: route.entityID,
+            query: nil
+        ))
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+
     func application(_ application: UIApplication, userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata) {
         Task {
             do {

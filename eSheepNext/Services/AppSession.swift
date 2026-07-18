@@ -50,6 +50,7 @@ final class AppSession {
     var authenticationRevision = 0
     var authenticationNotice: String?
     var pendingRecordEntry: PendingRecordEntry?
+    var pendingSearchQuery: String?
 
     init() {
         activeAccountProfileID = SecureAccountStore.activeAccountProfileID()
@@ -73,6 +74,24 @@ final class AppSession {
         switch request {
         case .home:
             selectedTab = .home
+        case .recordWeight:
+            selectedTab = .records
+            pendingRecordEntry = .weight
+        case .recordFeed:
+            selectedTab = .feeding
+            pendingRecordEntry = .feed
+        }
+    }
+
+    func consumeSystemNavigationTarget() {
+        guard let target = FarmSystemNavigationStore.consume() else { return }
+        selectedFarmID = target.farmID
+        switch target.kind {
+        case .home:
+            selectedTab = .home
+        case .searchSheep, .openPen:
+            pendingSearchQuery = target.query
+            selectedTab = .search
         case .recordWeight:
             selectedTab = .records
             pendingRecordEntry = .weight

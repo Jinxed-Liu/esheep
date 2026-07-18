@@ -565,7 +565,7 @@ struct CloudCollaborationCenterView: View {
                 modelContext.delete(account)
                 try? modelContext.save()
                 session.authenticationDidSignOut(
-                    warning: "账户删除已完成（任务 (deletion.deletionJobID)）。身份服务会话、设备与本机登录资料均已撤销。"
+                    warning: "账户删除已完成（任务 \(deletion.deletionJobID)）。身份服务会话、设备与本机登录资料均已撤销。"
                 )
             }
         }

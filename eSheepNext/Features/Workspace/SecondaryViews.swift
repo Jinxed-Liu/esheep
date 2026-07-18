@@ -211,6 +211,11 @@ struct FarmSettingsView: View {
                 } label: {
                     Label("身份、共享与同步", systemImage: "person.2.icloud")
                 }
+                NavigationLink {
+                    SystemServicesSettingsView(farm: farm)
+                } label: {
+                    Label("通知与系统能力", systemImage: "bell.badge")
+                }
             }
             Section("账户操作") {
                 AccountSignOutButton()

@@ -59,6 +59,11 @@ struct FarmWorkspaceView: View {
             }
             .tabViewSearchActivation(.searchTabSelection)
             .tabBarMinimizeBehavior(.onScrollDown)
+            .onChange(of: session.pendingSearchQuery, initial: true) { _, pendingQuery in
+                guard let pendingQuery else { return }
+                searchQuery = pendingQuery
+                session.pendingSearchQuery = nil
+            }
         }
     }
 

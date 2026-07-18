@@ -10,7 +10,7 @@
 - 羊只、圈舍、称重、转群、治疗/疫苗、配种/孕检/产羔、备注和本地搜索。
 - 原料库、配方、投喂多原料明细、投喂历史，以及按历史圈舍和真实羊天计算的自由采食分析。
 - 只读的确定性本地牧场助手；它不编造数据，也不能直接写入。
-- 原生五个 Tab、iPhone/iPad 适配、App Intents 快捷入口、App Icon、Privacy Manifest、Entitlement 基线和 Emoji 静态扫描。
+- 原生五个 Tab、iPhone/iPad 适配、farm-scoped App Intents 与 Spotlight 索引、通知路由、后台补偿同步、可选牧场 Widget、App Icon、Privacy Manifest、Entitlement 基线和 Emoji 静态扫描。
 - 独立 CloudKit 同步层：private/shared `CKSyncEngine`、每牧场 Zone、CKShare、持久化同步状态、完整命令 Outbox、设备签名、能力证书、冲突隔离和异常硬删除检测。
 - 独立 Cloudflare Workers + D1 身份服务源码，覆盖账号注册、密码登录、Apple 服务端验证、会话轮换、设备公钥、邀请、角色证书、账户删除与安全审计；不保存牧场业务数据。
 - 云端协作中心：Development 测试牧场启用、系统共享、邀请码、成员与证书、同步、冲突、安全事件和账户删除状态。
@@ -29,6 +29,7 @@
 3. 使用两个真实 iCloud 测试账户完成 Development 环境的 private/shared `CKSyncEngine`、Zone、CKShare、邀请、撤权和恢复验收；Production Schema 仍不部署。
 4. 在 App Store Connect 创建月度/年度订阅、产品页、支持站、隐私政策、服务条款、删除页面与审核账户/演示路径。
 5. 按七日清单完成双账号共享、离线同步、冲突、撤权、重装、状态重建、硬删除和照片恢复，并保存每日证据。
+6. 新增的 `com.sheepfarm.next.dev.widget`、Staging 和 Production Widget Bundle ID 需要在 Apple Developer 中注册 App Group 能力并生成描述文件；未完成前无签名构建可通过，但带 Widget 的真机安装会被签名门禁拒绝。
 
 当前代码已具备 `CKAsset` 照片传输、加密 checkpoint、区内成员快照、签名删除、业务冲突裁决、独立 SwiftData staging 云缓存重建和正式本机迁移提交。迁移正式提交会写入不可逆的本地锁定标记，服务层拒绝其创建 CloudKit Zone、上传或共享。2026-07-16 已在连接的 iPhone 16 Pro 上通过全部 41 项 XCTest，并通过 14 项 Worker 测试；Development Worker `0.2.1-development` 已真实部署，D1 健康检查为 `reachable`，带真实 Worker URL 的签名构建已安装并启动。真机退出/重登录操作、11 英寸 iPad Pro 最新回归、两个 iCloud 账号互联以及连续七天运行仍需实际操作和自然时间，不能提前标记为通过。
 
@@ -42,4 +43,4 @@
 ./tools/verify_local.sh
 ```
 
-该脚本扫描 Emoji，并用已安装的 Xcode Beta 进行无签名 `build-for-testing`。运行测试或安装真机需要为当前 Development Bundle ID 配置 Apple 开发团队和 provisioning profile。
+该脚本扫描 Emoji、完整编译 App/Test/Widget（包括 Metal Shader），并运行 Worker 测试。运行测试或安装真机需要为 App 与 Widget Bundle ID 配置 Apple 开发团队和 provisioning profile。

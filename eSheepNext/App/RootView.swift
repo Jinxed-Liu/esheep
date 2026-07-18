@@ -9,6 +9,10 @@ struct RootView: View {
     @Query(sort: \FarmRecord.updatedAt, order: .reverse) private var farms: [FarmRecord]
     @Query private var cloudBindings: [CloudFarmBinding]
     @Query private var membershipBindings: [FarmMembershipBinding]
+    @Query private var sheep: [SheepRecord]
+    @Query private var pens: [PenRecord]
+    @Query private var feeds: [FeedRecord]
+    @Query private var outbox: [OutboxItem]
     @State private var credentialStatus: AppleCredentialStatus = .checking
     @Environment(\.scenePhase) private var scenePhase
 
@@ -43,11 +47,31 @@ struct RootView: View {
         .task(id: visibleFarms.map(\.id)) {
             session.reconcileActiveFarm(with: visibleFarms)
             session.consumePendingNavigationRequest()
+            session.consumeSystemNavigationTarget()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 session.consumePendingNavigationRequest()
+                session.consumeSystemNavigationTarget()
+            } else if phase == .background {
+                FarmBackgroundRefresh.schedule()
             }
+        }
+        .onOpenURL { url in
+            guard let target = FarmSystemIntegrationService.target(from: url) else { return }
+            FarmSystemNavigationStore.enqueue(target)
+            session.consumeSystemNavigationTarget()
+        }
+        .task(id: systemSnapshotRevision) {
+            let snapshot = FarmSystemIntegrationService.makeSnapshot(
+                farms: visibleFarms,
+                sheep: sheep,
+                pens: pens,
+                feeds: feeds,
+                outbox: outbox,
+                selectedFarmID: session.selectedFarmID
+            )
+            await FarmSystemIntegrationService.publish(snapshot)
         }
         .task(id: authenticationTaskID) {
             if let account = activeAccount, account.authenticationMethod == .password {
@@ -114,4 +138,13 @@ struct RootView: View {
     private var authenticationTaskID: String {
         return "\(session.activeAccountProfileID?.uuidString ?? "none")|\(session.authenticationRevision)"
     }
+
+    private var systemSnapshotRevision: String {
+        let farmPart = visibleFarms.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
+        let sheepPart = sheep.filter { visibleFarmIDs.contains($0.farmID) }.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
+        let penPart = pens.filter { visibleFarmIDs.contains($0.farmID) }.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
+        return "\(farmPart)|\(sheepPart)|\(penPart)|\(feeds.count)|\(outbox.count)|\(session.selectedFarmID?.uuidString ?? "none")"
+    }
+
+    private var visibleFarmIDs: Set<UUID> { Set(visibleFarms.map(\.id)) }
 }

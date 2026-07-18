@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		E5A100302FC6000100A00001 /* eSheepNextWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E5A100312FC6000100A00001 /* eSheepNextWidget.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		E5A1000A2FC6000100A00001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -14,11 +18,33 @@
 			remoteGlobalIDString = E5A100082FC6000100A00001;
 			remoteInfo = eSheepNext;
 		};
+		E5A100322FC6000100A00001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E5A100012FC6000100A00001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E5A100382FC6000100A00001;
+			remoteInfo = eSheepNextWidget;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		E5A100332FC6000100A00001 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				E5A100302FC6000100A00001 /* eSheepNextWidget.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		E5A100062FC6000100A00001 /* eSheepNext.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = eSheepNext.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E5A1000C2FC6000100A00001 /* eSheepNextTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eSheepNextTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E5A100312FC6000100A00001 /* eSheepNextWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = eSheepNextWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E5A100212FC6000100A00001 /* Config/DevelopmentEnvironment.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/DevelopmentEnvironment.xcconfig; sourceTree = "<group>"; };
 		E5A100222FC6000100A00001 /* Config/StagingEnvironment.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/StagingEnvironment.xcconfig; sourceTree = "<group>"; };
 		E5A100232FC6000100A00001 /* Config/ReleaseEnvironment.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/ReleaseEnvironment.xcconfig; sourceTree = "<group>"; };
@@ -31,6 +57,13 @@
 				Info.plist,
 			);
 			target = E5A100082FC6000100A00001 /* eSheepNext */;
+		};
+		E5A1003E2FC6000100A00001 /* Exceptions for "eSheepNextWidget" folder in "eSheepNextWidget" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E5A100382FC6000100A00001 /* eSheepNextWidget */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -46,6 +79,14 @@
 		E5A1000D2FC6000100A00001 /* eSheepNextTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = eSheepNextTests;
+			sourceTree = "<group>";
+		};
+		E5A100342FC6000100A00001 /* eSheepNextWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E5A1003E2FC6000100A00001 /* Exceptions for "eSheepNextWidget" folder in "eSheepNextWidget" target */,
+			);
+			path = eSheepNextWidget;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -65,6 +106,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E5A100352FC6000100A00001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -76,6 +124,7 @@
 				E5A100232FC6000100A00001 /* Config/ReleaseEnvironment.xcconfig */,
 				E5A100032FC6000100A00001 /* eSheepNext */,
 				E5A1000D2FC6000100A00001 /* eSheepNextTests */,
+				E5A100342FC6000100A00001 /* eSheepNextWidget */,
 				E5A100072FC6000100A00001 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -85,6 +134,7 @@
 			children = (
 				E5A100062FC6000100A00001 /* eSheepNext.app */,
 				E5A1000C2FC6000100A00001 /* eSheepNextTests.xctest */,
+				E5A100312FC6000100A00001 /* eSheepNextWidget.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -99,10 +149,12 @@
 				E5A100042FC6000100A00001 /* Sources */,
 				E5A100052FC6000100A00001 /* Frameworks */,
 				E5A100092FC6000100A00001 /* Resources */,
+				E5A100332FC6000100A00001 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				E5A1003A2FC6000100A00001 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				E5A100032FC6000100A00001 /* eSheepNext */,
@@ -137,6 +189,28 @@
 			productReference = E5A1000C2FC6000100A00001 /* eSheepNextTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		E5A100382FC6000100A00001 /* eSheepNextWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E5A100392FC6000100A00001 /* Build configuration list for PBXNativeTarget "eSheepNextWidget" */;
+			buildPhases = (
+				E5A100362FC6000100A00001 /* Sources */,
+				E5A100352FC6000100A00001 /* Frameworks */,
+				E5A100372FC6000100A00001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E5A100342FC6000100A00001 /* eSheepNextWidget */,
+			);
+			name = eSheepNextWidget;
+			packageProductDependencies = (
+			);
+			productName = eSheepNextWidget;
+			productReference = E5A100312FC6000100A00001 /* eSheepNextWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -153,6 +227,9 @@
 					E5A1000E2FC6000100A00001 = {
 						CreatedOnToolsVersion = 27.0;
 						TestTargetID = E5A100082FC6000100A00001;
+					};
+					E5A100382FC6000100A00001 = {
+						CreatedOnToolsVersion = 27.0;
 					};
 				};
 			};
@@ -173,6 +250,7 @@
 			targets = (
 				E5A100082FC6000100A00001 /* eSheepNext */,
 				E5A1000E2FC6000100A00001 /* eSheepNextTests */,
+				E5A100382FC6000100A00001 /* eSheepNextWidget */,
 			);
 		};
 /* End PBXProject section */
@@ -186,6 +264,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E5A100102FC6000100A00001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E5A100372FC6000100A00001 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -209,6 +294,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E5A100362FC6000100A00001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -216,6 +308,11 @@
 			isa = PBXTargetDependency;
 			target = E5A100082FC6000100A00001 /* eSheepNext */;
 			targetProxy = E5A1000A2FC6000100A00001 /* PBXContainerItemProxy */;
+		};
+		E5A1003A2FC6000100A00001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E5A100382FC6000100A00001 /* eSheepNextWidget */;
+			targetProxy = E5A100322FC6000100A00001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -244,24 +341,12 @@
 			};
 			name = Release;
 		};
-		E5A100242FC6000100A00001 /* Staging */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				GCC_C_LANGUAGE_STANDARD = gnu17;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "STAGING $(inherited)";
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
-			};
-			name = Staging;
-		};
 		E5A100192FC6000100A00001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = E5A100212FC6000100A00001 /* Config/DevelopmentEnvironment.xcconfig */;
 			buildSettings = {
-				APP_ENVIRONMENT = development;
 				APPLE_AUTH_BROKER_URL = "";
+				APP_ENVIRONMENT = development;
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.dev;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.com.sheepfarm.next.dev;
@@ -273,8 +358,8 @@
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = eSheepNext/Info.plist;
-				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
 				INFOPLIST_KEY_APP_ENVIRONMENT = "$(APP_ENVIRONMENT)";
+				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
 				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
 				INFOPLIST_KEY_CFBundleURLTypes = "{ CFBundleURLName = \"com.sheepfarm.esheep.deep-link\"; CFBundleURLSchemes = (esheep); }";
 				INFOPLIST_KEY_CKSharingSupported = YES;
@@ -323,8 +408,8 @@
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = eSheepNext/Info.plist;
-				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
 				INFOPLIST_KEY_APP_ENVIRONMENT = "$(APP_ENVIRONMENT)";
+				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
 				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
 				INFOPLIST_KEY_CFBundleURLTypes = "{ CFBundleURLName = \"com.sheepfarm.esheep.deep-link\"; CFBundleURLSchemes = (esheep); }";
 				INFOPLIST_KEY_CKSharingSupported = YES;
@@ -357,6 +442,54 @@
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
+		};
+		E5A1001B2FC6000100A00001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.esheepnext.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/eSheepNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/eSheepNext";
+			};
+			name = Debug;
+		};
+		E5A1001C2FC6000100A00001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.esheepnext.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/eSheepNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/eSheepNext";
+			};
+			name = Release;
+		};
+		E5A100242FC6000100A00001 /* Staging */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "STAGING $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Staging;
 		};
 		E5A100252FC6000100A00001 /* Staging */ = {
 			isa = XCBuildConfiguration;
@@ -407,42 +540,6 @@
 			};
 			name = Staging;
 		};
-		E5A1001B2FC6000100A00001 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 7BBQMZ87SM;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.esheepnext.tests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				SWIFT_STRICT_CONCURRENCY = complete;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/eSheepNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/eSheepNext";
-			};
-			name = Debug;
-		};
-		E5A1001C2FC6000100A00001 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 7BBQMZ87SM;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.esheepnext.tests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				SWIFT_STRICT_CONCURRENCY = complete;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/eSheepNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/eSheepNext";
-			};
-			name = Release;
-		};
 		E5A100262FC6000100A00001 /* Staging */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -460,6 +557,90 @@
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/eSheepNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/eSheepNext";
 			};
 			name = Staging;
+		};
+		E5A1003B2FC6000100A00001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.dev;
+				CODE_SIGN_ENTITLEMENTS = eSheepNextWidget/eSheepNextWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = eSheepNextWidget/Info.plist;
+				INFOPLIST_KEY_APP_GROUP_IDENTIFIER = "$(APP_GROUP_IDENTIFIER)";
+				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
+				INFOPLIST_KEY_NSExtension = "{ NSExtensionPointIdentifier = \"com.apple.widgetkit-extension\"; }";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				MARKETING_VERSION = 3.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.dev.widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E5A1003C2FC6000100A00001 /* Staging */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.staging;
+				CODE_SIGN_ENTITLEMENTS = eSheepNextWidget/eSheepNextWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = eSheepNextWidget/Info.plist;
+				INFOPLIST_KEY_APP_GROUP_IDENTIFIER = "$(APP_GROUP_IDENTIFIER)";
+				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+ Staging";
+				INFOPLIST_KEY_NSExtension = "{ NSExtensionPointIdentifier = \"com.apple.widgetkit-extension\"; }";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				MARKETING_VERSION = 3.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging.widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Staging;
+		};
+		E5A1003D2FC6000100A00001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				APP_GROUP_IDENTIFIER = group.com.sheepfarm;
+				CODE_SIGN_ENTITLEMENTS = eSheepNextWidget/eSheepNextWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = eSheepNextWidget/Info.plist;
+				INFOPLIST_KEY_APP_GROUP_IDENTIFIER = "$(APP_GROUP_IDENTIFIER)";
+				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
+				INFOPLIST_KEY_NSExtension = "{ NSExtensionPointIdentifier = \"com.apple.widgetkit-extension\"; }";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				MARKETING_VERSION = 3.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios.widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
@@ -490,6 +671,16 @@
 				E5A100172FC6000100A00001 /* Debug */,
 				E5A100242FC6000100A00001 /* Staging */,
 				E5A100182FC6000100A00001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E5A100392FC6000100A00001 /* Build configuration list for PBXNativeTarget "eSheepNextWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E5A1003B2FC6000100A00001 /* Debug */,
+				E5A1003C2FC6000100A00001 /* Staging */,
+				E5A1003D2FC6000100A00001 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
