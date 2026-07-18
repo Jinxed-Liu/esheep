@@ -199,6 +199,11 @@ struct FarmSettingsView: View {
                 Text("第三方 AI 默认关闭；未得到用户同意不会发送牧场数据。应用不使用广告、跟踪或 ATT。")
                 Text("订阅交易由 App Store 验证并按当前 eSheep+ 账户绑定；切换账号不会串用其他账号的权益。")
                     .font(.footnote).foregroundStyle(.secondary)
+                ForEach(LegalDocument.allCases) { document in
+                    NavigationLink(document.title) {
+                        LegalDocumentView(document: document)
+                    }
+                }
             }
             Section("云端协作") {
                 NavigationLink {

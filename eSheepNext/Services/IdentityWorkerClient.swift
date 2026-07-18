@@ -81,6 +81,11 @@ struct WorkerSignOutResult: Sendable {
     let warningMessage: String?
 }
 
+struct WorkerAccountDeletionResponse: Codable, Sendable, Equatable {
+    let deletionJobID: String
+    let status: String
+}
+
 struct WorkerInviteResponse: Codable, Sendable {
     let inviteID: String
     let code: String
@@ -281,9 +286,14 @@ actor IdentityWorkerClient {
         try await request(path: "/v1/farms/\(farmID.uuidString.lowercased())/security-snapshot", method: "GET", body: Optional<String>.none)
     }
 
-    func deleteAccount() async throws {
-        let _: EmptyWorkerResponse = try await request(path: "/v1/account/delete", method: "POST", body: Optional<String>.none)
+    func deleteAccount() async throws -> WorkerAccountDeletionResponse {
+        let response: WorkerAccountDeletionResponse = try await request(
+            path: "/v1/account/delete",
+            method: "POST",
+            body: Optional<String>.none
+        )
         try SecureAccountStore.removeIdentitySecrets()
+        return response
     }
 
     private func request<Response: Decodable, Body: Encodable>(

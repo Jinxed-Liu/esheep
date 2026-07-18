@@ -37,6 +37,7 @@ struct WelcomeView: View {
     @State private var deferredAppleBrokerMessage: String?
     @State private var rawNonce = AppleIdentityActor.makeNonce()
     @State private var isBindingAccount = false
+    @State private var selectedLegalDocument: LegalDocument?
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable {
@@ -170,10 +171,18 @@ struct WelcomeView: View {
                         .font(.footnote)
                 }
 
-                Text("继续表示你已阅读服务条款、隐私政策和 iCloud 数据说明。")
-                    .font(.footnote)
-                    .foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.center)
+                VStack(spacing: 8) {
+                    Text("继续表示你已阅读并同意以下说明：")
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+                    HStack(spacing: 14) {
+                        ForEach(LegalDocument.allCases) { document in
+                            Button(document.title) { selectedLegalDocument = document }
+                                .font(.footnote)
+                        }
+                    }
+                }
+                .multilineTextAlignment(.center)
             }
             .frame(maxWidth: 520)
             .padding(.horizontal, 24)
@@ -181,6 +190,16 @@ struct WelcomeView: View {
             .frame(maxWidth: .infinity)
         }
         .background(AppTheme.pageBackground.ignoresSafeArea())
+        .sheet(item: $selectedLegalDocument) { document in
+            NavigationStack {
+                LegalDocumentView(document: document)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("完成") { selectedLegalDocument = nil }
+                        }
+                    }
+            }
+        }
         .alert("登录未完成", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }

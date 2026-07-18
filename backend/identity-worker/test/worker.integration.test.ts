@@ -33,7 +33,7 @@ function authenticatedJSON(token: string, method: string, value?: unknown): Requ
 
 describe("Development Worker and D1 integration", () => {
   beforeEach(async () => {
-    await env.DB.exec("DELETE FROM security_audit_events; DELETE FROM capability_certificates; DELETE FROM invites; DELETE FROM memberships; DELETE FROM farm_directories; DELETE FROM devices; DELETE FROM sessions; DELETE FROM apple_credentials; DELETE FROM accounts;");
+    await env.DB.exec("DELETE FROM deletion_jobs; DELETE FROM security_audit_events; DELETE FROM capability_certificates; DELETE FROM invites; DELETE FROM memberships; DELETE FROM farm_directories; DELETE FROM devices; DELETE FROM sessions; DELETE FROM apple_credentials; DELETE FROM password_credentials; DELETE FROM accounts;");
   });
 
   it("uses the lower-case hexadecimal nonce digest required by Sign in with Apple", async () => {
@@ -128,6 +128,30 @@ describe("Development Worker and D1 integration", () => {
       .bind(account.sessionID).first<{ revokedAt: number | null }>();
     expect(session?.revokedAt).toBeTypeOf("number");
     const reused = await call("/v1/account/status", authenticatedJSON(account.token, "GET"));
+    expect(reused.status).toBe(401);
+  });
+
+  it("deletes an eligible account and returns a completed deletion job", async () => {
+    const registration = await call("/v1/auth/register", authenticatedJSON("", "POST", {
+      username: "delete-owner",
+      password: "secure-delete-2026",
+      displayName: "删除测试",
+    }));
+    expect(registration.status).toBe(201);
+    const account = await registration.json<{ accountID: string; accessToken: string }>();
+
+    const deletion = await call("/v1/account/delete", authenticatedJSON(account.accessToken, "POST"));
+    expect(deletion.status).toBe(200);
+    const result = await deletion.json<{ deletionJobID: string; status: string }>();
+    expect(result.status).toBe("completed");
+
+    const storedAccount = await env.DB.prepare("SELECT status FROM accounts WHERE id = ?")
+      .bind(account.accountID).first<{ status: string }>();
+    expect(storedAccount?.status).toBe("deleted");
+    const job = await env.DB.prepare("SELECT status FROM deletion_jobs WHERE id = ?")
+      .bind(result.deletionJobID).first<{ status: string }>();
+    expect(job?.status).toBe("completed");
+    const reused = await call("/v1/account/status", authenticatedJSON(account.accessToken, "GET"));
     expect(reused.status).toBe(401);
   });
 

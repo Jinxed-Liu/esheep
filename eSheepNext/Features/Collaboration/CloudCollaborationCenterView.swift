@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 struct CloudCollaborationCenterView: View {
     @Environment(CloudCollaborationStore.self) private var collaboration
+    @Environment(AppSession.self) private var session
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \CloudFarmBinding.updatedAt, order: .reverse) private var cloudBindings: [CloudFarmBinding]
     @Query(sort: \FarmMembershipBinding.updatedAt, order: .reverse) private var memberships: [FarmMembershipBinding]
@@ -559,12 +560,13 @@ struct CloudCollaborationCenterView: View {
 
     private func deleteAccount() {
         runTask {
-            try await IdentityWorkerClient.shared.deleteAccount()
-            try SecureAccountStore.removeAppleUserIdentifier()
+            let deletion = try await IdentityWorkerClient.shared.deleteAccount()
             await MainActor.run {
                 modelContext.delete(account)
                 try? modelContext.save()
-                successMessage = "身份服务账户与本机登录资料已删除。"
+                session.authenticationDidSignOut(
+                    warning: "账户删除已完成（任务 (deletion.deletionJobID)）。身份服务会话、设备与本机登录资料均已撤销。"
+                )
             }
         }
     }
