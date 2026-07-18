@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "esheep-next-identity",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-15",
+  "secrets": {
+    "required": [
+      "APPLE_CLIENT_ID",
+      "APPLE_TEAM_ID",
+      "APPLE_KEY_ID",
+      "APPLE_PRIVATE_KEY",
+      "SESSION_SIGNING_SECRET",
+      "CREDENTIAL_ENCRYPTION_KEY",
+      "CAPABILITY_SIGNING_PRIVATE_KEY",
+      "CAPABILITY_SIGNING_KEY_ID"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "esheep-next-identity-development",
+      "database_id": "792e9957-a9ce-44b6-886b-c7756348ca5f",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "APPLE_ISSUER": "https://appleid.apple.com",
+    "ACCESS_TOKEN_TTL_SECONDS": "1800",
+    "REFRESH_TOKEN_TTL_SECONDS": "2592000",
+    "CAPABILITY_TTL_SECONDS": "604800",
+    "PASSWORD_PBKDF2_ITERATIONS": "1000"
+  }
+}

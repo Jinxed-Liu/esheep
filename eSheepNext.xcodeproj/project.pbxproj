@@ -1,0 +1,411 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		E5A1000A2FC6000100A00001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E5A100012FC6000100A00001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E5A100082FC6000100A00001;
+			remoteInfo = eSheepNext;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		E5A100062FC6000100A00001 /* eSheepNext.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = eSheepNext.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E5A1000C2FC6000100A00001 /* eSheepNextTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eSheepNextTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E5A100212FC6000100A00001 /* Config/DevelopmentEnvironment.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/DevelopmentEnvironment.xcconfig; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		E5A100202FC6000100A00001 /* Exceptions for "eSheepNext" folder in "eSheepNext" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E5A100082FC6000100A00001 /* eSheepNext */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		E5A100032FC6000100A00001 /* eSheepNext */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E5A100202FC6000100A00001 /* Exceptions for "eSheepNext" folder in "eSheepNext" target */,
+			);
+			path = eSheepNext;
+			sourceTree = "<group>";
+		};
+		E5A1000D2FC6000100A00001 /* eSheepNextTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = eSheepNextTests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E5A100052FC6000100A00001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E5A1000B2FC6000100A00001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		E5A100022FC6000100A00001 = {
+			isa = PBXGroup;
+			children = (
+				E5A100212FC6000100A00001 /* Config/DevelopmentEnvironment.xcconfig */,
+				E5A100032FC6000100A00001 /* eSheepNext */,
+				E5A1000D2FC6000100A00001 /* eSheepNextTests */,
+				E5A100072FC6000100A00001 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		E5A100072FC6000100A00001 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E5A100062FC6000100A00001 /* eSheepNext.app */,
+				E5A1000C2FC6000100A00001 /* eSheepNextTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E5A100082FC6000100A00001 /* eSheepNext */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E5A100112FC6000100A00001 /* Build configuration list for PBXNativeTarget "eSheepNext" */;
+			buildPhases = (
+				E5A100042FC6000100A00001 /* Sources */,
+				E5A100052FC6000100A00001 /* Frameworks */,
+				E5A100092FC6000100A00001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E5A100032FC6000100A00001 /* eSheepNext */,
+			);
+			name = eSheepNext;
+			packageProductDependencies = (
+			);
+			productName = eSheepNext;
+			productReference = E5A100062FC6000100A00001 /* eSheepNext.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E5A1000E2FC6000100A00001 /* eSheepNextTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E5A100142FC6000100A00001 /* Build configuration list for PBXNativeTarget "eSheepNextTests" */;
+			buildPhases = (
+				E5A1000F2FC6000100A00001 /* Sources */,
+				E5A1000B2FC6000100A00001 /* Frameworks */,
+				E5A100102FC6000100A00001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E5A100132FC6000100A00001 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E5A1000D2FC6000100A00001 /* eSheepNextTests */,
+			);
+			name = eSheepNextTests;
+			packageProductDependencies = (
+			);
+			productName = eSheepNextTests;
+			productReference = E5A1000C2FC6000100A00001 /* eSheepNextTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E5A100012FC6000100A00001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					E5A100082FC6000100A00001 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					E5A1000E2FC6000100A00001 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = E5A100082FC6000100A00001;
+					};
+				};
+			};
+			buildConfigurationList = E5A100152FC6000100A00001 /* Build configuration list for PBXProject "eSheepNext" */;
+			developmentRegion = "zh-Hans";
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				"zh-Hans",
+			);
+			mainGroup = E5A100022FC6000100A00001;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = E5A100072FC6000100A00001 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E5A100082FC6000100A00001 /* eSheepNext */,
+				E5A1000E2FC6000100A00001 /* eSheepNextTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E5A100092FC6000100A00001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E5A100102FC6000100A00001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E5A100042FC6000100A00001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E5A1000F2FC6000100A00001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E5A100132FC6000100A00001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E5A100082FC6000100A00001 /* eSheepNext */;
+			targetProxy = E5A1000A2FC6000100A00001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		E5A100172FC6000100A00001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		E5A100182FC6000100A00001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		E5A100192FC6000100A00001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E5A100212FC6000100A00001 /* Config/DevelopmentEnvironment.xcconfig */;
+			buildSettings = {
+				APPLE_AUTH_BROKER_URL = "";
+				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.dev;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.com.sheepfarm.next.dev;
+				CLOUD_COLLABORATION_ENABLED = YES;
+				CODE_SIGN_ENTITLEMENTS = eSheepNext/eSheepNext.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = eSheepNext/Info.plist;
+				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
+				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
+				INFOPLIST_KEY_CFBundleURLTypes = "{ CFBundleURLName = \"com.sheepfarm.esheep.deep-link\"; CFBundleURLSchemes = (esheep); }";
+				INFOPLIST_KEY_CKSharingSupported = YES;
+				INFOPLIST_KEY_CLOUDKIT_CONTAINER_IDENTIFIER = "$(CLOUDKIT_CONTAINER_IDENTIFIER)";
+				INFOPLIST_KEY_CLOUD_COLLABORATION_ENABLED = "$(CLOUD_COLLABORATION_ENABLED)";
+				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号与文档。";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于您主动发起的语音录入，将现场描述转换为文字。";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用于把您主动提交的语音转换为文字，便于快速录入和查询羊场数据。";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 3.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.dev;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E5A1001A2FC6000100A00001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLE_AUTH_BROKER_URL = "";
+				APP_GROUP_IDENTIFIER = group.com.sheepfarm;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "";
+				CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.com.sheepfarm.ios;
+				CLOUD_COLLABORATION_ENABLED = NO;
+				CODE_SIGN_ENTITLEMENTS = eSheepNext/eSheepNext.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = YES;
+				IDENTITY_WORKER_URL = "";
+				INFOPLIST_FILE = eSheepNext/Info.plist;
+				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
+				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
+				INFOPLIST_KEY_CFBundleURLTypes = "{ CFBundleURLName = \"com.sheepfarm.esheep.deep-link\"; CFBundleURLSchemes = (esheep); }";
+				INFOPLIST_KEY_CKSharingSupported = YES;
+				INFOPLIST_KEY_CLOUDKIT_CONTAINER_IDENTIFIER = "$(CLOUDKIT_CONTAINER_IDENTIFIER)";
+				INFOPLIST_KEY_CLOUD_COLLABORATION_ENABLED = "$(CLOUD_COLLABORATION_ENABLED)";
+				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号与文档。";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于您主动发起的语音录入，将现场描述转换为文字。";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用于把您主动提交的语音转换为文字，便于快速录入和查询羊场数据。";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 3.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		E5A1001B2FC6000100A00001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.esheepnext.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/eSheepNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/eSheepNext";
+			};
+			name = Debug;
+		};
+		E5A1001C2FC6000100A00001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.esheepnext.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/eSheepNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/eSheepNext";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		E5A100112FC6000100A00001 /* Build configuration list for PBXNativeTarget "eSheepNext" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E5A100192FC6000100A00001 /* Debug */,
+				E5A1001A2FC6000100A00001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E5A100142FC6000100A00001 /* Build configuration list for PBXNativeTarget "eSheepNextTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E5A1001B2FC6000100A00001 /* Debug */,
+				E5A1001C2FC6000100A00001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E5A100152FC6000100A00001 /* Build configuration list for PBXProject "eSheepNext" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E5A100172FC6000100A00001 /* Debug */,
+				E5A100182FC6000100A00001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E5A100012FC6000100A00001 /* Project object */;
+}
