@@ -1,0 +1,5 @@
+// Production 公开配置。不得引用 Development 或 Staging 服务。
+IDENTITY_WORKER_URL =
+CAPABILITY_SIGNING_PUBLIC_KEY_PEM =
+
+#include? "ReleaseEnvironment.local.xcconfig"

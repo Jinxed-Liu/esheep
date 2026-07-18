@@ -20,6 +20,8 @@
 		E5A100062FC6000100A00001 /* eSheepNext.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = eSheepNext.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E5A1000C2FC6000100A00001 /* eSheepNextTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eSheepNextTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E5A100212FC6000100A00001 /* Config/DevelopmentEnvironment.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/DevelopmentEnvironment.xcconfig; sourceTree = "<group>"; };
+		E5A100222FC6000100A00001 /* Config/StagingEnvironment.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/StagingEnvironment.xcconfig; sourceTree = "<group>"; };
+		E5A100232FC6000100A00001 /* Config/ReleaseEnvironment.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/ReleaseEnvironment.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -70,6 +72,8 @@
 			isa = PBXGroup;
 			children = (
 				E5A100212FC6000100A00001 /* Config/DevelopmentEnvironment.xcconfig */,
+				E5A100222FC6000100A00001 /* Config/StagingEnvironment.xcconfig */,
+				E5A100232FC6000100A00001 /* Config/ReleaseEnvironment.xcconfig */,
 				E5A100032FC6000100A00001 /* eSheepNext */,
 				E5A1000D2FC6000100A00001 /* eSheepNextTests */,
 				E5A100072FC6000100A00001 /* Products */,
@@ -240,10 +244,23 @@
 			};
 			name = Release;
 		};
+		E5A100242FC6000100A00001 /* Staging */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "STAGING $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Staging;
+		};
 		E5A100192FC6000100A00001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = E5A100212FC6000100A00001 /* Config/DevelopmentEnvironment.xcconfig */;
 			buildSettings = {
+				APP_ENVIRONMENT = development;
 				APPLE_AUTH_BROKER_URL = "";
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.dev;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -257,6 +274,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = eSheepNext/Info.plist;
 				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
+				INFOPLIST_KEY_APP_ENVIRONMENT = "$(APP_ENVIRONMENT)";
 				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
 				INFOPLIST_KEY_CFBundleURLTypes = "{ CFBundleURLName = \"com.sheepfarm.esheep.deep-link\"; CFBundleURLSchemes = (esheep); }";
 				INFOPLIST_KEY_CKSharingSupported = YES;
@@ -291,21 +309,22 @@
 		};
 		E5A1001A2FC6000100A00001 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E5A100232FC6000100A00001 /* Config/ReleaseEnvironment.xcconfig */;
 			buildSettings = {
 				APPLE_AUTH_BROKER_URL = "";
+				APP_ENVIRONMENT = production;
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "";
 				CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.com.sheepfarm.ios;
-				CLOUD_COLLABORATION_ENABLED = NO;
+				CLOUD_COLLABORATION_ENABLED = YES;
 				CODE_SIGN_ENTITLEMENTS = eSheepNext/eSheepNext.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = YES;
-				IDENTITY_WORKER_URL = "";
 				INFOPLIST_FILE = eSheepNext/Info.plist;
 				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
+				INFOPLIST_KEY_APP_ENVIRONMENT = "$(APP_ENVIRONMENT)";
 				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
 				INFOPLIST_KEY_CFBundleURLTypes = "{ CFBundleURLName = \"com.sheepfarm.esheep.deep-link\"; CFBundleURLSchemes = (esheep); }";
 				INFOPLIST_KEY_CKSharingSupported = YES;
@@ -338,6 +357,55 @@
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
+		};
+		E5A100252FC6000100A00001 /* Staging */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = E5A100222FC6000100A00001 /* Config/StagingEnvironment.xcconfig */;
+			buildSettings = {
+				APP_ENVIRONMENT = staging;
+				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.staging;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.com.sheepfarm.next.staging;
+				CLOUD_COLLABORATION_ENABLED = YES;
+				CODE_SIGN_ENTITLEMENTS = eSheepNext/eSheepNext.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = eSheepNext/Info.plist;
+				INFOPLIST_KEY_APP_ENVIRONMENT = "$(APP_ENVIRONMENT)";
+				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
+				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+ Staging";
+				INFOPLIST_KEY_CFBundleURLTypes = "{ CFBundleURLName = \"com.sheepfarm.esheep.deep-link\"; CFBundleURLSchemes = (esheep-staging); }";
+				INFOPLIST_KEY_CKSharingSupported = YES;
+				INFOPLIST_KEY_CLOUDKIT_CONTAINER_IDENTIFIER = "$(CLOUDKIT_CONTAINER_IDENTIFIER)";
+				INFOPLIST_KEY_CLOUD_COLLABORATION_ENABLED = "$(CLOUD_COLLABORATION_ENABLED)";
+				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号与文档。";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于您主动发起的语音录入，将现场描述转换为文字。";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用于把您主动提交的语音转换为文字，便于快速录入和查询羊场数据。";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 3.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Staging;
 		};
 		E5A1001B2FC6000100A00001 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -375,6 +443,24 @@
 			};
 			name = Release;
 		};
+		E5A100262FC6000100A00001 /* Staging */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/eSheepNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/eSheepNext";
+			};
+			name = Staging;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -382,6 +468,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				E5A100192FC6000100A00001 /* Debug */,
+				E5A100252FC6000100A00001 /* Staging */,
 				E5A1001A2FC6000100A00001 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -391,6 +478,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				E5A1001B2FC6000100A00001 /* Debug */,
+				E5A100262FC6000100A00001 /* Staging */,
 				E5A1001C2FC6000100A00001 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -400,6 +488,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				E5A100172FC6000100A00001 /* Debug */,
+				E5A100242FC6000100A00001 /* Staging */,
 				E5A100182FC6000100A00001 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;

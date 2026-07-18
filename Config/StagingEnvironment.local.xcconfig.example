@@ -1,0 +1,4 @@
+// 复制为 StagingEnvironment.local.xcconfig 后填写 Staging 环境公开配置。
+XC_SLASH = /
+IDENTITY_WORKER_URL = https:$(XC_SLASH)$(XC_SLASH)replace-with-staging-worker.workers.dev
+CAPABILITY_SIGNING_PUBLIC_KEY_PEM = -----BEGIN PUBLIC KEY-----\nREPLACE_WITH_P256_PUBLIC_KEY\n-----END PUBLIC KEY-----

@@ -44,6 +44,47 @@ struct CloudCollaborationCenterView: View {
     private var isDevelopmentTestFarm: Bool {
         !farm.isLocalOnlyMigration && farm.isDevelopmentTestFarm && farm.developmentSeed == TestFarmGeneratorActor.seed
     }
+    private var cloudAdmissionRequest: CloudAdmissionRequest {
+        CloudAdmissionRequest(
+            environment: .current,
+            role: farm.role,
+            membershipIsActive: farm.membershipStatusRawValue == "active",
+            isDeleted: farm.deletedAt != nil,
+            isDevelopmentTestFarm: farm.isDevelopmentTestFarm,
+            developmentSeed: farm.developmentSeed,
+            isLocalOnlyMigration: farm.isLocalOnlyMigration
+        )
+    }
+    private var cloudAdmissionDenial: CloudAdmissionDenial? {
+        do {
+            try CloudAdmissionPolicy.validate(cloudAdmissionRequest)
+            return nil
+        } catch let denial as CloudAdmissionDenial {
+            return denial
+        } catch {
+            return .inactiveMembership
+        }
+    }
+    private var canPrepareCloud: Bool { cloudAdmissionDenial == nil }
+    private var cloudAdmissionDescription: String {
+        guard let denial = cloudAdmissionDenial else {
+            return AppEnvironment.current == .development
+                ? "当前是带固定标记的 Development 测试牧场，可以用于双机验收。"
+                : "当前正式牧场符合发行环境云端准入条件。"
+        }
+        switch denial {
+        case .localOnlyMigration:
+            return CloudSyncError.localOnlyMigration.localizedDescription
+        case .developmentTestFarmRequired:
+            return CloudSyncError.developmentTestFarmRequired.localizedDescription
+        case .formalFarmRequired:
+            return CloudSyncError.formalFarmRequired.localizedDescription
+        case .ownerRequired:
+            return CloudSyncError.ownerRequired.localizedDescription
+        case .deletedFarm, .inactiveMembership:
+            return CloudSyncError.inactiveFarm.localizedDescription
+        }
+    }
 
     var body: some View {
         List {
@@ -116,14 +157,12 @@ struct CloudCollaborationCenterView: View {
 
     private var cloudStatusSection: some View {
         Section("牧场云端状态") {
-            LabeledContent("环境", value: "CloudKit Development")
+            LabeledContent("环境", value: AppEnvironment.current.rawValue.capitalized)
             LabeledContent("本地存储", value: "SwiftData 离线工作库")
             LabeledContent("Zone", value: binding?.zoneName ?? "尚未创建")
             LabeledContent("数据库", value: binding?.databaseScope == .sharedDatabase ? "Shared Database" : "Private Database")
             LabeledContent("状态", value: bindingStateText)
-            Text(isDevelopmentTestFarm
-                 ? "当前是带固定标记的 Development 测试牧场，可以用于双机验收。"
-                 : "当前牧场已被强制锁定为仅本地。试迁、迁移和真实牧场不能创建 CloudKit Zone、上传或共享。")
+            Text(cloudAdmissionDescription)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -162,15 +201,15 @@ struct CloudCollaborationCenterView: View {
 
     private var ownerCollaborationSection: some View {
         Section("场主协作") {
-            if !isDevelopmentTestFarm {
-                Label("仅 Development 测试牧场可启用云协作", systemImage: "lock.fill")
+            if !canPrepareCloud && binding?.state != .active {
+                Label("当前牧场不能启用云协作", systemImage: "lock.fill")
                     .foregroundStyle(.secondary)
-                Text("请新建空白牧场并生成固定测试数据，再建立 Development 云端协作；迁移后的牧场会始终保留在本机。")
+                Text(cloudAdmissionDescription)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else if binding?.state != .active {
-                Button { prepareTestCloudFarm() } label: {
-                    Label("启用测试云牧场", systemImage: "icloud.and.arrow.up")
+                Button { prepareCloudFarm() } label: {
+                    Label(AppEnvironment.current == .development ? "启用测试云牧场" : "启用云端协作", systemImage: "icloud.and.arrow.up")
                 }
                 .disabled(isWorking || account.serverBindingState != .verified)
             } else {
@@ -192,7 +231,7 @@ struct CloudCollaborationCenterView: View {
                     Text("\(progress.completed)/\(progress.total)")
                 }
             }
-            if isDevelopmentTestFarm {
+            if binding?.state == .active {
                 LabeledContent("测试标记", value: farm.developmentSeed ?? "已标记")
                     .fontDesign(.monospaced)
             } else if farm.isLocalOnlyMigration {
@@ -371,9 +410,9 @@ struct CloudCollaborationCenterView: View {
         }
     }
 
-    private func prepareTestCloudFarm() {
-        guard isDevelopmentTestFarm else {
-            errorMessage = CloudSyncError.developmentTestFarmRequired.localizedDescription
+    private func prepareCloudFarm() {
+        guard canPrepareCloud else {
+            errorMessage = cloudAdmissionDescription
             return
         }
         runTask {
@@ -392,7 +431,9 @@ struct CloudCollaborationCenterView: View {
             _ = try await collaboration.checkpoints.createCheckpoint(farmID: farm.id, reason: .initialCloudSetup)
             await MainActor.run {
                 sharePresentation = CloudSharePresentation(share: share)
-                successMessage = "测试云牧场、系统共享和能力证书已经建立。"
+                successMessage = AppEnvironment.current == .development
+                    ? "测试云牧场、系统共享和能力证书已经建立。"
+                    : "牧场云端协作、系统共享和能力证书已经建立。"
             }
         }
     }

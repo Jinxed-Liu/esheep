@@ -326,18 +326,44 @@ actor FarmPersistenceActor {
         return requiredTargets.isSubset(of: targets)
     }
 
-    /// Development 云协作只允许固定生成器建立的测试牧场进入 CloudKit。
-    /// 迁移提交的牧场和任何未标记牧场始终保持 localOnly；该校验必须在服务层执行，
-    /// 不能只依赖 SwiftUI 按钮是否可见。
-    func requireDevelopmentTestFarm(farmID: UUID) throws {
+    /// 云端准入必须在服务层执行：Development 只接收固定测试牧场，
+    /// Staging/Production 只接收正式新建牧场，旧版迁移牧场永久保持 localOnly。
+    func requireCloudAdmission(farmID: UUID, environment: AppEnvironment) throws {
         let context = ModelContext(container)
         let farms = try context.fetch(FetchDescriptor<FarmRecord>())
-        guard let farm = farms.first(where: { $0.id == farmID }),
-              !farm.isLocalOnlyMigration,
-              farm.isDevelopmentTestFarm,
-              farm.developmentSeed == TestFarmGeneratorActor.seed else {
-            throw CloudSyncError.developmentTestFarmRequired
+        guard let farm = farms.first(where: { $0.id == farmID }) else {
+            throw CloudSyncError.inactiveFarm
         }
+        let request = CloudAdmissionRequest(
+            environment: environment,
+            role: farm.role,
+            membershipIsActive: farm.membershipStatusRawValue == "active",
+            isDeleted: farm.deletedAt != nil,
+            isDevelopmentTestFarm: farm.isDevelopmentTestFarm,
+            developmentSeed: farm.developmentSeed,
+            isLocalOnlyMigration: farm.isLocalOnlyMigration
+        )
+        do {
+            try CloudAdmissionPolicy.validate(request)
+        } catch let denial as CloudAdmissionDenial {
+            switch denial {
+            case .developmentTestFarmRequired:
+                throw CloudSyncError.developmentTestFarmRequired
+            case .formalFarmRequired:
+                throw CloudSyncError.formalFarmRequired
+            case .localOnlyMigration:
+                throw CloudSyncError.localOnlyMigration
+            case .ownerRequired:
+                throw CloudSyncError.ownerRequired
+            case .deletedFarm, .inactiveMembership:
+                throw CloudSyncError.inactiveFarm
+            }
+        }
+    }
+
+    /// 保留现有测试调用面，语义明确固定为 Development。
+    func requireDevelopmentTestFarm(farmID: UUID) throws {
+        try requireCloudAdmission(farmID: farmID, environment: .development)
     }
 
     func stageAcceptedSharedFarm(farmID: UUID, temporaryOwnerAccountID: UUID) throws {

@@ -26,9 +26,74 @@ final class FarmDomainTests: XCTestCase {
             try await FarmPersistenceActor(container: container).requireDevelopmentTestFarm(farmID: migratedFarm.id)
             XCTFail("迁移牧场不能通过 Development 云端门禁")
         } catch let error as CloudSyncError {
-            guard case .developmentTestFarmRequired = error else {
+            guard case .localOnlyMigration = error else {
                 return XCTFail("收到错误的拒绝原因：\(error.localizedDescription)")
             }
+        }
+    }
+
+    func testCloudAdmissionPolicySeparatesDevelopmentAndProduction() throws {
+        let developmentTestFarm = CloudAdmissionRequest(
+            environment: .development,
+            role: .owner,
+            membershipIsActive: true,
+            isDeleted: false,
+            isDevelopmentTestFarm: true,
+            developmentSeed: TestFarmGeneratorActor.seed,
+            isLocalOnlyMigration: false
+        )
+        XCTAssertNoThrow(try CloudAdmissionPolicy.validate(developmentTestFarm))
+
+        var productionFarm = CloudAdmissionRequest(
+            environment: .production,
+            role: .owner,
+            membershipIsActive: true,
+            isDeleted: false,
+            isDevelopmentTestFarm: false,
+            developmentSeed: nil,
+            isLocalOnlyMigration: false
+        )
+        XCTAssertNoThrow(try CloudAdmissionPolicy.validate(productionFarm))
+
+        productionFarm = CloudAdmissionRequest(
+            environment: .production,
+            role: .owner,
+            membershipIsActive: true,
+            isDeleted: false,
+            isDevelopmentTestFarm: true,
+            developmentSeed: TestFarmGeneratorActor.seed,
+            isLocalOnlyMigration: false
+        )
+        XCTAssertThrowsError(try CloudAdmissionPolicy.validate(productionFarm)) { error in
+            XCTAssertEqual(error as? CloudAdmissionDenial, .formalFarmRequired)
+        }
+    }
+
+    func testCloudAdmissionRejectsMigrationAndNonOwnerInEveryEnvironment() {
+        let migration = CloudAdmissionRequest(
+            environment: .production,
+            role: .owner,
+            membershipIsActive: true,
+            isDeleted: false,
+            isDevelopmentTestFarm: false,
+            developmentSeed: nil,
+            isLocalOnlyMigration: true
+        )
+        XCTAssertThrowsError(try CloudAdmissionPolicy.validate(migration)) { error in
+            XCTAssertEqual(error as? CloudAdmissionDenial, .localOnlyMigration)
+        }
+
+        let worker = CloudAdmissionRequest(
+            environment: .production,
+            role: .worker,
+            membershipIsActive: true,
+            isDeleted: false,
+            isDevelopmentTestFarm: false,
+            developmentSeed: nil,
+            isLocalOnlyMigration: false
+        )
+        XCTAssertThrowsError(try CloudAdmissionPolicy.validate(worker)) { error in
+            XCTAssertEqual(error as? CloudAdmissionDenial, .ownerRequired)
         }
     }
 

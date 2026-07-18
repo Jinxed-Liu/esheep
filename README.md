@@ -32,6 +32,8 @@
 
 当前代码已具备 `CKAsset` 照片传输、加密 checkpoint、区内成员快照、签名删除、业务冲突裁决、独立 SwiftData staging 云缓存重建和正式本机迁移提交。迁移正式提交会写入不可逆的本地锁定标记，服务层拒绝其创建 CloudKit Zone、上传或共享。2026-07-16 已在连接的 iPhone 16 Pro 上通过全部 41 项 XCTest，并通过 14 项 Worker 测试；Development Worker `0.2.1-development` 已真实部署，D1 健康检查为 `reachable`，带真实 Worker URL 的签名构建已安装并启动。真机退出/重登录操作、11 英寸 iPad Pro 最新回归、两个 iCloud 账号互联以及连续七天运行仍需实际操作和自然时间，不能提前标记为通过。
 
+云端准入现在按环境隔离：Development 只允许固定测试牧场，Staging/Production 只允许正式新建牧场；旧版迁移牧场在所有环境中永久保持仅本机。三套构建配置不共享 Worker URL、App Group 或 CloudKit Container。
+
 详细边界与配置步骤见 `docs/云端协作安全设计.md`、`docs/CloudKit_Development配置清单.md` 和 `docs/Development七日验收记录.md`。
 
 ## 本地验证

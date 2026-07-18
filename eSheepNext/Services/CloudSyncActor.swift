@@ -33,6 +33,10 @@ enum CloudSyncError: LocalizedError {
     case participantMissing
     case localBaselineUnsupported
     case developmentTestFarmRequired
+    case formalFarmRequired
+    case localOnlyMigration
+    case ownerRequired
+    case inactiveFarm
 
     var errorDescription: String? {
         switch self {
@@ -44,6 +48,10 @@ enum CloudSyncError: LocalizedError {
         case .participantMissing: "尚未发现已接受系统共享的新参与者。"
         case .localBaselineUnsupported: "该牧场包含旧格式本地操作，不能直接作为云端测试牧场。请新建空白测试牧场进行本阶段验收。"
         case .developmentTestFarmRequired: "当前牧场不是带固定 Development 标记的测试牧场。迁移和真实牧场只能保留在本机，不能创建 CloudKit Zone、上传或共享。"
+        case .formalFarmRequired: "Staging 和 Production 只允许正式新建牧场使用云端协作，Development 测试牧场不能进入发行环境。"
+        case .localOnlyMigration: "该牧场来自旧版正式迁移，已永久锁定为仅本机使用，不能上传或共享。"
+        case .ownerRequired: "只有当前牧场的场主可以建立 CloudKit Zone 和共享。"
+        case .inactiveFarm: "当前牧场已删除或成员关系无效，不能启用云端协作。"
         }
     }
 }
@@ -123,7 +131,7 @@ actor CloudSyncActor {
 
     func prepareOwnerFarm(farmID: UUID, farmName: String, ownerAccountID: UUID) async throws -> CKShare {
         guard CloudFeatureConfiguration.isEnabled else { throw CloudSyncError.featureDisabled }
-        try await persistence.requireDevelopmentTestFarm(farmID: farmID)
+        try await persistence.requireCloudAdmission(farmID: farmID, environment: .current)
         guard await accountAvailability() == .available else { throw CloudSyncError.accountUnavailable }
         guard try await persistence.isCloudPreparationReady(farmID: farmID) else {
             throw CloudSyncError.localBaselineUnsupported
