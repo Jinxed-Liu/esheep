@@ -77,6 +77,19 @@ final class FarmDataInterchangeTests: XCTestCase {
         XCTAssertTrue(second.acceptedRows.isEmpty)
     }
 
+    func testSingleSheepWorkbookContainsTimelineFacts() throws {
+        let farmID = UUID()
+        let sheep = SheepRecord(farmID: farmID, earTag: "A001", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: date("2026-01-01"))
+        let weight = WeightRecord(farmID: farmID, sheepID: sheep.id, kilogramsText: "42.5", occurredAt: date("2026-07-01"), note: "月度称重")
+        let health = HealthRecord(farmID: farmID, sheepID: sheep.id, penID: nil, kind: .vaccination, itemNameSnapshot: "羊三联", occurredAt: date("2026-06-01"), note: "加强针")
+
+        let data = try FarmDataInterchange.singleSheepXLSXData(sheep: sheep, penName: nil, weights: [weight], health: [health], reproduction: [], transfers: [])
+
+        XCTAssertNotNil(data.range(of: Data("xl/worksheets/sheet1.xml".utf8)))
+        XCTAssertNotNil(data.range(of: Data("42.5".utf8)))
+        XCTAssertNotNil(data.range(of: Data("羊三联".utf8)))
+    }
+
     private func date(_ value: String) -> Date {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

@@ -112,6 +112,40 @@ enum FarmDataInterchange {
         return try encoder.encode(preview.rows)
     }
 
+    static func singleSheepXLSXData(
+        sheep: SheepRecord,
+        penName: String?,
+        weights: [WeightRecord],
+        health: [HealthRecord],
+        reproduction: [ReproductionRecord],
+        transfers: [TransferRecord]
+    ) throws -> Data {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        var table = [
+            ["单羊档案", sheep.earTag, "", ""],
+            ["字段", "值", "", ""],
+            ["品种", sheep.breed, "", ""],
+            ["性别", sheep.sex.displayName, "", ""],
+            ["状态", sheep.status.displayName, "", ""],
+            ["当前圈舍", sheep.currentPenDisplayName(penName), "", ""],
+            ["入场时间", formatter.string(from: sheep.enteredAt), "", ""],
+            ["出生日期", sheep.birthAt.map(formatter.string(from:)) ?? "", "", ""],
+            ["备注", sheep.note, "", ""],
+            ["", "", "", ""],
+            ["时间线类型", "发生时间", "内容", "备注"]
+        ]
+        let weightRows = weights.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }.map { ["称重", formatter.string(from: $0.occurredAt), "\($0.kilogramsText) 千克", $0.note] }
+        let healthRows = health.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }.map { [HealthRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "健康", formatter.string(from: $0.occurredAt), $0.itemNameSnapshot, $0.note] }
+        let reproductionRows = reproduction.filter { $0.farmID == sheep.farmID && $0.eweID == sheep.id && $0.deletedAt == nil }.map { [ReproductionRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "繁殖", formatter.string(from: $0.occurredAt), $0.result, $0.note] }
+        let transferRows = transfers.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }.map { ["转群", formatter.string(from: $0.occurredAt), "圈舍变更", $0.note] }
+        let timeline = (weightRows + healthRows + reproductionRows + transferRows).sorted { $0[1] < $1[1] }
+        table.append(contentsOf: timeline)
+        return try XLSXCodec.encode(table: table)
+    }
+
     private static func exportTable(farmID: UUID, sheep: [SheepRecord], pens: [PenRecord]) -> [[String]] {
         let penNames = Dictionary(uniqueKeysWithValues: pens.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { ($0.id, $0.name) })
         let formatter = DateFormatter()

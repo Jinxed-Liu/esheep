@@ -118,6 +118,8 @@ struct SheepDetailView: View {
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var isProcessingPhoto = false
     @State private var photoMessage: String?
+    @State private var exportDocument: FarmInterchangeDocument?
+    @State private var isExporting = false
     @State private var lifecycleInsight: FarmInsight?
     @State private var reproductionInsight: FarmInsight?
 
@@ -168,6 +170,19 @@ struct SheepDetailView: View {
         }
         .navigationTitle(sheep.earTag)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { exportSingleSheep() } label: { Image(systemName: "square.and.arrow.up") }
+                    .accessibilityLabel("导出单羊完整档案 XLSX")
+                    .disabled(!CapabilitySet(role: farm.role).allows(.exportFarm))
+            }
+        }
+        .fileExporter(isPresented: $isExporting, document: exportDocument, contentType: .officeOpenXMLSpreadsheet, defaultFilename: "羊只档案_\(sheep.earTag).xlsx") { result in
+            switch result {
+            case .success: photoMessage = "已导出包含基础资料和完整时间线的 XLSX 工作簿。"
+            case .failure(let error): photoMessage = "导出失败：\(error.localizedDescription)"
+            }
+        }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
             addPhoto(item)
@@ -260,6 +275,21 @@ struct SheepDetailView: View {
                 photoMessage = error.localizedDescription
             }
         }
+    }
+
+    private func exportSingleSheep() {
+        do {
+            let data = try FarmDataInterchange.singleSheepXLSXData(
+                sheep: sheep,
+                penName: penName,
+                weights: weights,
+                health: healthRecords,
+                reproduction: reproductionRecords,
+                transfers: transfers
+            )
+            exportDocument = FarmInterchangeDocument(data: data)
+            isExporting = true
+        } catch { photoMessage = "导出失败：\(error.localizedDescription)" }
     }
 }
 
