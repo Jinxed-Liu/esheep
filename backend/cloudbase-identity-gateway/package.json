@@ -1,0 +1,20 @@
+{
+  "name": "esheep-next-identity-gateway",
+  "version": "0.3.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check index.js && node --check apple-auth.js && node --check collaboration-service.js",
+    "security:audit": "npm audit --omit=dev --audit-level=high"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@cloudbase/node-sdk": "^4.0.3"
+  },
+  "overrides": {
+    "axios": "^1.13.4"
+  }
+}

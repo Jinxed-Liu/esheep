@@ -1,4 +1,6 @@
-# eSheepNext Identity Worker
+# eSheepNext legacy Identity Worker
+
+> 该 Cloudflare Workers + D1 实现仅保留用于历史 Development 证据和协议回归。eSheepNext 3.0 的 Development、Staging、Production 身份与协作运行链路全部改为 `backend/cloudbase-identity-gateway`；禁止把本目录部署为 3.0 Production 身份服务。
 
 该 Worker 只负责账号、会话、设备公钥、牧场目录的不透明标识、成员角色、邀请、能力证书与删除审计。它不保存牧场名称或任何养殖业务数据。
 
@@ -10,7 +12,7 @@
 4. 部署前用 `wrangler secret put` 写入全部密钥，不要提交 `.dev.vars`。
 5. 运行 `npm run deploy`。部署前置脚本会拒绝占位 D1 ID或缺少任何必需 Secret 的环境。
 
-Development 使用 Cloudflare 免费套餐的系统默认 CPU 限制，不在 `wrangler.jsonc` 中设置仅付费套餐支持的自定义 `limits.cpu_ms`。当前 Development 地址为 `https://esheep-next-identity.esheep-next-dev.workers.dev`。
+历史 Development 地址为 `https://esheep-next-identity.esheep-next-dev.workers.dev`，不再允许写入 3.0 的任何发行配置。
 
 能力证书使用 P-256 私钥签发。App 中配置对应公钥后才会信任证书。Apple refresh token 使用 AES-256-GCM 加密，Session Refresh Token 仅以 SHA-256 哈希存储。
 

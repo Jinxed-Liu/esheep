@@ -11,18 +11,18 @@
 - 成员设备：11 英寸 iPad Pro
 - 场主 Apple/iCloud 账号：待填写
 - 成员 Apple/iCloud 账号：待填写
-- Worker URL 与版本：待部署后填写
-- D1 数据库 ID：待创建后填写
+- CloudBase Gateway URL 与版本：待部署后填写
+- CloudBase 环境与部署 ID：待部署后填写
 - 测试牧场 ID：待填写
 
 ## 每日证据模板
 
-每次记录：开始与结束时间、两台设备系统版本、网络状态、Worker health、security generation、最新 checkpoint ID、Outbox 各状态数量、两端权威实体数量/最高 revision/汇总摘要、照片数量/摘要、冲突与安全事件。
+每次记录：开始与结束时间、两台设备系统版本、网络状态、CloudBase Gateway health、security generation、最新 checkpoint ID、Outbox 各状态数量、两端权威实体数量/最高 revision/汇总摘要、照片数量/摘要、冲突与安全事件。
 
 ## 第 1 日：部署与初始共享
 
 - 状态：未执行
-- 创建 D1、远端 migration、八项 Secrets 检查和 Worker 部署。
+- 部署 CloudBase 身份集合、Gateway、Auth Provider、Apple/能力证书密钥并完成生产依赖审计。
 - 两账号 Apple 登录、场主建立 Zone-wide Share、邀请码兑换、参与者确认。
 - 成员快照 generation 与初始 checkpoint 一致。
 - 测试数据达到 100 只羊、10 个圈舍、500 条生产事件、50 张照片。
@@ -43,7 +43,7 @@
 
 - 状态：未执行
 - 管理员与员工能力矩阵逐项验证。
-- 撤权前 checkpoint、Worker 撤销、generation 递增、成员快照、CKShare 移除、撤权后 checkpoint 顺序有日志。
+- 撤权前 checkpoint、CloudBase 撤销、generation 递增、成员快照、CKShare 移除、撤权后 checkpoint 顺序有日志。
 - 被撤权设备的新操作不得被接受。
 
 ## 第 5 日：重装与恢复密钥
@@ -65,7 +65,7 @@
 - 两端权威实体数量、revision、摘要一致；Outbox 全部 confirmed。
 - 核对共享区与恢复区存储估算、全部审计、安全事件和撤权重试。
 - iPhone 16 Pro 与 iPad 逐页布局、动态字体、键盘和安全区通过。
-- 附 Worker 测试、完整 XCTest、产品 Emoji 扫描与七日结论。
+- 附 CloudBase Gateway 测试、完整 XCTest、产品 Emoji 扫描与七日结论。
 
 ## 当前自动化基线
 
@@ -73,5 +73,7 @@
 - 2026-07-16：iPhone 16 Pro 真机 XCTest 41 项通过，0 失败；独立 SwiftData staging Store、正式本机迁移原子提交、迁移牧场永久 localOnly 门禁与退出后的身份状态重置测试均已通过。
 - 2026-07-16：11 英寸 iPad Pro 已登记到 Development provisioning，新增 staging 测试前的真机 XCTest 34 项通过，0 失败；最新 35 项复验因设备上锁中止，待解锁后重跑。
 - 2026-07-16：Debug 模拟器构建、Release 无签名真机构建与 `build-for-testing` 通过，产品 Emoji 扫描通过。
-- 2026-07-16：Development D1、远端 migration、八项 Secrets、Sign in with Apple Key 与 Identity Worker 已真实部署；健康检查返回 `database: reachable`，签名 App 已安装到 iPhone 16 Pro。尚未完成真机账号注册，因此第 1 日计时仍未开始。
+- 2026-07-16：历史 Cloudflare/D1 Identity Worker 曾完成 Development 部署，但已退出 3.0 运行链路，不能作为当前 CloudBase 验收证据。签名 App 已安装到 iPhone 16 Pro；CloudBase 新 Gateway 的真实账号全流程和第 1 日计时尚未完成。
+- 2026-07-18：当前 CloudBase Development 地址健康检查可达，未授权账户接口返回 401；但 `/v1/auth/apple` 仍返回旧版 `apple_cloudbase_migration_pending` 503，证明仓库内 0.3.0 Gateway 尚未部署。该项保持发布阻断。
+- 2026-07-18：iPhone 16 Pro 签名构建实际执行全部 82 项 XCTest，最终 82 项通过、0 失败。期间发现并修复 CSV 日期解析受系统区域设置影响的问题；11 英寸 iPad 与双账号云端流程仍未执行。
 - 两个真实 Apple/iCloud 账号互联和第 1 至第 7 日云端记录：未执行。

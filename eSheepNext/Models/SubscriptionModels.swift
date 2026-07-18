@@ -1,5 +1,17 @@
 import Foundation
 
+enum SubscriptionFeatureConfiguration {
+    static var isEnabled: Bool {
+        if let value = Bundle.main.object(forInfoDictionaryKey: "SUBSCRIPTIONS_ENABLED") as? Bool {
+            return value
+        }
+        if let value = Bundle.main.object(forInfoDictionaryKey: "SUBSCRIPTIONS_ENABLED") as? String {
+            return ["yes", "true", "1"].contains(value.lowercased())
+        }
+        return false
+    }
+}
+
 enum SubscriptionProductID {
     static let monthly = "com.sheepfarm.ios.pro.monthly"
     static let yearly = "com.sheepfarm.ios.pro.yearly"
@@ -50,12 +62,20 @@ struct FarmPlanStatus: Codable, Equatable, Sendable {
 }
 
 enum SubscriptionCapabilityPolicy {
-    static func canCreateFarm(existingOwnedFarmCount: Int, entitlement: AccountEntitlement) -> Bool {
-        existingOwnedFarmCount == 0 || entitlement.allowsOwnerProFeatures
+    static func canCreateFarm(
+        existingOwnedFarmCount: Int,
+        entitlement: AccountEntitlement,
+        subscriptionsEnabled: Bool = SubscriptionFeatureConfiguration.isEnabled
+    ) -> Bool {
+        !subscriptionsEnabled || existingOwnedFarmCount == 0 || entitlement.allowsOwnerProFeatures
     }
 
-    static func canCreateAdditionalFarm(role: FarmRole, entitlement: AccountEntitlement) -> Bool {
-        role == .owner && entitlement.allowsOwnerProFeatures
+    static func canCreateAdditionalFarm(
+        role: FarmRole,
+        entitlement: AccountEntitlement,
+        subscriptionsEnabled: Bool = SubscriptionFeatureConfiguration.isEnabled
+    ) -> Bool {
+        role == .owner && (!subscriptionsEnabled || entitlement.allowsOwnerProFeatures)
     }
 
     static func canRecordProduction(role: FarmRole, entitlement: AccountEntitlement) -> Bool {

@@ -7,28 +7,28 @@
 ## 已通过的仓库门禁
 
 - 版本：iOS/iPadOS 26.1，Marketing Version `3.0.0`。
-- Debug、Staging、Release 使用独立 Bundle ID、App Group、CloudKit Container、Worker URL 和功能开关；Release 不引用 Development 服务。
+- Debug、Staging、Release 使用独立 Bundle ID、App Group、CloudKit Container、CloudBase Gateway URL 和功能开关；Release 不引用 Development 服务。
 - Emoji 扫描通过。
 - App、Test、Widget、App Intents 与 Metal Shader 的通用 iOS 无签名 `build-for-testing` 通过。
-- Identity Worker 17 项自动化测试通过；本机缺少部署 Secrets 时仅产生预期警告。
+- CloudBase Gateway 7 项自动化测试、类型/语法检查与生产依赖审计通过；高危/严重漏洞为零。旧 Identity Worker 15 项协议回归测试继续通过，但不属于生产运行链路。
 - 已跟踪文件的常见私钥和生产密钥模式扫描通过；`backups`、本地 xcconfig、Worker `.dev.vars` 均被忽略。
-- Cloud 准入、迁移隔离、跨牧场隔离、羊天、自由采食闭合区间、库存反向流水、繁殖不确定性、订阅状态、云缓存 staging/回滚、XLSX/CSV/JSON 导入与幂等路径已有自动化覆盖。
+- Cloud 准入、迁移隔离、跨牧场隔离、羊天、自由采食闭合区间、库存反向流水、繁殖不确定性、免费发布模式、云缓存 staging/回滚、XLSX/CSV/JSON 导入与幂等路径已有自动化覆盖。
 
 ## Apple Developer 与真机门禁
 
 - [ ] 为 App 与 Widget 的 Development、Staging、Production Bundle ID 注册能力。
 - [ ] App 和 Widget 的 App Group 完全一致，并生成有效描述文件。
-- [ ] 在正式非 Beta Xcode 上执行全部 80 项 XCTest。
+- [ ] 在正式非 Beta Xcode 上执行全部 82 项 XCTest（2026-07-18 已在 iPhone 16 Pro 使用 Beta Xcode 实跑 82/82，不能替代正式 Xcode 门禁）。
 - [ ] iPhone 16 Pro 与 11 英寸 iPad Pro 完成逐页、横竖屏、键盘、Dynamic Type、VoiceOver、深色模式、离线和失败态回归。
 - [ ] 使用两个真实 iCloud 账号完成七日 private/shared Zone、邀请、离线、冲突、撤权、重装、缓存重建、照片和最终对账验收。
 
-## 商业化与生产云门禁
+## 免费发布与生产云门禁
 
-- [ ] App Store Connect 创建订阅组 `eSheepPlusFarmPro`，配置月度与年度产品。
-- [ ] 沙盒验证购买、续费、到期、宽限、退款、撤销、恢复与账户切换；员工生产录入不得被付费墙阻断。
+- [x] 3.0.0 Release 设置 `SUBSCRIPTIONS_ENABLED = NO`，隐藏购买、价格、恢复购买和付费提示；多牧场不读取 Pro 权益。
+- [ ] App Store Connect 3.0.0 确认未创建、未关联、未提交月度或年度订阅，元数据和截图无收费承诺。
 - [ ] 部署并冻结 CloudKit Production Schema，核对 Production Entitlement 和容器。
-- [ ] 部署生产 Identity Worker/D1 migration/Secrets，并记录健康检查与版本号。
-- [ ] 完成支持站、隐私政策、服务条款、账户删除页面、订阅资料、截图、审核账号与 Review Notes。
+- [ ] 部署独立 Production CloudBase Auth、文档集合、Gateway 与 Secrets，记录健康检查、版本号、依赖审计和新账号冒烟证据。
+- [ ] 完成支持站、隐私政策、服务条款、账户删除页面、截图、审核账号与 Review Notes。
 
 ## 最终发行门禁
 

@@ -4,6 +4,17 @@ import XCTest
 
 @MainActor
 final class FarmSessionTests: XCTestCase {
+    func testIdentityEndpointPreservesGatewayBasePath() throws {
+        let baseURL = try XCTUnwrap(URL(string: "https://example.com/identity"))
+
+        let endpoint = IdentityWorkerConfiguration.endpointURL(
+            baseURL: baseURL,
+            path: "/v1/auth/password"
+        )
+
+        XCTAssertEqual(endpoint.absoluteString, "https://example.com/identity/v1/auth/password")
+    }
+
     func testLegacyPasswordAccountCanStillDecodeItsExistingServerIdentity() {
         let serverAccountID = UUID()
         let account = AccountProfile(
@@ -16,6 +27,19 @@ final class FarmSessionTests: XCTestCase {
 
         XCTAssertEqual(account.authenticationMethod, .password)
         XCTAssertEqual(account.effectiveAccountID, serverAccountID)
+    }
+
+    func testAccountAvatarPersistsWithTheLocalProfile() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let account = AccountProfile(appleUserIdentifier: "avatar-user", displayName: "头像账户")
+        let avatarData = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        context.insert(account)
+        account.avatarImageData = avatarData
+        try context.save()
+
+        let saved = try context.fetch(FetchDescriptor<AccountProfile>()).first
+        XCTAssertEqual(saved?.avatarImageData, avatarData)
     }
 
     func testPendingAppIntentNavigationRoutesToTheCorrectEntryPoint() {

@@ -8,6 +8,11 @@ enum IdentityWorkerConfiguration {
         }
         return URL(string: raw)
     }
+
+    static func endpointURL(baseURL: URL, path: String) -> URL {
+        let relativePath = path.drop(while: { $0 == "/" })
+        return baseURL.appending(path: String(relativePath))
+    }
 }
 
 enum CloudFeatureConfiguration {
@@ -29,7 +34,7 @@ enum IdentityWorkerError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .notConfigured: "身份服务尚未配置。请先部署 Development Worker 并填写 IDENTITY_WORKER_URL。"
+        case .notConfigured: "身份服务尚未配置。请先部署大陆身份网关并填写 IDENTITY_WORKER_URL。"
         case .missingSession: "身份服务会话不存在，请重新使用 Apple 登录。"
         case .invalidResponse: "身份服务返回了无法解析的响应。"
         case .networkUnavailable(let host, .timedOut): "连接身份服务超时（\(host)）。请检查网络后重试。"
@@ -38,21 +43,6 @@ enum IdentityWorkerError: LocalizedError, Equatable {
         }
     }
 
-    var canDeferAppleBroker: Bool {
-        guard case .networkUnavailable(_, let code) = self else { return false }
-        return switch code {
-        case .cannotConnectToHost,
-             .cannotFindHost,
-             .dnsLookupFailed,
-             .networkConnectionLost,
-             .notConnectedToInternet,
-             .secureConnectionFailed,
-             .timedOut:
-            true
-        default:
-            false
-        }
-    }
 }
 
 struct WorkerSessionResponse: Codable, Sendable {
@@ -62,6 +52,11 @@ struct WorkerSessionResponse: Codable, Sendable {
     let refreshExpiresAt: Int
     let accountID: UUID
     let displayName: String?
+}
+
+struct WorkerEmailVerificationResponse: Codable, Sendable {
+    let verificationID: String
+    let expiresIn: Int
 }
 
 struct WorkerHealthResponse: Codable, Sendable {
@@ -159,6 +154,11 @@ private struct WorkerErrorEnvelope: Codable {
     let error: Detail
 }
 
+private struct WorkerFlatErrorEnvelope: Codable {
+    let code: String
+    let message: String
+}
+
 actor IdentityWorkerClient {
     static let shared = IdentityWorkerClient()
 
@@ -197,11 +197,27 @@ actor IdentityWorkerClient {
         return response
     }
 
-    func register(username: String, password: String, displayName: String) async throws -> WorkerSessionResponse {
+    func requestEmailVerification(email: String) async throws -> WorkerEmailVerificationResponse {
+        try await request(
+            path: "/v1/auth/verification",
+            method: "POST",
+            body: EmailVerificationBody(email: email),
+            authenticated: false
+        )
+    }
+
+    func register(email: String, verificationID: String, verificationCode: String, username: String, password: String, displayName: String) async throws -> WorkerSessionResponse {
         let response: WorkerSessionResponse = try await request(
             path: "/v1/auth/register",
             method: "POST",
-            body: PasswordRegistrationBody(username: username, password: password, displayName: displayName),
+            body: PasswordRegistrationBody(
+                email: email,
+                verificationID: verificationID,
+                verificationCode: verificationCode,
+                username: username,
+                password: password,
+                displayName: displayName
+            ),
             authenticated: false
         )
         try persist(response)
@@ -304,7 +320,7 @@ actor IdentityWorkerClient {
         allowRefresh: Bool = true
     ) async throws -> Response {
         guard let baseURL = IdentityWorkerConfiguration.baseURL else { throw IdentityWorkerError.notConfigured }
-        guard let url = URL(string: path, relativeTo: baseURL) else { throw IdentityWorkerError.notConfigured }
+        let url = IdentityWorkerConfiguration.endpointURL(baseURL: baseURL, path: path)
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -339,6 +355,9 @@ actor IdentityWorkerClient {
             if let envelope = try? decoder.decode(WorkerErrorEnvelope.self, from: data) {
                 throw IdentityWorkerError.server(code: envelope.error.code, message: envelope.error.message)
             }
+            if let envelope = try? decoder.decode(WorkerFlatErrorEnvelope.self, from: data) {
+                throw IdentityWorkerError.server(code: envelope.code, message: envelope.message)
+            }
             throw IdentityWorkerError.invalidResponse
         }
         if Response.self == EmptyWorkerResponse.self, data.isEmpty {
@@ -363,7 +382,15 @@ actor IdentityWorkerClient {
 }
 
 private struct DeviceRegistrationBody: Codable { let deviceID: UUID; let publicKeyJWK: [String: String]; let displayName: String }
-private struct PasswordRegistrationBody: Codable { let username: String; let password: String; let displayName: String }
+private struct EmailVerificationBody: Codable { let email: String }
+private struct PasswordRegistrationBody: Codable {
+    let email: String
+    let verificationID: String
+    let verificationCode: String
+    let username: String
+    let password: String
+    let displayName: String
+}
 private struct PasswordLoginBody: Codable { let username: String; let password: String }
 private struct FarmRegistrationBody: Codable { let farmID: UUID; let zoneName: String; let shareRecordName: String? }
 private struct InviteBody: Codable { let farmID: UUID; let role: FarmRole }

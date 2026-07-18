@@ -44,10 +44,10 @@
 /* Begin PBXFileReference section */
 		E5A100062FC6000100A00001 /* eSheepNext.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = eSheepNext.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E5A1000C2FC6000100A00001 /* eSheepNextTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eSheepNextTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		E5A100312FC6000100A00001 /* eSheepNextWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = eSheepNextWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E5A100212FC6000100A00001 /* Config/DevelopmentEnvironment.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/DevelopmentEnvironment.xcconfig; sourceTree = "<group>"; };
 		E5A100222FC6000100A00001 /* Config/StagingEnvironment.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/StagingEnvironment.xcconfig; sourceTree = "<group>"; };
 		E5A100232FC6000100A00001 /* Config/ReleaseEnvironment.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/ReleaseEnvironment.xcconfig; sourceTree = "<group>"; };
+		E5A100312FC6000100A00001 /* eSheepNextWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = eSheepNextWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -383,6 +383,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.dev;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				SUBSCRIPTIONS_ENABLED = NO;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -433,6 +434,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				SUBSCRIPTIONS_ENABLED = NO;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -531,6 +533,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				SUBSCRIPTIONS_ENABLED = NO;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -573,7 +576,11 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
 				INFOPLIST_KEY_NSExtension = "{ NSExtensionPointIdentifier = \"com.apple.widgetkit-extension\"; }";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
 				MARKETING_VERSION = 3.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.dev.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -601,7 +608,11 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+ Staging";
 				INFOPLIST_KEY_NSExtension = "{ NSExtensionPointIdentifier = \"com.apple.widgetkit-extension\"; }";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
 				MARKETING_VERSION = 3.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -629,7 +640,11 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
 				INFOPLIST_KEY_NSExtension = "{ NSExtensionPointIdentifier = \"com.apple.widgetkit-extension\"; }";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
 				MARKETING_VERSION = 3.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";

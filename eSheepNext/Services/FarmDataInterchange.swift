@@ -177,6 +177,8 @@ enum FarmDataInterchange {
         let dateFormatter = DateFormatter()
         dateFormatter.locale = Locale(identifier: "en_US_POSIX")
         dateFormatter.calendar = Calendar(identifier: .gregorian)
+        dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        dateFormatter.isLenient = false
         dateFormatter.dateFormat = "yyyy-MM-dd"
 
         func value(_ row: [String], _ name: String) -> String {
@@ -227,7 +229,8 @@ enum FarmDataInterchange {
     private static func optional(_ text: String) -> String? { text.isEmpty ? nil : text }
 
     private static func spreadsheetDate(_ text: String, formatter: DateFormatter) -> Date? {
-        if let date = formatter.date(from: text) { return date }
+        let strictDateRange = text.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression)
+        if strictDateRange != nil, let date = formatter.date(from: text), formatter.string(from: date) == text { return date }
         guard let serial = Double(text), serial >= 1, serial < 2_958_466 else { return nil }
         // Excel 的 1900 日期系统包含虚构的 1900-02-29；1899-12-30 基准可保持现代日期一致。
         var components = DateComponents()

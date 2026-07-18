@@ -1,0 +1,194 @@
+import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { Readable } from "node:stream";
+import test from "node:test";
+import gateway from "../index.js";
+import collaboration from "../collaboration-service.js";
+
+const { createHandler, stableAccountID } = gateway;
+const { CollaborationService, signCapability } = collaboration;
+const appleSigningKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const appleClientKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
+const customLoginKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const env = {
+  CLOUDBASE_AUTH_BASE_URL: "https://auth.example/",
+  CLOUDBASE_ENV_ID: "development-example",
+  CLOUDBASE_CUSTOM_LOGIN_KEY_ID: "custom-key-id",
+  CLOUDBASE_CUSTOM_LOGIN_PRIVATE_KEY: customLoginKeys.privateKey.export({ type: "pkcs1", format: "pem" }),
+  APPLE_CLIENT_ID: "com.sheepfarm.next.dev",
+  APPLE_TEAM_ID: "TEAMID1234",
+  APPLE_KEY_ID: "APPLEKEY1",
+  APPLE_PRIVATE_KEY: appleClientKeys.privateKey.export({ type: "pkcs8", format: "pem" }),
+  APPLE_TOKEN_ENCRYPTION_KEY: randomBytes(32).toString("base64"),
+  RATE_LIMIT_HASH_SALT: "test-rate-limit-salt",
+};
+
+function request(path, body, method = body === undefined ? "GET" : "POST", token) {
+  const stream = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]);
+  stream.url = path;
+  stream.method = method;
+  stream.headers = { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) };
+  return stream;
+}
+
+function response() {
+  const target = new EventEmitter();
+  target.status = 0;
+  target.chunks = [];
+  target.writeHead = (status) => { target.status = status; };
+  target.end = (chunk) => { if (chunk) target.chunks.push(Buffer.from(chunk)); target.emit("done"); };
+  target.destroy = (error) => target.emit("error", error);
+  return target;
+}
+
+async function invoke(handler, path, body, method, token) {
+  const res = response();
+  const done = new Promise((resolve, reject) => { res.once("done", resolve); res.once("error", reject); });
+  await handler(request(path, body, method, token), res);
+  await done;
+  const text = Buffer.concat(res.chunks).toString("utf8");
+  return { status: res.status, json: text ? JSON.parse(text) : undefined };
+}
+
+function fakeService(overrides = {}) {
+  return {
+    health: async () => ({ status: "ok", environment: "cloudbase-development", version: "0.3.0", database: "cloudbase-document" }),
+    ensureAccount: async (accountID, displayName) => ({ accountID, displayName: displayName || "eSheep+ 用户" }),
+    consumeRateLimit: async () => ({ remaining: 1 }),
+    recordAppleBinding: async () => undefined,
+    appleCredential: async () => null,
+    ...overrides,
+  };
+}
+
+test("registration creates the native CloudBase collaboration account", async () => {
+  const ensured = [];
+  const service = fakeService({ ensureAccount: async (accountID, displayName) => { ensured.push({ accountID, displayName }); return { accountID, displayName }; } });
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (String(url).endsWith("/verification/verify")) return Response.json({ verification_token: "verified" });
+    return Response.json({ sub: "cloudbase-subject", access_token: "access", refresh_token: "refresh", expires_in: 7200 });
+  };
+  const result = await invoke(createHandler({ fetchImpl, env, collaborationService: service }), "/identity/v1/auth/register", {
+    email: "Owner@Example.com", verificationID: "verification-id", verificationCode: "123456", username: "owner01", password: "secure-owner-2026", displayName: "测试场主",
+  });
+  assert.equal(result.status, 201);
+  assert.equal("brokerAvailable" in result.json, false);
+  assert.equal(result.json.accountID, stableAccountID("cloudbase-subject"));
+  assert.deepEqual(ensured, [{ accountID: stableAccountID("cloudbase-subject"), displayName: "测试场主" }]);
+  assert.equal(calls.some((call) => call.url.includes("worker")), false);
+});
+
+test("protected collaboration routes introspect the CloudBase access token", async () => {
+  const accountID = stableAccountID("subject-1");
+  const service = fakeService({ accountStatus: async (received) => ({ accountID: received, status: "active", memberships: [] }) });
+  const fetchImpl = async (url, init) => {
+    assert.ok(String(url).endsWith("/auth/v1/token/introspect"));
+    assert.equal(init.headers.authorization, "Bearer access-token");
+    return Response.json({ sub: "subject-1", token_type: "Bearer" });
+  };
+  const result = await invoke(createHandler({ fetchImpl, env, collaborationService: service }), "/identity/v1/account/status", undefined, "GET", "access-token");
+  assert.deepEqual(result, { status: 200, json: { accountID, status: "active", memberships: [] } });
+});
+
+function appleIdentityToken(rawNonce, subject = "apple-user-1") {
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: "apple-test-key" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({
+    iss: "https://appleid.apple.com",
+    aud: env.APPLE_CLIENT_ID,
+    sub: subject,
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 600,
+    nonce: createHash("sha256").update(rawNonce).digest("hex"),
+  })).toString("base64url");
+  const content = `${header}.${payload}`;
+  const signature = sign("RSA-SHA256", Buffer.from(content), appleSigningKeys.privateKey).toString("base64url");
+  return `${content}.${signature}`;
+}
+
+test("Apple sign-in verifies Apple and returns a native CloudBase session", async () => {
+  const bindings = [];
+  const service = fakeService({ recordAppleBinding: async (...value) => bindings.push(value) });
+  const fetchImpl = async (url) => {
+    const value = String(url);
+    if (value === "https://appleid.apple.com/auth/keys") {
+      return Response.json({ keys: [{ ...appleSigningKeys.publicKey.export({ format: "jwk" }), kid: "apple-test-key", alg: "RS256" }] });
+    }
+    if (value === "https://appleid.apple.com/auth/token") return Response.json({ refresh_token: "apple-refresh-token" });
+    if (value.endsWith("/auth/v1/signin/custom")) {
+      return Response.json({ sub: "cloudbase-apple-subject", access_token: "access", refresh_token: "refresh", expires_in: 7200 });
+    }
+    throw new Error(`unexpected URL ${value}`);
+  };
+  const rawNonce = "nonce-1";
+  const result = await invoke(createHandler({ fetchImpl, env, collaborationService: service }), "/identity/v1/auth/apple", {
+    identityToken: appleIdentityToken(rawNonce), authorizationCode: "authorization-code", nonce: rawNonce, displayName: "Apple 场主",
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.json.accountID, stableAccountID("cloudbase-apple-subject"));
+  assert.equal(bindings.length, 1);
+  assert.equal(bindings[0][0], stableAccountID("cloudbase-apple-subject"));
+  assert.ok(bindings[0][2].ciphertext);
+});
+
+test("Apple sign-in rejects a nonce mismatch without creating an account", async () => {
+  const fetchImpl = async (url) => {
+    if (String(url) === "https://appleid.apple.com/auth/keys") {
+      return Response.json({ keys: [{ ...appleSigningKeys.publicKey.export({ format: "jwk" }), kid: "apple-test-key", alg: "RS256" }] });
+    }
+    throw new Error("must not exchange invalid identity");
+  };
+  const result = await invoke(createHandler({ fetchImpl, env, collaborationService: fakeService() }), "/identity/v1/auth/apple", {
+    identityToken: appleIdentityToken("expected"), authorizationCode: "authorization-code", nonce: "wrong",
+  });
+  assert.equal(result.status, 401);
+  assert.equal(result.json.error.code, "apple_authentication_failed");
+});
+
+class MemoryStore {
+  constructor() { this.documents = new Map(); }
+  async get(id) { return this.documents.get(id) || null; }
+  async set(id, value) { this.documents.set(id, { ...value, _documentID: id }); return value; }
+  async update(id, value) { this.documents.set(id, { ...this.documents.get(id), ...value }); }
+  async remove(id) { this.documents.delete(id); }
+  async find(where, limit = 1000) {
+    return [...this.documents.values()].filter((item) => Object.entries(where).every(([name, value]) => item[name] === value)).slice(0, limit);
+  }
+  async transaction(operation) { return operation(this); }
+}
+
+test("identity rate limits fail closed after the configured request count", async () => {
+  const service = new CollaborationService({ store: new MemoryStore(), env: {} });
+  await service.consumeRateLimit("password_login", "client-1", 2, 900);
+  await service.consumeRateLimit("password_login", "client-1", 2, 900);
+  await assert.rejects(service.consumeRateLimit("password_login", "client-1", 2, 900), (error) => error.code === "rate_limited");
+});
+
+test("invite remains pending until owner confirmation and generation changes only on confirmation", async () => {
+  const store = new MemoryStore();
+  const service = new CollaborationService({ store, env: {} });
+  const owner = "11111111-1111-5111-8111-111111111111";
+  const worker = "22222222-2222-5222-8222-222222222222";
+  const farmID = "33333333-3333-5333-8333-333333333333";
+  await service.ensureAccount(owner, "场主");
+  await service.ensureAccount(worker, "员工");
+  await service.registerFarm(owner, { farmID, zoneName: `farm_${farmID}` });
+  const invite = await service.createInvite(owner, { farmID, role: "worker" });
+  const redeemed = await service.redeemInvite(worker, { code: invite.code });
+  assert.equal(redeemed.membershipStatus, "pendingShareConfirmation");
+  assert.equal((await service.securitySnapshot(owner, farmID)).generation, 1);
+  await service.confirmInvite(owner, invite.inviteID, { shareParticipantRecordName: "participant-1" });
+  const snapshot = await service.securitySnapshot(owner, farmID);
+  assert.equal(snapshot.generation, 2);
+  assert.equal(snapshot.members.find((item) => item.accountID === worker).status, "active");
+});
+
+test("capability certificate is an ES256 JWS with a 64-byte P1363 signature", () => {
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256", privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
+  const certificate = signCapability({ sub: "account" }, privateKey, "development-2026-07");
+  const [header, , signature] = certificate.split(".");
+  assert.equal(JSON.parse(Buffer.from(header, "base64url")).alg, "ES256");
+  assert.equal(Buffer.from(signature, "base64url").length, 64);
+});

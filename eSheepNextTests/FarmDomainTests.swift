@@ -25,10 +25,10 @@ final class FarmDomainTests: XCTestCase {
         let grace = AccountEntitlement(accountID: accountID, tier: .farmPro, state: .gracePeriod, productID: SubscriptionProductID.monthly, validUntil: .now)
         let expired = AccountEntitlement(accountID: accountID, tier: .basic, state: .expired, productID: SubscriptionProductID.monthly, validUntil: .now)
 
-        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: active))
-        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: grace))
-        XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: expired))
-        XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .worker, entitlement: active))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: active, subscriptionsEnabled: true))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: grace, subscriptionsEnabled: true))
+        XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: expired, subscriptionsEnabled: true))
+        XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .worker, entitlement: active, subscriptionsEnabled: true))
     }
 
     func testFirstFarmIsFreeButAdditionalFarmRequiresPro() {
@@ -41,9 +41,34 @@ final class FarmDomainTests: XCTestCase {
             validUntil: .now.addingTimeInterval(86_400)
         )
 
-        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 0, entitlement: basic))
-        XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 1, entitlement: basic))
-        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 1, entitlement: pro))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 0, entitlement: basic, subscriptionsEnabled: true))
+        XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 1, entitlement: basic, subscriptionsEnabled: true))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 1, entitlement: pro, subscriptionsEnabled: true))
+    }
+
+    func testFreeReleaseAllowsMultipleOwnerFarmsWithoutStoreKitEntitlement() {
+        let basic = AccountEntitlement.basic(accountID: UUID())
+        XCTAssertTrue(
+            SubscriptionCapabilityPolicy.canCreateFarm(
+                existingOwnedFarmCount: 12,
+                entitlement: basic,
+                subscriptionsEnabled: false
+            )
+        )
+        XCTAssertTrue(
+            SubscriptionCapabilityPolicy.canCreateAdditionalFarm(
+                role: .owner,
+                entitlement: basic,
+                subscriptionsEnabled: false
+            )
+        )
+        XCTAssertFalse(
+            SubscriptionCapabilityPolicy.canCreateAdditionalFarm(
+                role: .worker,
+                entitlement: basic,
+                subscriptionsEnabled: false
+            )
+        )
     }
 
     func testWidgetSnapshotKeepsEveryEntityFarmScoped() {

@@ -45,3 +45,4 @@ DEVELOPER_DIR="$developer_dir" xcodebuild build-for-testing \
   CODE_SIGNING_ALLOWED=NO
 
 (cd "$repo_root/backend/identity-worker" && npm test)
+(cd "$repo_root/backend/cloudbase-identity-gateway" && npm run check && npm test && npm run security:audit)

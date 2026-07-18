@@ -30,11 +30,15 @@ struct WelcomeView: View {
 
     @State private var credentialMode: WelcomeCredentialMode = .signIn
     @State private var username = ""
+    @State private var email = ""
+    @State private var emailVerificationCode = ""
+    @State private var emailVerificationID: String?
+    @State private var verificationCooldown = 0
+    @State private var isSendingVerification = false
     @State private var password = ""
     @State private var passwordConfirmation = ""
     @State private var displayName = ""
     @State private var errorMessage: String?
-    @State private var deferredAppleBrokerMessage: String?
     @State private var rawNonce = AppleIdentityActor.makeNonce()
     @State private var isBindingAccount = false
     @State private var selectedLegalDocument: LegalDocument?
@@ -42,6 +46,8 @@ struct WelcomeView: View {
 
     private enum Field: Hashable {
         case username
+        case email
+        case verificationCode
         case password
         case confirmation
         case displayName
@@ -78,15 +84,6 @@ struct WelcomeView: View {
                     .glassEffect(.regular, in: .rect(cornerRadius: 16))
                 }
 
-                if let deferredAppleBrokerMessage {
-                    Label(deferredAppleBrokerMessage, systemImage: "icloud.slash")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
-                        .glassEffect(.regular, in: .rect(cornerRadius: 16))
-                }
-
                 VStack(spacing: 16) {
                     Picker("登录方式", selection: $credentialMode) {
                         ForEach(WelcomeCredentialMode.allCases) { mode in
@@ -104,6 +101,28 @@ struct WelcomeView: View {
                         .textFieldStyle(.roundedBorder)
 
                     if credentialMode == .register {
+                        credentialFieldLabel("邮箱")
+                        TextField("用于接收 6 位注册验证码", text: $email)
+                            .textContentType(.emailAddress)
+                            .keyboardType(.emailAddress)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .focused($focusedField, equals: .email)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: email) { _, _ in emailVerificationID = nil }
+
+                        credentialFieldLabel("邮箱验证码")
+                        HStack(spacing: 10) {
+                            TextField("6 位数字", text: $emailVerificationCode)
+                                .textContentType(.oneTimeCode)
+                                .keyboardType(.numberPad)
+                                .focused($focusedField, equals: .verificationCode)
+                                .textFieldStyle(.roundedBorder)
+                            Button(verificationCooldown > 0 ? "\(verificationCooldown) 秒" : "发送验证码", action: sendEmailVerification)
+                                .buttonStyle(.bordered)
+                                .disabled(isSendingVerification || verificationCooldown > 0 || !emailLooksValid || IdentityWorkerConfiguration.baseURL == nil)
+                        }
+
                         credentialFieldLabel("显示名称")
                         TextField("例如 吉昊羊场", text: $displayName)
                             .textContentType(.name)
@@ -123,7 +142,7 @@ struct WelcomeView: View {
                             .textContentType(.newPassword)
                             .focused($focusedField, equals: .confirmation)
                             .textFieldStyle(.roundedBorder)
-                        Text("账号名为 3 至 32 位；密码为 10 至 128 位，并同时包含文字和数字。Android 端可使用同一账号登录。")
+                        Text("账号名为 5 至 24 位，以字母或数字开头，可使用字母、数字和 -_.:+@；密码至少 10 位并包含文字和数字。验证码 10 分钟内有效。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -135,7 +154,7 @@ struct WelcomeView: View {
                         .disabled(isBindingAccount || !passwordFormIsReady || IdentityWorkerConfiguration.baseURL == nil)
 
                     if IdentityWorkerConfiguration.baseURL == nil {
-                        Text("账号注册与密码登录需要部署身份服务。Apple 登录仍可建立本机工作空间。")
+                        Text("账号注册、密码登录和 Apple 登录都需要可用的 CloudBase 身份服务。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -159,7 +178,7 @@ struct WelcomeView: View {
                 .signInWithAppleButtonStyle(.black)
                 .frame(height: 52)
                 .clipShape(.rect(cornerRadius: 14))
-                .disabled(isBindingAccount)
+                .disabled(isBindingAccount || IdentityWorkerConfiguration.baseURL == nil)
 
                 Text("Apple 登录使用系统当前提供的 Apple 账户。App 无法读取账号列表，也不能伪造账号选择器；双账号协作测试应让两台设备分别登录不同的系统 Apple 账户。")
                     .font(.footnote)
@@ -213,12 +232,46 @@ struct WelcomeView: View {
     private var passwordFormIsReady: Bool {
         let hasCredential = !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !password.isEmpty
         if credentialMode == .signIn { return hasCredential }
-        return hasCredential && !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !passwordConfirmation.isEmpty
+        return hasCredential
+            && emailLooksValid
+            && emailVerificationID != nil
+            && emailVerificationCode.count == 6
+            && !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !passwordConfirmation.isEmpty
+    }
+
+    private var emailLooksValid: Bool {
+        let value = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.contains("@") && value.split(separator: "@").last?.contains(".") == true
+    }
+
+    private func sendEmailVerification() {
+        let submittedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        isSendingVerification = true
+        Task {
+            defer { isSendingVerification = false }
+            do {
+                let result = try await IdentityWorkerClient.shared.requestEmailVerification(email: submittedEmail)
+                emailVerificationID = result.verificationID
+                verificationCooldown = 60
+                while verificationCooldown > 0 {
+                    try await Task.sleep(for: .seconds(1))
+                    verificationCooldown -= 1
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     private func submitPasswordAuthentication() {
         let mode = credentialMode
         let submittedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let submittedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let submittedVerificationCode = emailVerificationCode
+        let submittedVerificationID = emailVerificationID
         let submittedPassword = password
         let submittedConfirmation = passwordConfirmation
         let submittedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -229,7 +282,11 @@ struct WelcomeView: View {
                 let response: WorkerSessionResponse
                 if mode == .register {
                     guard submittedPassword == submittedConfirmation else { throw WelcomeAuthError.passwordMismatch }
+                    guard let submittedVerificationID else { return }
                     response = try await IdentityWorkerClient.shared.register(
+                        email: submittedEmail,
+                        verificationID: submittedVerificationID,
+                        verificationCode: submittedVerificationCode,
                         username: submittedUsername,
                         password: submittedPassword,
                         displayName: submittedDisplayName
@@ -242,6 +299,8 @@ struct WelcomeView: View {
                 try? SecureAccountStore.removeAppleUserIdentifier()
                 password = ""
                 passwordConfirmation = ""
+                emailVerificationCode = ""
+                emailVerificationID = nil
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -271,17 +330,8 @@ struct WelcomeView: View {
                 }
                 do {
                     let payload = try AppleIdentityActor.payload(from: credential, rawNonce: nonce)
-                    let workerSession: WorkerSessionResponse?
-                    if IdentityWorkerConfiguration.baseURL == nil {
-                        workerSession = nil
-                    } else {
-                        do {
-                            workerSession = try await AppleIdentityActor.shared.bind(payload)
-                        } catch let error as IdentityWorkerError where error.canDeferAppleBroker {
-                            workerSession = nil
-                            deferredAppleBrokerMessage = "Apple 账户已完成系统认证，但当前无法连接身份服务。已进入本机工作空间；云端协作将在身份服务恢复后可用。"
-                        }
-                    }
+                    guard IdentityWorkerConfiguration.baseURL != nil else { throw IdentityWorkerError.notConfigured }
+                    let workerSession = try await AppleIdentityActor.shared.bind(payload)
                     let accountProfileID = try upsertAppleAccount(from: credential, workerSession: workerSession)
                     session.authenticationDidSucceed(accountProfileID: accountProfileID)
                 } catch {
@@ -319,16 +369,16 @@ struct WelcomeView: View {
     }
 
     @MainActor
-    private func upsertAppleAccount(from credential: ASAuthorizationAppleIDCredential, workerSession: WorkerSessionResponse?) throws -> UUID {
+    private func upsertAppleAccount(from credential: ASAuthorizationAppleIDCredential, workerSession: WorkerSessionResponse) throws -> UUID {
         let appleID = credential.user
         let appleSubjectHash = AppleIdentityHash.value(for: appleID)
         if let existing = accounts.first(where: { $0.appleSubjectHash == appleSubjectHash }) {
             try prepareForDifferentAccount(activating: existing.id)
             try SecureAccountStore.saveAppleUserIdentifier(appleID)
-            existing.serverAccountID = workerSession?.accountID ?? existing.serverAccountID
-            existing.serverBindingStateRaw = workerSession == nil ? ServerBindingState.pendingBroker.rawValue : ServerBindingState.verified.rawValue
+            existing.serverAccountID = workerSession.accountID
+            existing.serverBindingStateRaw = ServerBindingState.verified.rawValue
             existing.authenticationMethodRawValue = AccountAuthenticationMethod.apple.rawValue
-            if let name = workerSession?.displayName, !name.isEmpty { existing.displayName = name }
+            if let name = workerSession.displayName, !name.isEmpty { existing.displayName = name }
             existing.updatedAt = .now
             try modelContext.save()
             return existing.id
@@ -337,17 +387,13 @@ struct WelcomeView: View {
         let formattedName = credential.fullName.map(formatter.string(from:)) ?? "Apple 账户"
         let account = AccountProfile(
             appleUserIdentifier: appleID,
-            displayName: workerSession?.displayName ?? (formattedName.isEmpty ? "Apple 账户" : formattedName),
-            serverBindingStateRaw: workerSession == nil ? ServerBindingState.pendingBroker.rawValue : ServerBindingState.verified.rawValue,
+            displayName: workerSession.displayName ?? (formattedName.isEmpty ? "Apple 账户" : formattedName),
+            serverBindingStateRaw: ServerBindingState.verified.rawValue,
             authenticationMethod: .apple
         )
-        account.serverAccountID = workerSession?.accountID
+        account.serverAccountID = workerSession.accountID
         try prepareForDifferentAccount(activating: account.id)
         try SecureAccountStore.saveAppleUserIdentifier(appleID)
-        if workerSession == nil {
-            try SecureAccountStore.remove(account: "worker-access-token")
-            try SecureAccountStore.remove(account: "worker-refresh-token")
-        }
         modelContext.insert(account)
         try modelContext.save()
         return account.id

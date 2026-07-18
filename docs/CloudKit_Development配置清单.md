@@ -7,18 +7,17 @@
 3. 重新生成并安装包含上述能力的开发描述文件。
 4. 在 CloudKit Console 选择 Development 环境，不部署 Production Schema。
 
-## Cloudflare
+## CloudBase
 
-1. 在 `backend/identity-worker` 创建 D1 数据库并替换 `wrangler.jsonc` 中的数据库 ID。
-2. 生成 Session HMAC 密钥、AES-256-GCM 密钥和 P-256 能力证书密钥对。
-3. 使用 `wrangler secret put` 保存 Apple 与 Worker 私钥，不提交 `.dev.vars`。
-4. 执行远端 D1 migration，再部署 Worker。
-5. 把 Worker HTTPS 地址写入 Debug 构建设置 `IDENTITY_WORKER_URL`。
-6. 把能力证书 P-256 公钥 PEM 写入 `CAPABILITY_SIGNING_PUBLIC_KEY_PEM`。
+1. 为 Development 创建独立 CloudBase 环境，并启用邮箱密码与自定义登录；Staging、Production 不复用环境或密钥。
+2. 创建身份集合，生成 CloudBase 自定义登录密钥、Apple client secret 所需私钥、Apple refresh token AES-256-GCM 密钥、频率限制盐和 P-256 能力证书密钥对。
+3. 将私钥和盐只写入 CloudBase 函数环境变量；不得进入仓库、xcconfig 或 App 包。
+4. 在 `backend/cloudbase-identity-gateway` 运行 `npm run check`、`npm test` 与 `npm run security:audit`，高危或严重漏洞必须为零。
+5. 部署 Gateway 后验证健康检查、未授权接口返回 401、邮箱验证码、密码登录、Apple 登录、刷新、退出、删除、邀请单次消费和限流。
+6. 把 Gateway HTTPS 地址写入 Debug 构建设置 `IDENTITY_WORKER_URL`；该名称只为 iOS 配置兼容，不代表 Cloudflare Worker。
+7. 把能力证书 P-256 公钥 PEM 写入 `CAPABILITY_SIGNING_PUBLIC_KEY_PEM`。
 
-`npm run deploy` 会先检查 D1 ID 与八项必需 Workers Secrets；任一缺失时直接拒绝部署。只允许免费套餐，控制台提示升级或计费时必须停止。
-
-2026-07-16 已完成 Development D1、三份远端 migration、八项 Secrets 和 Worker 部署；`GET /v1/health` 返回版本 `0.2.0-development`、D1 `reachable`。免费套餐使用 Cloudflare 默认 CPU 限制，不配置付费版自定义 CPU 上限。
+2026-07-18 仓库内 Gateway 自动化与依赖审计已通过；新版本是否已部署以及真实 Apple/CloudBase 全流程必须以实时健康检查和双账号证据为准。历史 Cloudflare/D1 部署不再属于 3.0 运行链路。
 
 ## 真机前置检查
 

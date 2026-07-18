@@ -1,4 +1,5 @@
 IDENTITY_WORKER_URL =
 CAPABILITY_SIGNING_PUBLIC_KEY_PEM =
+XC_SLASH = /
 
 #include? "DevelopmentEnvironment.local.xcconfig"

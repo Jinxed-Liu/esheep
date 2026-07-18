@@ -29,6 +29,13 @@ final class SubscriptionService {
 
     func activate(accountID: UUID) async {
         activeAccountID = accountID
+        guard SubscriptionFeatureConfiguration.isEnabled else {
+            products = []
+            entitlement = .basic(accountID: accountID)
+            lastMessage = nil
+            lastErrorMessage = nil
+            return
+        }
         startTransactionListenerIfNeeded()
         await refresh()
     }
@@ -45,6 +52,13 @@ final class SubscriptionService {
             reset()
             return
         }
+        guard SubscriptionFeatureConfiguration.isEnabled else {
+            products = []
+            entitlement = .basic(accountID: activeAccountID)
+            lastMessage = nil
+            lastErrorMessage = nil
+            return
+        }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -59,6 +73,7 @@ final class SubscriptionService {
     }
 
     func purchase(_ product: Product) async {
+        guard SubscriptionFeatureConfiguration.isEnabled else { return }
         guard let activeAccountID else { return }
         isLoading = true
         defer { isLoading = false }
@@ -90,6 +105,7 @@ final class SubscriptionService {
     }
 
     func restorePurchases() async {
+        guard SubscriptionFeatureConfiguration.isEnabled else { return }
         guard activeAccountID != nil else { return }
         isLoading = true
         defer { isLoading = false }

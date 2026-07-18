@@ -2,12 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>APP_ENVIRONMENT</key>
+	<string>$(APP_ENVIRONMENT)</string>
 	<key>APP_GROUP_IDENTIFIER</key>
 	<string>$(APP_GROUP_IDENTIFIER)</string>
 	<key>CAPABILITY_SIGNING_PUBLIC_KEY_PEM</key>
 	<string>$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)</string>
 	<key>IDENTITY_WORKER_URL</key>
 	<string>$(IDENTITY_WORKER_URL)</string>
+	<key>SUBSCRIPTIONS_ENABLED</key>
+	<string>$(SUBSCRIPTIONS_ENABLED)</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.sheepfarm.esheepnext.refresh</string>

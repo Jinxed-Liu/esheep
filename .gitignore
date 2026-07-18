@@ -4,8 +4,12 @@ build/
 *.xcuserstate
 xcuserdata/
 backups/
+.codex-backups/
 backend/identity-worker/node_modules/
+backend/cloudbase-identity-gateway/node_modules/
 backend/identity-worker/.dev.vars
+backend/cloudbase-identity-gateway/.env
+backend/cloudbase-identity-gateway/.dev.vars
 .wrangler/
 Config/DevelopmentEnvironment.local.xcconfig
 Config/StagingEnvironment.local.xcconfig

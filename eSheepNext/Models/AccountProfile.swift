@@ -8,6 +8,7 @@ final class AccountProfile {
     var serverAccountID: UUID?
     var appleSubjectHash: String
     var displayName: String
+    @Attribute(.externalStorage) var avatarImageData: Data?
     var serverBindingStateRaw: String
     var authenticationMethodRawValue: String = AccountAuthenticationMethod.apple.rawValue
     var acceptedTermsVersion: String
@@ -29,6 +30,7 @@ final class AccountProfile {
         self.serverAccountID = nil
         self.appleSubjectHash = AppleIdentityHash.value(for: appleUserIdentifier)
         self.displayName = displayName
+        self.avatarImageData = nil
         self.serverBindingStateRaw = serverBindingStateRaw
         self.authenticationMethodRawValue = authenticationMethod.rawValue
         self.acceptedTermsVersion = "1.0"
