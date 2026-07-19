@@ -72,6 +72,28 @@ final class FarmNotificationService {
             lastErrorMessage = error.localizedDescription
         }
     }
+
+    func rescheduleCareReminders(_ reminders: [CareReminderRecord], farmID: UUID, now: Date = .now) async {
+        let center = UNUserNotificationCenter.current()
+        authorizationStatus = await center.notificationSettings().authorizationStatus
+        guard authorizationStatus == .authorized || authorizationStatus == .provisional else { return }
+        let prefix = "care:\(farmID.uuidString.lowercased()):"
+        let pending = await center.pendingNotificationRequests()
+        center.removePendingNotificationRequests(withIdentifiers: pending.map(\.identifier).filter { $0.hasPrefix(prefix) })
+        let upcoming = reminders.filter {
+            $0.farmID == farmID && $0.deletedAt == nil && $0.status == .pending && $0.dueAt > now
+        }.sorted { $0.dueAt < $1.dueAt }.prefix(60)
+        for reminder in upcoming {
+            let content = UNMutableNotificationContent()
+            content.title = reminder.kind.displayName
+            content.body = reminder.title
+            content.sound = .default
+            content.userInfo = FarmNotificationRoute(farmID: farmID, kind: .openCareReminder, entityID: reminder.id).userInfo
+            let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: reminder.dueAt)
+            let request = UNNotificationRequest(identifier: prefix + reminder.id.uuidString.lowercased(), content: content, trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false))
+            try? await center.add(request)
+        }
+    }
 }
 
 enum FarmBackgroundRefresh {

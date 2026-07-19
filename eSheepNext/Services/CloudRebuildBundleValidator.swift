@@ -35,6 +35,8 @@ enum CloudRebuildBundleValidator {
                 payload = outerPayload
             }
             switch payload.kind {
+            case .care:
+                guard payload.careCommand != nil else { throw RemoteDomainApplyError.invalidPayload("careCommand") }
             case .createFarm, .updateFarmLocation, .createPen, .addIngredient, .createRecipe, .receiveInventory, .addSemen, .createBatch:
                 break
             case .updatePen, .setPenActive:

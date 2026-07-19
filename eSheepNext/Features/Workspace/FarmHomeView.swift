@@ -9,6 +9,7 @@ struct FarmHomeView: View {
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
     @Query(sort: \FeedRecord.occurredAt, order: .reverse) private var feedRecords: [FeedRecord]
     @Query(sort: \HealthRecord.occurredAt, order: .reverse) private var healthRecords: [HealthRecord]
+    @Query(sort: \CareReminderRecord.dueAt) private var careReminders: [CareReminderRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -30,6 +31,7 @@ struct FarmHomeView: View {
                 hero
                 metrics
                 shortcuts
+                careReminderStatus
                 productionStatus
             }
             .padding(.horizontal, 16)
@@ -141,6 +143,21 @@ struct FarmHomeView: View {
             .buttonStyle(.plain)
             if healthRecords.contains(where: { $0.farmID == farm.id && $0.deletedAt == nil }) {
                 StatusRow(title: "健康记录", detail: "已有 \(healthRecords.filter { $0.farmID == farm.id && $0.deletedAt == nil }.count) 条记录", symbol: "cross.case")
+            }
+        }
+    }
+
+    private var careReminderStatus: some View {
+        let start = Calendar.current.startOfDay(for: .now)
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: start) ?? .distantFuture
+        let end = Calendar.current.date(byAdding: .day, value: 8, to: start) ?? .distantFuture
+        let pending = careReminders.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .pending && $0.dueAt < end }
+        let overdue = pending.count { $0.dueAt < start }
+        let today = pending.count { $0.dueAt >= start && $0.dueAt < tomorrow }
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("关键提醒").font(.headline)
+            NavigationLink { CareReminderCenterView(account: account, farm: farm, focusedReminderID: nil) } label: {
+                StatusRow(title: "今日、逾期与未来七日", detail: "逾期 \(overdue) · 今日 \(today) · 七日内 \(pending.count)", symbol: overdue > 0 ? "bell.badge.fill" : "bell")
             }
         }
     }

@@ -3,6 +3,7 @@ import SwiftData
 
 enum DomainEntityDeletionService {
     private static let healthInventoryReversalPrefix = "删除健康记录反向恢复库存："
+    private static let reproductionSemenReversalPrefix = "撤销繁殖记录反向恢复冻精："
 
     static func setDeletedAt(_ date: Date?, type: CloudEntityType, id: UUID, farmID: UUID, context: ModelContext) throws {
         switch type {
@@ -29,7 +30,7 @@ enum DomainEntityDeletionService {
         case .inventoryTransaction: try context.fetch(FetchDescriptor<InventoryTransactionRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
         case .health:
             try setHealthDeletedAt(date, id: id, farmID: farmID, context: context)
-        case .reproduction: try context.fetch(FetchDescriptor<ReproductionRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
+        case .reproduction: try setReproductionDeletedAt(date, id: id, farmID: farmID, context: context)
         case .semen: try context.fetch(FetchDescriptor<SemenRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
         case .note: try context.fetch(FetchDescriptor<NoteRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
         case .photoAsset: try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
@@ -42,6 +43,11 @@ enum DomainEntityDeletionService {
             if date != nil, let value = try context.fetch(FetchDescriptor<HealthSubjectLink>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
         case .lambingOffspring:
             if date != nil, let value = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
+        case .careBatch: try context.fetch(FetchDescriptor<CareBatchRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
+        case .semenTransaction: try context.fetch(FetchDescriptor<SemenTransactionRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
+        case .careRule:
+            if date != nil, let value = try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
+        case .careReminder: try context.fetch(FetchDescriptor<CareReminderRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
         }
     }
 
@@ -66,6 +72,7 @@ enum DomainEntityDeletionService {
             for reversal in reversals where reversal.deletedAt == nil {
                 reversal.deletedAt = .now
             }
+            restoreReminders(sourceID: health.id, farmID: farmID, context: context)
             return
         }
 
@@ -94,6 +101,55 @@ enum DomainEntityDeletionService {
                 sourceRecordID: health.id,
                 note: "\(healthInventoryReversalPrefix)\(health.id.uuidString.lowercased())"
             ))
+        }
+        deleteReminders(sourceID: health.id, farmID: farmID, at: date ?? .now, context: context)
+    }
+
+    private static func setReproductionDeletedAt(_ date: Date?, id: UUID, farmID: UUID, context: ModelContext) throws {
+        guard let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) else { return }
+        let wasDeleted = reproduction.deletedAt != nil
+        reproduction.deletedAt = date
+
+        let transactions = try context.fetch(FetchDescriptor<SemenTransactionRecord>())
+        let reversals = transactions.filter {
+            $0.farmID == farmID && $0.sourceRecordID == id && $0.kind == .adjustment && $0.note.hasPrefix(reproductionSemenReversalPrefix)
+        }
+        if date == nil {
+            for reversal in reversals where reversal.deletedAt == nil { reversal.deletedAt = .now }
+            restoreReminders(sourceID: id, farmID: farmID, context: context)
+            return
+        }
+        guard !wasDeleted else { return }
+        for consumption in transactions where consumption.farmID == farmID && consumption.sourceRecordID == id && consumption.kind == .consumption && consumption.deletedAt == nil {
+            let alreadyReversed = reversals.contains { $0.semenID == consumption.semenID && $0.quantityText == consumption.quantityText && $0.deletedAt == nil }
+            guard !alreadyReversed else { continue }
+            context.insert(SemenTransactionRecord(
+                id: StableCloudUUID.derived(namespace: consumption.id, name: "semen-reversal"),
+                farmID: farmID,
+                semenID: consumption.semenID,
+                kind: .adjustment,
+                quantityText: consumption.quantityText,
+                occurredAt: date ?? .now,
+                sourceRecordID: id,
+                note: "\(reproductionSemenReversalPrefix) \(id.uuidString.lowercased())"
+            ))
+        }
+        deleteReminders(sourceID: id, farmID: farmID, at: date ?? .now, context: context)
+    }
+
+    private static func deleteReminders(sourceID: UUID, farmID: UUID, at: Date, context: ModelContext) {
+        let reminders = (try? context.fetch(FetchDescriptor<CareReminderRecord>())) ?? []
+        for reminder in reminders where reminder.farmID == farmID && reminder.sourceEntityID == sourceID && reminder.deletedAt == nil {
+            reminder.deletedAt = at
+            reminder.revision += 1
+        }
+    }
+
+    private static func restoreReminders(sourceID: UUID, farmID: UUID, context: ModelContext) {
+        let reminders = (try? context.fetch(FetchDescriptor<CareReminderRecord>())) ?? []
+        for reminder in reminders where reminder.farmID == farmID && reminder.sourceEntityID == sourceID && reminder.deletedAt != nil {
+            reminder.deletedAt = nil
+            reminder.revision += 1
         }
     }
 }

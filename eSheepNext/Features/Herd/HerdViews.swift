@@ -330,6 +330,7 @@ struct SheepDetailView: View {
     @Query(sort: \WeightRecord.occurredAt, order: .reverse) private var weights: [WeightRecord]
     @Query(sort: \TransferRecord.occurredAt, order: .reverse) private var transfers: [TransferRecord]
     @Query(sort: \HealthRecord.occurredAt, order: .reverse) private var healthRecords: [HealthRecord]
+    @Query private var healthSubjectLinks: [HealthSubjectLink]
     @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproductionRecords: [ReproductionRecord]
     @Query(sort: \PhotoAssetRecord.createdAt, order: .reverse) private var photos: [PhotoAssetRecord]
 
@@ -368,10 +369,11 @@ struct SheepDetailView: View {
             order: .reverse
         )
         _healthRecords = Query(
-            filter: #Predicate<HealthRecord> { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil },
+            filter: #Predicate<HealthRecord> { $0.farmID == farmID && $0.deletedAt == nil },
             sort: \HealthRecord.occurredAt,
             order: .reverse
         )
+        _healthSubjectLinks = Query(filter: #Predicate<HealthSubjectLink> { $0.farmID == farmID && $0.sheepID == sheepID })
         _reproductionRecords = Query(
             filter: #Predicate<ReproductionRecord> { $0.farmID == farmID && $0.eweID == sheepID && $0.deletedAt == nil },
             sort: \ReproductionRecord.occurredAt,
@@ -386,6 +388,11 @@ struct SheepDetailView: View {
 
     private var sheepPhotos: [PhotoAssetRecord] {
         photos.sorted { photoDate($0) > photoDate($1) }
+    }
+
+    private var sheepHealthRecords: [HealthRecord] {
+        let linkedIDs = Set(healthSubjectLinks.map(\.healthRecordID))
+        return healthRecords.filter { $0.sheepID == sheep.id || linkedIDs.contains($0.id) }
     }
 
     private var analyticsSourceRevision: [String] {
@@ -638,7 +645,7 @@ struct SheepDetailView: View {
     private var timelineEntries: [SheepTimelineEntry] {
         let weightEntries = weights.map { SheepTimelineEntry(id: $0.id, title: "称重", detail: "\($0.kilogramsText) 千克", date: $0.occurredAt) }
         let transferEntries = transfers.map { SheepTimelineEntry(id: $0.id, title: "转群", detail: $0.note, date: $0.occurredAt) }
-        let healthEntries = healthRecords.map { SheepTimelineEntry(id: $0.id, title: $0.kindRawValue == HealthRecordKind.vaccination.rawValue ? "疫苗" : "治疗", detail: $0.itemNameSnapshot, date: $0.occurredAt) }
+        let healthEntries = sheepHealthRecords.map { SheepTimelineEntry(id: $0.id, title: $0.kindRawValue == HealthRecordKind.vaccination.rawValue ? "疫苗" : "治疗", detail: $0.itemNameSnapshot, date: $0.occurredAt) }
         let reproductionEntries = reproductionRecords.map { SheepTimelineEntry(id: $0.id, title: ReproductionRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "繁殖", detail: $0.note, date: $0.occurredAt) }
         let photoEntries = sheepPhotos
             .map { SheepTimelineEntry(id: $0.id, title: "照片", detail: "新增羊只影像", date: photoDate($0)) }
@@ -670,7 +677,8 @@ struct SheepDetailView: View {
                 sheep: sheep,
                 penName: penName,
                 weights: weights,
-                health: healthRecords,
+                health: sheepHealthRecords,
+                healthRecordIDs: Set(sheepHealthRecords.map(\.id)),
                 reproduction: reproductionRecords,
                 transfers: transfers
             )

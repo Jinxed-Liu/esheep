@@ -508,7 +508,7 @@ actor CloudRebuildActor {
         case .updateFarmLocation: 5
         case .createPen, .addIngredient, .createRecipe, .receiveInventory, .addSemen, .createBatch, .createBreedingProgram: 10
         case .updatePen, .setPenActive, .addSheep, .updateSheepProfile, .addRecipeComponent: 20
-        case .recordWeight, .correctWeight, .recordWeaning, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep, .recordFeed, .recordHealth, .recordReproduction, .addNote, .assignBatchMembership, .leaveBatchMembership: 30
+        case .recordWeight, .correctWeight, .recordWeaning, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep, .recordFeed, .recordHealth, .recordReproduction, .care, .addNote, .assignBatchMembership, .leaveBatchMembership: 30
         case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: 40
         }
     }

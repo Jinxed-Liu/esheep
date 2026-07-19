@@ -8,6 +8,7 @@ enum FarmSystemNavigationKind: String, Codable, Sendable {
     case openPen
     case recordWeight
     case recordFeed
+    case openCareReminder
 }
 
 struct FarmSystemNavigationTarget: Codable, Sendable, Equatable {

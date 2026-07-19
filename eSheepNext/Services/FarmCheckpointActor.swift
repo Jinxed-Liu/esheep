@@ -289,10 +289,10 @@ actor FarmCheckpointActor {
 
     private static func restorePriority(_ entityType: String) -> Int {
         switch CloudEntityType(rawValue: entityType) {
-        case .pen, .feedIngredient, .semen, .breedingProgram, .healthCatalogItem: 0
-        case .sheep, .productionBatch, .feedRecipe, .inventoryLot: 1
-        case .feedRecipeComponent, .weight, .weaning, .transfer, .removal, .batchMembership, .feed, .health, .reproduction, .note, .breedingProgramStep, .feedIngredientBatch: 2
-        case .feedLine, .inventoryTransaction, .photoAsset, .healthSubjectLink, .lambingOffspring: 3
+        case .pen, .feedIngredient, .semen, .breedingProgram, .healthCatalogItem, .careRule: 0
+        case .sheep, .productionBatch, .feedRecipe, .inventoryLot, .careBatch: 1
+        case .feedRecipeComponent, .weight, .weaning, .transfer, .removal, .batchMembership, .feed, .health, .reproduction, .note, .breedingProgramStep, .feedIngredientBatch, .semenTransaction: 2
+        case .feedLine, .inventoryTransaction, .photoAsset, .healthSubjectLink, .lambingOffspring, .careReminder: 3
         case .farm, .none: 4
         }
     }

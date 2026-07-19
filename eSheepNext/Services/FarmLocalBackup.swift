@@ -26,12 +26,13 @@ struct FarmBackupPayloadV1: Codable, Sendable, Equatable {
     let removals: [Removal]
     let tombstones: [Tombstone]
     let audits: [Audit]
+    let care: FarmCareBackupPayload?
 }
 
 struct FarmBackupPreview: Sendable, Equatable {
     let envelope: FarmBackupEnvelopeV1
     let entityCount: Int
-    var summary: String { "圈舍 \(envelope.payload.pens.count) · 羊只 \(envelope.payload.sheep.count) · 称重 \(envelope.payload.weights.count) · 转群 \(envelope.payload.transfers.count) · 离场 \(envelope.payload.removals.count)" }
+    var summary: String { "圈舍 \(envelope.payload.pens.count) · 羊只 \(envelope.payload.sheep.count) · 称重 \(envelope.payload.weights.count) · 健康繁殖 \(envelope.payload.care?.entityCount ?? 0)" }
 }
 
 struct FarmBackupRestoreResult: Sendable, Equatable {
@@ -76,7 +77,8 @@ enum FarmLocalBackupService {
             transfers: try context.fetch(FetchDescriptor<TransferRecord>()).filter { $0.farmID == farmID }.map { .init(id: $0.id, sheepID: $0.sheepID, fromPenID: $0.fromPenID, toPenID: $0.toPenID, occurredAt: $0.occurredAt, recordedAt: $0.recordedAt, note: $0.note, revision: $0.revision, deletedAt: $0.deletedAt) },
             removals: try context.fetch(FetchDescriptor<RemovalRecord>()).filter { $0.farmID == farmID }.map { .init(id: $0.id, sheepID: $0.sheepID, kind: $0.kind, reason: $0.reason, amountText: $0.amountText, occurredAt: $0.occurredAt, recordedAt: $0.recordedAt, note: $0.note, revision: $0.revision, deletedAt: $0.deletedAt) },
             tombstones: try context.fetch(FetchDescriptor<TombstoneRecord>()).filter { $0.farmID == farmID }.map { .init(id: $0.id, entityType: $0.entityType, entityID: $0.entityID, deletedAt: $0.deletedAt, reason: $0.reason, revision: $0.revision, restoredAt: $0.restoredAt) },
-            audits: try context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.farmID == farmID }.compactMap { operation in guard let kind = DomainOperationKind(rawValue: operation.kindRawValue) else { return nil }; return .init(id: operation.id, kind: kind, occurredAt: operation.occurredAt, summary: operation.summary, entityType: operation.entityType, entityID: operation.entityID, baseRevision: operation.baseRevision, resultingRevision: operation.resultingRevision, payload: operation.payload) }
+            audits: try context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.farmID == farmID }.compactMap { operation in guard let kind = DomainOperationKind(rawValue: operation.kindRawValue) else { return nil }; return .init(id: operation.id, kind: kind, occurredAt: operation.occurredAt, summary: operation.summary, entityType: operation.entityType, entityID: operation.entityID, baseRevision: operation.baseRevision, resultingRevision: operation.resultingRevision, payload: operation.payload) },
+            care: try FarmCareBackupPayload.capture(farmID: farmID, context: context)
         )
         let envelope = FarmBackupEnvelopeV1(schemaVersion: FarmBackupEnvelopeV1.schemaVersion, payload: payload, checksum: checksum(payload))
         return try encoder.encode(envelope)
@@ -86,7 +88,7 @@ enum FarmLocalBackupService {
         let envelope = try decoder.decode(FarmBackupEnvelopeV1.self, from: data)
         try validate(envelope)
         try validateInTemporaryStore(envelope)
-        let count = envelope.payload.pens.count + envelope.payload.sheep.count + envelope.payload.weights.count + envelope.payload.transfers.count + envelope.payload.removals.count + envelope.payload.tombstones.count
+        let count = envelope.payload.pens.count + envelope.payload.sheep.count + envelope.payload.weights.count + envelope.payload.transfers.count + envelope.payload.removals.count + envelope.payload.tombstones.count + (envelope.payload.care?.entityCount ?? 0)
         return .init(envelope: envelope, entityCount: count)
     }
 
@@ -100,6 +102,10 @@ enum FarmLocalBackupService {
             || context.fetch(FetchDescriptor<WeightRecord>()).contains { $0.farmID == farm.id }
             || context.fetch(FetchDescriptor<TransferRecord>()).contains { $0.farmID == farm.id }
             || context.fetch(FetchDescriptor<RemovalRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<HealthRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<ReproductionRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<InventoryLotRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<SemenRecord>()).contains { $0.farmID == farm.id }
         guard !hasData else { throw FarmLocalBackupError.targetNotEmpty }
         try validateIdentifierCollisions(preview.envelope.payload, targetFarmID: farm.id, context: context)
         insert(preview.envelope.payload, farmID: farm.id, accountID: account.effectiveAccountID, context: context)
@@ -126,6 +132,7 @@ enum FarmLocalBackupService {
         for value in envelope.payload.weights where !sheepIDs.contains(value.sheepID) { throw FarmLocalBackupError.missingReference("weight.sheepID") }
         for value in envelope.payload.transfers { guard sheepIDs.contains(value.sheepID) else { throw FarmLocalBackupError.missingReference("transfer.sheepID") }; if let id = value.fromPenID, !penIDs.contains(id) { throw FarmLocalBackupError.missingReference("transfer.fromPenID") }; if let id = value.toPenID, !penIDs.contains(id) { throw FarmLocalBackupError.missingReference("transfer.toPenID") } }
         for value in envelope.payload.removals where !sheepIDs.contains(value.sheepID) { throw FarmLocalBackupError.missingReference("removal.sheepID") }
+        try envelope.payload.care?.validate(penIDs: penIDs, sheepIDs: sheepIDs)
     }
 
     private static func validateInTemporaryStore(_ envelope: FarmBackupEnvelopeV1) throws {
@@ -146,6 +153,7 @@ enum FarmLocalBackupService {
         for value in payload.transfers { let record = TransferRecord(id: value.id, farmID: farmID, sheepID: value.sheepID, fromPenID: value.fromPenID, toPenID: value.toPenID, occurredAt: value.occurredAt, note: value.note); record.recordedAt = value.recordedAt; record.revision = value.revision; record.deletedAt = value.deletedAt; context.insert(record) }
         for value in payload.removals { let record = RemovalRecord(id: value.id, farmID: farmID, sheepID: value.sheepID, kind: value.kind, reason: value.reason, amountText: value.amountText, occurredAt: value.occurredAt, note: value.note); record.recordedAt = value.recordedAt; record.revision = value.revision; record.deletedAt = value.deletedAt; context.insert(record) }
         for value in payload.tombstones { let record = TombstoneRecord(id: value.id, farmID: farmID, entityType: value.entityType, entityID: value.entityID, deletedByAccountID: accountID, reason: value.reason, revision: value.revision); record.deletedAt = value.deletedAt; record.restoredAt = value.restoredAt; context.insert(record) }
+        payload.care?.insert(farmID: farmID, context: context)
         if includeAudits { for value in payload.audits { context.insert(DomainOperation(id: value.id, farmID: farmID, accountID: accountID, kind: value.kind, occurredAt: value.occurredAt, summary: value.summary, entityType: value.entityType, entityID: value.entityID, baseRevision: value.baseRevision, resultingRevision: value.resultingRevision, payload: value.payload)) } }
     }
 

@@ -36,6 +36,13 @@ struct RemoteDomainApplyService {
         }
 
         switch payload.kind {
+        case .care:
+            guard let command = payload.careCommand else { throw RemoteDomainApplyError.invalidPayload("careCommand") }
+            if try FarmCareCommandHandler.isApplied(command, farmID: envelope.farmID, context: context) { return .duplicate }
+            try FarmCareCommandHandler.validate(command, farmID: envelope.farmID, context: context)
+            let result = try FarmCareCommandHandler.apply(command, farmID: envelope.farmID, accountID: envelope.modifiedByAccountID, context: context, modifiedAt: envelope.modifiedAt)
+            guard result.entityType.rawValue == envelope.entityType, result.entityID == envelope.entityID else { throw RemoteDomainApplyError.invalidPayload("careCommand.target") }
+            return .applied(rebuildHistoryFrom: command.rebuildHistoryFrom)
         case .createFarm:
             return .duplicate
         case .updateFarmLocation:
@@ -278,10 +285,13 @@ struct RemoteDomainApplyService {
             let lot = InventoryLotRecord(id: envelope.entityID, farmID: envelope.farmID, catalogName: try string("catalogName", payload), kind: HealthRecordKind(rawValue: try string("kind", payload)) ?? .treatment, expiresAt: optionalDate("expiresAt", payload), startingQuantityText: try string("quantityText", payload))
             context.insert(lot)
             context.insert(InventoryTransactionRecord(id: StableCloudUUID.derived(namespace: lot.id, name: "inventory-receipt"), farmID: envelope.farmID, inventoryLotID: lot.id, kind: .receipt, quantityText: lot.startingQuantityText, occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? ""))
+            FarmCareCommandHandler.refreshInventoryExpiryReminder(for: lot, context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .addSemen:
             if try exists(SemenRecord.self, id: envelope.entityID, context: context) { return .duplicate }
-            context.insert(SemenRecord(id: envelope.entityID, farmID: envelope.farmID, code: try string("code", payload), breed: try string("breed", payload), source: payload.strings["source"] ?? "", batchNumber: payload.strings["batchNumber"] ?? "", quantityText: try string("quantityText", payload)))
+            let record = SemenRecord(id: envelope.entityID, farmID: envelope.farmID, code: try string("code", payload), breed: try string("breed", payload), source: payload.strings["source"] ?? "", batchNumber: payload.strings["batchNumber"] ?? "", quantityText: "0")
+            context.insert(record)
+            context.insert(SemenTransactionRecord(id: StableCloudUUID.derived(namespace: record.id, name: "semen-receipt"), farmID: envelope.farmID, semenID: record.id, kind: .receipt, quantityText: try string("quantityText", payload), occurredAt: envelope.modifiedAt, sourceRecordID: record.id, note: "冻精入库"))
             return .applied(rebuildHistoryFrom: nil)
         case .recordReproduction:
             if try exists(ReproductionRecord.self, id: envelope.entityID, context: context) { return .duplicate }
@@ -413,7 +423,7 @@ struct RemoteDomainApplyService {
         case .addSemen: .semen
         case .recordReproduction: .reproduction
         case .addNote: .note
-        case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: nil
+        case .care, .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: nil
         }
     }
 

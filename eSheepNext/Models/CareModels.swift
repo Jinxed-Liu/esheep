@@ -33,6 +33,7 @@ enum CareBatchKind: String, Codable, Sendable {
     case health
     case breeding
     case pregnancyCheck
+    case abortion
 }
 
 struct CareHealthDraft: Codable, Sendable, Equatable {
@@ -83,14 +84,16 @@ struct CareLambDraft: Codable, Sendable, Equatable, Identifiable {
     let sex: SheepSex
     let birthWeightText: String
     let createSheepRecord: Bool
+    let isStillborn: Bool
 
-    init(id: UUID = UUID(), sheepID: UUID = UUID(), earTag: String, sex: SheepSex, birthWeightText: String, createSheepRecord: Bool = true) {
+    init(id: UUID = UUID(), sheepID: UUID = UUID(), earTag: String, sex: SheepSex, birthWeightText: String, createSheepRecord: Bool = true, isStillborn: Bool = false) {
         self.id = id
         self.sheepID = sheepID
         self.earTag = earTag
         self.sex = sex
         self.birthWeightText = birthWeightText
         self.createSheepRecord = createSheepRecord
+        self.isStillborn = isStillborn
     }
 }
 
@@ -111,6 +114,7 @@ enum CareCommand: Codable, Sendable, Equatable {
     case upsertHealthCatalog(id: UUID, kindRawValue: String, name: String, category: String, unit: String, defaultDoseText: String?, defaultRoute: String, reminderIntervalDays: Int?, note: String, isActive: Bool)
     case recordHealth(CareHealthDraft)
     case correctHealth(originalID: UUID, replacement: CareHealthDraft, reason: String)
+    case receiveInventory(id: UUID, catalogName: String, catalogItemID: UUID?, kindRawValue: String, batchNumber: String, supplier: String, unit: String, expiresAt: Date?, quantityText: String, occurredAt: Date, note: String)
     case adjustInventory(id: UUID, lotID: UUID, quantityDeltaText: String, occurredAt: Date, note: String)
     case setInventoryLotActive(lotID: UUID, isActive: Bool)
     case adjustSemen(id: UUID, semenID: UUID, quantityDeltaText: String, occurredAt: Date, note: String)
@@ -125,6 +129,7 @@ enum CareCommand: Codable, Sendable, Equatable {
         case .upsertHealthCatalog(let id, _, _, _, _, _, _, _, _, _): id
         case .recordHealth(let draft): draft.id
         case .correctHealth(_, let replacement, _): replacement.id
+        case .receiveInventory(let id, _, _, _, _, _, _, _, _, _, _): id
         case .adjustInventory(let id, _, _, _, _): id
         case .setInventoryLotActive(let lotID, _): lotID
         case .adjustSemen(let id, _, _, _, _): id
@@ -138,7 +143,7 @@ enum CareCommand: Codable, Sendable, Equatable {
 
     var requiredCapability: FarmCapability {
         switch self {
-        case .upsertHealthCatalog, .adjustInventory, .setInventoryLotActive, .adjustSemen, .updateRules:
+        case .upsertHealthCatalog, .receiveInventory, .adjustInventory, .setInventoryLotActive, .adjustSemen, .updateRules:
             .manageCatalogs
         case .correctHealth, .correctReproduction:
             .editHistoricalFacts
@@ -152,6 +157,7 @@ enum CareCommand: Codable, Sendable, Equatable {
         case .upsertHealthCatalog: "维护健康目录"
         case .recordHealth: "记录批量健康事项"
         case .correctHealth: "修正健康记录"
+        case .receiveInventory: "药品疫苗入库"
         case .adjustInventory: "调整药品疫苗库存"
         case .setInventoryLotActive(_, let active): active ? "启用库存批次" : "停用库存批次"
         case .adjustSemen: "调整冻精库存"
@@ -160,6 +166,14 @@ enum CareCommand: Codable, Sendable, Equatable {
         case .correctReproduction: "修正繁殖记录"
         case .updateRules: "更新健康繁殖提醒规则"
         case .setReminderStatus: "更新健康繁殖提醒"
+        }
+    }
+
+    var rebuildHistoryFrom: Date? {
+        switch self {
+        case .recordLambing(let draft): draft.occurredAt
+        case .recordReproductionBatch(let draft), .correctReproduction(_, let draft, _): draft.occurredAt
+        default: nil
         }
     }
 }

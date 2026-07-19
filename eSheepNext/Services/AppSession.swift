@@ -58,6 +58,7 @@ final class AppSession {
     var pendingRecordEntry: PendingRecordEntry?
     var pendingSearchQuery: String?
     var pendingSheepID: UUID?
+    var pendingCareReminderID: UUID?
 
     init() {
         activeAccountProfileID = SecureAccountStore.activeAccountProfileID()
@@ -117,6 +118,9 @@ final class AppSession {
         case .recordFeed:
             selectedTab = .feeding
             pendingRecordEntry = .feed
+        case .openCareReminder:
+            pendingCareReminderID = target.entityID
+            selectedTab = .records
         }
     }
 

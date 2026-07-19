@@ -6,6 +6,7 @@ struct FarmRecordsView: View {
     let account: AccountProfile
     let farm: FarmRecord
     @State private var presentedEntry: PendingRecordEntry?
+    @State private var careReminderDestination: PendingCareReminderDestination?
 
     var body: some View {
         List {
@@ -20,11 +21,8 @@ struct FarmRecordsView: View {
                 NavigationLink { PenManagementView(account: account, farm: farm) } label: { Label("圈舍管理", systemImage: "building.2") }
             }
             Section("健康与繁殖") {
-                NavigationLink { HealthEntryView(account: account, farm: farm) } label: { Label("治疗或疫苗", systemImage: "cross.case") }
-                NavigationLink { InventoryManagementView(account: account, farm: farm) } label: { Label("药品与疫苗库存", systemImage: "shippingbox") }
-                NavigationLink { ReproductionEntryView(account: account, farm: farm) } label: { Label("配种、孕检或产羔", systemImage: "heart.text.square") }
+                NavigationLink { CareManagementView(account: account, farm: farm) } label: { Label("健康、库存、繁殖与提醒", systemImage: "cross.case.fill") }
                 NavigationLink { BreedingProgramListView(account: account, farm: farm) } label: { Label("配种方案", systemImage: "list.number") }
-                NavigationLink { SemenLibraryView(account: account, farm: farm) } label: { Label("冻精管理", systemImage: "snowflake") }
             }
             Section("补充") {
                 NavigationLink { NoteEntryView(account: account, farm: farm) } label: { Label("备注", systemImage: "note.text") }
@@ -43,9 +41,18 @@ struct FarmRecordsView: View {
                 }
             }
         }
-        .onAppear(perform: presentIntentEntryIfNeeded)
+        .onAppear {
+            presentIntentEntryIfNeeded()
+            presentCareReminderIfNeeded()
+        }
         .onChange(of: session.pendingRecordEntry) { _, _ in
             presentIntentEntryIfNeeded()
+        }
+        .navigationDestination(item: $careReminderDestination) { destination in
+            CareReminderCenterView(account: account, farm: farm, focusedReminderID: destination.id)
+        }
+        .onChange(of: session.pendingCareReminderID) { _, _ in
+            presentCareReminderIfNeeded()
         }
     }
 
@@ -54,6 +61,16 @@ struct FarmRecordsView: View {
         session.pendingRecordEntry = nil
         presentedEntry = entry
     }
+
+    private func presentCareReminderIfNeeded() {
+        guard let reminderID = session.pendingCareReminderID else { return }
+        session.pendingCareReminderID = nil
+        careReminderDestination = PendingCareReminderDestination(id: reminderID)
+    }
+}
+
+private struct PendingCareReminderDestination: Identifiable, Hashable {
+    let id: UUID
 }
 
 struct WeightEntryView: View {

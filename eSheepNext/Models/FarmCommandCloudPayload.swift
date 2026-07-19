@@ -65,12 +65,15 @@ struct FarmCommandCloudPayload: Codable, Sendable, Equatable {
     var feedLines: [FeedLine] = []
     var breedingProgramSteps: [BreedingProgramStep] = []
     var lambingOffspring: [LambingOffspring] = []
+    var careCommand: CareCommand?
 }
 
 enum FarmCommandCloudPayloadEncoder {
     static func encode(_ command: FarmCommand, resolvedFeedLines: [FarmCommandCloudPayload.FeedLine]? = nil) throws -> Data {
         var payload = FarmCommandCloudPayload(kind: command.operationKind)
         switch command {
+        case .care(let careCommand):
+            payload.careCommand = careCommand
         case .updateFarmLocation(let displayName, let latitude, let longitude, let addressSnapshot, let timeZoneIdentifier, let source, let horizontalAccuracyMeters):
             payload.strings = [
                 "displayName": displayName,

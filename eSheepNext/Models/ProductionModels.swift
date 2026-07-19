@@ -671,6 +671,7 @@ final class InventoryLotRecord {
     var id: UUID
     var farmID: UUID
     var catalogName: String
+    var catalogItemID: UUID? = nil
     var legacySourceKey: String?
     var batchNumber: String
     var supplier: String
@@ -683,10 +684,11 @@ final class InventoryLotRecord {
     var isActive: Bool
     var deletedAt: Date?
 
-    init(id: UUID = UUID(), farmID: UUID, catalogName: String, kind: HealthRecordKind, expiresAt: Date? = nil, startingQuantityText: String, legacySourceKey: String? = nil, batchNumber: String = "", supplier: String = "", receivedAt: Date? = nil, unit: String = "") {
+    init(id: UUID = UUID(), farmID: UUID, catalogName: String, catalogItemID: UUID? = nil, kind: HealthRecordKind, expiresAt: Date? = nil, startingQuantityText: String, legacySourceKey: String? = nil, batchNumber: String = "", supplier: String = "", receivedAt: Date? = nil, unit: String = "") {
         self.id = id
         self.farmID = farmID
         self.catalogName = catalogName
+        self.catalogItemID = catalogItemID
         self.legacySourceKey = legacySourceKey
         self.batchNumber = batchNumber
         self.supplier = supplier
@@ -741,8 +743,8 @@ final class HealthRecord {
     var occurredAt: Date
     var note: String
     var inventoryLotID: UUID?
-    var catalogItemID: UUID?
-    var batchID: UUID?
+    var catalogItemID: UUID? = nil
+    var batchID: UUID? = nil
     var quantityText: String?
     var unit: String
     var route: String
@@ -768,6 +770,8 @@ final class HealthRecord {
         self.legacySourceKey = legacySourceKey
         self.createdAt = .now
     }
+
+    var kind: HealthRecordKind { HealthRecordKind(rawValue: kindRawValue) ?? .treatment }
 }
 
 @Model
@@ -778,8 +782,8 @@ final class ReproductionRecord {
     var kindRawValue: String
     var occurredAt: Date
     var sireID: UUID?
-    var semenID: UUID?
-    var batchID: UUID?
+    var semenID: UUID? = nil
+    var batchID: UUID? = nil
     var semenNameSnapshot: String?
     var result: String
     var lambCount: Int

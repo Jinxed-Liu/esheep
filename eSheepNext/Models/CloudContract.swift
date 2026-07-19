@@ -177,6 +177,8 @@ enum CloudOperationSecurity {
     static func requiredCapability(for envelope: CloudOperationEnvelope) -> FarmCapability {
         if let payload = try? JSONDecoder.cloudOperation.decode(FarmCommandCloudPayload.self, from: envelope.payload) {
             switch payload.kind {
+            case .care:
+                return payload.careCommand?.requiredCapability ?? .recordProduction
             case .updateFarmLocation: return .editFarmLocation
             case .tombstoneEntity, .restoreTombstonedEntity, .correctWeight, .correctTransfer, .correctRemoval: return .deleteProtectedFacts
             case .resolveConflict: return .resolveConflicts

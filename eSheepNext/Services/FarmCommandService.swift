@@ -133,6 +133,7 @@ enum FarmCommand: Sendable {
     case receiveInventory(catalogName: String, kind: HealthRecordKind, expiresAt: Date?, quantityText: String, occurredAt: Date, note: String)
     case addSemen(code: String, breed: String, source: String, batchNumber: String, quantityText: String)
     case recordReproduction(eweID: UUID, kind: ReproductionRecordKind, occurredAt: Date, sireID: UUID?, semenName: String?, result: String, lambCount: Int, parity: Int?, birthDeadCount: Int?, offspring: [LambingOffspringDraft], note: String)
+    case care(CareCommand)
     case addNote(sheepID: UUID?, penID: UUID?, text: String, occurredAt: Date)
     case tombstoneEntity(entityType: CloudEntityType, entityID: UUID, reason: String)
     case restoreTombstonedEntity(tombstoneID: UUID)
@@ -145,6 +146,8 @@ enum FarmCommand: Sendable {
             .deleteProtectedFacts
         case .addIngredient, .createRecipe, .addRecipeComponent, .createBreedingProgram:
             .manageCatalogs
+        case .care(let command):
+            command.requiredCapability
         default:
             .recordProduction
         }
@@ -178,6 +181,7 @@ enum FarmCommand: Sendable {
         case .receiveInventory: .receiveInventory
         case .addSemen: .addSemen
         case .recordReproduction: .recordReproduction
+        case .care: .care
         case .addNote: .addNote
         case .tombstoneEntity: .tombstoneEntity
         case .restoreTombstonedEntity: .restoreTombstonedEntity
@@ -212,6 +216,7 @@ enum FarmCommand: Sendable {
         case .receiveInventory(let catalogName, _, _, _, _, _): "入库：\(catalogName)"
         case .addSemen(let code, _, _, _, _): "新增冻精：\(code)"
         case .recordReproduction(_, let kind, _, _, _, _, _, _, _, _, _): "记录\(kind.displayName)"
+        case .care(let command): command.summary
         case .addNote: "添加备注"
         case .tombstoneEntity: "删除权威记录"
         case .restoreTombstonedEntity: "恢复已删除记录"
@@ -270,6 +275,10 @@ final class FarmCommandService {
     }
 
     func execute(_ command: FarmCommand, in farm: FarmContext, context: ModelContext) throws {
+        var committed = false
+        defer {
+            if !committed { context.rollback() }
+        }
         let farmID = farm.farmID
         let accountID = farm.accountID
         let cloudBinding = try context.fetch(FetchDescriptor<CloudFarmBinding>(predicate: #Predicate {
@@ -321,6 +330,16 @@ final class FarmCommandService {
             if let tombstone = tombstones.first(where: { $0.farmID == farm.farmID && $0.entityID == originalID && $0.operationID == nil }) {
                 tombstone.operationID = operation.id
             }
+        case .care(let careCommand):
+            let originalID: UUID?
+            switch careCommand {
+            case .correctHealth(let id, _, _), .correctReproduction(let id, _, _): originalID = id
+            default: originalID = nil
+            }
+            if let originalID {
+                let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>())
+                if let tombstone = tombstones.first(where: { $0.farmID == farm.farmID && $0.entityID == originalID && $0.operationID == nil }) { tombstone.operationID = operation.id }
+            }
         default:
             break
         }
@@ -334,6 +353,7 @@ final class FarmCommandService {
             payloadDigest: operation.payloadDigest
         ))
         try context.save()
+        committed = true
     }
 
     @discardableResult
@@ -379,6 +399,8 @@ final class FarmCommandService {
 
     private func validate(_ command: FarmCommand, farmID: UUID, context: ModelContext) throws {
         switch command {
+        case .care(let careCommand):
+            try FarmCareCommandHandler.validate(careCommand, farmID: farmID, context: context)
         case .updateFarmLocation(let displayName, let latitude, let longitude, _, let timeZoneIdentifier, _, let accuracy):
             _ = try required(displayName, label: "牧场地点名称")
             guard (-90...90).contains(latitude), (-180...180).contains(longitude) else { throw FarmCommandError.invalidFarmCoordinate }
@@ -598,6 +620,9 @@ final class FarmCommandService {
         }
 
         switch command {
+        case .care(let careCommand):
+            let result = try FarmCareCommandHandler.apply(careCommand, farmID: farm.farmID, accountID: farm.accountID, context: context)
+            return AppliedCommandResult(entityType: result.entityType.rawValue, entityID: result.entityID, baseRevision: result.baseRevision, resultingRevision: result.resultingRevision, payload: defaultPayload)
         case .updateFarmLocation(let displayName, let latitude, let longitude, let addressSnapshot, let timeZoneIdentifier, let source, let accuracy):
             let farms = try context.fetch(FetchDescriptor<FarmRecord>())
             guard let record = farms.first(where: { $0.id == farm.farmID && $0.deletedAt == nil }) else {
@@ -847,10 +872,12 @@ final class FarmCommandService {
             let lot = InventoryLotRecord(farmID: farm.farmID, catalogName: catalogName.trimmingCharacters(in: .whitespacesAndNewlines), kind: kind, expiresAt: expiresAt, startingQuantityText: normalizedDecimal(quantityText))
             context.insert(lot)
             context.insert(InventoryTransactionRecord(id: StableCloudUUID.derived(namespace: lot.id, name: "inventory-receipt"), farmID: farm.farmID, inventoryLotID: lot.id, kind: .receipt, quantityText: normalizedDecimal(quantityText), occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines)))
+            FarmCareCommandHandler.refreshInventoryExpiryReminder(for: lot, context: context)
             return appliedResult(.inventoryLot, lot.id)
         case .addSemen(let code, let breed, let source, let batchNumber, let quantityText):
-            let record = SemenRecord(farmID: farm.farmID, code: code.trimmingCharacters(in: .whitespacesAndNewlines), breed: breed.trimmingCharacters(in: .whitespacesAndNewlines), source: source.trimmingCharacters(in: .whitespacesAndNewlines), batchNumber: batchNumber.trimmingCharacters(in: .whitespacesAndNewlines), quantityText: normalizedDecimal(quantityText))
+            let record = SemenRecord(farmID: farm.farmID, code: code.trimmingCharacters(in: .whitespacesAndNewlines), breed: breed.trimmingCharacters(in: .whitespacesAndNewlines), source: source.trimmingCharacters(in: .whitespacesAndNewlines), batchNumber: batchNumber.trimmingCharacters(in: .whitespacesAndNewlines), quantityText: "0")
             context.insert(record)
+            context.insert(SemenTransactionRecord(id: StableCloudUUID.derived(namespace: record.id, name: "semen-receipt"), farmID: farm.farmID, semenID: record.id, kind: .receipt, quantityText: normalizedDecimal(quantityText), occurredAt: record.createdAt, sourceRecordID: record.id, note: "冻精入库"))
             return appliedResult(.semen, record.id)
         case .recordReproduction(let eweID, let kind, let occurredAt, let sireID, let semenName, let result, let lambCount, let parity, let birthDeadCount, let offspring, let note):
             let record = ReproductionRecord(farmID: farm.farmID, eweID: eweID, kind: kind, occurredAt: occurredAt, sireID: sireID, semenNameSnapshot: semenName?.trimmingCharacters(in: .whitespacesAndNewlines), result: result.trimmingCharacters(in: .whitespacesAndNewlines), lambCount: lambCount, parity: parity, birthDeadCount: birthDeadCount, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -930,6 +957,10 @@ final class FarmCommandService {
         case .healthCatalogItem: return try context.fetch(FetchDescriptor<HealthCatalogItemRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .healthSubjectLink: return try context.fetch(FetchDescriptor<HealthSubjectLink>()).contains { $0.id == id && $0.farmID == farmID }
         case .lambingOffspring: return try context.fetch(FetchDescriptor<LambingOffspringRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .careBatch: return try context.fetch(FetchDescriptor<CareBatchRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .semenTransaction: return try context.fetch(FetchDescriptor<SemenTransactionRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .careRule: return try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .careReminder: return try context.fetch(FetchDescriptor<CareReminderRecord>()).contains { $0.id == id && $0.farmID == farmID }
         }
     }
 
@@ -1049,6 +1080,7 @@ private extension FarmCommand {
         case .correctRemoval(_, _, _, _, let occurredAt, _, _): occurredAt
         case .restoreSheep: nil
         case .tombstoneEntity, .restoreTombstonedEntity: nil
+        case .care: nil
         default: nil
         }
     }

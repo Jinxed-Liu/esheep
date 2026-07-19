@@ -149,11 +149,12 @@ final class LambingOffspringRecord {
     var legacyEarTag: String
     var sexRawValue: String
     var birthWeightText: String
+    var isStillborn: Bool = false
     var createdAt: Date
 
-    init(id: UUID = UUID(), farmID: UUID, lambingRecordID: UUID, sheepID: UUID?, legacyEarTag: String, sexRawValue: String, birthWeightText: String) {
+    init(id: UUID = UUID(), farmID: UUID, lambingRecordID: UUID, sheepID: UUID?, legacyEarTag: String, sexRawValue: String, birthWeightText: String, isStillborn: Bool = false) {
         self.id = id; self.farmID = farmID; self.lambingRecordID = lambingRecordID; self.sheepID = sheepID
-        self.legacyEarTag = legacyEarTag; self.sexRawValue = sexRawValue; self.birthWeightText = birthWeightText; self.createdAt = .now
+        self.legacyEarTag = legacyEarTag; self.sexRawValue = sexRawValue; self.birthWeightText = birthWeightText; self.isStillborn = isStillborn; self.createdAt = .now
     }
 }
 
@@ -194,7 +195,7 @@ final class HealthCatalogItemRecord {
     var unit: String
     var defaultDoseText: String?
     var defaultRoute: String
-    var reminderIntervalDays: Int?
+    var reminderIntervalDays: Int? = nil
     var note: String
     var isActive: Bool
     var createdAt: Date

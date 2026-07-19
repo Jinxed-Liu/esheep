@@ -251,7 +251,7 @@ struct MigrationCommitService {
         }
         for value in try farmValues(InventoryLotRecord.self, farmID: farmID, source: source) {
             let kind = HealthRecordKind(rawValue: value.kindRawValue) ?? .treatment
-            let copy = InventoryLotRecord(id: value.id, farmID: farmID, catalogName: value.catalogName, kind: kind, expiresAt: value.expiresAt, startingQuantityText: value.startingQuantityText, legacySourceKey: value.legacySourceKey, batchNumber: value.batchNumber, supplier: value.supplier, receivedAt: value.receivedAt, unit: value.unit)
+            let copy = InventoryLotRecord(id: value.id, farmID: farmID, catalogName: value.catalogName, catalogItemID: value.catalogItemID, kind: kind, expiresAt: value.expiresAt, startingQuantityText: value.startingQuantityText, legacySourceKey: value.legacySourceKey, batchNumber: value.batchNumber, supplier: value.supplier, receivedAt: value.receivedAt, unit: value.unit)
             copy.createdAt = value.createdAt; copy.isActive = value.isActive; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(InventoryTransactionRecord.self, farmID: farmID, source: source) {
@@ -260,11 +260,11 @@ struct MigrationCommitService {
         }
         for value in try farmValues(HealthRecord.self, farmID: farmID, source: source) {
             let kind = HealthRecordKind(rawValue: value.kindRawValue) ?? .treatment
-            let copy = HealthRecord(id: value.id, farmID: farmID, sheepID: value.sheepID, penID: value.penID, kind: kind, itemNameSnapshot: value.itemNameSnapshot, occurredAt: value.occurredAt, note: value.note, inventoryLotID: value.inventoryLotID, quantityText: value.quantityText, unit: value.unit, route: value.route, legacySourceKey: value.legacySourceKey)
+            let copy = HealthRecord(id: value.id, farmID: farmID, sheepID: value.sheepID, penID: value.penID, kind: kind, itemNameSnapshot: value.itemNameSnapshot, occurredAt: value.occurredAt, note: value.note, inventoryLotID: value.inventoryLotID, catalogItemID: value.catalogItemID, batchID: value.batchID, quantityText: value.quantityText, unit: value.unit, route: value.route, legacySourceKey: value.legacySourceKey)
             copy.createdAt = value.createdAt; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(ReproductionRecord.self, farmID: farmID, source: source) {
-            let copy = ReproductionRecord(id: value.id, farmID: farmID, eweID: value.eweID, kind: value.kind, occurredAt: value.occurredAt, sireID: value.sireID, semenNameSnapshot: value.semenNameSnapshot, result: value.result, lambCount: value.lambCount, parity: value.parity, birthDeadCount: value.birthDeadCount, note: value.note, legacySourceKey: value.legacySourceKey)
+            let copy = ReproductionRecord(id: value.id, farmID: farmID, eweID: value.eweID, kind: value.kind, occurredAt: value.occurredAt, sireID: value.sireID, semenID: value.semenID, batchID: value.batchID, semenNameSnapshot: value.semenNameSnapshot, result: value.result, lambCount: value.lambCount, parity: value.parity, birthDeadCount: value.birthDeadCount, note: value.note, legacySourceKey: value.legacySourceKey)
             copy.createdAt = value.createdAt; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(SemenRecord.self, farmID: farmID, source: source) {
@@ -280,7 +280,7 @@ struct MigrationCommitService {
             copy.createdAt = value.createdAt; destination.insert(copy)
         }
         for value in try farmValues(LambingOffspringRecord.self, farmID: farmID, source: source) {
-            let copy = LambingOffspringRecord(id: value.id, farmID: farmID, lambingRecordID: value.lambingRecordID, sheepID: value.sheepID, legacyEarTag: value.legacyEarTag, sexRawValue: value.sexRawValue, birthWeightText: value.birthWeightText)
+            let copy = LambingOffspringRecord(id: value.id, farmID: farmID, lambingRecordID: value.lambingRecordID, sheepID: value.sheepID, legacyEarTag: value.legacyEarTag, sexRawValue: value.sexRawValue, birthWeightText: value.birthWeightText, isStillborn: value.isStillborn)
             copy.createdAt = value.createdAt; destination.insert(copy)
         }
         for value in try farmValues(FeedIngredientBatchRecord.self, farmID: farmID, source: source) {
@@ -288,7 +288,7 @@ struct MigrationCommitService {
             copy.createdAt = value.createdAt; destination.insert(copy)
         }
         for value in try farmValues(HealthCatalogItemRecord.self, farmID: farmID, source: source) {
-            let copy = HealthCatalogItemRecord(id: value.id, farmID: farmID, legacySourceKey: value.legacySourceKey, legacyCatalogID: value.legacyCatalogID, kindRawValue: value.kindRawValue, name: value.name, category: value.category, unit: value.unit, defaultDoseText: value.defaultDoseText, defaultRoute: value.defaultRoute, note: value.note, isActive: value.isActive)
+            let copy = HealthCatalogItemRecord(id: value.id, farmID: farmID, legacySourceKey: value.legacySourceKey, legacyCatalogID: value.legacyCatalogID, kindRawValue: value.kindRawValue, name: value.name, category: value.category, unit: value.unit, defaultDoseText: value.defaultDoseText, defaultRoute: value.defaultRoute, reminderIntervalDays: value.reminderIntervalDays, note: value.note, isActive: value.isActive)
             copy.createdAt = value.createdAt; destination.insert(copy)
         }
         for value in try farmValues(PhotoAssetRecord.self, farmID: farmID, source: source) {
