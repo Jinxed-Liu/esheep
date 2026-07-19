@@ -741,6 +741,8 @@ final class HealthRecord {
     var occurredAt: Date
     var note: String
     var inventoryLotID: UUID?
+    var catalogItemID: UUID?
+    var batchID: UUID?
     var quantityText: String?
     var unit: String
     var route: String
@@ -748,7 +750,7 @@ final class HealthRecord {
     var createdAt: Date
     var deletedAt: Date?
 
-    init(id: UUID = UUID(), farmID: UUID, sheepID: UUID?, penID: UUID?, kind: HealthRecordKind, itemNameSnapshot: String, occurredAt: Date, note: String = "", inventoryLotID: UUID? = nil, quantityText: String? = nil, unit: String = "", route: String = "", legacySourceKey: String? = nil) {
+    init(id: UUID = UUID(), farmID: UUID, sheepID: UUID?, penID: UUID?, kind: HealthRecordKind, itemNameSnapshot: String, occurredAt: Date, note: String = "", inventoryLotID: UUID? = nil, catalogItemID: UUID? = nil, batchID: UUID? = nil, quantityText: String? = nil, unit: String = "", route: String = "", legacySourceKey: String? = nil) {
         self.id = id
         self.farmID = farmID
         self.sheepID = sheepID
@@ -758,6 +760,8 @@ final class HealthRecord {
         self.occurredAt = occurredAt
         self.note = note
         self.inventoryLotID = inventoryLotID
+        self.catalogItemID = catalogItemID
+        self.batchID = batchID
         self.quantityText = quantityText
         self.unit = unit
         self.route = route
@@ -774,6 +778,8 @@ final class ReproductionRecord {
     var kindRawValue: String
     var occurredAt: Date
     var sireID: UUID?
+    var semenID: UUID?
+    var batchID: UUID?
     var semenNameSnapshot: String?
     var result: String
     var lambCount: Int
@@ -784,13 +790,15 @@ final class ReproductionRecord {
     var createdAt: Date
     var deletedAt: Date?
 
-    init(id: UUID = UUID(), farmID: UUID, eweID: UUID, kind: ReproductionRecordKind, occurredAt: Date, sireID: UUID? = nil, semenNameSnapshot: String? = nil, result: String = "", lambCount: Int = 0, parity: Int? = nil, birthDeadCount: Int? = nil, note: String = "", legacySourceKey: String? = nil) {
+    init(id: UUID = UUID(), farmID: UUID, eweID: UUID, kind: ReproductionRecordKind, occurredAt: Date, sireID: UUID? = nil, semenID: UUID? = nil, batchID: UUID? = nil, semenNameSnapshot: String? = nil, result: String = "", lambCount: Int = 0, parity: Int? = nil, birthDeadCount: Int? = nil, note: String = "", legacySourceKey: String? = nil) {
         self.id = id
         self.farmID = farmID
         self.eweID = eweID
         self.kindRawValue = kind.rawValue
         self.occurredAt = occurredAt
         self.sireID = sireID
+        self.semenID = semenID
+        self.batchID = batchID
         self.semenNameSnapshot = semenNameSnapshot
         self.result = result
         self.lambCount = lambCount

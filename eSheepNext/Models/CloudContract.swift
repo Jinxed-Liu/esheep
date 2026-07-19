@@ -40,6 +40,10 @@ enum CloudEntityType: String, CaseIterable, Codable, Sendable {
     case healthCatalogItem
     case healthSubjectLink
     case lambingOffspring
+    case careBatch
+    case semenTransaction
+    case careRule
+    case careReminder
 }
 
 struct BootstrapEntityEnvelopeV1: Codable, Sendable, Equatable {
@@ -163,7 +167,7 @@ enum CloudOperationSecurity {
     static func requiredCapability(for entityType: String, deletedAt: Date?) -> FarmCapability {
         if deletedAt != nil { return .deleteProtectedFacts }
         switch CloudEntityType(rawValue: entityType) {
-        case .feedIngredient, .feedRecipe, .feedRecipeComponent, .semen, .breedingProgram:
+        case .feedIngredient, .feedRecipe, .feedRecipeComponent, .semen, .breedingProgram, .healthCatalogItem, .careRule:
             return .manageCatalogs
         default:
             return .recordProduction

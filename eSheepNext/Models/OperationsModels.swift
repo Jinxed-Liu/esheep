@@ -29,6 +29,7 @@ enum DomainOperationKind: String, Codable, Sendable {
     case receiveInventory
     case addSemen
     case recordReproduction
+    case care
     case addNote
     case tombstoneEntity
     case restoreTombstonedEntity

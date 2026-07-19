@@ -194,13 +194,14 @@ final class HealthCatalogItemRecord {
     var unit: String
     var defaultDoseText: String?
     var defaultRoute: String
+    var reminderIntervalDays: Int?
     var note: String
     var isActive: Bool
     var createdAt: Date
 
-    init(id: UUID = UUID(), farmID: UUID, legacySourceKey: String, legacyCatalogID: String, kindRawValue: String, name: String, category: String, unit: String, defaultDoseText: String?, defaultRoute: String, note: String, isActive: Bool) {
+    init(id: UUID = UUID(), farmID: UUID, legacySourceKey: String, legacyCatalogID: String, kindRawValue: String, name: String, category: String, unit: String, defaultDoseText: String?, defaultRoute: String, reminderIntervalDays: Int? = nil, note: String, isActive: Bool) {
         self.id = id; self.farmID = farmID; self.legacySourceKey = legacySourceKey; self.legacyCatalogID = legacyCatalogID
         self.kindRawValue = kindRawValue; self.name = name; self.category = category; self.unit = unit; self.defaultDoseText = defaultDoseText
-        self.defaultRoute = defaultRoute; self.note = note; self.isActive = isActive; self.createdAt = .now
+        self.defaultRoute = defaultRoute; self.reminderIntervalDays = reminderIntervalDays; self.note = note; self.isActive = isActive; self.createdAt = .now
     }
 }
