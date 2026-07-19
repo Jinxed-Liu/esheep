@@ -70,6 +70,21 @@ struct RemoteDomainApplyService {
             if try exists(PenRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             context.insert(PenRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), note: payload.strings["note"] ?? "", createdAt: envelope.modifiedAt))
             return .applied(rebuildHistoryFrom: nil)
+        case .updatePen:
+            guard let record = try fetch(PenRecord.self, id: try identifier("penID", payload), context: context) else { throw RemoteDomainApplyError.missingReference("penID") }
+            guard record.revision == envelope.baseRevision else { return .conflict(localRevision: record.revision) }
+            record.name = try string("name", payload)
+            record.note = payload.strings["note"] ?? ""
+            record.updatedAt = envelope.modifiedAt
+            record.revision = envelope.revision
+            return .applied(rebuildHistoryFrom: nil)
+        case .setPenActive:
+            guard let record = try fetch(PenRecord.self, id: try identifier("penID", payload), context: context) else { throw RemoteDomainApplyError.missingReference("penID") }
+            guard record.revision == envelope.baseRevision else { return .conflict(localRevision: record.revision) }
+            record.isActive = payload.integers["isActive"] == 1
+            record.updatedAt = envelope.modifiedAt
+            record.revision = envelope.revision
+            return .applied(rebuildHistoryFrom: nil)
         case .addSheep:
             if try exists(SheepRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let normalizedEarTag = EarTag.normalized(try string("earTag", payload))
@@ -85,18 +100,50 @@ struct RemoteDomainApplyService {
                 id: envelope.entityID,
                 farmID: envelope.farmID,
                 earTag: try string("earTag", payload),
+                legacyEarTag: optionalString("legacyEarTag", payload),
+                legacySourceKey: optionalString("legacySourceKey", payload),
+                isHistoricalArchive: payload.integers["isHistoricalArchive"] == 1,
                 breed: try string("breed", payload),
+                purpose: payload.strings["purpose"] ?? "未分类",
                 sex: SheepSex(rawValue: try string("sex", payload)) ?? .unknown,
                 penID: optionalID("penID", payload),
                 enteredAt: try date("occurredAt", payload),
                 birthAt: optionalDate("birthAt", payload),
+                damID: optionalID("damID", payload),
+                sireID: optionalID("sireID", payload),
                 note: payload.strings["note"] ?? ""
             )
             context.insert(record)
             return .applied(rebuildHistoryFrom: record.enteredAt)
+        case .updateSheepProfile:
+            guard let record = try fetch(SheepRecord.self, id: try identifier("sheepID", payload), context: context) else { throw RemoteDomainApplyError.missingReference("sheepID") }
+            guard record.revision == envelope.baseRevision else { return .conflict(localRevision: record.revision) }
+            let earTag = try string("earTag", payload)
+            let normalized = EarTag.normalized(earTag)
+            let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+            guard !sheep.contains(where: { $0.farmID == envelope.farmID && $0.id != record.id && EarTag.normalized($0.earTag) == normalized }) else {
+                return .conflict(localRevision: record.revision)
+            }
+            record.earTag = earTag
+            record.breed = try string("breed", payload)
+            record.sexRawValue = try string("sex", payload)
+            record.birthAt = optionalDate("birthAt", payload)
+            record.note = payload.strings["note"] ?? ""
+            record.updatedAt = envelope.modifiedAt
+            record.revision = envelope.revision
+            return .applied(rebuildHistoryFrom: nil)
         case .recordWeight:
             if try exists(WeightRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             context.insert(WeightRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: try identifier("sheepID", payload), kilogramsText: try string("kilogramsText", payload), occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? ""))
+            return .applied(rebuildHistoryFrom: nil)
+        case .correctWeight:
+            if try exists(WeightRecord.self, id: envelope.entityID, context: context) { return .duplicate }
+            let originalID = try identifier("originalID", payload)
+            guard let original = try fetch(WeightRecord.self, id: originalID, context: context), original.deletedAt == nil else { throw RemoteDomainApplyError.missingReference("originalID") }
+            original.deletedAt = envelope.modifiedAt
+            original.revision += 1
+            context.insert(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.weight.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["reason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID))
+            context.insert(WeightRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: original.sheepID, kilogramsText: try string("kilogramsText", payload), occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? ""))
             return .applied(rebuildHistoryFrom: nil)
         case .recordWeaning:
             if try exists(WeaningRecord.self, id: envelope.entityID, context: context) { return .duplicate }
@@ -135,10 +182,32 @@ struct RemoteDomainApplyService {
             let record = TransferRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: sheepID, fromPenID: FarmHistoryTimeline.pen(for: sheep, at: occurredAt, transfers: transfers), toPenID: optionalID("toPenID", payload), occurredAt: occurredAt, note: payload.strings["note"] ?? "")
             context.insert(record)
             return .applied(rebuildHistoryFrom: occurredAt)
+        case .correctTransfer:
+            if try exists(TransferRecord.self, id: envelope.entityID, context: context) { return .duplicate }
+            let originalID = try identifier("originalID", payload)
+            guard let original = try fetch(TransferRecord.self, id: originalID, context: context), original.deletedAt == nil,
+                  let sheep = try fetch(SheepRecord.self, id: original.sheepID, context: context) else { throw RemoteDomainApplyError.missingReference("originalID") }
+            original.deletedAt = envelope.modifiedAt
+            original.revision += 1
+            context.insert(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.transfer.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["reason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID))
+            let occurredAt = try date("occurredAt", payload)
+            let transfers = try context.fetch(FetchDescriptor<TransferRecord>()).filter { $0.farmID == envelope.farmID && $0.sheepID == original.sheepID && $0.deletedAt == nil }
+            context.insert(TransferRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: original.sheepID, fromPenID: FarmHistoryTimeline.pen(for: sheep, at: occurredAt, transfers: transfers), toPenID: optionalID("toPenID", payload), occurredAt: occurredAt, note: payload.strings["note"] ?? ""))
+            return .applied(rebuildHistoryFrom: occurredAt)
         case .removeSheep:
             if try exists(RemovalRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let occurredAt = try date("occurredAt", payload)
             context.insert(RemovalRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: try identifier("sheepID", payload), kind: RemovalKind(rawValue: try string("kind", payload)) ?? .culled, reason: try string("reason", payload), amountText: optionalString("amountText", payload), occurredAt: occurredAt, note: payload.strings["note"] ?? ""))
+            return .applied(rebuildHistoryFrom: occurredAt)
+        case .correctRemoval:
+            if try exists(RemovalRecord.self, id: envelope.entityID, context: context) { return .duplicate }
+            let originalID = try identifier("originalID", payload)
+            guard let original = try fetch(RemovalRecord.self, id: originalID, context: context), original.deletedAt == nil else { throw RemoteDomainApplyError.missingReference("originalID") }
+            original.deletedAt = envelope.modifiedAt
+            original.revision += 1
+            context.insert(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.removal.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["correctionReason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID))
+            let occurredAt = try date("occurredAt", payload)
+            context.insert(RemovalRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: original.sheepID, kind: RemovalKind(rawValue: try string("kind", payload)) ?? .culled, reason: try string("reason", payload), amountText: optionalString("amountText", payload), occurredAt: occurredAt, note: payload.strings["note"] ?? ""))
             return .applied(rebuildHistoryFrom: occurredAt)
         case .restoreSheep:
             guard let record = try fetch(RemovalRecord.self, id: envelope.entityID, context: context) else { throw RemoteDomainApplyError.missingReference("removalID") }
@@ -295,6 +364,30 @@ struct RemoteDomainApplyService {
                 deletedAt: nil
             )
             return try apply(sourceEnvelope, context: context)
+        case .bootstrapEntity:
+            guard let snapshotData = payload.dataValues["snapshot"] else {
+                throw RemoteDomainApplyError.invalidPayload("snapshot")
+            }
+            let snapshot = try decoder.decode(BootstrapEntityEnvelopeV1.self, from: snapshotData)
+            try snapshot.validate(for: envelope)
+            let sourceEnvelope = CloudOperationEnvelope(
+                farmID: envelope.farmID,
+                entityID: envelope.entityID,
+                entityType: envelope.entityType,
+                schemaVersion: envelope.schemaVersion,
+                revision: snapshot.sourceRevision,
+                baseRevision: max(0, snapshot.sourceRevision - 1),
+                operationID: StableCloudUUID.derived(namespace: envelope.operationID, name: "migration-bootstrap-source"),
+                modifiedAt: envelope.modifiedAt,
+                modifiedByAccountID: envelope.modifiedByAccountID,
+                modifiedByDeviceID: envelope.modifiedByDeviceID,
+                payload: snapshot.sourcePayload,
+                payloadDigest: snapshot.sourcePayloadDigest,
+                capabilityCertificate: envelope.capabilityCertificate,
+                operationSignature: envelope.operationSignature,
+                deletedAt: envelope.deletedAt
+            )
+            return try apply(sourceEnvelope, context: context)
         }
     }
 
@@ -302,13 +395,13 @@ struct RemoteDomainApplyService {
         switch kind {
         case .createFarm: .farm
         case .updateFarmLocation: .farm
-        case .createPen: .pen
-        case .addSheep: .sheep
-        case .recordWeight: .weight
+        case .createPen, .updatePen, .setPenActive: .pen
+        case .addSheep, .updateSheepProfile: .sheep
+        case .recordWeight, .correctWeight: .weight
         case .recordWeaning: .weaning
         case .createBreedingProgram: .breedingProgram
-        case .transferSheep: .transfer
-        case .removeSheep, .restoreSheep: .removal
+        case .transferSheep, .correctTransfer: .transfer
+        case .removeSheep, .correctRemoval, .restoreSheep: .removal
         case .createBatch: .productionBatch
         case .assignBatchMembership, .leaveBatchMembership: .batchMembership
         case .addIngredient: .feedIngredient
@@ -320,7 +413,7 @@ struct RemoteDomainApplyService {
         case .addSemen: .semen
         case .recordReproduction: .reproduction
         case .addNote: .note
-        case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity: nil
+        case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: nil
         }
     }
 

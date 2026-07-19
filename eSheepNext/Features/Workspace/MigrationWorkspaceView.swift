@@ -6,6 +6,7 @@ struct MigrationWorkspaceView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var appSession
     @Query private var accounts: [AccountProfile]
+    @Query private var migrationCommits: [MigrationCommitRecord]
     @State private var isImporting = false
     @State private var isImportingBaseline = false
     @State private var session: MigrationSession?
@@ -20,9 +21,9 @@ struct MigrationWorkspaceView: View {
     var body: some View {
         List {
             Section {
-                Text("迁移演练只读取旧版导出 JSON，并在独立临时数据库中转换。不会写入当前牧场、旧版或 CloudKit。")
+                Text("先读取 eSheep+ 导出的 JSON，在独立临时数据库中转换、修复和对账。确认正式建场前不会修改当前牧场、旧版数据或 iCloud。")
                     .font(.footnote).foregroundStyle(.secondary)
-                Button("选择旧版 JSON 迁移包") { isImporting = true }
+                Button("选择 eSheep+ 导出文件") { isImporting = true }
             }
             if !savedSessions.isEmpty {
                 Section("已保存的迁移会话") {
@@ -36,6 +37,9 @@ struct MigrationWorkspaceView: View {
                                 Text(saved.isReadyForTemporaryBuild ? "可建立临时牧场" : "仍有 \(saved.blockingIssues.count) 项待处理")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
+                        }
+                        .swipeActions {
+                            Button("删除", role: .destructive) { deleteSession(saved.id) }
                         }
                     }
                 }
@@ -91,24 +95,24 @@ struct MigrationWorkspaceView: View {
                         LabeledContent("阻断项／警告项", value: "\(result.blockingDiscrepancies.count)／\(result.discrepancies.filter { $0.severity == .warning }.count)")
                         NavigationLink("打开迁移验收中心") { MigrationReviewCenterView(farmID: temporaryFarm!.farmID, report: result).modelContainer(temporaryFarm!.container) }
                         if result.blockingDiscrepancies.isEmpty {
-                            Button(isCommittingMigration ? "正在迁移到本机牧场" : "迁移到本机牧场") {
+                            Button(isCommittingMigration ? "正在创建正式牧场" : "创建正式牧场") {
                                 isCommitConfirmationPresented = true
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(isCommittingMigration || activeAccount == nil)
-                            Text("提交后会在当前账号下创建一个可正常使用的本机牧场。不会修改旧版数据，也不会在本步骤上传 CloudKit。")
+                            Text("创建后即可离线使用。Development 会在登录与 iCloud 可用时自动上传；失败不会影响本机录入。")
                                 .font(.footnote).foregroundStyle(.secondary)
                         } else {
-                            Text("对账阻断项清零后才能迁移到本机牧场。")
+                            Text("对账阻断项清零后才能创建正式牧场。")
                                 .font(.footnote).foregroundStyle(.red)
                         }
-                        Text("临时转换完成；只有点击并确认正式迁移后才会写入本机牧场。")
+                        Text("临时转换完成；只有点击并确认创建正式牧场后才会写入业务数据库。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
             }
         }
-        .navigationTitle("安全试迁")
+        .navigationTitle("从 eSheep+ 导入")
         .task { savedSessions = MigrationWorkspaceStore.allSessions() }
         .fileImporter(isPresented: $isImporting, allowedContentTypes: [.json]) { result in
             do {
@@ -127,14 +131,14 @@ struct MigrationWorkspaceView: View {
             } catch { errorMessage = error.localizedDescription }
         }
         .confirmationDialog(
-            "确认迁移到本机牧场",
+            "确认创建正式牧场",
             isPresented: $isCommitConfirmationPresented,
             titleVisibility: .visible
         ) {
-            Button("确认迁移") { commitMigration() }
+            Button("确认创建") { commitMigration() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("系统会将已对账的临时数据原子写入当前账号的正式本地 Store。旧版 eSheep+ 和 CloudKit 均不会被修改。")
+            Text("系统会将已对账数据和云端基线原子写入当前账号。旧版 eSheep+ 不会被修改，iCloud 上传将在建场成功后自动进行。")
         }
         .alert(
             "迁移完成",
@@ -149,7 +153,7 @@ struct MigrationWorkspaceView: View {
             }
         } message: {
             if let result = commitResult {
-                Text("\(result.farmName) 已写入本机，共迁移 \(result.committedRecordCount) 条记录和 \(result.photoCount) 张照片。")
+                Text("\(result.farmName) 已创建，共导入 \(result.committedRecordCount) 条记录和 \(result.photoCount) 张照片。\(cloudStatusText(for: result.farmID))")
             }
         }
         .alert("迁移操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(errorMessage ?? "") }
@@ -195,6 +199,21 @@ struct MigrationWorkspaceView: View {
             errorMessage = error.localizedDescription
         }
         isCommittingMigration = false
+    }
+
+    private func deleteSession(_ sessionID: UUID) {
+        do {
+            try MigrationWorkspaceStore.delete(sessionID: sessionID)
+            if session?.id == sessionID { session = nil; temporaryFarm = nil }
+            savedSessions = MigrationWorkspaceStore.allSessions()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func cloudStatusText(for farmID: UUID) -> String {
+        guard let commit = migrationCommits.first(where: { $0.farmID == farmID }) else { return "已保存在本机。" }
+        return commit.cloudState.displayName + (commit.cloudLastError.map { "：\($0)" } ?? "。")
     }
 }
 

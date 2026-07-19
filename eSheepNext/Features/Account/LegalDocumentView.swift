@@ -34,7 +34,7 @@ enum LegalDocument: String, CaseIterable, Identifiable {
         case .iCloud:
             [
                 ("使用方式", "启用云协作后，应用会在配置的 CloudKit Container 中为符合准入条件的牧场创建独立 Zone，并通过 CKShare 邀请成员。"),
-                ("本机迁移边界", "从旧版迁移的牧场永久保持本机边界，不会自动上传或共享。"),
+                ("旧版牧场导入", "旧版数据会先在本机临时库完成校验。Development 云同步启用时，正式建场后会自动上传至您登录的 iCloud；上传失败不影响本机继续使用。"),
                 ("删除与恢复", "退出共享会移除本机共享缓存；场主恢复使用独立的校验与 staging 流程。iCloud 账户状态和系统服务可影响同步时效。"),
             ]
         }

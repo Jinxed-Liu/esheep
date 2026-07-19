@@ -105,6 +105,12 @@ actor CloudRebuildActor {
         return sessionID
     }
 
+    func rebuildAndCommit(farmID: UUID, scope: CloudDatabaseScope, reason: CloudRebuildReason) async throws -> CloudRebuildResult {
+        let sessionID = try await rebuild(farmID: farmID, scope: scope, reason: reason)
+        if let task = activeTasks[sessionID] { await task.value }
+        return try await commit(sessionID: sessionID)
+    }
+
     func cancel(sessionID: UUID) async throws {
         activeTasks[sessionID]?.cancel()
         activeTasks[sessionID] = nil
@@ -268,6 +274,12 @@ actor CloudRebuildActor {
             try addIssue(sessionID: sessionID, farmID: binding.farmID, code: "farmRootMissing", detail: "Zone 中缺少 FarmRoot。")
             throw CloudContractError.malformedRecord
         }
+        if let bootstrapState = rootRecord[CloudRecordField.bootstrapState] as? String, bootstrapState != "ready" {
+            throw CloudRebuildError.stagingValidation("迁移牧场云端基线尚未完成。")
+        }
+        let expectedBootstrapDigest = rootRecord[CloudRecordField.bootstrapDigest] as? String
+        let expectedBootstrapEntityCount = expectedBootstrapDigest == nil ? nil : Self.integer(rootRecord[CloudRecordField.bootstrapEntityCount])
+        let expectedBootstrapPhotoCount = expectedBootstrapDigest == nil ? nil : Self.integer(rootRecord[CloudRecordField.bootstrapPhotoCount])
         let rootValue = try mapper.farmRootValue(from: rootRecord)
         guard rootValue.farmID == binding.farmID else { throw CloudRebuildError.farmMismatch }
         let root = CloudRebuildRootSnapshot(farmID: rootValue.farmID, name: rootValue.name, ownerAccountID: rootValue.ownerAccountID, modifiedAt: rootValue.modifiedAt)
@@ -278,7 +290,11 @@ actor CloudRebuildActor {
             do {
                 let envelope = try mapper.operationEnvelope(from: record)
                 guard envelope.farmID == binding.farmID else { throw CloudRebuildError.farmMismatch }
-                try Self.validate(envelope: envelope, trust: trust)
+                try Self.validate(
+                    envelope: envelope,
+                    authorizationDate: record.modificationDate ?? record.creationDate,
+                    trust: trust
+                )
                 if let old = byOperationID[envelope.operationID] {
                     if envelope.revision > old.revision { byOperationID[envelope.operationID] = envelope }
                 } else {
@@ -295,7 +311,11 @@ actor CloudRebuildActor {
         for record in records where record.recordType == CloudRecordType.farmAsset.rawValue {
             do {
                 let value = try Self.assetEnvelope(record: record, mapper: mapper)
-                try Self.validate(asset: value, trust: trust)
+                try Self.validate(
+                    asset: value,
+                    authorizationDate: record.modificationDate ?? record.creationDate,
+                    trust: trust
+                )
                 guard let ckAsset = record[CloudRecordField.asset] as? CKAsset, let sourceURL = ckAsset.fileURL else {
                     throw CloudContractError.malformedRecord
                 }
@@ -318,6 +338,23 @@ actor CloudRebuildActor {
             value.fetchedOperationCount = operations.count
             value.fetchedAssetCount = records.filter { $0.recordType == CloudRecordType.farmAsset.rawValue }.count
             value.downloadedAssetCount = assets.count
+        }
+        if let expectedBootstrapDigest, let expectedBootstrapEntityCount, let expectedBootstrapPhotoCount {
+            let snapshots = try operations.compactMap { operation -> BootstrapEntityEnvelopeV1? in
+                let payload = try JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: operation.payload)
+                guard payload.kind == .bootstrapEntity else { return nil }
+                guard let data = payload.dataValues["snapshot"] else { throw RemoteDomainApplyError.invalidPayload("snapshot") }
+                let snapshot = try JSONDecoder.cloudRebuild.decode(BootstrapEntityEnvelopeV1.self, from: data)
+                try snapshot.validate(for: operation)
+                return snapshot
+            }
+            let digestLines = snapshots.map { "\($0.entityType):\($0.entityID.uuidString.lowercased()):\($0.sourcePayloadDigest)" }.sorted()
+            let actualDigest = CloudPayloadDigest.hex(for: Data(digestLines.joined(separator: "\n").utf8))
+            guard snapshots.count == expectedBootstrapEntityCount,
+                  assets.count == expectedBootstrapPhotoCount,
+                  actualDigest == expectedBootstrapDigest else {
+                throw CloudRebuildError.stagingValidation("迁移云端基线数量或摘要不一致。")
+            }
         }
         let membership = try await validateMembership(records: records, binding: binding, trust: trust)
         let bundle = CloudRebuildBundle(
@@ -356,23 +393,36 @@ actor CloudRebuildActor {
         throw CloudContractError.malformedRecord
     }
 
-    private static func validate(envelope: CloudOperationEnvelope, trust: CloudTrustSnapshot) throws {
+    private static func validate(
+        envelope: CloudOperationEnvelope,
+        authorizationDate: Date?,
+        trust: CloudTrustSnapshot
+    ) throws {
         guard let publicKey = trust.capabilityPublicKeyPEM, !publicKey.isEmpty else { throw CloudContractError.invalidCertificate }
         let claims = try CapabilityCertificateVerifier.verify(envelope.capabilityCertificate, publicKeyPEM: publicKey)
         guard !trust.revokedCertificateIDs.contains(claims.certificateID), let deviceKey = trust.devicePublicKeys[claims.deviceID] else {
             throw CloudContractError.capabilityDenied
         }
-        try CloudOperationSecurity.validate(envelope: envelope, claims: claims, devicePublicKeyX963: deviceKey)
+        try CloudOperationSecurity.validate(
+            envelope: envelope,
+            claims: claims,
+            devicePublicKeyX963: deviceKey,
+            authorizationDate: authorizationDate
+        )
     }
 
-    private static func validate(asset: FarmAssetEnvelope, trust: CloudTrustSnapshot) throws {
+    private static func validate(
+        asset: FarmAssetEnvelope,
+        authorizationDate: Date?,
+        trust: CloudTrustSnapshot
+    ) throws {
         guard let publicKey = trust.capabilityPublicKeyPEM, !publicKey.isEmpty else { throw CloudContractError.invalidCertificate }
         let claims = try CapabilityCertificateVerifier.verify(asset.capabilityCertificate, publicKeyPEM: publicKey)
         guard claims.farmID == asset.farmID,
               claims.accountID == asset.modifiedByAccountID,
               claims.deviceID == asset.modifiedByDeviceID,
               claims.capabilities.contains(.recordProduction),
-              claims.isValid(at: asset.createdAt),
+              claims.isValid(at: authorizationDate ?? asset.createdAt),
               !trust.revokedCertificateIDs.contains(claims.certificateID),
               let key = trust.devicePublicKeys[claims.deviceID] else { throw CloudContractError.capabilityDenied }
         try DeviceSignatureVerifier.verify(signature: asset.signature, data: asset.canonicalSigningData, publicKeyX963: key)
@@ -446,14 +496,20 @@ actor CloudRebuildActor {
     }
 
     private static func operationRank(_ envelope: CloudOperationEnvelope) -> Int {
-        guard let payload = try? JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: envelope.payload) else { return 900 }
+        guard var payload = try? JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: envelope.payload) else { return 900 }
+        if payload.kind == .bootstrapEntity,
+           let snapshotData = payload.dataValues["snapshot"],
+           let snapshot = try? JSONDecoder.cloudRebuild.decode(BootstrapEntityEnvelopeV1.self, from: snapshotData),
+           let source = try? JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: snapshot.sourcePayload) {
+            payload = source
+        }
         return switch payload.kind {
         case .createFarm: 0
         case .updateFarmLocation: 5
         case .createPen, .addIngredient, .createRecipe, .receiveInventory, .addSemen, .createBatch, .createBreedingProgram: 10
-        case .addSheep, .addRecipeComponent: 20
-        case .recordWeight, .recordWeaning, .transferSheep, .removeSheep, .restoreSheep, .recordFeed, .recordHealth, .recordReproduction, .addNote, .assignBatchMembership, .leaveBatchMembership: 30
-        case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity: 40
+        case .updatePen, .setPenActive, .addSheep, .updateSheepProfile, .addRecipeComponent: 20
+        case .recordWeight, .correctWeight, .recordWeaning, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep, .recordFeed, .recordHealth, .recordReproduction, .addNote, .assignBatchMembership, .leaveBatchMembership: 30
+        case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: 40
         }
     }
 

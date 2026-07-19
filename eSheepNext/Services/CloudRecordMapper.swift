@@ -27,6 +27,10 @@ enum CloudRecordField {
     static let generation = "generation"
     static let issuedAt = "issuedAt"
     static let signature = "signature"
+    static let bootstrapState = "bootstrapState"
+    static let bootstrapDigest = "bootstrapDigest"
+    static let bootstrapEntityCount = "bootstrapEntityCount"
+    static let bootstrapPhotoCount = "bootstrapPhotoCount"
 }
 
 struct CloudRecordMapper: Sendable {

@@ -22,8 +22,7 @@ enum CloudAdmissionDenial: Error, Equatable, Sendable {
     case inactiveMembership
     case ownerRequired
     case localOnlyMigration
-    case developmentTestFarmRequired
-    case formalFarmRequired
+    case verifiedMigrationRequired
 }
 
 struct CloudAdmissionRequest: Equatable, Sendable {
@@ -31,9 +30,27 @@ struct CloudAdmissionRequest: Equatable, Sendable {
     let role: FarmRole
     let membershipIsActive: Bool
     let isDeleted: Bool
-    let isDevelopmentTestFarm: Bool
-    let developmentSeed: String?
     let isLocalOnlyMigration: Bool
+    let hasVerifiedMigrationCommit: Bool
+    let hasCompleteMigrationBaseline: Bool
+
+    init(
+        environment: AppEnvironment,
+        role: FarmRole,
+        membershipIsActive: Bool,
+        isDeleted: Bool,
+        isLocalOnlyMigration: Bool,
+        hasVerifiedMigrationCommit: Bool = false,
+        hasCompleteMigrationBaseline: Bool = false
+    ) {
+        self.environment = environment
+        self.role = role
+        self.membershipIsActive = membershipIsActive
+        self.isDeleted = isDeleted
+        self.isLocalOnlyMigration = isLocalOnlyMigration
+        self.hasVerifiedMigrationCommit = hasVerifiedMigrationCommit
+        self.hasCompleteMigrationBaseline = hasCompleteMigrationBaseline
+    }
 }
 
 enum CloudAdmissionPolicy {
@@ -45,15 +62,12 @@ enum CloudAdmissionPolicy {
 
         switch request.environment {
         case .development:
-            guard request.isDevelopmentTestFarm,
-                  request.developmentSeed == TestFarmGeneratorActor.seed else {
-                throw CloudAdmissionDenial.developmentTestFarmRequired
+            let isVerifiedMigrationFarm = request.hasVerifiedMigrationCommit && request.hasCompleteMigrationBaseline
+            guard isVerifiedMigrationFarm else {
+                throw CloudAdmissionDenial.verifiedMigrationRequired
             }
         case .staging, .production:
-            guard !request.isDevelopmentTestFarm else {
-                throw CloudAdmissionDenial.formalFarmRequired
-            }
+            break
         }
     }
 }
-

@@ -266,6 +266,22 @@ struct LocalFarmAnswer: Sendable, Equatable {
     let sources: [String]
 }
 
+enum CurrentFarmOccupancy {
+    static func occupiedPenIDs(farmID: UUID, sheep: [SheepRecord]) -> Set<UUID> {
+        Set(sheep.lazy.compactMap { item in
+            guard item.farmID == farmID,
+                  item.deletedAt == nil,
+                  item.isCurrentlyPresent else { return nil }
+            return item.currentPenID
+        })
+    }
+
+    static func occupiedPens(farmID: UUID, sheep: [SheepRecord], pens: [PenRecord]) -> [PenRecord] {
+        let occupiedIDs = occupiedPenIDs(farmID: farmID, sheep: sheep)
+        return pens.filter { $0.farmID == farmID && $0.deletedAt == nil && occupiedIDs.contains($0.id) }
+    }
+}
+
 enum LocalFarmAssistant {
     static func answer(
         question: String,
@@ -298,10 +314,12 @@ enum LocalFarmAssistant {
         }
 
         if normalized.contains("羊") && (normalized.contains("多少") || normalized.contains("数量")) {
-            return LocalFarmAnswer(text: "当前牧场共有 \(activeSheep.filter { $0.status == .active && $0.deletedAt == nil }.count) 只在场羊只。", sources: ["本地羊只档案"])
+            return LocalFarmAnswer(text: "当前牧场共有 \(activeSheep.filter(\.isCurrentlyPresent).count) 只在场羊只。", sources: ["本地羊只档案"])
         }
         if normalized.contains("圈") {
-            return LocalFarmAnswer(text: "当前共有 \(pens.filter { $0.isActive && $0.deletedAt == nil }.count) 个启用圈舍。", sources: ["本地圈舍档案"])
+            let farmID = activeSheep.first?.farmID ?? pens.first?.farmID
+            let count = farmID.map { CurrentFarmOccupancy.occupiedPens(farmID: $0, sheep: activeSheep, pens: pens).count } ?? 0
+            return LocalFarmAnswer(text: "当前共有 \(count) 个有在场羊的圈舍。", sources: ["本地羊只与圈舍档案"])
         }
         if normalized.contains("投喂") {
             let today = Calendar.current.startOfDay(for: .now)

@@ -18,11 +18,11 @@ struct FarmAnalysisCenterView: View {
     }
 
     private var activeSheepCount: Int {
-        sheep.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active }
+        sheep.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent }
     }
 
     private var activePenCount: Int {
-        pens.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive }
+        CurrentFarmOccupancy.occupiedPens(farmID: farm.id, sheep: sheep, pens: pens).count
     }
 
     private var currentMonthFeedCount: Int {
@@ -50,7 +50,7 @@ struct FarmAnalysisCenterView: View {
                     HStack(spacing: 0) {
                         DashboardMetric(title: "在场羊只", value: "\(activeSheepCount)", unit: "只")
                         Divider().frame(height: 46)
-                        DashboardMetric(title: "启用圈舍", value: "\(activePenCount)", unit: "个")
+                        DashboardMetric(title: "有羊圈舍", value: "\(activePenCount)", unit: "个")
                         Divider().frame(height: 46)
                         DashboardMetric(title: "本月投喂", value: "\(currentMonthFeedCount)", unit: "次")
                     }
@@ -194,7 +194,11 @@ private struct WeightGainAnalysisView: View {
         return (snapshot.weights.map(\.occurredAt) + snapshot.weanings.map(\.occurredAt)).max() ?? .now
     }
     private var cohort: WeightCohort { analytics.weightCohort ?? WeightCohort(sheepIDs: [], latestAverageWeight: nil, latestAverageADG: nil, weightTrend: [], adgTrend: [], scatter: []) }
-    private var farmPens: [FarmAnalyticsSnapshot.Pen] { analytics.snapshot?.pens ?? [] }
+    private var farmPens: [FarmAnalyticsSnapshot.Pen] {
+        guard let snapshot = analytics.snapshot else { return [] }
+        let occupiedIDs = CurrentFarmOccupancy.occupiedPenIDs(farmID: farm.id, sheep: sheep)
+        return snapshot.pens.filter { occupiedIDs.contains($0.id) }
+    }
     private var farmBatches: [ProductionBatchRecord] { batches.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
     private var regression: [WeightRegressionPoint] { WeightGainAnalyticsEngine.trendline(for: cohort.scatter, kind: regressionKind) }
     private var sourceRevision: [Int] { [sheep.count, pens.count, weights.count, weanings.count, reproduction.count, offspring.count, removals.count, transfers.count, memberships.count, feeds.count, feedLines.count] }

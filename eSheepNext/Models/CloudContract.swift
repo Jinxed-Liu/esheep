@@ -35,6 +35,40 @@ enum CloudEntityType: String, CaseIterable, Codable, Sendable {
     case semen
     case note
     case photoAsset
+    case breedingProgramStep
+    case feedIngredientBatch
+    case healthCatalogItem
+    case healthSubjectLink
+    case lambingOffspring
+}
+
+struct BootstrapEntityEnvelopeV1: Codable, Sendable, Equatable {
+    static let schemaVersion = 1
+
+    let schemaVersion: Int
+    let entityType: String
+    let entityID: UUID
+    let sourceRevision: Int
+    let sourcePayload: Data
+    let sourcePayloadDigest: String
+
+    init(entityType: String, entityID: UUID, sourceRevision: Int, sourcePayload: Data) {
+        self.schemaVersion = Self.schemaVersion
+        self.entityType = entityType
+        self.entityID = entityID
+        self.sourceRevision = max(1, sourceRevision)
+        self.sourcePayload = sourcePayload
+        self.sourcePayloadDigest = CloudPayloadDigest.hex(for: sourcePayload)
+    }
+
+    func validate(for envelope: CloudOperationEnvelope) throws {
+        guard schemaVersion == Self.schemaVersion,
+              entityType == envelope.entityType,
+              entityID == envelope.entityID,
+              CloudPayloadDigest.hex(for: sourcePayload) == sourcePayloadDigest else {
+            throw CloudContractError.malformedRecord
+        }
+    }
 }
 
 struct CloudOperationEnvelope: Codable, Sendable, Equatable {
@@ -140,7 +174,7 @@ enum CloudOperationSecurity {
         if let payload = try? JSONDecoder.cloudOperation.decode(FarmCommandCloudPayload.self, from: envelope.payload) {
             switch payload.kind {
             case .updateFarmLocation: return .editFarmLocation
-            case .tombstoneEntity, .restoreTombstonedEntity: return .deleteProtectedFacts
+            case .tombstoneEntity, .restoreTombstonedEntity, .correctWeight, .correctTransfer, .correctRemoval: return .deleteProtectedFacts
             case .resolveConflict: return .resolveConflicts
             case .recoverEntity: return .recoverFarm
             default: break
@@ -152,12 +186,19 @@ enum CloudOperationSecurity {
     static func validate(
         envelope: CloudOperationEnvelope,
         claims: CapabilityCertificateClaims,
-        devicePublicKeyX963: Data
+        devicePublicKeyX963: Data,
+        authorizationDate: Date? = nil
     ) throws {
         guard CloudPayloadDigest.hex(for: envelope.payload) == envelope.payloadDigest else {
             throw CloudContractError.invalidPayloadDigest
         }
-        guard claims.isValid(at: envelope.modifiedAt) else { throw CloudContractError.expiredCertificate }
+        // A capability authorizes the cloud write, not the historical business
+        // date carried by an offline or migrated operation. CloudKit's server
+        // modification date is therefore the authoritative authorization time
+        // when it is available. The fallback preserves local/test validation.
+        guard claims.isValid(at: authorizationDate ?? envelope.modifiedAt) else {
+            throw CloudContractError.expiredCertificate
+        }
         guard claims.farmID == envelope.farmID,
               claims.accountID == envelope.modifiedByAccountID,
               claims.deviceID == envelope.modifiedByDeviceID else {

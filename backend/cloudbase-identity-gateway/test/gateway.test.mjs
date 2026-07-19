@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { Readable } from "node:stream";
 import test from "node:test";
 import gateway from "../index.js";
 import collaboration from "../collaboration-service.js";
 
 const { createHandler, stableAccountID } = gateway;
-const { CollaborationService, signCapability } = collaboration;
+const { CollaborationService, DocumentStore, signCapability } = collaboration;
 const appleSigningKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const appleClientKeys = generateKeyPairSync("ec", { namedCurve: "P-256" });
 const customLoginKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -53,7 +53,7 @@ async function invoke(handler, path, body, method, token) {
 
 function fakeService(overrides = {}) {
   return {
-    health: async () => ({ status: "ok", environment: "cloudbase-development", version: "0.3.0", database: "cloudbase-document" }),
+    health: async () => ({ status: "ok", environment: "cloudbase-development", version: "0.3.2", database: "cloudbase-document" }),
     ensureAccount: async (accountID, displayName) => ({ accountID, displayName: displayName || "eSheep+ 用户" }),
     consumeRateLimit: async () => ({ remaining: 1 }),
     recordAppleBinding: async () => undefined,
@@ -79,6 +79,77 @@ test("registration creates the native CloudBase collaboration account", async ()
   assert.equal(result.json.accountID, stableAccountID("cloudbase-subject"));
   assert.deepEqual(ensured, [{ accountID: stableAccountID("cloudbase-subject"), displayName: "测试场主" }]);
   assert.equal(calls.some((call) => call.url.includes("worker")), false);
+});
+
+test("email verification is normalized and returned without creating an account", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url: String(url), body: JSON.parse(init.body) });
+    return Response.json({ verification_id: "verification-id", expires_in: 600 });
+  };
+  const result = await invoke(createHandler({ fetchImpl, env, collaborationService: fakeService() }), "/identity/v1/auth/verification", { email: " Owner@Example.COM " });
+  assert.deepEqual(result, { status: 200, json: { verificationID: "verification-id", expiresIn: 600 } });
+  assert.equal(calls[0].body.email, "owner@example.com");
+});
+
+test("password login and refresh both return the compatible CloudBase session shape", async () => {
+  const fetchImpl = async (url, init) => {
+    const value = String(url);
+    if (value.endsWith("/auth/v1/signin")) {
+      assert.deepEqual(JSON.parse(init.body), { username: "owner01", password: "secure-owner-2026" });
+      return Response.json({ sub: "password-subject", access_token: "access-1", refresh_token: "refresh-1", expires_in: 7200 });
+    }
+    if (value.endsWith("/auth/v1/token")) {
+      assert.deepEqual(JSON.parse(init.body), { grant_type: "refresh_token", refresh_token: "refresh-1" });
+      return Response.json({ sub: "password-subject", access_token: "access-2", refresh_token: "refresh-2", expires_in: 7200 });
+    }
+    throw new Error(`unexpected URL ${value}`);
+  };
+  const handler = createHandler({ fetchImpl, env, collaborationService: fakeService() });
+  const login = await invoke(handler, "/identity/v1/auth/password", { username: "owner01", password: "secure-owner-2026" });
+  const refresh = await invoke(handler, "/identity/v1/auth/refresh", { refreshToken: "refresh-1" });
+  assert.equal(login.status, 200);
+  assert.equal(login.json.accessToken, "access-1");
+  assert.equal(refresh.status, 200);
+  assert.equal(refresh.json.accessToken, "access-2");
+  assert.equal(login.json.accountID, refresh.json.accountID);
+});
+
+test("logout introspects then revokes the current CloudBase session", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push(String(url));
+    if (String(url).endsWith("/auth/v1/token/introspect")) return Response.json({ sub: "logout-subject" });
+    if (String(url).endsWith("/auth/v1/logout")) {
+      assert.equal(init.headers.authorization, "Bearer access-token");
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const result = await invoke(createHandler({ fetchImpl, env, collaborationService: fakeService() }), "/identity/v1/auth/logout", undefined, "POST", "access-token");
+  assert.equal(result.status, 204);
+  assert.equal(calls.length, 2);
+});
+
+test("document store treats a missing CloudBase document as an empty lookup", async () => {
+  const database = {
+    collection() {
+      return {
+        doc() {
+          return {
+            async get() {
+              const error = new Error("Document not found");
+              error.code = "DOCUMENT_NOT_FOUND";
+              throw error;
+            },
+          };
+        },
+      };
+    },
+  };
+
+  const store = new DocumentStore(database);
+  assert.equal(await store.get("new-rate-limit-record"), null);
 });
 
 test("protected collaboration routes introspect the CloudBase access token", async () => {
@@ -183,6 +254,49 @@ test("invite remains pending until owner confirmation and generation changes onl
   const snapshot = await service.securitySnapshot(owner, farmID);
   assert.equal(snapshot.generation, 2);
   assert.equal(snapshot.members.find((item) => item.accountID === worker).status, "active");
+});
+
+test("provisioning farms issue owner capabilities but stay hidden until activation", async () => {
+  const store = new MemoryStore();
+  const service = new CollaborationService({ store, env: {} });
+  const owner = "11111111-1111-5111-8111-111111111111";
+  const farmID = "44444444-4444-5444-8444-444444444444";
+  await service.ensureAccount(owner, "迁移场主");
+  const registered = await service.registerFarm(owner, { farmID, zoneName: `farm_${farmID}`, status: "provisioning" });
+  assert.equal(registered.status, "provisioning");
+  assert.deepEqual((await service.accountStatus(owner)).memberships, []);
+  const snapshot = await service.securitySnapshot(owner, farmID);
+  assert.equal(snapshot.members.find((item) => item.accountID === owner).role, "owner");
+  assert.equal((await service.activateFarm(owner, farmID)).status, "active");
+  assert.equal((await service.accountStatus(owner)).memberships[0].farm_id, farmID);
+  assert.equal((await service.activateFarm(owner, farmID)).status, "active");
+});
+
+test("farm identity is canonical across uppercase JSON and lowercase URL paths", async () => {
+  const owner = randomUUID();
+  const deviceID = randomUUID();
+  const lowercaseFarmID = randomUUID();
+  const uppercaseFarmID = lowercaseFarmID.toUpperCase();
+  const { privateKey } = generateKeyPairSync("ec", {
+    namedCurve: "P-256",
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const service = new CollaborationService({ store: new MemoryStore(), env: {
+    CAPABILITY_SIGNING_PRIVATE_KEY: privateKey,
+    CAPABILITY_SIGNING_KEY_ID: "test-key",
+  } });
+
+  await service.registerDevice(owner, { deviceID, publicKeyJWK: { kty: "EC" }, displayName: "iPhone" });
+  await service.registerFarm(owner, {
+    farmID: uppercaseFarmID,
+    zoneName: `Farm_${lowercaseFarmID}`,
+    status: "provisioning",
+  });
+
+  assert.equal((await service.issueCapability(owner, { farmID: uppercaseFarmID, deviceID })).role, "owner");
+  assert.equal((await service.securitySnapshot(owner, lowercaseFarmID)).farmID, lowercaseFarmID);
+  assert.equal((await service.activateFarm(owner, lowercaseFarmID)).farmID, lowercaseFarmID);
 });
 
 test("capability certificate is an ES256 JWS with a 64-byte P1363 signature", () => {

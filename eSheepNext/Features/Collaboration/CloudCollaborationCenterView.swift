@@ -11,7 +11,6 @@ struct CloudCollaborationCenterView: View {
     @Query(sort: \CloudFarmBinding.updatedAt, order: .reverse) private var cloudBindings: [CloudFarmBinding]
     @Query(sort: \FarmMembershipBinding.updatedAt, order: .reverse) private var memberships: [FarmMembershipBinding]
     @Query(sort: \CapabilityCertificateRecord.expiresAt, order: .reverse) private var certificates: [CapabilityCertificateRecord]
-    @Query(sort: \OutboxItem.createdAt, order: .reverse) private var outbox: [OutboxItem]
     @Query(sort: \SyncConflictRecord.detectedAt, order: .reverse) private var conflicts: [SyncConflictRecord]
     @Query(sort: \CloudAssetTransfer.updatedAt, order: .reverse) private var assetTransfers: [CloudAssetTransfer]
     @Query(sort: \SecurityIncidentRecord.detectedAt, order: .reverse) private var incidents: [SecurityIncidentRecord]
@@ -20,6 +19,7 @@ struct CloudCollaborationCenterView: View {
     @Query(sort: \FarmRecoveryAssetRecord.createdAt, order: .reverse) private var recoveryAssets: [FarmRecoveryAssetRecord]
     @Query(sort: \CloudRebuildSessionRecord.updatedAt, order: .reverse) private var rebuildSessions: [CloudRebuildSessionRecord]
     @Query(sort: \CloudSyncDiagnosticSnapshotRecord.capturedAt, order: .reverse) private var diagnosticSnapshots: [CloudSyncDiagnosticSnapshotRecord]
+    @Query private var migrationCommits: [MigrationCommitRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -33,17 +33,21 @@ struct CloudCollaborationCenterView: View {
     @State private var redeemedInvite: WorkerRedeemResponse?
     @State private var sharePresentation: CloudSharePresentation?
     @State private var deletionConfirmation = false
-    @State private var testGenerationProgress: TestFarmGenerationProgress?
+    @State private var pendingOutboxCount = 0
+    @State private var uploadingOutboxCount = 0
+    @State private var rejectedOutboxCount = 0
+    @State private var blockedOutboxCount = 0
+    @State private var confirmedBaselineCount = 0
 
     private var binding: CloudFarmBinding? { cloudBindings.first(where: { $0.farmID == farm.id }) }
     private var farmMemberships: [FarmMembershipBinding] { memberships.filter { $0.farmID == farm.id } }
     private var farmCertificates: [CapabilityCertificateRecord] { certificates.filter { $0.farmID == farm.id && $0.accountID == account.effectiveAccountID } }
-    private var farmOutbox: [OutboxItem] { outbox.filter { $0.farmID == farm.id } }
     private var farmConflicts: [SyncConflictRecord] { conflicts.filter { $0.farmID == farm.id } }
     private var farmTransfers: [CloudAssetTransfer] { assetTransfers.filter { $0.farmID == farm.id } }
     private var farmIncidents: [SecurityIncidentRecord] { incidents.filter { $0.farmID == farm.id || $0.farmID == nil } }
-    private var isDevelopmentTestFarm: Bool {
-        !farm.isLocalOnlyMigration && farm.isDevelopmentTestFarm && farm.developmentSeed == TestFarmGeneratorActor.seed
+    private var migrationCommit: MigrationCommitRecord? { migrationCommits.first { $0.farmID == farm.id } }
+    private var isSyncedFormalFarm: Bool {
+        migrationCommit?.status == .completed && migrationCommit?.cloudState == .synced
     }
     private var cloudAdmissionRequest: CloudAdmissionRequest {
         CloudAdmissionRequest(
@@ -51,9 +55,9 @@ struct CloudCollaborationCenterView: View {
             role: farm.role,
             membershipIsActive: farm.membershipStatusRawValue == "active",
             isDeleted: farm.deletedAt != nil,
-            isDevelopmentTestFarm: farm.isDevelopmentTestFarm,
-            developmentSeed: farm.developmentSeed,
-            isLocalOnlyMigration: farm.isLocalOnlyMigration
+            isLocalOnlyMigration: farm.isLocalOnlyMigration,
+            hasVerifiedMigrationCommit: migrationCommit?.status == .completed,
+            hasCompleteMigrationBaseline: migrationCommit.map { !$0.baselineDigest.isEmpty && $0.baselineEntityCount > 0 && $0.cloudState != .localCommitted && $0.cloudState != .failed } ?? false
         )
     }
     private var cloudAdmissionDenial: CloudAdmissionDenial? {
@@ -69,17 +73,13 @@ struct CloudCollaborationCenterView: View {
     private var canPrepareCloud: Bool { cloudAdmissionDenial == nil }
     private var cloudAdmissionDescription: String {
         guard let denial = cloudAdmissionDenial else {
-            return AppEnvironment.current == .development
-                ? "当前是带固定标记的 Development 测试牧场，可以用于双机验收。"
-                : "当前正式牧场符合发行环境云端准入条件。"
+            return "当前正式迁移牧场已完成本地校验和云端基线，符合云端准入条件。"
         }
         switch denial {
         case .localOnlyMigration:
             return CloudSyncError.localOnlyMigration.localizedDescription
-        case .developmentTestFarmRequired:
-            return CloudSyncError.developmentTestFarmRequired.localizedDescription
-        case .formalFarmRequired:
-            return CloudSyncError.formalFarmRequired.localizedDescription
+        case .verifiedMigrationRequired:
+            return CloudSyncError.verifiedMigrationRequired.localizedDescription
         case .ownerRequired:
             return CloudSyncError.ownerRequired.localizedDescription
         case .deletedFarm, .inactiveMembership:
@@ -89,21 +89,29 @@ struct CloudCollaborationCenterView: View {
 
     var body: some View {
         List {
+            if let migrationCommit {
+                migrationUploadSection(migrationCommit)
+            }
+
             identitySection
             cloudStatusSection
             syncSection
             if farm.role == .owner { ownerCollaborationSection }
-            joinSection
-            memberSection
+            if MemberSharingConfiguration.isEnabled && farm.role != .owner {
+                joinSection
+            }
+            if MemberSharingConfiguration.isEnabled {
+                memberSection
+            }
             safetySection
             if farm.role == .owner { recoverySection }
             accountSection
         }
-        .navigationTitle("云端协作")
-        .navigationBarTitleDisplayMode(.inline)
         .refreshable {
             await refreshStatus()
         }
+        .navigationTitle("云端协作")
+        .navigationBarTitleDisplayMode(.inline)
         .task {
             await refreshStatus()
         }
@@ -156,6 +164,54 @@ struct CloudCollaborationCenterView: View {
         }
     }
 
+    private func migrationUploadSection(_ commit: MigrationCommitRecord) -> some View {
+        Section {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    Image(systemName: commit.cloudState == .synced ? "checkmark.icloud.fill" : "icloud.and.arrow.up")
+                        .font(.title2)
+                        .foregroundStyle(commit.cloudState == .failed ? .red : AppTheme.brand)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("迁移数据上传")
+                            .font(.headline)
+                        Text(commit.cloudState.displayName)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                if commit.baselineEntityCount > 0 {
+                    ProgressView(
+                        value: Double(min(confirmedBaselineCount, commit.baselineEntityCount)),
+                        total: Double(commit.baselineEntityCount)
+                    )
+                    Text("基线已确认 \(confirmedBaselineCount.formatted()) / \(commit.baselineEntityCount.formatted()) · 阻塞 \(blockedOutboxCount.formatted()) · 照片 \(commit.baselinePhotoCount.formatted()) 张")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let error = commit.cloudLastError {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                } else if commit.cloudState != .synced {
+                    Text("上传采用低负载分批处理；高温或低电量时会自动暂停。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if commit.cloudState == .failed || commit.cloudLastError != nil {
+                    Button("继续上传") {
+                        Task { await collaboration.resumeAutomaticMigrationUploads(accountID: account.effectiveAccountID) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
     private var cloudStatusSection: some View {
         Section("牧场云端状态") {
             LabeledContent("环境", value: AppEnvironment.current.rawValue.capitalized)
@@ -171,14 +227,16 @@ struct CloudCollaborationCenterView: View {
 
     private var syncSection: some View {
         Section("同步中心") {
-            CloudMetricRow(title: "待上传", value: farmOutbox.filter { $0.status == .pending || $0.status == .retryableFailure }.count, systemImage: "arrow.up.circle")
-            CloudMetricRow(title: "等待确认", value: farmOutbox.filter { $0.status == .uploading || $0.status == .awaitingConfirmation }.count, systemImage: "clock")
-            CloudMetricRow(title: "权限拒绝", value: farmOutbox.filter { $0.status == .rejectedPermission }.count, systemImage: "lock.trianglebadge.exclamationmark")
+            CloudMetricRow(title: "待上传", value: pendingOutboxCount, systemImage: "arrow.up.circle")
+            CloudMetricRow(title: "等待确认", value: uploadingOutboxCount, systemImage: "clock")
+            CloudMetricRow(title: "上传阻塞", value: blockedOutboxCount, systemImage: "exclamationmark.icloud")
+            CloudMetricRow(title: "权限拒绝", value: rejectedOutboxCount, systemImage: "lock.trianglebadge.exclamationmark")
             CloudMetricRow(title: "冲突", value: farmConflicts.filter { $0.statusRawValue == SyncConflictStatus.unresolved.rawValue || $0.statusRawValue == SyncConflictStatus.quarantined.rawValue }.count, systemImage: "arrow.trianglehead.branch")
             Button {
                 Task {
                     await collaboration.synchronizeNow()
                     await collaboration.maintainRecovery(farmID: farm.id)
+                    refreshOutboxCounts()
                 }
             } label: {
                 Label(collaboration.isSynchronizing ? "正在同步" : "立即同步", systemImage: "arrow.triangle.2.circlepath")
@@ -210,43 +268,25 @@ struct CloudCollaborationCenterView: View {
                     .foregroundStyle(.secondary)
             } else if binding?.state != .active {
                 Button { prepareCloudFarm() } label: {
-                    Label(AppEnvironment.current == .development ? "启用测试云牧场" : "启用云端协作", systemImage: "icloud.and.arrow.up")
+                    Label("继续准备云端牧场", systemImage: "icloud.and.arrow.up")
                 }
                 .disabled(isWorking || account.serverBindingState != .verified)
             } else {
-                Button { presentShare() } label: {
-                    Label("打开系统共享", systemImage: "person.2.badge.plus")
-                }
-                .disabled(isWorking)
-            }
-
-            #if DEBUG
-            Button { generateSevenDayTestFarm() } label: {
-                Label("生成本机验收测试数据", systemImage: "hammer")
-            }
-            .disabled(isWorking || farm.isDevelopmentTestFarm || farm.isLocalOnlyMigration)
-            if let progress = testGenerationProgress {
-                ProgressView(value: Double(progress.completed), total: Double(progress.total)) {
-                    Text(progress.stage)
-                } currentValueLabel: {
-                    Text("\(progress.completed)/\(progress.total)")
+                if MemberSharingConfiguration.isEnabled && isSyncedFormalFarm {
+                    Button { presentShare() } label: {
+                        Label("打开系统共享", systemImage: "person.2.badge.plus")
+                    }
+                    .disabled(isWorking)
+                } else if MemberSharingConfiguration.isEnabled {
+                    Label("正式牧场基线核对完成后可邀请成员", systemImage: "clock.badge.checkmark")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("场主双设备同步已启用", systemImage: "iphone.gen2.radiowaves.left.and.right")
+                        .foregroundStyle(.secondary)
                 }
             }
-            if binding?.state == .active {
-                LabeledContent("测试标记", value: farm.developmentSeed ?? "已标记")
-                    .fontDesign(.monospaced)
-            } else if farm.isLocalOnlyMigration {
-                Text("这是已提交的本地迁移牧场，测试数据生成和 CloudKit 均已永久关闭。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } else if binding?.state != .active {
-                Text("无需先迁移或启用 CloudKit。生成的数据只写入当前 Debug 牧场，之后可再选择是否建立云端测试绑定。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            #endif
 
-            if isDevelopmentTestFarm {
+            if isSyncedFormalFarm && MemberSharingConfiguration.isEnabled {
                 Picker("邀请角色", selection: $inviteRole) {
                     Text("管理员").tag(FarmRole.administrator)
                     Text("员工").tag(FarmRole.worker)
@@ -391,7 +431,7 @@ struct CloudCollaborationCenterView: View {
         switch binding?.state {
         case .localOnly, .none: "仅本地"
         case .preparingZone: "正在准备"
-        case .active: "已启用"
+        case .active: "云端通道已启用"
         case .rebuildingCache: "正在重建云缓存"
         case .accessRevoked: "访问已撤销"
         case .requiresAccountReview: "需要检查账户"
@@ -400,6 +440,7 @@ struct CloudCollaborationCenterView: View {
     }
 
     private func refreshStatus() async {
+        refreshOutboxCounts()
         await collaboration.refreshAccountAvailability()
         await collaboration.captureDiagnostics(farmID: farm.id)
         guard account.serverBindingState == .verified, IdentityWorkerConfiguration.baseURL != nil else { return }
@@ -409,6 +450,37 @@ struct CloudCollaborationCenterView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func refreshOutboxCounts() {
+        let farmID = farm.id
+        let pending = OutboxStatus.pending.rawValue
+        let retryable = OutboxStatus.retryableFailure.rawValue
+        let uploading = OutboxStatus.uploading.rawValue
+        let awaiting = OutboxStatus.awaitingConfirmation.rawValue
+        let rejected = OutboxStatus.rejectedPermission.rawValue
+        let blocked = OutboxStatus.blockedConflict.rawValue
+        let confirmed = OutboxStatus.confirmed.rawValue
+
+        pendingOutboxCount = (try? modelContext.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && ($0.statusRawValue == pending || $0.statusRawValue == retryable)
+        }))) ?? 0
+        uploadingOutboxCount = (try? modelContext.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && ($0.statusRawValue == uploading || $0.statusRawValue == awaiting)
+        }))) ?? 0
+        rejectedOutboxCount = (try? modelContext.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.statusRawValue == rejected
+        }))) ?? 0
+        blockedOutboxCount = (try? modelContext.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.statusRawValue == blocked
+        }))) ?? 0
+        let bootstrapKind = DomainOperationKind.bootstrapEntity.rawValue
+        let baselineOperationIDs = Set((try? modelContext.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID && $0.kindRawValue == bootstrapKind
+        })))?.map(\.id) ?? [])
+        confirmedBaselineCount = (try? modelContext.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.statusRawValue == confirmed
+        })))?.count(where: { baselineOperationIDs.contains($0.operationID) }) ?? 0
     }
 
     private func prepareCloudFarm() {
@@ -432,9 +504,7 @@ struct CloudCollaborationCenterView: View {
             _ = try await collaboration.checkpoints.createCheckpoint(farmID: farm.id, reason: .initialCloudSetup)
             await MainActor.run {
                 sharePresentation = CloudSharePresentation(share: share)
-                successMessage = AppEnvironment.current == .development
-                    ? "测试云牧场、系统共享和能力证书已经建立。"
-                    : "牧场云端协作、系统共享和能力证书已经建立。"
+                successMessage = "正式牧场云端协作、系统共享和能力证书已经建立。"
             }
         }
     }
@@ -445,25 +515,6 @@ struct CloudCollaborationCenterView: View {
             await MainActor.run { sharePresentation = CloudSharePresentation(share: share) }
         }
     }
-
-    #if DEBUG
-    private func generateSevenDayTestFarm() {
-        runTask {
-            let result = try await collaboration.testFarmGenerator.generate(
-                farmID: farm.id,
-                accountID: account.effectiveAccountID
-            ) { progress in
-                await MainActor.run { testGenerationProgress = progress }
-            }
-            if binding?.state == .active {
-                await collaboration.synchronizeNow()
-            }
-            await MainActor.run {
-                successMessage = "已生成 \(result.penCount) 个圈舍、\(result.sheepCount) 只羊、\(result.productionEventCount) 条生产事件和 \(result.photoCount) 张测试照片。"
-            }
-        }
-    }
-    #endif
 
     private func createInvite() {
         runTask {
@@ -1118,7 +1169,7 @@ private struct CloudSharingControllerView: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UICloudSharingController, context: Context) {}
 
     final class Coordinator: NSObject, UICloudSharingControllerDelegate {
-        func itemTitle(for csc: UICloudSharingController) -> String? { "eSheep+ 测试牧场" }
+        func itemTitle(for csc: UICloudSharingController) -> String? { "eSheep+ 牧场" }
         func cloudSharingController(_ csc: UICloudSharingController, failedToSaveShareWithError error: Error) {}
         func cloudSharingControllerDidSaveShare(_ csc: UICloudSharingController) {}
         func cloudSharingControllerDidStopSharing(_ csc: UICloudSharingController) {}

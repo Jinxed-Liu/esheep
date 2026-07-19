@@ -11,6 +11,7 @@ class APIError extends Error {
 const now = () => Math.floor(Date.now() / 1000);
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const key = (type, id) => `${type}_${hash(String(id)).slice(0, 40)}`;
+const canonicalFarmID = (value) => String(value || "").trim().toLowerCase();
 const inviteAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 
 function inviteCode() {
@@ -57,7 +58,14 @@ class DocumentStore {
   }
 
   async get(documentID) {
-    return normalizeDocument(await this.collection.doc(documentID).get());
+    try {
+      return normalizeDocument(await this.collection.doc(documentID).get());
+    } catch (error) {
+      if (error?.code === "DOCUMENT_NOT_FOUND" || error?.code === "DATABASE_REQUEST_FAILED" && /not found/i.test(String(error?.message || ""))) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async set(documentID, value) {
@@ -95,7 +103,7 @@ class CollaborationService {
 
   async health() {
     await this.store.find({ type: "service_probe" }, 1);
-    return { status: "ok", environment: this.env.APP_ENVIRONMENT || "cloudbase-development", version: "0.3.0", database: "cloudbase-document" };
+    return { status: "ok", environment: this.env.APP_ENVIRONMENT || "cloudbase-development", version: "0.3.2", database: "cloudbase-document" };
   }
 
   async consumeRateLimit(scope, identity, limit, windowSeconds) {
@@ -152,7 +160,7 @@ class CollaborationService {
   }
 
   async membership(farmID, accountID) {
-    return this.store.get(key("membership", `${farmID}:${accountID}`));
+    return this.store.get(key("membership", `${canonicalFarmID(farmID)}:${accountID}`));
   }
 
   async requireOwner(farmID, accountID) {
@@ -184,19 +192,34 @@ class CollaborationService {
   }
 
   async registerFarm(accountID, input) {
-    if (!input.farmID || String(input.zoneName || "").toLowerCase() !== `farm_${String(input.farmID).toLowerCase()}`) throw new APIError(400, "invalid_farm_zone", "牧场 Zone 名称无效。");
-    const farmKey = key("farm", input.farmID);
+    const farmID = canonicalFarmID(input.farmID);
+    if (!farmID || String(input.zoneName || "").toLowerCase() !== `farm_${farmID}`) throw new APIError(400, "invalid_farm_zone", "牧场 Zone 名称无效。");
+    const requestedStatus = input.status || "active";
+    if (requestedStatus !== "provisioning" && requestedStatus !== "active") throw new APIError(400, "invalid_farm_status", "牧场登记状态无效。");
+    const farmKey = key("farm", farmID);
     const existing = await this.store.get(farmKey);
     if (existing && existing.ownerAccountID !== accountID) throw new APIError(409, "farm_already_registered", "该牧场已由其他账号登记。");
     const timestamp = now();
-    await this.store.set(farmKey, { type: "farm", farmID: input.farmID, ownerAccountID: accountID, cloudZoneName: input.zoneName, shareRecordName: input.shareRecordName || existing?.shareRecordName || null, securityGeneration: Math.max(existing?.securityGeneration || 0, 1), status: "active", createdAt: existing?.createdAt || timestamp, updatedAt: timestamp });
-    const memberKey = key("membership", `${input.farmID}:${accountID}`);
+    const status = existing?.status === "active" ? "active" : requestedStatus;
+    await this.store.set(farmKey, { type: "farm", farmID, ownerAccountID: accountID, cloudZoneName: input.zoneName, shareRecordName: input.shareRecordName || existing?.shareRecordName || null, securityGeneration: Math.max(existing?.securityGeneration || 0, 1), status, createdAt: existing?.createdAt || timestamp, updatedAt: timestamp });
+    const memberKey = key("membership", `${farmID}:${accountID}`);
     const member = await this.store.get(memberKey);
-    await this.store.set(memberKey, { type: "membership", membershipID: member?.membershipID || randomUUID(), farmID: input.farmID, accountID, role: "owner", status: "active", shareParticipantRecordName: member?.shareParticipantRecordName || null, createdAt: member?.createdAt || timestamp, updatedAt: timestamp });
-    return { farmID: input.farmID, status: "active" };
+    await this.store.set(memberKey, { type: "membership", membershipID: member?.membershipID || randomUUID(), farmID, accountID, role: "owner", status: "active", shareParticipantRecordName: member?.shareParticipantRecordName || null, createdAt: member?.createdAt || timestamp, updatedAt: timestamp });
+    return { farmID, status };
+  }
+
+  async activateFarm(accountID, farmID) {
+    farmID = canonicalFarmID(farmID);
+    const farmKey = key("farm", farmID);
+    const farm = await this.store.get(farmKey);
+    if (!farm || farm.ownerAccountID !== accountID) throw new APIError(404, "farm_not_found", "牧场目录不存在。");
+    await this.requireOwner(farmID, accountID);
+    if (farm.status !== "active") await this.store.update(farmKey, { status: "active", activatedAt: now(), updatedAt: now() });
+    return { farmID, status: "active" };
   }
 
   async bumpGeneration(farmID, timestamp = now()) {
+    farmID = canonicalFarmID(farmID);
     const documentID = key("farm", farmID);
     const farm = await this.store.get(documentID);
     if (!farm) return;
@@ -210,11 +233,12 @@ class CollaborationService {
 
   async createInvite(accountID, input) {
     requireInviteRole(input.role);
-    await this.requireOwner(input.farmID, accountID);
+    const farmID = canonicalFarmID(input.farmID);
+    await this.requireOwner(farmID, accountID);
     const code = inviteCode();
     const inviteID = randomUUID();
     const timestamp = now();
-    await this.store.set(key("invite", inviteID), { type: "invite", inviteID, farmID: input.farmID, createdByAccountID: accountID, role: input.role, codeHash: hash(code), expiresAt: timestamp + 86400, usedAt: null, createdAt: timestamp });
+    await this.store.set(key("invite", inviteID), { type: "invite", inviteID, farmID, createdByAccountID: accountID, role: input.role, codeHash: hash(code), expiresAt: timestamp + 86400, usedAt: null, createdAt: timestamp });
     return { inviteID, code, role: input.role, expiresAt: timestamp + 86400 };
   }
 
@@ -263,7 +287,7 @@ class CollaborationService {
   }
 
   async memberByID(memberID, farmID) {
-    return (await this.store.find({ type: "membership", membershipID: memberID, farmID }, 2))[0] || null;
+    return (await this.store.find({ type: "membership", membershipID: memberID, farmID: canonicalFarmID(farmID) }, 2))[0] || null;
   }
 
   async revokeCertificates(farmID, accountID, timestamp) {
@@ -295,7 +319,8 @@ class CollaborationService {
   }
 
   async issueCapability(accountID, input) {
-    const membership = await this.membership(input.farmID, accountID);
+    const farmID = canonicalFarmID(input.farmID);
+    const membership = await this.membership(farmID, accountID);
     if (membership?.status !== "active") throw new APIError(403, "inactive_membership", "当前账号不是该牧场的有效成员。");
     const device = await this.store.get(key("device", input.deviceID));
     if (device?.accountID !== accountID || device.status !== "active") throw new APIError(403, "unregistered_device", "当前设备尚未注册或已撤销。");
@@ -303,23 +328,29 @@ class CollaborationService {
     const expiresAt = issuedAt + Number(this.env.CAPABILITY_TTL_SECONDS || 604800);
     const certificateID = randomUUID();
     const capabilities = capabilitiesForRole(membership.role);
-    const claims = { certificateID, accountID, farmID: input.farmID, deviceID: input.deviceID, role: membership.role, capabilities, iat: issuedAt, exp: expiresAt, iss: "esheep-next-identity", aud: "esheep-next-cloud-operation" };
+    const claims = { certificateID, accountID, farmID, deviceID: input.deviceID, role: membership.role, capabilities, iat: issuedAt, exp: expiresAt, iss: "esheep-next-identity", aud: "esheep-next-cloud-operation" };
     const certificate = signCapability(claims, String(this.env.CAPABILITY_SIGNING_PRIVATE_KEY || "").replace(/\\n/g, "\n"), this.env.CAPABILITY_SIGNING_KEY_ID);
-    await this.store.set(key("capability", certificateID), { type: "capability", certificateID, accountID, farmID: input.farmID, deviceID: input.deviceID, role: membership.role, capabilities, certificate, issuedAt, expiresAt, revokedAt: null });
+    await this.store.set(key("capability", certificateID), { type: "capability", certificateID, accountID, farmID, deviceID: input.deviceID, role: membership.role, capabilities, certificate, issuedAt, expiresAt, revokedAt: null });
     return { certificateID, certificate, role: membership.role, capabilities, issuedAt, expiresAt };
   }
 
   async accountStatus(accountID) {
     const account = await this.account(accountID);
     const memberships = await this.store.find({ type: "membership", accountID });
-    return { accountID, displayName: account?.displayName, status: account?.status || "active", memberships: memberships.map((item) => ({ farm_id: item.farmID, role: item.role, status: item.status })) };
+    const visible = [];
+    for (const item of memberships) {
+      const farm = await this.store.get(key("farm", item.farmID));
+      if (farm?.status === "active") visible.push({ ...item, farm });
+    }
+    return { accountID, displayName: account?.displayName, status: account?.status || "active", memberships: visible.map((item) => ({ farm_id: item.farmID, ownerAccountID: item.farm.ownerAccountID, role: item.role, status: item.status, cloudZoneName: item.farm.cloudZoneName, shareRecordName: item.farm.shareRecordName || null })) };
   }
 
   async securitySnapshot(accountID, farmID) {
+    farmID = canonicalFarmID(farmID);
     const requester = await this.membership(farmID, accountID);
     if (requester?.status !== "active") throw new APIError(403, "inactive_membership", "当前账号不是该牧场的有效成员。");
     const farm = await this.store.get(key("farm", farmID));
-    if (!farm || farm.status !== "active") throw new APIError(404, "farm_not_found", "牧场目录不存在。");
+    if (!farm || (farm.status !== "active" && !(farm.status === "provisioning" && requester.role === "owner"))) throw new APIError(404, "farm_not_found", "牧场目录不存在。");
     const memberships = await this.store.find({ type: "membership", farmID });
     const activeAccountIDs = new Set(memberships.filter((item) => item.status === "active").map((item) => item.accountID));
     const accounts = await Promise.all(memberships.map((item) => this.account(item.accountID)));

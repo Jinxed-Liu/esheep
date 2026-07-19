@@ -21,12 +21,12 @@ struct FarmSetupView: View {
                 }
                 .buttonStyle(.glassProminent)
 
-                Button("从旧版迁移") {
+                Button("从 eSheep+ 导入") {
                     isMigrationPresented = true
                 }
                 .buttonStyle(.glass)
 
-                Text("迁移会先在独立临时库中预览和对账；只有确认后才会为当前账号创建本机牧场，不会创建多余的空牧场，也不会上传 CloudKit。")
+                Text("导入会先在独立临时库中预览和对账；确认后创建正式牧场。本机可立即使用，Development 会在联网后自动准备 iCloud 同步。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

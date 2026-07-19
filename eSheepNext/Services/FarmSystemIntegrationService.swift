@@ -39,20 +39,19 @@ enum FarmSystemIntegrationService {
         sheep: [SheepRecord],
         pens: [PenRecord],
         feeds: [FeedRecord],
-        outbox: [OutboxItem],
+        pendingOperationCounts: [UUID: Int],
         selectedFarmID: UUID?
     ) -> FarmWidgetSnapshot {
         let startOfToday = Calendar.current.startOfDay(for: .now)
         let farmSnapshots = farms.filter { $0.deletedAt == nil }.map { farm in
-            FarmWidgetSnapshot.Farm(
+            let occupiedPenCount = CurrentFarmOccupancy.occupiedPens(farmID: farm.id, sheep: sheep, pens: pens).count
+            return FarmWidgetSnapshot.Farm(
                 farmID: farm.id,
                 name: farm.name,
-                activeSheepCount: sheep.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active },
-                activePenCount: pens.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive },
+                activeSheepCount: sheep.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent },
+                activePenCount: occupiedPenCount,
                 todayFeedCount: feeds.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.occurredAt >= startOfToday },
-                pendingOperationCount: outbox.count {
-                    $0.farmID == farm.id && ($0.status == .pending || $0.status == .retryableFailure)
-                },
+                pendingOperationCount: pendingOperationCounts[farm.id, default: 0],
                 sheep: sheep.filter {
                     $0.farmID == farm.id && $0.deletedAt == nil
                 }.map {

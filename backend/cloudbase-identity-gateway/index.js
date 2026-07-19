@@ -145,6 +145,8 @@ async function route({ request, pathname, fetchImpl, env, service }) {
   const device = pathname.match(/^\/v1\/devices\/([^/]+)$/);
   if (request.method === "DELETE" && device) { await service.revokeDevice(auth.accountID, device[1]); return [204]; }
   if (request.method === "POST" && pathname === "/v1/farms/register") return [201, await service.registerFarm(auth.accountID, await readJSON(request))];
+  const activateFarm = pathname.match(/^\/v1\/farms\/([^/]+)\/activate$/);
+  if (request.method === "POST" && activateFarm) return [200, await service.activateFarm(auth.accountID, activateFarm[1])];
   if (request.method === "POST" && pathname === "/v1/invites") return [201, await service.createInvite(auth.accountID, await readJSON(request))];
   if (request.method === "POST" && pathname === "/v1/invites/redeem") return [200, await service.redeemInvite(auth.accountID, await readJSON(request))];
   const invite = pathname.match(/^\/v1\/invites\/([^/]+)\/confirm$/);

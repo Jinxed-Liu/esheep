@@ -1,11 +1,11 @@
 import PhotosUI
+import Charts
 import SwiftData
 import SwiftUI
 import UIKit
 
 struct HerdManagementView: View {
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
-    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
+    @Environment(\.modelContext) private var modelContext
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -16,48 +16,56 @@ struct HerdManagementView: View {
     @State private var exportMessage: String?
     @State private var query = ""
     @State private var sexFilter: SheepSex?
-    @State private var statusFilter: SheepStatus?
+    @State private var statusFilter: SheepStatus? = .active
     @State private var penFilter: UUID?
     @State private var sortOrder = HerdSortOrder.earTag
     @State private var visibleLimit = 100
     @State private var selection = Set<UUID>()
     @State private var isBatchTransferring = false
+    @State private var sourceSheep: [HerdSheepRow] = []
+    @State private var filteredSheep: [HerdSheepRow] = []
+    @State private var penOptions: [HerdPenOption] = []
+    @State private var presentSheepCount = 0
+    @State private var hasBuiltSheepSnapshot = false
 
-    private var farmSheep: [SheepRecord] {
-        let filtered = sheep.filter {
-            $0.farmID == farm.id && $0.deletedAt == nil &&
-                (query.isEmpty || $0.earTag.localizedCaseInsensitiveContains(query) || $0.breed.localizedCaseInsensitiveContains(query)) &&
+    private func makeFilteredSheep() -> [HerdSheepRow] {
+        let filtered = sourceSheep.filter {
+            (query.isEmpty || $0.earTag.localizedCaseInsensitiveContains(query) || $0.breed.localizedCaseInsensitiveContains(query)) &&
                 (sexFilter == nil || $0.sex == sexFilter) &&
-                (statusFilter == nil || $0.status == statusFilter) &&
+                (statusFilter == nil || (statusFilter == .active ? $0.isCurrentlyPresent : $0.status == statusFilter)) &&
                 (penFilter == nil || $0.currentPenID == penFilter)
         }
         return filtered.sorted {
+            if $0.isCurrentlyPresent != $1.isCurrentlyPresent {
+                return $0.isCurrentlyPresent
+            }
             switch sortOrder {
-            case .earTag: $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending
-            case .newestEntry: $0.enteredAt == $1.enteredAt ? $0.earTag < $1.earTag : $0.enteredAt > $1.enteredAt
-            case .breed: $0.breed == $1.breed ? $0.earTag < $1.earTag : $0.breed.localizedStandardCompare($1.breed) == .orderedAscending
+            case .earTag: return $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending
+            case .newestEntry: return $0.enteredAt == $1.enteredAt ? $0.earTag < $1.earTag : $0.enteredAt > $1.enteredAt
+            case .breed: return $0.breed == $1.breed ? $0.earTag < $1.earTag : $0.breed.localizedStandardCompare($1.breed) == .orderedAscending
             }
         }
     }
 
-    private var visibleSheep: ArraySlice<SheepRecord> { farmSheep.prefix(visibleLimit) }
-
     private var penNames: [UUID: String] {
-        Dictionary(uniqueKeysWithValues: pens.filter { $0.farmID == farm.id }.map { ($0.id, $0.name) })
-    }
-
-    private var presentSheep: [SheepRecord] {
-        sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent }
+        Dictionary(uniqueKeysWithValues: penOptions.map { ($0.id, $0.name) })
     }
 
     var body: some View {
+        let displayedSheep = hasBuiltSheepSnapshot ? filteredSheep : makeFilteredSheep()
+        let visibleSheep = displayedSheep.prefix(visibleLimit)
         List(selection: $selection) {
-            if farmSheep.isEmpty {
+            if displayedSheep.isEmpty {
                 ContentUnavailableView.search(text: query)
             } else {
                 ForEach(visibleSheep, id: \.id) { sheep in
                     NavigationLink {
-                        SheepDetailView(account: account, farm: farm, sheep: sheep, penName: sheep.currentPenID.flatMap { penNames[$0] })
+                        SheepDetailEntryView(
+                            account: account,
+                            farm: farm,
+                            sheepID: sheep.id,
+                            penName: sheep.currentPenID.flatMap { penNames[$0] }
+                        )
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(sheep.earTag).font(.headline)
@@ -68,17 +76,19 @@ struct HerdManagementView: View {
                     }
                     .tag(sheep.id)
                 }
-                if visibleSheep.count < farmSheep.count {
-                    Button("继续加载（剩余 \(farmSheep.count - visibleSheep.count) 只）") { visibleLimit += 100 }
+                if visibleSheep.count < displayedSheep.count {
+                    Button("继续加载（剩余 \(displayedSheep.count - visibleSheep.count) 只）") { visibleLimit += 100 }
                 }
             }
         }
         .navigationTitle("羊只")
         .searchable(text: $query, prompt: "耳号或品种")
-        .onChange(of: query) { _, _ in visibleLimit = 100 }
-        .onChange(of: sexFilter) { _, _ in visibleLimit = 100; selection.removeAll() }
-        .onChange(of: statusFilter) { _, _ in visibleLimit = 100; selection.removeAll() }
-        .onChange(of: penFilter) { _, _ in visibleLimit = 100; selection.removeAll() }
+        .onAppear(perform: reloadSheepSource)
+        .onChange(of: query) { _, _ in visibleLimit = 100; rebuildSheepSnapshot() }
+        .onChange(of: sexFilter) { _, _ in visibleLimit = 100; selection.removeAll(); rebuildSheepSnapshot() }
+        .onChange(of: statusFilter) { _, _ in visibleLimit = 100; selection.removeAll(); rebuildSheepSnapshot() }
+        .onChange(of: penFilter) { _, _ in visibleLimit = 100; selection.removeAll(); rebuildSheepSnapshot() }
+        .onChange(of: sortOrder) { _, _ in visibleLimit = 100; rebuildSheepSnapshot() }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { EditButton() }
             ToolbarItem(placement: .topBarTrailing) {
@@ -93,7 +103,7 @@ struct HerdManagementView: View {
                     }
                     Picker("圈舍", selection: $penFilter) {
                         Text("全部圈舍").tag(UUID?.none)
-                        ForEach(pens.filter { $0.farmID == farm.id && $0.deletedAt == nil }, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
+                        ForEach(penOptions) { Text($0.name).tag(UUID?.some($0.id)) }
                     }
                     Divider()
                     Picker("排序", selection: $sortOrder) {
@@ -113,20 +123,21 @@ struct HerdManagementView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { exportPresentSheep() } label: { Image(systemName: "square.and.arrow.up") }
                     .accessibilityLabel("导出在群羊只 CSV")
-                    .disabled(presentSheep.isEmpty)
+                    .disabled(presentSheepCount == 0)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { isAddingSheep = true } label: { Image(systemName: "plus") }
                     .accessibilityLabel("新建羊只")
             }
         }
-        .sheet(isPresented: $isAddingSheep) {
+        .sheet(isPresented: $isAddingSheep, onDismiss: reloadSheepSource) {
             NavigationStack { AddSheepView(account: account, farm: farm) }
         }
         .sheet(isPresented: $isBatchTransferring) {
             NavigationStack {
                 BatchTransferSheepView(account: account, farm: farm, sheepIDs: selection) { count in
                     selection.removeAll()
+                    reloadSheepSource()
                     exportMessage = "已为 \(count) 只羊生成转群记录。"
                 }
             }
@@ -139,7 +150,7 @@ struct HerdManagementView: View {
         ) { result in
             switch result {
             case .success:
-                exportMessage = "已导出 \(presentSheep.count) 只在群羊只。文件为 UTF-8 CSV，可直接用 Excel 打开。"
+                exportMessage = "已导出 \(presentSheepCount) 只在群羊只。文件为 UTF-8 CSV，可直接用 Excel 打开。"
             case .failure(let error):
                 exportMessage = "导出失败：\(error.localizedDescription)"
             }
@@ -152,11 +163,83 @@ struct HerdManagementView: View {
     }
 
     private func exportPresentSheep() {
-        exportDocument = InHerdSheepExportDocument(
-            data: InHerdSheepExport.csvData(farmID: farm.id, sheep: presentSheep, pens: pens)
-        )
-        isExportingSheep = true
+        let farmID = farm.id
+        do {
+            let sheep = try modelContext.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            })).filter(\.isCurrentlyPresent)
+            let pens = try modelContext.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            }))
+            exportDocument = InHerdSheepExportDocument(
+                data: InHerdSheepExport.csvData(farmID: farmID, sheep: sheep, pens: pens)
+            )
+            presentSheepCount = sheep.count
+            isExportingSheep = true
+        } catch {
+            exportMessage = "导出失败：\(error.localizedDescription)"
+        }
     }
+
+    private func reloadSheepSource() {
+        let farmID = farm.id
+        do {
+            let sheep = try modelContext.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            }))
+            let pens = try modelContext.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            }))
+            sourceSheep = sheep.map(HerdSheepRow.init)
+            penOptions = pens.map { HerdPenOption(id: $0.id, name: $0.name) }
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            presentSheepCount = sourceSheep.lazy.filter(\.isCurrentlyPresent).count
+            rebuildSheepSnapshot()
+        } catch {
+            sourceSheep = []
+            filteredSheep = []
+            penOptions = []
+            presentSheepCount = 0
+            hasBuiltSheepSnapshot = true
+            exportMessage = "读取羊只档案失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func rebuildSheepSnapshot() {
+        filteredSheep = makeFilteredSheep()
+        hasBuiltSheepSnapshot = true
+    }
+}
+
+private struct HerdSheepRow: Identifiable {
+    let id: UUID
+    let earTag: String
+    let breed: String
+    let sex: SheepSex
+    let status: SheepStatus
+    let currentPenID: UUID?
+    let enteredAt: Date
+    let isCurrentlyPresent: Bool
+
+    init(_ sheep: SheepRecord) {
+        id = sheep.id
+        earTag = sheep.earTag
+        breed = sheep.breed
+        sex = sheep.sex
+        status = sheep.status
+        currentPenID = sheep.currentPenID
+        enteredAt = sheep.enteredAt
+        isCurrentlyPresent = sheep.isCurrentlyPresent
+    }
+
+    func currentPenDisplayName(_ penName: String?) -> String {
+        isCurrentlyPresent ? (penName ?? "未分圈") : "已离群"
+    }
+}
+
+private struct HerdPenOption: Identifiable {
+    let id: UUID
+    let name: String
 }
 
 private enum HerdSortOrder: String, CaseIterable, Identifiable {
@@ -215,20 +298,39 @@ private struct BatchTransferSheepView: View {
     }
 }
 
+private struct SheepDetailEntryView: View {
+    @Query private var sheep: [SheepRecord]
+
+    let account: AccountProfile
+    let farm: FarmRecord
+    let penName: String?
+
+    init(account: AccountProfile, farm: FarmRecord, sheepID: UUID, penName: String?) {
+        self.account = account
+        self.farm = farm
+        self.penName = penName
+        let farmID = farm.id
+        _sheep = Query(filter: #Predicate<SheepRecord> {
+            $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
+        })
+    }
+
+    var body: some View {
+        if let sheep = sheep.first {
+            SheepDetailView(account: account, farm: farm, sheep: sheep, penName: penName)
+        } else {
+            ContentUnavailableView("羊只档案不存在", systemImage: "exclamationmark.triangle")
+        }
+    }
+}
+
 struct SheepDetailView: View {
     @Environment(CloudCollaborationStore.self) private var collaboration
-    @Query private var allSheep: [SheepRecord]
-    @Query private var pens: [PenRecord]
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \WeightRecord.occurredAt, order: .reverse) private var weights: [WeightRecord]
-    @Query private var weanings: [WeaningRecord]
     @Query(sort: \TransferRecord.occurredAt, order: .reverse) private var transfers: [TransferRecord]
     @Query(sort: \HealthRecord.occurredAt, order: .reverse) private var healthRecords: [HealthRecord]
     @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproductionRecords: [ReproductionRecord]
-    @Query private var offspring: [LambingOffspringRecord]
-    @Query private var removals: [RemovalRecord]
-    @Query private var memberships: [BatchMembershipRecord]
-    @Query private var feeds: [FeedRecord]
-    @Query private var feedLines: [FeedRecordLine]
     @Query(sort: \PhotoAssetRecord.createdAt, order: .reverse) private var photos: [PhotoAssetRecord]
 
     let account: AccountProfile
@@ -243,19 +345,83 @@ struct SheepDetailView: View {
     @State private var isExporting = false
     @State private var lifecycleInsight: FarmInsight?
     @State private var reproductionInsight: FarmInsight?
+    @State private var isEditingProfile = false
+    @State private var editingPhotoTime: PhotoTimeDraft?
+    @State private var pendingPhotoDeletion: PhotoDeletionDraft?
+    private let commandService = FarmCommandService()
 
-    private var sheepPhotos: [PhotoAssetRecord] {
-        photos.filter { $0.farmID == farm.id && $0.sheepID == sheep.id && $0.deletedAt == nil }
+    init(account: AccountProfile, farm: FarmRecord, sheep: SheepRecord, penName: String?) {
+        self.account = account
+        self.farm = farm
+        self.sheep = sheep
+        self.penName = penName
+        let farmID = farm.id
+        let sheepID = sheep.id
+        _weights = Query(
+            filter: #Predicate<WeightRecord> { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil },
+            sort: \WeightRecord.occurredAt,
+            order: .reverse
+        )
+        _transfers = Query(
+            filter: #Predicate<TransferRecord> { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil },
+            sort: \TransferRecord.occurredAt,
+            order: .reverse
+        )
+        _healthRecords = Query(
+            filter: #Predicate<HealthRecord> { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil },
+            sort: \HealthRecord.occurredAt,
+            order: .reverse
+        )
+        _reproductionRecords = Query(
+            filter: #Predicate<ReproductionRecord> { $0.farmID == farmID && $0.eweID == sheepID && $0.deletedAt == nil },
+            sort: \ReproductionRecord.occurredAt,
+            order: .reverse
+        )
+        _photos = Query(
+            filter: #Predicate<PhotoAssetRecord> { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil },
+            sort: \PhotoAssetRecord.createdAt,
+            order: .reverse
+        )
     }
 
-    private var analyticsSourceRevision: [Int] { [allSheep.count, pens.count, weights.count, weanings.count, transfers.count, reproductionRecords.count, offspring.count, removals.count, memberships.count, feeds.count, feedLines.count] }
+    private var sheepPhotos: [PhotoAssetRecord] {
+        photos.sorted { photoDate($0) > photoDate($1) }
+    }
+
+    private var analyticsSourceRevision: [String] {
+        ["sheep:\(sheep.revision)"]
+            + weights.map { "weight:\($0.id.uuidString):\($0.revision)" }
+            + reproductionRecords.map { "reproduction:\($0.id.uuidString)" }
+    }
 
     private func makeAnalyticsSnapshot() -> FarmAnalyticsSnapshot {
-        FarmAnalyticsSnapshot.make(farmID: farm.id, sheep: allSheep, pens: pens, weights: weights, weanings: weanings, reproduction: reproductionRecords, offspring: offspring, removals: removals, transfers: transfers, memberships: memberships, feeds: feeds, feedLines: feedLines)
+        FarmAnalyticsSnapshot.make(
+            farmID: farm.id,
+            sheep: [sheep],
+            pens: [],
+            weights: weights,
+            weanings: [],
+            reproduction: reproductionRecords,
+            offspring: [],
+            removals: [],
+            transfers: [],
+            memberships: [],
+            feeds: [],
+            feedLines: []
+        )
     }
 
     var body: some View {
         List {
+            Section {
+                SheepProfileBanner(
+                    sheep: sheep,
+                    penName: penName,
+                    photo: sheepPhotos.first,
+                    photoCount: sheepPhotos.count
+                )
+            }
+
             Section("档案") {
                 LabeledContent("耳号", value: sheep.earTag)
                 LabeledContent("品种", value: sheep.breed)
@@ -267,36 +433,98 @@ struct SheepDetailView: View {
             if !sheep.note.isEmpty {
                 Section("备注") { Text(sheep.note) }
             }
+            weightChartSection
             analyticsSection
-            Section("照片") {
+            Section("照片时间线") {
                 PhotosPicker(selection: $selectedPhoto, matching: .images) {
                     Label("从照片库添加", systemImage: "photo.badge.plus")
                 }
                 .disabled(isProcessingPhoto || !FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role).capabilities.allows(.recordProduction))
                 if isProcessingPhoto { ProgressView("正在处理照片") }
                 if sheepPhotos.isEmpty {
-                    Text("尚未添加照片").foregroundStyle(.secondary)
+                    ContentUnavailableView(
+                        "尚未添加照片",
+                        systemImage: "photo.on.rectangle.angled",
+                        description: Text("添加后会按拍摄时间形成这只羊的影像时间线。")
+                    )
                 } else {
-                    ScrollView(.horizontal) {
-                        LazyHStack(spacing: 12) {
-                            ForEach(sheepPhotos, id: \.id) { photo in
-                                CloudPhotoThumbnail(assetID: photo.id, digest: photo.sha256)
+                    ForEach(sheepPhotos, id: \.id) { photo in
+                        HStack(spacing: 12) {
+                            Button {
+                                editPhotoTime(photo)
+                            } label: {
+                                PhotoTimelineRow(photo: photo)
                             }
+                            .buttonStyle(.plain)
+                            .disabled(!canEditPhotos)
+
+                            Menu {
+                                Button("修改照片时间", systemImage: "calendar.badge.clock") {
+                                    editPhotoTime(photo)
+                                }
+                                .disabled(!canEditPhotos)
+                                Button("删除照片", systemImage: "trash", role: .destructive) {
+                                    requestPhotoDeletion(photo)
+                                }
+                                .disabled(!canDeletePhotos)
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                            }
+                            .accessibilityLabel("照片操作")
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button("删除", systemImage: "trash", role: .destructive) {
+                                requestPhotoDeletion(photo)
+                            }
+                            .disabled(!canDeletePhotos)
                         }
                     }
-                    .scrollIndicators(.hidden)
                 }
             }
             timelineSection
+            Section("记录管理") {
+                NavigationLink {
+                    SheepRecordHistoryScreen(account: account, farm: farm, sheepID: sheep.id)
+                } label: {
+                    Label("修正、撤销与恢复", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                }
+            }
         }
         .navigationTitle(sheep.earTag)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                Button("编辑") { isEditingProfile = true }
+                    .disabled(!CapabilitySet(role: farm.role).allows(.recordProduction))
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Button { exportSingleSheep() } label: { Image(systemName: "square.and.arrow.up") }
                     .accessibilityLabel("导出单羊完整档案 XLSX")
                     .disabled(!CapabilitySet(role: farm.role).allows(.exportFarm))
             }
+        }
+        .sheet(isPresented: $isEditingProfile) {
+            NavigationStack { EditSheepProfileView(account: account, farm: farm, sheep: sheep) }
+        }
+        .sheet(item: $editingPhotoTime) { draft in
+            NavigationStack {
+                PhotoTimeEditor(initialDate: draft.capturedAt) { date in
+                    updatePhotoTime(assetID: draft.assetID, capturedAt: date)
+                }
+            }
+        }
+        .confirmationDialog(
+            "删除这张照片？",
+            isPresented: Binding(
+                get: { pendingPhotoDeletion != nil },
+                set: { if !$0 { pendingPhotoDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("删除照片", role: .destructive) { deletePendingPhoto() }
+            Button("取消", role: .cancel) { pendingPhotoDeletion = nil }
+        } message: {
+            Text("照片会从当前档案和时间线中移除，并保留审计记录，可在“修正、撤销与恢复”中恢复。")
         }
         .fileExporter(isPresented: $isExporting, document: exportDocument, contentType: .officeOpenXMLSpreadsheet, defaultFilename: "羊只档案_\(sheep.earTag).xlsx") { result in
             switch result {
@@ -313,6 +541,46 @@ struct SheepDetailView: View {
         .alert("照片", isPresented: Binding(get: { photoMessage != nil }, set: { if !$0 { photoMessage = nil } })) {
             Button("完成", role: .cancel) {}
         } message: { Text(photoMessage ?? "") }
+    }
+
+    private var canEditPhotos: Bool {
+        FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role)
+            .capabilities.allows(.recordProduction)
+    }
+
+    private var canDeletePhotos: Bool {
+        FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role)
+            .capabilities.allows(.deleteProtectedFacts)
+    }
+
+    private func photoDate(_ photo: PhotoAssetRecord) -> Date {
+        photo.capturedAt ?? photo.createdAt
+    }
+
+    private func editPhotoTime(_ photo: PhotoAssetRecord) {
+        editingPhotoTime = PhotoTimeDraft(assetID: photo.id, capturedAt: photoDate(photo))
+    }
+
+    private func requestPhotoDeletion(_ photo: PhotoAssetRecord) {
+        pendingPhotoDeletion = PhotoDeletionDraft(assetID: photo.id, capturedAt: photoDate(photo))
+    }
+
+    @ViewBuilder
+    private var weightChartSection: some View {
+        let records = weights.reversed()
+        if let latest = records.last {
+            Section("体重") {
+                LabeledContent("最近体重", value: "\(latest.kilogramsText) 千克")
+                if records.count >= 2 {
+                    Chart(records, id: \.id) { record in
+                        LineMark(x: .value("日期", record.occurredAt), y: .value("体重", NSDecimalNumber(decimal: record.kilograms).doubleValue))
+                        PointMark(x: .value("日期", record.occurredAt), y: .value("体重", NSDecimalNumber(decimal: record.kilograms).doubleValue))
+                    }
+                    .frame(height: 160)
+                    .accessibilityLabel("\(sheep.earTag)体重变化曲线，共\(records.count)次称重")
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -368,15 +636,13 @@ struct SheepDetailView: View {
     }
 
     private var timelineEntries: [SheepTimelineEntry] {
-        let weightEntries = weights.filter { $0.sheepID == sheep.id && $0.deletedAt == nil }
-            .map { SheepTimelineEntry(id: $0.id, title: "称重", detail: "\($0.kilogramsText) 千克", date: $0.occurredAt) }
-        let transferEntries = transfers.filter { $0.sheepID == sheep.id && $0.deletedAt == nil }
-            .map { SheepTimelineEntry(id: $0.id, title: "转群", detail: $0.note, date: $0.occurredAt) }
-        let healthEntries = healthRecords.filter { $0.sheepID == sheep.id && $0.deletedAt == nil }
-            .map { SheepTimelineEntry(id: $0.id, title: $0.kindRawValue == HealthRecordKind.vaccination.rawValue ? "疫苗" : "治疗", detail: $0.itemNameSnapshot, date: $0.occurredAt) }
-        let reproductionEntries = reproductionRecords.filter { $0.eweID == sheep.id && $0.deletedAt == nil }
-            .map { SheepTimelineEntry(id: $0.id, title: ReproductionRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "繁殖", detail: $0.note, date: $0.occurredAt) }
-        return (weightEntries + transferEntries + healthEntries + reproductionEntries).sorted { $0.date > $1.date }
+        let weightEntries = weights.map { SheepTimelineEntry(id: $0.id, title: "称重", detail: "\($0.kilogramsText) 千克", date: $0.occurredAt) }
+        let transferEntries = transfers.map { SheepTimelineEntry(id: $0.id, title: "转群", detail: $0.note, date: $0.occurredAt) }
+        let healthEntries = healthRecords.map { SheepTimelineEntry(id: $0.id, title: $0.kindRawValue == HealthRecordKind.vaccination.rawValue ? "疫苗" : "治疗", detail: $0.itemNameSnapshot, date: $0.occurredAt) }
+        let reproductionEntries = reproductionRecords.map { SheepTimelineEntry(id: $0.id, title: ReproductionRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "繁殖", detail: $0.note, date: $0.occurredAt) }
+        let photoEntries = sheepPhotos
+            .map { SheepTimelineEntry(id: $0.id, title: "照片", detail: "新增羊只影像", date: photoDate($0)) }
+        return (weightEntries + transferEntries + healthEntries + reproductionEntries + photoEntries).sorted { $0.date > $1.date }
     }
 
     private func addPhoto(_ item: PhotosPickerItem) {
@@ -412,13 +678,185 @@ struct SheepDetailView: View {
             isExporting = true
         } catch { photoMessage = "导出失败：\(error.localizedDescription)" }
     }
+
+    private func updatePhotoTime(assetID: UUID, capturedAt: Date) {
+        Task {
+            do {
+                try await collaboration.photoTransfers.updateCapturedAt(assetID: assetID, capturedAt: capturedAt)
+                await collaboration.synchronizeNow()
+                photoMessage = collaboration.lastErrorMessage ?? "照片时间已更新并进入云端同步队列。"
+            } catch {
+                photoMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func deletePendingPhoto() {
+        guard let draft = pendingPhotoDeletion else { return }
+        pendingPhotoDeletion = nil
+        do {
+            try commandService.execute(
+                .tombstoneEntity(
+                    entityType: .photoAsset,
+                    entityID: draft.assetID,
+                    reason: "用户删除羊只照片（拍摄时间：\(draft.capturedAt.formatted(date: .numeric, time: .shortened))）"
+                ),
+                in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
+                context: modelContext
+            )
+            photoMessage = "照片已删除，可在记录管理中恢复。"
+            Task { await collaboration.synchronizeNow() }
+        } catch {
+            photoMessage = "删除失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+private struct SheepProfileBanner: View {
+    let sheep: SheepRecord
+    let penName: String?
+    let photo: PhotoAssetRecord?
+    let photoCount: Int
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Group {
+                if let photo {
+                    CloudPhotoThumbnail(
+                        assetID: photo.id,
+                        digest: photo.sha256,
+                        width: 112,
+                        height: 96,
+                        cornerRadius: 12
+                    )
+                } else {
+                    Image(systemName: "sheep")
+                        .font(.system(size: 36, weight: .medium))
+                        .foregroundStyle(AppTheme.brand)
+                        .frame(width: 112, height: 96)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 12))
+                }
+            }
+            .accessibilityLabel(photo == nil ? "暂无羊只照片" : "最新羊只照片")
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(sheep.earTag)
+                    .font(.title2.bold())
+                    .lineLimit(1)
+
+                Text([sheep.breed.isEmpty ? "未填写品种" : sheep.breed, sheep.sex.displayName, sheep.status.displayName].joined(separator: " · "))
+                    .lineLimit(1)
+                Label(sheep.currentPenDisplayName(penName), systemImage: "square.grid.2x2")
+                Label("\(photoCount) 张照片", systemImage: "photo.stack")
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct PhotoTimelineRow: View {
+    let photo: PhotoAssetRecord
+
+    private var displayedDate: Date { photo.capturedAt ?? photo.createdAt }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            CloudPhotoThumbnail(assetID: photo.id, digest: photo.sha256, width: 82, height: 82, cornerRadius: 14)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Label("羊只照片", systemImage: "camera.fill")
+                    .font(.subheadline.weight(.semibold))
+                Text(displayedDate, format: .dateTime.year().month().day())
+                    .font(.subheadline)
+                Text(displayedDate, format: .dateTime.hour().minute())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if photo.capturedAt == nil {
+                    Text("未记录拍摄时间，当前显示添加时间")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(.rect)
+    }
+}
+
+private struct PhotoTimeDraft: Identifiable {
+    let assetID: UUID
+    let capturedAt: Date
+    var id: UUID { assetID }
+}
+
+private struct PhotoDeletionDraft {
+    let assetID: UUID
+    let capturedAt: Date
+}
+
+private struct PhotoTimeEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let initialDate: Date
+    let onSave: (Date) -> Void
+    @State private var capturedAt: Date
+
+    init(initialDate: Date, onSave: @escaping (Date) -> Void) {
+        self.initialDate = initialDate
+        self.onSave = onSave
+        _capturedAt = State(initialValue: initialDate)
+    }
+
+    var body: some View {
+        Form {
+            Section("照片时间") {
+                DatePicker(
+                    "拍摄时间",
+                    selection: $capturedAt,
+                    in: ...Date.now,
+                    displayedComponents: [.date, .hourAndMinute]
+                )
+            }
+            Section {
+                Text("该时间会用于照片时间线、羊只总时间线和顶部档案照片排序。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("修改照片时间")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("取消") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存") {
+                    onSave(capturedAt)
+                    dismiss()
+                }
+            }
+        }
+    }
 }
 
 private struct CloudPhotoThumbnail: View {
     @Environment(CloudCollaborationStore.self) private var collaboration
     let assetID: UUID
     let digest: String
+    let width: CGFloat
+    let height: CGFloat
+    let cornerRadius: CGFloat
     @State private var image: UIImage?
+
+    init(assetID: UUID, digest: String, width: CGFloat = 104, height: CGFloat = 104, cornerRadius: CGFloat = 16) {
+        self.assetID = assetID
+        self.digest = digest
+        self.width = width
+        self.height = height
+        self.cornerRadius = cornerRadius
+    }
 
     var body: some View {
         Group {
@@ -430,9 +868,8 @@ private struct CloudPhotoThumbnail: View {
                 ProgressView()
             }
         }
-        .frame(width: 104, height: 104)
-        .clipShape(.rect(cornerRadius: 16))
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .frame(width: width, height: height)
+        .clipShape(.rect(cornerRadius: cornerRadius))
         .task(id: digest) {
             if let data = try? await collaboration.photoTransfers.localFileData(assetID: assetID) {
                 image = UIImage(data: data)
@@ -449,94 +886,186 @@ private struct SheepTimelineEntry: Identifiable {
 }
 
 struct PenManagementView: View {
-    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
+    @Query private var pens: [PenRecord]
+    @Query private var sheep: [SheepRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
     @State private var isAddingPen = false
+    @State private var displayScope = PenDisplayScope.occupied
 
-    private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
+    init(account: AccountProfile, farm: FarmRecord) {
+        self.account = account
+        self.farm = farm
+        let farmID = farm.id
+        _pens = Query(
+            filter: #Predicate<PenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \PenRecord.name
+        )
+        _sheep = Query(
+            filter: #Predicate<SheepRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \SheepRecord.earTag
+        )
+    }
+
+    private var currentSheepByPen: [UUID: [SheepRecord]] {
+        Dictionary(
+            grouping: sheep.filter { $0.isCurrentlyPresent && $0.currentPenID != nil },
+            by: { $0.currentPenID! }
+        )
+    }
+
+    private func farmPens(sheepByPen: [UUID: [SheepRecord]]) -> [PenRecord] {
+        switch displayScope {
+        case .occupied:
+            pens.filter { sheepByPen[$0.id]?.isEmpty == false }
+        case .clearedArchive:
+            pens.filter { sheepByPen[$0.id]?.isEmpty != false }
+        case .all:
+            pens
+        }
+    }
 
     var body: some View {
+        let sheepByPen = currentSheepByPen
+        let displayedPens = farmPens(sheepByPen: sheepByPen)
         List {
-            ForEach(farmPens, id: \.id) { pen in
+            ForEach(displayedPens, id: \.id) { pen in
                 NavigationLink {
-                    PenDetailView(farm: farm, pen: pen, sheep: sheep.filter { $0.farmID == farm.id && $0.currentPenID == pen.id && $0.status == .active && $0.deletedAt == nil })
+                    PenDetailView(account: account, farm: farm, pen: pen, sheep: sheepByPen[pen.id] ?? [])
                 } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(pen.name).font(.headline)
-                        Text("当前羊只 \(sheep.filter { $0.farmID == farm.id && $0.currentPenID == pen.id && $0.status == .active && $0.deletedAt == nil }.count) 只")
+                        let currentCount = sheepByPen[pen.id]?.count ?? 0
+                        Text(currentCount == 0 ? "已清圈 · 已归档" : "当前羊只 \(currentCount) 只")
                             .font(.subheadline).foregroundStyle(.secondary)
                     }
                 }
             }
         }
         .overlay {
-            if farmPens.isEmpty {
-                ContentUnavailableView("还没有圈舍", systemImage: "building.2", description: Text("圈舍是羊只、投喂和历史分析的核心单位。"))
+            if displayedPens.isEmpty {
+                ContentUnavailableView(
+                    displayScope.emptyTitle,
+                    systemImage: "building.2",
+                    description: Text(displayScope.emptyDescription)
+                )
             }
         }
         .navigationTitle("圈舍")
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Picker("显示范围", selection: $displayScope) {
+                        ForEach(PenDisplayScope.allCases) { scope in
+                            Text(scope.title).tag(scope)
+                        }
+                    }
+                } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
+                .accessibilityLabel("圈舍显示范围")
+            }
             ToolbarItem(placement: .topBarTrailing) { Button { isAddingPen = true } label: { Image(systemName: "plus") } }
         }
         .sheet(isPresented: $isAddingPen) { NavigationStack { AddPenView(account: account, farm: farm) } }
     }
 }
 
-struct PenDetailView: View {
-    @Query private var allSheep: [SheepRecord]
-    @Query private var allPens: [PenRecord]
-    @Query private var weights: [WeightRecord]
-    @Query private var weanings: [WeaningRecord]
-    @Query private var reproduction: [ReproductionRecord]
-    @Query private var offspring: [LambingOffspringRecord]
-    @Query private var removals: [RemovalRecord]
-    @Query private var transfers: [TransferRecord]
-    @Query private var memberships: [BatchMembershipRecord]
-    @Query private var feeds: [FeedRecord]
-    @Query private var feedLines: [FeedRecordLine]
+private enum PenDisplayScope: String, CaseIterable, Identifiable {
+    case occupied
+    case clearedArchive
+    case all
 
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .occupied: "有羊圈舍"
+        case .clearedArchive: "已清圈归档"
+        case .all: "全部圈舍"
+        }
+    }
+
+    var emptyTitle: String {
+        switch self {
+        case .occupied: "当前没有圈舍存有在场羊"
+        case .clearedArchive: "没有已清圈的归档圈舍"
+        case .all: "还没有圈舍"
+        }
+    }
+
+    var emptyDescription: String {
+        switch self {
+        case .occupied: "空圈舍会自动进入已清圈归档。"
+        case .clearedArchive: "最后一只在场羊离开后，圈舍会自动归档到这里。"
+        case .all: "圈舍是羊只、投喂和历史分析的核心单位。"
+        }
+    }
+}
+
+struct PenDetailView: View {
+    @Environment(\.modelContext) private var modelContext
+
+    let account: AccountProfile
     let farm: FarmRecord
     let pen: PenRecord
     let sheep: [SheepRecord]
-    @State private var herdInsight: FarmInsight?
+    @State private var isEditing = false
+    @State private var herdInsight: FarmInsight
 
-    private var analyticsSourceRevision: [Int] { [allSheep.count, allPens.count, weights.count, weanings.count, reproduction.count, offspring.count, removals.count, transfers.count, memberships.count, feeds.count, feedLines.count] }
+    private let analysisMembers: [PenHerdMemberSnapshot]
 
-    private func makeAnalyticsSnapshot() -> FarmAnalyticsSnapshot {
-        FarmAnalyticsSnapshot.make(farmID: farm.id, sheep: allSheep, pens: allPens, weights: weights, weanings: weanings, reproduction: reproduction, offspring: offspring, removals: removals, transfers: transfers, memberships: memberships, feeds: feeds, feedLines: feedLines)
+    init(account: AccountProfile, farm: FarmRecord, pen: PenRecord, sheep: [SheepRecord]) {
+        self.account = account
+        self.farm = farm
+        self.pen = pen
+        self.sheep = sheep
+        let members = sheep.map { PenHerdMemberSnapshot(id: $0.id, purpose: $0.purpose) }
+        analysisMembers = members
+        _herdInsight = State(initialValue: PenHerdInsightBuilder.insight(penName: pen.name, members: members))
     }
 
     var body: some View {
         List {
             if !pen.note.isEmpty { Section("说明") { Text(pen.note) } }
-            if let herdInsight {
-                Section(herdInsight.title) {
-                    Text(herdInsight.summary)
-                    ForEach(herdInsight.details, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
-                }
-            } else {
-                Section { ProgressView("正在计算圈舍分析") }
+            Section(herdInsight.title) {
+                Text(herdInsight.summary)
+                ForEach(herdInsight.details, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
             }
             Section("当前羊只") {
                 if sheep.isEmpty { Text("当前没有在场羊只").foregroundStyle(.secondary) }
-                ForEach(sheep, id: \.id) { item in Text(item.earTag) }
+                ForEach(sheep, id: \.id) { item in
+                    NavigationLink {
+                        SheepDetailEntryView(
+                            account: account,
+                            farm: farm,
+                            sheepID: item.id,
+                            penName: pen.name
+                        )
+                    } label: {
+                        Text(item.earTag)
+                    }
+                }
             }
         }
         .navigationTitle(pen.name)
-        .onAppear(perform: refreshInsight)
-        .onChange(of: analyticsSourceRevision) { _, _ in refreshInsight() }
-    }
-
-    private func refreshInsight() {
-        let snapshot = makeAnalyticsSnapshot()
-        let penID = pen.id
-        Task {
-            herdInsight = await Task.detached(priority: .userInitiated) {
-                SheepAnalyticsEngine.penHerd(penID: penID, snapshot: snapshot)
-            }.value
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("编辑") { isEditing = true }
+                    .disabled(!CapabilitySet(role: farm.role).allows(.recordProduction))
+            }
+        }
+        .sheet(isPresented: $isEditing) {
+            NavigationStack { EditPenView(account: account, farm: farm, pen: pen) }
+        }
+        .task(id: pen.id) {
+            let reader = PenAnalyticsReadActor(container: modelContext.container)
+            if let insight = try? await reader.insight(
+                farmID: farm.id,
+                penName: pen.name,
+                members: analysisMembers
+            ) {
+                herdInsight = insight
+            }
         }
     }
 }

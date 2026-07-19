@@ -12,11 +12,22 @@ enum SecureAccountStoreError: LocalizedError {
     }
 }
 
+struct StoredWorkerSession: Codable, Equatable {
+    let accountID: UUID
+    let accessExpiresAt: Int
+    let refreshExpiresAt: Int
+
+    func canResumeOffline(now: Date = .now) -> Bool {
+        refreshExpiresAt > Int(now.timeIntervalSince1970)
+    }
+}
+
 enum SecureAccountStore {
     private static let service = "com.sheepfarm.esheepnext.identity"
     private static let recoveryService = "com.sheepfarm.esheepnext.recovery"
     private static let appleUserKey = "apple-user-identifier"
     private static let activeAccountProfileKey = "active-account-profile-id"
+    private static let workerSessionMetadataKey = "worker-session-metadata"
 
     static func saveAppleUserIdentifier(_ identifier: String) throws {
         try save(Data(identifier.utf8), account: appleUserKey)
@@ -102,13 +113,25 @@ enum SecureAccountStore {
     }
 
     static func removeLoginSecrets() throws {
-        for account in ["worker-access-token", "worker-refresh-token", appleUserKey] {
+        for account in ["worker-access-token", "worker-refresh-token", workerSessionMetadataKey, appleUserKey] {
             try remove(account: account)
         }
     }
 
-    static func hasWorkerSession() -> Bool {
-        (try? data(account: "worker-refresh-token")) != nil
+    static func saveWorkerSession(_ session: StoredWorkerSession) throws {
+        try save(JSONEncoder().encode(session), account: workerSessionMetadataKey)
+    }
+
+    static func workerSession() -> StoredWorkerSession? {
+        guard let stored = try? data(account: workerSessionMetadataKey) else { return nil }
+        return try? JSONDecoder().decode(StoredWorkerSession.self, from: stored)
+    }
+
+    static func hasWorkerSession(for accountID: UUID, now: Date = .now) -> Bool {
+        guard let session = workerSession(),
+              session.accountID == accountID,
+              session.canResumeOffline(now: now) else { return false }
+        return (try? data(account: "worker-refresh-token")) != nil
     }
 
     static func saveSynchronizable(_ data: Data, account: String) throws {

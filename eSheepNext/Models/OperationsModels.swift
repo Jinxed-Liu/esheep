@@ -5,12 +5,18 @@ enum DomainOperationKind: String, Codable, Sendable {
     case createFarm
     case updateFarmLocation
     case createPen
+    case updatePen
+    case setPenActive
     case addSheep
+    case updateSheepProfile
     case recordWeight
+    case correctWeight
     case recordWeaning
     case createBreedingProgram
     case transferSheep
+    case correctTransfer
     case removeSheep
+    case correctRemoval
     case restoreSheep
     case createBatch
     case assignBatchMembership
@@ -28,6 +34,7 @@ enum DomainOperationKind: String, Codable, Sendable {
     case restoreTombstonedEntity
     case resolveConflict
     case recoverEntity
+    case bootstrapEntity
 }
 
 enum OutboxStatus: String, Codable, Sendable {

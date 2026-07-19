@@ -22,10 +22,23 @@ enum CloudRebuildBundleValidator {
 
         var normalizedEarTags = Set<String>()
         for operation in operations {
-            let payload = try JSONDecoder.cloudRebuildValidation.decode(FarmCommandCloudPayload.self, from: operation.payload)
+            let outerPayload = try JSONDecoder.cloudRebuildValidation.decode(FarmCommandCloudPayload.self, from: operation.payload)
+            let payload: FarmCommandCloudPayload
+            if outerPayload.kind == .bootstrapEntity {
+                guard let snapshotData = outerPayload.dataValues["snapshot"] else {
+                    throw RemoteDomainApplyError.invalidPayload("snapshot")
+                }
+                let snapshot = try JSONDecoder.cloudRebuildValidation.decode(BootstrapEntityEnvelopeV1.self, from: snapshotData)
+                try snapshot.validate(for: operation)
+                payload = try JSONDecoder.cloudRebuildValidation.decode(FarmCommandCloudPayload.self, from: snapshot.sourcePayload)
+            } else {
+                payload = outerPayload
+            }
             switch payload.kind {
             case .createFarm, .updateFarmLocation, .createPen, .addIngredient, .createRecipe, .receiveInventory, .addSemen, .createBatch:
                 break
+            case .updatePen, .setPenActive:
+                try require(identifier("penID", payload), in: entitiesByType[.pen], field: "pen.penID")
             case .createBreedingProgram:
                 guard !payload.breedingProgramSteps.isEmpty,
                       payload.breedingProgramSteps.allSatisfy({ $0.dayOffset >= 0 && !$0.action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
@@ -35,16 +48,26 @@ enum CloudRebuildBundleValidator {
                 if let penID = optionalID("penID", payload) { try require(penID, in: entitiesByType[.pen], field: "sheep.penID") }
                 guard let earTag = payload.strings["earTag"] else { throw RemoteDomainApplyError.invalidPayload("earTag") }
                 guard normalizedEarTags.insert(EarTag.normalized(earTag)).inserted else { throw FarmCommandError.duplicateEarTag }
+            case .updateSheepProfile:
+                try require(identifier("sheepID", payload), in: entitiesByType[.sheep], field: "sheep.sheepID")
+                guard payload.strings["earTag"] != nil else { throw RemoteDomainApplyError.invalidPayload("earTag") }
             case .recordWeight:
                 try require(identifier("sheepID", payload), in: entitiesByType[.sheep], field: "weight.sheepID")
+            case .correctWeight:
+                try require(identifier("originalID", payload), in: entitiesByType[.weight], field: "weight.originalID")
             case .recordWeaning:
                 try require(identifier("sheepID", payload), in: entitiesByType[.sheep], field: "weaning.sheepID")
                 if let damID = optionalID("damID", payload) { try require(damID, in: entitiesByType[.sheep], field: "weaning.damID") }
             case .transferSheep:
                 try require(identifier("sheepID", payload), in: entitiesByType[.sheep], field: "transfer.sheepID")
                 if let penID = optionalID("toPenID", payload) { try require(penID, in: entitiesByType[.pen], field: "transfer.toPenID") }
+            case .correctTransfer:
+                try require(identifier("originalID", payload), in: entitiesByType[.transfer], field: "transfer.originalID")
+                if let penID = optionalID("toPenID", payload) { try require(penID, in: entitiesByType[.pen], field: "transfer.toPenID") }
             case .removeSheep:
                 try require(identifier("sheepID", payload), in: entitiesByType[.sheep], field: "removal.sheepID")
+            case .correctRemoval:
+                try require(identifier("originalID", payload), in: entitiesByType[.removal], field: "removal.originalID")
             case .restoreSheep:
                 try require(operation.entityID, in: entitiesByType[.removal], field: "restore.removalID")
             case .assignBatchMembership, .leaveBatchMembership:
@@ -67,7 +90,7 @@ enum CloudRebuildBundleValidator {
             case .addNote:
                 if let sheepID = optionalID("sheepID", payload) { try require(sheepID, in: entitiesByType[.sheep], field: "note.sheepID") }
                 if let penID = optionalID("penID", payload) { try require(penID, in: entitiesByType[.pen], field: "note.penID") }
-            case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity:
+            case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity:
                 break
             }
         }

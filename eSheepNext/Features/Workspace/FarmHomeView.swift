@@ -2,37 +2,32 @@ import SwiftData
 import SwiftUI
 
 struct FarmHomeView: View {
+    @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
     @Environment(CloudCollaborationStore.self) private var collaboration
     @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
     @Query(sort: \FeedRecord.occurredAt, order: .reverse) private var feedRecords: [FeedRecord]
     @Query(sort: \HealthRecord.occurredAt, order: .reverse) private var healthRecords: [HealthRecord]
-    @Query(sort: \OutboxItem.createdAt, order: .reverse) private var outboxItems: [OutboxItem]
 
     let account: AccountProfile
     let farm: FarmRecord
     @Binding var isWeatherDetailPresented: Bool
-    @State private var testGenerationProgress: TestFarmGenerationProgress?
-    @State private var testGenerationError: String?
+    @Binding var isMetricDetailPresented: Bool
+    @State private var pendingOutboxCount = 0
+    @State private var selectedMetric: HomeMetricDestination?
+    @Namespace private var metricTransition
 
-    private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active } }
-    private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
+    private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent } }
+    private var farmPens: [PenRecord] { CurrentFarmOccupancy.occupiedPens(farmID: farm.id, sheep: sheep, pens: pens) }
     private var todayFeedCount: Int {
         let start = Calendar.current.startOfDay(for: .now)
         return feedRecords.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.occurredAt >= start }.count
     }
-    private var pendingOutboxCount: Int { outboxItems.filter { $0.farmID == farm.id && $0.statusRawValue == "pending" }.count }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 hero
-                #if DEBUG
-                if farmSheep.isEmpty && farmPens.isEmpty && !farm.isDevelopmentTestFarm && !farm.isLocalOnlyMigration {
-                    localTestDataCard
-                }
-                #endif
                 metrics
                 shortcuts
                 productionStatus
@@ -43,74 +38,78 @@ struct FarmHomeView: View {
         }
         .scrollIndicators(.hidden)
         .background(AppTheme.pageBackground)
-        .alert("无法生成测试数据", isPresented: Binding(
-            get: { testGenerationError != nil },
-            set: { if !$0 { testGenerationError = nil } }
-        )) {
-            Button("知道了", role: .cancel) {}
-        } message: {
-            Text(testGenerationError ?? "")
+        .navigationDestination(item: $selectedMetric) { destination in
+            metricDestination(destination)
+                .navigationTransition(.zoom(sourceID: destination.id, in: metricTransition))
+                .toolbarVisibility(.hidden, for: .tabBar)
         }
-    }
-
-    #if DEBUG
-    private var localTestDataCard: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 12) {
-                Label("建立本机验收数据", systemImage: "hammer")
-                    .font(.headline)
-                Text("不需要先迁移生产数据或启用 CloudKit。系统将在当前测试牧场生成 100 只羊、10 个圈舍、500 条生产事件和 50 张测试图片。")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                if let progress = testGenerationProgress {
-                    ProgressView(value: Double(progress.completed), total: Double(progress.total)) {
-                        Text(progress.stage)
-                    } currentValueLabel: {
-                        Text("\(progress.completed)/\(progress.total)")
-                    }
-                } else {
-                    Button("生成测试数据") {
-                        generateLocalTestData()
-                    }
-                    .buttonStyle(.glassProminent)
-                }
+        .onChange(of: selectedMetric) { _, destination in
+            isMetricDetailPresented = destination != nil
+        }
+        .onDisappear {
+            if selectedMetric == nil {
+                isMetricDetailPresented = false
             }
         }
-    }
-
-    private func generateLocalTestData() {
-        testGenerationProgress = .init(completed: 0, total: 660, stage: "正在准备")
-        Task {
-            do {
-                _ = try await collaboration.testFarmGenerator.generate(
-                    farmID: farm.id,
-                    accountID: account.effectiveAccountID
-                ) { progress in
-                    await MainActor.run { testGenerationProgress = progress }
-                }
-                testGenerationProgress = nil
-            } catch {
-                testGenerationProgress = nil
-                testGenerationError = error.localizedDescription
-            }
+        .task(id: farm.id) {
+            let farmID = farm.id
+            let pending = OutboxStatus.pending.rawValue
+            let retryable = OutboxStatus.retryableFailure.rawValue
+            let descriptor = FetchDescriptor<OutboxItem>(predicate: #Predicate {
+                $0.farmID == farmID && ($0.statusRawValue == pending || $0.statusRawValue == retryable)
+            })
+            pendingOutboxCount = (try? modelContext.fetchCount(descriptor)) ?? 0
         }
     }
-    #endif
 
     private var hero: some View {
         FarmWeatherHero(
             farm: farm,
             syncSymbol: pendingOutboxCount == 0 ? "checkmark.icloud" : "arrow.triangle.2.circlepath.icloud",
-            syncText: pendingOutboxCount == 0 ? "本地记录已排队处理" : "有 \(pendingOutboxCount) 条本地记录等待同步",
+            syncText: CloudFeatureConfiguration.isEnabled
+                ? (pendingOutboxCount == 0 ? "本地记录已排队处理" : "有 \(pendingOutboxCount) 条本地记录等待同步")
+                : "业务数据已保存在本机",
             isDetailPresented: $isWeatherDetailPresented
         )
     }
 
     private var metrics: some View {
         HStack(spacing: 12) {
-            HomeMetric(title: "在场羊只", value: "\(farmSheep.count)", symbol: "pawprint.fill")
-            HomeMetric(title: "启用圈舍", value: "\(farmPens.count)", symbol: "building.2")
-            HomeMetric(title: "今日投喂", value: "\(todayFeedCount)", symbol: "leaf")
+            metricButton(.sheep, value: farmSheep.count)
+            metricButton(.pens, value: farmPens.count)
+            metricButton(.feeding, value: todayFeedCount)
+        }
+    }
+
+    private func metricButton(_ destination: HomeMetricDestination, value: Int) -> some View {
+        Button {
+            selectedMetric = destination
+        } label: {
+            HomeMetric(title: destination.title, value: "\(value)", symbol: destination.symbol)
+                .contentShape(.rect(cornerRadius: 20))
+                .matchedTransitionSource(id: destination.id, in: metricTransition) { source in
+                    source
+                        .background(AppTheme.pageBackground)
+                        .clipShape(.rect(cornerRadius: 20))
+                }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("\(destination.title)，\(value)")
+        .accessibilityHint("打开完整页面")
+    }
+
+    @ViewBuilder
+    private func metricDestination(_ destination: HomeMetricDestination) -> some View {
+        switch destination {
+        case .sheep:
+            HerdManagementView(account: account, farm: farm)
+                .navigationTitle("在场羊只")
+        case .pens:
+            PenManagementView(account: account, farm: farm)
+                .navigationTitle("有羊圈舍")
+        case .feeding:
+            TodayFeedDetailView(farm: farm)
         }
     }
 
@@ -118,9 +117,10 @@ struct FarmHomeView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("快捷操作").font(.headline)
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                HomeShortcut(title: "新建羊只", symbol: "plus.circle") { session.selectedTab = .records }
-                HomeShortcut(title: "称重", symbol: "scalemass") { session.selectedTab = .records }
-                HomeShortcut(title: "转群", symbol: "arrow.left.arrow.right") { session.selectedTab = .records }
+                HomeShortcut(title: "新建羊只", symbol: "plus.circle") { session.requestRecordEntry(.addSheep) }
+                HomeShortcut(title: "称重", symbol: "scalemass") { session.requestRecordEntry(.weight) }
+                HomeShortcut(title: "转群", symbol: "arrow.left.arrow.right") { session.requestRecordEntry(.transfer) }
+                HomeShortcut(title: "离场", symbol: "person.crop.circle.badge.minus") { session.requestRecordEntry(.removal) }
                 HomeShortcut(title: "投喂", symbol: "leaf") { session.selectedTab = .feeding }
             }
         }
@@ -133,7 +133,7 @@ struct FarmHomeView: View {
                 StatusRow(title: "羊只档案", detail: "查看羊只档案、体重与时间线", symbol: "list.bullet")
             }
             NavigationLink { PenManagementView(account: account, farm: farm) } label: {
-                StatusRow(title: "圈舍管理", detail: "当前 \(farmPens.count) 个启用圈舍", symbol: "building.2")
+                StatusRow(title: "圈舍管理", detail: "当前 \(farmPens.count) 个圈舍有在场羊", symbol: "building.2")
             }
             Button { session.selectedTab = .assistant } label: {
                 StatusRow(title: "牧场分析", detail: "增重、羔羊、繁殖与采食", symbol: "chart.bar.xaxis")
@@ -142,6 +142,30 @@ struct FarmHomeView: View {
             if healthRecords.contains(where: { $0.farmID == farm.id && $0.deletedAt == nil }) {
                 StatusRow(title: "健康记录", detail: "已有 \(healthRecords.filter { $0.farmID == farm.id && $0.deletedAt == nil }.count) 条记录", symbol: "cross.case")
             }
+        }
+    }
+}
+
+private enum HomeMetricDestination: String, Hashable, Identifiable {
+    case sheep
+    case pens
+    case feeding
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .sheep: "在场羊只"
+        case .pens: "有羊圈舍"
+        case .feeding: "今日投喂"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .sheep: "pawprint.fill"
+        case .pens: "building.2"
+        case .feeding: "leaf"
         }
     }
 }
@@ -161,6 +185,71 @@ private struct HomeMetric: View {
             .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64, alignment: .leading)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+private struct TodayFeedDetailView: View {
+    @Query(sort: \FeedRecord.occurredAt, order: .reverse) private var feedRecords: [FeedRecord]
+    @Query private var feedLines: [FeedRecordLine]
+    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
+
+    let farm: FarmRecord
+
+    private var todayFeedRecords: [FeedRecord] {
+        let start = Calendar.current.startOfDay(for: .now)
+        return feedRecords.filter {
+            $0.farmID == farm.id && $0.deletedAt == nil && $0.occurredAt >= start
+        }
+    }
+
+    private var penNames: [UUID: String] {
+        Dictionary(uniqueKeysWithValues: pens.lazy.filter { $0.farmID == farm.id }.map { ($0.id, $0.name) })
+    }
+
+    var body: some View {
+        List {
+            ForEach(todayFeedRecords, id: \.id) { feed in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(penNames[feed.penID] ?? "已删除圈舍")
+                            .font(.headline)
+                        Spacer()
+                        Text(feed.occurredAt, format: .dateTime.hour().minute())
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(feedSummary(feed))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    if !feed.note.isEmpty {
+                        Text(feed.note)
+                            .font(.footnote)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .overlay {
+            if todayFeedRecords.isEmpty {
+                ContentUnavailableView(
+                    "今日暂无投喂",
+                    systemImage: "leaf",
+                    description: Text("今天记录的投喂会显示在这里。")
+                )
+            }
+        }
+        .navigationTitle("今日投喂")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func feedSummary(_ feed: FeedRecord) -> String {
+        let lineCount = feedLines.lazy.filter {
+            $0.farmID == farm.id && $0.feedRecordID == feed.id && $0.deletedAt == nil
+        }.count
+        let meal = feed.mealName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = meal.isEmpty ? feed.mode.displayName : meal
+        return "\(prefix) · \(lineCount) 种原料"
     }
 }
 

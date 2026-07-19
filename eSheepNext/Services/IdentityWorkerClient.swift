@@ -25,12 +25,9 @@ enum CloudFeatureConfiguration {
     }
 }
 
-enum AppleLoginCompatibilityPolicy {
-    static func allowsLocalWorkspace(for error: IdentityWorkerError, environment: AppEnvironment = .current) -> Bool {
-        guard environment == .development else { return false }
-        guard case .server(let code, _) = error else { return false }
-        return code == "apple_cloudbase_migration_pending"
-    }
+enum MemberSharingConfiguration {
+    /// 正式迁移牧场完成云端基线并激活后开放成员共享。
+    static let isEnabled = true
 }
 
 enum IdentityWorkerError: LocalizedError, Equatable {
@@ -115,8 +112,11 @@ struct WorkerCapabilityResponse: Codable, Sendable {
 struct WorkerAccountStatus: Codable, Sendable {
     struct Membership: Codable, Sendable {
         let farm_id: UUID
+        let ownerAccountID: UUID?
         let role: FarmRole
         let status: String
+        let cloudZoneName: String?
+        let shareRecordName: String?
     }
 
     let accountID: UUID
@@ -247,6 +247,14 @@ actor IdentityWorkerClient {
         try await request(path: "/v1/health", method: "GET", body: Optional<String>.none, authenticated: false)
     }
 
+    /// Verifies the persisted session and refreshes it once when required.
+    /// A successful return proves that the local tokens still belong to a live
+    /// CloudBase account; callers may continue to use local farm data offline
+    /// after this initial authenticated session has been established.
+    func restoreSession() async throws -> WorkerAccountStatus {
+        try await accountStatus()
+    }
+
     func signOut() async throws -> WorkerSignOutResult {
         let warningMessage: String?
         do {
@@ -274,8 +282,12 @@ actor IdentityWorkerClient {
         let _: EmptyWorkerResponse = try await request(path: "/v1/devices/\(deviceID.uuidString.lowercased())", method: "DELETE", body: Optional<String>.none)
     }
 
-    func registerFarm(farmID: UUID, zoneName: String, shareRecordName: String?) async throws {
-        let _: EmptyWorkerResponse = try await request(path: "/v1/farms/register", method: "POST", body: FarmRegistrationBody(farmID: farmID, zoneName: zoneName, shareRecordName: shareRecordName))
+    func registerFarm(farmID: UUID, zoneName: String, shareRecordName: String?, status: String = "active") async throws {
+        let _: WorkerFarmRegistrationResponse = try await request(path: "/v1/farms/register", method: "POST", body: FarmRegistrationBody(farmID: farmID, zoneName: zoneName, shareRecordName: shareRecordName, status: status))
+    }
+
+    func activateFarm(farmID: UUID) async throws {
+        let _: WorkerFarmRegistrationResponse = try await request(path: "/v1/farms/\(farmID.uuidString.lowercased())/activate", method: "POST", body: Optional<String>.none)
     }
 
     func createInvite(farmID: UUID, role: FarmRole) async throws -> WorkerInviteResponse {
@@ -386,6 +398,11 @@ actor IdentityWorkerClient {
     private func persist(_ response: WorkerSessionResponse) throws {
         try SecureAccountStore.save(Data(response.accessToken.utf8), account: "worker-access-token")
         try SecureAccountStore.save(Data(response.refreshToken.utf8), account: "worker-refresh-token")
+        try SecureAccountStore.saveWorkerSession(.init(
+            accountID: response.accountID,
+            accessExpiresAt: response.accessExpiresAt,
+            refreshExpiresAt: response.refreshExpiresAt
+        ))
     }
 }
 
@@ -400,7 +417,8 @@ private struct PasswordRegistrationBody: Codable {
     let displayName: String
 }
 private struct PasswordLoginBody: Codable { let username: String; let password: String }
-private struct FarmRegistrationBody: Codable { let farmID: UUID; let zoneName: String; let shareRecordName: String? }
+private struct FarmRegistrationBody: Codable { let farmID: UUID; let zoneName: String; let shareRecordName: String?; let status: String }
+private struct WorkerFarmRegistrationResponse: Codable { let farmID: UUID; let status: String }
 private struct InviteBody: Codable { let farmID: UUID; let role: FarmRole }
 private struct CapabilityBody: Codable { let farmID: UUID; let deviceID: UUID }
 private struct FarmOnlyBody: Codable { let farmID: UUID }

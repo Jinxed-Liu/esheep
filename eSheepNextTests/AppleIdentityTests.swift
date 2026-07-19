@@ -2,15 +2,13 @@ import XCTest
 @testable import eSheepNext
 
 final class AppleIdentityTests: XCTestCase {
-    func testDevelopmentCanEnterLocalWorkspaceWhileAppleCloudBaseBindingIsMigrating() {
+    func testMigrationResponseIsSurfacedAsARealLoginFailure() {
         let error = IdentityWorkerError.server(
             code: "apple_cloudbase_migration_pending",
             message: "账号在迁移"
         )
 
-        XCTAssertTrue(AppleLoginCompatibilityPolicy.allowsLocalWorkspace(for: error, environment: .development))
-        XCTAssertFalse(AppleLoginCompatibilityPolicy.allowsLocalWorkspace(for: error, environment: .staging))
-        XCTAssertFalse(AppleLoginCompatibilityPolicy.allowsLocalWorkspace(for: error, environment: .production))
+        XCTAssertEqual(error.errorDescription, "账号在迁移")
     }
 
     func testNonceDigestUsesAppleCompatibleLowercaseHexSHA256() {

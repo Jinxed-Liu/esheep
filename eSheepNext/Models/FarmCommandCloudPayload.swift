@@ -85,14 +85,28 @@ enum FarmCommandCloudPayloadEncoder {
             ]
         case .createPen(let name, let note):
             payload.strings = ["name": name, "note": note]
+        case .updatePen(let penID, let name, let note):
+            payload.identifiers = ["penID": penID]
+            payload.strings = ["name": name, "note": note]
+        case .setPenActive(let penID, let isActive):
+            payload.identifiers = ["penID": penID]
+            payload.integers = ["isActive": isActive ? 1 : 0]
         case .addSheep(let earTag, let breed, let sex, let penID, let occurredAt, let birthAt, let note):
             payload.strings = ["earTag": earTag, "breed": breed, "sex": sex.rawValue, "note": note]
             payload.optionalIdentifiers = ["penID": penID]
             payload.dates = ["occurredAt": occurredAt]
             payload.optionalDates = ["birthAt": birthAt]
+        case .updateSheepProfile(let sheepID, let earTag, let breed, let sex, let birthAt, let note):
+            payload.identifiers = ["sheepID": sheepID]
+            payload.strings = ["earTag": earTag, "breed": breed, "sex": sex.rawValue, "note": note]
+            payload.optionalDates = ["birthAt": birthAt]
         case .recordWeight(let sheepID, let kilogramsText, let occurredAt, let note):
             payload.identifiers = ["sheepID": sheepID]
             payload.strings = ["kilogramsText": kilogramsText, "note": note]
+            payload.dates = ["occurredAt": occurredAt]
+        case .correctWeight(let originalID, let kilogramsText, let occurredAt, let note, let reason):
+            payload.identifiers = ["originalID": originalID]
+            payload.strings = ["kilogramsText": kilogramsText, "note": note, "reason": reason]
             payload.dates = ["occurredAt": occurredAt]
         case .recordWeaning(let sheepID, let weanWeightText, let occurredAt, let birthAt, let birthWeightText, let averageDailyGainText, let damID, let litterSize, let note):
             payload.identifiers = ["sheepID": sheepID]
@@ -113,9 +127,19 @@ enum FarmCommandCloudPayloadEncoder {
             payload.optionalIdentifiers = ["toPenID": toPenID]
             payload.dates = ["occurredAt": occurredAt]
             payload.strings = ["note": note]
+        case .correctTransfer(let originalID, let toPenID, let occurredAt, let note, let reason):
+            payload.identifiers = ["originalID": originalID]
+            payload.optionalIdentifiers = ["toPenID": toPenID]
+            payload.dates = ["occurredAt": occurredAt]
+            payload.strings = ["note": note, "reason": reason]
         case .removeSheep(let sheepID, let kind, let reason, let amountText, let occurredAt, let note):
             payload.identifiers = ["sheepID": sheepID]
             payload.strings = ["kind": kind.rawValue, "reason": reason, "note": note]
+            payload.optionalStrings = ["amountText": amountText]
+            payload.dates = ["occurredAt": occurredAt]
+        case .correctRemoval(let originalID, let kind, let reason, let amountText, let occurredAt, let note, let correctionReason):
+            payload.identifiers = ["originalID": originalID]
+            payload.strings = ["kind": kind.rawValue, "reason": reason, "note": note, "correctionReason": correctionReason]
             payload.optionalStrings = ["amountText": amountText]
             payload.dates = ["occurredAt": occurredAt]
         case .restoreSheep(let removalID):

@@ -33,8 +33,7 @@ enum CloudSyncError: LocalizedError {
     case shareSaveFailed
     case participantMissing
     case localBaselineUnsupported
-    case developmentTestFarmRequired
-    case formalFarmRequired
+    case verifiedMigrationRequired
     case localOnlyMigration
     case ownerRequired
     case inactiveFarm
@@ -47,14 +46,19 @@ enum CloudSyncError: LocalizedError {
         case .rootSaveFailed: "无法保存牧场云端根记录。"
         case .shareSaveFailed: "无法创建牧场共享记录。"
         case .participantMissing: "尚未发现已接受系统共享的新参与者。"
-        case .localBaselineUnsupported: "该牧场包含旧格式本地操作，不能直接作为云端测试牧场。请新建空白测试牧场进行本阶段验收。"
-        case .developmentTestFarmRequired: "当前牧场不是带固定 Development 标记的测试牧场。迁移和真实牧场只能保留在本机，不能创建 CloudKit Zone、上传或共享。"
-        case .formalFarmRequired: "Staging 和 Production 只允许正式新建牧场使用云端协作，Development 测试牧场不能进入发行环境。"
-        case .localOnlyMigration: "该牧场来自旧版正式迁移，已永久锁定为仅本机使用，不能上传或共享。"
+        case .localBaselineUnsupported: "该牧场包含旧格式本地操作，必须先完成正式迁移校验并生成云端基线。"
+        case .verifiedMigrationRequired: "当前牧场尚未完成可验证的正式迁移提交和云端基线，不能建立云端牧场。"
+        case .localOnlyMigration: "该旧迁移牧场尚未通过完整性校验，暂时只能保留在本机。"
         case .ownerRequired: "只有当前牧场的场主可以建立 CloudKit Zone 和共享。"
         case .inactiveFarm: "当前牧场已删除或成员关系无效，不能启用云端协作。"
         }
     }
+}
+
+struct MigrationCloudBaselineSnapshot: Sendable, Equatable {
+    let digest: String
+    let entityCount: Int
+    let photoCount: Int
 }
 
 private final class CloudSyncEngineDelegateProxy: CKSyncEngineDelegate, @unchecked Sendable {
@@ -146,6 +150,12 @@ actor CloudSyncActor {
         _ = try zoneResult.saveResults[recoveryZoneID]?.get()
 
         let root = mapper.rootRecord(farmID: farmID, farmName: farmName, ownerAccountID: ownerAccountID, zoneID: zoneID)
+        if let baseline = try await persistence.migrationCloudBaseline(farmID: farmID) {
+            root[CloudRecordField.bootstrapState] = "provisioning" as CKRecordValue
+            root[CloudRecordField.bootstrapDigest] = baseline.digest as CKRecordValue
+            root[CloudRecordField.bootstrapEntityCount] = baseline.entityCount as CKRecordValue
+            root[CloudRecordField.bootstrapPhotoCount] = baseline.photoCount as CKRecordValue
+        }
         let share = CKShare(recordZoneID: zoneID)
         share.publicPermission = .none
         share[CKShare.SystemFieldKey.title] = farmName as CKRecordValue
@@ -160,6 +170,22 @@ actor CloudSyncActor {
             state: .active
         )
         return savedShare
+    }
+
+    func markMigrationBootstrapReady(farmID: UUID, digest: String, entityCount: Int, photoCount: Int) async throws {
+        guard let binding = try await persistence.bindingSnapshot(farmID: farmID), binding.databaseScope == .privateDatabase else {
+            throw CloudSyncError.farmBindingMissing
+        }
+        let zoneID = CKRecordZone.ID(zoneName: binding.zoneName, ownerName: binding.zoneOwnerName)
+        let recordID = CKRecord.ID(recordName: "root_\(farmID.uuidString.lowercased())", zoneID: zoneID)
+        let record = try await container.privateCloudDatabase.record(for: recordID)
+        guard record[CloudRecordField.bootstrapDigest] as? String == digest else { throw CloudContractError.invalidPayloadDigest }
+        record[CloudRecordField.bootstrapState] = "ready" as CKRecordValue
+        record[CloudRecordField.bootstrapEntityCount] = entityCount as CKRecordValue
+        record[CloudRecordField.bootstrapPhotoCount] = photoCount as CKRecordValue
+        record[CloudRecordField.modifiedAt] = Date.now as CKRecordValue
+        let result = try await container.privateCloudDatabase.modifyRecords(saving: [record], deleting: [], savePolicy: .ifServerRecordUnchanged, atomically: true)
+        _ = try result.saveResults[recordID]?.get()
     }
 
     func attachAcceptedShare(farmID: UUID, ownerAccountID: UUID, zoneID: CKRecordZone.ID, shareRecordName: String) async throws {
@@ -223,8 +249,13 @@ actor CloudSyncActor {
     }
 
     func synchronizeNow() async throws {
+        _ = try await synchronizeBatch(maxOutboxItems: 25)
+    }
+
+    @discardableResult
+    func synchronizeBatch(maxOutboxItems: Int) async throws -> Int {
         guard CloudFeatureConfiguration.isEnabled else { throw CloudSyncError.featureDisabled }
-        let pending = try await persistence.pendingRecordIDs()
+        let pending = try await persistence.pendingRecordIDs(maxOutboxItems: maxOutboxItems)
         let privateChanges = pending.filter { $0.1 == .privateDatabase }.map { CKSyncEngine.PendingRecordZoneChange.saveRecord($0.0) }
         let sharedChanges = pending.filter { $0.1 == .sharedDatabase }.map { CKSyncEngine.PendingRecordZoneChange.saveRecord($0.0) }
         if !privateChanges.isEmpty { privateEngine.state.add(pendingRecordZoneChanges: privateChanges) }
@@ -232,9 +263,18 @@ actor CloudSyncActor {
         async let privateFetch: Void = privateEngine.fetchChanges()
         async let sharedFetch: Void = sharedEngine.fetchChanges()
         _ = try await (privateFetch, sharedFetch)
-        async let privateSend: Void = privateEngine.sendChanges()
-        async let sharedSend: Void = sharedEngine.sendChanges()
-        _ = try await (privateSend, sharedSend)
+        do {
+            async let privateSend: Void = privateEngine.sendChanges()
+            async let sharedSend: Void = sharedEngine.sendChanges()
+            _ = try await (privateSend, sharedSend)
+        } catch {
+            // CKSyncEngine reports per-record outcomes through the delegate and
+            // can still throw for the aggregate batch. Keep confirmed receipts,
+            // defer only records left in-flight, and let Outbox state drive the
+            // UI instead of surfacing the generic "Failed to send changes".
+            try await persistence.deferUnresolvedUploadsAfterBatchError(error)
+        }
+        return pending.count
     }
 
     func resetEngine(scope: CloudDatabaseScope) async throws {
@@ -267,7 +307,7 @@ actor CloudSyncActor {
                 try await persistence.recordUnexpectedDeletions(changes.deletions)
             case .sentRecordZoneChanges(let changes):
                 try await persistence.confirmSavedRecords(changes.savedRecords, scope: scope)
-                try await persistence.markFailedRecords(changes.failedRecordSaves)
+                try await persistence.markFailedRecords(changes.failedRecordSaves, scope: scope)
             case .accountChange:
                 try await persistence.lockAllCloudFarmsForAccountReview()
             default:
@@ -312,9 +352,10 @@ final class CloudCollaborationStore {
     let membershipSnapshots: MembershipSnapshotActor
     let conflicts: ConflictResolutionActor
     let rebuilds: CloudRebuildActor
-    let testFarmGenerator: TestFarmGeneratorActor
+    private let modelContainer: ModelContainer
 
     init(container: ModelContainer) {
+        self.modelContainer = container
         let persistence = FarmPersistenceActor(container: container)
         self.persistence = persistence
         let configuredIdentifier = Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String
@@ -326,7 +367,6 @@ final class CloudCollaborationStore {
         self.membershipSnapshots = MembershipSnapshotActor(modelContainer: container, persistence: persistence, containerIdentifier: identifier)
         self.conflicts = ConflictResolutionActor(container: container)
         self.rebuilds = CloudRebuildActor(modelContainer: container, persistence: persistence, containerIdentifier: identifier)
-        self.testFarmGenerator = TestFarmGeneratorActor(modelContainer: container, photoTransfers: photoTransfers)
     }
 
     func refreshAccountAvailability() async {
@@ -354,6 +394,236 @@ final class CloudCollaborationStore {
         } catch {
             lastErrorMessage = error.localizedDescription
         }
+    }
+
+    func resumeAutomaticMigrationUploads(accountID: UUID) async {
+        guard AppEnvironment.current == .development, CloudFeatureConfiguration.isEnabled else { return }
+        let initialContext = ModelContext(modelContainer)
+        do {
+            _ = try await persistence.purgeLegacyCertificateTimestampIncidents()
+            _ = try MigrationCloudBootstrapService().upgradeEligibleLegacyFarms(accountID: accountID, context: initialContext)
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            return
+        }
+
+        let commits: [MigrationCommitRecord]
+        do {
+            commits = try initialContext.fetch(FetchDescriptor<MigrationCommitRecord>()).filter {
+                $0.ownerAccountID == accountID &&
+                !$0.baselineDigest.isEmpty &&
+                $0.cloudState != .synced &&
+                $0.cloudState != .localCommitted
+            }
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            return
+        }
+
+        for snapshot in commits {
+            do {
+                try await resumeMigrationUpload(commitID: snapshot.id, accountID: accountID)
+            } catch is CancellationError {
+                // Scene changes and app suspension legitimately cancel this
+                // task. Keep the last durable migration state so the next
+                // foreground pass can resume without recording a false cloud
+                // failure or creating a retry storm.
+                return
+            } catch {
+                let context = ModelContext(modelContainer)
+                if let commit = try? context.fetch(FetchDescriptor<MigrationCommitRecord>()).first(where: { $0.id == snapshot.id }) {
+                    commit.cloudState = .failed
+                    commit.cloudLastError = error.localizedDescription
+                    commit.cloudRetryCount += 1
+                    try? context.save()
+                }
+                lastErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func discoverAndRestoreOwnerFarms(accountID: UUID) async {
+        guard AppEnvironment.current == .development, CloudFeatureConfiguration.isEnabled else { return }
+        do {
+            let status = try await IdentityWorkerClient.shared.accountStatus()
+            guard status.accountID == accountID, status.status == "active" else { return }
+            for membership in status.memberships where membership.role == .owner && membership.status == "active" {
+                guard membership.cloudZoneName == CloudZoneName.forFarm(membership.farm_id),
+                      try await persistence.bindingSnapshot(farmID: membership.farm_id) == nil else { continue }
+                try await persistence.stageDiscoveredOwnerFarm(
+                    farmID: membership.farm_id,
+                    ownerAccountID: membership.ownerAccountID ?? accountID,
+                    shareRecordName: membership.shareRecordName
+                )
+                _ = try await rebuilds.rebuildAndCommit(
+                    farmID: membership.farm_id,
+                    scope: .privateDatabase,
+                    reason: .reinstallRecovery
+                )
+                try await sync.resetEngine(scope: .privateDatabase)
+            }
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func resumeMigrationUpload(commitID: UUID, accountID: UUID) async throws {
+        var context = ModelContext(modelContainer)
+        guard let commit = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first(where: { $0.id == commitID }),
+              let farm = try context.fetch(FetchDescriptor<FarmRecord>()).first(where: { $0.id == commit.farmID && $0.ownerAccountID == accountID }),
+              !farm.isLocalOnlyMigration else { return }
+
+        var binding = try context.fetch(FetchDescriptor<CloudFarmBinding>()).first(where: { $0.farmID == farm.id && $0.state == .active })
+        if binding == nil {
+            commit.cloudState = .provisioning
+            commit.cloudLastError = nil
+            try context.save()
+
+            let identity = try await DeviceIdentityActor.shared.register()
+            let share = try await sync.prepareOwnerFarm(farmID: farm.id, farmName: farm.name, ownerAccountID: accountID)
+            try await IdentityWorkerClient.shared.registerFarm(
+                farmID: farm.id,
+                zoneName: CloudZoneName.forFarm(farm.id),
+                shareRecordName: share.recordID.recordName,
+                status: "provisioning"
+            )
+            let capability = try await IdentityWorkerClient.shared.issueCapability(farmID: farm.id, deviceID: identity.deviceID)
+            try await persistence.saveCapability(capability, accountID: accountID, farmID: farm.id, deviceID: identity.deviceID)
+            _ = try await MembershipActor(persistence: persistence).refresh(farmID: farm.id)
+            _ = try await membershipSnapshots.publish(farmID: farm.id, accountID: accountID)
+
+            context = ModelContext(modelContainer)
+            binding = try context.fetch(FetchDescriptor<CloudFarmBinding>()).first(where: { $0.farmID == farm.id && $0.state == .active })
+        } else {
+            // CloudKit zone creation can succeed before the CloudBase directory
+            // registration. Re-register provisioning on every recovery pass so
+            // a half-completed setup heals idempotently instead of failing the
+            // capability lookup forever.
+            try await IdentityWorkerClient.shared.registerFarm(
+                farmID: farm.id,
+                zoneName: CloudZoneName.forFarm(farm.id),
+                shareRecordName: binding?.shareRecordName,
+                status: "provisioning"
+            )
+            let identity = try await DeviceIdentityActor.shared.identity()
+            let hasUsableCapability = try await persistence.hasUsableCapability(
+                accountID: accountID,
+                farmID: farm.id,
+                deviceID: identity.deviceID
+            )
+            if !hasUsableCapability {
+                _ = try await InviteServiceActor(persistence: persistence).refreshCapability(accountID: accountID, farmID: farm.id)
+            }
+        }
+        guard binding != nil else { throw CloudSyncError.farmBindingMissing }
+
+        // Older builds treated an idempotent "record already exists" response
+        // as a permanent conflict. Requeue once; the failure handler now
+        // confirms byte-identical server records and preserves real conflicts.
+        _ = try await persistence.requeueBlockedConflicts(farmID: farm.id)
+
+        context = ModelContext(modelContainer)
+        guard let uploadingCommit = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first(where: { $0.id == commitID }) else { return }
+        uploadingCommit.cloudState = .uploading
+        uploadingCommit.cloudLastError = nil
+        try context.save()
+
+        await photoTransfers.processPendingTransfers()
+        let migrationFarmID = farm.id
+        var consecutiveBatchFailures = 0
+        while !Task.isCancelled {
+            if ProcessInfo.processInfo.isLowPowerModeEnabled || ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical {
+                context = ModelContext(modelContainer)
+                if let paused = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first(where: { $0.id == commitID }) {
+                    paused.cloudLastError = ProcessInfo.processInfo.isLowPowerModeEnabled
+                        ? "设备处于低电量模式，迁移上传已自动降速暂停。"
+                        : "设备温度较高，迁移上传已自动暂停降温。"
+                    try context.save()
+                }
+                try await Task.sleep(for: .seconds(30))
+                continue
+            }
+            context = ModelContext(modelContainer)
+            if let active = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first(where: { $0.id == commitID }),
+               active.cloudLastError?.contains("自动") == true {
+                active.cloudLastError = nil
+                try context.save()
+            }
+            let confirmed = OutboxStatus.confirmed.rawValue
+            let beforeCount = try context.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+                $0.farmID == migrationFarmID && $0.statusRawValue != confirmed
+            }))
+            let thermalState = ProcessInfo.processInfo.thermalState
+            let batchSize = thermalState == .fair ? 3 : 10
+            let interBatchDelay: Duration = thermalState == .fair ? .seconds(8) : .seconds(4)
+            let scheduled: Int
+            do {
+                scheduled = try await sync.synchronizeBatch(maxOutboxItems: batchSize)
+                consecutiveBatchFailures = 0
+            } catch {
+                // CKSyncEngine can throw for the batch even after its delegate
+                // has confirmed the successful/idempotent records. Judge the
+                // migration by durable Outbox progress instead of converting a
+                // partial batch error into a whole-migration failure.
+                context = ModelContext(modelContainer)
+                let afterCount = try context.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+                    $0.farmID == migrationFarmID && $0.statusRawValue != confirmed
+                }))
+                if afterCount < beforeCount {
+                    consecutiveBatchFailures = 0
+                    if let active = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first(where: { $0.id == commitID }) {
+                        active.cloudState = .uploading
+                        active.cloudLastError = nil
+                        try context.save()
+                    }
+                    try await Task.sleep(for: interBatchDelay)
+                    continue
+                }
+
+                consecutiveBatchFailures += 1
+                if let paused = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first(where: { $0.id == commitID }) {
+                    paused.cloudState = .uploading
+                    paused.cloudLastError = "CloudKit 暂时未能发送这一批，已保留本机数据并等待重试：\(error.localizedDescription)"
+                    try context.save()
+                }
+                guard consecutiveBatchFailures < 3 else { return }
+                try await Task.sleep(for: .seconds(5 * consecutiveBatchFailures))
+                continue
+            }
+            guard scheduled > 0 else { break }
+            try await Task.sleep(for: interBatchDelay)
+        }
+        try Task.checkCancellation()
+        await photoTransfers.processPendingTransfers()
+
+        context = ModelContext(modelContainer)
+        let pendingOutbox = try context.fetch(FetchDescriptor<OutboxItem>()).contains {
+            $0.farmID == farm.id && $0.status != .confirmed
+        }
+        let pendingAssets = try context.fetch(FetchDescriptor<CloudAssetTransfer>()).contains {
+            $0.farmID == farm.id && $0.direction == .upload && $0.status != .completed
+        }
+        guard !pendingOutbox, !pendingAssets else { return }
+
+        guard let verifyingCommit = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first(where: { $0.id == commitID }) else { return }
+        verifyingCommit.cloudState = .verifying
+        try context.save()
+        try await sync.markMigrationBootstrapReady(
+            farmID: farm.id,
+            digest: verifyingCommit.baselineDigest,
+            entityCount: verifyingCommit.baselineEntityCount,
+            photoCount: verifyingCommit.baselinePhotoCount
+        )
+        _ = try await checkpoints.createCheckpoint(farmID: farm.id, reason: .initialCloudSetup)
+        try await IdentityWorkerClient.shared.activateFarm(farmID: farm.id)
+
+        context = ModelContext(modelContainer)
+        guard let completed = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first(where: { $0.id == commitID }) else { return }
+        completed.cloudState = .synced
+        completed.cloudSyncedAt = .now
+        completed.cloudLastError = nil
+        try context.save()
+        lastSuccessfulSyncAt = .now
     }
 
     func maintainRecovery(farmID: UUID) async {
@@ -433,9 +703,18 @@ final class CloudCollaborationStore {
             isIdentityWriteLocked = false
             let membership = MembershipActor(persistence: persistence)
             let invite = InviteServiceActor(persistence: persistence)
+            let identity = try await DeviceIdentityActor.shared.identity()
             for farmID in farmIDs {
                 _ = try await membership.refresh(farmID: farmID)
-                _ = try await invite.refreshCapability(accountID: accountID, farmID: farmID)
+                let hasUsableCapability = try await persistence.hasUsableCapability(
+                    accountID: accountID,
+                    farmID: farmID,
+                    deviceID: identity.deviceID,
+                    minimumRemaining: 86_400
+                )
+                if !hasUsableCapability {
+                    _ = try await invite.refreshCapability(accountID: accountID, farmID: farmID)
+                }
             }
         } catch {
             lastErrorMessage = error.localizedDescription

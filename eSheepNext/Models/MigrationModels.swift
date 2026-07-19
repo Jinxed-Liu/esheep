@@ -5,6 +5,28 @@ enum MigrationCommitStatus: String, Codable, Sendable {
     case completed
 }
 
+enum MigrationCloudState: String, Codable, Sendable, CaseIterable {
+    case localCommitted
+    case baselineReady
+    case provisioning
+    case uploading
+    case verifying
+    case synced
+    case failed
+
+    var displayName: String {
+        switch self {
+        case .localCommitted: "已保存在本机"
+        case .baselineReady: "等待联网上传"
+        case .provisioning: "正在建立 iCloud 牧场"
+        case .uploading: "正在上传迁移数据"
+        case .verifying: "正在核对云端数据"
+        case .synced: "iCloud 已完成"
+        case .failed: "云端准备失败"
+        }
+    }
+}
+
 @Model
 final class MigrationCommitRecord {
     var id: UUID
@@ -16,6 +38,14 @@ final class MigrationCommitRecord {
     var recordCountsJSON: String
     var assetsRelativeDirectory: String
     var committedAt: Date
+    var cloudStateRawValue: String = MigrationCloudState.localCommitted.rawValue
+    var baselineDigest: String = ""
+    var baselineEntityCount: Int = 0
+    var baselinePhotoCount: Int = 0
+    var cloudRetryCount: Int = 0
+    var cloudLastError: String?
+    var cloudUpgradedAt: Date?
+    var cloudSyncedAt: Date?
 
     init(
         id: UUID = UUID(),
@@ -40,6 +70,11 @@ final class MigrationCommitRecord {
 
     var status: MigrationCommitStatus {
         MigrationCommitStatus(rawValue: statusRawValue) ?? .completed
+    }
+
+    var cloudState: MigrationCloudState {
+        get { MigrationCloudState(rawValue: cloudStateRawValue) ?? .localCommitted }
+        set { cloudStateRawValue = newValue.rawValue }
     }
 }
 

@@ -36,6 +36,15 @@ final class FarmSessionTests: XCTestCase {
         XCTAssertEqual(account.effectiveAccountID, serverAccountID)
     }
 
+    func testPersistedSessionOnlyAllowsOfflineResumeBeforeRefreshExpiry() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let active = StoredWorkerSession(accountID: UUID(), accessExpiresAt: 1_799_999_000, refreshExpiresAt: 1_800_000_100)
+        let expired = StoredWorkerSession(accountID: UUID(), accessExpiresAt: 1_799_999_000, refreshExpiresAt: 1_800_000_000)
+
+        XCTAssertTrue(active.canResumeOffline(now: now))
+        XCTAssertFalse(expired.canResumeOffline(now: now))
+    }
+
     func testAccountAvatarPersistsWithTheLocalProfile() throws {
         let container = try makeContainer()
         let context = ModelContext(container)
@@ -62,6 +71,12 @@ final class FarmSessionTests: XCTestCase {
         session.consumePendingNavigationRequest()
         XCTAssertEqual(session.selectedTab, .feeding)
         XCTAssertEqual(session.pendingRecordEntry, .feed)
+
+        let sheepID = UUID()
+        AppNavigationRequest.enqueue(.openSheep(sheepID))
+        session.consumePendingNavigationRequest()
+        XCTAssertEqual(session.selectedTab, .search)
+        XCTAssertEqual(session.pendingSheepID, sheepID)
     }
 
     func testCreatingFarmSelectsItAndKeepsOwnerScope() throws {

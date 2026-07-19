@@ -105,6 +105,50 @@ final class CloudCollaborationTests: XCTestCase {
         XCTAssertNoThrow(try CloudOperationSecurity.validate(envelope: envelope, claims: claims, devicePublicKeyX963: privateKey.publicKey.x963Representation))
     }
 
+    func testOperationSecurityUsesCloudWriteTimeForMigratedHistory() throws {
+        let privateKey = P256.Signing.PrivateKey()
+        let historicalDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let cloudWriteDate = historicalDate.addingTimeInterval(86_400)
+        let payload = Data("{}".utf8)
+        var envelope = makeEnvelope(payload: payload, signature: Data(), modifiedAt: historicalDate)
+        envelope = makeEnvelope(
+            payload: payload,
+            signature: try privateKey.signature(for: envelope.canonicalSigningData).rawRepresentation,
+            modifiedAt: historicalDate
+        )
+        let claims = CapabilityCertificateClaims(
+            certificateID: UUID().uuidString,
+            accountID: envelope.modifiedByAccountID,
+            farmID: envelope.farmID,
+            deviceID: envelope.modifiedByDeviceID,
+            role: .worker,
+            capabilities: [.readFarm, .recordProduction],
+            iat: Int(cloudWriteDate.timeIntervalSince1970) - 10,
+            exp: Int(cloudWriteDate.timeIntervalSince1970) + 300,
+            iss: "esheep-next-identity",
+            aud: "esheep-next-cloud-operation"
+        )
+
+        XCTAssertNoThrow(try CloudOperationSecurity.validate(
+            envelope: envelope,
+            claims: claims,
+            devicePublicKeyX963: privateKey.publicKey.x963Representation,
+            authorizationDate: cloudWriteDate
+        ))
+    }
+
+    func testExistingIdenticalCloudRecordIsIdempotentSuccess() throws {
+        let mapper = CloudRecordMapper()
+        let envelope = makeEnvelope(payload: Data("{\"value\":1}".utf8), signature: Data([1]))
+        let zoneID = CKRecordZone.ID(zoneName: CloudZoneName.forFarm(envelope.farmID), ownerName: CKCurrentUserDefaultName)
+        let client = mapper.operationRecord(from: envelope, zoneID: zoneID)
+        let server = mapper.operationRecord(from: envelope, zoneID: zoneID)
+
+        XCTAssertTrue(CloudRecordIdempotency.equivalent(client: client, server: server))
+        server[CloudRecordField.payloadDigest] = "different" as CKRecordValue
+        XCTAssertFalse(CloudRecordIdempotency.equivalent(client: client, server: server))
+    }
+
     func testCommandPipelineStoresFullPayloadAndStableTarget() throws {
         let container = try makeContainer()
         let context = ModelContext(container)
@@ -348,7 +392,12 @@ final class CloudCollaborationTests: XCTestCase {
         XCTAssertFalse(claims.isValid(at: issued.addingTimeInterval(604_801)))
     }
 
-    private func makeEnvelope(payload: Data, signature: Data, entityType: String = CloudEntityType.weight.rawValue) -> CloudOperationEnvelope {
+    private func makeEnvelope(
+        payload: Data,
+        signature: Data,
+        entityType: String = CloudEntityType.weight.rawValue,
+        modifiedAt: Date = Date(timeIntervalSince1970: 1_700_000_000)
+    ) -> CloudOperationEnvelope {
         CloudOperationEnvelope(
             farmID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
             entityID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
@@ -357,7 +406,7 @@ final class CloudCollaborationTests: XCTestCase {
             revision: 1,
             baseRevision: 0,
             operationID: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
-            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            modifiedAt: modifiedAt,
             modifiedByAccountID: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!,
             modifiedByDeviceID: UUID(uuidString: "55555555-5555-5555-5555-555555555555")!,
             payload: payload,

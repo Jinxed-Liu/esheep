@@ -76,17 +76,16 @@ final class FarmDomainTests: XCTestCase {
         let first = FarmRecord(ownerAccountID: ownerID, name: "北场")
         let second = FarmRecord(ownerAccountID: ownerID, name: "南场")
         let firstPen = PenRecord(farmID: first.id, name: "一号圈")
+        let firstEmptyPen = PenRecord(farmID: first.id, name: "空圈")
         let secondPen = PenRecord(farmID: second.id, name: "二号圈")
         let firstSheep = SheepRecord(farmID: first.id, earTag: "A001", breed: "湖羊", sex: .ewe, penID: firstPen.id, enteredAt: .now)
         let secondSheep = SheepRecord(farmID: second.id, earTag: "B001", breed: "杜泊", sex: .ram, penID: secondPen.id, enteredAt: .now)
-        let pending = OutboxItem(farmID: first.id, accountID: ownerID, operationID: UUID())
-
         let snapshot = FarmSystemIntegrationService.makeSnapshot(
             farms: [first, second],
             sheep: [firstSheep, secondSheep],
-            pens: [firstPen, secondPen],
+            pens: [firstPen, firstEmptyPen, secondPen],
             feeds: [],
-            outbox: [pending],
+            pendingOperationCounts: [first.id: 1],
             selectedFarmID: second.id
         )
 
@@ -94,7 +93,34 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(snapshot.selectedFarmID, second.id)
         XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == first.id })?.sheep.map(\.farmID), [first.id])
         XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == second.id })?.pens.map(\.farmID), [second.id])
+        XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == first.id })?.activePenCount, 1)
         XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == first.id })?.pendingOperationCount, 1)
+    }
+
+    func testPenHerdInsightUsesOnlyLatestWeightForCurrentMembers() {
+        let firstID = UUID()
+        let secondID = UUID()
+        let removedID = UUID()
+        let earlier = Date(timeIntervalSince1970: 1_000)
+        let latest = Date(timeIntervalSince1970: 2_000)
+        let insight = PenHerdInsightBuilder.insight(
+            penName: "育肥一圈",
+            members: [
+                PenHerdMemberSnapshot(id: firstID, purpose: "育肥"),
+                PenHerdMemberSnapshot(id: secondID, purpose: "育肥")
+            ],
+            weightSamples: [
+                PenHerdWeightSample(sheepID: firstID, occurredAt: earlier, kilograms: 30, sourcePriority: 0),
+                PenHerdWeightSample(sheepID: firstID, occurredAt: latest, kilograms: 40, sourcePriority: 1),
+                PenHerdWeightSample(sheepID: firstID, occurredAt: latest, kilograms: 42, sourcePriority: 0),
+                PenHerdWeightSample(sheepID: secondID, occurredAt: latest, kilograms: 38, sourcePriority: 0),
+                PenHerdWeightSample(sheepID: removedID, occurredAt: latest, kilograms: 90, sourcePriority: 0)
+            ]
+        )
+
+        XCTAssertEqual(insight.summary, "育肥一圈 在群2只")
+        XCTAssertTrue(insight.details.contains("育肥：2只"))
+        XCTAssertTrue(insight.details.contains("平均体重：40.0kg"))
     }
 
     func testSpotlightDeepLinkPreservesFarmAndEntityIdentity() throws {
@@ -110,61 +136,54 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(target.query, "A001")
     }
 
-    func testMigrationFarmIsRejectedByDevelopmentCloudGate() async throws {
+    func testUnverifiedFarmIsRejectedByDevelopmentCloudGate() async throws {
         let container = try AppSchema.makeContainer(name: "migration-cloud-gate-\(UUID().uuidString)", isStoredInMemoryOnly: true)
         let context = ModelContext(container)
-        let migratedFarm = FarmRecord(ownerAccountID: UUID(), name: "本机迁移牧场")
-        migratedFarm.isLocalOnlyMigration = true
-        migratedFarm.isDevelopmentTestFarm = true // 即使有人错误写入测试标记，也必须拒绝。
-        migratedFarm.developmentSeed = TestFarmGeneratorActor.seed
-        context.insert(migratedFarm)
+        let farm = FarmRecord(ownerAccountID: UUID(), name: "未迁移牧场")
+        context.insert(farm)
         try context.save()
 
         do {
-            try await FarmPersistenceActor(container: container).requireDevelopmentTestFarm(farmID: migratedFarm.id)
-            XCTFail("迁移牧场不能通过 Development 云端门禁")
+            try await FarmPersistenceActor(container: container).requireCloudAdmission(farmID: farm.id, environment: .development)
+            XCTFail("没有正式迁移提交和完整基线的牧场不能通过 Development 云端门禁")
         } catch let error as CloudSyncError {
-            guard case .localOnlyMigration = error else {
+            guard case .verifiedMigrationRequired = error else {
                 return XCTFail("收到错误的拒绝原因：\(error.localizedDescription)")
             }
         }
     }
 
-    func testCloudAdmissionPolicySeparatesDevelopmentAndProduction() throws {
-        let developmentTestFarm = CloudAdmissionRequest(
+    func testCloudAdmissionPolicyRequiresVerifiedMigrationInDevelopment() throws {
+        let verifiedMigrationFarm = CloudAdmissionRequest(
             environment: .development,
             role: .owner,
             membershipIsActive: true,
             isDeleted: false,
-            isDevelopmentTestFarm: true,
-            developmentSeed: TestFarmGeneratorActor.seed,
+            isLocalOnlyMigration: false,
+            hasVerifiedMigrationCommit: true,
+            hasCompleteMigrationBaseline: true
+        )
+        XCTAssertNoThrow(try CloudAdmissionPolicy.validate(verifiedMigrationFarm))
+
+        let unverifiedFarm = CloudAdmissionRequest(
+            environment: .development,
+            role: .owner,
+            membershipIsActive: true,
+            isDeleted: false,
             isLocalOnlyMigration: false
         )
-        XCTAssertNoThrow(try CloudAdmissionPolicy.validate(developmentTestFarm))
+        XCTAssertThrowsError(try CloudAdmissionPolicy.validate(unverifiedFarm)) { error in
+            XCTAssertEqual(error as? CloudAdmissionDenial, .verifiedMigrationRequired)
+        }
 
-        var productionFarm = CloudAdmissionRequest(
+        let productionFarm = CloudAdmissionRequest(
             environment: .production,
             role: .owner,
             membershipIsActive: true,
             isDeleted: false,
-            isDevelopmentTestFarm: false,
-            developmentSeed: nil,
             isLocalOnlyMigration: false
         )
         XCTAssertNoThrow(try CloudAdmissionPolicy.validate(productionFarm))
-
-        productionFarm = CloudAdmissionRequest(
-            environment: .production,
-            role: .owner,
-            membershipIsActive: true,
-            isDeleted: false,
-            isDevelopmentTestFarm: true,
-            developmentSeed: TestFarmGeneratorActor.seed,
-            isLocalOnlyMigration: false
-        )
-        XCTAssertThrowsError(try CloudAdmissionPolicy.validate(productionFarm)) { error in
-            XCTAssertEqual(error as? CloudAdmissionDenial, .formalFarmRequired)
-        }
     }
 
     func testCloudAdmissionRejectsMigrationAndNonOwnerInEveryEnvironment() {
@@ -173,8 +192,6 @@ final class FarmDomainTests: XCTestCase {
             role: .owner,
             membershipIsActive: true,
             isDeleted: false,
-            isDevelopmentTestFarm: false,
-            developmentSeed: nil,
             isLocalOnlyMigration: true
         )
         XCTAssertThrowsError(try CloudAdmissionPolicy.validate(migration)) { error in
@@ -186,8 +203,6 @@ final class FarmDomainTests: XCTestCase {
             role: .worker,
             membershipIsActive: true,
             isDeleted: false,
-            isDevelopmentTestFarm: false,
-            developmentSeed: nil,
             isLocalOnlyMigration: false
         )
         XCTAssertThrowsError(try CloudAdmissionPolicy.validate(worker)) { error in
@@ -581,6 +596,45 @@ final class FarmDomainTests: XCTestCase {
         try service.execute(.restoreTombstonedEntity(tombstoneID: tombstone.id), in: farmContext, context: context)
         XCTAssertNil(health.deletedAt)
         XCTAssertNotNil(reversal.deletedAt)
+    }
+
+    func testPhotoDeletionCreatesRecoverableTombstoneAndOutbox() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let account = AccountProfile(appleUserIdentifier: "photo-delete-owner", displayName: "场主")
+        let farm = FarmRecord(ownerAccountID: account.id, name: "照片删除测试场")
+        let sheep = SheepRecord(farmID: farm.id, earTag: "P001", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: .now)
+        let photo = PhotoAssetRecord(
+            farmID: farm.id,
+            sheepID: sheep.id,
+            legacySourceKey: "test-photo",
+            originalEarTag: sheep.earTag,
+            relativePath: "test-photo.jpg",
+            sha256: "photo-digest"
+        )
+        context.insert(account)
+        context.insert(farm)
+        context.insert(sheep)
+        context.insert(photo)
+        try context.save()
+
+        let service = FarmCommandService()
+        let farmContext = FarmContext(accountID: account.id, farmID: farm.id, role: .owner)
+        try service.execute(
+            .tombstoneEntity(entityType: .photoAsset, entityID: photo.id, reason: "用户删除羊只照片"),
+            in: farmContext,
+            context: context
+        )
+
+        XCTAssertNotNil(photo.deletedAt)
+        let tombstone = try XCTUnwrap(try context.fetch(FetchDescriptor<TombstoneRecord>()).first { $0.entityID == photo.id })
+        XCTAssertEqual(tombstone.entityType, CloudEntityType.photoAsset.rawValue)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.entityID == photo.id }.count, 1)
+
+        try service.execute(.restoreTombstonedEntity(tombstoneID: tombstone.id), in: farmContext, context: context)
+        XCTAssertNil(photo.deletedAt)
+        XCTAssertNotNil(tombstone.restoredAt)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.entityID == photo.id }.count, 2)
     }
 
     func testReproductionRequiresEweRamAndKeepsPregnancyCheckFreeOfPaternity() throws {
@@ -1118,18 +1172,49 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertFalse(first.wasAlreadyCommitted)
         let committedFarm = try XCTUnwrap(try context.fetch(FetchDescriptor<FarmRecord>()).filter { $0.id == first.farmID }.first)
         XCTAssertEqual(committedFarm.ownerAccountID, account.effectiveAccountID)
-        XCTAssertTrue(committedFarm.isLocalOnlyMigration)
-        XCTAssertFalse(committedFarm.isDevelopmentTestFarm)
+        XCTAssertFalse(committedFarm.isLocalOnlyMigration)
         XCTAssertEqual(try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == first.farmID }.count, 1)
         XCTAssertEqual(try context.fetch(FetchDescriptor<WeightRecord>()).filter { $0.farmID == first.farmID }.count, 1)
-        XCTAssertEqual(try context.fetch(FetchDescriptor<MigrationCommitRecord>()).count, 1)
-        XCTAssertTrue(try context.fetch(FetchDescriptor<OutboxItem>()).isEmpty)
+        let commit = try XCTUnwrap(try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first)
+        XCTAssertEqual(commit.cloudState, .baselineReady)
+        XCTAssertFalse(commit.baselineDigest.isEmpty)
+        XCTAssertGreaterThanOrEqual(commit.baselineEntityCount, 3)
+        let firstOutbox = try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.farmID == first.farmID }
+        XCTAssertEqual(firstOutbox.count, commit.baselineEntityCount)
+        XCTAssertTrue(firstOutbox.allSatisfy { $0.status == .pending })
 
         let second = try MigrationCommitService().commit(sessionID: session.id, account: account, destinationContext: context)
         XCTAssertTrue(second.wasAlreadyCommitted)
         XCTAssertEqual(second.farmID, first.farmID)
         XCTAssertEqual(try context.fetch(FetchDescriptor<FarmRecord>()).filter { $0.id == first.farmID }.count, 1)
         XCTAssertEqual(try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == first.farmID }.count, 1)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.farmID == first.farmID }.count, firstOutbox.count)
+    }
+
+    func testLegacyCommittedMigrationAutomaticallyBuildsOneCloudBaseline() throws {
+        let container = try AppSchema.makeContainer(name: "legacy-migration-upgrade-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let account = AccountProfile(appleUserIdentifier: "legacy-migration-owner", displayName: "场主")
+        let farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: "旧迁移牧场")
+        farm.isLocalOnlyMigration = true
+        let pen = PenRecord(farmID: farm.id, name: "基础舍")
+        let sheep = SheepRecord(farmID: farm.id, earTag: "A001", breed: "湖羊", sex: .ewe, penID: pen.id, enteredAt: .now)
+        let sessionID = UUID()
+        let commit = MigrationCommitRecord(sessionID: sessionID, sourceChecksum: "source", farmID: farm.id, ownerAccountID: account.effectiveAccountID, recordCountsJSON: "{}", assetsRelativeDirectory: "")
+        context.insert(account); context.insert(farm); context.insert(pen); context.insert(sheep); context.insert(commit)
+        try context.save()
+
+        let first = try MigrationCloudBootstrapService().upgradeEligibleLegacyFarms(accountID: account.effectiveAccountID, context: context)
+        XCTAssertEqual(first.count, 1)
+        XCTAssertFalse(farm.isLocalOnlyMigration)
+        XCTAssertEqual(commit.cloudState, .baselineReady)
+        XCTAssertFalse(commit.baselineDigest.isEmpty)
+        let operationIDs = try context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.farmID == farm.id }.map(\.id)
+        XCTAssertEqual(Set(operationIDs).count, operationIDs.count)
+
+        let second = try MigrationCloudBootstrapService().upgradeEligibleLegacyFarms(accountID: account.effectiveAccountID, context: context)
+        XCTAssertTrue(second.isEmpty)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.farmID == farm.id }.map(\.id), operationIDs)
     }
 
     func testFeedRecordKeepsBatchPriceAndNutrientSnapshotsInItsCloudOperation() throws {

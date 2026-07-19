@@ -4,6 +4,7 @@ struct FarmWorkspaceView: View {
     @Environment(AppSession.self) private var session
     @State private var searchQuery = ""
     @State private var isWeatherDetailPresented = false
+    @State private var isMetricDetailPresented = false
 
     let account: AccountProfile
     let farms: [FarmRecord]
@@ -22,9 +23,9 @@ struct FarmWorkspaceView: View {
                         FarmHomeView(
                             account: account,
                             farm: activeFarm,
-                            isWeatherDetailPresented: $isWeatherDetailPresented
+                            isWeatherDetailPresented: $isWeatherDetailPresented,
+                            isMetricDetailPresented: $isMetricDetailPresented
                         )
-                            .navigationTitle("首页")
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbar {
                                 FarmNavigationToolbar(account: account, farms: farms, activeFarm: activeFarm)
@@ -32,8 +33,11 @@ struct FarmWorkspaceView: View {
                     }
                     .toolbarVisibility(
                         isWeatherDetailPresented ? .hidden : .visible,
-                        for: .navigationBar,
-                        .tabBar
+                        for: .navigationBar
+                    )
+                    .toolbarVisibility(
+                        isWeatherDetailPresented || isMetricDetailPresented ? .hidden : .visible,
+                        for: .tabBar
                     )
                 }
                 Tab("洞察", systemImage: "sparkles", value: .assistant) {
@@ -98,10 +102,11 @@ private struct FarmNavigationToolbar: ToolbarContent {
             NavigationLink {
                 FarmSettingsView(account: account, farm: activeFarm)
             } label: {
-                AccountAvatarView(account: account)
+                AccountAvatarView(account: account, size: 38)
             }
             .accessibilityLabel("账户与牧场设置")
         }
+        .sharedBackgroundVisibility(.hidden)
     }
 }
 

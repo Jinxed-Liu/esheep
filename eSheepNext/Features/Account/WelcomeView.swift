@@ -39,7 +39,6 @@ struct WelcomeView: View {
     @State private var passwordConfirmation = ""
     @State private var displayName = ""
     @State private var errorMessage: String?
-    @State private var appleMigrationNotice: String?
     @State private var rawNonce = AppleIdentityActor.makeNonce()
     @State private var isBindingAccount = false
     @State private var selectedLegalDocument: LegalDocument?
@@ -62,11 +61,12 @@ struct WelcomeView: View {
         ScrollView {
             VStack(spacing: 24) {
                 GlassEffectContainer(spacing: 18) {
-                    Image(systemName: "pawprint.fill")
-                        .font(.system(size: 42, weight: .semibold))
-                        .foregroundStyle(AppTheme.brand)
+                    Image("AppLogo")
+                        .resizable()
+                        .scaledToFit()
                         .frame(width: 92, height: 92)
-                        .glassEffect(.regular, in: .circle)
+                        .clipShape(.rect(cornerRadius: 21, style: .continuous))
+                        .shadow(color: AppTheme.brand.opacity(0.22), radius: 12, y: 6)
 
                     VStack(spacing: 8) {
                         Text("eSheep+").font(.largeTitle.bold())
@@ -83,15 +83,6 @@ struct WelcomeView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(14)
                     .glassEffect(.regular, in: .rect(cornerRadius: 16))
-                }
-
-                if let appleMigrationNotice {
-                    Label(appleMigrationNotice, systemImage: "person.crop.circle.badge.clock")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
-                        .glassEffect(.regular, in: .rect(cornerRadius: 16))
                 }
 
                 VStack(spacing: 16) {
@@ -341,13 +332,7 @@ struct WelcomeView: View {
                 do {
                     let payload = try AppleIdentityActor.payload(from: credential, rawNonce: nonce)
                     guard IdentityWorkerConfiguration.baseURL != nil else { throw IdentityWorkerError.notConfigured }
-                    let workerSession: WorkerSessionResponse?
-                    do {
-                        workerSession = try await AppleIdentityActor.shared.bind(payload)
-                    } catch let error as IdentityWorkerError where AppleLoginCompatibilityPolicy.allowsLocalWorkspace(for: error) {
-                        workerSession = nil
-                        appleMigrationNotice = "Development 身份服务仍在迁移，已使用 Apple 系统凭据进入本机工作空间；账号云端协作暂不可用。"
-                    }
+                    let workerSession = try await AppleIdentityActor.shared.bind(payload)
                     let accountProfileID = try upsertAppleAccount(from: credential, workerSession: workerSession)
                     session.authenticationDidSucceed(accountProfileID: accountProfileID)
                 } catch {
@@ -385,16 +370,16 @@ struct WelcomeView: View {
     }
 
     @MainActor
-    private func upsertAppleAccount(from credential: ASAuthorizationAppleIDCredential, workerSession: WorkerSessionResponse?) throws -> UUID {
+    private func upsertAppleAccount(from credential: ASAuthorizationAppleIDCredential, workerSession: WorkerSessionResponse) throws -> UUID {
         let appleID = credential.user
         let appleSubjectHash = AppleIdentityHash.value(for: appleID)
         if let existing = accounts.first(where: { $0.appleSubjectHash == appleSubjectHash }) {
             try prepareForDifferentAccount(activating: existing.id)
             try SecureAccountStore.saveAppleUserIdentifier(appleID)
-            existing.serverAccountID = workerSession?.accountID ?? existing.serverAccountID
-            existing.serverBindingStateRaw = workerSession == nil ? ServerBindingState.pendingBroker.rawValue : ServerBindingState.verified.rawValue
+            existing.serverAccountID = workerSession.accountID
+            existing.serverBindingStateRaw = ServerBindingState.verified.rawValue
             existing.authenticationMethodRawValue = AccountAuthenticationMethod.apple.rawValue
-            if let name = workerSession?.displayName, !name.isEmpty { existing.displayName = name }
+            if let name = workerSession.displayName, !name.isEmpty { existing.displayName = name }
             existing.updatedAt = .now
             try modelContext.save()
             return existing.id
@@ -403,17 +388,13 @@ struct WelcomeView: View {
         let formattedName = credential.fullName.map(formatter.string(from:)) ?? "Apple 账户"
         let account = AccountProfile(
             appleUserIdentifier: appleID,
-            displayName: workerSession?.displayName ?? (formattedName.isEmpty ? "Apple 账户" : formattedName),
-            serverBindingStateRaw: workerSession == nil ? ServerBindingState.pendingBroker.rawValue : ServerBindingState.verified.rawValue,
+            displayName: workerSession.displayName ?? (formattedName.isEmpty ? "Apple 账户" : formattedName),
+            serverBindingStateRaw: ServerBindingState.verified.rawValue,
             authenticationMethod: .apple
         )
-        account.serverAccountID = workerSession?.accountID
+        account.serverAccountID = workerSession.accountID
         try prepareForDifferentAccount(activating: account.id)
         try SecureAccountStore.saveAppleUserIdentifier(appleID)
-        if workerSession == nil {
-            try SecureAccountStore.remove(account: "worker-access-token")
-            try SecureAccountStore.remove(account: "worker-refresh-token")
-        }
         modelContext.insert(account)
         try modelContext.save()
         return account.id

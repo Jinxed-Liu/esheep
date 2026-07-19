@@ -189,6 +189,7 @@ struct AssistantStartView: View {
 }
 
 struct FarmSearchView: View {
+    @Environment(AppSession.self) private var session
     @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
     let account: AccountProfile
@@ -236,6 +237,7 @@ struct FarmSearchView: View {
                     ForEach(resultsPens, id: \.id) { pen in
                         NavigationLink {
                             PenDetailView(
+                                account: account,
                                 farm: farm,
                                 pen: pen,
                                 sheep: sheep.filter {
@@ -259,6 +261,22 @@ struct FarmSearchView: View {
             placement: .navigationBarDrawer(displayMode: .always),
             prompt: "耳号、品种或圈舍"
         )
+        .navigationDestination(isPresented: Binding(
+            get: { session.pendingSheepID != nil },
+            set: { if !$0 { session.pendingSheepID = nil } }
+        )) {
+            if let sheepID = session.pendingSheepID,
+               let item = sheep.first(where: { $0.id == sheepID && $0.farmID == farm.id && $0.deletedAt == nil }) {
+                SheepDetailView(
+                    account: account,
+                    farm: farm,
+                    sheep: item,
+                    penName: item.currentPenID.flatMap { penNames[$0] }
+                )
+            } else {
+                ContentUnavailableView("羊只不存在", systemImage: "questionmark.folder", description: Text("该羊只可能已删除或不属于当前牧场。"))
+            }
+        }
     }
 }
 
@@ -312,10 +330,17 @@ struct FarmSettingsView: View {
                 }
             }
             Section("云端协作") {
-                NavigationLink {
-                    CloudCollaborationCenterView(account: account, farm: farm)
-                } label: {
-                    Label("身份、共享与同步", systemImage: "person.2.icloud")
+                if CloudFeatureConfiguration.isEnabled {
+                    NavigationLink {
+                        CloudCollaborationCenterView(account: account, farm: farm)
+                    } label: {
+                        Label("身份、共享与同步", systemImage: "person.2.icloud")
+                    }
+                } else {
+                    LabeledContent("业务数据", value: "仅保存在本机")
+                    Text("当前开发阶段未启用 CloudKit；登录只用于验证 eSheep+ 账户。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
                 NavigationLink {
                     SystemServicesSettingsView(farm: farm)

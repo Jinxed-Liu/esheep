@@ -49,6 +49,15 @@ struct MigrationCommitService {
         if let existing = existingCommits.first(where: {
             $0.sessionID == sessionID && $0.sourceChecksum == session.manifest.sourceChecksum && $0.status == .completed
         }), let farm = try destinationContext.fetch(FetchDescriptor<FarmRecord>()).first(where: { $0.id == existing.farmID }) {
+            if farm.isLocalOnlyMigration || existing.cloudState == .localCommitted || existing.cloudState == .failed {
+                _ = try MigrationCloudBootstrapService().prepare(
+                    commit: existing,
+                    farm: farm,
+                    accountID: account.effectiveAccountID,
+                    context: destinationContext
+                )
+                try destinationContext.save()
+            }
             return MigrationCommitResult(
                 farmID: farm.id,
                 farmName: farm.name,
@@ -101,7 +110,7 @@ struct MigrationCommitService {
                 createdAt: sourceFarm.createdAt,
                 updatedAt: .now
             )
-            destinationFarm.isLocalOnlyMigration = true
+            destinationFarm.isLocalOnlyMigration = false
             destinationContext.insert(destinationFarm)
             try copyFarmRecords(
                 farmID: sourceFarm.id,
@@ -114,7 +123,7 @@ struct MigrationCommitService {
             let counts = temporary.reconciliation.convertedByType
             let countsData = try JSONEncoder().encode(counts)
             let countsJSON = String(data: countsData, encoding: .utf8) ?? "{}"
-            destinationContext.insert(MigrationCommitRecord(
+            let commitRecord = MigrationCommitRecord(
                 id: StableMigrationID.uuid(sessionID: sessionID, sourceKey: "formal-commit"),
                 sessionID: sessionID,
                 sourceChecksum: session.manifest.sourceChecksum,
@@ -122,7 +131,14 @@ struct MigrationCommitService {
                 ownerAccountID: account.effectiveAccountID,
                 recordCountsJSON: countsJSON,
                 assetsRelativeDirectory: relativeAssetDirectory
-            ))
+            )
+            destinationContext.insert(commitRecord)
+            _ = try MigrationCloudBootstrapService().prepare(
+                commit: commitRecord,
+                farm: destinationFarm,
+                accountID: account.effectiveAccountID,
+                context: destinationContext
+            )
             destinationContext.insert(FarmActivity(
                 id: StableMigrationID.uuid(sessionID: sessionID, sourceKey: "formal-commit-activity"),
                 farmID: sourceFarm.id,

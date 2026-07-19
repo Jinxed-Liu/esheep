@@ -5,7 +5,7 @@ struct FarmRecordsView: View {
     @Environment(AppSession.self) private var session
     let account: AccountProfile
     let farm: FarmRecord
-    @State private var isWeightEntryPresented = false
+    @State private var presentedEntry: PendingRecordEntry?
 
     var body: some View {
         List {
@@ -28,13 +28,19 @@ struct FarmRecordsView: View {
             }
             Section("补充") {
                 NavigationLink { NoteEntryView(account: account, farm: farm) } label: { Label("备注", systemImage: "note.text") }
-                NavigationLink { MigrationWorkspaceView() } label: { Label("旧版安全试迁", systemImage: "arrow.triangle.2.circlepath") }
+                NavigationLink { MigrationWorkspaceView() } label: { Label("从 eSheep+ 导入", systemImage: "square.and.arrow.down") }
             }
         }
         .navigationTitle("录入")
-        .sheet(isPresented: $isWeightEntryPresented) {
+        .sheet(item: $presentedEntry) { entry in
             NavigationStack {
-                WeightEntryView(account: account, farm: farm)
+                switch entry {
+                case .addSheep: AddSheepView(account: account, farm: farm)
+                case .weight: WeightEntryView(account: account, farm: farm)
+                case .transfer: TransferEntryView(account: account, farm: farm)
+                case .removal: RemovalEntryView(account: account, farm: farm)
+                case .feed: EmptyView()
+                }
             }
         }
         .onAppear(perform: presentIntentEntryIfNeeded)
@@ -44,9 +50,9 @@ struct FarmRecordsView: View {
     }
 
     private func presentIntentEntryIfNeeded() {
-        guard session.pendingRecordEntry == .weight else { return }
+        guard let entry = session.pendingRecordEntry, entry != .feed else { return }
         session.pendingRecordEntry = nil
-        isWeightEntryPresented = true
+        presentedEntry = entry
     }
 }
 

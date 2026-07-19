@@ -5,9 +5,12 @@
 ## 当前本地产品闭环
 
 - 登录页同时提供邮箱验证码注册、账号密码登录和 Sign in with Apple；无牧场首页和牧场设置均提供退出登录。退出会撤销 CloudBase Session，只清除本机登录令牌与 Apple 登录标识，保留牧场缓存和设备身份。
+- 已保存的本地工作区不再绕过真实会话门禁：只有持久化 CloudBase Session 有效，且 Apple 账号主体校验一致时才进入牧场；服务不可用或账号主体不一致会明确拒绝登录，不再显示为“迁移中”后继续使用本地身份。
 - 多牧场本地隔离：每条业务实体、操作审计和 Outbox 都强制携带 `farmID`。
 - 统一命令管道：角色能力校验、业务验证、SwiftData 保存、`DomainOperation` 审计和 Outbox 入队。
-- 羊只、圈舍、称重、转群、治疗/疫苗、配种/孕检/产羔、备注和本地搜索。
+- 首页可直接进入建羊、称重、转群和离场；统一导航也支持搜索结果和 App Intent 直接打开羊只详情。
+- 圈舍支持改名、备注、停用和重新启用；羊只支持修改耳号、品种、性别、出生日期和备注。耳号在牧场内永久唯一，圈舍仍有在群羊或受保护历史引用时拒绝破坏性操作。
+- 称重、转群和离场支持详情、受控修正、撤销与恢复；修正会保留原事实的墓碑和审计，并从受影响时间重建羊只当前状态。
 - 羊群支持耳号/品种搜索、性别/状态/圈舍筛选、排序、分段加载和经命令管道执行的批量转群；单羊可导出包含基础资料与时间线的真实 XLSX。
 - 原料库、配方、投喂多原料明细、投喂历史，以及按历史圈舍和真实羊天计算的自由采食分析。
 - 只读的确定性本地牧场助手；它不编造数据，也不能直接写入。
@@ -15,28 +18,26 @@
 - 独立 CloudKit 同步层：private/shared `CKSyncEngine`、每牧场 Zone、CKShare、持久化同步状态、完整命令 Outbox、设备签名、能力证书、冲突隔离和异常硬删除检测。
 - CloudBase 是唯一生产身份与协作服务：Auth 负责邮箱验证码、密码、刷新、退出与 Apple 自定义登录，文档数据库保存账号、设备、匿名牧场目录、成员、邀请、能力证书和删除审计；养殖业务数据仍只存在 CloudKit。旧 Cloudflare/D1 实现仅保留协议回归，不进入 3.0 运行链路。
 - 3.0.0 为免费版本：Release 默认关闭 StoreKit 界面和付费判断，多牧场与已授权生产录入不依赖 Pro 权益；StoreKit 代码保留在默认关闭的构建开关后。
-- 云端协作中心：Development 测试牧场启用、系统共享、邀请码、成员与证书、同步、冲突、安全事件和账户删除状态。
+- 云端协作中心：正式迁移牧场云端状态、系统共享、邀请码、成员与证书、同步、冲突、安全事件和账户删除状态。
 - Zone-wide `CKShare(recordZoneID:)`、成员安全 generation 快照、签名 Tombstone、冲突解决操作、压缩照片 `CKAsset`、场主私有加密照片副本与三份 checkpoint 保留策略。
 - 每牧场 iCloud 钥匙串恢复密钥、`.esheep-recovery` 恢复包、恢复码包装、恢复点校验与约束检查后的签名恢复操作。
 - 设置中心提供 XLSX、CSV、JSON 导入预览、重复与错误报告、稳定幂等键和命令化提交；导出会生成真实 OOXML `.xlsx`，不会把 CSV 改名伪装成工作簿。
+- 设置中心另提供版本化 `FarmBackupEnvelopeV1` 完整本地备份。恢复先在独立临时 SwiftData 容器中校验 checksum、引用、耳号和历史状态，只允许写入空牧场，重复恢复保持幂等；XLSX/CSV 仍只作为人工查看和表格交换。
 - 云缓存安全重建：全 Zone 分页拉取、独立磁盘 staging、签名与摘要校验、照片下载校验、历史重建、单事务业务缓存替换、未确认 Outbox 重放，以及失败后保留旧库和 staging 证据。
-- Development 固定种子测试牧场生成器：空牧场首页即可通过正式命令服务生成 10 个圈舍、100 只羊、500 条生产事件和 50 张编号测试图片，不再要求先迁移数据或启用 CloudKit。
-- 旧版数据正式导入本机：试迁会话阻断项清零后，可将完整临时牧场原子写入正式 SwiftData；照片在提交前校验 SHA-256，同一来源包重复提交保持幂等，提交失败回滚数据库和资源目录。该入口只写本机，不上传 CloudKit、不修改 eSheep+ 或 Supabase。
+- 旧版牧场正式导入：阻断项清零后，将临时牧场、照片和版本化云端基线原子写入正式 SwiftData；同一来源包重复提交保持幂等，失败回滚数据库和资源目录。Development 在联网后自动续传至用户 iCloud，始终不修改 eSheep+ 或 Supabase。
 
-## Development 外部状态与仍需事项
+## 当前阶段边界与外部状态
 
 这些步骤不能由仓库代码或无签名构建替代，尚未在本机伪造完成状态：
 
-1. 注册并核对 Development、Staging、Production 的 Bundle ID、App Group、CloudKit Container、Sign in with Apple、WeatherKit、Push 与配置文件；3.0.0 不创建或提交订阅产品。
-2. 仓库内 CloudBase Gateway 已覆盖邮箱、Apple、刷新、退出、删除、限流、邀请事务与能力证书。新的 Development/Production 部署、CloudBase 自定义登录密钥、Apple Provider 和实时健康检查仍需外部验证；历史 Cloudflare/D1 地址不得写入发行配置。
-3. 使用两个真实 iCloud 测试账户完成 Development 环境的 private/shared `CKSyncEngine`、Zone、CKShare、邀请、撤权和恢复验收；Production Schema 仍不部署。
-4. 在 App Store Connect 确认 3.0.0 未关联订阅，完成产品页、支持站、隐私政策、服务条款、删除页面与审核账户/演示路径。
-5. 按七日清单完成双账号共享、离线同步、冲突、撤权、重装、状态重建、硬删除和照片恢复，并保存每日证据。
-6. 新增的 `com.sheepfarm.next.dev.widget`、Staging 和 Production Widget Bundle ID 需要在 Apple Developer 中注册 App Group 能力并生成描述文件；未完成前无签名构建可通过，但带 Widget 的真机安装会被签名门禁拒绝。
+1. Debug/Development 已启用正式迁移牧场的 iCloud 双设备同步与成员邀请入口；Staging 与 Release 继续关闭。真实双账号邀请、撤权、订阅、TestFlight 和 App Store 工作仍需单独验收。
+2. 仓库内 CloudBase Gateway 0.3.2 已覆盖邮箱、Apple、刷新、退出、删除、限流、迁移牧场 `provisioning → active` 目录状态，以及牧场 UUID 大小写统一。2026-07-19 已向 Development 完整 COS 部署 0.3.2；Apple 路由不再返回 `apple_cloudbase_migration_pending`。真实 Apple 系统授权、邮箱验证码注册和迁移牧场双设备重建仍需在真机分别完成交互验收。
+3. 登录成功后的业务写入只依赖本机 SwiftData；断网、CloudKit 关闭和重启不应阻断建羊、称重、转群、离场、修正、撤销、查询和备份恢复。
+4. 新增的 `com.sheepfarm.next.dev.widget` Bundle ID 仍需要有效描述文件才能在连接设备上运行 XCTest；无签名 App/Test/Widget 编译不受此限制。
 
-当前代码已具备 `CKAsset` 照片传输、加密 checkpoint、区内成员快照、签名删除、业务冲突裁决、独立 SwiftData staging 云缓存重建和正式本机迁移提交。迁移正式提交会写入不可逆的本地锁定标记，服务层拒绝其创建 CloudKit Zone、上传或共享。2026-07-16 已在连接的 iPhone 16 Pro 上通过当时全部 41 项 XCTest；当前自动化基线以 `./tools/verify_local.sh` 的最新结果为准。新增 Widget 描述文件尚未生成时，新增 XCTest 不能在真机执行。CloudBase 远端部署状态以部署清单和实时健康检查为准。真机退出/重登录操作、11 英寸 iPad Pro 最新回归、两个 iCloud 账号互联以及连续七天运行仍需实际操作和自然时间，不能提前标记为通过。
+当前自动化基线以 `./tools/verify_local.sh` 的最新结果为准；真实登录、迁移包上传、同一场主双设备重建、断网续传和照片对账仍必须在两台真实 iCloud 设备上取得证据，不能由编译或模拟响应代替。
 
-云端准入现在按环境隔离：Development 只允许固定测试牧场，Staging/Production 只允许正式新建牧场；旧版迁移牧场在所有环境中永久保持仅本机。三套构建配置不共享 CloudBase Gateway URL、App Group 或 CloudKit Container。
+云端准入按环境隔离：Development 只允许具有完整迁移提交、基线摘要和照片校验的正式迁移牧场，不再存在固定种子测试牧场路径；Staging/Production 云功能仍由构建开关关闭。迁移目录在完整上传前保持 provisioning，第二台设备和受邀成员只能发现 active 牧场。
 
 详细边界与配置步骤见 `docs/云端协作安全设计.md`、`docs/CloudKit_Development配置清单.md` 和 `docs/Development七日验收记录.md`。
 

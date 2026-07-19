@@ -23,6 +23,9 @@ enum FarmCommandError: LocalizedError {
     case cloudIdentityLocked
     case invalidFarmCoordinate
     case invalidFarmTimeZone
+    case penHasCurrentSheep
+    case protectedPenReferences
+    case sourceRecordNotFound
 
     var errorDescription: String? {
         switch self {
@@ -47,6 +50,9 @@ enum FarmCommandError: LocalizedError {
         case .cloudIdentityLocked: "当前云端牧场缺少有效的账号绑定或能力证书，已锁定写入。"
         case .invalidFarmCoordinate: "牧场坐标必须位于有效的经纬度范围内。"
         case .invalidFarmTimeZone: "请选择有效的 IANA 时区。"
+        case .penHasCurrentSheep: "圈舍内仍有在场羊只，请先转群后再停用。"
+        case .protectedPenReferences: "圈舍仍被羊只或生产历史引用，不能直接删除；可以先停用。"
+        case .sourceRecordNotFound: "未找到可修正的原始记录。"
         }
     }
 }
@@ -103,12 +109,18 @@ struct LambingOffspringDraft: Sendable, Hashable, Identifiable {
 enum FarmCommand: Sendable {
     case updateFarmLocation(displayName: String, latitude: Double, longitude: Double, addressSnapshot: String?, timeZoneIdentifier: String, source: FarmLocationSource, horizontalAccuracyMeters: Double?)
     case createPen(name: String, note: String)
+    case updatePen(penID: UUID, name: String, note: String)
+    case setPenActive(penID: UUID, isActive: Bool)
     case addSheep(earTag: String, breed: String, sex: SheepSex, penID: UUID?, occurredAt: Date, birthAt: Date?, note: String)
+    case updateSheepProfile(sheepID: UUID, earTag: String, breed: String, sex: SheepSex, birthAt: Date?, note: String)
     case recordWeight(sheepID: UUID, kilogramsText: String, occurredAt: Date, note: String)
+    case correctWeight(originalID: UUID, kilogramsText: String, occurredAt: Date, note: String, reason: String)
     case recordWeaning(sheepID: UUID, weanWeightText: String, occurredAt: Date, birthAt: Date?, birthWeightText: String?, averageDailyGainText: String?, damID: UUID?, litterSize: Int?, note: String)
     case createBreedingProgram(name: String, createdAt: Date, steps: [BreedingProgramStepDraft])
     case transferSheep(sheepID: UUID, toPenID: UUID?, occurredAt: Date, note: String)
+    case correctTransfer(originalID: UUID, toPenID: UUID?, occurredAt: Date, note: String, reason: String)
     case removeSheep(sheepID: UUID, kind: RemovalKind, reason: String, amountText: String?, occurredAt: Date, note: String)
+    case correctRemoval(originalID: UUID, kind: RemovalKind, reason: String, amountText: String?, occurredAt: Date, note: String, correctionReason: String)
     case restoreSheep(removalID: UUID)
     case createBatch(name: String, purpose: String, startedAt: Date, note: String)
     case assignSheepToBatch(batchID: UUID, sheepID: UUID, joinedAt: Date)
@@ -129,7 +141,7 @@ enum FarmCommand: Sendable {
         switch self {
         case .updateFarmLocation:
             .editFarmLocation
-        case .restoreSheep, .tombstoneEntity, .restoreTombstonedEntity:
+        case .restoreSheep, .tombstoneEntity, .restoreTombstonedEntity, .correctWeight, .correctTransfer, .correctRemoval:
             .deleteProtectedFacts
         case .addIngredient, .createRecipe, .addRecipeComponent, .createBreedingProgram:
             .manageCatalogs
@@ -142,12 +154,18 @@ enum FarmCommand: Sendable {
         switch self {
         case .updateFarmLocation: .updateFarmLocation
         case .createPen: .createPen
+        case .updatePen: .updatePen
+        case .setPenActive: .setPenActive
         case .addSheep: .addSheep
+        case .updateSheepProfile: .updateSheepProfile
         case .recordWeight: .recordWeight
+        case .correctWeight: .correctWeight
         case .recordWeaning: .recordWeaning
         case .createBreedingProgram: .createBreedingProgram
         case .transferSheep: .transferSheep
+        case .correctTransfer: .correctTransfer
         case .removeSheep: .removeSheep
+        case .correctRemoval: .correctRemoval
         case .restoreSheep: .restoreSheep
         case .createBatch: .createBatch
         case .assignSheepToBatch: .assignBatchMembership
@@ -170,12 +188,18 @@ enum FarmCommand: Sendable {
         switch self {
         case .updateFarmLocation: "更新牧场固定位置"
         case .createPen(let name, _): "新建圈舍：\(name)"
+        case .updatePen(_, let name, _): "更新圈舍：\(name)"
+        case .setPenActive(_, let active): active ? "重新启用圈舍" : "停用圈舍"
         case .addSheep(let earTag, _, _, _, _, _, _): "新建羊只：\(earTag)"
+        case .updateSheepProfile(_, let earTag, _, _, _, _): "更新羊只档案：\(earTag)"
         case .recordWeight: "记录称重"
+        case .correctWeight: "修正称重记录"
         case .recordWeaning: "记录断奶"
         case .createBreedingProgram(let name, _, _): "新建配种方案：\(name)"
         case .transferSheep: "记录转群"
+        case .correctTransfer: "修正转群记录"
         case .removeSheep(_, let kind, _, _, _, _): "记录\(kind.displayName)"
+        case .correctRemoval(_, let kind, _, _, _, _, _): "修正\(kind.displayName)记录"
         case .restoreSheep: "恢复离场羊只"
         case .createBatch(let name, _, _, _): "新建生产批次：\(name)"
         case .assignSheepToBatch: "加入生产批次"
@@ -211,8 +235,7 @@ final class FarmCommandService {
         let trimmedName = try required(name, label: "牧场名称")
         let existingOwnedFarmCount = try context.fetch(FetchDescriptor<FarmRecord>()).count {
             $0.ownerAccountID == account.effectiveAccountID &&
-            $0.deletedAt == nil &&
-            !$0.isDevelopmentTestFarm
+            $0.deletedAt == nil
         }
         guard SubscriptionCapabilityPolicy.canCreateFarm(
             existingOwnedFarmCount: existingOwnedFarmCount,
@@ -247,11 +270,15 @@ final class FarmCommandService {
     }
 
     func execute(_ command: FarmCommand, in farm: FarmContext, context: ModelContext) throws {
-        let cloudBinding = try context.fetch(FetchDescriptor<CloudFarmBinding>()).first(where: { $0.farmID == farm.farmID })
+        let farmID = farm.farmID
+        let accountID = farm.accountID
+        let cloudBinding = try context.fetch(FetchDescriptor<CloudFarmBinding>(predicate: #Predicate {
+            $0.farmID == farmID
+        })).first
         if let cloudBinding {
-            let hasUsableCertificate = try context.fetch(FetchDescriptor<CapabilityCertificateRecord>()).contains(where: {
-                $0.farmID == farm.farmID && $0.accountID == farm.accountID && $0.isUsable
-            })
+            let hasUsableCertificate = try context.fetch(FetchDescriptor<CapabilityCertificateRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.accountID == accountID
+            })).contains(where: \.isUsable)
             guard cloudBinding.state == .active, hasUsableCertificate else { throw FarmCommandError.cloudIdentityLocked }
         }
         guard farm.capabilities.allows(command.requiredCapability) else {
@@ -286,6 +313,13 @@ final class FarmCommandService {
             if let tombstone = tombstones.first(where: { $0.id == tombstoneID }) {
                 tombstone.restoredByOperationID = operation.id
                 tombstone.restoredAt = Date.now
+            }
+        case .correctWeight(let originalID, _, _, _, _),
+             .correctTransfer(let originalID, _, _, _, _),
+             .correctRemoval(let originalID, _, _, _, _, _, _):
+            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>())
+            if let tombstone = tombstones.first(where: { $0.farmID == farm.farmID && $0.entityID == originalID && $0.operationID == nil }) {
+                tombstone.operationID = operation.id
             }
         default:
             break
@@ -352,6 +386,17 @@ final class FarmCommandService {
             if let accuracy, accuracy < 0 { throw FarmCommandError.invalidNumber("定位精度") }
         case .createPen(let name, _):
             _ = try required(name, label: "圈舍名称")
+        case .updatePen(let penID, let name, _):
+            try assertPen(penID, farmID: farmID, context: context, includeInactive: true)
+            _ = try required(name, label: "圈舍名称")
+        case .setPenActive(let penID, let isActive):
+            try assertPen(penID, farmID: farmID, context: context, includeInactive: true)
+            if !isActive {
+                let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+                guard !sheep.contains(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.currentPenID == penID }) else {
+                    throw FarmCommandError.penHasCurrentSheep
+                }
+            }
         case .addSheep(let earTag, let breed, _, let penID, _, _, _):
             let normalizedTag = try required(earTag, label: "耳号")
             _ = try required(breed, label: "品种")
@@ -360,9 +405,27 @@ final class FarmCommandService {
                 throw FarmCommandError.duplicateEarTag
             }
             if let penID { try assertPen(penID, farmID: farmID, context: context) }
+        case .updateSheepProfile(let sheepID, let earTag, let breed, _, _, _):
+            let current = try sheepRecord(sheepID, farmID: farmID, context: context)
+            let normalizedTag = try required(earTag, label: "耳号")
+            _ = try required(breed, label: "品种")
+            if EarTag.normalized(current.earTag) != EarTag.normalized(normalizedTag) {
+                let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                    $0.farmID == farmID && $0.deletedAt == nil
+                }))
+                guard !sheep.contains(where: {
+                    $0.id != sheepID && EarTag.normalized($0.earTag) == EarTag.normalized(normalizedTag)
+                }) else { throw FarmCommandError.duplicateEarTag }
+            }
         case .recordWeight(let sheepID, let kilogramsText, _, _):
             try assertSheep(sheepID, farmID: farmID, context: context)
             try positiveDecimal(kilogramsText, label: "体重")
+        case .correctWeight(let originalID, let kilogramsText, _, _, let reason):
+            guard try context.fetch(FetchDescriptor<WeightRecord>()).contains(where: { $0.id == originalID && $0.farmID == farmID && $0.deletedAt == nil }) else {
+                throw FarmCommandError.sourceRecordNotFound
+            }
+            try positiveDecimal(kilogramsText, label: "体重")
+            _ = try required(reason, label: "修正原因")
         case .recordWeaning(let sheepID, let weanWeightText, _, _, let birthWeightText, let averageDailyGainText, let damID, let litterSize, _):
             try assertSheep(sheepID, farmID: farmID, context: context)
             try positiveDecimal(weanWeightText, label: "断奶重")
@@ -384,9 +447,22 @@ final class FarmCommandService {
         case .transferSheep(let sheepID, let toPenID, _, _):
             try assertSheep(sheepID, farmID: farmID, context: context)
             if let toPenID { try assertPen(toPenID, farmID: farmID, context: context) }
+        case .correctTransfer(let originalID, let toPenID, _, _, let reason):
+            guard try context.fetch(FetchDescriptor<TransferRecord>()).contains(where: { $0.id == originalID && $0.farmID == farmID && $0.deletedAt == nil }) else {
+                throw FarmCommandError.sourceRecordNotFound
+            }
+            if let toPenID { try assertPen(toPenID, farmID: farmID, context: context) }
+            _ = try required(reason, label: "修正原因")
         case .removeSheep(let sheepID, _, let reason, let amountText, _, _):
             try assertSheep(sheepID, farmID: farmID, context: context)
             _ = try required(reason, label: "离场原因")
+            if let amountText, !amountText.isEmpty { try positiveDecimal(amountText, label: "金额") }
+        case .correctRemoval(let originalID, _, let reason, let amountText, _, _, let correctionReason):
+            guard try context.fetch(FetchDescriptor<RemovalRecord>()).contains(where: { $0.id == originalID && $0.farmID == farmID && $0.deletedAt == nil }) else {
+                throw FarmCommandError.sourceRecordNotFound
+            }
+            _ = try required(reason, label: "离场原因")
+            _ = try required(correctionReason, label: "修正原因")
             if let amountText, !amountText.isEmpty { try positiveDecimal(amountText, label: "金额") }
         case .restoreSheep(let removalID):
             let removals = try context.fetch(FetchDescriptor<RemovalRecord>())
@@ -500,6 +576,13 @@ final class FarmCommandService {
             guard try entityExists(type: entityType, id: entityID, farmID: farmID, context: context) else {
                 throw FarmCommandError.missingRequiredValue("可删除的权威记录")
             }
+            if entityType == .pen {
+                let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+                let transfers = try context.fetch(FetchDescriptor<TransferRecord>())
+                let hasReferences = sheep.contains { $0.farmID == farmID && ($0.currentPenID == entityID || $0.initialPenID == entityID) }
+                    || transfers.contains { $0.farmID == farmID && ($0.fromPenID == entityID || $0.toPenID == entityID) }
+                guard !hasReferences else { throw FarmCommandError.protectedPenReferences }
+            }
         case .restoreTombstonedEntity(let tombstoneID):
             guard let tombstone = try context.fetch(FetchDescriptor<TombstoneRecord>()).first(where: { $0.id == tombstoneID && $0.farmID == farmID && $0.restoredAt == nil }) else {
                 throw FarmCommandError.missingRequiredValue("可恢复的删除记录")
@@ -537,14 +620,54 @@ final class FarmCommandService {
             let record = PenRecord(farmID: farm.farmID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), note: note.trimmingCharacters(in: .whitespacesAndNewlines))
             context.insert(record)
             return appliedResult(.pen, record.id)
+        case .updatePen(let penID, let name, let note):
+            guard let record = try context.fetch(FetchDescriptor<PenRecord>()).first(where: { $0.id == penID && $0.farmID == farm.farmID && $0.deletedAt == nil }) else {
+                throw FarmCommandError.penNotFound
+            }
+            let baseRevision = record.revision
+            record.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.updatedAt = .now
+            record.revision += 1
+            return appliedResult(.pen, record.id, baseRevision: baseRevision, revision: record.revision)
+        case .setPenActive(let penID, let isActive):
+            guard let record = try context.fetch(FetchDescriptor<PenRecord>()).first(where: { $0.id == penID && $0.farmID == farm.farmID && $0.deletedAt == nil }) else {
+                throw FarmCommandError.penNotFound
+            }
+            let baseRevision = record.revision
+            record.isActive = isActive
+            record.updatedAt = .now
+            record.revision += 1
+            return appliedResult(.pen, record.id, baseRevision: baseRevision, revision: record.revision)
         case .addSheep(let earTag, let breed, let sex, let penID, let occurredAt, let birthAt, let note):
             let record = SheepRecord(farmID: farm.farmID, earTag: earTag.trimmingCharacters(in: .whitespacesAndNewlines), breed: breed.trimmingCharacters(in: .whitespacesAndNewlines), sex: sex, penID: penID, enteredAt: occurredAt, birthAt: birthAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
             context.insert(record)
             return appliedResult(.sheep, record.id)
+        case .updateSheepProfile(let sheepID, let earTag, let breed, let sex, let birthAt, let note):
+            let record = try sheepRecord(sheepID, farmID: farm.farmID, context: context)
+            let baseRevision = record.revision
+            record.earTag = earTag.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.breed = breed.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.sexRawValue = sex.rawValue
+            record.birthAt = birthAt
+            record.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.updatedAt = .now
+            record.revision += 1
+            return appliedResult(.sheep, record.id, baseRevision: baseRevision, revision: record.revision)
         case .recordWeight(let sheepID, let kilogramsText, let occurredAt, let note):
             let record = WeightRecord(farmID: farm.farmID, sheepID: sheepID, kilogramsText: normalizedDecimal(kilogramsText), occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
             context.insert(record)
             return appliedResult(.weight, record.id)
+        case .correctWeight(let originalID, let kilogramsText, let occurredAt, let note, let reason):
+            guard let original = try context.fetch(FetchDescriptor<WeightRecord>()).first(where: { $0.id == originalID && $0.farmID == farm.farmID && $0.deletedAt == nil }) else {
+                throw FarmCommandError.sourceRecordNotFound
+            }
+            original.deletedAt = .now
+            original.revision += 1
+            context.insert(TombstoneRecord(farmID: farm.farmID, entityType: CloudEntityType.weight.rawValue, entityID: original.id, deletedByAccountID: farm.accountID, reason: "修正：\(reason.trimmingCharacters(in: .whitespacesAndNewlines))", revision: original.revision))
+            let replacement = WeightRecord(farmID: farm.farmID, sheepID: original.sheepID, kilogramsText: normalizedDecimal(kilogramsText), occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
+            context.insert(replacement)
+            return appliedResult(.weight, replacement.id)
         case .recordWeaning(let sheepID, let weanWeightText, let occurredAt, let birthAt, let birthWeightText, let averageDailyGainText, let damID, let litterSize, let note):
             let record = WeaningRecord(
                 farmID: farm.farmID,
@@ -585,6 +708,21 @@ final class FarmCommandService {
             let record = TransferRecord(farmID: farm.farmID, sheepID: sheepID, fromPenID: origin, toPenID: toPenID, occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
             context.insert(record)
             return appliedResult(.transfer, record.id)
+        case .correctTransfer(let originalID, let toPenID, let occurredAt, let note, let reason):
+            guard let original = try context.fetch(FetchDescriptor<TransferRecord>()).first(where: { $0.id == originalID && $0.farmID == farm.farmID && $0.deletedAt == nil }) else {
+                throw FarmCommandError.sourceRecordNotFound
+            }
+            original.deletedAt = .now
+            original.revision += 1
+            context.insert(TombstoneRecord(farmID: farm.farmID, entityType: CloudEntityType.transfer.rawValue, entityID: original.id, deletedByAccountID: farm.accountID, reason: "修正：\(reason.trimmingCharacters(in: .whitespacesAndNewlines))", revision: original.revision))
+            let sheep = try sheepRecord(original.sheepID, farmID: farm.farmID, context: context)
+            sheep.legacyStatusSnapshotIsAuthoritative = false
+            sheep.legacyPenSnapshotIsAuthoritative = false
+            let remaining = try context.fetch(FetchDescriptor<TransferRecord>()).filter { $0.farmID == farm.farmID && $0.sheepID == original.sheepID && $0.deletedAt == nil }
+            let fromPenID = FarmHistoryTimeline.pen(for: sheep, at: occurredAt, transfers: remaining)
+            let replacement = TransferRecord(farmID: farm.farmID, sheepID: original.sheepID, fromPenID: fromPenID, toPenID: toPenID, occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
+            context.insert(replacement)
+            return appliedResult(.transfer, replacement.id)
         case .removeSheep(let sheepID, let kind, let reason, let amountText, let occurredAt, let note):
             let sheep = try sheepRecord(sheepID, farmID: farm.farmID, context: context)
             sheep.legacyStatusSnapshotIsAuthoritative = false
@@ -592,6 +730,20 @@ final class FarmCommandService {
             let record = RemovalRecord(farmID: farm.farmID, sheepID: sheepID, kind: kind, reason: reason.trimmingCharacters(in: .whitespacesAndNewlines), amountText: amountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }, occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
             context.insert(record)
             return appliedResult(.removal, record.id)
+        case .correctRemoval(let originalID, let kind, let reason, let amountText, let occurredAt, let note, let correctionReason):
+            guard let original = try context.fetch(FetchDescriptor<RemovalRecord>()).first(where: { $0.id == originalID && $0.farmID == farm.farmID && $0.deletedAt == nil }) else {
+                throw FarmCommandError.sourceRecordNotFound
+            }
+            original.deletedAt = .now
+            original.revision += 1
+            context.insert(TombstoneRecord(farmID: farm.farmID, entityType: CloudEntityType.removal.rawValue, entityID: original.id, deletedByAccountID: farm.accountID, reason: "修正：\(correctionReason.trimmingCharacters(in: .whitespacesAndNewlines))", revision: original.revision))
+            if let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == original.sheepID && $0.farmID == farm.farmID }) {
+                sheep.legacyStatusSnapshotIsAuthoritative = false
+                sheep.legacyPenSnapshotIsAuthoritative = false
+            }
+            let replacement = RemovalRecord(farmID: farm.farmID, sheepID: original.sheepID, kind: kind, reason: reason.trimmingCharacters(in: .whitespacesAndNewlines), amountText: amountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }, occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
+            context.insert(replacement)
+            return appliedResult(.removal, replacement.id)
         case .restoreSheep(let removalID):
             let removals = try context.fetch(FetchDescriptor<RemovalRecord>())
             guard let removal = removals.first(where: { $0.id == removalID && $0.farmID == farm.farmID && $0.deletedAt == nil }) else {
@@ -773,6 +925,11 @@ final class FarmCommandService {
         case .semen: return try context.fetch(FetchDescriptor<SemenRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .note: return try context.fetch(FetchDescriptor<NoteRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .photoAsset: return try context.fetch(FetchDescriptor<PhotoAssetRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .breedingProgramStep: return try context.fetch(FetchDescriptor<BreedingProgramStepRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .feedIngredientBatch: return try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .healthCatalogItem: return try context.fetch(FetchDescriptor<HealthCatalogItemRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .healthSubjectLink: return try context.fetch(FetchDescriptor<HealthSubjectLink>()).contains { $0.id == id && $0.farmID == farmID }
+        case .lambingOffspring: return try context.fetch(FetchDescriptor<LambingOffspringRecord>()).contains { $0.id == id && $0.farmID == farmID }
         }
     }
 
@@ -793,7 +950,14 @@ final class FarmCommandService {
     }
 
     private func assertSheep(_ id: UUID, farmID: UUID, context: ModelContext) throws { _ = try sheepRecord(id, farmID: farmID, context: context) }
-    private func assertPen(_ id: UUID, farmID: UUID, context: ModelContext) throws { _ = try penRecord(id, farmID: farmID, context: context) }
+    private func assertPen(_ id: UUID, farmID: UUID, context: ModelContext, includeInactive: Bool = false) throws {
+        let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+            $0.id == id && $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        guard pens.contains(where: {
+            includeInactive || $0.isActive
+        }) else { throw FarmCommandError.penNotFound }
+    }
     private func assertIngredient(_ id: UUID, farmID: UUID, context: ModelContext) throws { _ = try ingredientRecord(id, farmID: farmID, context: context) }
 
     private func assertRecipe(_ id: UUID, farmID: UUID, context: ModelContext) throws {
@@ -811,8 +975,10 @@ final class FarmCommandService {
     }
 
     private func sheepRecord(_ id: UUID, farmID: UUID, context: ModelContext) throws -> SheepRecord {
-        let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
-        guard let item = sheep.first(where: { $0.id == id && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sheepNotFound }
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.id == id && $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        guard let item = sheep.first else { throw FarmCommandError.sheepNotFound }
         return item
     }
 
@@ -869,7 +1035,7 @@ enum EarTag {
 private extension FarmCommand {
     var requiresHistoryRebuild: Bool {
         switch self {
-        case .addSheep, .transferSheep, .removeSheep, .restoreSheep, .tombstoneEntity, .restoreTombstonedEntity: true
+        case .addSheep, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep, .tombstoneEntity, .restoreTombstonedEntity: true
         default: false
         }
     }
@@ -878,7 +1044,9 @@ private extension FarmCommand {
         switch self {
         case .addSheep(_, _, _, _, let occurredAt, _, _): occurredAt
         case .transferSheep(_, _, let occurredAt, _): occurredAt
+        case .correctTransfer(_, _, let occurredAt, _, _): occurredAt
         case .removeSheep(_, _, _, _, let occurredAt, _): occurredAt
+        case .correctRemoval(_, _, _, _, let occurredAt, _, _): occurredAt
         case .restoreSheep: nil
         case .tombstoneEntity, .restoreTombstonedEntity: nil
         default: nil

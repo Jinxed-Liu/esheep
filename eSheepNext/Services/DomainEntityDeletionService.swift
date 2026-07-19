@@ -33,6 +33,15 @@ enum DomainEntityDeletionService {
         case .semen: try context.fetch(FetchDescriptor<SemenRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
         case .note: try context.fetch(FetchDescriptor<NoteRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
         case .photoAsset: try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
+        case .breedingProgramStep: try context.fetch(FetchDescriptor<BreedingProgramStepRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
+        case .feedIngredientBatch:
+            if date != nil, let value = try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
+        case .healthCatalogItem:
+            if date != nil, let value = try context.fetch(FetchDescriptor<HealthCatalogItemRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
+        case .healthSubjectLink:
+            if date != nil, let value = try context.fetch(FetchDescriptor<HealthSubjectLink>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
+        case .lambingOffspring:
+            if date != nil, let value = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
         }
     }
 

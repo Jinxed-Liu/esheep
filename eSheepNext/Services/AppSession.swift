@@ -10,20 +10,26 @@ enum AppTab: Hashable {
     case search
 }
 
-enum AppNavigationRequest: String, Sendable {
+enum AppNavigationRequest: Codable, Sendable, Equatable {
     case home
+    case addSheep
     case recordWeight
+    case transferSheep
+    case removeSheep
     case recordFeed
+    case openSheep(UUID)
 
     private static let storageKey = "pending-app-navigation-request"
 
     static func enqueue(_ request: AppNavigationRequest) {
-        UserDefaults.standard.set(request.rawValue, forKey: storageKey)
+        guard let data = try? JSONEncoder().encode(request) else { return }
+        UserDefaults.standard.set(data, forKey: storageKey)
     }
 
     static func consume() -> AppNavigationRequest? {
         defer { UserDefaults.standard.removeObject(forKey: storageKey) }
-        return UserDefaults.standard.string(forKey: storageKey).flatMap(AppNavigationRequest.init(rawValue:))
+        guard let data = UserDefaults.standard.data(forKey: storageKey) else { return nil }
+        return try? JSONDecoder().decode(AppNavigationRequest.self, from: data)
     }
 }
 
@@ -51,6 +57,7 @@ final class AppSession {
     var authenticationNotice: String?
     var pendingRecordEntry: PendingRecordEntry?
     var pendingSearchQuery: String?
+    var pendingSheepID: UUID?
 
     init() {
         activeAccountProfileID = SecureAccountStore.activeAccountProfileID()
@@ -74,12 +81,20 @@ final class AppSession {
         switch request {
         case .home:
             selectedTab = .home
+        case .addSheep:
+            requestRecordEntry(.addSheep)
         case .recordWeight:
-            selectedTab = .records
-            pendingRecordEntry = .weight
+            requestRecordEntry(.weight)
+        case .transferSheep:
+            requestRecordEntry(.transfer)
+        case .removeSheep:
+            requestRecordEntry(.removal)
         case .recordFeed:
             selectedTab = .feeding
             pendingRecordEntry = .feed
+        case .openSheep(let sheepID):
+            pendingSheepID = sheepID
+            selectedTab = .search
         }
     }
 
@@ -89,7 +104,11 @@ final class AppSession {
         switch target.kind {
         case .home:
             selectedTab = .home
-        case .searchSheep, .openPen:
+        case .searchSheep:
+            pendingSearchQuery = target.query
+            pendingSheepID = target.entityID
+            selectedTab = .search
+        case .openPen:
             pendingSearchQuery = target.query
             selectedTab = .search
         case .recordWeight:
@@ -99,6 +118,11 @@ final class AppSession {
             selectedTab = .feeding
             pendingRecordEntry = .feed
         }
+    }
+
+    func requestRecordEntry(_ entry: PendingRecordEntry) {
+        selectedTab = entry == .feed ? .feeding : .records
+        pendingRecordEntry = entry
     }
 
     func switchFarm(to farmID: UUID, availableFarms: [FarmRecord]) throws {
@@ -151,7 +175,12 @@ final class AppSession {
     }
 }
 
-enum PendingRecordEntry: Sendable, Equatable {
+enum PendingRecordEntry: String, Sendable, Equatable, Identifiable {
+    case addSheep
     case weight
+    case transfer
+    case removal
     case feed
+
+    var id: String { rawValue }
 }

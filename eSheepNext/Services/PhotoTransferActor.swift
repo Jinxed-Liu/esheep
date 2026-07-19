@@ -242,6 +242,40 @@ actor PhotoTransferActor {
         return try Data(contentsOf: Self.absoluteURL(for: asset.relativePath))
     }
 
+    func updateCapturedAt(assetID: UUID, capturedAt: Date) throws {
+        let context = ModelContext(modelContainer)
+        guard let asset = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first(where: {
+            $0.id == assetID && $0.deletedAt == nil
+        }) else {
+            throw PhotoTransferError.assetMissing
+        }
+
+        asset.capturedAt = capturedAt
+        if let transfer = try context.fetch(FetchDescriptor<CloudAssetTransfer>()).first(where: {
+            $0.assetID == assetID && $0.direction == .upload
+        }) {
+            transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+            transfer.nextRetryAt = nil
+            transfer.lastErrorCode = nil
+            transfer.updatedAt = .now
+        } else {
+            let fileURL = Self.absoluteURL(for: asset.relativePath)
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                throw PhotoTransferError.sourceUnreadable
+            }
+            context.insert(CloudAssetTransfer(
+                farmID: asset.farmID,
+                assetID: asset.id,
+                localRelativePath: asset.relativePath,
+                payloadDigest: asset.sha256,
+                byteCount: Self.fileSize(fileURL),
+                direction: .upload,
+                sourceDigest: asset.sourceSHA256.isEmpty ? asset.sha256 : asset.sourceSHA256
+            ))
+        }
+        try context.save()
+    }
+
     func verify(assetID: UUID) throws -> Bool {
         let context = ModelContext(modelContainer)
         guard let asset = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first(where: { $0.id == assetID }) else { throw PhotoTransferError.assetMissing }

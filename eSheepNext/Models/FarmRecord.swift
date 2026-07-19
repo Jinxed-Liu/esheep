@@ -36,9 +36,7 @@ final class FarmRecord {
     var createdAt: Date
     var updatedAt: Date
     var deletedAt: Date?
-    var isDevelopmentTestFarm: Bool = false
-    var developmentSeed: String?
-    /// 由旧版试迁正式提交而来。此标记一经写入不得解除，确保迁移牧场永远不进入 Development 云端测试链路。
+    /// 旧数据库兼容字段。只有完整校验并生成正式云端基线后，升级服务才能解除此限制。
     var isLocalOnlyMigration: Bool = false
     var locationDisplayName: String?
     var latitude: Double?
@@ -66,8 +64,6 @@ final class FarmRecord {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.deletedAt = nil
-        self.isDevelopmentTestFarm = false
-        self.developmentSeed = nil
         self.isLocalOnlyMigration = false
         self.locationDisplayName = nil
         self.latitude = nil

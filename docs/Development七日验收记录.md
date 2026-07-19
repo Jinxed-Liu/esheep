@@ -1,6 +1,6 @@
 # eSheepNext Development 七日验收记录
 
-本记录只用于生成的测试牧场。没有实际执行、截图、日志与摘要证据的项目必须保留“未执行”，不得提前标记通过。
+本记录只用于本次完成正式提交和云端基线校验的迁移牧场。没有实际执行、截图、日志与摘要证据的项目必须保留“未执行”，不得提前标记通过。
 
 ## 固定环境
 
@@ -13,7 +13,8 @@
 - 成员 Apple/iCloud 账号：待填写
 - CloudBase Gateway URL 与版本：待部署后填写
 - CloudBase 环境与部署 ID：待部署后填写
-- 测试牧场 ID：待填写
+- 正式迁移牧场 ID：待填写
+- 迁移提交 ID 与基线摘要：待填写
 
 ## 每日证据模板
 
@@ -25,7 +26,7 @@
 - 部署 CloudBase 身份集合、Gateway、Auth Provider、Apple/能力证书密钥并完成生产依赖审计。
 - 两账号 Apple 登录、场主建立 Zone-wide Share、邀请码兑换、参与者确认。
 - 成员快照 generation 与初始 checkpoint 一致。
-- 测试数据达到 100 只羊、10 个圈舍、500 条生产事件、50 张照片。
+- 第一台设备的迁移实体数量、关键羊只状态和照片摘要与迁移提交清单一致。
 
 ## 第 2 日：离线生产与照片
 
@@ -75,5 +76,8 @@
 - 2026-07-16：Debug 模拟器构建、Release 无签名真机构建与 `build-for-testing` 通过，产品 Emoji 扫描通过。
 - 2026-07-16：历史 Cloudflare/D1 Identity Worker 曾完成 Development 部署，但已退出 3.0 运行链路，不能作为当前 CloudBase 验收证据。签名 App 已安装到 iPhone 16 Pro；CloudBase 新 Gateway 的真实账号全流程和第 1 日计时尚未完成。
 - 2026-07-18：当前 CloudBase Development 地址健康检查可达，未授权账户接口返回 401；但 `/v1/auth/apple` 仍返回旧版 `apple_cloudbase_migration_pending` 503，证明仓库内 0.3.0 Gateway 尚未部署。该项保持发布阻断。
+- 2026-07-19：使用 CloudBase CLI 的完整 COS 通道部署 Gateway 0.3.0，远端函数为 Active/Available，15 项运行配置完整且健康检查返回 200/0.3.0。Apple 路由的无效凭证返回 401 `apple_authentication_failed`，旧迁移响应已消失；CloudBase 自定义登录票据真实换回 access/refresh session，Apple client secret 向 Apple 验证返回预期 `invalid_grant`。首次限流文档不存在曾导致邮箱入口 500，补充 SDK `DOCUMENT_NOT_FOUND` 适配和回归测试后重新部署，邮箱格式错误返回 400、错误密码返回 400、未授权账户接口返回 401。部署探针账号已删除。真实 Apple 授权弹窗和邮箱验证码收取仍待真机交互。
+- 2026-07-19：迁移牧场云端启动所需的 Gateway 0.3.1 已通过完整 COS 通道部署到同一 Development 环境。健康检查返回 200/0.3.1；新增激活接口存在，未授权调用返回 401 `missing_access_token`。该证据只证明服务版本和鉴权边界，不替代真实迁移包上传、CloudKit 摘要核对或第二台设备重建。
+- 2026-07-19：真机迁移首次暴露 JSON UUID 大写、URL UUID 小写造成 CloudBase 文档键不一致；Gateway 0.3.2 统一牧场 UUID 后通过 13/13 测试并部署 Development。该项仍需等待当前真机基线完成上传与摘要核对。
 - 2026-07-18：iPhone 16 Pro 签名构建实际执行全部 82 项 XCTest，最终 82 项通过、0 失败。期间发现并修复 CSV 日期解析受系统区域设置影响的问题；11 英寸 iPad 与双账号云端流程仍未执行。
 - 两个真实 Apple/iCloud 账号互联和第 1 至第 7 日云端记录：未执行。

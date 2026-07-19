@@ -240,15 +240,41 @@ actor FarmPersistenceActor {
         }
     }
 
-    func pendingRecordIDs() throws -> [(CKRecord.ID, CloudDatabaseScope)] {
+    func pendingRecordIDs(maxOutboxItems: Int = 25) throws -> [(CKRecord.ID, CloudDatabaseScope)] {
         let context = ModelContext(container)
-        let outbox = try context.fetch(FetchDescriptor<OutboxItem>())
-            .filter {
-                [.pending, .retryableFailure, .uploading, .awaitingConfirmation].contains($0.status) &&
-                ($0.nextRetryAt == nil || $0.nextRetryAt! <= .now)
-            }
+        let pending = OutboxStatus.pending.rawValue
+        let uploading = OutboxStatus.uploading.rawValue
+        let awaiting = OutboxStatus.awaitingConfirmation.rawValue
+        var primaryDescriptor = FetchDescriptor<OutboxItem>(
+            predicate: #Predicate {
+                $0.statusRawValue == pending || $0.statusRawValue == uploading || $0.statusRawValue == awaiting
+            },
+            sortBy: [SortDescriptor(\.createdAt)]
+        )
+        primaryDescriptor.fetchLimit = max(1, maxOutboxItems)
+        var outbox = try context.fetch(primaryDescriptor)
+        if outbox.count < maxOutboxItems {
+            let retryable = OutboxStatus.retryableFailure.rawValue
+            var retryDescriptor = FetchDescriptor<OutboxItem>(
+                predicate: #Predicate { $0.statusRawValue == retryable },
+                sortBy: [SortDescriptor(\.createdAt)]
+            )
+            retryDescriptor.fetchLimit = maxOutboxItems - outbox.count
+            outbox.append(contentsOf: try context.fetch(retryDescriptor).filter {
+                $0.nextRetryAt == nil || $0.nextRetryAt! <= .now
+            })
+        }
         let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
-        let operations = try context.fetch(FetchDescriptor<DomainOperation>())
+        let operationIDs = Set(outbox.map(\.operationID))
+        var operations: [DomainOperation] = []
+        operations.reserveCapacity(operationIDs.count)
+        for operationID in operationIDs {
+            if let operation = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+                $0.id == operationID
+            })).first {
+                operations.append(operation)
+            }
+        }
         let operationByID = Dictionary(uniqueKeysWithValues: operations.map { ($0.id, $0) })
         var bindingValues: [UUID: (zoneName: String, ownerName: String, scope: CloudDatabaseScope)] = [:]
         for binding in bindings where binding.state == .active {
@@ -326,31 +352,44 @@ actor FarmPersistenceActor {
         return requiredTargets.isSubset(of: targets)
     }
 
-    /// 云端准入必须在服务层执行：Development 只接收固定测试牧场，
-    /// Staging/Production 只接收正式新建牧场，旧版迁移牧场永久保持 localOnly。
+    func migrationCloudBaseline(farmID: UUID) throws -> MigrationCloudBaselineSnapshot? {
+        let context = ModelContext(container)
+        guard let commit = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first(where: {
+            $0.farmID == farmID && !$0.baselineDigest.isEmpty && $0.baselineEntityCount > 0 && $0.cloudState != .failed
+        }) else { return nil }
+        return MigrationCloudBaselineSnapshot(digest: commit.baselineDigest, entityCount: commit.baselineEntityCount, photoCount: commit.baselinePhotoCount)
+    }
+
+    /// 云端准入必须在服务层执行：Development 只接收已完成本地对账
+    /// 并生成完整云端基线的正式迁移牧场。
     func requireCloudAdmission(farmID: UUID, environment: AppEnvironment) throws {
         let context = ModelContext(container)
         let farms = try context.fetch(FetchDescriptor<FarmRecord>())
         guard let farm = farms.first(where: { $0.id == farmID }) else {
             throw CloudSyncError.inactiveFarm
         }
+        let migrationCommit = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first(where: {
+            $0.farmID == farmID &&
+            $0.status == .completed &&
+            !$0.baselineDigest.isEmpty &&
+            $0.baselineEntityCount > 0 &&
+            $0.cloudState != .failed
+        })
         let request = CloudAdmissionRequest(
             environment: environment,
             role: farm.role,
             membershipIsActive: farm.membershipStatusRawValue == "active",
             isDeleted: farm.deletedAt != nil,
-            isDevelopmentTestFarm: farm.isDevelopmentTestFarm,
-            developmentSeed: farm.developmentSeed,
-            isLocalOnlyMigration: farm.isLocalOnlyMigration
+            isLocalOnlyMigration: farm.isLocalOnlyMigration,
+            hasVerifiedMigrationCommit: migrationCommit != nil,
+            hasCompleteMigrationBaseline: migrationCommit?.cloudState != .localCommitted
         )
         do {
             try CloudAdmissionPolicy.validate(request)
         } catch let denial as CloudAdmissionDenial {
             switch denial {
-            case .developmentTestFarmRequired:
-                throw CloudSyncError.developmentTestFarmRequired
-            case .formalFarmRequired:
-                throw CloudSyncError.formalFarmRequired
+            case .verifiedMigrationRequired:
+                throw CloudSyncError.verifiedMigrationRequired
             case .localOnlyMigration:
                 throw CloudSyncError.localOnlyMigration
             case .ownerRequired:
@@ -359,11 +398,6 @@ actor FarmPersistenceActor {
                 throw CloudSyncError.inactiveFarm
             }
         }
-    }
-
-    /// 保留现有测试调用面，语义明确固定为 Development。
-    func requireDevelopmentTestFarm(farmID: UUID) throws {
-        try requireCloudAdmission(farmID: farmID, environment: .development)
     }
 
     func stageAcceptedSharedFarm(farmID: UUID, temporaryOwnerAccountID: UUID) throws {
@@ -381,44 +415,80 @@ actor FarmPersistenceActor {
         try context.save()
     }
 
+    func stageDiscoveredOwnerFarm(farmID: UUID, ownerAccountID: UUID, shareRecordName: String?) throws {
+        let context = ModelContext(container)
+        var farms = try context.fetch(FetchDescriptor<FarmRecord>())
+        if !farms.contains(where: { $0.id == farmID }) {
+            let farm = FarmRecord(id: farmID, ownerAccountID: ownerAccountID, name: "正在从 iCloud 恢复的牧场", role: .owner)
+            farm.membershipStatusRawValue = FarmMembershipStatus.active.rawValue
+            context.insert(farm)
+            farms.append(farm)
+        }
+        let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
+        let binding = bindings.first(where: { $0.farmID == farmID }) ?? CloudFarmBinding(farmID: farmID, ownerAccountID: ownerAccountID, databaseScope: .privateDatabase)
+        if binding.modelContext == nil { context.insert(binding) }
+        binding.shareRecordName = shareRecordName
+        binding.stateRawValue = CloudFarmBindingState.active.rawValue
+        binding.updatedAt = .now
+        try context.save()
+    }
+
     func record(for recordID: CKRecord.ID, scope: CloudDatabaseScope, device: DeviceIdentityActor) async -> CKRecord? {
         do {
             let context = ModelContext(container)
-            let operations = try context.fetch(FetchDescriptor<DomainOperation>())
-            let outbox = try context.fetch(FetchDescriptor<OutboxItem>())
             let operationID: UUID?
             if let direct = mapper.operationID(from: recordID) {
                 operationID = direct
             } else if let entityID = mapper.entityID(from: recordID) {
-                operationID = outbox
-                    .filter { $0.entityID == entityID && $0.status != .confirmed }
-                    .compactMap { item in operations.first(where: { $0.id == item.operationID }) }
+                let confirmed = OutboxStatus.confirmed.rawValue
+                let candidates = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+                    $0.entityID == entityID && $0.statusRawValue != confirmed
+                }))
+                let candidateIDs = Set(candidates.map(\.operationID))
+                operationID = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+                    $0.entityID == entityID
+                }))
+                    .filter { candidateIDs.contains($0.id) }
                     .max(by: {
                         if $0.resultingRevision != $1.resultingRevision { return $0.resultingRevision < $1.resultingRevision }
                         return $0.createdAt < $1.createdAt
                     })?.id
             } else if let entityID = mapper.tombstoneEntityID(from: recordID) {
-                operationID = operations
-                    .filter { $0.entityID == entityID && $0.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue }
+                let tombstoneKind = DomainOperationKind.tombstoneEntity.rawValue
+                operationID = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+                    $0.entityID == entityID && $0.kindRawValue == tombstoneKind
+                }))
                     .max(by: { $0.createdAt < $1.createdAt })?.id
             } else {
                 operationID = nil
             }
             guard let operationID else { return nil }
-            guard let operation = operations.first(where: { $0.id == operationID }),
-                  let item = outbox.first(where: { $0.operationID == operationID }),
+            guard let operation = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+                      $0.id == operationID
+                  })).first,
+                  let item = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+                      $0.operationID == operationID
+                  })).first,
                   let entityID = operation.entityID else { return nil }
+            let identity = try await device.identity()
             let certificates = try context.fetch(FetchDescriptor<CapabilityCertificateRecord>())
             guard let certificate = certificates
-                .filter({ $0.farmID == operation.farmID && $0.accountID == operation.accountID && $0.isUsable })
+                .filter({
+                    $0.farmID == operation.farmID &&
+                    $0.accountID == operation.accountID &&
+                    $0.deviceID == identity.deviceID &&
+                    $0.isUsable
+                })
                 .max(by: { $0.expiresAt < $1.expiresAt }) else {
                 item.statusRawValue = OutboxStatus.rejectedPermission.rawValue
                 item.errorMessage = "没有当前牧场可用的能力证书。"
                 try context.save()
                 return nil
             }
-            let identity = try await device.identity()
-            let tombstone = try context.fetch(FetchDescriptor<TombstoneRecord>()).first(where: { $0.operationID == operation.id })
+            let currentOperationID = operation.id
+            let tombstone = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                $0.operationID == currentOperationID
+            })).first
             var envelope = CloudOperationEnvelope(
                 farmID: operation.farmID,
                 entityID: entityID,
@@ -542,10 +612,30 @@ actor FarmPersistenceActor {
         try context.save()
     }
 
-    func markFailedRecords(_ failures: [CKSyncEngine.Event.SentRecordZoneChanges.FailedRecordSave]) throws {
+    func markFailedRecords(
+        _ failures: [CKSyncEngine.Event.SentRecordZoneChanges.FailedRecordSave],
+        scope: CloudDatabaseScope
+    ) throws {
+        let idempotentServerRecords = failures.compactMap { failure -> CKRecord? in
+            guard failure.error.code == .serverRecordChanged,
+                  let serverRecord = failure.error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord,
+                  CloudRecordIdempotency.equivalent(client: failure.record, server: serverRecord) else {
+                return nil
+            }
+            return serverRecord
+        }
+        if !idempotentServerRecords.isEmpty {
+            try confirmSavedRecords(idempotentServerRecords, scope: scope)
+        }
+
         let context = ModelContext(container)
         let outbox = try context.fetch(FetchDescriptor<OutboxItem>())
         for failure in failures {
+            if failure.error.code == .serverRecordChanged,
+               let serverRecord = failure.error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord,
+               CloudRecordIdempotency.equivalent(client: failure.record, server: serverRecord) {
+                continue
+            }
             let operationID = mapper.operationID(from: failure.record.recordID) ??
                 ((failure.record[CloudRecordField.operationID] as? String).flatMap(UUID.init(uuidString:)))
             guard let operationID,
@@ -556,6 +646,21 @@ actor FarmPersistenceActor {
             item.nextRetryAt = classification.retryAt
         }
         try context.save()
+    }
+
+    func deferUnresolvedUploadsAfterBatchError(_ error: Error) throws {
+        let context = ModelContext(container)
+        let uploading = OutboxStatus.uploading.rawValue
+        let awaiting = OutboxStatus.awaitingConfirmation.rawValue
+        let items = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.statusRawValue == uploading || $0.statusRawValue == awaiting
+        }))
+        for item in items {
+            item.statusRawValue = OutboxStatus.retryableFailure.rawValue
+            item.errorMessage = "CloudKit 批次未全部完成，已保留并等待重试：\(error.localizedDescription)"
+            item.nextRetryAt = .now.addingTimeInterval(15)
+        }
+        if !items.isEmpty { try context.save() }
     }
 
     func ingest(_ records: [CKRecord], scope: CloudDatabaseScope) async throws {
@@ -588,7 +693,12 @@ actor FarmPersistenceActor {
                     try quarantine(envelope: envelope, recordName: record.recordID.recordName, reason: "devicePublicKeyMissing", context: context)
                     continue
                 }
-                try CloudOperationSecurity.validate(envelope: envelope, claims: claims, devicePublicKeyX963: device.publicKeyX963)
+                try CloudOperationSecurity.validate(
+                    envelope: envelope,
+                    claims: claims,
+                    devicePublicKeyX963: device.publicKeyX963,
+                    authorizationDate: record.modificationDate ?? record.creationDate
+                )
                 let outcome = try RemoteDomainApplyService().apply(envelope, context: context)
                 switch outcome {
                 case .applied(let changedAt):
@@ -626,10 +736,15 @@ actor FarmPersistenceActor {
                 ))
                 receivedOperationIDs.insert(envelope.operationID)
             } catch {
+                let mappedEnvelope = try? mapper.operationEnvelope(from: record)
                 context.insert(SecurityIncidentRecord(
-                    farmID: nil,
-                    incidentType: "malformedCloudOperation",
+                    farmID: mappedEnvelope?.farmID,
+                    incidentType: (error as? CloudContractError) == .expiredCertificate
+                        ? "cloudAuthorizationExpired"
+                        : "malformedCloudOperation",
                     recordName: record.recordID.recordName,
+                    accountID: mappedEnvelope?.modifiedByAccountID,
+                    deviceID: mappedEnvelope?.modifiedByDeviceID,
                     detail: error.localizedDescription
                 ))
             }
@@ -1002,8 +1117,69 @@ actor FarmPersistenceActor {
             farm.membershipStatusRawValue = response.role == .owner ? FarmMembershipStatus.active.rawValue : FarmMembershipStatus.pendingOwnerConfirmation.rawValue
             farm.updatedAt = .now
         }
+        // A provisioning attempt may ask CKSyncEngine for a record just before
+        // the first capability is persisted. Only that explicit, locally
+        // generated rejection is recoverable here; genuine CloudKit permission
+        // failures remain blocked for user review.
+        for item in try context.fetch(FetchDescriptor<OutboxItem>())
+        where item.farmID == farmID &&
+              item.status == .rejectedPermission &&
+              item.errorMessage == "没有当前牧场可用的能力证书。" {
+            item.statusRawValue = OutboxStatus.pending.rawValue
+            item.errorMessage = nil
+            item.nextRetryAt = nil
+        }
         try Self.activateSharedFarmIfFullyVerified(farmID: farmID, accountID: accountID, context: context)
         try context.save()
+    }
+
+    func hasUsableCapability(
+        accountID: UUID,
+        farmID: UUID,
+        deviceID: UUID,
+        minimumRemaining: TimeInterval = 3_600
+    ) throws -> Bool {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<CapabilityCertificateRecord>()).contains {
+            $0.accountID == accountID &&
+            $0.farmID == farmID &&
+            $0.deviceID == deviceID &&
+            $0.revokedAt == nil &&
+            $0.remainingTime > minimumRemaining
+        }
+    }
+
+    @discardableResult
+    func requeueBlockedConflicts(farmID: UUID) throws -> Int {
+        let context = ModelContext(container)
+        let blocked = OutboxStatus.blockedConflict.rawValue
+        let items = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.statusRawValue == blocked
+        })).filter {
+            // New builds prefix a real payload conflict explicitly. Only
+            // legacy ambiguous failures are eligible for one-time recheck.
+            $0.errorMessage?.hasPrefix("云端已有不同内容") != true
+        }
+        for item in items {
+            item.statusRawValue = OutboxStatus.pending.rawValue
+            item.errorMessage = nil
+            item.nextRetryAt = nil
+        }
+        if !items.isEmpty { try context.save() }
+        return items.count
+    }
+
+    @discardableResult
+    func purgeLegacyCertificateTimestampIncidents() throws -> Int {
+        let context = ModelContext(container)
+        let legacyType = "malformedCloudOperation"
+        let legacyDetail = CloudContractError.expiredCertificate.localizedDescription
+        let incidents = try context.fetch(FetchDescriptor<SecurityIncidentRecord>()).filter {
+            $0.incidentType == legacyType && $0.detail == legacyDetail
+        }
+        for incident in incidents { context.delete(incident) }
+        if !incidents.isEmpty { try context.save() }
+        return incidents.count
     }
 
     func saveSecuritySnapshot(_ snapshot: WorkerFarmSecuritySnapshot) throws {
@@ -1217,14 +1393,40 @@ enum CloudErrorClassifier {
         switch error.code {
         case .notAuthenticated, .permissionFailure:
             return Result(status: .rejectedPermission, message: error.localizedDescription, retryAt: nil)
-        case .serverRecordChanged, .batchRequestFailed:
-            return Result(status: .blockedConflict, message: error.localizedDescription, retryAt: nil)
+        case .serverRecordChanged:
+            return Result(
+                status: .blockedConflict,
+                message: "云端已有不同内容，已停止自动重试。\(error.localizedDescription)",
+                retryAt: nil
+            )
+        case .batchRequestFailed:
+            return Result(status: .retryableFailure, message: error.localizedDescription, retryAt: .now.addingTimeInterval(5))
         case .networkFailure, .networkUnavailable, .serviceUnavailable, .requestRateLimited, .zoneBusy:
             let delay = (error.userInfo[CKErrorRetryAfterKey] as? TimeInterval) ?? 30
             return Result(status: .retryableFailure, message: error.localizedDescription, retryAt: .now.addingTimeInterval(delay))
         default:
             return Result(status: .retryableFailure, message: error.localizedDescription, retryAt: .now.addingTimeInterval(60))
         }
+    }
+}
+
+enum CloudRecordIdempotency {
+    static func equivalent(client: CKRecord, server: CKRecord) -> Bool {
+        guard client.recordID == server.recordID,
+              client.recordType == server.recordType,
+              let clientOperationID = client[CloudRecordField.operationID] as? String,
+              clientOperationID == server[CloudRecordField.operationID] as? String else {
+            return false
+        }
+        if let clientDigest = client[CloudRecordField.payloadDigest] as? String,
+           let serverDigest = server[CloudRecordField.payloadDigest] as? String {
+            return clientDigest == serverDigest
+        }
+        if let clientPayload = client[CloudRecordField.payload] as? Data,
+           let serverPayload = server[CloudRecordField.payload] as? Data {
+            return clientPayload == serverPayload
+        }
+        return false
     }
 }
 

@@ -2,6 +2,7 @@ import SwiftData
 import SwiftUI
 
 struct RootView: View {
+    @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
     @Environment(CloudCollaborationStore.self) private var collaboration
     @Environment(SubscriptionService.self) private var subscription
@@ -12,7 +13,7 @@ struct RootView: View {
     @Query private var sheep: [SheepRecord]
     @Query private var pens: [PenRecord]
     @Query private var feeds: [FeedRecord]
-    @Query private var outbox: [OutboxItem]
+    @Query private var migrationCommits: [MigrationCommitRecord]
     @State private var credentialStatus: AppleCredentialStatus = .checking
     @Environment(\.scenePhase) private var scenePhase
 
@@ -63,21 +64,36 @@ struct RootView: View {
             session.consumeSystemNavigationTarget()
         }
         .task(id: systemSnapshotRevision) {
+            var pendingOperationCounts: [UUID: Int] = [:]
+            for farm in visibleFarms {
+                let farmID = farm.id
+                let pending = OutboxStatus.pending.rawValue
+                let retryable = OutboxStatus.retryableFailure.rawValue
+                let descriptor = FetchDescriptor<OutboxItem>(predicate: #Predicate {
+                    $0.farmID == farmID && ($0.statusRawValue == pending || $0.statusRawValue == retryable)
+                })
+                pendingOperationCounts[farmID] = (try? modelContext.fetchCount(descriptor)) ?? 0
+            }
             let snapshot = FarmSystemIntegrationService.makeSnapshot(
                 farms: visibleFarms,
                 sheep: sheep,
                 pens: pens,
                 feeds: feeds,
-                outbox: outbox,
+                pendingOperationCounts: pendingOperationCounts,
                 selectedFarmID: session.selectedFarmID
             )
             await FarmSystemIntegrationService.publish(snapshot)
         }
         .task(id: authenticationTaskID) {
-            if let account = activeAccount, account.authenticationMethod == .password {
-                credentialStatus = SecureAccountStore.hasWorkerSession() ? .authorized : .requiresSignIn
-            } else if activeAccount != nil {
-                credentialStatus = await AppleCredentialVerifier.currentStatus()
+            if let account = activeAccount {
+                guard account.serverBindingState == .verified,
+                      SecureAccountStore.hasWorkerSession(for: account.effectiveAccountID) else {
+                    credentialStatus = .requiresSignIn
+                    await collaboration.refreshAccountAvailability()
+                    subscription.reset()
+                    return
+                }
+                credentialStatus = await restoredCredentialStatus(for: account)
             } else {
                 credentialStatus = .requiresSignIn
             }
@@ -92,8 +108,26 @@ struct RootView: View {
             guard scenePhase == .active,
                   CloudFeatureConfiguration.isEnabled,
                   activeAccount?.serverBindingState == .verified,
+                  !migrationCommits.contains(where: {
+                      $0.ownerAccountID == activeAccount?.effectiveAccountID && $0.cloudState != .synced
+                  }),
                   activeCloudBindings.contains(where: { $0.state == .active }) else { return }
             await collaboration.synchronizeNow()
+        }
+        .task(id: migrationCloudTaskID) {
+            guard scenePhase == .active,
+                  let account = activeAccount,
+                  account.serverBindingState == .verified else { return }
+            do {
+                _ = try MigrationCloudBootstrapService().upgradeEligibleLegacyFarms(
+                    accountID: account.effectiveAccountID,
+                    context: modelContext
+                )
+            } catch {
+                collaboration.lastErrorMessage = error.localizedDescription
+            }
+            await collaboration.discoverAndRestoreOwnerFarms(accountID: account.effectiveAccountID)
+            await collaboration.resumeAutomaticMigrationUploads(accountID: account.effectiveAccountID)
         }
         .task(id: maintenanceTaskID) {
             guard let account = activeAccount, account.serverBindingState == .verified else { return }
@@ -123,6 +157,36 @@ struct RootView: View {
         return accounts.first(where: { $0.id == profileID })
     }
 
+    private func restoredCredentialStatus(for account: AccountProfile) async -> AppleCredentialStatus {
+        let appleStatus: AppleCredentialStatus
+        if account.authenticationMethod == .password {
+            appleStatus = .authorized
+        } else {
+            appleStatus = await AppleCredentialVerifier.currentStatus()
+            if appleStatus == .requiresSignIn { return .requiresSignIn }
+        }
+
+        do {
+            let remote = try await IdentityWorkerClient.shared.restoreSession()
+            guard remote.accountID == account.effectiveAccountID, remote.status == "active" else {
+                try? SecureAccountStore.removeLoginSecrets()
+                return .requiresSignIn
+            }
+            return appleStatus == .transferred ? .transferred : .authorized
+        } catch is URLError {
+            return appleStatus == .transferred ? .transferred : .authorized
+        } catch let error as IdentityWorkerError {
+            if case .networkUnavailable = error {
+                return appleStatus == .transferred ? .transferred : .authorized
+            }
+            try? SecureAccountStore.removeLoginSecrets()
+            return .requiresSignIn
+        } catch {
+            try? SecureAccountStore.removeLoginSecrets()
+            return .requiresSignIn
+        }
+    }
+
     private var visibleFarms: [FarmRecord] {
         guard let account = activeAccount else { return [] }
         let sharedFarmIDs = Set(membershipBindings.compactMap { binding in
@@ -150,26 +214,32 @@ struct RootView: View {
         let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
         let bindingPart = activeCloudBindings
             .filter { $0.state == .active }
-            .map { "\($0.farmID.uuidString):\($0.updatedAt.timeIntervalSince1970)" }
+            .map { $0.farmID.uuidString }
             .sorted()
             .joined(separator: ",")
-        let activeFarmIDs = Set(activeCloudBindings.filter { $0.state == .active }.map(\.farmID))
-        let pendingPart = outbox
-            .filter {
-                activeFarmIDs.contains($0.farmID) &&
-                    ($0.status == .pending || $0.status == .retryableFailure)
-            }
-            .map { $0.id.uuidString }
+        return "\(scenePhase)|\(accountPart)|\(bindingPart)"
+    }
+
+    private var migrationCloudTaskID: String {
+        let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
+        let commitPart = migrationCommits
+            .filter { $0.ownerAccountID == activeAccount?.effectiveAccountID }
+            // Do not include cloud state, retry count or Outbox state here. The
+            // upload task mutates those values itself; using them as task
+            // identity makes SwiftUI cancel and recreate the same upload while
+            // it is provisioning the CloudKit zone.
+            .map { "\($0.id.uuidString):\($0.baselineDigest)" }
             .sorted()
             .joined(separator: ",")
-        return "\(scenePhase)|\(accountPart)|\(bindingPart)|\(pendingPart)"
+        let legacyPart = farms.filter(\.isLocalOnlyMigration).map(\.id.uuidString).sorted().joined(separator: ",")
+        return "\(scenePhase)|\(accountPart)|\(commitPart)|\(legacyPart)"
     }
 
     private var systemSnapshotRevision: String {
         let farmPart = visibleFarms.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
         let sheepPart = sheep.filter { visibleFarmIDs.contains($0.farmID) }.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
         let penPart = pens.filter { visibleFarmIDs.contains($0.farmID) }.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
-        return "\(farmPart)|\(sheepPart)|\(penPart)|\(feeds.count)|\(outbox.count)|\(session.selectedFarmID?.uuidString ?? "none")"
+        return "\(farmPart)|\(sheepPart)|\(penPart)|\(feeds.count)|\(session.selectedFarmID?.uuidString ?? "none")"
     }
 
     private var visibleFarmIDs: Set<UUID> { Set(visibleFarms.map(\.id)) }

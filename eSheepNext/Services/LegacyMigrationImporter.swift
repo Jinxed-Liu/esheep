@@ -104,6 +104,7 @@ enum MigrationWorkspaceStore {
         try JSONEncoder().encode(MigrationActiveBuild(buildID: staging.directory.lastPathComponent)).write(to: pointerURL, options: .atomic)
     }
     static func hasActiveBuild(for sessionID: UUID) -> Bool { FileManager.default.fileExists(atPath: storeURL(for: sessionID).path(percentEncoded: false)) }
+    static func delete(sessionID: UUID) throws { try FileManager.default.removeItem(at: directory(for: sessionID)) }
     static func saveBaseline(_ data: Data, for sessionID: UUID) throws { try data.write(to: directory(for: sessionID).appending(path: "baseline.json"), options: .atomic) }
     static func baseline(for sessionID: UUID) -> MigrationBaselineSnapshot? { try? JSONDecoder().decode(MigrationBaselineSnapshot.self, from: Data(contentsOf: directory(for: sessionID).appending(path: "baseline.json"))) }
 }
