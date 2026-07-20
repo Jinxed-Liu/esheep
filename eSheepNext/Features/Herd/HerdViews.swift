@@ -342,7 +342,7 @@ private struct BatchTransferSheepView: View {
     }
 }
 
-private struct SheepDetailEntryView: View {
+struct SheepDetailEntryView: View {
     @Query private var sheep: [SheepRecord]
 
     let account: AccountProfile
@@ -371,27 +371,22 @@ private struct SheepDetailEntryView: View {
 struct SheepDetailView: View {
     @Environment(CloudCollaborationStore.self) private var collaboration
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \WeightRecord.occurredAt, order: .reverse) private var weights: [WeightRecord]
-    @Query(sort: \TransferRecord.occurredAt, order: .reverse) private var transfers: [TransferRecord]
-    @Query(sort: \HealthRecord.occurredAt, order: .reverse) private var healthRecords: [HealthRecord]
-    @Query private var healthSubjectLinks: [HealthSubjectLink]
-    @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproductionRecords: [ReproductionRecord]
-    @Query(sort: \PhotoAssetRecord.createdAt, order: .reverse) private var photos: [PhotoAssetRecord]
-    @Query(sort: \SheepRecord.earTag) private var allSheep: [SheepRecord]
-    @Query(sort: \SemenDonorRecord.name) private var semenDonors: [SemenDonorRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
     let sheep: SheepRecord
     let penName: String?
+    private let detailSubject: SheepDetailSubjectSnapshot
 
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var isProcessingPhoto = false
     @State private var photoMessage: String?
     @State private var exportDocument: FarmInterchangeDocument?
     @State private var isExporting = false
-    @State private var lifecycleInsight: FarmInsight?
-    @State private var reproductionInsight: FarmInsight?
+    @State private var isPreparingExport = false
+    @State private var detailSnapshot: SheepDetailSnapshot?
+    @State private var isLoadingDetail = true
+    @State private var detailLoadError: String?
     @State private var isEditingProfile = false
     @State private var editingPhotoTime: PhotoTimeDraft?
     @State private var pendingPhotoDeletion: PhotoDeletionDraft?
@@ -402,67 +397,22 @@ struct SheepDetailView: View {
         self.farm = farm
         self.sheep = sheep
         self.penName = penName
-        let farmID = farm.id
-        let sheepID = sheep.id
-        _weights = Query(
-            filter: #Predicate<WeightRecord> { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil },
-            sort: \WeightRecord.occurredAt,
-            order: .reverse
-        )
-        _transfers = Query(
-            filter: #Predicate<TransferRecord> { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil },
-            sort: \TransferRecord.occurredAt,
-            order: .reverse
-        )
-        _healthRecords = Query(
-            filter: #Predicate<HealthRecord> { $0.farmID == farmID && $0.deletedAt == nil },
-            sort: \HealthRecord.occurredAt,
-            order: .reverse
-        )
-        _healthSubjectLinks = Query(filter: #Predicate<HealthSubjectLink> { $0.farmID == farmID && $0.sheepID == sheepID })
-        _reproductionRecords = Query(
-            filter: #Predicate<ReproductionRecord> { $0.farmID == farmID && $0.eweID == sheepID && $0.deletedAt == nil },
-            sort: \ReproductionRecord.occurredAt,
-            order: .reverse
-        )
-        _photos = Query(
-            filter: #Predicate<PhotoAssetRecord> { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil },
-            sort: \PhotoAssetRecord.createdAt,
-            order: .reverse
+        detailSubject = SheepDetailSubjectSnapshot(
+            id: sheep.id,
+            earTag: sheep.earTag,
+            breed: sheep.breed,
+            purpose: sheep.purpose,
+            sex: sheep.sex,
+            status: sheep.status,
+            initialPenID: sheep.initialPenID,
+            currentPenID: sheep.currentPenID,
+            birthAt: sheep.birthAt,
+            enteredAt: sheep.enteredAt,
+            removedAt: sheep.removedAt
         )
     }
 
-    private var sheepPhotos: [PhotoAssetRecord] {
-        photos.sorted { photoDate($0) > photoDate($1) }
-    }
-
-    private var sheepHealthRecords: [HealthRecord] {
-        let linkedIDs = Set(healthSubjectLinks.map(\.healthRecordID))
-        return healthRecords.filter { $0.sheepID == sheep.id || linkedIDs.contains($0.id) }
-    }
-
-    private var analyticsSourceRevision: [String] {
-        ["sheep:\(sheep.revision)"]
-            + weights.map { "weight:\($0.id.uuidString):\($0.revision)" }
-            + reproductionRecords.map { "reproduction:\($0.id.uuidString)" }
-    }
-
-    private func makeAnalyticsSnapshot() -> FarmAnalyticsSnapshot {
-        FarmAnalyticsSnapshot.make(
-            farmID: farm.id,
-            sheep: [sheep],
-            pens: [],
-            weights: weights,
-            weanings: [],
-            reproduction: reproductionRecords,
-            offspring: [],
-            removals: [],
-            transfers: [],
-            memberships: [],
-            feeds: [],
-            feedLines: []
-        )
-    }
+    private var sheepPhotos: [SheepDetailPhotoSnapshot] { detailSnapshot?.photos ?? [] }
 
     var body: some View {
         List {
@@ -473,6 +423,16 @@ struct SheepDetailView: View {
                     photo: sheepPhotos.first,
                     photoCount: sheepPhotos.count
                 )
+            }
+            if let detailLoadError {
+                Section {
+                    ContentUnavailableView(
+                        "读取生产记录失败",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(detailLoadError)
+                    )
+                    Button("重新读取") { Task { await reloadDetailSnapshot() } }
+                }
             }
 
             Section("档案") {
@@ -488,7 +448,7 @@ struct SheepDetailView: View {
             }
             Section("系谱") {
                 NavigationLink {
-                    SheepPedigreeView(account: account, farm: farm, sheepID: sheep.id)
+                    AnyView(SheepPedigreeView(account: account, farm: farm, sheepID: sheep.id))
                 } label: {
                     Label("父母、祖先、同胞与后代", systemImage: "point.3.connected.trianglepath.dotted")
                 }
@@ -558,12 +518,18 @@ struct SheepDetailView: View {
                     .disabled(!CapabilitySet(role: farm.role).allows(.recordProduction))
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button { exportSingleSheep() } label: { Image(systemName: "square.and.arrow.up") }
+                Button { exportSingleSheep() } label: {
+                    if isPreparingExport {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
                     .accessibilityLabel("导出单羊完整档案 XLSX")
-                    .disabled(!CapabilitySet(role: farm.role).allows(.exportFarm))
+                    .disabled(isPreparingExport || !CapabilitySet(role: farm.role).allows(.exportFarm))
             }
         }
-        .sheet(isPresented: $isEditingProfile) {
+        .sheet(isPresented: $isEditingProfile, onDismiss: { Task { await reloadDetailSnapshot() } }) {
             NavigationStack { EditSheepProfileView(account: account, farm: farm, sheep: sheep) }
         }
         .sheet(item: $editingPhotoTime) { draft in
@@ -596,8 +562,7 @@ struct SheepDetailView: View {
             guard let item else { return }
             addPhoto(item)
         }
-        .onAppear(perform: refreshInsights)
-        .onChange(of: analyticsSourceRevision) { _, _ in refreshInsights() }
+        .task(id: sheep.id) { await reloadDetailSnapshot() }
         .alert("照片", isPresented: Binding(get: { photoMessage != nil }, set: { if !$0 { photoMessage = nil } })) {
             Button("完成", role: .cancel) {}
         } message: { Text(photoMessage ?? "") }
@@ -613,28 +578,24 @@ struct SheepDetailView: View {
             .capabilities.allows(.deleteProtectedFacts)
     }
 
-    private func photoDate(_ photo: PhotoAssetRecord) -> Date {
-        photo.capturedAt ?? photo.createdAt
+    private func editPhotoTime(_ photo: SheepDetailPhotoSnapshot) {
+        editingPhotoTime = PhotoTimeDraft(assetID: photo.id, capturedAt: photo.displayedAt)
     }
 
-    private func editPhotoTime(_ photo: PhotoAssetRecord) {
-        editingPhotoTime = PhotoTimeDraft(assetID: photo.id, capturedAt: photoDate(photo))
-    }
-
-    private func requestPhotoDeletion(_ photo: PhotoAssetRecord) {
-        pendingPhotoDeletion = PhotoDeletionDraft(assetID: photo.id, capturedAt: photoDate(photo))
+    private func requestPhotoDeletion(_ photo: SheepDetailPhotoSnapshot) {
+        pendingPhotoDeletion = PhotoDeletionDraft(assetID: photo.id, capturedAt: photo.displayedAt)
     }
 
     @ViewBuilder
     private var weightChartSection: some View {
-        let records = weights.reversed()
+        let records = Array((detailSnapshot?.weights ?? []).reversed())
         if let latest = records.last {
             Section("体重") {
                 LabeledContent("最近体重", value: "\(latest.kilogramsText) 千克")
                 if records.count >= 2 {
                     Chart(records, id: \.id) { record in
-                        LineMark(x: .value("日期", record.occurredAt), y: .value("体重", NSDecimalNumber(decimal: record.kilograms).doubleValue))
-                        PointMark(x: .value("日期", record.occurredAt), y: .value("体重", NSDecimalNumber(decimal: record.kilograms).doubleValue))
+                        LineMark(x: .value("日期", record.occurredAt), y: .value("体重", record.kilograms))
+                        PointMark(x: .value("日期", record.occurredAt), y: .value("体重", record.kilograms))
                     }
                     .frame(height: 160)
                     .accessibilityLabel("\(sheep.earTag)体重变化曲线，共\(records.count)次称重")
@@ -645,15 +606,15 @@ struct SheepDetailView: View {
 
     @ViewBuilder
     private var analyticsSection: some View {
-        if let lifecycleInsight {
+        if let lifecycleInsight = detailSnapshot?.lifecycleInsight {
             Section(lifecycleInsight.title) {
                 Text(lifecycleInsight.summary)
                 ForEach(lifecycleInsight.details, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
             }
-        } else {
+        } else if isLoadingDetail {
             Section { ProgressView("正在计算羊只分析") }
         }
-        if let reproductionInsight, !reproductionInsight.details.isEmpty {
+        if let reproductionInsight = detailSnapshot?.reproductionInsight, !reproductionInsight.details.isEmpty {
             Section(reproductionInsight.title) {
                 Text(reproductionInsight.summary)
                 ForEach(reproductionInsight.details, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
@@ -661,26 +622,13 @@ struct SheepDetailView: View {
         }
     }
 
-    private func refreshInsights() {
-        let snapshot = makeAnalyticsSnapshot()
-        let sheepID = sheep.id
-        Task {
-            let insights = await Task.detached(priority: .userInitiated) {
-                (
-                    SheepAnalyticsEngine.lifecycle(sheepID: sheepID, snapshot: snapshot),
-                    SheepAnalyticsEngine.reproduction(sheepID: sheepID, snapshot: snapshot)
-                )
-            }.value
-            lifecycleInsight = insights.0
-            reproductionInsight = insights.1
-        }
-    }
-
     @ViewBuilder
     private var timelineSection: some View {
-        let entries = timelineEntries
+        let entries = detailSnapshot?.timeline ?? []
         Section("时间线") {
-            if entries.isEmpty {
+            if isLoadingDetail, detailSnapshot == nil {
+                ProgressView("正在读取时间线")
+            } else if entries.isEmpty {
                 Text("暂无历史记录").foregroundStyle(.secondary)
             } else {
                 ForEach(entries, id: \.id) { entry in
@@ -695,14 +643,21 @@ struct SheepDetailView: View {
         }
     }
 
-    private var timelineEntries: [SheepTimelineEntry] {
-        let weightEntries = weights.map { SheepTimelineEntry(id: $0.id, title: "称重", detail: "\($0.kilogramsText) 千克", date: $0.occurredAt) }
-        let transferEntries = transfers.map { SheepTimelineEntry(id: $0.id, title: "转群", detail: $0.note, date: $0.occurredAt) }
-        let healthEntries = sheepHealthRecords.map { SheepTimelineEntry(id: $0.id, title: $0.kindRawValue == HealthRecordKind.vaccination.rawValue ? "疫苗" : "治疗", detail: $0.itemNameSnapshot, date: $0.occurredAt) }
-        let reproductionEntries = reproductionRecords.map { SheepTimelineEntry(id: $0.id, title: ReproductionRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "繁殖", detail: $0.note, date: $0.occurredAt) }
-        let photoEntries = sheepPhotos
-            .map { SheepTimelineEntry(id: $0.id, title: "照片", detail: "新增羊只影像", date: photoDate($0)) }
-        return (weightEntries + transferEntries + healthEntries + reproductionEntries + photoEntries).sorted { $0.date > $1.date }
+    private func reloadDetailSnapshot() async {
+        isLoadingDetail = true
+        defer { isLoadingDetail = false }
+        do {
+            detailSnapshot = try await SheepDetailSnapshotActor(container: modelContext.container).load(
+                farmID: farm.id,
+                sheepID: sheep.id,
+                subject: detailSubject
+            )
+            detailLoadError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            detailLoadError = error.localizedDescription
+        }
     }
 
     private func addPhoto(_ item: PhotosPickerItem) {
@@ -717,6 +672,7 @@ struct SheepDetailView: View {
                 guard let data = try await item.loadTransferable(type: Data.self) else { throw PhotoTransferError.sourceUnreadable }
                 _ = try await collaboration.photoTransfers.enqueue(data: data, farmID: farm.id, entityID: sheep.id)
                 await collaboration.synchronizeNow()
+                await reloadDetailSnapshot()
                 photoMessage = collaboration.lastErrorMessage ?? "照片已压缩保存并进入云端同步队列。"
             } catch {
                 photoMessage = error.localizedDescription
@@ -725,21 +681,22 @@ struct SheepDetailView: View {
     }
 
     private func exportSingleSheep() {
-        do {
-            let data = try FarmDataInterchange.singleSheepXLSXData(
-                sheep: sheep,
-                penName: penName,
-                weights: weights,
-                health: sheepHealthRecords,
-                healthRecordIDs: Set(sheepHealthRecords.map(\.id)),
-                reproduction: reproductionRecords,
-                transfers: transfers,
-                allSheep: allSheep,
-                semenDonors: semenDonors
-            )
-            exportDocument = FarmInterchangeDocument(data: data)
-            isExporting = true
-        } catch { photoMessage = "导出失败：\(error.localizedDescription)" }
+        guard !isPreparingExport else { return }
+        isPreparingExport = true
+        Task {
+            defer { isPreparingExport = false }
+            do {
+                let data = try await SheepDetailSnapshotActor(container: modelContext.container).singleSheepXLSXData(
+                    farmID: farm.id,
+                    sheepID: sheep.id,
+                    penName: penName
+                )
+                exportDocument = FarmInterchangeDocument(data: data)
+                isExporting = true
+            } catch {
+                photoMessage = "导出失败：\(error.localizedDescription)"
+            }
+        }
     }
 
     private func updatePhotoTime(assetID: UUID, capturedAt: Date) {
@@ -747,6 +704,7 @@ struct SheepDetailView: View {
             do {
                 try await collaboration.photoTransfers.updateCapturedAt(assetID: assetID, capturedAt: capturedAt)
                 await collaboration.synchronizeNow()
+                await reloadDetailSnapshot()
                 photoMessage = collaboration.lastErrorMessage ?? "照片时间已更新并进入云端同步队列。"
             } catch {
                 photoMessage = error.localizedDescription
@@ -768,7 +726,10 @@ struct SheepDetailView: View {
                 context: modelContext
             )
             photoMessage = "照片已删除，可在记录管理中恢复。"
-            Task { await collaboration.synchronizeNow() }
+            Task {
+                await reloadDetailSnapshot()
+                await collaboration.synchronizeNow()
+            }
         } catch {
             photoMessage = "删除失败：\(error.localizedDescription)"
         }
@@ -778,7 +739,7 @@ struct SheepDetailView: View {
 private struct SheepProfileBanner: View {
     let sheep: SheepRecord
     let penName: String?
-    let photo: PhotoAssetRecord?
+    let photo: SheepDetailPhotoSnapshot?
     let photoCount: Int
 
     var body: some View {
@@ -821,9 +782,9 @@ private struct SheepProfileBanner: View {
 }
 
 private struct PhotoTimelineRow: View {
-    let photo: PhotoAssetRecord
+    let photo: SheepDetailPhotoSnapshot
 
-    private var displayedDate: Date { photo.capturedAt ?? photo.createdAt }
+    private var displayedDate: Date { photo.displayedAt }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -939,13 +900,6 @@ private struct CloudPhotoThumbnail: View {
             }
         }
     }
-}
-
-private struct SheepTimelineEntry: Identifiable {
-    let id: UUID
-    let title: String
-    let detail: String
-    let date: Date
 }
 
 struct PenManagementView: View {

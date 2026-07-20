@@ -199,6 +199,7 @@ enum LegacyMigrationImporter {
             let currentStatus = isHistoricalArchive ? SheepStatus.removed : legacyCurrentStatus(candidate.status)
             let currentPenName = legacyPenName(candidate.pen)
             let initialPenName = inferredLegacyInitialPenName(for: candidate, transfers: legacyTransfers)
+            let sourceSex = candidate.sex.trimmingCharacters(in: .whitespacesAndNewlines)
             let sheep = SheepRecord(
                 id: stable(candidate.id),
                 farmID: farm.id,
@@ -208,13 +209,15 @@ enum LegacyMigrationImporter {
                 isHistoricalArchive: isHistoricalArchive,
                 breed: candidate.breed,
                 purpose: candidate.purpose.isEmpty ? "未分类" : candidate.purpose,
-                sex: sex(candidate.sex),
+                sex: sex(sourceSex),
                 penID: mapping.pens[initialPenName],
                 enteredAt: date(candidate.enteredAtText ?? candidate.birth) ?? .distantPast,
                 birthAt: isHistoricalArchive ? nil : date(candidate.birth),
                 note: candidate.note
             )
-            sheep.isBreedingRam = sheep.sex == .ram && (sheep.purpose.contains("种公羊") || currentPenName.contains("种公羊"))
+            // 旧来源把“公”和“种公”分开记录。用途字段曾被批量归类，不能据此
+            // 把所有公羊提升成种公羊；只有来源明确写为“种公”才建立资格事实。
+            sheep.isBreedingRam = sourceSex == "种公"
             sheep.statusRawValue = currentStatus.rawValue
             sheep.currentPenID = currentStatus == .active ? mapping.pens[currentPenName] : nil
             sheep.legacyStatusSnapshotIsAuthoritative = !isHistoricalArchive && !candidate.status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1025,7 +1028,9 @@ private func sameLegacyDay(_ lhs: Date, _ rhs: Date) -> Bool {
     calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
     return calendar.isDate(lhs, inSameDayAs: rhs)
 }
-private func sex(_ value: String) -> SheepSex { value == "母" ? .ewe : value == "公" ? .ram : .unknown }
+private func sex(_ value: String) -> SheepSex {
+    value == "母" ? .ewe : ["公", "种公"].contains(value) ? .ram : .unknown
+}
 private func appendAssignments(_ output: inout [MigrationRecordAssignment], kind: String, path: String, records: [[String: Any]], tagKey: String, penKey: String? = nil) { for (index, item) in records.enumerated() { output.append(MigrationRecordAssignment(id: "\(path)[\(index)]", kind: kind, legacyEarTag: string(item[tagKey]), dateText: string(item["date"]), penHint: penKey.map { string(item[$0]) }, targetSheepSourceKey: nil, exclusionReason: nil)) } }
 private func photoEntries(_ media: [String: Any]) -> [(tag: String, base64: String)] { (media["photoData"] as? [String: String] ?? [:]).sorted(by: { $0.key < $1.key }).map { ($0.key, $0.value) } }
 private func audit(_ context: ModelContext, _ session: MigrationSession, _ sourceKey: String, _ type: String, _ payload: Any, _ targetIDs: [UUID], resolution: String = "converted", exclusionReason: String? = nil) { let data = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data(); let raw = String(data: data, encoding: .utf8) ?? "{}"; let ids = (try? String(data: JSONEncoder().encode(targetIDs.map(\.uuidString)), encoding: .utf8)) ?? "[]"; context.insert(MigrationAuditRecord(id: StableMigrationID.uuid(sessionID: session.id, sourceKey: "audit:\(sourceKey)"), sessionID: session.id, sourceKey: sourceKey, entityType: type, targetEntityIDsJSON: ids, rawPayloadJSON: raw, resolution: resolution, exclusionReason: exclusionReason)) }

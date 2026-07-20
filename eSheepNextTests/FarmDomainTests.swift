@@ -1138,6 +1138,35 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(committedLamb.sireID, sire.id)
     }
 
+    func testMigrationDoesNotPromoteOrdinaryRamsFromPurposeClassification() throws {
+        let payload = """
+        {
+          "schemaVersion": 3,
+          "herd": {
+            "sheep": [
+              {"tag":"R001","sex":"公","purpose":"种公羊","pen":"一舍"},
+              {"tag":"BR001","sex":"种公","purpose":"种公羊","pen":"配种舍"}
+            ],
+            "customPens":["一舍","配种舍"],
+            "transfers":[],"removals":[],"weighRecords":[],"productionBatches":[],"batchMemberships":[]
+          },
+          "reproduction":{"lambing":[],"semenRecords":[]}
+        }
+        """.data(using: .utf8)!
+
+        let session = try LegacyMigrationImporter.preview(source: payload)
+        let temporary = try LegacyMigrationImporter.buildTemporaryFarm(sessionID: session.id)
+        let context = ModelContext(temporary.container)
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+        let ordinaryRam = try XCTUnwrap(sheep.first { $0.earTag == "R001" })
+        let breedingRam = try XCTUnwrap(sheep.first { $0.earTag == "BR001" })
+
+        XCTAssertEqual(ordinaryRam.sex, .ram)
+        XCTAssertFalse(ordinaryRam.isBreedingRam, "旧用途分类不能批量提升普通公羊资格")
+        XCTAssertEqual(breedingRam.sex, .ram)
+        XCTAssertTrue(breedingRam.isBreedingRam, "旧来源明确写为“种公”时才迁移资格事实")
+    }
+
     func testFailedStagingBuildLeavesLastReviewableTemporaryResultUntouched() throws {
         let payload = """
         {"schemaVersion":3,"herd":{"sheep":[{"tag":"A001","pen":"基础舍"}],"transfers":[],"removals":[],"weighRecords":[],"productionBatches":[],"batchMemberships":[]},"reproduction":{"lambing":[],"semenRecords":[]}}

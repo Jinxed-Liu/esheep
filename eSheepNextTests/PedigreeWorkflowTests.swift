@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class PedigreeWorkflowTests: XCTestCase {
-    func testCandidateInferenceUsesOnlyHistoricalSamePenBreedingRamsAndNeverConfirms() throws {
+    func testCandidateInferenceUsesHistoricalSamePenWindowAndNeverConfirms() throws {
         let fixture = try makeFixture()
         let penA = PenRecord(farmID: fixture.farm.id, name: "配种一舍")
         let penB = PenRecord(farmID: fixture.farm.id, name: "配种二舍")
@@ -14,21 +14,119 @@ final class PedigreeWorkflowTests: XCTestCase {
         let ewe = SheepRecord(farmID: fixture.farm.id, earTag: "E001", breed: "湖羊", sex: .ewe, penID: penA.id, enteredAt: date("2025-01-01"))
         let samePen = SheepRecord(farmID: fixture.farm.id, earTag: "BR001", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penA.id, enteredAt: date("2025-01-01"), birthAt: date("2024-01-01"))
         let ordinaryRam = SheepRecord(farmID: fixture.farm.id, earTag: "R002", breed: "杜泊", isBreedingRam: false, sex: .ram, penID: penA.id, enteredAt: date("2025-01-01"))
-        let notEntered = SheepRecord(farmID: fixture.farm.id, earTag: "BR003", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penA.id, enteredAt: conceptionAt.addingTimeInterval(1))
+        let legacyPurposeHint = SheepRecord(farmID: fixture.farm.id, earTag: "LEGACY-RAM", breed: "萨福克", purpose: "种公羊", isBreedingRam: false, sex: .ram, penID: penA.id, enteredAt: date("2025-01-01"))
+        let notEntered = SheepRecord(farmID: fixture.farm.id, earTag: "BR003", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penA.id, enteredAt: conceptionAt.addingTimeInterval(21 * 86_400))
         let alreadyRemoved = SheepRecord(farmID: fixture.farm.id, earTag: "BR004", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penA.id, enteredAt: date("2025-01-01"))
         alreadyRemoved.removedAt = conceptionAt.addingTimeInterval(-1)
-        let movedTooLate = SheepRecord(farmID: fixture.farm.id, earTag: "BR005", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penB.id, enteredAt: date("2025-01-01"))
+        let movedWithinPrematurityWindow = SheepRecord(farmID: fixture.farm.id, earTag: "BR005", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penB.id, enteredAt: date("2025-01-01"))
         let movedBefore = SheepRecord(farmID: fixture.farm.id, earTag: "BR006", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penB.id, enteredAt: date("2025-01-01"))
+        let movedOnLastToleranceDay = SheepRecord(farmID: fixture.farm.id, earTag: "BR007", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penB.id, enteredAt: date("2025-01-01"))
+        let movedOutsideTolerance = SheepRecord(farmID: fixture.farm.id, earTag: "BR008", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penB.id, enteredAt: date("2025-01-01"))
         let child = SheepRecord(farmID: fixture.farm.id, earTag: "L001", breed: "湖羊", sex: .ewe, penID: penA.id, enteredAt: lambingAt, birthAt: lambingAt, damID: ewe.id)
-        [ewe, samePen, ordinaryRam, notEntered, alreadyRemoved, movedTooLate, movedBefore, child].forEach { fixture.context.insert($0) }
-        fixture.context.insert(TransferRecord(farmID: fixture.farm.id, sheepID: movedTooLate.id, fromPenID: penB.id, toPenID: penA.id, occurredAt: conceptionAt.addingTimeInterval(1), note: "受胎后转入"))
+        [ewe, samePen, ordinaryRam, legacyPurposeHint, notEntered, alreadyRemoved, movedWithinPrematurityWindow, movedBefore, movedOnLastToleranceDay, movedOutsideTolerance, child].forEach { fixture.context.insert($0) }
+        fixture.context.insert(TransferRecord(farmID: fixture.farm.id, sheepID: movedWithinPrematurityWindow.id, fromPenID: penB.id, toPenID: penA.id, occurredAt: conceptionAt.addingTimeInterval(86_400), note: "早产容差第 1 天转入"))
         fixture.context.insert(TransferRecord(farmID: fixture.farm.id, sheepID: movedBefore.id, fromPenID: penB.id, toPenID: penA.id, occurredAt: conceptionAt.addingTimeInterval(-1), note: "受胎前转入"))
+        fixture.context.insert(TransferRecord(farmID: fixture.farm.id, sheepID: movedOnLastToleranceDay.id, fromPenID: penB.id, toPenID: penA.id, occurredAt: conceptionAt.addingTimeInterval(20 * 86_400), note: "早产容差第 20 天转入"))
+        fixture.context.insert(TransferRecord(farmID: fixture.farm.id, sheepID: movedOutsideTolerance.id, fromPenID: penB.id, toPenID: penA.id, occurredAt: conceptionAt.addingTimeInterval(21 * 86_400), note: "超出早产容差"))
         try fixture.context.save()
 
         let candidates = try PedigreeAnalysis.sireCandidates(eweID: ewe.id, lambingAt: lambingAt, gestationDays: 150, farmID: fixture.farm.id, context: fixture.context)
-        XCTAssertEqual(Set(candidates.map(\.ramID)), Set([samePen.id, movedBefore.id]))
+        XCTAssertEqual(Set(candidates.map(\.ramID)), Set([samePen.id, movedBefore.id, movedWithinPrematurityWindow.id, movedOnLastToleranceDay.id, legacyPurposeHint.id]))
+        XCTAssertFalse(try XCTUnwrap(candidates.first { $0.ramID == legacyPurposeHint.id }).isConfirmedBreedingRam)
+        XCTAssertFalse(candidates.contains { $0.ramID == ordinaryRam.id }, "普通公羊不能进入父本候选")
+        XCTAssertFalse(candidates.contains { $0.ramID == movedOutsideTolerance.id }, "出生前 129 天才同舍已超出 20 天早产容差")
         XCTAssertNil(child.sireID, "候选推算不得自动确权")
         XCTAssertEqual(candidates.first { $0.ramID == samePen.id }?.conceptionAt, conceptionAt)
+        let oneDayEarly = try XCTUnwrap(candidates.first { $0.ramID == movedWithinPrematurityWindow.id })
+        XCTAssertEqual(oneDayEarly.matchedAt, conceptionAt.addingTimeInterval(86_400))
+        XCTAssertEqual(oneDayEarly.prematurityAllowanceDays, 1)
+        XCTAssertEqual(oneDayEarly.inferredGestationDays, 149)
+        XCTAssertTrue(oneDayEarly.isPrematurityWindowMatch)
+        let twentyDaysEarly = try XCTUnwrap(candidates.first { $0.ramID == movedOnLastToleranceDay.id })
+        XCTAssertEqual(twentyDaysEarly.prematurityAllowanceDays, 20)
+        XCTAssertEqual(twentyDaysEarly.inferredGestationDays, 130)
+    }
+
+    func testPrematurityWindowUsesDamTransferLikeS3SH032() throws {
+        let fixture = try makeFixture()
+        let oldPen = PenRecord(farmID: fixture.farm.id, name: "大棚五舍")
+        let breedingPen = PenRecord(farmID: fixture.farm.id, name: "四舍西")
+        fixture.context.insert(oldPen); fixture.context.insert(breedingPen)
+        let birthAt = date("2026-03-20")
+        let standardConceptionAt = date("2025-10-21")
+        let ewe = SheepRecord(farmID: fixture.farm.id, earTag: "SH42054", breed: "湖羊", sex: .ewe, penID: oldPen.id, enteredAt: date("2024-02-02"))
+        let ram = SheepRecord(farmID: fixture.farm.id, earTag: "SH23.4.03", breed: "澳洲白", purpose: "种公羊", isBreedingRam: true, sex: .ram, penID: breedingPen.id, enteredAt: date("2023-04-18"))
+        let child = SheepRecord(farmID: fixture.farm.id, earTag: "S3-SH032", breed: "湖羊", sex: .ewe, penID: breedingPen.id, enteredAt: birthAt, birthAt: birthAt, damID: ewe.id)
+        [ewe, ram, child].forEach { fixture.context.insert($0) }
+        fixture.context.insert(TransferRecord(
+            farmID: fixture.farm.id,
+            sheepID: ewe.id,
+            fromPenID: oldPen.id,
+            toPenID: breedingPen.id,
+            occurredAt: standardConceptionAt.addingTimeInterval(86_400),
+            note: "后备母羊配种"
+        ))
+        try fixture.context.save()
+
+        let candidates = try PedigreeAnalysis.sireCandidates(
+            eweID: ewe.id,
+            lambingAt: birthAt,
+            gestationDays: 150,
+            farmID: fixture.farm.id,
+            context: fixture.context
+        )
+
+        let candidate = try XCTUnwrap(candidates.first { $0.ramID == ram.id })
+        XCTAssertEqual(candidate.matchedAt, date("2025-10-22"))
+        XCTAssertEqual(candidate.prematurityAllowanceDays, 1)
+        XCTAssertEqual(candidate.inferredGestationDays, 149)
+        XCTAssertNil(child.sireID, "早产容差命中仍不得自动确认父本")
+    }
+
+    func testLargeFarmPedigreeCheckBuildsOneIndexedSnapshotWithoutBlocking() {
+        let penID = UUID()
+        let damID = UUID()
+        let enteredAt = date("2022-01-01")
+        let firstBirthAt = date("2026-01-01")
+        var sheep: [PedigreeSheepSnapshot] = [
+            .init(id: damID, earTag: "E0001", sex: .ewe, initialPenID: penID, currentPenID: penID, enteredAt: enteredAt, birthAt: date("2021-01-01")),
+        ]
+        for index in 0..<24 {
+            sheep.append(.init(id: UUID(), earTag: "BR\(index)", sex: .ram, isBreedingRam: true, initialPenID: penID, currentPenID: penID, enteredAt: enteredAt, birthAt: date("2020-01-01")))
+        }
+        var childIDs: [UUID] = []
+        for index in 0..<3_048 {
+            let id = UUID()
+            childIDs.append(id)
+            sheep.append(.init(
+                id: id,
+                earTag: "L\(index)",
+                sex: index.isMultiple(of: 2) ? .ewe : .ram,
+                initialPenID: penID,
+                currentPenID: penID,
+                enteredAt: firstBirthAt,
+                birthAt: firstBirthAt.addingTimeInterval(Double(index % 365) * 86_400),
+                damID: damID
+            ))
+        }
+        let transfers = (0..<8_203).map { index in
+            TransferSnapshot(
+                sheepID: childIDs[index % childIDs.count],
+                toPenID: penID,
+                occurredAt: enteredAt.addingTimeInterval(Double(index % 730) * 86_400),
+                stableID: UUID()
+            )
+        }
+
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        let issues = PedigreeAnalysis.issues(input: .init(sheep: sheep, transfers: transfers), gestationDays: 150)
+        let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
+
+        XCTAssertEqual(sheep.count, 3_073)
+        XCTAssertEqual(transfers.count, 8_203)
+        XCTAssertEqual(issues.count { $0.kind == .candidateSire }, childIDs.count)
+        XCTAssertTrue(issues.filter { $0.kind == .candidateSire }.allSatisfy { $0.candidateRamIDs.count == 24 })
+        XCTAssertLessThan(elapsed, 3, "真场规模的系谱检查不应在主线程形成重复全库扫描")
     }
 
     func testDirectRamExternalDonorAndLinkedDonorKeepHistoricalSnapshots() throws {

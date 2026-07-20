@@ -9,9 +9,21 @@ struct PedigreeSireCandidate: Identifiable, Sendable, Equatable {
     let ramID: UUID
     let earTag: String
     let breed: String
+    /// 按牧场标准妊娠天数得到的基准受胎日。
     let conceptionAt: Date
+    /// 在早产容差窗口内，母羊与该种公羊最早出现同舍证据的日期。
+    let matchedAt: Date
+    let candidateWindowEndAt: Date
+    let inferredGestationDays: Int
+    let prematurityAllowanceDays: Int
     let historicalPenID: UUID
+    let historicalPenName: String?
     let rankingScore: Double
+    let isConfirmedBreedingRam: Bool
+    let ramRevision: Int
+
+    var isPrematurityWindowMatch: Bool { prematurityAllowanceDays > 0 }
+    var configuredGestationDays: Int { inferredGestationDays + prematurityAllowanceDays }
 }
 
 struct PedigreeCandidateFeatures: Sendable, Equatable {
@@ -20,6 +32,134 @@ struct PedigreeCandidateFeatures: Sendable, Equatable {
     let sameHistoricalPen: Bool
     let presentAtConception: Bool
     let explicitlyMarkedBreedingRam: Bool
+}
+
+struct PedigreeSheepSnapshot: Identifiable, Sendable, Equatable {
+    let id: UUID
+    let earTag: String
+    let breed: String
+    let purpose: String
+    let sex: SheepSex
+    let isBreedingRam: Bool
+    let initialPenID: UUID?
+    let currentPenID: UUID?
+    let enteredAt: Date
+    let removedAt: Date?
+    let birthAt: Date?
+    let damID: UUID?
+    let sireID: UUID?
+    let semenDonorID: UUID?
+    let damProvenance: PedigreeRelationSource?
+    let sireProvenance: PedigreeRelationSource?
+    let semenDonorNameSnapshot: String?
+    let semenDonorRegistrationNumberSnapshot: String?
+    let semenDonorBreedSnapshot: String?
+    let revision: Int
+
+    init(
+        id: UUID = UUID(),
+        earTag: String,
+        breed: String = "",
+        purpose: String = "未分类",
+        sex: SheepSex,
+        isBreedingRam: Bool = false,
+        initialPenID: UUID? = nil,
+        currentPenID: UUID? = nil,
+        enteredAt: Date = .distantPast,
+        removedAt: Date? = nil,
+        birthAt: Date? = nil,
+        damID: UUID? = nil,
+        sireID: UUID? = nil,
+        semenDonorID: UUID? = nil,
+        damProvenance: PedigreeRelationSource? = nil,
+        sireProvenance: PedigreeRelationSource? = nil,
+        semenDonorNameSnapshot: String? = nil,
+        semenDonorRegistrationNumberSnapshot: String? = nil,
+        semenDonorBreedSnapshot: String? = nil,
+        revision: Int = 1
+    ) {
+        self.id = id
+        self.earTag = earTag
+        self.breed = breed
+        self.purpose = purpose
+        self.sex = sex
+        self.isBreedingRam = isBreedingRam
+        self.initialPenID = initialPenID
+        self.currentPenID = currentPenID
+        self.enteredAt = enteredAt
+        self.removedAt = removedAt
+        self.birthAt = birthAt
+        self.damID = damID
+        self.sireID = sireID
+        self.semenDonorID = semenDonorID
+        self.damProvenance = damProvenance
+        self.sireProvenance = sireProvenance
+        self.semenDonorNameSnapshot = semenDonorNameSnapshot
+        self.semenDonorRegistrationNumberSnapshot = semenDonorRegistrationNumberSnapshot
+        self.semenDonorBreedSnapshot = semenDonorBreedSnapshot
+        self.revision = revision
+    }
+
+    init(_ record: SheepRecord) {
+        self.init(
+            id: record.id,
+            earTag: record.earTag,
+            breed: record.breed,
+            purpose: record.purpose,
+            sex: record.sex,
+            isBreedingRam: record.isBreedingRam,
+            initialPenID: record.initialPenID,
+            currentPenID: record.currentPenID,
+            enteredAt: record.enteredAt,
+            removedAt: record.removedAt,
+            birthAt: record.birthAt,
+            damID: record.damID,
+            sireID: record.sireID,
+            semenDonorID: record.semenDonorID,
+            damProvenance: record.damProvenance,
+            sireProvenance: record.sireProvenance,
+            semenDonorNameSnapshot: record.semenDonorNameSnapshot,
+            semenDonorRegistrationNumberSnapshot: record.semenDonorRegistrationNumberSnapshot,
+            semenDonorBreedSnapshot: record.semenDonorBreedSnapshot,
+            revision: record.revision
+        )
+    }
+}
+
+struct PedigreeAnalysisInput: Sendable {
+    let sheep: [PedigreeSheepSnapshot]
+    let transfers: [TransferSnapshot]
+}
+
+struct PedigreeRelatedSheep: Identifiable, Sendable, Equatable {
+    let id: UUID
+    let earTag: String
+    let sex: SheepSex
+    let currentPenName: String?
+}
+
+struct PedigreeDonorSummary: Sendable, Equatable {
+    let name: String
+    let registrationNumber: String
+    let breed: String
+}
+
+struct PedigreeAuditSummary: Identifiable, Sendable, Equatable {
+    let id: UUID
+    let reason: String
+    let occurredAt: Date
+}
+
+struct PedigreeProfileSnapshot: Sendable, Equatable {
+    let record: PedigreeSheepSnapshot
+    let dam: PedigreeRelatedSheep?
+    let sire: PedigreeRelatedSheep?
+    let donor: PedigreeDonorSummary?
+    let grandparents: [PedigreeRelatedSheep]
+    let maternalSiblings: [PedigreeRelatedSheep]
+    let paternalSiblings: [PedigreeRelatedSheep]
+    let descendants: [PedigreeRelatedSheep]
+    let audits: [PedigreeAuditSummary]
 }
 
 protocol PedigreeCandidateRanking: Sendable {
@@ -82,8 +222,34 @@ struct PedigreeIssue: Identifiable, Sendable, Equatable {
     let candidateRamIDs: [UUID]
 }
 
-@MainActor
 enum PedigreeAnalysis {
+    /// 羊只可能提前分娩，父本候选因此允许从标准受胎日向出生方向延伸 20 天。
+    /// 该窗口只扩大“候选”检索，永远不自动确认父本。
+    static let prematureBirthToleranceDays = 20
+
+    @MainActor
+    static func loadInput(farmID: UUID, context: ModelContext) throws -> PedigreeAnalysisInput {
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        return PedigreeAnalysisInput(
+            sheep: sheep.map(PedigreeSheepSnapshot.init),
+            transfers: transfers.map {
+                TransferSnapshot(
+                    sheepID: $0.sheepID,
+                    toPenID: $0.toPenID,
+                    occurredAt: $0.occurredAt,
+                    recordedAt: $0.recordedAt,
+                    stableID: $0.id
+                )
+            }
+        )
+    }
+
+    @MainActor
     static func sireCandidates(
         eweID: UUID,
         lambingAt: Date,
@@ -92,39 +258,67 @@ enum PedigreeAnalysis {
         context: ModelContext,
         ranking: any PedigreeCandidateRanking = RuleBasedPedigreeCandidateRanking()
     ) throws -> [PedigreeSireCandidate] {
-        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
-        let transfers = try context.fetch(FetchDescriptor<TransferRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
-        let presence = sheep.map { SheepPresenceSnapshot(sheepID: $0.id, initialPenID: $0.initialPenID, enteredAt: $0.enteredAt, removedAt: $0.removedAt) }
-        let transferSnapshots = transfers.map { TransferSnapshot(sheepID: $0.sheepID, toPenID: $0.toPenID, occurredAt: $0.occurredAt, recordedAt: $0.recordedAt, stableID: $0.id) }
-        let breedingRamIDs = Set(sheep.filter { $0.sex == .ram && $0.isBreedingRam }.map(\.id))
-        let ids = FarmAnalytics.inferredSireCandidates(for: eweID, lambingAt: lambingAt, gestationDays: gestationDays, sheep: presence, sexes: Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0.sex) }), breedingRamIDs: breedingRamIDs, transfers: transferSnapshots)
-        let conceptionAt = Calendar.current.date(byAdding: .day, value: -max(1, gestationDays), to: lambingAt) ?? lambingAt
-        guard let ewe = sheep.first(where: { $0.id == eweID }),
-              let penID = FarmHistoryTimeline.pen(for: ewe, at: conceptionAt, transfers: transfers) else { return [] }
-        let byID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
+        let input = try loadInput(farmID: farmID, context: context)
+        let index = CandidateIndex(input: input)
+        guard let match = index.match(eweID: eweID, lambingAt: lambingAt, gestationDays: gestationDays) else { return [] }
+        let penNames = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        })).map { ($0.id, $0.name) })
         let coreMLRanking = BundledCoreMLPedigreeCandidateRanking.load()
-        return ids.compactMap { id -> PedigreeSireCandidate? in
-            guard let ram = byID[id] else { return nil }
-            let ageDays = ram.birthAt.map { max(0, conceptionAt.timeIntervalSince($0) / 86_400) } ?? 365
-            let features = PedigreeCandidateFeatures(ramAgeDaysAtConception: ageDays, gestationDays: gestationDays, sameHistoricalPen: true, presentAtConception: true, explicitlyMarkedBreedingRam: true)
+        return match.rams.compactMap { evidence -> PedigreeSireCandidate? in
+            guard let ram = index.sheepByID[evidence.ramID] else { return nil }
+            let ageDays = ram.birthAt.map { max(0, evidence.matchedAt.timeIntervalSince($0) / 86_400) } ?? 365
+            let features = PedigreeCandidateFeatures(
+                ramAgeDaysAtConception: ageDays,
+                gestationDays: gestationDays,
+                sameHistoricalPen: true,
+                presentAtConception: true,
+                explicitlyMarkedBreedingRam: ram.isBreedingRam
+            )
             #if canImport(CoreML)
             let score = coreMLRanking?.score(features) ?? ranking.score(features)
             #else
             let score = ranking.score(features)
             #endif
-            return .init(ramID: ram.id, earTag: ram.earTag, breed: ram.breed, conceptionAt: conceptionAt, historicalPenID: penID, rankingScore: score)
+            return .init(
+                ramID: ram.id,
+                earTag: ram.earTag,
+                breed: ram.breed,
+                conceptionAt: match.standardConceptionAt,
+                matchedAt: evidence.matchedAt,
+                candidateWindowEndAt: match.windowEndAt,
+                inferredGestationDays: evidence.inferredGestationDays,
+                prematurityAllowanceDays: evidence.prematurityAllowanceDays,
+                historicalPenID: evidence.penID,
+                historicalPenName: penNames[evidence.penID],
+                rankingScore: score,
+                isConfirmedBreedingRam: ram.isBreedingRam,
+                ramRevision: ram.revision
+            )
         }
         .sorted {
+            if $0.isConfirmedBreedingRam != $1.isConfirmedBreedingRam { return $0.isConfirmedBreedingRam }
+            if $0.prematurityAllowanceDays != $1.prematurityAllowanceDays {
+                return $0.prematurityAllowanceDays < $1.prematurityAllowanceDays
+            }
             if $0.rankingScore != $1.rankingScore { return $0.rankingScore > $1.rankingScore }
             return $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending
         }
     }
 
+    @MainActor
     static func issues(farmID: UUID, gestationDays: Int, context: ModelContext) throws -> [PedigreeIssue] {
-        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
-        let byID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
+        issues(input: try loadInput(farmID: farmID, context: context), gestationDays: gestationDays)
+    }
+
+    static func issues(input: PedigreeAnalysisInput, gestationDays: Int) -> [PedigreeIssue] {
+        let byID = Dictionary(uniqueKeysWithValues: input.sheep.map { ($0.id, $0) })
+        let candidateIndex = CandidateIndex(input: input)
+        let cycleIDs = pedigreeCycleIDs(byID: byID)
+        var candidateCache: [CandidateLookupKey: [UUID]] = [:]
         var issues: [PedigreeIssue] = []
-        for child in sheep {
+        issues.reserveCapacity(input.sheep.count * 2)
+        for child in input.sheep {
             if child.damID == nil {
                 issues.append(.init(id: "\(child.id)-unknown-dam", kind: .unknownDam, sheepID: child.id, title: "\(child.earTag) · 母本未知", detail: "当前档案没有确认母本。", candidateRamIDs: []))
             } else if let damID = child.damID, let dam = byID[damID] {
@@ -136,32 +330,265 @@ enum PedigreeAnalysis {
             if child.sireID == nil && child.semenDonorID == nil {
                 var candidates: [UUID] = []
                 if let eweID = child.damID, let birthAt = child.birthAt {
-                    candidates = try sireCandidates(eweID: eweID, lambingAt: birthAt, gestationDays: gestationDays, farmID: farmID, context: context).map(\.ramID)
+                    let key = CandidateLookupKey(eweID: eweID, lambingAt: birthAt, gestationDays: gestationDays)
+                    if let cached = candidateCache[key] {
+                        candidates = cached
+                    } else {
+                        candidates = candidateIndex.match(eweID: eweID, lambingAt: birthAt, gestationDays: gestationDays)?.ramIDs ?? []
+                        candidateCache[key] = candidates
+                    }
                 }
-                issues.append(.init(id: "\(child.id)-unknown-sire", kind: candidates.isEmpty ? .unknownSire : .candidateSire, sheepID: child.id, title: "\(child.earTag) · 父本未确认", detail: candidates.isEmpty ? "没有符合历史边界的同舍种公羊。" : "发现 \(candidates.count) 只历史同舍种公羊，仅作为候选。", candidateRamIDs: candidates))
+                let minimumGestationDays = max(1, gestationDays - prematureBirthToleranceDays)
+                issues.append(.init(
+                    id: "\(child.id)-unknown-sire",
+                    kind: candidates.isEmpty ? .unknownSire : .candidateSire,
+                    sheepID: child.id,
+                    title: "\(child.earTag) · 父本未确认",
+                    detail: candidates.isEmpty
+                        ? "出生前 \(gestationDays)～\(minimumGestationDays) 天内没有符合历史边界的同舍种公羊。"
+                        : "出生前 \(gestationDays)～\(minimumGestationDays) 天内发现 \(candidates.count) 只历史同舍种公羊，仅作为候选。",
+                    candidateRamIDs: candidates
+                ))
             } else if let sireID = child.sireID, let sire = byID[sireID] {
                 if sire.sex != .ram || !sire.isBreedingRam { issues.append(.init(id: "\(child.id)-sire-sex", kind: .sexMismatch, sheepID: child.id, title: "\(child.earTag) · 父本资格异常", detail: "引用的父本不是已明确标记的种公羊。", candidateRamIDs: [])) }
                 if let childBirth = child.birthAt, let parentBirth = sire.birthAt, parentBirth >= childBirth { issues.append(.init(id: "\(child.id)-sire-date", kind: .dateInversion, sheepID: child.id, title: "\(child.earTag) · 父系日期倒置", detail: "父本出生日期不早于后代。", candidateRamIDs: [])) }
             } else if child.sireID != nil {
                 issues.append(.init(id: "\(child.id)-sire-missing", kind: .invalidReference, sheepID: child.id, title: "\(child.earTag) · 父本引用失效", detail: "父本 UUID 在当前牧场中不存在。", candidateRamIDs: []))
             }
-            if ancestryContains(child.id, startingAt: child.damID, byID: byID) || ancestryContains(child.id, startingAt: child.sireID, byID: byID) {
+            if cycleIDs.contains(child.id) {
                 issues.append(.init(id: "\(child.id)-cycle", kind: .cycle, sheepID: child.id, title: "\(child.earTag) · 循环系谱", detail: "父系或母系祖先链回到了该羊只。", candidateRamIDs: []))
             }
         }
         return issues.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 
-    private static func ancestryContains(_ target: UUID, startingAt root: UUID?, byID: [UUID: SheepRecord]) -> Bool {
-        guard let root else { return false }
-        var pending = [root]
-        var visited = Set<UUID>()
-        while let id = pending.popLast() {
-            if id == target { return true }
-            guard visited.insert(id).inserted, let record = byID[id] else { continue }
-            if let damID = record.damID { pending.append(damID) }
-            if let sireID = record.sireID { pending.append(sireID) }
+    @MainActor
+    static func profile(sheepID: UUID, farmID: UUID, context: ModelContext) throws -> PedigreeProfileSnapshot? {
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        })).map(PedigreeSheepSnapshot.init)
+        guard let record = sheep.first(where: { $0.id == sheepID }) else { return nil }
+
+        let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let penNames = Dictionary(uniqueKeysWithValues: pens.map { ($0.id, $0.name) })
+        let byID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
+
+        func related(_ item: PedigreeSheepSnapshot) -> PedigreeRelatedSheep {
+            PedigreeRelatedSheep(id: item.id, earTag: item.earTag, sex: item.sex, currentPenName: item.currentPenID.flatMap { penNames[$0] })
         }
-        return false
+        func sorted(_ values: [PedigreeSheepSnapshot]) -> [PedigreeRelatedSheep] {
+            values.sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }.map(related)
+        }
+
+        let dam = record.damID.flatMap { byID[$0] }
+        let sire = record.sireID.flatMap { byID[$0] }
+        let parents = [dam, sire].compactMap { $0 }
+        var seenGrandparents = Set<UUID>()
+        let grandparents = parents
+            .flatMap { [$0.damID, $0.sireID].compactMap { $0.flatMap { byID[$0] } } }
+            .filter { seenGrandparents.insert($0.id).inserted }
+
+        let maternalSiblings: [PedigreeSheepSnapshot]
+        if let damID = record.damID {
+            maternalSiblings = sheep.filter { $0.id != record.id && $0.damID == damID }
+        } else {
+            maternalSiblings = []
+        }
+        let paternalSiblings: [PedigreeSheepSnapshot]
+        if let donorID = record.semenDonorID {
+            paternalSiblings = sheep.filter { $0.id != record.id && $0.semenDonorID == donorID }
+        } else if let sireID = record.sireID {
+            paternalSiblings = sheep.filter { $0.id != record.id && $0.sireID == sireID && $0.semenDonorID == nil }
+        } else {
+            paternalSiblings = []
+        }
+        let descendants = sheep.filter { $0.damID == record.id || $0.sireID == record.id }
+
+        let donor: PedigreeDonorSummary?
+        if let donorID = record.semenDonorID {
+            let donorRecord = try context.fetch(FetchDescriptor<SemenDonorRecord>(predicate: #Predicate {
+                $0.id == donorID && $0.farmID == farmID && $0.deletedAt == nil
+            })).first
+            donor = PedigreeDonorSummary(
+                name: donorRecord?.name ?? record.semenDonorNameSnapshot ?? "未知供体",
+                registrationNumber: donorRecord?.registrationNumber ?? record.semenDonorRegistrationNumberSnapshot ?? "",
+                breed: donorRecord?.breed ?? record.semenDonorBreedSnapshot ?? ""
+            )
+        } else {
+            donor = nil
+        }
+
+        let audits = try context.fetch(FetchDescriptor<PedigreeChangeRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.sheepID == sheepID
+        })).sorted { $0.occurredAt > $1.occurredAt }.map {
+            PedigreeAuditSummary(id: $0.id, reason: $0.reason, occurredAt: $0.occurredAt)
+        }
+
+        return PedigreeProfileSnapshot(
+            record: record,
+            dam: dam.map(related),
+            sire: sire.map(related),
+            donor: donor,
+            grandparents: sorted(grandparents),
+            maternalSiblings: sorted(maternalSiblings),
+            paternalSiblings: sorted(paternalSiblings),
+            descendants: sorted(descendants),
+            audits: audits
+        )
+    }
+
+    private struct CandidateLookupKey: Hashable {
+        let eweID: UUID
+        let lambingAt: Date
+        let gestationDays: Int
+    }
+
+    private struct CandidateRamMatch {
+        let ramID: UUID
+        let matchedAt: Date
+        let penID: UUID
+        let inferredGestationDays: Int
+        let prematurityAllowanceDays: Int
+    }
+
+    private struct CandidateMatch {
+        let standardConceptionAt: Date
+        let windowEndAt: Date
+        let rams: [CandidateRamMatch]
+
+        var ramIDs: [UUID] { rams.map(\.ramID) }
+    }
+
+    private struct CandidateIndex {
+        let sheepByID: [UUID: PedigreeSheepSnapshot]
+        private let breedingRamCandidates: [PedigreeSheepSnapshot]
+        private let transfersBySheep: [UUID: [TransferSnapshot]]
+
+        init(input: PedigreeAnalysisInput) {
+            sheepByID = Dictionary(uniqueKeysWithValues: input.sheep.map { ($0.id, $0) })
+            // 新资格标记是权威事实。旧库只有“用途”快照时，它只作为待人工核实的线索，
+            // 不能在这里静默升级为已确认种公羊。
+            breedingRamCandidates = input.sheep.filter {
+                $0.sex == .ram && ($0.isBreedingRam || $0.purpose == "种公羊")
+            }
+            transfersBySheep = Dictionary(grouping: input.transfers, by: \.sheepID).mapValues { values in
+                values.sorted {
+                    if $0.occurredAt != $1.occurredAt { return $0.occurredAt < $1.occurredAt }
+                    if $0.recordedAt != $1.recordedAt { return $0.recordedAt < $1.recordedAt }
+                    return $0.stableID.uuidString < $1.stableID.uuidString
+                }
+            }
+        }
+
+        func match(eweID: UUID, lambingAt: Date, gestationDays: Int, calendar: Calendar = .current) -> CandidateMatch? {
+            let normalizedGestationDays = max(1, gestationDays)
+            let toleranceDays = min(PedigreeAnalysis.prematureBirthToleranceDays, normalizedGestationDays - 1)
+            let standardConceptionAt = calendar.date(byAdding: .day, value: -normalizedGestationDays, to: lambingAt) ?? lambingAt
+            let windowEndAt = calendar.date(byAdding: .day, value: toleranceDays, to: standardConceptionAt) ?? standardConceptionAt
+            guard let ewe = sheepByID[eweID] else { return nil }
+
+            let rams = breedingRamCandidates.compactMap { ram -> CandidateRamMatch? in
+                guard ram.id != eweID,
+                      let evidence = firstCoLocation(
+                          ewe: ewe,
+                          ram: ram,
+                          from: standardConceptionAt,
+                          through: windowEndAt
+                      ) else { return nil }
+                let allowanceDays = max(
+                    0,
+                    calendar.dateComponents(
+                        [.day],
+                        from: calendar.startOfDay(for: standardConceptionAt),
+                        to: calendar.startOfDay(for: evidence.date)
+                    ).day ?? 0
+                )
+                return CandidateRamMatch(
+                    ramID: ram.id,
+                    matchedAt: evidence.date,
+                    penID: evidence.penID,
+                    inferredGestationDays: max(1, normalizedGestationDays - allowanceDays),
+                    prematurityAllowanceDays: allowanceDays
+                )
+            }
+            return CandidateMatch(
+                standardConceptionAt: standardConceptionAt,
+                windowEndAt: windowEndAt,
+                rams: rams
+            )
+        }
+
+        /// 羊只的圈舍/在场状态只会在入场或转群时发生变化；检查这些边界点即可，
+        /// 不需要把全场记录按 21 个自然日重复扫描。
+        private func firstCoLocation(
+            ewe: PedigreeSheepSnapshot,
+            ram: PedigreeSheepSnapshot,
+            from startAt: Date,
+            through endAt: Date
+        ) -> (date: Date, penID: UUID)? {
+            var checkpoints = Set([startAt, endAt])
+            for enteredAt in [ewe.enteredAt, ram.enteredAt] where enteredAt > startAt && enteredAt <= endAt {
+                checkpoints.insert(enteredAt)
+            }
+            for sheepID in [ewe.id, ram.id] {
+                for transfer in transfersBySheep[sheepID] ?? []
+                    where transfer.occurredAt > startAt && transfer.occurredAt <= endAt {
+                    checkpoints.insert(transfer.occurredAt)
+                }
+            }
+
+            for date in checkpoints.sorted() {
+                guard isPresent(ewe, at: date),
+                      isPresent(ram, at: date),
+                      let ewePenID = pen(for: ewe, at: date),
+                      pen(for: ram, at: date) == ewePenID else { continue }
+                return (date, ewePenID)
+            }
+            return nil
+        }
+
+        private func isPresent(_ sheep: PedigreeSheepSnapshot, at date: Date) -> Bool {
+            sheep.enteredAt <= date && (sheep.removedAt.map { $0 > date } ?? true)
+        }
+
+        private func pen(for sheep: PedigreeSheepSnapshot, at date: Date) -> UUID? {
+            guard let transfers = transfersBySheep[sheep.id], !transfers.isEmpty else { return sheep.initialPenID }
+            var lower = 0
+            var upper = transfers.count
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2
+                if transfers[middle].occurredAt <= date { lower = middle + 1 } else { upper = middle }
+            }
+            return lower > 0 ? transfers[lower - 1].toPenID : sheep.initialPenID
+        }
+    }
+
+    private static func pedigreeCycleIDs(byID: [UUID: PedigreeSheepSnapshot]) -> Set<UUID> {
+        var state: [UUID: UInt8] = [:]
+        var path: [UUID] = []
+        var pathIndex: [UUID: Int] = [:]
+        var cycleIDs = Set<UUID>()
+
+        func visit(_ id: UUID) {
+            if state[id] == 2 { return }
+            if state[id] == 1 {
+                if let start = pathIndex[id] { cycleIDs.formUnion(path[start...]) }
+                return
+            }
+            guard let record = byID[id] else { return }
+            state[id] = 1
+            pathIndex[id] = path.count
+            path.append(id)
+            if let damID = record.damID { visit(damID) }
+            if let sireID = record.sireID { visit(sireID) }
+            _ = path.popLast()
+            pathIndex[id] = nil
+            state[id] = 2
+        }
+
+        for id in byID.keys where state[id] == nil { visit(id) }
+        return cycleIDs
     }
 }
