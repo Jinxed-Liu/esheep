@@ -145,12 +145,19 @@ final class SheepRecord {
     var legacyPenSnapshotIsAuthoritative: Bool?
     var breed: String
     var purpose: String
+    var isBreedingRam: Bool = false
     var sexRawValue: String
     var statusRawValue: String
     var currentPenID: UUID?
     var initialPenID: UUID?
     var damID: UUID?
     var sireID: UUID?
+    var damProvenanceRawValue: String? = nil
+    var sireProvenanceRawValue: String? = nil
+    var semenDonorID: UUID? = nil
+    var semenDonorNameSnapshot: String? = nil
+    var semenDonorRegistrationNumberSnapshot: String? = nil
+    var semenDonorBreedSnapshot: String? = nil
     var enteredAt: Date
     var birthAt: Date?
     var removedAt: Date?
@@ -169,12 +176,19 @@ final class SheepRecord {
         isHistoricalArchive: Bool = false,
         breed: String,
         purpose: String = "未分类",
+        isBreedingRam: Bool? = nil,
         sex: SheepSex,
         penID: UUID?,
         enteredAt: Date,
         birthAt: Date? = nil,
         damID: UUID? = nil,
         sireID: UUID? = nil,
+        damProvenance: PedigreeRelationSource? = nil,
+        sireProvenance: PedigreeRelationSource? = nil,
+        semenDonorID: UUID? = nil,
+        semenDonorNameSnapshot: String? = nil,
+        semenDonorRegistrationNumberSnapshot: String? = nil,
+        semenDonorBreedSnapshot: String? = nil,
         note: String = ""
     ) {
         self.id = id
@@ -187,12 +201,19 @@ final class SheepRecord {
         self.legacyPenSnapshotIsAuthoritative = false
         self.breed = breed
         self.purpose = purpose
+        self.isBreedingRam = isBreedingRam ?? (sex == .ram && purpose.contains("种公羊"))
         self.sexRawValue = sex.rawValue
         self.statusRawValue = SheepStatus.active.rawValue
         self.currentPenID = penID
         self.initialPenID = penID
         self.damID = damID
         self.sireID = sireID
+        self.damProvenanceRawValue = damProvenance?.rawValue
+        self.sireProvenanceRawValue = sireProvenance?.rawValue
+        self.semenDonorID = semenDonorID
+        self.semenDonorNameSnapshot = semenDonorNameSnapshot
+        self.semenDonorRegistrationNumberSnapshot = semenDonorRegistrationNumberSnapshot
+        self.semenDonorBreedSnapshot = semenDonorBreedSnapshot
         self.enteredAt = enteredAt
         self.birthAt = birthAt
         self.removedAt = nil
@@ -204,6 +225,8 @@ final class SheepRecord {
 
     var sex: SheepSex { SheepSex(rawValue: sexRawValue) ?? .unknown }
     var status: SheepStatus { SheepStatus(rawValue: statusRawValue) ?? .active }
+    var damProvenance: PedigreeRelationSource? { damProvenanceRawValue.flatMap(PedigreeRelationSource.init(rawValue:)) }
+    var sireProvenance: PedigreeRelationSource? { sireProvenanceRawValue.flatMap(PedigreeRelationSource.init(rawValue:)) }
 
     /// `currentPenID` 只描述当前在场位置；离场、死亡和历史归档羊不属于任何当前圈舍。
     var isCurrentlyPresent: Bool { status == .active && !isHistoricalArchive }
@@ -785,7 +808,13 @@ final class ReproductionRecord {
     var sireID: UUID?
     var semenID: UUID? = nil
     var batchID: UUID? = nil
+    var relatedBreedingRecordID: UUID? = nil
     var semenNameSnapshot: String?
+    var semenDonorID: UUID? = nil
+    var semenDonorNameSnapshot: String? = nil
+    var semenDonorRegistrationNumberSnapshot: String? = nil
+    var semenDonorBreedSnapshot: String? = nil
+    var paternalSourceRawValue: String? = nil
     var result: String
     var lambCount: Int
     var parity: Int?
@@ -793,9 +822,11 @@ final class ReproductionRecord {
     var note: String
     var legacySourceKey: String?
     var createdAt: Date
+    var updatedAt: Date = Date.now
+    var revision: Int = 1
     var deletedAt: Date?
 
-    init(id: UUID = UUID(), farmID: UUID, eweID: UUID, kind: ReproductionRecordKind, occurredAt: Date, sireID: UUID? = nil, semenID: UUID? = nil, batchID: UUID? = nil, semenNameSnapshot: String? = nil, result: String = "", lambCount: Int = 0, parity: Int? = nil, birthDeadCount: Int? = nil, note: String = "", legacySourceKey: String? = nil) {
+    init(id: UUID = UUID(), farmID: UUID, eweID: UUID, kind: ReproductionRecordKind, occurredAt: Date, sireID: UUID? = nil, semenID: UUID? = nil, batchID: UUID? = nil, relatedBreedingRecordID: UUID? = nil, semenNameSnapshot: String? = nil, semenDonorID: UUID? = nil, semenDonorNameSnapshot: String? = nil, semenDonorRegistrationNumberSnapshot: String? = nil, semenDonorBreedSnapshot: String? = nil, paternalSource: PaternalIdentitySource? = nil, result: String = "", lambCount: Int = 0, parity: Int? = nil, birthDeadCount: Int? = nil, note: String = "", legacySourceKey: String? = nil) {
         self.id = id
         self.farmID = farmID
         self.eweID = eweID
@@ -804,7 +835,13 @@ final class ReproductionRecord {
         self.sireID = sireID
         self.semenID = semenID
         self.batchID = batchID
+        self.relatedBreedingRecordID = relatedBreedingRecordID
         self.semenNameSnapshot = semenNameSnapshot
+        self.semenDonorID = semenDonorID
+        self.semenDonorNameSnapshot = semenDonorNameSnapshot
+        self.semenDonorRegistrationNumberSnapshot = semenDonorRegistrationNumberSnapshot
+        self.semenDonorBreedSnapshot = semenDonorBreedSnapshot
+        self.paternalSourceRawValue = paternalSource?.rawValue
         self.result = result
         self.lambCount = lambCount
         self.parity = parity
@@ -812,9 +849,11 @@ final class ReproductionRecord {
         self.note = note
         self.legacySourceKey = legacySourceKey
         self.createdAt = .now
+        self.updatedAt = self.createdAt
     }
 
     var kind: ReproductionRecordKind { ReproductionRecordKind(rawValue: kindRawValue) ?? .breeding }
+    var paternalSource: PaternalIdentitySource { PaternalIdentitySource(rawValue: paternalSourceRawValue ?? "") ?? .unknown }
 }
 
 @Model
@@ -826,12 +865,14 @@ final class SemenRecord {
     var source: String
     var batchNumber: String
     var quantityText: String
+    var donorID: UUID? = nil
+    var revision: Int = 1
     var legacySourceKey: String?
     var createdAt: Date
     var updatedAt: Date
     var deletedAt: Date?
 
-    init(id: UUID = UUID(), farmID: UUID, code: String, breed: String, source: String = "", batchNumber: String = "", quantityText: String = "0", legacySourceKey: String? = nil) {
+    init(id: UUID = UUID(), farmID: UUID, code: String, breed: String, source: String = "", batchNumber: String = "", quantityText: String = "0", donorID: UUID? = nil, legacySourceKey: String? = nil) {
         self.id = id
         self.farmID = farmID
         self.code = code
@@ -839,6 +880,7 @@ final class SemenRecord {
         self.source = source
         self.batchNumber = batchNumber
         self.quantityText = quantityText
+        self.donorID = donorID
         self.legacySourceKey = legacySourceKey
         self.createdAt = .now
         self.updatedAt = .now

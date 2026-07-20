@@ -49,6 +49,32 @@ struct FarmCheckpointManifest: Codable, Sendable, Equatable {
         let revision: Int
         let payload: Data
         let payloadDigest: String
+        let operationID: UUID?
+        let baseRevision: Int?
+        let occurredAt: Date?
+        let deletedAt: Date?
+
+        init(
+            entityType: String,
+            entityID: UUID,
+            revision: Int,
+            payload: Data,
+            payloadDigest: String,
+            operationID: UUID? = nil,
+            baseRevision: Int? = nil,
+            occurredAt: Date? = nil,
+            deletedAt: Date? = nil
+        ) {
+            self.entityType = entityType
+            self.entityID = entityID
+            self.revision = revision
+            self.payload = payload
+            self.payloadDigest = payloadDigest
+            self.operationID = operationID
+            self.baseRevision = baseRevision
+            self.occurredAt = occurredAt
+            self.deletedAt = deletedAt
+        }
     }
 
     struct AssetReference: Codable, Sendable, Equatable {

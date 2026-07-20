@@ -19,6 +19,18 @@ enum FarmCommandError: LocalizedError {
     case reproductionSubjectMustBeEwe
     case reproductionSireMustBeRam
     case pregnancyCheckCannotSetPaternity
+    case pedigreeReasonRequired
+    case pedigreeSelfReference
+    case pedigreeParentSexMismatch
+    case pedigreeCycle
+    case pedigreeDateInversion
+    case pedigreePaternalSourceConflict
+    case pedigreeRevisionConflict
+    case semenDonorNotFound
+    case duplicateSemenDonorRegistration
+    case linkedBreedingNotFound
+    case linkedBreedingAlreadyClosed
+    case lambingCorrectionConflict(String)
     case weaningDamMustBeEwe
     case cloudIdentityLocked
     case invalidFarmCoordinate
@@ -45,8 +57,20 @@ enum FarmCommandError: LocalizedError {
         case .insufficientInventory: "库存余量不足，无法完成本次出库。"
         case .invalidReproductionRecord: "繁殖记录缺少必填信息。"
         case .reproductionSubjectMustBeEwe: "繁殖记录的对象必须是母羊。"
-        case .reproductionSireMustBeRam: "本交父本必须是公羊。"
+        case .reproductionSireMustBeRam: "本交父本必须是已标记的种公羊。"
         case .pregnancyCheckCannotSetPaternity: "孕检只能记录结果，不能确认父本或冻精来源。"
+        case .pedigreeReasonRequired: "修改历史系谱必须填写原因。"
+        case .pedigreeSelfReference: "羊只不能把自己设为父本或母本。"
+        case .pedigreeParentSexMismatch: "母本必须是母羊，父本必须是已标记的种公羊。"
+        case .pedigreeCycle: "本次修改会形成循环系谱，已停止保存。"
+        case .pedigreeDateInversion: "父母的已知出生日期不能晚于或等于后代。"
+        case .pedigreePaternalSourceConflict: "本场种公羊和冻精供体必须二选一；供体关联种公羊只能由供体关系投影。"
+        case .pedigreeRevisionConflict: "该档案已在其他位置更新，请刷新后重试。"
+        case .semenDonorNotFound: "未找到当前牧场中的冻精供体。"
+        case .duplicateSemenDonorRegistration: "当前牧场已存在相同的供体登记号。"
+        case .linkedBreedingNotFound: "未找到这只母羊此前可关联的配种记录。"
+        case .linkedBreedingAlreadyClosed: "所选配种记录已经由流产或产羔闭合。"
+        case .lambingCorrectionConflict(let detail): "产羔修正与后续记录冲突：\(detail)"
         case .weaningDamMustBeEwe: "断奶记录中的母本必须是母羊。"
         case .cloudIdentityLocked: "当前云端牧场缺少有效的账号绑定或能力证书，已锁定写入。"
         case .invalidFarmCoordinate: "牧场坐标必须位于有效的经纬度范围内。"
@@ -758,6 +782,7 @@ final class FarmCommandService {
             record.earTag = earTag.trimmingCharacters(in: .whitespacesAndNewlines)
             record.breed = breed.trimmingCharacters(in: .whitespacesAndNewlines)
             record.sexRawValue = sex.rawValue
+            if sex != .ram { record.isBreedingRam = false }
             record.birthAt = birthAt
             record.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
             record.updatedAt = .now
@@ -1044,6 +1069,8 @@ final class FarmCommandService {
         case .health: return try context.fetch(FetchDescriptor<HealthRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .reproduction: return try context.fetch(FetchDescriptor<ReproductionRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .semen: return try context.fetch(FetchDescriptor<SemenRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .semenDonor: return try context.fetch(FetchDescriptor<SemenDonorRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .pedigreeChange: return try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .note: return try context.fetch(FetchDescriptor<NoteRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .photoAsset: return try context.fetch(FetchDescriptor<PhotoAssetRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .breedingProgramStep: return try context.fetch(FetchDescriptor<BreedingProgramStepRecord>()).contains { $0.id == id && $0.farmID == farmID }

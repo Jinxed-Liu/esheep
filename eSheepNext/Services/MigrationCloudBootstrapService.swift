@@ -222,6 +222,14 @@ struct MigrationCloudBootstrapService {
         context: ModelContext,
         to values: inout [(entityType: CloudEntityType, entityID: UUID, revision: Int, sourcePayload: Data, order: Int)]
     ) throws {
+        for value in try context.fetch(FetchDescriptor<SemenDonorRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
+            let initial = CareSemenDonorDraft(id: value.id, name: value.name, registrationNumber: value.registrationNumber, breed: value.breed, linkedRamID: nil, note: value.note, status: value.status, expectedRevision: 0)
+            values.append((.semenDonor, value.id, 1, try FarmCommandCloudPayloadEncoder.encode(.care(.upsertSemenDonor(initial))), 5))
+            if let linkedRamID = value.linkedRamID {
+                let linked = CareSemenDonorDraft(id: value.id, name: value.name, registrationNumber: value.registrationNumber, breed: value.breed, linkedRamID: linkedRamID, note: value.note, status: value.status, expectedRevision: 1)
+                values.append((.semenDonor, value.id, 2, try FarmCommandCloudPayloadEncoder.encode(.care(.upsertSemenDonor(linked))), 25))
+            }
+        }
         for value in try context.fetch(FetchDescriptor<PenRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
             values.append((.pen, value.id, value.revision, try FarmCommandCloudPayloadEncoder.encode(.createPen(name: value.name, note: value.note)), 10))
         }
@@ -231,8 +239,15 @@ struct MigrationCloudBootstrapService {
             payload.optionalStrings["legacySourceKey"] = value.legacySourceKey
             payload.strings["purpose"] = value.purpose
             payload.integers["isHistoricalArchive"] = value.isHistoricalArchive ? 1 : 0
+            payload.integers["isBreedingRam"] = value.isBreedingRam ? 1 : 0
             payload.optionalIdentifiers["damID"] = value.damID
             payload.optionalIdentifiers["sireID"] = value.sireID
+            payload.optionalIdentifiers["semenDonorID"] = value.semenDonorID
+            payload.optionalStrings["damProvenance"] = value.damProvenanceRawValue
+            payload.optionalStrings["sireProvenance"] = value.sireProvenanceRawValue
+            payload.optionalStrings["semenDonorNameSnapshot"] = value.semenDonorNameSnapshot
+            payload.optionalStrings["semenDonorRegistrationNumberSnapshot"] = value.semenDonorRegistrationNumberSnapshot
+            payload.optionalStrings["semenDonorBreedSnapshot"] = value.semenDonorBreedSnapshot
             values.append((.sheep, value.id, value.revision, try JSONEncoder.cloud.encode(payload), 20))
         }
         for value in try context.fetch(FetchDescriptor<WeightRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
@@ -286,11 +301,28 @@ struct MigrationCloudBootstrapService {
         }
         let offspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter { $0.farmID == farmID }
         for value in try context.fetch(FetchDescriptor<ReproductionRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
-            let children = offspring.filter { $0.lambingRecordID == value.id }.map { LambingOffspringDraft(id: $0.id, sheepID: $0.sheepID, earTag: $0.legacyEarTag, sex: $0.sexRawValue == LambSex.male.rawValue ? .male : .female, birthWeightText: $0.birthWeightText) }
-            values.append((.reproduction, value.id, 1, try FarmCommandCloudPayloadEncoder.encode(.recordReproduction(eweID: value.eweID, kind: value.kind, occurredAt: value.occurredAt, sireID: value.sireID, semenName: value.semenNameSnapshot, result: value.result, lambCount: value.lambCount, parity: value.parity, birthDeadCount: value.birthDeadCount, offspring: children, note: value.note)), 30))
+            var payload = try decodePayload(FarmCommandCloudPayloadEncoder.encode(.recordReproduction(eweID: value.eweID, kind: value.kind, occurredAt: value.occurredAt, sireID: value.sireID, semenName: value.semenNameSnapshot, result: value.result, lambCount: value.lambCount, parity: value.parity, birthDeadCount: value.birthDeadCount, offspring: [], note: value.note)))
+            payload.optionalIdentifiers["semenID"] = value.semenID
+            payload.optionalIdentifiers["batchID"] = value.batchID
+            payload.optionalIdentifiers["relatedBreedingRecordID"] = value.relatedBreedingRecordID
+            payload.optionalIdentifiers["semenDonorID"] = value.semenDonorID
+            payload.optionalStrings["semenDonorNameSnapshot"] = value.semenDonorNameSnapshot
+            payload.optionalStrings["semenDonorRegistrationNumberSnapshot"] = value.semenDonorRegistrationNumberSnapshot
+            payload.optionalStrings["semenDonorBreedSnapshot"] = value.semenDonorBreedSnapshot
+            payload.optionalStrings["paternalSource"] = value.paternalSourceRawValue
+            payload.lambingOffspring = offspring.filter { $0.lambingRecordID == value.id }.map {
+                .init(id: $0.id, sheepID: $0.sheepID, earTag: $0.legacyEarTag, sexRawValue: $0.sexRawValue, birthWeightText: $0.birthWeightText, isStillborn: $0.isStillborn, autoCreatedSheep: $0.autoCreatedSheep, autoBirthWeightRecordID: $0.autoBirthWeightRecordID, deletedByLambingRevocation: $0.deletedByLambingRevocation, revision: $0.revision, updatedAt: $0.updatedAt, deletedAt: $0.deletedAt)
+            }
+            values.append((.reproduction, value.id, value.revision, try JSONEncoder.cloud.encode(payload), 30))
         }
         for value in try context.fetch(FetchDescriptor<SemenRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
-            values.append((.semen, value.id, 1, try FarmCommandCloudPayloadEncoder.encode(.addSemen(code: value.code, breed: value.breed, source: value.source, batchNumber: value.batchNumber, quantityText: value.quantityText)), 10))
+            var payload = try decodePayload(FarmCommandCloudPayloadEncoder.encode(.addSemen(code: value.code, breed: value.breed, source: value.source, batchNumber: value.batchNumber, quantityText: value.quantityText)))
+            payload.optionalIdentifiers["donorID"] = value.donorID
+            values.append((.semen, value.id, value.revision, try JSONEncoder.cloud.encode(payload), 10))
+        }
+        for value in try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).filter({ $0.farmID == farmID }) {
+            let snapshot = CarePedigreeAuditSnapshot(id: value.id, sheepID: value.sheepID, beforeDamID: value.beforeDamID, afterDamID: value.afterDamID, beforeSireID: value.beforeSireID, afterSireID: value.afterSireID, beforeSemenDonorID: value.beforeSemenDonorID, afterSemenDonorID: value.afterSemenDonorID, beforeDamSourceRawValue: value.beforeDamSourceRawValue, afterDamSourceRawValue: value.afterDamSourceRawValue, beforeSireSourceRawValue: value.beforeSireSourceRawValue, afterSireSourceRawValue: value.afterSireSourceRawValue, reason: value.reason, changedByAccountID: value.changedByAccountID, sheepRevision: value.sheepRevision, occurredAt: value.occurredAt)
+            values.append((.pedigreeChange, value.id, 1, try FarmCommandCloudPayloadEncoder.encode(.care(.restorePedigreeAudit(snapshot))), 35))
         }
         for value in try context.fetch(FetchDescriptor<NoteRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
             values.append((.note, value.id, value.revision, try FarmCommandCloudPayloadEncoder.encode(.addNote(sheepID: value.sheepID, penID: value.penID, text: value.text, occurredAt: value.occurredAt)), 30))

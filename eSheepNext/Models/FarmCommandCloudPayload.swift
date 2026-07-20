@@ -51,6 +51,13 @@ struct FarmCommandCloudPayload: Codable, Sendable, Equatable {
         let earTag: String
         let sexRawValue: String
         let birthWeightText: String
+        var isStillborn: Bool? = nil
+        var autoCreatedSheep: Bool? = nil
+        var autoBirthWeightRecordID: UUID? = nil
+        var deletedByLambingRevocation: Bool? = nil
+        var revision: Int? = nil
+        var updatedAt: Date? = nil
+        var deletedAt: Date? = nil
     }
 
     let kind: DomainOperationKind

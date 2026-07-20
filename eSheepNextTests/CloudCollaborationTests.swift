@@ -354,6 +354,68 @@ final class CloudCollaborationTests: XCTestCase {
         XCTAssertEqual(restored.name, "恢复舍")
     }
 
+    func testCheckpointKeepsAndReplaysFullPedigreeOperationHistory() throws {
+        let sourceContainer = try AppSchema.makeContainer(name: "checkpoint-source-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let source = ModelContext(sourceContainer)
+        let account = AccountProfile(appleUserIdentifier: UUID().uuidString, displayName: "恢复测试")
+        let farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: "恢复测试牧场")
+        source.insert(account); source.insert(farm); try source.save()
+        let farmContext = FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: .owner)
+        let commands = FarmCommandService()
+        try commands.execute(.addSheep(earTag: "E001", breed: "湖羊", sex: .ewe, penID: nil, occurredAt: .now, birthAt: nil, note: ""), in: farmContext, context: source)
+        try commands.execute(.addSheep(earTag: "BR001", breed: "杜泊", sex: .ram, penID: nil, occurredAt: .now, birthAt: nil, note: ""), in: farmContext, context: source)
+        try commands.execute(.addSheep(earTag: "L001", breed: "湖羊", sex: .ewe, penID: nil, occurredAt: .now, birthAt: nil, note: ""), in: farmContext, context: source)
+        let sourceSheep = try source.fetch(FetchDescriptor<SheepRecord>())
+        let dam = try XCTUnwrap(sourceSheep.first { $0.earTag == "E001" })
+        let ram = try XCTUnwrap(sourceSheep.first { $0.earTag == "BR001" })
+        let child = try XCTUnwrap(sourceSheep.first { $0.earTag == "L001" })
+        try commands.execute(.care(.setBreedingRam(sheepID: ram.id, isBreedingRam: true, expectedRevision: ram.revision)), in: farmContext, context: source)
+        try commands.execute(.care(.updateSheepPedigree(.init(sheepID: child.id, damID: dam.id, sireID: ram.id, semenDonorID: nil, reason: "恢复点系谱", expectedRevision: child.revision))), in: farmContext, context: source)
+
+        let operations = try source.fetch(FetchDescriptor<DomainOperation>()).filter { $0.farmID == farm.id && $0.entityID != nil }
+        let snapshots = try FarmCheckpointOperationHistory.snapshots(operations: operations, farmID: farm.id, context: source)
+        XCTAssertEqual(snapshots.filter { $0.entityID == child.id }.count, 2, "恢复点必须同时保留建档与后续系谱命令")
+        XCTAssertEqual(snapshots.filter { $0.entityID == ram.id }.count, 2, "恢复点必须同时保留建档与种公羊资格命令")
+
+        let checkpointID = UUID()
+        let manifest = FarmCheckpointManifest(schemaVersion: 2, checkpointID: checkpointID, farmID: farm.id, createdAt: .now, operationWatermark: .now, securityGeneration: 1, entities: snapshots, tombstones: [], assets: [], entityCounts: [:], entityDigests: [:])
+        let envelopes = FarmCheckpointOperationHistory.sourceEnvelopes(snapshots: snapshots, manifest: manifest, accountID: account.effectiveAccountID)
+        let targetContainer = try AppSchema.makeContainer(name: "checkpoint-target-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let target = ModelContext(targetContainer)
+        target.insert(FarmRecord(id: farm.id, ownerAccountID: account.effectiveAccountID, name: farm.name)); try target.save()
+        for envelope in CloudRebuildActor.sortedOperations(envelopes) {
+            guard case .conflict = try RemoteDomainApplyService().apply(envelope, context: target) else { continue }
+            XCTFail("恢复点完整历史不应产生冲突：\(envelope.operationID)")
+        }
+
+        let restored = try target.fetch(FetchDescriptor<SheepRecord>())
+        let restoredRam = try XCTUnwrap(restored.first { $0.id == ram.id })
+        let restoredChild = try XCTUnwrap(restored.first { $0.id == child.id })
+        XCTAssertTrue(restoredRam.isBreedingRam)
+        XCTAssertEqual(restoredChild.damID, dam.id)
+        XCTAssertEqual(restoredChild.sireID, ram.id)
+        XCTAssertEqual(try target.fetch(FetchDescriptor<PedigreeChangeRecord>()).filter { $0.sheepID == child.id }.count, 1)
+
+        let nestedRecovery = try envelopes.map {
+            try wrapRecovery(
+                wrapRecovery($0, checkpointID: checkpointID, level: 1),
+                checkpointID: checkpointID,
+                level: 2
+            )
+        }
+        XCTAssertNoThrow(try CloudRebuildBundleValidator.validateReferences(operations: nestedRecovery, assets: []))
+        let nestedContainer = try AppSchema.makeContainer(name: "checkpoint-nested-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let nestedTarget = ModelContext(nestedContainer)
+        nestedTarget.insert(FarmRecord(id: farm.id, ownerAccountID: account.effectiveAccountID, name: farm.name)); try nestedTarget.save()
+        for envelope in CloudRebuildActor.sortedOperations(Array(nestedRecovery.reversed())) {
+            guard case .conflict = try RemoteDomainApplyService().apply(envelope, context: nestedTarget) else { continue }
+            XCTFail("嵌套恢复操作不应产生冲突：\(envelope.operationID)")
+        }
+        let nestedSheep = try nestedTarget.fetch(FetchDescriptor<SheepRecord>())
+        XCTAssertTrue(try XCTUnwrap(nestedSheep.first { $0.id == ram.id }).isBreedingRam)
+        XCTAssertEqual(try XCTUnwrap(nestedSheep.first { $0.id == child.id }).sireID, ram.id)
+    }
+
     func testPhotoOptimizationCapsLongestEdgeAndProducesVerifiableDigest() throws {
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: 3000, height: 1000))
         let image = renderer.image { context in
@@ -414,6 +476,32 @@ final class CloudCollaborationTests: XCTestCase {
             capabilityCertificate: "test-certificate",
             operationSignature: signature,
             deletedAt: nil
+        )
+    }
+
+    private func wrapRecovery(_ source: CloudOperationEnvelope, checkpointID: UUID, level: Int) throws -> CloudOperationEnvelope {
+        var payload = FarmCommandCloudPayload(kind: .recoverEntity)
+        payload.identifiers = ["checkpointID": checkpointID, "entityID": source.entityID]
+        payload.strings = ["entityType": source.entityType, "sourcePayloadDigest": source.payloadDigest]
+        payload.integers = ["sourceRevision": source.revision]
+        payload.dataValues = ["resolvedPayload": source.payload]
+        let encoded = try JSONEncoder.cloud.encode(payload)
+        return CloudOperationEnvelope(
+            farmID: source.farmID,
+            entityID: source.entityID,
+            entityType: source.entityType,
+            schemaVersion: 2,
+            revision: source.revision + 1,
+            baseRevision: source.revision,
+            operationID: StableCloudUUID.derived(namespace: checkpointID, name: "nested-\(level)-\(source.operationID.uuidString.lowercased())"),
+            modifiedAt: source.modifiedAt,
+            modifiedByAccountID: source.modifiedByAccountID,
+            modifiedByDeviceID: source.modifiedByDeviceID,
+            payload: encoded,
+            payloadDigest: CloudPayloadDigest.hex(for: encoded),
+            capabilityCertificate: source.capabilityCertificate,
+            operationSignature: source.operationSignature,
+            deletedAt: source.deletedAt
         )
     }
 

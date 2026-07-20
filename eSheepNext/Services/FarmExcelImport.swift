@@ -45,7 +45,7 @@ private struct FarmExcelSheetSchema {
 
 @MainActor
 enum FarmExcelImportService {
-    static let templateVersion = 1
+    static let templateVersion = 2
 
     private static let schemas: [FarmExcelSheetSchema] = [
         .init(name: "圈舍", capability: .recordProduction, columns: ["导入键", "圈舍名称", "备注"], required: ["导入键", "圈舍名称"], example: ["示例-pen-01", "育肥一圈", "南侧圈舍"]),
@@ -64,10 +64,12 @@ enum FarmExcelImportService {
         .init(name: "库存入库", capability: .manageCatalogs, columns: ["导入键", "目录名称", "类型", "批号", "供应商", "单位", "有效期", "数量", "入库日期", "备注"], required: ["导入键", "目录名称", "类型", "批号", "单位", "数量", "入库日期"], example: ["示例-stock-01", "羊三联四防", "疫苗", "202607A", "供应商", "毫升", "2027-07-01", "100", "2026-07-19", ""]),
         .init(name: "库存调整", capability: .manageCatalogs, columns: ["导入键", "目录名称", "批号", "调整数量", "发生日期", "备注"], required: ["导入键", "目录名称", "批号", "调整数量", "发生日期"], example: ["示例-stock-adjust-01", "羊三联四防", "202607A", "-2", "2026-07-19", "盘点差异"]),
         .init(name: "健康记录", capability: .recordProduction, columns: ["导入键", "类型", "名称", "羊只耳号列表", "圈舍", "目录名称", "库存批号", "每只剂量", "单位", "给药途径", "发生日期", "提醒日期", "备注"], required: ["导入键", "类型", "名称", "发生日期"], example: ["示例-health-01", "疫苗", "羊三联四防", "A001;A002", "", "羊三联四防", "202607A", "2", "毫升", "肌肉注射", "2026-07-19", "2027-01-15", ""]),
-        .init(name: "冻精入库", capability: .manageCatalogs, columns: ["导入键", "冻精编号", "品种", "来源", "批号", "数量"], required: ["导入键", "冻精编号", "品种", "数量"], example: ["示例-semen-01", "S20260701", "杜泊", "种公羊站", "D01", "20"]),
+        .init(name: "冻精供体", capability: .manageCatalogs, columns: ["导入键", "供体名称", "登记号", "品种", "关联种公羊耳号", "状态", "备注"], required: ["导入键", "供体名称", "品种"], example: ["示例-donor-01", "杜泊供体01", "CN-DP-001", "杜泊", "R001", "在用", ""]),
+        .init(name: "冻精入库", capability: .manageCatalogs, columns: ["导入键", "冻精编号", "品种", "来源", "批号", "数量", "供体登记号"], required: ["导入键", "冻精编号", "品种", "数量"], example: ["示例-semen-01", "S20260701", "杜泊", "种公羊站", "D01", "20", "CN-DP-001"]),
         .init(name: "冻精调整", capability: .manageCatalogs, columns: ["导入键", "冻精编号", "调整数量", "发生日期", "备注"], required: ["导入键", "冻精编号", "调整数量", "发生日期"], example: ["示例-semen-adjust-01", "S20260701", "-1", "2026-07-19", "盘点差异"]),
-        .init(name: "繁殖记录", capability: .recordProduction, columns: ["导入键", "类型", "母羊耳号列表", "结果", "公羊耳号", "冻精编号", "每只冻精数量", "发生日期", "提醒日期", "备注"], required: ["导入键", "类型", "母羊耳号列表", "发生日期"], example: ["示例-repro-01", "配种", "E001;E002", "已配", "R001", "", "", "2026-07-19", "2026-09-02", ""]),
-        .init(name: "产羔", capability: .recordProduction, columns: ["导入键", "母羊耳号", "发生日期", "公羊耳号", "冻精编号", "胎次", "产羔明细", "圈舍", "备注"], required: ["导入键", "母羊耳号", "发生日期", "胎次", "产羔明细"], example: ["示例-lambing-01", "E001", "2026-07-19", "R001", "", "2", "L001|母羊|3.4|是|否;死胎1|未知|2.8|否|是", "产羔圈", ""]),
+        .init(name: "繁殖记录", capability: .recordProduction, columns: ["导入键", "类型", "母羊耳号列表", "结果", "种公羊耳号", "冻精编号", "每只冻精数量", "发生日期", "提醒日期", "备注"], required: ["导入键", "类型", "母羊耳号列表", "发生日期"], example: ["示例-repro-01", "配种", "E001;E002", "已配", "R001", "", "", "2026-07-19", "2026-09-02", ""]),
+        .init(name: "产羔", capability: .recordProduction, columns: ["导入键", "母羊耳号", "发生日期", "种公羊耳号", "冻精编号", "胎次", "产羔明细", "圈舍", "备注"], required: ["导入键", "母羊耳号", "发生日期", "胎次", "产羔明细"], example: ["示例-lambing-01", "E001", "2026-07-19", "R001", "", "2", "L001|母羊|3.4|是|否;死胎1|未知|2.8|否|是", "产羔圈", ""]),
+        .init(name: "系谱关系", capability: .editHistoricalFacts, columns: ["导入键", "羊只耳号", "母本耳号", "父本来源", "种公羊耳号", "供体登记号", "修改原因"], required: ["导入键", "羊只耳号", "父本来源", "修改原因"], example: ["示例-pedigree-01", "L001", "E001", "种公羊", "R001", "", "核对产羔本后确认"]),
         .init(name: "配种方案", capability: .manageCatalogs, columns: ["导入键", "方案名称", "创建日期", "步骤"], required: ["导入键", "方案名称", "创建日期", "步骤"], example: ["示例-program-01", "同期发情方案", "2026-07-19", "0|放栓;12|撤栓;14|配种"]),
         .init(name: "备注", capability: .recordProduction, columns: ["导入键", "耳号", "圈舍", "内容", "发生日期"], required: ["导入键", "内容", "发生日期"], example: ["示例-note-01", "A001", "", "观察采食情况", "2026-07-19"]),
         .init(name: "提醒规则", capability: .manageCatalogs, columns: ["导入键", "孕检间隔天", "妊娠周期天"], required: ["导入键", "孕检间隔天", "妊娠周期天"], example: ["示例-rule-01", "45", "150"])
@@ -138,6 +140,8 @@ enum FarmExcelImportService {
         if row.sheet == "离场", !["出售", "淘汰", "死亡", "转出"].contains(row["类型"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "类型", message: "只能填写出售、淘汰、死亡或转出。", severity: .error)) }
         if ["健康目录", "库存入库", "健康记录"].contains(row.sheet), !["治疗", "疫苗"].contains(row["类型"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "类型", message: "只能填写治疗或疫苗。", severity: .error)) }
         if row.sheet == "繁殖记录", !["配种", "孕检", "流产"].contains(row["类型"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "类型", message: "只能填写配种、孕检或流产；产羔请使用产羔表。", severity: .error)) }
+        if row.sheet == "冻精供体", !row["状态"].isEmpty, !["在用", "停用"].contains(row["状态"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "状态", message: "只能填写在用或停用。", severity: .error)) }
+        if row.sheet == "系谱关系", !["未知", "种公羊", "冻精供体"].contains(row["父本来源"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "父本来源", message: "只能填写未知、种公羊或冻精供体。", severity: .error)) }
     }
 
     private static func validateReferences(_ rows: [FarmExcelRow], farmID: UUID, context: ModelContext, issues: inout [FarmExcelIssue]) throws {
@@ -162,6 +166,9 @@ enum FarmExcelImportService {
         let knownCatalogs = existingCatalogs.union(rows.filter { $0.sheet == "健康目录" }.map { $0["名称"].normalizedLookup })
         let existingSemen = Set(try context.fetch(FetchDescriptor<SemenRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }.map { $0.code.normalizedLookup })
         let knownSemen = existingSemen.union(rows.filter { $0.sheet == "冻精入库" }.map { $0["冻精编号"].normalizedLookup })
+        let existingDonorRegistrations = Set(try context.fetch(FetchDescriptor<SemenDonorRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil && !$0.registrationNumber.isEmpty }.map { $0.registrationNumber.normalizedLookup })
+        let plannedDonorRegistrations = Set(rows.filter { $0.sheet == "冻精供体" && !$0["登记号"].isEmpty }.map { $0["登记号"].normalizedLookup })
+        let knownDonorRegistrations = existingDonorRegistrations.union(plannedDonorRegistrations)
         let existingLots = Set(try context.fetch(FetchDescriptor<InventoryLotRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }.map { "\($0.catalogName.normalizedLookup)|\($0.batchNumber.normalizedLookup)" })
         let plannedLots = Set(rows.filter { $0.sheet == "库存入库" }.map { "\($0["目录名称"].normalizedLookup)|\($0["批号"].normalizedLookup)" })
         let knownLots = existingLots.union(plannedLots)
@@ -180,8 +187,13 @@ enum FarmExcelImportService {
                 else if !value.isEmpty && !seen.insert(value).inserted { issues.append(.init(sheet: sheet, row: row.rowNumber, field: field, message: "与本文件同工作表的其他行重复。", severity: .error)) }
             }
         }
+        var donorRegistrationsSeen = Set<String>()
+        for row in rows where row.sheet == "冻精供体" && !row["登记号"].isEmpty {
+            let registration = row["登记号"].normalizedLookup
+            if !donorRegistrationsSeen.insert(registration).inserted { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "登记号", message: "与本文件其他供体登记号重复。", severity: .error)) }
+        }
         for row in rows {
-            let tagFields = ["耳号", "母羊耳号", "公羊耳号", "母羊耳号列表", "羊只耳号列表"]
+            let tagFields = ["耳号", "羊只耳号", "母羊耳号", "母本耳号", "种公羊耳号", "关联种公羊耳号", "母羊耳号列表", "羊只耳号列表"]
             if row.sheet != "新建羊只" {
                 for field in tagFields where !row[field].isEmpty {
                     for tag in splitList(row[field]) where !knownTags.contains(EarTag.normalized(tag)) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: field, message: "当前牧场及本文件的新建羊只中找不到耳号 \(tag)。", severity: .error)) }
@@ -214,9 +226,19 @@ enum FarmExcelImportService {
                 }
             }
             if ["冻精调整", "繁殖记录", "产羔"].contains(row.sheet), !row["冻精编号"].isEmpty && !knownSemen.contains(row["冻精编号"].normalizedLookup) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "冻精编号", message: "当前牧场及本文件中找不到该冻精。", severity: .error)) }
+            if ["冻精入库", "系谱关系"].contains(row.sheet), !row["供体登记号"].isEmpty && !knownDonorRegistrations.contains(row["供体登记号"].normalizedLookup) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "供体登记号", message: "当前牧场及本文件中找不到该冻精供体。", severity: .error)) }
             if row.sheet == "批次脱离", !knownBatches.contains(row["批次名称"].normalizedLookup) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "批次名称", message: "当前牧场及本文件中找不到该生产批次。", severity: .error)) }
-            if row.sheet == "繁殖记录", row["类型"] == "配种", row["公羊耳号"].isEmpty && row["冻精编号"].isEmpty { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "配种来源", message: "本交填写公羊耳号，人工授精填写冻精编号。", severity: .error)) }
-            if row.sheet == "繁殖记录", row["类型"] == "孕检", (!row["公羊耳号"].isEmpty || !row["冻精编号"].isEmpty) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "配种来源", message: "孕检不能绑定公羊或冻精。", severity: .error)) }
+            if ["繁殖记录", "产羔"].contains(row.sheet), !row["种公羊耳号"].isEmpty, !sheep.contains(where: { $0.farmID == farmID && EarTag.normalized($0.earTag) == EarTag.normalized(row["种公羊耳号"]) && $0.sex == .ram && $0.isBreedingRam }) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "种公羊耳号", message: "该耳号未被明确标记为种公羊。", severity: .error)) }
+            if row.sheet == "冻精供体", !row["关联种公羊耳号"].isEmpty, !sheep.contains(where: { $0.farmID == farmID && EarTag.normalized($0.earTag) == EarTag.normalized(row["关联种公羊耳号"]) && $0.sex == .ram && $0.isBreedingRam }) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "关联种公羊耳号", message: "供体只能关联已明确标记的种公羊。", severity: .error)) }
+            if row.sheet == "繁殖记录", row["类型"] == "配种", row["种公羊耳号"].isEmpty == row["冻精编号"].isEmpty { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "配种来源", message: "本交种公羊与冻精必须二选一。", severity: .error)) }
+            if row.sheet == "繁殖记录", row["类型"] != "配种", (!row["种公羊耳号"].isEmpty || !row["冻精编号"].isEmpty) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "配种来源", message: "孕检和流产不能确认父本；请在 App 内关联原配种记录。", severity: .error)) }
+            if row.sheet == "产羔", !row["种公羊耳号"].isEmpty && !row["冻精编号"].isEmpty { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "父本来源", message: "种公羊与冻精必须二选一。", severity: .error)) }
+            if row.sheet == "系谱关系" {
+                let source = row["父本来源"]
+                if source == "未知", !row["种公羊耳号"].isEmpty || !row["供体登记号"].isEmpty { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "父本来源", message: "父本未知时不能填写种公羊或供体。", severity: .error)) }
+                if source == "种公羊", row["种公羊耳号"].isEmpty || !row["供体登记号"].isEmpty { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "父本来源", message: "种公羊来源必须且只能填写种公羊耳号。", severity: .error)) }
+                if source == "冻精供体", row["供体登记号"].isEmpty || !row["种公羊耳号"].isEmpty { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "父本来源", message: "冻精供体来源必须且只能填写供体登记号。", severity: .error)) }
+            }
             if row.sheet == "产羔", (try? parseLambs(row["产羔明细"], parentID: UUID())) == nil { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "产羔明细", message: "请使用 耳号|性别|出生重|建档|死胎 格式。", severity: .error)) }
             if row.sheet == "配种方案", (try? parsePairs(row["步骤"])) == nil { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "步骤", message: "请使用 天数|操作;天数|操作 格式。", severity: .error)) }
         }
@@ -227,13 +249,42 @@ enum FarmExcelImportService {
         let order = Dictionary(uniqueKeysWithValues: schemas.enumerated().map { ($0.element.name, $0.offset) })
         let rows = preview.rows.sorted { (order[$0.sheet] ?? 999, $0.rowNumber) < (order[$1.sheet] ?? 999, $1.rowNumber) }
         var index = 0
+        var followups: [ExcelFollowup] = []
         let farmContext = FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role)
         try commandService.executeBatch(in: farmContext, context: context) {
+            if !followups.isEmpty {
+                return try followupCommand(followups.removeFirst(), farmID: farm.id, context: context)
+            }
             guard rows.indices.contains(index) else { return nil }
             let row = rows[index]; index += 1
+            if row.sheet == "冻精供体", !row["关联种公羊耳号"].isEmpty,
+               try existingDonor(for: row, farmID: farm.id, context: context) == nil {
+                followups.append(.linkNewDonor(row))
+            }
+            if row.sheet == "冻精入库", !row["供体登记号"].isEmpty {
+                followups.append(.linkSemenDonor(row))
+            }
             return try command(for: row, farmID: farm.id, context: context)
         }
         return rows.count
+    }
+
+    private enum ExcelFollowup {
+        case linkNewDonor(FarmExcelRow)
+        case linkSemenDonor(FarmExcelRow)
+    }
+
+    private static func followupCommand(_ followup: ExcelFollowup, farmID: UUID, context: ModelContext) throws -> FarmCommand {
+        switch followup {
+        case .linkNewDonor(let row):
+            let id = StableCloudUUID.derived(namespace: farmID, name: "excel-v\(templateVersion):\(row.sheet):\(row["导入键"].lowercased())")
+            guard let ram = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && EarTag.normalized($0.earTag) == EarTag.normalized(row["关联种公羊耳号"]) }) else { throw FarmCommandError.sheepNotFound }
+            return .care(.upsertSemenDonor(.init(id: id, name: row["供体名称"], registrationNumber: row["登记号"], breed: row["品种"], linkedRamID: ram.id, note: row["备注"], status: row["状态"] == "停用" ? .inactive : .active, expectedRevision: 1)))
+        case .linkSemenDonor(let row):
+            guard let semen = try context.fetch(FetchDescriptor<SemenRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.code.normalizedLookup == row["冻精编号"].normalizedLookup }) else { throw FarmCommandError.missingRequiredValue("冻精") }
+            guard let donor = try context.fetch(FetchDescriptor<SemenDonorRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.registrationNumber.normalizedLookup == row["供体登记号"].normalizedLookup }) else { throw FarmCommandError.semenDonorNotFound }
+            return .care(.setSemenDonor(semenID: semen.id, donorID: donor.id, expectedRevision: semen.revision))
+        }
     }
 
     private static func command(for row: FarmExcelRow, farmID: UUID, context: ModelContext) throws -> FarmCommand {
@@ -242,6 +293,7 @@ enum FarmExcelImportService {
         func ingredient(_ name: String) throws -> FeedIngredientRecord { guard let value = try context.fetch(FetchDescriptor<FeedIngredientRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.name.normalizedLookup == name.normalizedLookup }) else { throw FarmCommandError.ingredientNotFound }; return value }
         func recipe(_ name: String) throws -> FeedRecipeRecord { guard let value = try context.fetch(FetchDescriptor<FeedRecipeRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.name.normalizedLookup == name.normalizedLookup }) else { throw FarmCommandError.missingRequiredValue("配方") }; return value }
         func semen(_ code: String) throws -> SemenRecord { guard let value = try context.fetch(FetchDescriptor<SemenRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.code.normalizedLookup == code.normalizedLookup }) else { throw FarmCommandError.missingRequiredValue("冻精") }; return value }
+        func donor(_ registration: String) throws -> SemenDonorRecord { guard let value = try context.fetch(FetchDescriptor<SemenDonorRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.registrationNumber.normalizedLookup == registration.normalizedLookup }) else { throw FarmCommandError.semenDonorNotFound }; return value }
         func catalog(_ name: String) throws -> HealthCatalogItemRecord { guard let value = try context.fetch(FetchDescriptor<HealthCatalogItemRecord>()).first(where: { $0.farmID == farmID && $0.name.normalizedLookup == name.normalizedLookup }) else { throw FarmCommandError.missingRequiredValue("健康目录") }; return value }
         func lot(_ name: String, _ batch: String) throws -> InventoryLotRecord { let matches = try context.fetch(FetchDescriptor<InventoryLotRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil && $0.catalogName.normalizedLookup == name.normalizedLookup && $0.batchNumber.normalizedLookup == batch.normalizedLookup }; guard matches.count == 1, let value = matches.first else { throw FarmCommandError.inventoryLotNotFound }; return value }
         let id = StableCloudUUID.derived(namespace: farmID, name: "excel-v\(templateVersion):\(row.sheet):\(row["导入键"].lowercased())")
@@ -262,15 +314,23 @@ enum FarmExcelImportService {
         case "库存入库": return .care(.receiveInventory(id: id, catalogName: row["目录名称"], catalogItemID: try? catalog(row["目录名称"]).id, kindRawValue: healthKind(row["类型"]).rawValue, batchNumber: row["批号"], supplier: row["供应商"], unit: row["单位"], expiresAt: parseDate(row["有效期"]), quantityText: row["数量"], occurredAt: parseDate(row["入库日期"])!, note: row["备注"]))
         case "库存调整": return .care(.adjustInventory(id: id, lotID: try lot(row["目录名称"], row["批号"]).id, quantityDeltaText: row["调整数量"], occurredAt: parseDate(row["发生日期"])!, note: row["备注"]))
         case "健康记录": let subjects = try splitList(row["羊只耳号列表"]).map { try sheep($0).id }; let catalogItem = try row["目录名称"].nilIfEmpty.map(catalog); let inventory = try row["库存批号"].nilIfEmpty.map { try lot(row["目录名称"].isEmpty ? row["名称"] : row["目录名称"], $0) }; return .care(.recordHealth(.init(id: id, batchID: StableCloudUUID.derived(namespace: id, name: "batch"), subjectIDs: subjects, penID: try optionalPen(row["圈舍"], pen: pen)?.id, catalogItemID: catalogItem?.id, kind: healthKind(row["类型"]), itemName: row["名称"], occurredAt: parseDate(row["发生日期"])!, note: row["备注"], inventoryLotID: inventory?.id, dosePerSubjectText: row["每只剂量"].nilIfEmpty, unit: row["单位"], route: row["给药途径"], reminderAt: parseDate(row["提醒日期"]))))
+        case "冻精供体": let existing = try existingDonor(for: row, farmID: farmID, context: context); let ramID = try row["关联种公羊耳号"].nilIfEmpty.map { try sheep($0).id }; return .care(.upsertSemenDonor(.init(id: existing?.id ?? id, name: row["供体名称"], registrationNumber: row["登记号"], breed: row["品种"], linkedRamID: existing == nil ? nil : ramID, note: row["备注"], status: row["状态"] == "停用" ? .inactive : .active, expectedRevision: existing?.revision ?? 0)))
         case "冻精入库": return .addSemen(code: row["冻精编号"], breed: row["品种"], source: row["来源"], batchNumber: row["批号"], quantityText: row["数量"])
         case "冻精调整": return .care(.adjustSemen(id: id, semenID: try semen(row["冻精编号"]).id, quantityDeltaText: row["调整数量"], occurredAt: parseDate(row["发生日期"])!, note: row["备注"]))
-        case "繁殖记录": let subjects = try splitList(row["母羊耳号列表"]).map { CareReproductionSubjectDraft(id: StableCloudUUID.derived(namespace: id, name: EarTag.normalized($0)), eweID: try sheep($0).id, result: row["结果"]) }; return .care(.recordReproductionBatch(.init(id: id, kind: reproductionKind(row["类型"]), subjects: subjects, occurredAt: parseDate(row["发生日期"])!, sireID: try row["公羊耳号"].nilIfEmpty.map { try sheep($0).id }, semenID: try row["冻精编号"].nilIfEmpty.map { try semen($0).id }, semenUnitsPerEweText: row["每只冻精数量"].nilIfEmpty, note: row["备注"], reminderAt: parseDate(row["提醒日期"]))))
-        case "产羔": let lambs = try parseLambs(row["产羔明细"], parentID: id); return .care(.recordLambing(.init(id: id, eweID: try sheep(row["母羊耳号"]).id, occurredAt: parseDate(row["发生日期"])!, sireID: try row["公羊耳号"].nilIfEmpty.map { try sheep($0).id }, semenID: try row["冻精编号"].nilIfEmpty.map { try semen($0).id }, parity: Int(row["胎次"]) ?? 0, birthDeadCount: lambs.count { $0.isStillborn }, offspring: lambs, penID: try optionalPen(row["圈舍"], pen: pen)?.id, note: row["备注"])))
+        case "繁殖记录": let subjects = try splitList(row["母羊耳号列表"]).map { CareReproductionSubjectDraft(id: StableCloudUUID.derived(namespace: id, name: EarTag.normalized($0)), eweID: try sheep($0).id, result: row["结果"]) }; return .care(.recordReproductionBatch(.init(id: id, kind: reproductionKind(row["类型"]), subjects: subjects, occurredAt: parseDate(row["发生日期"])!, sireID: try row["种公羊耳号"].nilIfEmpty.map { try sheep($0).id }, semenID: try row["冻精编号"].nilIfEmpty.map { try semen($0).id }, semenUnitsPerEweText: row["每只冻精数量"].nilIfEmpty, note: row["备注"], reminderAt: parseDate(row["提醒日期"]))))
+        case "产羔": let lambs = try parseLambs(row["产羔明细"], parentID: id); return .care(.recordLambing(.init(id: id, eweID: try sheep(row["母羊耳号"]).id, occurredAt: parseDate(row["发生日期"])!, sireID: try row["种公羊耳号"].nilIfEmpty.map { try sheep($0).id }, semenID: try row["冻精编号"].nilIfEmpty.map { try semen($0).id }, parity: Int(row["胎次"]) ?? 0, birthDeadCount: lambs.count { $0.isStillborn }, offspring: lambs, penID: try optionalPen(row["圈舍"], pen: pen)?.id, note: row["备注"])))
+        case "系谱关系": let child = try sheep(row["羊只耳号"]); let source = row["父本来源"]; return .care(.updateSheepPedigree(.init(id: id, sheepID: child.id, damID: try row["母本耳号"].nilIfEmpty.map { try sheep($0).id }, sireID: source == "种公羊" ? try sheep(row["种公羊耳号"]).id : nil, semenDonorID: source == "冻精供体" ? try donor(row["供体登记号"]).id : nil, reason: row["修改原因"], expectedRevision: child.revision)))
         case "配种方案": return .createBreedingProgram(name: row["方案名称"], createdAt: parseDate(row["创建日期"])!, steps: try parsePairs(row["步骤"]).map { guard let day = Int($0.0) else { throw FarmDataInterchangeError.malformedFile("配种方案步骤天数无效。") }; return BreedingProgramStepDraft(dayOffset: day, action: $0.1) })
         case "备注": return .addNote(sheepID: try row["耳号"].nilIfEmpty.map { try sheep($0).id }, penID: try optionalPen(row["圈舍"], pen: pen)?.id, text: row["内容"], occurredAt: parseDate(row["发生日期"])!)
         case "提醒规则": let existingID = try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first { $0.farmID == farmID }?.id; return .care(.updateRules(id: existingID ?? id, pregnancyCheckDays: Int(row["孕检间隔天"]) ?? 0, gestationDays: Int(row["妊娠周期天"]) ?? 0))
         default: throw FarmDataInterchangeError.malformedFile("不支持的工作表 \(row.sheet)。")
         }
+    }
+
+    private static func existingDonor(for row: FarmExcelRow, farmID: UUID, context: ModelContext) throws -> SemenDonorRecord? {
+        let donors = try context.fetch(FetchDescriptor<SemenDonorRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        if !row["登记号"].isEmpty, let match = donors.first(where: { $0.registrationNumber.normalizedLookup == row["登记号"].normalizedLookup }) { return match }
+        return donors.first { $0.name.normalizedLookup == row["供体名称"].normalizedLookup }
     }
 
     private static func optionalPen(_ value: String, pen: (String) throws -> PenRecord) throws -> PenRecord? { value.isEmpty ? nil : try pen(value) }

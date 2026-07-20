@@ -28,6 +28,8 @@ enum AppSchema {
             HealthRecord.self,
             ReproductionRecord.self,
             SemenRecord.self,
+            SemenDonorRecord.self,
+            PedigreeChangeRecord.self,
             NoteRecord.self,
             DomainOperation.self,
             OutboxItem.self,

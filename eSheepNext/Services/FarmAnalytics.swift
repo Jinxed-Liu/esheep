@@ -226,17 +226,26 @@ enum FarmAnalytics {
     static func inferredSireCandidates(
         for eweID: UUID,
         lambingAt: Date,
+        gestationDays: Int = 150,
         sheep: [SheepPresenceSnapshot],
         sexes: [UUID: SheepSex],
+        breedingRamIDs: Set<UUID>,
         transfers: [TransferSnapshot],
         calendar: Calendar = .current
     ) -> [UUID] {
-        let conceptionDate = calendar.date(byAdding: .day, value: -150, to: lambingAt) ?? lambingAt
-        guard let ewe = sheep.first(where: { $0.sheepID == eweID }), let penID = pen(at: conceptionDate, for: ewe, transfers: transfers) else {
+        let conceptionDate = calendar.date(byAdding: .day, value: -max(1, gestationDays), to: lambingAt) ?? lambingAt
+        guard let ewe = sheep.first(where: { $0.sheepID == eweID }),
+              ewe.enteredAt <= conceptionDate,
+              ewe.removedAt.map({ $0 > conceptionDate }) ?? true,
+              let penID = pen(at: conceptionDate, for: ewe, transfers: transfers) else {
             return []
         }
         return sheep.compactMap { candidate in
-            guard sexes[candidate.sheepID] == .ram else { return nil }
+            guard candidate.sheepID != eweID,
+                  sexes[candidate.sheepID] == .ram,
+                  breedingRamIDs.contains(candidate.sheepID),
+                  candidate.enteredAt <= conceptionDate,
+                  candidate.removedAt.map({ $0 > conceptionDate }) ?? true else { return nil }
             return pen(at: conceptionDate, for: candidate, transfers: transfers) == penID ? candidate.sheepID : nil
         }
     }

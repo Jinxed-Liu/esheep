@@ -165,6 +165,29 @@ enum CloudRebuildStagingBuilder {
         guard reproductions.allSatisfy({ $0.lambCount >= 0 }) else {
             throw CloudRebuildError.stagingValidation("繁殖记录存在负产羔数。")
         }
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let sheepByID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
+        let donors = try context.fetch(FetchDescriptor<SemenDonorRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let donorIDs = Set(donors.map(\.id))
+        for donor in donors {
+            if let ramID = donor.linkedRamID {
+                guard let ram = sheepByID[ramID], ram.sex == .ram, ram.isBreedingRam else {
+                    throw CloudRebuildError.stagingValidation("冻精供体关联了无效种公羊。")
+                }
+            }
+        }
+        for item in sheep {
+            if let damID = item.damID, sheepByID[damID]?.sex != .ewe { throw CloudRebuildError.stagingValidation("羊只 \(item.earTag) 的母本引用无效。") }
+            if let sireID = item.sireID, sheepByID[sireID]?.sex != .ram { throw CloudRebuildError.stagingValidation("羊只 \(item.earTag) 的父本引用无效。") }
+            if let donorID = item.semenDonorID, !donorIDs.contains(donorID) { throw CloudRebuildError.stagingValidation("羊只 \(item.earTag) 的冻精供体引用无效。") }
+            if pedigreeCycle(target: item.id, root: item.damID, sheepByID: sheepByID) || pedigreeCycle(target: item.id, root: item.sireID, sheepByID: sheepByID) { throw CloudRebuildError.stagingValidation("羊只 \(item.earTag) 存在循环系谱。") }
+            if let birthAt = item.birthAt, let damBirth = item.damID.flatMap({ sheepByID[$0]?.birthAt }), damBirth >= birthAt { throw CloudRebuildError.stagingValidation("羊只 \(item.earTag) 的母系日期倒置。") }
+            if let birthAt = item.birthAt, let sireBirth = item.sireID.flatMap({ sheepByID[$0]?.birthAt }), sireBirth >= birthAt { throw CloudRebuildError.stagingValidation("羊只 \(item.earTag) 的父系日期倒置。") }
+        }
+        let semen = try context.fetch(FetchDescriptor<SemenRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        guard semen.allSatisfy({ $0.donorID == nil || donorIDs.contains($0.donorID!) }) else { throw CloudRebuildError.stagingValidation("冻精批次存在无效供体引用。") }
+        let reproductionIDs = Set(reproductions.map(\.id))
+        guard reproductions.allSatisfy({ $0.relatedBreedingRecordID == nil || reproductionIDs.contains($0.relatedBreedingRecordID!) }) else { throw CloudRebuildError.stagingValidation("繁殖链存在无效配种引用。") }
         let dailyCounts = try context.fetch(FetchDescriptor<DailyPenCountRecord>())
             .filter { $0.farmID == farmID }
         guard dailyCounts.allSatisfy({ $0.count >= 0 }) else {
@@ -177,5 +200,18 @@ enum CloudRebuildStagingBuilder {
             "\($0.operationID.uuidString.lowercased()):\($0.revision):\($0.payloadDigest)"
         }.joined(separator: "\n")
         return CloudPayloadDigest.hex(for: Data(text.utf8))
+    }
+
+    private static func pedigreeCycle(target: UUID, root: UUID?, sheepByID: [UUID: SheepRecord]) -> Bool {
+        guard let root else { return false }
+        var pending = [root]
+        var visited = Set<UUID>()
+        while let id = pending.popLast() {
+            if id == target { return true }
+            guard visited.insert(id).inserted, let item = sheepByID[id] else { continue }
+            if let damID = item.damID { pending.append(damID) }
+            if let sireID = item.sireID { pending.append(sireID) }
+        }
+        return false
     }
 }

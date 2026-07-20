@@ -57,11 +57,13 @@ struct CareReproductionSubjectDraft: Codable, Sendable, Equatable, Identifiable 
     let id: UUID
     let eweID: UUID
     let result: String
+    let relatedBreedingRecordID: UUID?
 
-    init(id: UUID = UUID(), eweID: UUID, result: String = "") {
+    init(id: UUID = UUID(), eweID: UUID, result: String = "", relatedBreedingRecordID: UUID? = nil) {
         self.id = id
         self.eweID = eweID
         self.result = result
+        self.relatedBreedingRecordID = relatedBreedingRecordID
     }
 }
 
@@ -103,11 +105,87 @@ struct CareLambingDraft: Codable, Sendable, Equatable {
     let occurredAt: Date
     let sireID: UUID?
     let semenID: UUID?
+    let relatedBreedingRecordID: UUID?
     let parity: Int
     let birthDeadCount: Int
     let offspring: [CareLambDraft]
     let penID: UUID?
     let note: String
+
+    init(id: UUID = UUID(), eweID: UUID, occurredAt: Date, sireID: UUID?, semenID: UUID?, relatedBreedingRecordID: UUID? = nil, parity: Int, birthDeadCount: Int, offspring: [CareLambDraft], penID: UUID?, note: String) {
+        self.id = id
+        self.eweID = eweID
+        self.occurredAt = occurredAt
+        self.sireID = sireID
+        self.semenID = semenID
+        self.relatedBreedingRecordID = relatedBreedingRecordID
+        self.parity = parity
+        self.birthDeadCount = birthDeadCount
+        self.offspring = offspring
+        self.penID = penID
+        self.note = note
+    }
+}
+
+struct CarePedigreeUpdateDraft: Codable, Sendable, Equatable {
+    let id: UUID
+    let sheepID: UUID
+    let damID: UUID?
+    let sireID: UUID?
+    let semenDonorID: UUID?
+    let reason: String
+    let expectedRevision: Int
+
+    init(id: UUID = UUID(), sheepID: UUID, damID: UUID?, sireID: UUID?, semenDonorID: UUID?, reason: String, expectedRevision: Int) {
+        self.id = id
+        self.sheepID = sheepID
+        self.damID = damID
+        self.sireID = sireID
+        self.semenDonorID = semenDonorID
+        self.reason = reason
+        self.expectedRevision = expectedRevision
+    }
+}
+
+struct CareSemenDonorDraft: Codable, Sendable, Equatable {
+    let id: UUID
+    let name: String
+    let registrationNumber: String
+    let breed: String
+    let linkedRamID: UUID?
+    let note: String
+    let status: SemenDonorStatus
+    let expectedRevision: Int
+
+    init(id: UUID = UUID(), name: String, registrationNumber: String = "", breed: String, linkedRamID: UUID? = nil, note: String = "", status: SemenDonorStatus = .active, expectedRevision: Int = 0) {
+        self.id = id
+        self.name = name
+        self.registrationNumber = registrationNumber
+        self.breed = breed
+        self.linkedRamID = linkedRamID
+        self.note = note
+        self.status = status
+        self.expectedRevision = expectedRevision
+    }
+}
+
+struct CarePedigreeAuditSnapshot: Codable, Sendable, Equatable {
+    let id: UUID
+    let sheepID: UUID
+    let beforeDamID: UUID?
+    let afterDamID: UUID?
+    let beforeSireID: UUID?
+    let afterSireID: UUID?
+    let beforeSemenDonorID: UUID?
+    let afterSemenDonorID: UUID?
+    let beforeDamSourceRawValue: String?
+    let afterDamSourceRawValue: String?
+    let beforeSireSourceRawValue: String?
+    let afterSireSourceRawValue: String?
+    let reason: String
+    let changedByAccountID: UUID
+    let sheepRevision: Int
+    let occurredAt: Date
 }
 
 enum CareCommand: Codable, Sendable, Equatable {
@@ -118,9 +196,17 @@ enum CareCommand: Codable, Sendable, Equatable {
     case adjustInventory(id: UUID, lotID: UUID, quantityDeltaText: String, occurredAt: Date, note: String)
     case setInventoryLotActive(lotID: UUID, isActive: Bool)
     case adjustSemen(id: UUID, semenID: UUID, quantityDeltaText: String, occurredAt: Date, note: String)
+    case upsertSemenDonor(CareSemenDonorDraft)
+    case setSemenDonor(semenID: UUID, donorID: UUID?, expectedRevision: Int)
+    case updateSheepPedigree(CarePedigreeUpdateDraft)
+    case setBreedingRam(sheepID: UUID, isBreedingRam: Bool, expectedRevision: Int)
+    case restorePedigreeAudit(CarePedigreeAuditSnapshot)
     case recordReproductionBatch(CareReproductionBatchDraft)
     case recordLambing(CareLambingDraft)
     case correctReproduction(originalID: UUID, replacement: CareReproductionBatchDraft, reason: String)
+    case correctLambing(originalID: UUID, replacement: CareLambingDraft, reason: String)
+    case revokeLambing(recordID: UUID, reason: String)
+    case restoreLambing(recordID: UUID)
     case updateRules(id: UUID, pregnancyCheckDays: Int, gestationDays: Int)
     case setReminderStatus(reminderID: UUID, status: CareReminderStatus)
 
@@ -133,9 +219,16 @@ enum CareCommand: Codable, Sendable, Equatable {
         case .adjustInventory(let id, _, _, _, _): id
         case .setInventoryLotActive(let lotID, _): lotID
         case .adjustSemen(let id, _, _, _, _): id
+        case .upsertSemenDonor(let draft): draft.id
+        case .setSemenDonor(let semenID, _, _): semenID
+        case .updateSheepPedigree(let draft): draft.sheepID
+        case .setBreedingRam(let sheepID, _, _): sheepID
+        case .restorePedigreeAudit(let snapshot): snapshot.id
         case .recordReproductionBatch(let draft): draft.id
         case .recordLambing(let draft): draft.id
         case .correctReproduction(_, let replacement, _): replacement.id
+        case .correctLambing(let originalID, _, _): originalID
+        case .revokeLambing(let recordID, _), .restoreLambing(let recordID): recordID
         case .updateRules(let id, _, _): id
         case .setReminderStatus(let reminderID, _): reminderID
         }
@@ -143,9 +236,9 @@ enum CareCommand: Codable, Sendable, Equatable {
 
     var requiredCapability: FarmCapability {
         switch self {
-        case .upsertHealthCatalog, .receiveInventory, .adjustInventory, .setInventoryLotActive, .adjustSemen, .updateRules:
+        case .upsertHealthCatalog, .receiveInventory, .adjustInventory, .setInventoryLotActive, .adjustSemen, .upsertSemenDonor, .setSemenDonor, .updateRules:
             .manageCatalogs
-        case .correctHealth, .correctReproduction:
+        case .correctHealth, .correctReproduction, .updateSheepPedigree, .setBreedingRam, .restorePedigreeAudit, .correctLambing, .revokeLambing, .restoreLambing:
             .editHistoricalFacts
         case .recordHealth, .recordReproductionBatch, .recordLambing, .setReminderStatus:
             .recordProduction
@@ -161,9 +254,17 @@ enum CareCommand: Codable, Sendable, Equatable {
         case .adjustInventory: "调整药品疫苗库存"
         case .setInventoryLotActive(_, let active): active ? "启用库存批次" : "停用库存批次"
         case .adjustSemen: "调整冻精库存"
+        case .upsertSemenDonor: "维护冻精供体"
+        case .setSemenDonor: "关联冻精供体"
+        case .updateSheepPedigree: "确认羊只系谱"
+        case .setBreedingRam(_, let active, _): active ? "标记种公羊" : "取消种公羊标记"
+        case .restorePedigreeAudit: "恢复系谱审计"
         case .recordReproductionBatch(let draft): "批量记录\(draft.kind.displayName)"
         case .recordLambing: "记录产羔并建立羔羊档案"
         case .correctReproduction: "修正繁殖记录"
+        case .correctLambing: "修正产羔记录"
+        case .revokeLambing: "撤销产羔记录"
+        case .restoreLambing: "恢复产羔记录"
         case .updateRules: "更新健康繁殖提醒规则"
         case .setReminderStatus: "更新健康繁殖提醒"
         }
@@ -172,6 +273,7 @@ enum CareCommand: Codable, Sendable, Equatable {
     var rebuildHistoryFrom: Date? {
         switch self {
         case .recordLambing(let draft): draft.occurredAt
+        case .correctLambing(_, let draft, _): draft.occurredAt
         case .recordReproductionBatch(let draft), .correctReproduction(_, let draft, _): draft.occurredAt
         default: nil
         }

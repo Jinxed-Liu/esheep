@@ -23,10 +23,30 @@ enum FarmCareCommandHandler {
             return try context.fetch(FetchDescriptor<InventoryLotRecord>()).contains { $0.id == lotID && $0.farmID == farmID && $0.isActive == active }
         case .adjustSemen(let id, _, _, _, _):
             return try context.fetch(FetchDescriptor<SemenTransactionRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .upsertSemenDonor(let draft):
+            return try context.fetch(FetchDescriptor<SemenDonorRecord>()).contains {
+                $0.id == draft.id && $0.farmID == farmID && $0.name == draft.name.trimmed &&
+                $0.registrationNumber == draft.registrationNumber.trimmed && $0.breed == draft.breed.trimmed &&
+                $0.linkedRamID == draft.linkedRamID && $0.note == draft.note.trimmed && $0.status == draft.status
+            }
+        case .setSemenDonor(let semenID, let donorID, _):
+            return try context.fetch(FetchDescriptor<SemenRecord>()).contains { $0.id == semenID && $0.farmID == farmID && $0.donorID == donorID }
+        case .updateSheepPedigree(let draft):
+            return try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).contains { $0.id == draft.id && $0.farmID == farmID && $0.sheepID == draft.sheepID }
+        case .setBreedingRam(let sheepID, let active, _):
+            return try context.fetch(FetchDescriptor<SheepRecord>()).contains { $0.id == sheepID && $0.farmID == farmID && $0.isBreedingRam == active }
+        case .restorePedigreeAudit(let snapshot):
+            return try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).contains { $0.id == snapshot.id && $0.farmID == farmID }
         case .recordReproductionBatch(let draft), .correctReproduction(_, let draft, _):
             return try context.fetch(FetchDescriptor<CareBatchRecord>()).contains { $0.id == draft.id && $0.farmID == farmID }
         case .recordLambing(let draft):
             return try context.fetch(FetchDescriptor<ReproductionRecord>()).contains { $0.id == draft.id && $0.farmID == farmID }
+        case .correctLambing(let originalID, let draft, _):
+            return try lambingStateMatches(originalID: originalID, draft: draft, farmID: farmID, context: context)
+        case .revokeLambing(let recordID, _):
+            return try context.fetch(FetchDescriptor<ReproductionRecord>()).contains { $0.id == recordID && $0.farmID == farmID && $0.deletedAt != nil }
+        case .restoreLambing(let recordID):
+            return try context.fetch(FetchDescriptor<ReproductionRecord>()).contains { $0.id == recordID && $0.farmID == farmID && $0.deletedAt == nil && $0.revision > 1 }
         case .updateRules(let id, let checkDays, let gestationDays):
             return try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).contains { $0.id == id && $0.farmID == farmID && $0.pregnancyCheckDays == checkDays && $0.gestationDays == gestationDays }
         case .setReminderStatus(let reminderID, let status):
@@ -73,23 +93,52 @@ enum FarmCareCommandHandler {
             guard let delta = Decimal.stable(deltaText), delta != 0 else { throw FarmCommandError.invalidNumber("调整数量") }
             guard try semenBalance(semen, context: context) + delta >= 0 else { throw FarmCommandError.insufficientInventory }
 
+        case .upsertSemenDonor(let draft):
+            try validateSemenDonor(draft, farmID: farmID, context: context)
+
+        case .setSemenDonor(let semenID, let donorID, let expectedRevision):
+            let record = try semen(semenID, farmID: farmID, context: context)
+            guard record.revision == expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
+            if let donorID { _ = try semenDonor(donorID, farmID: farmID, context: context, requiresActive: false) }
+
+        case .updateSheepPedigree(let draft):
+            try validatePedigree(draft, farmID: farmID, context: context)
+
+        case .setBreedingRam(let sheepID, let active, let expectedRevision):
+            guard let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sheepNotFound }
+            guard sheep.revision == expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
+            if active, sheep.sex != .ram { throw FarmCommandError.reproductionSireMustBeRam }
+
+        case .restorePedigreeAudit(let snapshot):
+            let sheepIDs = Set(try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            guard sheepIDs.contains(snapshot.sheepID) else { throw FarmCommandError.sheepNotFound }
+            for id in [snapshot.beforeDamID, snapshot.afterDamID, snapshot.beforeSireID, snapshot.afterSireID].compactMap({ $0 }) where !sheepIDs.contains(id) { throw FarmCommandError.sheepNotFound }
+            let donorIDs = Set(try context.fetch(FetchDescriptor<SemenDonorRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            for id in [snapshot.beforeSemenDonorID, snapshot.afterSemenDonorID].compactMap({ $0 }) where !donorIDs.contains(id) { throw FarmCommandError.semenDonorNotFound }
+
         case .recordReproductionBatch(let draft):
             try validateReproductionBatch(draft, farmID: farmID, semenCreditSourceID: nil, context: context)
 
         case .recordLambing(let draft):
-            let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
-            guard let ewe = sheep.first(where: { $0.id == draft.eweID && $0.farmID == farmID && $0.deletedAt == nil }), ewe.sex == .ewe else { throw FarmCommandError.reproductionSubjectMustBeEwe }
-            guard draft.parity > 0, draft.birthDeadCount >= 0, draft.birthDeadCount == draft.offspring.count(where: \.isStillborn), !draft.offspring.isEmpty, draft.offspring.allSatisfy({ !$0.isStillborn || !$0.createSheepRecord }) else { throw FarmCommandError.invalidReproductionRecord }
-            if let sireID = draft.sireID, !sheep.contains(where: { $0.id == sireID && $0.farmID == farmID && $0.deletedAt == nil && $0.sex == .ram }) { throw FarmCommandError.reproductionSireMustBeRam }
-            let existingTags = Set(sheep.filter { $0.farmID == farmID }.map { EarTag.normalized($0.earTag) })
-            let newTags = draft.offspring.filter(\.createSheepRecord).map { EarTag.normalized($0.earTag) }
-            guard newTags.allSatisfy({ !$0.isEmpty }), Set(newTags).count == newTags.count, existingTags.isDisjoint(with: newTags) else { throw FarmCommandError.duplicateEarTag }
-            for lamb in draft.offspring { _ = try positive(lamb.birthWeightText, "初生重") }
+            try validateLambing(draft, farmID: farmID, existingRecordID: nil, context: context)
 
         case .correctReproduction(let originalID, let replacement, let reason):
             guard try context.fetch(FetchDescriptor<ReproductionRecord>()).contains(where: { $0.id == originalID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sourceRecordNotFound }
             try require(reason, "修正原因")
             try validateReproductionBatch(replacement, farmID: farmID, semenCreditSourceID: originalID, context: context)
+
+        case .correctLambing(let originalID, let replacement, let reason):
+            guard replacement.id == originalID,
+                  let original = try context.fetch(FetchDescriptor<ReproductionRecord>()).first(where: { $0.id == originalID && $0.farmID == farmID && $0.kind == .lambing && $0.deletedAt == nil }) else { throw FarmCommandError.sourceRecordNotFound }
+            try require(reason, "修正原因")
+            try validateLambing(replacement, farmID: farmID, existingRecordID: original.id, context: context)
+
+        case .revokeLambing(let recordID, let reason):
+            guard try context.fetch(FetchDescriptor<ReproductionRecord>()).contains(where: { $0.id == recordID && $0.farmID == farmID && $0.kind == .lambing && $0.deletedAt == nil }) else { throw FarmCommandError.sourceRecordNotFound }
+            try require(reason, "撤销原因")
+
+        case .restoreLambing(let recordID):
+            guard try context.fetch(FetchDescriptor<ReproductionRecord>()).contains(where: { $0.id == recordID && $0.farmID == farmID && $0.kind == .lambing && $0.deletedAt != nil }) else { throw FarmCommandError.sourceRecordNotFound }
 
         case .updateRules(_, let checkDays, let gestationDays):
             guard (1...365).contains(checkDays), (100...220).contains(gestationDays) else { throw FarmCommandError.invalidNumber("提醒间隔") }
@@ -145,16 +194,96 @@ enum FarmCareCommandHandler {
             context.insert(SemenTransactionRecord(id: id, farmID: farmID, semenID: semenID, kind: .adjustment, quantityText: Decimal.stable(deltaText)!.stableText, occurredAt: occurredAt, note: note.trimmed))
             return .init(entityType: .semenTransaction, entityID: id, baseRevision: 0, resultingRevision: 1)
 
+        case .upsertSemenDonor(let draft):
+            let records = try context.fetch(FetchDescriptor<SemenDonorRecord>())
+            if let record = records.first(where: { $0.id == draft.id && $0.farmID == farmID }) {
+                let base = record.revision
+                record.name = draft.name.trimmed
+                record.registrationNumber = draft.registrationNumber.trimmed
+                record.breed = draft.breed.trimmed
+                record.linkedRamID = draft.linkedRamID
+                record.note = draft.note.trimmed
+                record.statusRawValue = draft.status.rawValue
+                record.updatedAt = modifiedAt
+                record.deletedAt = nil
+                record.revision += 1
+                return .init(entityType: .semenDonor, entityID: record.id, baseRevision: base, resultingRevision: record.revision)
+            }
+            context.insert(SemenDonorRecord(id: draft.id, farmID: farmID, name: draft.name.trimmed, registrationNumber: draft.registrationNumber.trimmed, breed: draft.breed.trimmed, linkedRamID: draft.linkedRamID, note: draft.note.trimmed, status: draft.status, createdAt: modifiedAt, updatedAt: modifiedAt))
+            return .init(entityType: .semenDonor, entityID: draft.id, baseRevision: 0, resultingRevision: 1)
+
+        case .setSemenDonor(let semenID, let donorID, _):
+            let record = try semen(semenID, farmID: farmID, context: context)
+            let base = record.revision
+            record.donorID = donorID
+            record.updatedAt = modifiedAt
+            record.revision += 1
+            return .init(entityType: .semen, entityID: record.id, baseRevision: base, resultingRevision: record.revision)
+
+        case .updateSheepPedigree(let draft):
+            guard let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == draft.sheepID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sheepNotFound }
+            let donor = try draft.semenDonorID.map { try semenDonor($0, farmID: farmID, context: context, requiresActive: false) }
+            let resolvedSireID = donor?.linkedRamID ?? draft.sireID
+            let base = sheep.revision
+            context.insert(PedigreeChangeRecord(
+                id: draft.id,
+                farmID: farmID,
+                sheepID: sheep.id,
+                beforeDamID: sheep.damID,
+                afterDamID: draft.damID,
+                beforeSireID: sheep.sireID,
+                afterSireID: resolvedSireID,
+                beforeSemenDonorID: sheep.semenDonorID,
+                afterSemenDonorID: donor?.id,
+                beforeDamSourceRawValue: sheep.damProvenanceRawValue,
+                afterDamSourceRawValue: draft.damID == nil ? nil : PedigreeRelationSource.manual.rawValue,
+                beforeSireSourceRawValue: sheep.sireProvenanceRawValue,
+                afterSireSourceRawValue: (resolvedSireID == nil && donor == nil) ? nil : PedigreeRelationSource.manual.rawValue,
+                reason: draft.reason.trimmed,
+                changedByAccountID: accountID,
+                sheepRevision: base + 1,
+                occurredAt: modifiedAt
+            ))
+            sheep.damID = draft.damID
+            sheep.sireID = resolvedSireID
+            sheep.damProvenanceRawValue = draft.damID == nil ? nil : PedigreeRelationSource.manual.rawValue
+            sheep.sireProvenanceRawValue = (resolvedSireID == nil && donor == nil) ? nil : PedigreeRelationSource.manual.rawValue
+            sheep.semenDonorID = donor?.id
+            sheep.semenDonorNameSnapshot = donor?.name
+            sheep.semenDonorRegistrationNumberSnapshot = donor?.registrationNumber.nilIfEmpty
+            sheep.semenDonorBreedSnapshot = donor?.breed
+            sheep.updatedAt = modifiedAt
+            sheep.revision += 1
+            return .init(entityType: .sheep, entityID: sheep.id, baseRevision: base, resultingRevision: sheep.revision)
+
+        case .setBreedingRam(let sheepID, let active, _):
+            guard let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sheepNotFound }
+            let base = sheep.revision
+            sheep.isBreedingRam = active
+            sheep.updatedAt = modifiedAt
+            sheep.revision += 1
+            return .init(entityType: .sheep, entityID: sheep.id, baseRevision: base, resultingRevision: sheep.revision)
+
+        case .restorePedigreeAudit(let snapshot):
+            if try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).contains(where: { $0.id == snapshot.id && $0.farmID == farmID }) {
+                return .init(entityType: .pedigreeChange, entityID: snapshot.id, baseRevision: 0, resultingRevision: 1)
+            }
+            context.insert(PedigreeChangeRecord(id: snapshot.id, farmID: farmID, sheepID: snapshot.sheepID, beforeDamID: snapshot.beforeDamID, afterDamID: snapshot.afterDamID, beforeSireID: snapshot.beforeSireID, afterSireID: snapshot.afterSireID, beforeSemenDonorID: snapshot.beforeSemenDonorID, afterSemenDonorID: snapshot.afterSemenDonorID, beforeDamSourceRawValue: snapshot.beforeDamSourceRawValue, afterDamSourceRawValue: snapshot.afterDamSourceRawValue, beforeSireSourceRawValue: snapshot.beforeSireSourceRawValue, afterSireSourceRawValue: snapshot.afterSireSourceRawValue, reason: snapshot.reason, changedByAccountID: snapshot.changedByAccountID, sheepRevision: snapshot.sheepRevision, occurredAt: snapshot.occurredAt))
+            return .init(entityType: .pedigreeChange, entityID: snapshot.id, baseRevision: 0, resultingRevision: 1)
+
         case .recordReproductionBatch(let draft):
             if try context.fetch(FetchDescriptor<CareBatchRecord>()).contains(where: { $0.id == draft.id && $0.farmID == farmID }) { return .init(entityType: .careBatch, entityID: draft.id, baseRevision: 0, resultingRevision: 1) }
             let batchKind: CareBatchKind
             switch draft.kind { case .breeding: batchKind = .breeding; case .pregnancyCheck: batchKind = .pregnancyCheck; case .abortion: batchKind = .abortion; case .lambing: throw FarmCommandError.invalidReproductionRecord }
             context.insert(CareBatchRecord(id: draft.id, farmID: farmID, kind: batchKind, occurredAt: draft.occurredAt, note: draft.note.trimmed))
-            let semenRecord = try draft.semenID.map { try semen($0, farmID: farmID, context: context) }
+            let paternity = draft.kind == .breeding
+                ? try resolvePaternity(sireID: draft.sireID, semenID: draft.semenID, farmID: farmID, context: context)
+                : ResolvedPaternity.unknown
+            let semenRecord = paternity.semen
             let semenPerEwe = draft.semenID == nil ? nil : (Decimal.stable(draft.semenUnitsPerEweText ?? "1") ?? 1)
             for subject in draft.subjects {
                 let recordID = StableCloudUUID.derived(namespace: draft.id, name: subject.id.uuidString.lowercased())
-                context.insert(ReproductionRecord(id: recordID, farmID: farmID, eweID: subject.eweID, kind: draft.kind, occurredAt: draft.occurredAt, sireID: draft.sireID, semenID: draft.semenID, batchID: draft.id, semenNameSnapshot: semenRecord?.code, result: subject.result.trimmed, note: draft.note.trimmed))
+                context.insert(ReproductionRecord(id: recordID, farmID: farmID, eweID: subject.eweID, kind: draft.kind, occurredAt: draft.occurredAt, sireID: paternity.sireID, semenID: semenRecord?.id, batchID: draft.id, relatedBreedingRecordID: subject.relatedBreedingRecordID, semenNameSnapshot: semenRecord?.code, semenDonorID: paternity.donorID, semenDonorNameSnapshot: paternity.donorNameSnapshot, semenDonorRegistrationNumberSnapshot: paternity.donorRegistrationNumberSnapshot, semenDonorBreedSnapshot: paternity.donorBreedSnapshot, paternalSource: paternity.source, result: subject.result.trimmed, note: draft.note.trimmed))
                 if let reminderAt = draft.reminderAt, draft.kind != .abortion {
                     let reminderKind: CareReminderKind = draft.kind == .breeding ? .pregnancyCheck : .expectedLambing
                     insertReminder(farmID: farmID, kind: reminderKind, sourceType: CloudEntityType.reproduction.rawValue, sourceID: recordID, sheepID: subject.eweID, dueAt: reminderAt, title: "\(subject.result.isEmpty ? "母羊" : subject.result) · \(reminderKind.displayName)", context: context)
@@ -170,18 +299,19 @@ enum FarmCareCommandHandler {
 
         case .recordLambing(let draft):
             if try context.fetch(FetchDescriptor<ReproductionRecord>()).contains(where: { $0.id == draft.id && $0.farmID == farmID }) { return .init(entityType: .reproduction, entityID: draft.id, baseRevision: 0, resultingRevision: 1) }
-            let semenRecord = try draft.semenID.map { try semen($0, farmID: farmID, context: context) }
-            let reproduction = ReproductionRecord(id: draft.id, farmID: farmID, eweID: draft.eweID, kind: .lambing, occurredAt: draft.occurredAt, sireID: draft.sireID, semenID: draft.semenID, semenNameSnapshot: semenRecord?.code, lambCount: draft.offspring.count, parity: draft.parity, birthDeadCount: draft.birthDeadCount, note: draft.note.trimmed)
+            let paternity = try resolveLambingPaternity(draft, farmID: farmID, context: context)
+            let reproduction = ReproductionRecord(id: draft.id, farmID: farmID, eweID: draft.eweID, kind: .lambing, occurredAt: draft.occurredAt, sireID: paternity.sireID, semenID: paternity.semen?.id, relatedBreedingRecordID: draft.relatedBreedingRecordID, semenNameSnapshot: paternity.semen?.code, semenDonorID: paternity.donorID, semenDonorNameSnapshot: paternity.donorNameSnapshot, semenDonorRegistrationNumberSnapshot: paternity.donorRegistrationNumberSnapshot, semenDonorBreedSnapshot: paternity.donorBreedSnapshot, paternalSource: paternity.source, lambCount: draft.offspring.count, parity: draft.parity, birthDeadCount: draft.birthDeadCount, note: draft.note.trimmed)
             context.insert(reproduction)
             let ewe = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == draft.eweID && $0.farmID == farmID })
             for lamb in draft.offspring {
+                let birthWeightID = StableCloudUUID.derived(namespace: lamb.sheepID, name: "birth-weight")
                 if lamb.createSheepRecord {
-                    context.insert(SheepRecord(id: lamb.sheepID, farmID: farmID, earTag: lamb.earTag.trimmed, breed: ewe?.breed ?? "未知", sex: lamb.sex, penID: draft.penID, enteredAt: draft.occurredAt, birthAt: draft.occurredAt, damID: draft.eweID, sireID: draft.sireID, note: "由产羔记录自动建档"))
+                    context.insert(SheepRecord(id: lamb.sheepID, farmID: farmID, earTag: lamb.earTag.trimmed, breed: ewe?.breed ?? "未知", sex: lamb.sex, penID: draft.penID, enteredAt: draft.occurredAt, birthAt: draft.occurredAt, damID: draft.eweID, sireID: paternity.sireID, damProvenance: .lambing, sireProvenance: paternity.source == .unknown ? nil : .lambing, semenDonorID: paternity.donorID, semenDonorNameSnapshot: paternity.donorNameSnapshot, semenDonorRegistrationNumberSnapshot: paternity.donorRegistrationNumberSnapshot, semenDonorBreedSnapshot: paternity.donorBreedSnapshot, note: "由产羔记录自动建档"))
                     if let weight = Decimal.stable(lamb.birthWeightText) {
-                        context.insert(WeightRecord(id: StableCloudUUID.derived(namespace: lamb.sheepID, name: "birth-weight"), farmID: farmID, sheepID: lamb.sheepID, kilogramsText: weight.stableText, occurredAt: draft.occurredAt, note: "初生重"))
+                        context.insert(WeightRecord(id: birthWeightID, farmID: farmID, sheepID: lamb.sheepID, kilogramsText: weight.stableText, occurredAt: draft.occurredAt, note: "初生重"))
                     }
                 }
-                context.insert(LambingOffspringRecord(id: lamb.id, farmID: farmID, lambingRecordID: draft.id, sheepID: lamb.createSheepRecord ? lamb.sheepID : nil, legacyEarTag: lamb.earTag.trimmed, sexRawValue: lamb.sex.rawValue, birthWeightText: Decimal.stable(lamb.birthWeightText)!.stableText, isStillborn: lamb.isStillborn))
+                context.insert(LambingOffspringRecord(id: lamb.id, farmID: farmID, lambingRecordID: draft.id, sheepID: lamb.createSheepRecord ? lamb.sheepID : nil, legacyEarTag: lamb.earTag.trimmed, sexRawValue: lamb.sex.rawValue, birthWeightText: Decimal.stable(lamb.birthWeightText)!.stableText, isStillborn: lamb.isStillborn, autoCreatedSheep: lamb.createSheepRecord, autoBirthWeightRecordID: lamb.createSheepRecord ? birthWeightID : nil))
             }
             deleteExpectedLambingReminders(eweID: draft.eweID, farmID: farmID, at: modifiedAt, context: context)
             return .init(entityType: .reproduction, entityID: draft.id, baseRevision: 0, resultingRevision: 1)
@@ -192,6 +322,15 @@ enum FarmCareCommandHandler {
             context.insert(TombstoneRecord(farmID: farmID, entityType: CloudEntityType.reproduction.rawValue, entityID: originalID, deletedByAccountID: accountID, reason: "修正：\(reason.trimmed)"))
             let result = try apply(.recordReproductionBatch(replacement), farmID: farmID, accountID: accountID, context: context, modifiedAt: modifiedAt)
             return .init(entityType: result.entityType, entityID: result.entityID, baseRevision: 1, resultingRevision: 2)
+
+        case .correctLambing(let originalID, let replacement, let reason):
+            return try applyLambingCorrection(originalID: originalID, replacement: replacement, reason: reason.trimmed, accountID: accountID, farmID: farmID, context: context, modifiedAt: modifiedAt)
+
+        case .revokeLambing(let recordID, let reason):
+            return try setLambingRevoked(true, recordID: recordID, reason: reason.trimmed, accountID: accountID, farmID: farmID, context: context, modifiedAt: modifiedAt)
+
+        case .restoreLambing(let recordID):
+            return try setLambingRevoked(false, recordID: recordID, reason: "恢复产羔记录", accountID: accountID, farmID: farmID, context: context, modifiedAt: modifiedAt)
 
         case .updateRules(let id, let pregnancyCheckDays, let gestationDays):
             let rules = try context.fetch(FetchDescriptor<FarmCareRuleRecord>())
@@ -227,6 +366,54 @@ enum FarmCareCommandHandler {
         return try context.fetch(FetchDescriptor<SemenTransactionRecord>()).filter { $0.farmID == semen.farmID && $0.semenID == semen.id && $0.deletedAt == nil }.reduce(initial) { partial, transaction in
             switch transaction.kind { case .receipt, .adjustment: partial + transaction.quantity; case .consumption: partial - transaction.quantity }
         }
+    }
+
+    private static func lambingStateMatches(originalID: UUID, draft: CareLambingDraft, farmID: UUID, context: ModelContext) throws -> Bool {
+        guard let record = try context.fetch(FetchDescriptor<ReproductionRecord>()).first(where: {
+            $0.id == originalID && $0.farmID == farmID && $0.kind == .lambing && $0.deletedAt == nil
+        }),
+        record.eweID == draft.eweID,
+        record.occurredAt == draft.occurredAt,
+        record.relatedBreedingRecordID == draft.relatedBreedingRecordID,
+        record.parity == draft.parity,
+        record.birthDeadCount == draft.birthDeadCount,
+        record.lambCount == draft.offspring.count,
+        record.note == draft.note.trimmed else { return false }
+
+        if let sireID = draft.sireID {
+            guard record.sireID == sireID, record.semenID == nil, record.semenDonorID == nil else { return false }
+        } else if let semenID = draft.semenID {
+            guard record.semenID == semenID else { return false }
+        } else if draft.relatedBreedingRecordID == nil {
+            guard record.sireID == nil, record.semenID == nil, record.semenDonorID == nil else { return false }
+        }
+
+        let details = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter {
+            $0.farmID == farmID && $0.lambingRecordID == originalID && $0.deletedAt == nil
+        }
+        guard details.count == draft.offspring.count else { return false }
+        let detailByID = Dictionary(uniqueKeysWithValues: details.map { ($0.id, $0) })
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+        for lamb in draft.offspring {
+            guard let detail = detailByID[lamb.id],
+                  detail.sheepID == (lamb.createSheepRecord ? lamb.sheepID : nil),
+                  EarTag.normalized(detail.legacyEarTag) == EarTag.normalized(lamb.earTag),
+                  detail.sexRawValue == lamb.sex.rawValue,
+                  detail.birthWeightText == Decimal.stable(lamb.birthWeightText)?.stableText,
+                  detail.isStillborn == lamb.isStillborn,
+                  detail.autoCreatedSheep == lamb.createSheepRecord else { return false }
+            if lamb.createSheepRecord {
+                guard let child = sheep.first(where: { $0.id == lamb.sheepID && $0.farmID == farmID && $0.deletedAt == nil }),
+                      EarTag.normalized(child.earTag) == EarTag.normalized(lamb.earTag),
+                      child.sex == lamb.sex,
+                      child.birthAt == draft.occurredAt,
+                      child.initialPenID == draft.penID,
+                      child.damID == draft.eweID,
+                      child.sireID == record.sireID,
+                      child.semenDonorID == record.semenDonorID else { return false }
+            }
+        }
+        return true
     }
 
     private static func applyHealth(_ draft: CareHealthDraft, farmID: UUID, context: ModelContext) throws -> CareApplyResult {
@@ -296,8 +483,17 @@ enum FarmCareCommandHandler {
         guard eweIDs.count == draft.subjects.count,
               draft.subjects.allSatisfy({ subject in sheep.contains { $0.id == subject.eweID && $0.farmID == farmID && $0.deletedAt == nil && $0.sex == .ewe } }) else { throw FarmCommandError.reproductionSubjectMustBeEwe }
         if draft.kind != .breeding, draft.sireID != nil || draft.semenID != nil { throw FarmCommandError.pregnancyCheckCannotSetPaternity }
-        if let sireID = draft.sireID, !sheep.contains(where: { $0.id == sireID && $0.farmID == farmID && $0.deletedAt == nil && $0.sex == .ram }) { throw FarmCommandError.reproductionSireMustBeRam }
-        if draft.kind == .breeding, draft.sireID == nil, draft.semenID == nil { throw FarmCommandError.invalidReproductionRecord }
+        if let sireID = draft.sireID, !sheep.contains(where: { $0.id == sireID && $0.farmID == farmID && $0.deletedAt == nil && $0.sex == .ram && $0.isBreedingRam }) { throw FarmCommandError.reproductionSireMustBeRam }
+        if draft.kind == .breeding {
+            guard (draft.sireID == nil) != (draft.semenID == nil), draft.subjects.allSatisfy({ $0.relatedBreedingRecordID == nil }) else { throw FarmCommandError.pedigreePaternalSourceConflict }
+            _ = try resolvePaternity(sireID: draft.sireID, semenID: draft.semenID, farmID: farmID, context: context)
+        } else {
+            for subject in draft.subjects {
+                if let relatedID = subject.relatedBreedingRecordID {
+                    _ = try linkedBreeding(relatedID, eweID: subject.eweID, eventAt: draft.occurredAt, closesBreeding: draft.kind == .abortion, farmID: farmID, context: context)
+                }
+            }
+        }
         if let semenID = draft.semenID {
             let record = try semen(semenID, farmID: farmID, context: context)
             let perEwe = try positive(draft.semenUnitsPerEweText ?? "1", "每只冻精用量")
@@ -309,6 +505,358 @@ enum FarmCareCommandHandler {
             }
             guard available >= perEwe * Decimal(draft.subjects.count) else { throw FarmCommandError.insufficientInventory }
         }
+    }
+
+    private struct ResolvedPaternity {
+        let sireID: UUID?
+        let semen: SemenRecord?
+        let donorID: UUID?
+        let donorNameSnapshot: String?
+        let donorRegistrationNumberSnapshot: String?
+        let donorBreedSnapshot: String?
+        let source: PaternalIdentitySource
+
+        static var unknown: ResolvedPaternity { ResolvedPaternity(sireID: nil, semen: nil, donorID: nil, donorNameSnapshot: nil, donorRegistrationNumberSnapshot: nil, donorBreedSnapshot: nil, source: .unknown) }
+    }
+
+    private static func resolvePaternity(sireID: UUID?, semenID: UUID?, farmID: UUID, context: ModelContext) throws -> ResolvedPaternity {
+        guard sireID == nil || semenID == nil else { throw FarmCommandError.pedigreePaternalSourceConflict }
+        if let sireID {
+            let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+            guard sheep.contains(where: { $0.id == sireID && $0.farmID == farmID && $0.deletedAt == nil && $0.sex == .ram && $0.isBreedingRam }) else { throw FarmCommandError.reproductionSireMustBeRam }
+            return .init(sireID: sireID, semen: nil, donorID: nil, donorNameSnapshot: nil, donorRegistrationNumberSnapshot: nil, donorBreedSnapshot: nil, source: .ram)
+        }
+        if let semenID {
+            let semenRecord = try semen(semenID, farmID: farmID, context: context)
+            let donor = try semenRecord.donorID.map { try semenDonor($0, farmID: farmID, context: context, requiresActive: true) }
+            return .init(
+                sireID: donor?.linkedRamID,
+                semen: semenRecord,
+                donorID: donor?.id,
+                donorNameSnapshot: donor?.name,
+                donorRegistrationNumberSnapshot: donor?.registrationNumber.nilIfEmpty,
+                donorBreedSnapshot: donor?.breed,
+                source: donor == nil ? .unknown : .semenDonor
+            )
+        }
+        return .unknown
+    }
+
+    private static func resolveLambingPaternity(_ draft: CareLambingDraft, farmID: UUID, context: ModelContext) throws -> ResolvedPaternity {
+        let explicit = try resolvePaternity(sireID: draft.sireID, semenID: draft.semenID, farmID: farmID, context: context)
+        guard let relatedID = draft.relatedBreedingRecordID else { return explicit }
+        let breeding = try linkedBreeding(relatedID, eweID: draft.eweID, eventAt: draft.occurredAt, closesBreeding: true, excludingClosureID: draft.id, farmID: farmID, context: context)
+        let inherited = ResolvedPaternity(
+            sireID: breeding.sireID,
+            semen: try breeding.semenID.map { try semen($0, farmID: farmID, context: context) },
+            donorID: breeding.semenDonorID,
+            donorNameSnapshot: breeding.semenDonorNameSnapshot,
+            donorRegistrationNumberSnapshot: breeding.semenDonorRegistrationNumberSnapshot,
+            donorBreedSnapshot: breeding.semenDonorBreedSnapshot,
+            source: breeding.paternalSource
+        )
+        if explicit.source == .unknown { return inherited }
+        guard explicit.sireID == inherited.sireID,
+              explicit.semen?.id == inherited.semen?.id,
+              explicit.donorID == inherited.donorID else { throw FarmCommandError.pedigreePaternalSourceConflict }
+        return inherited
+    }
+
+    private static func linkedBreeding(_ id: UUID, eweID: UUID, eventAt: Date, closesBreeding: Bool, excludingClosureID: UUID? = nil, farmID: UUID, context: ModelContext) throws -> ReproductionRecord {
+        let records = try context.fetch(FetchDescriptor<ReproductionRecord>())
+        guard let breeding = records.first(where: { $0.id == id && $0.farmID == farmID && $0.eweID == eweID && $0.kind == .breeding && $0.deletedAt == nil && $0.occurredAt <= eventAt }) else { throw FarmCommandError.linkedBreedingNotFound }
+        if closesBreeding, records.contains(where: {
+            $0.id != excludingClosureID && $0.farmID == farmID && $0.relatedBreedingRecordID == id && $0.deletedAt == nil && ($0.kind == .lambing || $0.kind == .abortion)
+        }) { throw FarmCommandError.linkedBreedingAlreadyClosed }
+        return breeding
+    }
+
+    private static func validateSemenDonor(_ draft: CareSemenDonorDraft, farmID: UUID, context: ModelContext) throws {
+        try require(draft.name, "供体名称")
+        try require(draft.breed, "供体品种")
+        let donors = try context.fetch(FetchDescriptor<SemenDonorRecord>())
+        if let existing = donors.first(where: { $0.id == draft.id && $0.farmID == farmID }) {
+            guard existing.revision == draft.expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
+        } else {
+            guard draft.expectedRevision == 0 else { throw FarmCommandError.pedigreeRevisionConflict }
+        }
+        let registration = draft.registrationNumber.trimmed
+        if !registration.isEmpty, donors.contains(where: { $0.id != draft.id && $0.farmID == farmID && $0.deletedAt == nil && $0.registrationNumber.caseInsensitiveCompare(registration) == .orderedSame }) {
+            throw FarmCommandError.duplicateSemenDonorRegistration
+        }
+        if let ramID = draft.linkedRamID {
+            let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+            guard sheep.contains(where: { $0.id == ramID && $0.farmID == farmID && $0.deletedAt == nil && $0.sex == .ram && $0.isBreedingRam }) else { throw FarmCommandError.reproductionSireMustBeRam }
+        }
+    }
+
+    private static func semenDonor(_ id: UUID, farmID: UUID, context: ModelContext, requiresActive: Bool) throws -> SemenDonorRecord {
+        guard let donor = try context.fetch(FetchDescriptor<SemenDonorRecord>()).first(where: {
+            $0.id == id && $0.farmID == farmID && $0.deletedAt == nil && (!requiresActive || $0.status == .active)
+        }) else { throw FarmCommandError.semenDonorNotFound }
+        return donor
+    }
+
+    private static func validatePedigree(_ draft: CarePedigreeUpdateDraft, farmID: UUID, context: ModelContext) throws {
+        guard !draft.reason.trimmed.isEmpty else { throw FarmCommandError.pedigreeReasonRequired }
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        guard let child = sheep.first(where: { $0.id == draft.sheepID }) else { throw FarmCommandError.sheepNotFound }
+        guard child.revision == draft.expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
+        guard draft.damID != child.id, draft.sireID != child.id else { throw FarmCommandError.pedigreeSelfReference }
+        let dam = draft.damID.flatMap { id in sheep.first(where: { $0.id == id }) }
+        if draft.damID != nil, dam?.sex != .ewe { throw FarmCommandError.pedigreeParentSexMismatch }
+        let directSire = draft.sireID.flatMap { id in sheep.first(where: { $0.id == id }) }
+        if draft.sireID != nil, directSire?.sex != .ram || directSire?.isBreedingRam != true { throw FarmCommandError.pedigreeParentSexMismatch }
+        let donor = try draft.semenDonorID.map { try semenDonor($0, farmID: farmID, context: context, requiresActive: false) }
+        if donor != nil, directSire != nil { throw FarmCommandError.pedigreePaternalSourceConflict }
+        let resolvedSire = donor?.linkedRamID.flatMap { id in sheep.first(where: { $0.id == id }) } ?? directSire
+        if let dam, let resolvedSire, dam.id == resolvedSire.id { throw FarmCommandError.pedigreePaternalSourceConflict }
+        if let birthAt = child.birthAt {
+            if let parentBirth = dam?.birthAt, parentBirth >= birthAt { throw FarmCommandError.pedigreeDateInversion }
+            if let parentBirth = resolvedSire?.birthAt, parentBirth >= birthAt { throw FarmCommandError.pedigreeDateInversion }
+        }
+        if let dam, try ancestryContains(child.id, startingAt: dam.id, sheep: sheep) { throw FarmCommandError.pedigreeCycle }
+        if let resolvedSire, try ancestryContains(child.id, startingAt: resolvedSire.id, sheep: sheep) { throw FarmCommandError.pedigreeCycle }
+    }
+
+    private static func ancestryContains(_ target: UUID, startingAt root: UUID, sheep: [SheepRecord]) throws -> Bool {
+        var pending = [root]
+        var visited = Set<UUID>()
+        let byID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
+        while let current = pending.popLast() {
+            if current == target { return true }
+            guard visited.insert(current).inserted, let record = byID[current] else { continue }
+            if let damID = record.damID { pending.append(damID) }
+            if let sireID = record.sireID { pending.append(sireID) }
+        }
+        return false
+    }
+
+    private static func validateLambing(_ draft: CareLambingDraft, farmID: UUID, existingRecordID: UUID?, context: ModelContext) throws {
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+        guard let ewe = sheep.first(where: { $0.id == draft.eweID && $0.farmID == farmID && $0.deletedAt == nil }), ewe.sex == .ewe else { throw FarmCommandError.reproductionSubjectMustBeEwe }
+        guard draft.parity > 0, draft.birthDeadCount >= 0, draft.birthDeadCount == draft.offspring.count(where: \.isStillborn), !draft.offspring.isEmpty, draft.offspring.allSatisfy({ !$0.isStillborn || !$0.createSheepRecord }), Set(draft.offspring.map(\.id)).count == draft.offspring.count else { throw FarmCommandError.invalidReproductionRecord }
+        _ = try resolveLambingPaternity(draft, farmID: farmID, context: context)
+        if let penID = draft.penID {
+            guard try context.fetch(FetchDescriptor<PenRecord>()).contains(where: { $0.id == penID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.penNotFound }
+        }
+        let existingOffspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter { $0.farmID == farmID && $0.lambingRecordID == existingRecordID }
+        let originalLambing = try existingRecordID.flatMap { id in
+            try context.fetch(FetchDescriptor<ReproductionRecord>()).first { $0.id == id && $0.farmID == farmID && $0.kind == .lambing }
+        }
+        let editableSheepIDs = Set(existingOffspring.compactMap(\.sheepID))
+        let existingTags = Set(sheep.filter { $0.farmID == farmID && !editableSheepIDs.contains($0.id) }.map { EarTag.normalized($0.earTag) })
+        let newTags = draft.offspring.filter(\.createSheepRecord).map { EarTag.normalized($0.earTag) }
+        guard newTags.allSatisfy({ !$0.isEmpty }), Set(newTags).count == newTags.count, existingTags.isDisjoint(with: newTags) else { throw FarmCommandError.duplicateEarTag }
+        for lamb in draft.offspring {
+            _ = try positive(lamb.birthWeightText, "初生重")
+            if let prior = existingOffspring.first(where: { $0.id == lamb.id }), let sheepID = prior.sheepID {
+                guard lamb.createSheepRecord, sheepID == lamb.sheepID else { throw FarmCommandError.lambingCorrectionConflict("已建档羔羊不能改成死羔或替换档案") }
+                guard let child = sheep.first(where: { $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil }),
+                      EarTag.normalized(child.earTag) == EarTag.normalized(prior.legacyEarTag),
+                      child.sexRawValue == prior.sexRawValue,
+                      originalLambing?.occurredAt == child.birthAt else {
+                    throw FarmCommandError.lambingCorrectionConflict("羔羊档案已在产羔记录之外被人工修改")
+                }
+                if let firstDownstream = try earliestDownstreamDate(sheepID: sheepID, excludingBirthWeightID: prior.autoBirthWeightRecordID, farmID: farmID, context: context), draft.occurredAt > firstDownstream {
+                    throw FarmCommandError.lambingCorrectionConflict("修正后的产羔日期晚于羔羊后续记录")
+                }
+            }
+        }
+    }
+
+    private static func earliestDownstreamDate(sheepID: UUID, excludingBirthWeightID: UUID?, farmID: UUID, context: ModelContext) throws -> Date? {
+        var dates: [Date] = []
+        dates += try context.fetch(FetchDescriptor<WeightRecord>()).filter { $0.farmID == farmID && $0.sheepID == sheepID && $0.id != excludingBirthWeightID && $0.deletedAt == nil }.map(\.occurredAt)
+        dates += try context.fetch(FetchDescriptor<WeaningRecord>()).filter { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }.map(\.occurredAt)
+        dates += try context.fetch(FetchDescriptor<TransferRecord>()).filter { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }.map(\.occurredAt)
+        dates += try context.fetch(FetchDescriptor<RemovalRecord>()).filter { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }.map(\.occurredAt)
+        dates += try context.fetch(FetchDescriptor<HealthRecord>()).filter { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }.map(\.occurredAt)
+        dates += try context.fetch(FetchDescriptor<ReproductionRecord>()).filter { $0.farmID == farmID && $0.eweID == sheepID && $0.deletedAt == nil }.map(\.occurredAt)
+        return dates.min()
+    }
+
+    private static func applyLambingCorrection(originalID: UUID, replacement: CareLambingDraft, reason: String, accountID: UUID, farmID: UUID, context: ModelContext, modifiedAt: Date) throws -> CareApplyResult {
+        guard let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>()).first(where: { $0.id == originalID && $0.farmID == farmID && $0.kind == .lambing && $0.deletedAt == nil }) else { throw FarmCommandError.sourceRecordNotFound }
+        let base = reproduction.revision
+        let previousEweID = reproduction.eweID
+        let previousSireID = reproduction.sireID
+        let previousDonorID = reproduction.semenDonorID
+        let paternity = try resolveLambingPaternity(replacement, farmID: farmID, context: context)
+        let ewe = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == replacement.eweID && $0.farmID == farmID })
+        let offspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter { $0.farmID == farmID && $0.lambingRecordID == originalID }
+        let replacementIDs = Set(replacement.offspring.map(\.id))
+
+        for prior in offspring where !replacementIDs.contains(prior.id) && prior.deletedAt == nil {
+            try compensateRemovedOffspring(prior, eweID: previousEweID, sireID: previousSireID, donorID: previousDonorID, reason: reason, accountID: accountID, farmID: farmID, context: context, modifiedAt: modifiedAt)
+            prior.deletedByLambingRevocation = false
+            prior.deletedAt = modifiedAt
+            prior.updatedAt = modifiedAt
+            prior.revision += 1
+        }
+
+        for lamb in replacement.offspring {
+            let birthWeight = Decimal.stable(lamb.birthWeightText)!.stableText
+            let birthWeightID = StableCloudUUID.derived(namespace: lamb.sheepID, name: "birth-weight")
+            if let prior = offspring.first(where: { $0.id == lamb.id }) {
+                prior.legacyEarTag = lamb.earTag.trimmed
+                prior.sexRawValue = lamb.sex.rawValue
+                prior.birthWeightText = birthWeight
+                prior.isStillborn = lamb.isStillborn
+                prior.deletedAt = nil
+                prior.updatedAt = modifiedAt
+                prior.revision += 1
+                if prior.autoCreatedSheep, let sheepID = prior.sheepID,
+                   let child = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil }) {
+                    child.earTag = lamb.earTag.trimmed
+                    child.sexRawValue = lamb.sex.rawValue
+                    child.birthAt = replacement.occurredAt
+                    child.enteredAt = min(child.enteredAt, replacement.occurredAt)
+                    child.initialPenID = replacement.penID
+                    let transfers = try context.fetch(FetchDescriptor<TransferRecord>()).filter {
+                        $0.farmID == farmID && $0.sheepID == child.id && $0.deletedAt == nil
+                    }
+                    child.currentPenID = FarmHistoryTimeline.pen(for: child, at: .now, transfers: transfers)
+                    try updateLambingPedigree(child: child, damID: replacement.eweID, paternity: paternity, reason: reason, accountID: accountID, auditNamespace: prior.id, farmID: farmID, context: context, modifiedAt: modifiedAt)
+                    child.updatedAt = modifiedAt
+                    child.revision += 1
+                    if let weight = try context.fetch(FetchDescriptor<WeightRecord>()).first(where: { $0.id == (prior.autoBirthWeightRecordID ?? birthWeightID) && $0.farmID == farmID && $0.deletedAt == nil }) {
+                        weight.kilogramsText = birthWeight
+                        weight.occurredAt = replacement.occurredAt
+                        weight.revision += 1
+                    } else if prior.autoBirthWeightRecordID == nil {
+                        context.insert(WeightRecord(id: birthWeightID, farmID: farmID, sheepID: child.id, kilogramsText: birthWeight, occurredAt: replacement.occurredAt, note: "初生重"))
+                        prior.autoBirthWeightRecordID = birthWeightID
+                    }
+                }
+            } else {
+                if lamb.createSheepRecord {
+                    context.insert(SheepRecord(id: lamb.sheepID, farmID: farmID, earTag: lamb.earTag.trimmed, breed: ewe?.breed ?? "未知", sex: lamb.sex, penID: replacement.penID, enteredAt: replacement.occurredAt, birthAt: replacement.occurredAt, damID: replacement.eweID, sireID: paternity.sireID, damProvenance: .lambing, sireProvenance: paternity.source == .unknown ? nil : .lambing, semenDonorID: paternity.donorID, semenDonorNameSnapshot: paternity.donorNameSnapshot, semenDonorRegistrationNumberSnapshot: paternity.donorRegistrationNumberSnapshot, semenDonorBreedSnapshot: paternity.donorBreedSnapshot, note: "由产羔修正补录建档"))
+                    context.insert(WeightRecord(id: birthWeightID, farmID: farmID, sheepID: lamb.sheepID, kilogramsText: birthWeight, occurredAt: replacement.occurredAt, note: "初生重"))
+                }
+                context.insert(LambingOffspringRecord(id: lamb.id, farmID: farmID, lambingRecordID: originalID, sheepID: lamb.createSheepRecord ? lamb.sheepID : nil, legacyEarTag: lamb.earTag.trimmed, sexRawValue: lamb.sex.rawValue, birthWeightText: birthWeight, isStillborn: lamb.isStillborn, autoCreatedSheep: lamb.createSheepRecord, autoBirthWeightRecordID: lamb.createSheepRecord ? birthWeightID : nil))
+            }
+        }
+
+        reproduction.eweID = replacement.eweID
+        reproduction.occurredAt = replacement.occurredAt
+        reproduction.sireID = paternity.sireID
+        reproduction.semenID = paternity.semen?.id
+        reproduction.relatedBreedingRecordID = replacement.relatedBreedingRecordID
+        reproduction.semenNameSnapshot = paternity.semen?.code
+        reproduction.semenDonorID = paternity.donorID
+        reproduction.semenDonorNameSnapshot = paternity.donorNameSnapshot
+        reproduction.semenDonorRegistrationNumberSnapshot = paternity.donorRegistrationNumberSnapshot
+        reproduction.semenDonorBreedSnapshot = paternity.donorBreedSnapshot
+        reproduction.paternalSourceRawValue = paternity.source.rawValue
+        reproduction.lambCount = replacement.offspring.count
+        reproduction.parity = replacement.parity
+        reproduction.birthDeadCount = replacement.birthDeadCount
+        reproduction.note = replacement.note.trimmed
+        reproduction.updatedAt = modifiedAt
+        reproduction.revision += 1
+        deleteExpectedLambingReminders(eweID: replacement.eweID, farmID: farmID, at: modifiedAt, context: context)
+        return .init(entityType: .reproduction, entityID: reproduction.id, baseRevision: base, resultingRevision: reproduction.revision)
+    }
+
+    private static func compensateRemovedOffspring(_ offspring: LambingOffspringRecord, eweID: UUID, sireID: UUID?, donorID: UUID?, reason: String, accountID: UUID, farmID: UUID, context: ModelContext, modifiedAt: Date) throws {
+        guard offspring.autoCreatedSheep, let sheepID = offspring.sheepID,
+              let child = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil }) else { return }
+        let beforeDam = child.damID
+        let beforeSire = child.sireID
+        let beforeDonor = child.semenDonorID
+        if child.damID == eweID, child.damProvenance == .lambing { child.damID = nil; child.damProvenanceRawValue = nil }
+        if child.sireID == sireID, child.sireProvenance == .lambing { child.sireID = nil; child.sireProvenanceRawValue = nil }
+        if child.semenDonorID == donorID, child.sireProvenance != .manual {
+            child.semenDonorID = nil; child.semenDonorNameSnapshot = nil; child.semenDonorRegistrationNumberSnapshot = nil; child.semenDonorBreedSnapshot = nil
+        }
+        if beforeDam != child.damID || beforeSire != child.sireID || beforeDonor != child.semenDonorID {
+            context.insert(PedigreeChangeRecord(id: StableCloudUUID.derived(namespace: offspring.id, name: "compensate-\(offspring.revision + 1)"), farmID: farmID, sheepID: child.id, beforeDamID: beforeDam, afterDamID: child.damID, beforeSireID: beforeSire, afterSireID: child.sireID, beforeSemenDonorID: beforeDonor, afterSemenDonorID: child.semenDonorID, beforeDamSourceRawValue: beforeDam == nil ? nil : PedigreeRelationSource.lambing.rawValue, afterDamSourceRawValue: child.damProvenanceRawValue, beforeSireSourceRawValue: beforeSire == nil && beforeDonor == nil ? nil : PedigreeRelationSource.lambing.rawValue, afterSireSourceRawValue: child.sireProvenanceRawValue, reason: reason, changedByAccountID: accountID, sheepRevision: child.revision + 1, occurredAt: modifiedAt))
+            child.updatedAt = modifiedAt
+            child.revision += 1
+            offspring.autoPedigreeRevokedByLambing = true
+        }
+        if let weightID = offspring.autoBirthWeightRecordID,
+           let weight = try context.fetch(FetchDescriptor<WeightRecord>()).first(where: { $0.id == weightID && $0.farmID == farmID && $0.deletedAt == nil && $0.note == "初生重" }) {
+            weight.deletedAt = modifiedAt
+            weight.revision += 1
+            offspring.autoBirthWeightRevokedByLambing = true
+        }
+    }
+
+    private static func updateLambingPedigree(child: SheepRecord, damID: UUID, paternity: ResolvedPaternity, reason: String, accountID: UUID, auditNamespace: UUID, farmID: UUID, context: ModelContext, modifiedAt: Date) throws {
+        let preservesManualDam = child.damProvenance == .manual
+        let preservesManualSire = child.sireProvenance == .manual
+        if (preservesManualDam && child.damID != damID) || (preservesManualSire && (child.sireID != paternity.sireID || child.semenDonorID != paternity.donorID)) {
+            throw FarmCommandError.lambingCorrectionConflict("羔羊系谱已被人工确认")
+        }
+        let beforeDam = child.damID
+        let beforeSire = child.sireID
+        let beforeDonor = child.semenDonorID
+        let beforeDamSource = child.damProvenanceRawValue
+        let beforeSireSource = child.sireProvenanceRawValue
+        if !preservesManualDam {
+            child.damID = damID
+            child.damProvenanceRawValue = PedigreeRelationSource.lambing.rawValue
+        }
+        if !preservesManualSire {
+            child.sireID = paternity.sireID
+            child.sireProvenanceRawValue = paternity.source == .unknown ? nil : PedigreeRelationSource.lambing.rawValue
+            child.semenDonorID = paternity.donorID
+            child.semenDonorNameSnapshot = paternity.donorNameSnapshot
+            child.semenDonorRegistrationNumberSnapshot = paternity.donorRegistrationNumberSnapshot
+            child.semenDonorBreedSnapshot = paternity.donorBreedSnapshot
+        }
+        if beforeDam != child.damID || beforeSire != child.sireID || beforeDonor != child.semenDonorID {
+            context.insert(PedigreeChangeRecord(id: StableCloudUUID.derived(namespace: auditNamespace, name: "lambing-correction-\(child.revision + 1)"), farmID: farmID, sheepID: child.id, beforeDamID: beforeDam, afterDamID: child.damID, beforeSireID: beforeSire, afterSireID: child.sireID, beforeSemenDonorID: beforeDonor, afterSemenDonorID: child.semenDonorID, beforeDamSourceRawValue: beforeDamSource, afterDamSourceRawValue: child.damProvenanceRawValue, beforeSireSourceRawValue: beforeSireSource, afterSireSourceRawValue: child.sireProvenanceRawValue, reason: reason, changedByAccountID: accountID, sheepRevision: child.revision + 1, occurredAt: modifiedAt))
+        }
+    }
+
+    private static func setLambingRevoked(_ revoked: Bool, recordID: UUID, reason: String, accountID: UUID, farmID: UUID, context: ModelContext, modifiedAt: Date) throws -> CareApplyResult {
+        guard let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>()).first(where: { $0.id == recordID && $0.farmID == farmID && $0.kind == .lambing }) else { throw FarmCommandError.sourceRecordNotFound }
+        let base = reproduction.revision
+        let offspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter { $0.farmID == farmID && $0.lambingRecordID == recordID }
+        let paternity = ResolvedPaternity(sireID: reproduction.sireID, semen: try reproduction.semenID.map { try semen($0, farmID: farmID, context: context) }, donorID: reproduction.semenDonorID, donorNameSnapshot: reproduction.semenDonorNameSnapshot, donorRegistrationNumberSnapshot: reproduction.semenDonorRegistrationNumberSnapshot, donorBreedSnapshot: reproduction.semenDonorBreedSnapshot, source: reproduction.paternalSource)
+        if revoked {
+            reproduction.deletedAt = modifiedAt
+            for detail in offspring where detail.deletedAt == nil {
+                try compensateRemovedOffspring(detail, eweID: reproduction.eweID, sireID: reproduction.sireID, donorID: reproduction.semenDonorID, reason: reason, accountID: accountID, farmID: farmID, context: context, modifiedAt: modifiedAt)
+                detail.deletedByLambingRevocation = true
+                detail.deletedAt = modifiedAt
+                detail.updatedAt = modifiedAt
+                detail.revision += 1
+            }
+            restoreExpectedLambingReminders(eweID: reproduction.eweID, farmID: farmID, at: modifiedAt, context: context)
+        } else {
+            reproduction.deletedAt = nil
+            for detail in offspring where detail.deletedByLambingRevocation {
+                detail.deletedAt = nil
+                detail.updatedAt = modifiedAt
+                detail.revision += 1
+                guard detail.autoCreatedSheep, let sheepID = detail.sheepID,
+                      let child = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil }) else { continue }
+                if detail.autoPedigreeRevokedByLambing {
+                    guard (child.damID == nil || child.damID == reproduction.eweID),
+                          (child.sireID == nil || child.sireID == reproduction.sireID),
+                          (child.semenDonorID == nil || child.semenDonorID == reproduction.semenDonorID) else { throw FarmCommandError.lambingCorrectionConflict("羔羊系谱在撤销后已被其他记录占用") }
+                    try updateLambingPedigree(child: child, damID: reproduction.eweID, paternity: paternity, reason: reason, accountID: accountID, auditNamespace: detail.id, farmID: farmID, context: context, modifiedAt: modifiedAt)
+                    child.updatedAt = modifiedAt
+                    child.revision += 1
+                    detail.autoPedigreeRevokedByLambing = false
+                }
+                if detail.autoBirthWeightRevokedByLambing, let weightID = detail.autoBirthWeightRecordID,
+                   let weight = try context.fetch(FetchDescriptor<WeightRecord>()).first(where: { $0.id == weightID && $0.farmID == farmID && $0.deletedAt != nil }) {
+                    weight.deletedAt = nil
+                    weight.revision += 1
+                    detail.autoBirthWeightRevokedByLambing = false
+                }
+                detail.deletedByLambingRevocation = false
+            }
+            deleteExpectedLambingReminders(eweID: reproduction.eweID, farmID: farmID, at: modifiedAt, context: context)
+        }
+        reproduction.updatedAt = modifiedAt
+        reproduction.revision += 1
+        return .init(entityType: .reproduction, entityID: reproduction.id, baseRevision: base, resultingRevision: reproduction.revision)
     }
 
     private static func insertReminder(farmID: UUID, kind: CareReminderKind, sourceType: String, sourceID: UUID, sheepID: UUID? = nil, inventoryLotID: UUID? = nil, dueAt: Date, title: String, context: ModelContext) {
@@ -330,6 +878,15 @@ enum FarmCareCommandHandler {
     private static func deleteExpectedLambingReminders(eweID: UUID, farmID: UUID, at: Date, context: ModelContext) {
         let reminders = (try? context.fetch(FetchDescriptor<CareReminderRecord>())) ?? []
         for reminder in reminders where reminder.farmID == farmID && reminder.sheepID == eweID && reminder.kind == .expectedLambing && reminder.deletedAt == nil { reminder.statusRawValue = CareReminderStatus.completed.rawValue; reminder.completedAt = at; reminder.revision += 1 }
+    }
+
+    private static func restoreExpectedLambingReminders(eweID: UUID, farmID: UUID, at: Date, context: ModelContext) {
+        let reminders = (try? context.fetch(FetchDescriptor<CareReminderRecord>())) ?? []
+        for reminder in reminders where reminder.farmID == farmID && reminder.sheepID == eweID && reminder.kind == .expectedLambing && reminder.deletedAt == nil && reminder.status == .completed {
+            reminder.statusRawValue = CareReminderStatus.pending.rawValue
+            reminder.completedAt = nil
+            reminder.revision += 1
+        }
     }
 
     private static func require(_ value: String, _ label: String) throws {

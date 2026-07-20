@@ -74,18 +74,11 @@ actor FarmCheckpointActor {
         }) else { throw FarmCheckpointError.ownerBindingRequired }
         let operations = try context.fetch(FetchDescriptor<DomainOperation>())
             .filter { $0.farmID == farmID && $0.entityID != nil }
-            .sorted { lhs, rhs in
-                if lhs.entityID == rhs.entityID { return lhs.resultingRevision > rhs.resultingRevision }
-                return (lhs.entityID?.uuidString ?? "") < (rhs.entityID?.uuidString ?? "")
-            }
-        var latestByEntity: [UUID: DomainOperation] = [:]
-        for operation in operations {
-            guard let entityID = operation.entityID, latestByEntity[entityID] == nil else { continue }
-            latestByEntity[entityID] = operation
-        }
-        let entitySnapshots = latestByEntity.values.map {
-            FarmCheckpointManifest.EntitySnapshot(entityType: $0.entityType, entityID: $0.entityID!, revision: $0.resultingRevision, payload: $0.payload, payloadDigest: $0.payloadDigest)
-        }.sorted { $0.entityID.uuidString < $1.entityID.uuidString }
+        let entitySnapshots = try FarmCheckpointOperationHistory.snapshots(
+            operations: operations,
+            farmID: farmID,
+            context: context
+        )
         let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>()).filter { $0.farmID == farmID }.compactMap { value -> FarmTombstoneEnvelope? in
             guard let operationID = value.operationID else { return nil }
             return FarmTombstoneEnvelope(tombstoneID: value.id, farmID: value.farmID, entityType: value.entityType, entityID: value.entityID, revision: value.revision, deletedAt: value.deletedAt, deletedByAccountID: value.deletedByAccountID, reason: value.reason, operationID: operationID, restoresTombstoneID: value.restoredByOperationID)
@@ -94,14 +87,21 @@ actor FarmCheckpointActor {
             FarmCheckpointManifest.AssetReference(assetID: $0.id, payloadDigest: $0.sha256, recoveryRecordName: $0.recoveryRecordName)
         }
         let grouped = Dictionary(grouping: entitySnapshots, by: \.entityType)
-        let counts = grouped.mapValues(\.count)
+        // Checkpoint v2 keeps the complete operation history, but the user-facing
+        // count must continue to describe unique domain entities rather than
+        // replay operations.
+        let counts = grouped.mapValues { Set($0.map(\.entityID)).count }
         let digests = grouped.mapValues { values in
-            CloudPayloadDigest.hex(for: Data(values.sorted { $0.entityID.uuidString < $1.entityID.uuidString }.flatMap { Array($0.payloadDigest.utf8) }))
+            let ordered = values.sorted {
+                if $0.entityID != $1.entityID { return $0.entityID.uuidString < $1.entityID.uuidString }
+                return ($0.operationID?.uuidString ?? "") < ($1.operationID?.uuidString ?? "")
+            }
+            return CloudPayloadDigest.hex(for: Data(ordered.flatMap { Array($0.payloadDigest.utf8) }))
         }
         let checkpointID = UUID()
         let watermark = operations.map(\.occurredAt).max() ?? .distantPast
         let manifest = FarmCheckpointManifest(
-            schemaVersion: 1,
+            schemaVersion: 2,
             checkpointID: checkpointID,
             farmID: farmID,
             createdAt: .now,
@@ -125,7 +125,7 @@ actor FarmCheckpointActor {
             manifestDigest: CloudPayloadDigest.hex(for: clearData),
             encryptedRelativePath: Self.relativePath(for: fileURL),
             byteCount: Int64(encryptedData.count),
-            entityCount: entitySnapshots.count,
+            entityCount: counts.values.reduce(0, +),
             assetCount: assets.count,
             securityGeneration: binding.securityGeneration
         )
@@ -174,54 +174,39 @@ actor FarmCheckpointActor {
         let manifest = try await verifyCheckpoint(id: id)
         guard manifest.farmID == farm.farmID else { throw FarmCheckpointError.manifestFarmMismatch }
         let context = ModelContext(modelContainer)
-        let ordered = manifest.entities.sorted {
-            let lhs = Self.restorePriority($0.entityType)
-            let rhs = Self.restorePriority($1.entityType)
-            return lhs == rhs ? $0.entityID.uuidString < $1.entityID.uuidString : lhs < rhs
-        }
+        let ordered = CloudRebuildActor.sortedOperations(
+            FarmCheckpointOperationHistory.sourceEnvelopes(
+                snapshots: manifest.entities,
+                manifest: manifest,
+                accountID: farm.accountID
+            )
+        )
         var operationIDs: [UUID] = []
         var rebuildFrom: Date?
-        for snapshot in ordered {
-            let sourceEnvelope = CloudOperationEnvelope(
-                farmID: farm.farmID,
-                entityID: snapshot.entityID,
-                entityType: snapshot.entityType,
-                schemaVersion: 2,
-                revision: snapshot.revision,
-                baseRevision: max(0, snapshot.revision - 1),
-                operationID: StableCloudUUID.derived(namespace: id, name: "source:\(snapshot.entityID.uuidString.lowercased())"),
-                modifiedAt: manifest.createdAt,
-                modifiedByAccountID: farm.accountID,
-                modifiedByDeviceID: UUID(),
-                payload: snapshot.payload,
-                payloadDigest: snapshot.payloadDigest,
-                capabilityCertificate: "checkpoint",
-                operationSignature: Data(),
-                deletedAt: nil
-            )
+        for sourceEnvelope in ordered {
             switch try RemoteDomainApplyService().apply(sourceEnvelope, context: context) {
             case .applied(let changedAt):
                 if let changedAt { rebuildFrom = min(rebuildFrom ?? changedAt, changedAt) }
             case .duplicate:
                 break
             case .conflict:
-                throw FarmCheckpointError.restoreConflict(snapshot.entityID)
+                throw FarmCheckpointError.restoreConflict(sourceEnvelope.entityID)
             }
             var payload = FarmCommandCloudPayload(kind: .recoverEntity)
-            payload.identifiers = ["checkpointID": id, "entityID": snapshot.entityID]
-            payload.strings = ["entityType": snapshot.entityType, "sourcePayloadDigest": snapshot.payloadDigest]
-            payload.integers = ["sourceRevision": snapshot.revision]
-            payload.dataValues = ["resolvedPayload": snapshot.payload]
+            payload.identifiers = ["checkpointID": id, "entityID": sourceEnvelope.entityID]
+            payload.strings = ["entityType": sourceEnvelope.entityType, "sourcePayloadDigest": sourceEnvelope.payloadDigest]
+            payload.integers = ["sourceRevision": sourceEnvelope.revision]
+            payload.dataValues = ["resolvedPayload": sourceEnvelope.payload]
             let encoded = try JSONEncoder.cloud.encode(payload)
             let operation = DomainOperation(
                 farmID: farm.farmID,
                 accountID: farm.accountID,
                 kind: .recoverEntity,
                 summary: "从恢复点恢复权威记录",
-                entityType: snapshot.entityType,
-                entityID: snapshot.entityID,
-                baseRevision: snapshot.revision,
-                resultingRevision: snapshot.revision + 1,
+                entityType: sourceEnvelope.entityType,
+                entityID: sourceEnvelope.entityID,
+                baseRevision: sourceEnvelope.revision,
+                resultingRevision: sourceEnvelope.revision + 1,
                 payload: encoded
             )
             context.insert(operation)
@@ -287,13 +272,63 @@ actor FarmCheckpointActor {
         return String(url.standardizedFileURL.path.dropFirst(root.count + 1))
     }
 
-    private static func restorePriority(_ entityType: String) -> Int {
-        switch CloudEntityType(rawValue: entityType) {
-        case .pen, .feedIngredient, .semen, .breedingProgram, .healthCatalogItem, .careRule: 0
-        case .sheep, .productionBatch, .feedRecipe, .inventoryLot, .careBatch: 1
-        case .feedRecipeComponent, .weight, .weaning, .transfer, .removal, .batchMembership, .feed, .health, .reproduction, .note, .breedingProgramStep, .feedIngredientBatch, .semenTransaction: 2
-        case .feedLine, .inventoryTransaction, .photoAsset, .healthSubjectLink, .lambingOffspring, .careReminder: 3
-        case .farm, .none: 4
+}
+
+enum FarmCheckpointOperationHistory {
+    static func snapshots(
+        operations: [DomainOperation],
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> [FarmCheckpointManifest.EntitySnapshot] {
+        let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>()).filter { $0.farmID == farmID }
+        let deletedAtByOperationID = Dictionary(uniqueKeysWithValues: tombstones.compactMap { tombstone in
+            tombstone.operationID.map { ($0, tombstone.deletedAt) }
+        })
+        return operations.compactMap { operation in
+            guard let entityID = operation.entityID else { return nil }
+            return FarmCheckpointManifest.EntitySnapshot(
+                entityType: operation.entityType,
+                entityID: entityID,
+                revision: operation.resultingRevision,
+                payload: operation.payload,
+                payloadDigest: operation.payloadDigest,
+                operationID: operation.id,
+                baseRevision: operation.baseRevision,
+                occurredAt: operation.occurredAt,
+                deletedAt: deletedAtByOperationID[operation.id]
+            )
+        }
+        .sorted {
+            if $0.occurredAt != $1.occurredAt { return ($0.occurredAt ?? .distantPast) < ($1.occurredAt ?? .distantPast) }
+            return ($0.operationID?.uuidString ?? "") < ($1.operationID?.uuidString ?? "")
+        }
+    }
+
+    static func sourceEnvelopes(
+        snapshots: [FarmCheckpointManifest.EntitySnapshot],
+        manifest: FarmCheckpointManifest,
+        accountID: UUID
+    ) -> [CloudOperationEnvelope] {
+        snapshots.map { snapshot in
+            let sourceIdentity = snapshot.operationID?.uuidString.lowercased()
+                ?? "\(snapshot.entityType):\(snapshot.entityID.uuidString.lowercased()):\(snapshot.revision)"
+            return CloudOperationEnvelope(
+                farmID: manifest.farmID,
+                entityID: snapshot.entityID,
+                entityType: snapshot.entityType,
+                schemaVersion: 2,
+                revision: snapshot.revision,
+                baseRevision: snapshot.baseRevision ?? max(0, snapshot.revision - 1),
+                operationID: StableCloudUUID.derived(namespace: manifest.checkpointID, name: "source:\(sourceIdentity)"),
+                modifiedAt: snapshot.occurredAt ?? manifest.createdAt,
+                modifiedByAccountID: accountID,
+                modifiedByDeviceID: StableCloudUUID.derived(namespace: manifest.checkpointID, name: "checkpoint-device"),
+                payload: snapshot.payload,
+                payloadDigest: snapshot.payloadDigest,
+                capabilityCertificate: "checkpoint",
+                operationSignature: Data(),
+                deletedAt: snapshot.deletedAt
+            )
         }
     }
 }

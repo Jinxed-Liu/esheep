@@ -174,8 +174,11 @@ struct MigrationCommitService {
             copy.isActive = value.isActive; copy.revision = value.revision; copy.updatedAt = value.updatedAt; copy.deletedAt = value.deletedAt
             destination.insert(copy)
         }
+        for value in try farmValues(SemenDonorRecord.self, farmID: farmID, source: source) {
+            destination.insert(SemenDonorRecord(id: value.id, farmID: farmID, name: value.name, registrationNumber: value.registrationNumber, breed: value.breed, linkedRamID: value.linkedRamID, note: value.note, status: value.status, revision: value.revision, createdAt: value.createdAt, updatedAt: value.updatedAt, deletedAt: value.deletedAt))
+        }
         for value in try farmValues(SheepRecord.self, farmID: farmID, source: source) {
-            let copy = SheepRecord(id: value.id, farmID: farmID, earTag: value.earTag, legacyEarTag: value.legacyEarTag, legacySourceKey: value.legacySourceKey, isHistoricalArchive: value.isHistoricalArchive, breed: value.breed, purpose: value.purpose, sex: value.sex, penID: value.initialPenID, enteredAt: value.enteredAt, birthAt: value.birthAt, damID: value.damID, sireID: value.sireID, note: value.note)
+            let copy = SheepRecord(id: value.id, farmID: farmID, earTag: value.earTag, legacyEarTag: value.legacyEarTag, legacySourceKey: value.legacySourceKey, isHistoricalArchive: value.isHistoricalArchive, breed: value.breed, purpose: value.purpose, isBreedingRam: value.isBreedingRam, sex: value.sex, penID: value.initialPenID, enteredAt: value.enteredAt, birthAt: value.birthAt, damID: value.damID, sireID: value.sireID, damProvenance: value.damProvenance, sireProvenance: value.sireProvenance, semenDonorID: value.semenDonorID, semenDonorNameSnapshot: value.semenDonorNameSnapshot, semenDonorRegistrationNumberSnapshot: value.semenDonorRegistrationNumberSnapshot, semenDonorBreedSnapshot: value.semenDonorBreedSnapshot, note: value.note)
             copy.statusRawValue = value.statusRawValue; copy.initialPenID = value.initialPenID; copy.removedAt = value.removedAt; copy.legacyStatusSnapshotIsAuthoritative = value.legacyStatusSnapshotIsAuthoritative; copy.legacyPenSnapshotIsAuthoritative = value.legacyPenSnapshotIsAuthoritative; copy.revision = value.revision; copy.createdAt = value.createdAt; copy.updatedAt = value.updatedAt; copy.deletedAt = value.deletedAt
             copy.currentPenID = copy.isCurrentlyPresent ? value.currentPenID : nil
             destination.insert(copy)
@@ -264,12 +267,12 @@ struct MigrationCommitService {
             copy.createdAt = value.createdAt; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(ReproductionRecord.self, farmID: farmID, source: source) {
-            let copy = ReproductionRecord(id: value.id, farmID: farmID, eweID: value.eweID, kind: value.kind, occurredAt: value.occurredAt, sireID: value.sireID, semenID: value.semenID, batchID: value.batchID, semenNameSnapshot: value.semenNameSnapshot, result: value.result, lambCount: value.lambCount, parity: value.parity, birthDeadCount: value.birthDeadCount, note: value.note, legacySourceKey: value.legacySourceKey)
-            copy.createdAt = value.createdAt; copy.deletedAt = value.deletedAt; destination.insert(copy)
+            let copy = ReproductionRecord(id: value.id, farmID: farmID, eweID: value.eweID, kind: value.kind, occurredAt: value.occurredAt, sireID: value.sireID, semenID: value.semenID, batchID: value.batchID, relatedBreedingRecordID: value.relatedBreedingRecordID, semenNameSnapshot: value.semenNameSnapshot, semenDonorID: value.semenDonorID, semenDonorNameSnapshot: value.semenDonorNameSnapshot, semenDonorRegistrationNumberSnapshot: value.semenDonorRegistrationNumberSnapshot, semenDonorBreedSnapshot: value.semenDonorBreedSnapshot, paternalSource: value.paternalSource, result: value.result, lambCount: value.lambCount, parity: value.parity, birthDeadCount: value.birthDeadCount, note: value.note, legacySourceKey: value.legacySourceKey)
+            copy.createdAt = value.createdAt; copy.updatedAt = value.updatedAt; copy.revision = value.revision; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(SemenRecord.self, farmID: farmID, source: source) {
-            let copy = SemenRecord(id: value.id, farmID: farmID, code: value.code, breed: value.breed, source: value.source, batchNumber: value.batchNumber, quantityText: value.quantityText, legacySourceKey: value.legacySourceKey)
-            copy.createdAt = value.createdAt; copy.updatedAt = value.updatedAt; copy.deletedAt = value.deletedAt; destination.insert(copy)
+            let copy = SemenRecord(id: value.id, farmID: farmID, code: value.code, breed: value.breed, source: value.source, batchNumber: value.batchNumber, quantityText: value.quantityText, donorID: value.donorID, legacySourceKey: value.legacySourceKey)
+            copy.revision = value.revision; copy.createdAt = value.createdAt; copy.updatedAt = value.updatedAt; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(NoteRecord.self, farmID: farmID, source: source) {
             let copy = NoteRecord(id: value.id, farmID: farmID, sheepID: value.sheepID, penID: value.penID, text: value.text, occurredAt: value.occurredAt)
@@ -280,8 +283,11 @@ struct MigrationCommitService {
             copy.createdAt = value.createdAt; destination.insert(copy)
         }
         for value in try farmValues(LambingOffspringRecord.self, farmID: farmID, source: source) {
-            let copy = LambingOffspringRecord(id: value.id, farmID: farmID, lambingRecordID: value.lambingRecordID, sheepID: value.sheepID, legacyEarTag: value.legacyEarTag, sexRawValue: value.sexRawValue, birthWeightText: value.birthWeightText, isStillborn: value.isStillborn)
-            copy.createdAt = value.createdAt; destination.insert(copy)
+            let copy = LambingOffspringRecord(id: value.id, farmID: farmID, lambingRecordID: value.lambingRecordID, sheepID: value.sheepID, legacyEarTag: value.legacyEarTag, sexRawValue: value.sexRawValue, birthWeightText: value.birthWeightText, isStillborn: value.isStillborn, autoCreatedSheep: value.autoCreatedSheep, autoBirthWeightRecordID: value.autoBirthWeightRecordID)
+            copy.autoPedigreeRevokedByLambing = value.autoPedigreeRevokedByLambing; copy.autoBirthWeightRevokedByLambing = value.autoBirthWeightRevokedByLambing; copy.deletedByLambingRevocation = value.deletedByLambingRevocation; copy.revision = value.revision; copy.createdAt = value.createdAt; copy.updatedAt = value.updatedAt; copy.deletedAt = value.deletedAt; destination.insert(copy)
+        }
+        for value in try farmValues(PedigreeChangeRecord.self, farmID: farmID, source: source) {
+            destination.insert(PedigreeChangeRecord(id: value.id, farmID: farmID, sheepID: value.sheepID, beforeDamID: value.beforeDamID, afterDamID: value.afterDamID, beforeSireID: value.beforeSireID, afterSireID: value.afterSireID, beforeSemenDonorID: value.beforeSemenDonorID, afterSemenDonorID: value.afterSemenDonorID, beforeDamSourceRawValue: value.beforeDamSourceRawValue, afterDamSourceRawValue: value.afterDamSourceRawValue, beforeSireSourceRawValue: value.beforeSireSourceRawValue, afterSireSourceRawValue: value.afterSireSourceRawValue, reason: value.reason, changedByAccountID: value.changedByAccountID, sheepRevision: value.sheepRevision, occurredAt: value.occurredAt))
         }
         for value in try farmValues(FeedIngredientBatchRecord.self, farmID: farmID, source: source) {
             let copy = FeedIngredientBatchRecord(id: value.id, farmID: farmID, ingredientID: value.ingredientID, legacySourceKey: value.legacySourceKey, batchName: value.batchName, purchaseDate: value.purchaseDate, supplier: value.supplier, storageLocation: value.storageLocation, pricePerKilogramText: value.pricePerKilogramText, initialKilogramsText: value.initialKilogramsText, remainingKilogramsText: value.remainingKilogramsText, note: value.note, isActive: value.isActive)
@@ -327,6 +333,8 @@ struct MigrationCommitService {
             case let item as HealthRecord: item.farmID == farmID
             case let item as ReproductionRecord: item.farmID == farmID
             case let item as SemenRecord: item.farmID == farmID
+            case let item as SemenDonorRecord: item.farmID == farmID
+            case let item as PedigreeChangeRecord: item.farmID == farmID
             case let item as NoteRecord: item.farmID == farmID
             case let item as HealthSubjectLink: item.farmID == farmID
             case let item as LambingOffspringRecord: item.farmID == farmID

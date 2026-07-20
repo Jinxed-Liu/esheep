@@ -50,6 +50,7 @@ struct CareManagementView: View {
                 NavigationLink { HealthCatalogManagementView(account: account, farm: farm) } label: { Label("药品与疫苗目录", systemImage: "books.vertical") }
                 NavigationLink { CareInventoryView(account: account, farm: farm) } label: { Label("药品与疫苗库存", systemImage: "shippingbox") }
                 NavigationLink { CareSemenView(account: account, farm: farm) } label: { Label("冻精库存", systemImage: "snowflake") }
+                NavigationLink { PedigreeCheckView(account: account, farm: farm) } label: { Label("全场系谱检查", systemImage: "point.3.connected.trianglepath.dotted") }
                 NavigationLink { CareRulesView(account: account, farm: farm) } label: { Label("提醒规则", systemImage: "calendar.badge.clock") }
             }
             Section("历史") {
@@ -359,59 +360,153 @@ struct ReproductionBatchEntryView: View {
     @Environment(FarmNotificationService.self) private var notifications
     @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
     @Query(sort: \SemenRecord.code) private var semen: [SemenRecord]
+    @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproduction: [ReproductionRecord]
     @Query private var rules: [FarmCareRuleRecord]
     @Query private var reminders: [CareReminderRecord]
     let account: AccountProfile; let farm: FarmRecord
     private let service = FarmCommandService()
-    @State private var kind = ReproductionRecordKind.breeding; @State private var selected = Set<UUID>(); @State private var results: [UUID: String] = [:]; @State private var sireID: UUID?; @State private var semenID: UUID?; @State private var semenUnits = "1"; @State private var occurredAt = Date.now; @State private var reminderAt = Date.now; @State private var note = ""; @State private var errorMessage: String?
+    @State private var kind = ReproductionRecordKind.breeding; @State private var selected = Set<UUID>(); @State private var results: [UUID: String] = [:]; @State private var relatedBreedings: [UUID: UUID] = [:]; @State private var sireID: UUID?; @State private var semenID: UUID?; @State private var semenUnits = "1"; @State private var occurredAt = Date.now; @State private var reminderAt = Date.now; @State private var note = ""; @State private var errorMessage: String?
     private var ewes: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ewe } }
-    private var rams: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ram } }
+    private var breedingRams: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ram && $0.isBreedingRam } }
     private var farmSemen: [SemenRecord] { semen.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
     private var rule: FarmCareRuleRecord? { rules.first { $0.farmID == farm.id } }
     var body: some View {
         Form {
             Picker("类型", selection: $kind) { Text("配种").tag(ReproductionRecordKind.breeding); Text("孕检").tag(ReproductionRecordKind.pregnancyCheck); Text("流产").tag(ReproductionRecordKind.abortion) }
-            Section("母羊（可多选）") { ForEach(ewes, id: \.id) { ewe in Button { if selected.contains(ewe.id) { selected.remove(ewe.id) } else { selected.insert(ewe.id) } } label: { HStack { Text(ewe.earTag); Spacer(); if selected.contains(ewe.id) { Image(systemName: "checkmark.circle.fill") } } }.buttonStyle(.plain); if kind == .pregnancyCheck && selected.contains(ewe.id) { TextField("\(ewe.earTag)结果", text: Binding(get: { results[ewe.id, default: ""] }, set: { results[ewe.id] = $0 })) } } }
-            if kind == .breeding { Section("父本来源") { Picker("本交公羊", selection: $sireID) { Text("不使用本交").tag(UUID?.none); ForEach(rams, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }; Picker("冻精", selection: $semenID) { Text("不使用冻精").tag(UUID?.none); ForEach(farmSemen, id: \.id) { Text($0.code).tag(UUID?.some($0.id)) } }; if semenID != nil { TextField("每只用量", text: $semenUnits).keyboardType(.decimalPad) } } }
+            Section("母羊（可多选）") {
+                ForEach(ewes, id: \.id) { ewe in
+                    Button { toggle(ewe.id) } label: { HStack { Text(ewe.earTag); Spacer(); if selected.contains(ewe.id) { Image(systemName: "checkmark.circle.fill") } } }.buttonStyle(.plain)
+                    if selected.contains(ewe.id), kind != .breeding {
+                        TextField("\(ewe.earTag)结果", text: Binding(get: { results[ewe.id, default: ""] }, set: { results[ewe.id] = $0 }))
+                        Picker("关联配种", selection: breedingBinding(for: ewe.id)) {
+                            Text("保持未关联").tag(UUID?.none)
+                            ForEach(openBreedings(for: ewe.id), id: \.id) { record in
+                                Text(breedingLabel(record)).tag(UUID?.some(record.id))
+                            }
+                        }
+                        if let relatedID = relatedBreedings[ewe.id], let related = reproduction.first(where: { $0.id == relatedID }) {
+                            LabeledContent("父本来源", value: related.paternalSource.displayName)
+                            LabeledContent("预计产羔", value: expectedLambingDate(for: related).formatted(date: .abbreviated, time: .omitted))
+                        }
+                    }
+                }
+            }
+            if kind == .breeding {
+                Section("父本来源") {
+                    Picker("本场种公羊", selection: $sireID) { Text("不使用本交").tag(UUID?.none); ForEach(breedingRams, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }
+                    Picker("冻精", selection: $semenID) { Text("不使用冻精").tag(UUID?.none); ForEach(farmSemen, id: \.id) { Text($0.code).tag(UUID?.some($0.id)) } }
+                    if semenID != nil { TextField("每只用量", text: $semenUnits).keyboardType(.decimalPad) }
+                    Text("本场种公羊与冻精必须二选一；普通公羊不会出现在此处。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
             DatePicker("发生时间", selection: $occurredAt); if kind != .abortion { DatePicker(kind == .breeding ? "孕检提醒" : "预产提醒", selection: $reminderAt) }; TextField("备注", text: $note, axis: .vertical)
         }
         .navigationTitle("批量配种或孕检").toolbar { EntrySaveToolbar(action: save) }.recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["繁殖记录"])
-        .onAppear { updateReminder() }.onChange(of: kind) { _, _ in sireID = nil; semenID = nil; updateReminder() }.onChange(of: occurredAt) { _, _ in updateReminder() }
+        .onAppear { updateReminder() }
+        .onChange(of: kind) { _, _ in sireID = nil; semenID = nil; relatedBreedings.removeAll(); updateReminder() }
+        .onChange(of: occurredAt) { _, _ in updateReminder() }
+        .onChange(of: sireID) { _, value in if value != nil { semenID = nil } }
+        .onChange(of: semenID) { _, value in if value != nil { sireID = nil } }
     }
+    private func toggle(_ id: UUID) { if selected.contains(id) { selected.remove(id); relatedBreedings.removeValue(forKey: id) } else { selected.insert(id) } }
+    private func breedingBinding(for eweID: UUID) -> Binding<UUID?> { Binding(get: { relatedBreedings[eweID] }, set: { value in if let value { relatedBreedings[eweID] = value } else { relatedBreedings.removeValue(forKey: eweID) } }) }
+    private func openBreedings(for eweID: UUID) -> [ReproductionRecord] { reproduction.filter { record in record.farmID == farm.id && record.eweID == eweID && record.kind == .breeding && record.deletedAt == nil && record.occurredAt <= occurredAt && !reproduction.contains { closure in closure.farmID == farm.id && closure.relatedBreedingRecordID == record.id && closure.deletedAt == nil && (closure.kind == .lambing || closure.kind == .abortion) } } }
+    private func breedingLabel(_ record: ReproductionRecord) -> String { "\(record.occurredAt.formatted(date: .abbreviated, time: .omitted)) · \(record.paternalSource.displayName)" }
+    private func expectedLambingDate(for record: ReproductionRecord) -> Date { Calendar.current.date(byAdding: .day, value: rule?.gestationDays ?? 150, to: record.occurredAt) ?? record.occurredAt }
     private func updateReminder() { let days = kind == .breeding ? (rule?.pregnancyCheckDays ?? 45) : (rule?.gestationDays ?? 150); reminderAt = Calendar.current.date(byAdding: .day, value: days, to: occurredAt) ?? occurredAt }
-    private func save() { let subjects = selected.map { CareReproductionSubjectDraft(eweID: $0, result: results[$0] ?? "") }; let draft = CareReproductionBatchDraft(id: UUID(), kind: kind, subjects: subjects, occurredAt: occurredAt, sireID: kind == .breeding ? sireID : nil, semenID: kind == .breeding ? semenID : nil, semenUnitsPerEweText: kind == .breeding && semenID != nil ? semenUnits : nil, note: note, reminderAt: kind == .abortion ? nil : reminderAt); do { try service.execute(.care(.recordReproductionBatch(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); let refreshed = (try? modelContext.fetch(FetchDescriptor<CareReminderRecord>())) ?? reminders; Task { await notifications.rescheduleCareReminders(refreshed, farmID: farm.id) }; dismiss() } catch { errorMessage = error.localizedDescription } }
+    private func save() { let subjects = selected.map { CareReproductionSubjectDraft(eweID: $0, result: results[$0] ?? "", relatedBreedingRecordID: kind == .breeding ? nil : relatedBreedings[$0]) }; let draft = CareReproductionBatchDraft(id: UUID(), kind: kind, subjects: subjects, occurredAt: occurredAt, sireID: kind == .breeding ? sireID : nil, semenID: kind == .breeding ? semenID : nil, semenUnitsPerEweText: kind == .breeding && semenID != nil ? semenUnits : nil, note: note, reminderAt: kind == .abortion ? nil : reminderAt); do { try service.execute(.care(.recordReproductionBatch(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); let refreshed = (try? modelContext.fetch(FetchDescriptor<CareReminderRecord>())) ?? reminders; Task { await notifications.rescheduleCareReminders(refreshed, farmID: farm.id) }; dismiss() } catch { errorMessage = error.localizedDescription } }
 }
 
-private struct LambFormRow: Identifiable { let id = UUID(); let sheepID = UUID(); var earTag = ""; var sex = SheepSex.ram; var birthWeight = ""; var createRecord = true; var isStillborn = false }
+private struct LambFormRow: Identifiable {
+    let id: UUID
+    let sheepID: UUID
+    var earTag: String
+    var sex: SheepSex
+    var birthWeight: String
+    var createRecord: Bool
+    var isStillborn: Bool
+
+    init(id: UUID = UUID(), sheepID: UUID = UUID(), earTag: String = "", sex: SheepSex = .ram, birthWeight: String = "", createRecord: Bool = true, isStillborn: Bool = false) {
+        self.id = id; self.sheepID = sheepID; self.earTag = earTag; self.sex = sex; self.birthWeight = birthWeight; self.createRecord = createRecord; self.isStillborn = isStillborn
+    }
+}
 
 struct CareLambingEntryView: View {
     @Environment(\.dismiss) private var dismiss; @Environment(\.modelContext) private var modelContext
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]; @Query(sort: \PenRecord.name) private var pens: [PenRecord]; @Query(sort: \SemenRecord.code) private var semen: [SemenRecord]
+    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]; @Query(sort: \PenRecord.name) private var pens: [PenRecord]; @Query(sort: \SemenRecord.code) private var semen: [SemenRecord]; @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproduction: [ReproductionRecord]; @Query private var rules: [FarmCareRuleRecord]
     let account: AccountProfile; let farm: FarmRecord; private let service = FarmCommandService()
-    @State private var eweID: UUID?; @State private var sireID: UUID?; @State private var semenID: UUID?; @State private var penID: UUID?; @State private var occurredAt = Date.now; @State private var parity = 1; @State private var rows = [LambFormRow()]; @State private var note = ""; @State private var errorMessage: String?
-    private var ewes: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ewe } }; private var rams: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ram } }; private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }; private var farmSemen: [SemenRecord] { semen.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
+    @State private var eweID: UUID?; @State private var sireID: UUID?; @State private var semenID: UUID?; @State private var relatedBreedingID: UUID?; @State private var penID: UUID?; @State private var occurredAt = Date.now; @State private var parity = 1; @State private var rows = [LambFormRow()]; @State private var note = ""; @State private var candidates: [PedigreeSireCandidate] = []; @State private var candidateWasPreselected = false; @State private var errorMessage: String?
+    private var ewes: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ewe } }; private var breedingRams: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ram && $0.isBreedingRam } }; private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }; private var farmSemen: [SemenRecord] { semen.filter { $0.farmID == farm.id && $0.deletedAt == nil } }; private var gestationDays: Int { rules.first { $0.farmID == farm.id }?.gestationDays ?? 150 }
+    private var openBreedings: [ReproductionRecord] { guard let eweID else { return [] }; return reproduction.filter { record in record.farmID == farm.id && record.eweID == eweID && record.kind == .breeding && record.deletedAt == nil && record.occurredAt <= occurredAt && !reproduction.contains { closure in closure.farmID == farm.id && closure.relatedBreedingRecordID == record.id && closure.deletedAt == nil && (closure.kind == .lambing || closure.kind == .abortion) } } }
+    private var relatedBreeding: ReproductionRecord? { relatedBreedingID.flatMap { id in openBreedings.first { $0.id == id } } }
     var body: some View {
-        Form { Picker("母羊", selection: $eweID) { Text("请选择").tag(UUID?.none); ForEach(ewes, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }; Picker("公羊", selection: $sireID) { Text("未知或冻精").tag(UUID?.none); ForEach(rams, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }; Picker("冻精", selection: $semenID) { Text("未关联").tag(UUID?.none); ForEach(farmSemen, id: \.id) { Text($0.code).tag(UUID?.some($0.id)) } }; Picker("羔羊圈舍", selection: $penID) { Text("未分圈").tag(UUID?.none); ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }; DatePicker("产羔时间", selection: $occurredAt); Stepper("胎次：\(parity)", value: $parity, in: 1...20); LabeledContent("产羔总数", value: "\(rows.count)"); LabeledContent("死胎数", value: "\(rows.count(where: \.isStillborn))"); Section("逐只羔羊") { ForEach($rows) { $row in VStack { TextField("耳号", text: $row.earTag); Picker("性别", selection: $row.sex) { Text("公").tag(SheepSex.ram); Text("母").tag(SheepSex.ewe) }; TextField("初生重", text: $row.birthWeight).keyboardType(.decimalPad); Toggle("死胎", isOn: $row.isStillborn); Toggle("建立羊只档案", isOn: $row.createRecord).disabled(row.isStillborn) } }.onDelete { rows.remove(atOffsets: $0) }; Button("增加一只羔羊") { rows.append(LambFormRow()) } }; TextField("备注", text: $note, axis: .vertical) }
+        Form {
+            Picker("母羊", selection: $eweID) { Text("请选择").tag(UUID?.none); ForEach(ewes, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }
+            DatePicker("产羔时间", selection: $occurredAt)
+            Section("繁殖链") {
+                Picker("关联配种", selection: $relatedBreedingID) { Text("保持未关联").tag(UUID?.none); ForEach(openBreedings, id: \.id) { Text("\($0.occurredAt.formatted(date: .abbreviated, time: .omitted)) · \($0.paternalSource.displayName)").tag(UUID?.some($0.id)) } }
+                if let relatedBreeding {
+                    LabeledContent("父本来源", value: relatedBreeding.paternalSource.displayName)
+                    LabeledContent("原预计产羔", value: (Calendar.current.date(byAdding: .day, value: gestationDays, to: relatedBreeding.occurredAt) ?? relatedBreeding.occurredAt).formatted(date: .abbreviated, time: .omitted))
+                }
+            }
+            if relatedBreedingID == nil {
+                Section("父本来源") {
+                    Picker("本场种公羊", selection: $sireID) { Text("未知或使用冻精").tag(UUID?.none); ForEach(breedingRams, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }
+                    Picker("冻精", selection: $semenID) { Text("未关联").tag(UUID?.none); ForEach(farmSemen, id: \.id) { Text($0.code).tag(UUID?.some($0.id)) } }
+                }
+                if !candidates.isEmpty {
+                    Section("历史同舍种公羊候选") {
+                        Text("以产羔时间向前推 \(gestationDays) 天，仅检查当时同舍且在场的种公羊。候选不会自动确权。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        ForEach(candidates) { candidate in
+                            Button { sireID = candidate.ramID; semenID = nil } label: {
+                                HStack { VStack(alignment: .leading) { Text(candidate.earTag); Text("排序分 \(candidate.rankingScore, format: .number.precision(.fractionLength(2)))").font(.caption).foregroundStyle(.secondary) }; Spacer(); if sireID == candidate.ramID { Image(systemName: "checkmark.circle.fill") } }
+                            }
+                        }
+                        if candidates.count == 1 && candidateWasPreselected { Text("唯一候选已在本表单中预选；只有点击保存才会写入。").font(.caption).foregroundStyle(.orange) }
+                    }
+                }
+            }
+            Picker("羔羊圈舍", selection: $penID) { Text("未分圈").tag(UUID?.none); ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }
+            Stepper("胎次：\(parity)", value: $parity, in: 1...20); LabeledContent("产羔总数", value: "\(rows.count)"); LabeledContent("死胎数", value: "\(rows.count(where: \.isStillborn))")
+            Section("逐只羔羊") { ForEach($rows) { $row in VStack { TextField("耳号", text: $row.earTag); Picker("性别", selection: $row.sex) { Text("公").tag(SheepSex.ram); Text("母").tag(SheepSex.ewe) }; TextField("初生重", text: $row.birthWeight).keyboardType(.decimalPad); Toggle("死胎", isOn: $row.isStillborn); Toggle("建立羊只档案", isOn: $row.createRecord).disabled(row.isStillborn) } }.onDelete { rows.remove(atOffsets: $0) }; Button("增加一只羔羊") { rows.append(LambFormRow()) } }
+            TextField("备注", text: $note, axis: .vertical)
+        }
             .navigationTitle("产羔记录").toolbar { EntrySaveToolbar(action: save) }.recordErrorAlert($errorMessage)
             .farmExcelImport(account: account, farm: farm, sheets: ["产羔"])
+            .onAppear(perform: refreshCandidates)
+            .onChange(of: eweID) { _, _ in relatedBreedingID = nil; resetAndRefreshCandidates() }
+            .onChange(of: occurredAt) { _, _ in relatedBreedingID = nil; resetAndRefreshCandidates() }
+            .onChange(of: relatedBreedingID) { _, value in if value != nil { sireID = nil; semenID = nil } }
+            .onChange(of: sireID) { _, value in if value != nil { semenID = nil } }
+            .onChange(of: semenID) { _, value in if value != nil { sireID = nil } }
     }
-    private func save() { guard let eweID else { errorMessage = "请选择母羊。"; return }; let offspring = rows.map { CareLambDraft(id: $0.id, sheepID: $0.sheepID, earTag: $0.earTag, sex: $0.sex, birthWeightText: $0.birthWeight, createSheepRecord: $0.isStillborn ? false : $0.createRecord, isStillborn: $0.isStillborn) }; let draft = CareLambingDraft(id: UUID(), eweID: eweID, occurredAt: occurredAt, sireID: sireID, semenID: semenID, parity: parity, birthDeadCount: offspring.count(where: \.isStillborn), offspring: offspring, penID: penID, note: note); do { try service.execute(.care(.recordLambing(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); dismiss() } catch { errorMessage = error.localizedDescription } }
+    private func resetAndRefreshCandidates() { candidateWasPreselected = false; sireID = nil; semenID = nil; refreshCandidates() }
+    private func refreshCandidates() { guard let eweID else { candidates = []; return }; do { candidates = try PedigreeAnalysis.sireCandidates(eweID: eweID, lambingAt: occurredAt, gestationDays: gestationDays, farmID: farm.id, context: modelContext); if candidates.count == 1 && sireID == nil && semenID == nil && relatedBreedingID == nil && !candidateWasPreselected { sireID = candidates[0].ramID; candidateWasPreselected = true } } catch { errorMessage = error.localizedDescription } }
+    private func save() { guard let eweID else { errorMessage = "请选择母羊。"; return }; let offspring = rows.map { CareLambDraft(id: $0.id, sheepID: $0.sheepID, earTag: $0.earTag, sex: $0.sex, birthWeightText: $0.birthWeight, createSheepRecord: $0.isStillborn ? false : $0.createRecord, isStillborn: $0.isStillborn) }; let draft = CareLambingDraft(id: UUID(), eweID: eweID, occurredAt: occurredAt, sireID: relatedBreedingID == nil ? sireID : nil, semenID: relatedBreedingID == nil ? semenID : nil, relatedBreedingRecordID: relatedBreedingID, parity: parity, birthDeadCount: offspring.count(where: \.isStillborn), offspring: offspring, penID: penID, note: note); do { try service.execute(.care(.recordLambing(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); dismiss() } catch { errorMessage = error.localizedDescription } }
 }
 
 struct CareSemenView: View {
     @Query(sort: \SemenRecord.code) private var semen: [SemenRecord]
+    @Query(sort: \SemenDonorRecord.name) private var donors: [SemenDonorRecord]
     let account: AccountProfile; let farm: FarmRecord
-    var body: some View { List { NavigationLink { SemenLibraryView(account: account, farm: farm) } label: { Label("新增冻精批次", systemImage: "plus") }; ForEach(semen.filter { $0.farmID == farm.id && $0.deletedAt == nil }, id: \.id) { record in NavigationLink { CareSemenDetailView(account: account, farm: farm, semen: record) } label: { Text(record.code) } } }.navigationTitle("冻精库存").farmExcelImport(account: account, farm: farm, sheets: ["冻精入库", "冻精调整"]) }
+    private var donorByID: [UUID: SemenDonorRecord] { Dictionary(uniqueKeysWithValues: donors.filter { $0.farmID == farm.id }.map { ($0.id, $0) }) }
+    var body: some View { List { Section("管理") { NavigationLink { SemenLibraryView(account: account, farm: farm) } label: { Label("新增冻精批次", systemImage: "plus") }; NavigationLink { SemenDonorManagementView(account: account, farm: farm) } label: { Label("冻精供体档案", systemImage: "person.crop.circle") } }; Section("冻精批次") { ForEach(semen.filter { $0.farmID == farm.id && $0.deletedAt == nil }, id: \.id) { record in NavigationLink { CareSemenDetailView(account: account, farm: farm, semen: record) } label: { VStack(alignment: .leading, spacing: 3) { Text(record.code); Text(record.donorID.flatMap { donorByID[$0]?.name } ?? "未关联供体").font(.caption).foregroundStyle(.secondary) } } } } }.navigationTitle("冻精库存").farmExcelImport(account: account, farm: farm, sheets: ["冻精入库", "冻精调整", "冻精供体"]) }
 }
 
 private struct CareSemenDetailView: View {
     @Environment(\.modelContext) private var modelContext; @Query private var transactions: [SemenTransactionRecord]
+    @Query(sort: \SemenDonorRecord.name) private var donors: [SemenDonorRecord]
     let account: AccountProfile; let farm: FarmRecord; let semen: SemenRecord; private let service = FarmCommandService()
-    @State private var delta = ""; @State private var note = ""; @State private var errorMessage: String?
+    @State private var delta = ""; @State private var note = ""; @State private var donorID: UUID?; @State private var errorMessage: String?
     private var balance: Decimal { let initial = Decimal.stable(semen.quantityText) ?? 0; return transactions.filter { $0.farmID == farm.id && $0.semenID == semen.id && $0.deletedAt == nil }.reduce(initial) { partial, value in switch value.kind { case .receipt, .adjustment: partial + value.quantity; case .consumption: partial - value.quantity } } }
-    var body: some View { Form { LabeledContent("编号", value: semen.code); LabeledContent("余量", value: balance.stableText); TextField("增减数量", text: $delta).keyboardType(.numbersAndPunctuation); TextField("原因", text: $note); Button("保存调整", action: save) }.navigationTitle("冻精详情").recordErrorAlert($errorMessage).farmExcelImport(account: account, farm: farm, sheets: ["冻精调整"]) }
+    private var farmDonors: [SemenDonorRecord] { donors.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active } }
+    var body: some View { Form { Section("批次") { LabeledContent("编号", value: semen.code); LabeledContent("余量", value: balance.stableText) }; Section("供体") { Picker("冻精供体", selection: $donorID) { Text("未关联").tag(UUID?.none); ForEach(farmDonors, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }; Button("保存供体关联", action: saveDonor).disabled(!CapabilitySet(role: farm.role).allows(.manageCatalogs)) }; Section("库存调整") { TextField("增减数量", text: $delta).keyboardType(.numbersAndPunctuation); TextField("原因", text: $note); Button("保存调整", action: save) } }.navigationTitle("冻精详情").recordErrorAlert($errorMessage).farmExcelImport(account: account, farm: farm, sheets: ["冻精调整", "冻精供体"]).onAppear { donorID = semen.donorID } }
     private func save() { do { try service.execute(.care(.adjustSemen(id: UUID(), semenID: semen.id, quantityDeltaText: delta, occurredAt: .now, note: note)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); delta = ""; note = "" } catch { errorMessage = error.localizedDescription } }
+    private func saveDonor() { do { try service.execute(.care(.setSemenDonor(semenID: semen.id, donorID: donorID, expectedRevision: semen.revision)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext) } catch { errorMessage = error.localizedDescription } }
 }
 
 struct CareRulesView: View {
@@ -474,16 +569,17 @@ struct ReproductionHistoryView: View {
 
 private struct ReproductionRecordDetailView: View {
     @Environment(\.modelContext) private var modelContext; @Query private var sheep: [SheepRecord]; @Query private var tombstones: [TombstoneRecord]
-    let account: AccountProfile; let farm: FarmRecord; let record: ReproductionRecord; private let service = FarmCommandService(); @State private var errorMessage: String?; @State private var correction: ReproductionCorrectionDestination?
+    let account: AccountProfile; let farm: FarmRecord; let record: ReproductionRecord; private let service = FarmCommandService(); @State private var errorMessage: String?; @State private var correction: ReproductionCorrectionDestination?; @State private var showRevokePrompt = false; @State private var revokeReason = ""
     private var eweName: String { sheep.first(where: { $0.id == record.eweID })?.earTag ?? "未知母羊" }
     var body: some View {
         List {
-            Section("事实") { LabeledContent("母羊", value: eweName); LabeledContent("类型", value: record.kind.displayName); LabeledContent("发生时间", value: record.occurredAt.formatted()); if let sireID = record.sireID { LabeledContent("公羊", value: sheep.first(where: { $0.id == sireID })?.earTag ?? sireID.uuidString) }; if let semen = record.semenNameSnapshot { LabeledContent("冻精", value: semen) }; if !record.result.isEmpty { LabeledContent("结果", value: record.result) }; if record.kind == .lambing { LabeledContent("产羔总数", value: "\(record.lambCount)"); LabeledContent("死胎", value: "\(record.birthDeadCount ?? 0)") }; if !record.note.isEmpty { Text(record.note) } }
-            Section { if record.deletedAt == nil { if record.kind != .lambing { Button("修正记录") { correction = .init(id: record.id) } }; Button("撤销记录", role: .destructive, action: revoke) } else if let tombstone = tombstones.first(where: { $0.farmID == farm.id && $0.entityID == record.id && $0.restoredAt == nil && !$0.reason.hasPrefix("修正：") }) { Button("恢复记录") { restore(tombstone.id) } } }
-        }.navigationTitle("繁殖记录详情").recordErrorAlert($errorMessage).sheet(item: $correction) { _ in NavigationStack { ReproductionCorrectionView(account: account, farm: farm, record: record) } }
+            Section("事实") { LabeledContent("母羊", value: eweName); LabeledContent("类型", value: record.kind.displayName); LabeledContent("发生时间", value: record.occurredAt.formatted()); LabeledContent("父本来源", value: record.paternalSource.displayName); if let sireID = record.sireID { LabeledContent("种公羊", value: sheep.first(where: { $0.id == sireID })?.earTag ?? sireID.uuidString) }; if let semen = record.semenNameSnapshot { LabeledContent("冻精", value: semen) }; if let donor = record.semenDonorNameSnapshot { LabeledContent("供体快照", value: donor) }; if let related = record.relatedBreedingRecordID { LabeledContent("关联配种", value: related.uuidString) }; if !record.result.isEmpty { LabeledContent("结果", value: record.result) }; if record.kind == .lambing { LabeledContent("产羔总数", value: "\(record.lambCount)"); LabeledContent("死胎", value: "\(record.birthDeadCount ?? 0)") }; if !record.note.isEmpty { Text(record.note) } }
+            Section { if record.deletedAt == nil { Button("修正记录") { correction = .init(id: record.id) }; Button("撤销记录", role: .destructive) { if record.kind == .lambing { revokeReason = ""; showRevokePrompt = true } else { revoke() } } } else if record.kind == .lambing { Button("安全恢复产羔") { restoreLambing() } } else if let tombstone = tombstones.first(where: { $0.farmID == farm.id && $0.entityID == record.id && $0.restoredAt == nil && !$0.reason.hasPrefix("修正：") }) { Button("恢复记录") { restore(tombstone.id) } } }
+        }.navigationTitle("繁殖记录详情").recordErrorAlert($errorMessage).sheet(item: $correction) { _ in NavigationStack { if record.kind == .lambing { LambingCorrectionView(account: account, farm: farm, record: record) } else { ReproductionCorrectionView(account: account, farm: farm, record: record) } } }.alert("撤销产羔记录", isPresented: $showRevokePrompt) { TextField("撤销原因（必填）", text: $revokeReason); Button("撤销", role: .destructive, action: revoke); Button("取消", role: .cancel) {} } message: { Text("不会删除羔羊档案及其后续记录，只补偿本次产羔自动建立且未被人工修正的关系与初生重。") }
     }
-    private func revoke() { do { try service.execute(.tombstoneEntity(entityType: .reproduction, entityID: record.id, reason: "用户撤销繁殖记录"), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext) } catch { errorMessage = error.localizedDescription } }
+    private func revoke() { do { let command: FarmCommand = record.kind == .lambing ? .care(.revokeLambing(recordID: record.id, reason: revokeReason)) : .tombstoneEntity(entityType: .reproduction, entityID: record.id, reason: "用户撤销繁殖记录"); try service.execute(command, in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext) } catch { errorMessage = error.localizedDescription } }
     private func restore(_ id: UUID) { do { try service.execute(.restoreTombstonedEntity(tombstoneID: id), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext) } catch { errorMessage = error.localizedDescription } }
+    private func restoreLambing() { do { try service.execute(.care(.restoreLambing(recordID: record.id)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext) } catch { errorMessage = error.localizedDescription } }
 }
 
 private struct ReproductionCorrectionDestination: Identifiable { let id: UUID }
@@ -493,20 +589,158 @@ private struct ReproductionCorrectionView: View {
     @Query private var sheep: [SheepRecord]; @Query private var semen: [SemenRecord]; @Query private var reminders: [CareReminderRecord]; @Query private var semenTransactions: [SemenTransactionRecord]
     let account: AccountProfile; let farm: FarmRecord; let record: ReproductionRecord; private let service = FarmCommandService()
     @State private var occurredAt = Date.now; @State private var sireID: UUID?; @State private var semenID: UUID?; @State private var semenUnits = "1"; @State private var result = ""; @State private var note = ""; @State private var reason = ""; @State private var hasReminder = false; @State private var reminderAt = Date.now; @State private var errorMessage: String?
-    private var rams: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.sex == .ram } }
+    private var rams: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.sex == .ram && $0.isBreedingRam } }
     private var farmSemen: [SemenRecord] { semen.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
     var body: some View {
         Form {
-            Section("修正后的事实") { LabeledContent("类型", value: record.kind.displayName); DatePicker("发生时间", selection: $occurredAt); TextField("结果", text: $result); if record.kind == .breeding { Picker("本交公羊", selection: $sireID) { Text("不使用本交").tag(UUID?.none); ForEach(rams, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }; Picker("冻精", selection: $semenID) { Text("不使用冻精").tag(UUID?.none); ForEach(farmSemen, id: \.id) { Text($0.code).tag(UUID?.some($0.id)) } }; if semenID != nil { TextField("冻精用量", text: $semenUnits).keyboardType(.decimalPad) } }; TextField("备注", text: $note, axis: .vertical) }
+            Section("修正后的事实") { LabeledContent("类型", value: record.kind.displayName); DatePicker("发生时间", selection: $occurredAt); TextField("结果", text: $result); if record.kind == .breeding { Picker("本场种公羊", selection: $sireID) { Text("不使用本交").tag(UUID?.none); ForEach(rams, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }; Picker("冻精", selection: $semenID) { Text("不使用冻精").tag(UUID?.none); ForEach(farmSemen, id: \.id) { Text($0.code).tag(UUID?.some($0.id)) } }; if semenID != nil { TextField("冻精用量", text: $semenUnits).keyboardType(.decimalPad) } }; TextField("备注", text: $note, axis: .vertical) }
             if record.kind != .abortion { Section("提醒") { Toggle("保留关联提醒", isOn: $hasReminder); if hasReminder { DatePicker("提醒日期", selection: $reminderAt) } } }
             Section("审计") { TextField("修正原因", text: $reason, axis: .vertical) }
         }
         .navigationTitle("修正繁殖记录").toolbar { EntrySaveToolbar(action: save) }.recordErrorAlert($errorMessage)
         .onAppear { occurredAt = record.occurredAt; sireID = record.sireID; semenID = record.semenID; result = record.result; note = record.note; semenUnits = semenTransactions.first(where: { $0.farmID == farm.id && $0.sourceRecordID == record.id && $0.kind == .consumption && $0.deletedAt == nil })?.quantityText ?? "1"; if let reminder = reminders.first(where: { $0.farmID == farm.id && $0.sourceEntityID == record.id && $0.deletedAt == nil }) { hasReminder = true; reminderAt = reminder.dueAt } }
+        .onChange(of: sireID) { _, value in if value != nil { semenID = nil } }
+        .onChange(of: semenID) { _, value in if value != nil { sireID = nil } }
     }
     private func save() {
         let draft = CareReproductionBatchDraft(id: UUID(), kind: record.kind, subjects: [.init(eweID: record.eweID, result: result)], occurredAt: occurredAt, sireID: record.kind == .breeding ? sireID : nil, semenID: record.kind == .breeding ? semenID : nil, semenUnitsPerEweText: record.kind == .breeding && semenID != nil ? semenUnits : nil, note: note, reminderAt: record.kind == .abortion || !hasReminder ? nil : reminderAt)
         do { try service.execute(.care(.correctReproduction(originalID: record.id, replacement: draft, reason: reason)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); dismiss() } catch { errorMessage = error.localizedDescription }
+    }
+}
+
+private enum LambingPaternalMode: String, CaseIterable, Identifiable {
+    case unknown
+    case breedingRam
+    case semen
+    var id: String { rawValue }
+    var title: String { switch self { case .unknown: "未知"; case .breedingRam: "本场种公羊"; case .semen: "冻精" } }
+}
+
+private struct LambingCorrectionView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
+    @Query(sort: \SemenRecord.code) private var semen: [SemenRecord]
+    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
+    @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproduction: [ReproductionRecord]
+    @Query private var offspringRecords: [LambingOffspringRecord]
+
+    let account: AccountProfile
+    let farm: FarmRecord
+    let record: ReproductionRecord
+    private let service = FarmCommandService()
+
+    @State private var occurredAt = Date.now
+    @State private var relatedBreedingID: UUID?
+    @State private var paternalMode = LambingPaternalMode.unknown
+    @State private var sireID: UUID?
+    @State private var semenID: UUID?
+    @State private var penID: UUID?
+    @State private var parity = 1
+    @State private var rows: [LambFormRow] = []
+    @State private var note = ""
+    @State private var reason = ""
+    @State private var errorMessage: String?
+
+    private var breedingRams: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.sex == .ram && $0.isBreedingRam } }
+    private var farmSemen: [SemenRecord] { semen.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
+    private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
+    private var eligibleBreedings: [ReproductionRecord] { reproduction.filter { breeding in
+        breeding.farmID == farm.id && breeding.eweID == record.eweID && breeding.kind == .breeding && breeding.deletedAt == nil && breeding.occurredAt <= occurredAt && !reproduction.contains { closure in
+            closure.id != record.id && closure.farmID == farm.id && closure.relatedBreedingRecordID == breeding.id && closure.deletedAt == nil && (closure.kind == .lambing || closure.kind == .abortion)
+        }
+    } }
+    private var linkedBreeding: ReproductionRecord? { relatedBreedingID.flatMap { id in eligibleBreedings.first { $0.id == id } } }
+
+    var body: some View {
+        Form {
+            Section("产羔事实") {
+                DatePicker("产羔时间", selection: $occurredAt)
+                Stepper("胎次：\(parity)", value: $parity, in: 1...20)
+                Picker("羔羊圈舍", selection: $penID) {
+                    Text("未分圈").tag(UUID?.none)
+                    ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
+                }
+            }
+            Section("繁殖链") {
+                Picker("关联配种", selection: $relatedBreedingID) {
+                    Text("保持未关联").tag(UUID?.none)
+                    ForEach(eligibleBreedings, id: \.id) { Text("\($0.occurredAt.formatted(date: .abbreviated, time: .omitted)) · \($0.paternalSource.displayName)").tag(UUID?.some($0.id)) }
+                }
+                if let linkedBreeding { LabeledContent("父本来源", value: linkedBreeding.paternalSource.displayName) }
+            }
+            if relatedBreedingID == nil {
+                Section("父本来源") {
+                    Picker("类型", selection: $paternalMode) { ForEach(LambingPaternalMode.allCases) { Text($0.title).tag($0) } }
+                    if paternalMode == .breedingRam {
+                        Picker("种公羊", selection: $sireID) { Text("请选择").tag(UUID?.none); ForEach(breedingRams, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }
+                    } else if paternalMode == .semen {
+                        Picker("冻精", selection: $semenID) { Text("请选择").tag(UUID?.none); ForEach(farmSemen, id: \.id) { Text($0.code).tag(UUID?.some($0.id)) } }
+                    }
+                }
+            }
+            Section("逐只羔羊") {
+                ForEach($rows) { $row in
+                    VStack {
+                        TextField("耳号", text: $row.earTag)
+                        Picker("性别", selection: $row.sex) { Text("公").tag(SheepSex.ram); Text("母").tag(SheepSex.ewe) }
+                        TextField("初生重", text: $row.birthWeight).keyboardType(.decimalPad)
+                        Toggle("死胎", isOn: $row.isStillborn)
+                        Toggle("建立羊只档案", isOn: $row.createRecord).disabled(row.isStillborn)
+                    }
+                }
+                .onDelete { rows.remove(atOffsets: $0) }
+                Button("补录一只羔羊") { rows.append(LambFormRow()) }
+            }
+            Section("备注") { TextField("备注", text: $note, axis: .vertical) }
+            Section("审计") {
+                TextField("修正原因（必填）", text: $reason, axis: .vertical)
+                Text("移除已建档羔羊不会删除其档案；若系谱已人工修改或存在冲突，保存会被阻断。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("修正产羔记录")
+        .toolbar { EntrySaveToolbar(action: save) }
+        .recordErrorAlert($errorMessage)
+        .onAppear(perform: load)
+        .onChange(of: relatedBreedingID) { _, value in if value != nil { paternalMode = .unknown; sireID = nil; semenID = nil } }
+        .onChange(of: paternalMode) { _, value in if value != .breedingRam { sireID = nil }; if value != .semen { semenID = nil } }
+    }
+
+    private func load() {
+        occurredAt = record.occurredAt
+        relatedBreedingID = record.relatedBreedingRecordID
+        sireID = record.sireID
+        semenID = record.semenID
+        paternalMode = record.semenID != nil ? .semen : (record.sireID != nil ? .breedingRam : .unknown)
+        parity = record.parity ?? 1
+        note = record.note
+        rows = offspringRecords
+            .filter { $0.farmID == farm.id && $0.lambingRecordID == record.id && $0.deletedAt == nil }
+            .map { detail in
+                LambFormRow(id: detail.id, sheepID: detail.sheepID ?? UUID(), earTag: detail.legacyEarTag, sex: SheepSex(rawValue: detail.sexRawValue) ?? .unknown, birthWeight: detail.birthWeightText, createRecord: detail.sheepID != nil, isStillborn: detail.isStillborn)
+            }
+    }
+
+    private func save() {
+        let lambs = rows.map { CareLambDraft(id: $0.id, sheepID: $0.sheepID, earTag: $0.earTag, sex: $0.sex, birthWeightText: $0.birthWeight, createSheepRecord: $0.isStillborn ? false : $0.createRecord, isStillborn: $0.isStillborn) }
+        let draft = CareLambingDraft(
+            id: record.id,
+            eweID: record.eweID,
+            occurredAt: occurredAt,
+            sireID: relatedBreedingID == nil && paternalMode == .breedingRam ? sireID : nil,
+            semenID: relatedBreedingID == nil && paternalMode == .semen ? semenID : nil,
+            relatedBreedingRecordID: relatedBreedingID,
+            parity: parity,
+            birthDeadCount: lambs.count(where: \.isStillborn),
+            offspring: lambs,
+            penID: penID,
+            note: note
+        )
+        do {
+            try service.execute(.care(.correctLambing(originalID: record.id, replacement: draft, reason: reason)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            dismiss()
+        } catch { errorMessage = error.localizedDescription }
     }
 }
 

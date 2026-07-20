@@ -214,6 +214,7 @@ enum LegacyMigrationImporter {
                 birthAt: isHistoricalArchive ? nil : date(candidate.birth),
                 note: candidate.note
             )
+            sheep.isBreedingRam = sheep.sex == .ram && (sheep.purpose.contains("种公羊") || currentPenName.contains("种公羊"))
             sheep.statusRawValue = currentStatus.rawValue
             sheep.currentPenID = currentStatus == .active ? mapping.pens[currentPenName] : nil
             sheep.legacyStatusSnapshotIsAuthoritative = !isHistoricalArchive && !candidate.status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -924,7 +925,7 @@ enum MigrationReconciliationService {
     private static func fetch<T: PersistentModel>(_ type: T.Type, _ context: ModelContext) -> [T] { (try? context.fetch(FetchDescriptor<T>())) ?? [] }
 }
 
-private func migrationSchema() -> Schema { Schema([FarmRecord.self, PenRecord.self, SheepRecord.self, WeightRecord.self, WeaningRecord.self, BreedingProgramRecord.self, BreedingProgramStepRecord.self, TransferRecord.self, RemovalRecord.self, ProductionBatchRecord.self, BatchMembershipRecord.self, DailyPenCountRecord.self, FeedIngredientRecord.self, FeedRecipeRecord.self, FeedRecipeComponentRecord.self, FeedRecord.self, FeedRecordLine.self, InventoryLotRecord.self, InventoryTransactionRecord.self, HealthRecord.self, ReproductionRecord.self, SemenRecord.self, NoteRecord.self, MigrationAuditRecord.self, PhotoAssetRecord.self, HealthSubjectLink.self, LambingOffspringRecord.self, FeedIngredientBatchRecord.self, HealthCatalogItemRecord.self]) }
+private func migrationSchema() -> Schema { Schema([FarmRecord.self, PenRecord.self, SheepRecord.self, WeightRecord.self, WeaningRecord.self, BreedingProgramRecord.self, BreedingProgramStepRecord.self, TransferRecord.self, RemovalRecord.self, ProductionBatchRecord.self, BatchMembershipRecord.self, DailyPenCountRecord.self, FeedIngredientRecord.self, FeedRecipeRecord.self, FeedRecipeComponentRecord.self, FeedRecord.self, FeedRecordLine.self, InventoryLotRecord.self, InventoryTransactionRecord.self, HealthRecord.self, ReproductionRecord.self, SemenRecord.self, SemenDonorRecord.self, PedigreeChangeRecord.self, NoteRecord.self, MigrationAuditRecord.self, PhotoAssetRecord.self, HealthSubjectLink.self, LambingOffspringRecord.self, FeedIngredientBatchRecord.self, HealthCatalogItemRecord.self]) }
 private func section(_ name: String, _ root: [String: Any]) -> [String: Any] { root[name] as? [String: Any] ?? [:] }
 private func records(_ value: Any?) -> [[String: Any]] { value as? [[String: Any]] ?? [] }
 private func string(_ value: Any?) -> String { value as? String ?? "" }

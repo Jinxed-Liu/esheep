@@ -150,11 +150,21 @@ final class LambingOffspringRecord {
     var sexRawValue: String
     var birthWeightText: String
     var isStillborn: Bool = false
+    var autoCreatedSheep: Bool = false
+    var autoBirthWeightRecordID: UUID? = nil
+    var autoPedigreeRevokedByLambing: Bool = false
+    var autoBirthWeightRevokedByLambing: Bool = false
+    /// 只标记由“撤销产羔”临时隐藏的子项；产羔修正删除的子项不得在恢复时复活。
+    var deletedByLambingRevocation: Bool = false
+    var revision: Int = 1
     var createdAt: Date
+    var updatedAt: Date = Date.now
+    var deletedAt: Date? = nil
 
-    init(id: UUID = UUID(), farmID: UUID, lambingRecordID: UUID, sheepID: UUID?, legacyEarTag: String, sexRawValue: String, birthWeightText: String, isStillborn: Bool = false) {
+    init(id: UUID = UUID(), farmID: UUID, lambingRecordID: UUID, sheepID: UUID?, legacyEarTag: String, sexRawValue: String, birthWeightText: String, isStillborn: Bool = false, autoCreatedSheep: Bool = false, autoBirthWeightRecordID: UUID? = nil) {
         self.id = id; self.farmID = farmID; self.lambingRecordID = lambingRecordID; self.sheepID = sheepID
-        self.legacyEarTag = legacyEarTag; self.sexRawValue = sexRawValue; self.birthWeightText = birthWeightText; self.isStillborn = isStillborn; self.createdAt = .now
+        self.legacyEarTag = legacyEarTag; self.sexRawValue = sexRawValue; self.birthWeightText = birthWeightText; self.isStillborn = isStillborn
+        self.autoCreatedSheep = autoCreatedSheep; self.autoBirthWeightRecordID = autoBirthWeightRecordID; self.createdAt = .now; self.updatedAt = self.createdAt
     }
 }
 

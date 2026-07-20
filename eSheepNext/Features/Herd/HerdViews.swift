@@ -377,6 +377,8 @@ struct SheepDetailView: View {
     @Query private var healthSubjectLinks: [HealthSubjectLink]
     @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproductionRecords: [ReproductionRecord]
     @Query(sort: \PhotoAssetRecord.createdAt, order: .reverse) private var photos: [PhotoAssetRecord]
+    @Query(sort: \SheepRecord.earTag) private var allSheep: [SheepRecord]
+    @Query(sort: \SemenDonorRecord.name) private var semenDonors: [SemenDonorRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -483,6 +485,13 @@ struct SheepDetailView: View {
             }
             if !sheep.note.isEmpty {
                 Section("备注") { Text(sheep.note) }
+            }
+            Section("系谱") {
+                NavigationLink {
+                    SheepPedigreeView(account: account, farm: farm, sheepID: sheep.id)
+                } label: {
+                    Label("父母、祖先、同胞与后代", systemImage: "point.3.connected.trianglepath.dotted")
+                }
             }
             weightChartSection
             analyticsSection
@@ -724,7 +733,9 @@ struct SheepDetailView: View {
                 health: sheepHealthRecords,
                 healthRecordIDs: Set(sheepHealthRecords.map(\.id)),
                 reproduction: reproductionRecords,
-                transfers: transfers
+                transfers: transfers,
+                allSheep: allSheep,
+                semenDonors: semenDonors
             )
             exportDocument = FarmInterchangeDocument(data: data)
             isExporting = true

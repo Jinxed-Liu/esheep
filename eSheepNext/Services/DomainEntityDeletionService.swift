@@ -36,6 +36,8 @@ enum DomainEntityDeletionService {
             try setHealthDeletedAt(date, id: id, farmID: farmID, context: context)
         case .reproduction: try setReproductionDeletedAt(date, id: id, farmID: farmID, context: context)
         case .semen: try context.fetch(FetchDescriptor<SemenRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
+        case .semenDonor: try context.fetch(FetchDescriptor<SemenDonorRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
+        case .pedigreeChange: throw FarmPermissionError.denied(.deleteProtectedFacts)
         case .note: try context.fetch(FetchDescriptor<NoteRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
         case .photoAsset: try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
         case .breedingProgramStep: try context.fetch(FetchDescriptor<BreedingProgramStepRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date

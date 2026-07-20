@@ -33,6 +33,8 @@ enum CloudEntityType: String, CaseIterable, Codable, Sendable {
     case health
     case reproduction
     case semen
+    case semenDonor
+    case pedigreeChange
     case note
     case photoAsset
     case breedingProgramStep

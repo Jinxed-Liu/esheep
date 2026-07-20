@@ -484,7 +484,7 @@ actor CloudRebuildActor {
         return CloudRebuildMembershipSnapshot(farmID: farmID, generation: generation, issuedAt: issuedAt, payload: payload, signedByAccountID: accountID, signedByDeviceID: deviceID, capabilityCertificate: certificate, signature: signature, cloudRecordName: record.recordID.recordName)
     }
 
-    private static func sortedOperations(_ operations: [CloudOperationEnvelope]) -> [CloudOperationEnvelope] {
+    static func sortedOperations(_ operations: [CloudOperationEnvelope]) -> [CloudOperationEnvelope] {
         operations.sorted {
             let left = operationRank($0)
             let right = operationRank($1)
@@ -496,19 +496,39 @@ actor CloudRebuildActor {
     }
 
     private static func operationRank(_ envelope: CloudOperationEnvelope) -> Int {
-        guard var payload = try? JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: envelope.payload) else { return 900 }
-        if payload.kind == .bootstrapEntity,
-           let snapshotData = payload.dataValues["snapshot"],
-           let snapshot = try? JSONDecoder.cloudRebuild.decode(BootstrapEntityEnvelopeV1.self, from: snapshotData),
-           let source = try? JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: snapshot.sourcePayload) {
-            payload = source
+        var encoded = envelope.payload
+        var resolvedPayload: FarmCommandCloudPayload?
+        for _ in 0..<16 {
+            guard let payload = try? JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: encoded) else { return 900 }
+            switch payload.kind {
+            case .bootstrapEntity:
+                guard let snapshotData = payload.dataValues["snapshot"],
+                      let snapshot = try? JSONDecoder.cloudRebuild.decode(BootstrapEntityEnvelopeV1.self, from: snapshotData) else { return 900 }
+                encoded = snapshot.sourcePayload
+            case .recoverEntity:
+                guard let sourceData = payload.dataValues["resolvedPayload"] else { return 900 }
+                encoded = sourceData
+            default:
+                resolvedPayload = payload
+            }
+            if resolvedPayload != nil { break }
         }
+        guard let payload = resolvedPayload else { return 900 }
         return switch payload.kind {
         case .createFarm: 0
         case .updateFarmLocation: 5
         case .createPen, .addIngredient, .createRecipe, .receiveInventory, .addSemen, .createBatch, .createBreedingProgram: 10
         case .updatePen, .setPenActive, .addSheep, .updateSheepProfile, .addRecipeComponent: 20
-        case .recordWeight, .correctWeight, .recordWeaning, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep, .recordFeed, .recordHealth, .recordReproduction, .care, .addNote, .assignBatchMembership, .leaveBatchMembership: 30
+        case .care:
+            switch payload.careCommand {
+            case .upsertSemenDonor(let draft): draft.linkedRamID == nil ? 5 : 25
+            case .setSemenDonor: 12
+            case .updateSheepPedigree: 25
+            case .setBreedingRam: 20
+            case .restorePedigreeAudit: 35
+            default: 30
+            }
+        case .recordWeight, .correctWeight, .recordWeaning, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep, .recordFeed, .recordHealth, .recordReproduction, .addNote, .assignBatchMembership, .leaveBatchMembership: 30
         case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: 40
         }
     }

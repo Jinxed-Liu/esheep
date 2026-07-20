@@ -84,7 +84,7 @@ final class CareWorkflowTests: XCTestCase {
     func testLambingCreatesPedigreeAndDuplicateEarTagRollsBack() throws {
         let fixture = try makeFixture()
         let ewe = try insertEwe(fixture, earTag: "E001")
-        let ram = SheepRecord(farmID: fixture.farm.id, earTag: "R001", breed: "杜泊", sex: .ram, penID: nil, enteredAt: .now)
+        let ram = SheepRecord(farmID: fixture.farm.id, earTag: "R001", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: nil, enteredAt: .now)
         fixture.context.insert(ram)
         let lambingID = UUID()
         try fixture.service.execute(.care(.recordLambing(.init(id: lambingID, eweID: ewe.id, occurredAt: .now, sireID: ram.id, semenID: nil, parity: 2, birthDeadCount: 0, offspring: [.init(earTag: "L001", sex: .ewe, birthWeightText: "3.2")], penID: nil, note: "顺产"))), in: fixture.ownerContext, context: fixture.context)

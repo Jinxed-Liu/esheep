@@ -40,9 +40,14 @@ final class FarmAnalyticsTests: XCTestCase {
         try context.save()
         let command = FarmCommand.recordReproduction(eweID: eweID, kind: .lambing, occurredAt: .now, sireID: nil, semenName: nil, result: "", lambCount: 1, parity: 2, birthDeadCount: 0, offspring: [LambingOffspringDraft(earTag: "L100", sex: .female, birthWeightText: "3.1")], note: "云端重放")
         let payload = try FarmCommandCloudPayloadEncoder.encode(command)
+        let payloadObject = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        let legacyOffspring = try XCTUnwrap((payloadObject["lambingOffspring"] as? [[String: Any]])?.first)
+        XCTAssertNil(legacyOffspring["isStillborn"], "旧产羔载荷不包含新增可选字段时仍须可解码")
+        XCTAssertNil(legacyOffspring["deletedByLambingRevocation"])
         let envelope = CloudOperationEnvelope(farmID: farmID, entityID: targetID, entityType: CloudEntityType.reproduction.rawValue, schemaVersion: 2, revision: 1, baseRevision: 0, operationID: UUID(), modifiedAt: .now, modifiedByAccountID: UUID(), modifiedByDeviceID: UUID(), payload: payload, payloadDigest: CloudPayloadDigest.hex(for: payload), capabilityCertificate: "test", operationSignature: Data(), deletedAt: nil)
 
         XCTAssertEqual(try RemoteDomainApplyService().apply(envelope, context: context), .applied(rebuildHistoryFrom: nil))
+        XCTAssertEqual(try RemoteDomainApplyService().apply(envelope, context: context), .duplicate)
         XCTAssertEqual(try context.fetch(FetchDescriptor<ReproductionRecord>()).filter { $0.id == targetID }.count, 1)
         XCTAssertEqual(try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter { $0.lambingRecordID == targetID }.count, 1)
     }

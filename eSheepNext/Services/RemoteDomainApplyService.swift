@@ -118,8 +118,17 @@ struct RemoteDomainApplyService {
                 birthAt: optionalDate("birthAt", payload),
                 damID: optionalID("damID", payload),
                 sireID: optionalID("sireID", payload),
+                damProvenance: optionalString("damProvenance", payload).flatMap(PedigreeRelationSource.init(rawValue:)),
+                sireProvenance: optionalString("sireProvenance", payload).flatMap(PedigreeRelationSource.init(rawValue:)),
+                semenDonorID: optionalID("semenDonorID", payload),
+                semenDonorNameSnapshot: optionalString("semenDonorNameSnapshot", payload),
+                semenDonorRegistrationNumberSnapshot: optionalString("semenDonorRegistrationNumberSnapshot", payload),
+                semenDonorBreedSnapshot: optionalString("semenDonorBreedSnapshot", payload),
                 note: payload.strings["note"] ?? ""
             )
+            record.revision = envelope.revision
+            record.isBreedingRam = payload.integers["isBreedingRam"] == 1
+            record.updatedAt = envelope.modifiedAt
             context.insert(record)
             return .applied(rebuildHistoryFrom: record.enteredAt)
         case .updateSheepProfile:
@@ -134,6 +143,7 @@ struct RemoteDomainApplyService {
             record.earTag = earTag
             record.breed = try string("breed", payload)
             record.sexRawValue = try string("sex", payload)
+            if record.sex != .ram { record.isBreedingRam = false }
             record.birthAt = optionalDate("birthAt", payload)
             record.note = payload.strings["note"] ?? ""
             record.updatedAt = envelope.modifiedAt
@@ -309,7 +319,9 @@ struct RemoteDomainApplyService {
             return .applied(rebuildHistoryFrom: nil)
         case .addSemen:
             if try exists(SemenRecord.self, id: envelope.entityID, context: context) { return .duplicate }
-            let record = SemenRecord(id: envelope.entityID, farmID: envelope.farmID, code: try string("code", payload), breed: try string("breed", payload), source: payload.strings["source"] ?? "", batchNumber: payload.strings["batchNumber"] ?? "", quantityText: "0")
+            let record = SemenRecord(id: envelope.entityID, farmID: envelope.farmID, code: try string("code", payload), breed: try string("breed", payload), source: payload.strings["source"] ?? "", batchNumber: payload.strings["batchNumber"] ?? "", quantityText: "0", donorID: optionalID("donorID", payload))
+            record.revision = envelope.revision
+            record.updatedAt = envelope.modifiedAt
             context.insert(record)
             context.insert(SemenTransactionRecord(id: StableCloudUUID.derived(namespace: record.id, name: "semen-receipt"), farmID: envelope.farmID, semenID: record.id, kind: .receipt, quantityText: try string("quantityText", payload), occurredAt: envelope.modifiedAt, sourceRecordID: record.id, note: "冻精入库"))
             return .applied(rebuildHistoryFrom: nil)
@@ -320,13 +332,20 @@ struct RemoteDomainApplyService {
             if kind == .lambing, !payload.lambingOffspring.isEmpty, payload.lambingOffspring.count != lambCount {
                 throw RemoteDomainApplyError.invalidPayload("lambingOffspring")
             }
-            let record = ReproductionRecord(id: envelope.entityID, farmID: envelope.farmID, eweID: try identifier("eweID", payload), kind: kind, occurredAt: try date("occurredAt", payload), sireID: optionalID("sireID", payload), semenNameSnapshot: optionalString("semenName", payload), result: payload.strings["result"] ?? "", lambCount: lambCount, parity: payload.integers["parity"], birthDeadCount: payload.integers["birthDeadCount"], note: payload.strings["note"] ?? "")
+            let record = ReproductionRecord(id: envelope.entityID, farmID: envelope.farmID, eweID: try identifier("eweID", payload), kind: kind, occurredAt: try date("occurredAt", payload), sireID: optionalID("sireID", payload), semenID: optionalID("semenID", payload), batchID: optionalID("batchID", payload), relatedBreedingRecordID: optionalID("relatedBreedingRecordID", payload), semenNameSnapshot: optionalString("semenName", payload), semenDonorID: optionalID("semenDonorID", payload), semenDonorNameSnapshot: optionalString("semenDonorNameSnapshot", payload), semenDonorRegistrationNumberSnapshot: optionalString("semenDonorRegistrationNumberSnapshot", payload), semenDonorBreedSnapshot: optionalString("semenDonorBreedSnapshot", payload), paternalSource: optionalString("paternalSource", payload).flatMap(PaternalIdentitySource.init(rawValue:)), result: payload.strings["result"] ?? "", lambCount: lambCount, parity: payload.integers["parity"], birthDeadCount: payload.integers["birthDeadCount"], note: payload.strings["note"] ?? "")
+            record.revision = envelope.revision
+            record.updatedAt = envelope.modifiedAt
             context.insert(record)
             for detail in payload.lambingOffspring {
                 if let sheepID = detail.sheepID, !(try exists(SheepRecord.self, id: sheepID, context: context)) {
                     throw RemoteDomainApplyError.missingReference("lambingOffspring.sheepID")
                 }
-                context.insert(LambingOffspringRecord(id: detail.id, farmID: envelope.farmID, lambingRecordID: record.id, sheepID: detail.sheepID, legacyEarTag: detail.earTag, sexRawValue: detail.sexRawValue, birthWeightText: detail.birthWeightText))
+                let offspring = LambingOffspringRecord(id: detail.id, farmID: envelope.farmID, lambingRecordID: record.id, sheepID: detail.sheepID, legacyEarTag: detail.earTag, sexRawValue: detail.sexRawValue, birthWeightText: detail.birthWeightText, isStillborn: detail.isStillborn ?? false, autoCreatedSheep: detail.autoCreatedSheep ?? false, autoBirthWeightRecordID: detail.autoBirthWeightRecordID)
+                offspring.deletedByLambingRevocation = detail.deletedByLambingRevocation ?? false
+                offspring.revision = detail.revision ?? 1
+                offspring.updatedAt = detail.updatedAt ?? envelope.modifiedAt
+                offspring.deletedAt = detail.deletedAt
+                context.insert(offspring)
             }
             return .applied(rebuildHistoryFrom: nil)
         case .addNote:
