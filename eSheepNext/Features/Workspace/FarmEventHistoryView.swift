@@ -71,8 +71,13 @@ actor FarmEventHistoryActor {
         let context = ModelContext(container)
         let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID }
         let pens = try context.fetch(FetchDescriptor<PenRecord>()).filter { $0.farmID == farmID }
+        let sheepByID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
         let sheepName = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0.earTag) })
         let penName = Dictionary(uniqueKeysWithValues: pens.map { ($0.id, $0.name) })
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.calendar = Calendar(identifier: .gregorian)
+        dateFormatter.dateFormat = "yyyy-MM-dd"
         let lotName = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<InventoryLotRecord>())
             .filter { $0.farmID == farmID }
             .map { ($0.id, $0.catalogName + ($0.batchNumber.isEmpty ? "" : " · " + $0.batchNumber)) })
@@ -121,14 +126,34 @@ actor FarmEventHistoryActor {
 
         let weanings = try context.fetch(FetchDescriptor<WeaningRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
         events.append(contentsOf: weanings.map { record in
-            FarmEventSnapshot(
+            let child = sheepByID[record.sheepID]
+            let birthAt = record.birthAt ?? child?.birthAt
+            let dam = record.damID.flatMap { sheepName[$0] }
+                ?? child?.damID.flatMap { sheepName[$0] }
+                ?? record.legacyDamEarTag
+                ?? "未关联"
+            let sire = child?.sireID.flatMap { sheepName[$0] }
+                ?? child?.semenDonorNameSnapshot
+                ?? "未关联"
+            let currentPen = child?.currentPenID.flatMap { penName[$0] } ?? "未分圈"
+            return FarmEventSnapshot(
                 id: record.id, entityType: .weaning, category: .herd,
                 occurredAt: record.occurredAt, recordedAt: record.recordedAt,
                 title: "断奶", subject: sheepName[record.sheepID] ?? "未知羊只",
                 detail: "断奶重 \(record.weanWeightText) 千克", note: record.note,
                 fields: [
-                    .init(label: "断奶重", value: "\(record.weanWeightText) 千克"),
-                    .init(label: "母本", value: record.damID.flatMap { sheepName[$0] } ?? record.legacyDamEarTag ?? "未关联")
+                    .init(label: "耳号", value: child?.earTag ?? "未知羊只"),
+                    .init(label: "性别", value: child?.sex.displayName ?? "未知"),
+                    .init(label: "品种", value: child?.breed ?? ""),
+                    .init(label: "状态", value: child?.status.displayName ?? "未知"),
+                    .init(label: "当前圈舍", value: currentPen),
+                    .init(label: "出生日期", value: birthAt.map(dateFormatter.string(from:)) ?? ""),
+                    .init(label: "断奶重kg", value: record.weanWeightText),
+                    .init(label: "出生重kg", value: record.birthWeightText ?? ""),
+                    .init(label: "日增重kg/天", value: record.averageDailyGainText ?? ""),
+                    .init(label: "母本", value: dam),
+                    .init(label: "父本来源", value: sire),
+                    .init(label: "胎只数", value: record.litterSize.map { String($0) } ?? "")
                 ]
             )
         })
@@ -161,10 +186,19 @@ actor FarmEventHistoryActor {
             )
         })
 
+        let feedLines = try context.fetch(FetchDescriptor<FeedRecordLine>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let feedLinesByRecordID = Dictionary(grouping: feedLines, by: \.feedRecordID)
         let feeds = try context.fetch(FetchDescriptor<FeedRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
         events.append(contentsOf: feeds.map { record in
             let location = penName[record.penID] ?? "未知圈舍"
             let meal = record.mealName.isEmpty ? record.mode.displayName : record.mealName
+            let lines = (feedLinesByRecordID[record.id] ?? [])
+                .sorted { $0.ingredientNameSnapshot.localizedStandardCompare($1.ingredientNameSnapshot) == .orderedAscending }
+                .map {
+                    let unit = ($0.unitSnapshot?.isEmpty == false ? $0.unitSnapshot : nil) ?? "千克"
+                    return "\($0.ingredientNameSnapshot) \($0.kilogramsText) \(unit)"
+                }
+                .joined(separator: "；")
             return FarmEventSnapshot(
                 id: record.id, entityType: .feed, category: .feeding,
                 occurredAt: record.occurredAt, recordedAt: record.recordedAt,
@@ -173,7 +207,10 @@ actor FarmEventHistoryActor {
                     .init(label: "圈舍", value: location),
                     .init(label: "方式", value: record.mode.displayName),
                     .init(label: "班次", value: record.mealName.isEmpty ? "未填写" : record.mealName),
-                    .init(label: "饲喂员", value: record.feederName.isEmpty ? "未填写" : record.feederName)
+                    .init(label: "饲喂员", value: record.feederName.isEmpty ? "未填写" : record.feederName),
+                    .init(label: "原料明细", value: lines),
+                    .init(label: "剩料kg", value: record.remainingKilogramsText ?? ""),
+                    .init(label: "废弃kg", value: record.discardedKilogramsText ?? "")
                 ]
             )
         })
@@ -219,6 +256,10 @@ actor FarmEventHistoryActor {
                     .init(label: "母羊", value: sheepName[record.eweID] ?? "未知母羊"),
                     .init(label: "公羊", value: record.sireID.flatMap { sheepName[$0] } ?? "未关联"),
                     .init(label: "冻精", value: record.semenNameSnapshot ?? "未使用"),
+                    .init(label: "冻精供体", value: record.semenDonorNameSnapshot ?? ""),
+                    .init(label: "胎次", value: record.parity.map { String($0) } ?? ""),
+                    .init(label: "产羔数", value: record.kind == .lambing ? String(record.lambCount) : ""),
+                    .init(label: "死胎数", value: record.birthDeadCount.map { String($0) } ?? ""),
                     .init(label: "结果", value: record.result.isEmpty ? "未填写" : record.result)
                 ]
             )
@@ -287,8 +328,10 @@ struct FarmEventHistoryView: View {
 
     @State private var events = [FarmEventSnapshot]()
     @State private var category: FarmEventCategory?
+    @State private var recordScope = FarmEventExportScope.all
     @State private var query = ""
     @State private var pendingDeletion: FarmEventSnapshot?
+    @State private var isPresentingExport = false
     @State private var isLoading = true
     @State private var errorMessage: String?
 
@@ -296,9 +339,14 @@ struct FarmEventHistoryView: View {
         CapabilitySet(role: farm.role).allows(.deleteProtectedFacts)
     }
 
+    private var canExport: Bool {
+        CapabilitySet(role: farm.role).allows(.exportFarm)
+    }
+
     private var visibleEvents: [FarmEventSnapshot] {
         events.filter { event in
             (category == nil || event.category == category) &&
+                recordScope.includes(event) &&
                 (query.isEmpty || event.searchableText.contains(query.localizedLowercase))
         }
     }
@@ -310,7 +358,7 @@ struct FarmEventHistoryView: View {
                     .listRowBackground(Color.clear)
             } else if visibleEvents.isEmpty {
                 ContentUnavailableView(
-                    query.isEmpty && category == nil ? "暂无事件记录" : "没有匹配的事件",
+                    query.isEmpty && category == nil && recordScope == .all ? "暂无事件记录" : "没有匹配的事件",
                     systemImage: "clock.arrow.circlepath",
                     description: Text("生产录入完成后会按发生时间倒序显示在这里。")
                 )
@@ -318,7 +366,7 @@ struct FarmEventHistoryView: View {
             } else {
                 ForEach(visibleEvents) { event in
                     NavigationLink {
-                        FarmEventDetailView(event: event)
+                        FarmEventDetailView(event: event, farmName: farm.name, canExport: canExport)
                     } label: {
                         FarmEventRow(event: event)
                     }
@@ -345,14 +393,39 @@ struct FarmEventHistoryView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button("全部事件", systemImage: category == nil ? "checkmark" : "clock") { category = nil }
-                    ForEach(FarmEventCategory.allCases) { item in
-                        Button(item.displayName, systemImage: category == item ? "checkmark" : item.symbol) { category = item }
+                    Section("业务分类") {
+                        Button("全部分类", systemImage: category == nil ? "checkmark" : "clock") {
+                            category = nil
+                            recordScope = .all
+                        }
+                        ForEach(FarmEventCategory.allCases) { item in
+                            Button(item.displayName, systemImage: category == item ? "checkmark" : item.symbol) {
+                                category = item
+                                recordScope = .all
+                            }
+                        }
+                    }
+                    Section("记录类型") {
+                        ForEach(FarmEventExportScope.allCases.dropFirst()) { item in
+                            Button(item.displayName, systemImage: recordScope == item ? "checkmark" : item.symbol) {
+                                recordScope = item
+                                category = nil
+                            }
+                        }
                     }
                 } label: {
-                    Image(systemName: category == nil ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                    Image(systemName: category == nil && recordScope == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
                 }
                 .accessibilityLabel("筛选事件")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    isPresentingExport = true
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .disabled(events.isEmpty || !canExport)
+                .accessibilityLabel("导出事件记录")
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -371,6 +444,9 @@ struct FarmEventHistoryView: View {
         .sheet(item: $pendingDeletion, onDismiss: { Task { await reload() } }) { event in
             FarmEventDeletionSheet(account: account, farm: farm, event: event)
                 .presentationDetents([.medium])
+        }
+        .sheet(isPresented: $isPresentingExport) {
+            FarmEventExportSheet(farmName: farm.name, events: events, initialScope: recordScope)
         }
         .recordErrorAlert($errorMessage)
     }
@@ -419,6 +495,12 @@ private struct FarmEventRow: View {
 
 private struct FarmEventDetailView: View {
     let event: FarmEventSnapshot
+    let farmName: String
+    let canExport: Bool
+
+    @State private var document: FarmEventCSVExportDocument?
+    @State private var isExporting = false
+    @State private var message: String?
 
     var body: some View {
         List {
@@ -445,6 +527,42 @@ private struct FarmEventDetailView: View {
         }
         .navigationTitle("事件详情")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("导出", systemImage: "square.and.arrow.up", action: prepareExport)
+                    .disabled(!canExport)
+            }
+        }
+        .fileExporter(
+            isPresented: $isExporting,
+            document: document,
+            contentType: .commaSeparatedText,
+            defaultFilename: FarmEventCSVExport.fileName(
+                farmName: farmName,
+                scope: FarmEventExportScope.scope(for: event),
+                range: .days(from: event.occurredAt, through: event.occurredAt)
+            )
+        ) { result in
+            switch result {
+            case .success: message = "该条记录已导出为 CSV。"
+            case .failure(let error): message = "导出失败：\(error.localizedDescription)"
+            }
+        }
+        .alert("记录导出", isPresented: Binding(
+            get: { message != nil },
+            set: { if !$0 { message = nil } }
+        )) {
+            Button("完成", role: .cancel) {}
+        } message: {
+            Text(message ?? "")
+        }
+    }
+
+    private func prepareExport() {
+        document = FarmEventCSVExportDocument(
+            data: FarmEventCSVExport.csvData(events: [event], scope: .all, range: .all)
+        )
+        isExporting = true
     }
 }
 

@@ -29,6 +29,60 @@ final class FarmEventHistoryTests: XCTestCase {
         XCTAssertFalse(events.contains { $0.detail.contains("其他牧场") || $0.detail.contains("已撤销") })
     }
 
+    func testWeaningEventContainsLambAndPedigreeExportFields() async throws {
+        let container = try AppSchema.makeContainer(name: "event-weaning-export-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let pen = PenRecord(farmID: farmID, name: "羔羊一舍")
+        let dam = SheepRecord(farmID: farmID, earTag: "D001", breed: "湖羊", sex: .ewe, penID: pen.id, enteredAt: .now)
+        let sire = SheepRecord(farmID: farmID, earTag: "S001", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: pen.id, enteredAt: .now)
+        let birthAt = Date(timeIntervalSince1970: 1_735_689_600)
+        let lamb = SheepRecord(
+            farmID: farmID,
+            earTag: "L001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: birthAt,
+            birthAt: birthAt,
+            damID: dam.id,
+            sireID: sire.id
+        )
+        let weaning = WeaningRecord(
+            farmID: farmID,
+            sheepID: lamb.id,
+            occurredAt: birthAt.addingTimeInterval(60 * 86_400),
+            weanWeightText: "25.5",
+            birthAt: birthAt,
+            birthWeightText: "3.2",
+            averageDailyGainText: "0.372",
+            damID: dam.id,
+            litterSize: 3,
+            note: "留种观察"
+        )
+        context.insert(pen)
+        context.insert(dam)
+        context.insert(sire)
+        context.insert(lamb)
+        context.insert(weaning)
+        try context.save()
+
+        let events = try await FarmEventHistoryActor(container: container).load(farmID: farmID)
+        let event = try XCTUnwrap(events.first { $0.id == weaning.id })
+        let fields = Dictionary(uniqueKeysWithValues: event.fields.map { ($0.label, $0.value) })
+
+        XCTAssertEqual(event.entityType, .weaning)
+        XCTAssertEqual(event.subject, "L001")
+        XCTAssertEqual(fields["耳号"], "L001")
+        XCTAssertEqual(fields["当前圈舍"], "羔羊一舍")
+        XCTAssertEqual(fields["断奶重kg"], "25.5")
+        XCTAssertEqual(fields["出生重kg"], "3.2")
+        XCTAssertEqual(fields["日增重kg/天"], "0.372")
+        XCTAssertEqual(fields["母本"], "D001")
+        XCTAssertEqual(fields["父本来源"], "S001")
+        XCTAssertEqual(fields["胎只数"], "3")
+    }
+
     @MainActor
     func testDeletingFeedEventTombstonesParentAndLinesAndCreatesAuditOutbox() throws {
         let container = try AppSchema.makeContainer(name: "event-feed-delete-\(UUID().uuidString)", isStoredInMemoryOnly: true)

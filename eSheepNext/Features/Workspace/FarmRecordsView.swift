@@ -14,7 +14,7 @@ struct FarmRecordsView: View {
                 NavigationLink {
                     FarmEventHistoryView(account: account, farm: farm)
                 } label: {
-                    Label("事件记录", systemImage: "clock.arrow.circlepath")
+                    Label("事件记录与导出", systemImage: "clock.arrow.circlepath")
                 }
             }
             Section("羊群与圈舍") {
