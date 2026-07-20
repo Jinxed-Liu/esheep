@@ -155,7 +155,13 @@ struct PedigreeProfileSnapshot: Sendable, Equatable {
     let dam: PedigreeRelatedSheep?
     let sire: PedigreeRelatedSheep?
     let donor: PedigreeDonorSummary?
+    let maternalGranddam: PedigreeRelatedSheep?
+    let maternalGrandsire: PedigreeRelatedSheep?
+    let paternalGranddam: PedigreeRelatedSheep?
+    let paternalGrandsire: PedigreeRelatedSheep?
     let grandparents: [PedigreeRelatedSheep]
+    /// 与本羊出现在同一条有效产羔记录中的其他已建档羔羊。
+    let littermates: [PedigreeRelatedSheep]
     let maternalSiblings: [PedigreeRelatedSheep]
     let paternalSiblings: [PedigreeRelatedSheep]
     let descendants: [PedigreeRelatedSheep]
@@ -390,17 +396,55 @@ enum PedigreeAnalysis {
             .flatMap { [$0.damID, $0.sireID].compactMap { $0.flatMap { byID[$0] } } }
             .filter { seenGrandparents.insert($0.id).inserted }
 
+        let subjectOffspringID: UUID? = record.id
+        let subjectOffspringLinks = try context.fetch(FetchDescriptor<LambingOffspringRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.sheepID == subjectOffspringID && $0.deletedAt == nil
+        }))
+        var littermates: [PedigreeSheepSnapshot] = []
+        if !subjectOffspringLinks.isEmpty {
+            var linkedLambings: [ReproductionRecord] = []
+            for lambingID in Set(subjectOffspringLinks.map(\.lambingRecordID)) {
+                let matches = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
+                    $0.id == lambingID && $0.farmID == farmID && $0.deletedAt == nil
+                }))
+                linkedLambings.append(contentsOf: matches.filter { $0.kind == .lambing })
+            }
+            let selectedLambing = linkedLambings.min { lhs, rhs in
+                if let birthAt = record.birthAt {
+                    let lhsDistance = abs(lhs.occurredAt.timeIntervalSince(birthAt))
+                    let rhsDistance = abs(rhs.occurredAt.timeIntervalSince(birthAt))
+                    if lhsDistance != rhsDistance { return lhsDistance < rhsDistance }
+                }
+                if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt > rhs.occurredAt }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            if let lambingID = selectedLambing?.id {
+                let activeOffspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>(predicate: #Predicate {
+                    $0.farmID == farmID && $0.lambingRecordID == lambingID && $0.deletedAt == nil
+                }))
+                let littermateIDs = Set(activeOffspring.compactMap(\.sheepID).filter { $0 != record.id })
+                littermates = sheep.filter { littermateIDs.contains($0.id) }
+            }
+        }
+        let littermateIDs = Set(littermates.map(\.id))
+
         let maternalSiblings: [PedigreeSheepSnapshot]
         if let damID = record.damID {
-            maternalSiblings = sheep.filter { $0.id != record.id && $0.damID == damID }
+            maternalSiblings = sheep.filter {
+                $0.id != record.id && $0.damID == damID && !littermateIDs.contains($0.id)
+            }
         } else {
             maternalSiblings = []
         }
         let paternalSiblings: [PedigreeSheepSnapshot]
         if let donorID = record.semenDonorID {
-            paternalSiblings = sheep.filter { $0.id != record.id && $0.semenDonorID == donorID }
+            paternalSiblings = sheep.filter {
+                $0.id != record.id && $0.semenDonorID == donorID && !littermateIDs.contains($0.id)
+            }
         } else if let sireID = record.sireID {
-            paternalSiblings = sheep.filter { $0.id != record.id && $0.sireID == sireID && $0.semenDonorID == nil }
+            paternalSiblings = sheep.filter {
+                $0.id != record.id && $0.sireID == sireID && $0.semenDonorID == nil && !littermateIDs.contains($0.id)
+            }
         } else {
             paternalSiblings = []
         }
@@ -431,7 +475,12 @@ enum PedigreeAnalysis {
             dam: dam.map(related),
             sire: sire.map(related),
             donor: donor,
+            maternalGranddam: dam?.damID.flatMap { byID[$0] }.map(related),
+            maternalGrandsire: dam?.sireID.flatMap { byID[$0] }.map(related),
+            paternalGranddam: sire?.damID.flatMap { byID[$0] }.map(related),
+            paternalGrandsire: sire?.sireID.flatMap { byID[$0] }.map(related),
             grandparents: sorted(grandparents),
+            littermates: sorted(littermates),
             maternalSiblings: sorted(maternalSiblings),
             paternalSiblings: sorted(paternalSiblings),
             descendants: sorted(descendants),

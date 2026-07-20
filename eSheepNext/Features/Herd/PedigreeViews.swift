@@ -41,6 +41,19 @@ struct SheepPedigreeView: View {
         Group {
             if let profile {
                 List {
+                    Section("两代系谱树") {
+                        PedigreeTreeDiagram(
+                            profile: profile,
+                            sireCandidates: sireCandidates,
+                            isLoadingCandidates: isLoadingCandidates,
+                            canConfirmCandidate: canEdit,
+                            onSelectSheep: openRelatedSheep,
+                            onSelectCandidate: { selectedCandidate = $0 }
+                        )
+                        .listRowInsets(.init(top: 12, leading: 0, bottom: 8, trailing: 0))
+                        .listRowSeparator(.hidden)
+                    }
+
                     Section("父母") {
                         pedigreeLink(label: "母本", relation: profile.record.damProvenance, sheep: profile.dam)
                         if let donor = profile.donor {
@@ -59,6 +72,7 @@ struct SheepPedigreeView: View {
                     sireCandidateSection(profile)
 
                     ancestorSection(profile.grandparents)
+                    relationshipSection("同胎羊", records: profile.littermates)
                     relationshipSection("同母羊", records: profile.maternalSiblings)
                     relationshipSection("同父羊", records: profile.paternalSiblings)
                     relationshipSection("直接后代", records: profile.descendants)

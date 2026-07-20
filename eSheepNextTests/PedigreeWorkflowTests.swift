@@ -83,6 +83,74 @@ final class PedigreeWorkflowTests: XCTestCase {
         XCTAssertNil(child.sireID, "早产容差命中仍不得自动确认父本")
     }
 
+    func testPedigreeProfileKeepsFourGrandparentsInCorrectTreePositions() throws {
+        let fixture = try makeFixture()
+        let maternalGranddam = insertSheep(fixture, tag: "MGD", sex: .ewe, birthAt: date("2020-01-01"))
+        let maternalGrandsire = insertSheep(fixture, tag: "MGS", sex: .ram, isBreedingRam: true, birthAt: date("2020-01-01"))
+        let paternalGranddam = insertSheep(fixture, tag: "PGD", sex: .ewe, birthAt: date("2020-01-01"))
+        let paternalGrandsire = insertSheep(fixture, tag: "PGS", sex: .ram, isBreedingRam: true, birthAt: date("2020-01-01"))
+        let dam = insertSheep(fixture, tag: "DAM", sex: .ewe, birthAt: date("2022-01-01"))
+        let sire = insertSheep(fixture, tag: "SIRE", sex: .ram, isBreedingRam: true, birthAt: date("2022-01-01"))
+        let child = insertSheep(fixture, tag: "CHILD", sex: .ewe, birthAt: date("2026-01-01"))
+        dam.damID = maternalGranddam.id
+        dam.sireID = maternalGrandsire.id
+        sire.damID = paternalGranddam.id
+        sire.sireID = paternalGrandsire.id
+        child.damID = dam.id
+        child.sireID = sire.id
+        try fixture.context.save()
+
+        let profile = try XCTUnwrap(PedigreeAnalysis.profile(
+            sheepID: child.id,
+            farmID: fixture.farm.id,
+            context: fixture.context
+        ))
+
+        XCTAssertEqual(profile.dam?.earTag, "DAM")
+        XCTAssertEqual(profile.sire?.earTag, "SIRE")
+        XCTAssertEqual(profile.maternalGranddam?.earTag, "MGD")
+        XCTAssertEqual(profile.maternalGrandsire?.earTag, "MGS")
+        XCTAssertEqual(profile.paternalGranddam?.earTag, "PGD")
+        XCTAssertEqual(profile.paternalGrandsire?.earTag, "PGS")
+        XCTAssertEqual(Set(profile.grandparents.map(\.earTag)), Set(["MGD", "MGS", "PGD", "PGS"]))
+    }
+
+    func testPedigreeProfileKeepsFiveLambsFromOneLambingTogether() throws {
+        let fixture = try makeFixture()
+        let ewe = insertSheep(fixture, tag: "EWE", sex: .ewe, birthAt: date("2022-01-01"))
+        let sire = insertSheep(fixture, tag: "SIRE", sex: .ram, isBreedingRam: true, birthAt: date("2021-01-01"))
+        let lambing = CareLambingDraft(
+            eweID: ewe.id,
+            occurredAt: date("2026-03-20"),
+            sireID: sire.id,
+            semenID: nil,
+            parity: 2,
+            birthDeadCount: 0,
+            offspring: (1...5).map {
+                CareLambDraft(earTag: "L00\($0)", sex: $0.isMultiple(of: 2) ? .ram : .ewe, birthWeightText: "3.2")
+            },
+            penID: nil,
+            note: "五羔"
+        )
+        try fixture.service.execute(.care(.recordLambing(lambing)), in: fixture.ownerContext, context: fixture.context)
+
+        let sameDamDifferentLambing = insertSheep(fixture, tag: "LATER", sex: .ewe, birthAt: date("2027-03-20"))
+        sameDamDifferentLambing.damID = ewe.id
+        sameDamDifferentLambing.sireID = sire.id
+        try fixture.context.save()
+        let subject = try sheep(fixture, "L003")
+
+        let profile = try XCTUnwrap(PedigreeAnalysis.profile(
+            sheepID: subject.id,
+            farmID: fixture.farm.id,
+            context: fixture.context
+        ))
+
+        XCTAssertEqual(Set(profile.littermates.map(\.earTag)), Set(["L001", "L002", "L004", "L005"]))
+        XCTAssertEqual(profile.maternalSiblings.map(\.earTag), ["LATER"])
+        XCTAssertEqual(profile.paternalSiblings.map(\.earTag), ["LATER"])
+    }
+
     func testLargeFarmPedigreeCheckBuildsOneIndexedSnapshotWithoutBlocking() {
         let penID = UUID()
         let damID = UUID()
