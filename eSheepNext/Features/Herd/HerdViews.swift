@@ -13,6 +13,8 @@ struct HerdManagementView: View {
     @State private var isAddingSheep = false
     @State private var isExportingSheep = false
     @State private var exportDocument: InHerdSheepExportDocument?
+    @State private var exportKind = HerdExportKind.present
+    @State private var exportedSheepCount = 0
     @State private var exportMessage: String?
     @State private var query = ""
     @State private var sexFilter: SheepSex?
@@ -26,6 +28,7 @@ struct HerdManagementView: View {
     @State private var filteredSheep: [HerdSheepRow] = []
     @State private var penOptions: [HerdPenOption] = []
     @State private var presentSheepCount = 0
+    @State private var removedSheepCount = 0
     @State private var hasBuiltSheepSnapshot = false
 
     private func makeFilteredSheep() -> [HerdSheepRow] {
@@ -121,9 +124,15 @@ struct HerdManagementView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button { exportPresentSheep() } label: { Image(systemName: "square.and.arrow.up") }
-                    .accessibilityLabel("导出在群羊只 CSV")
-                    .disabled(presentSheepCount == 0)
+                Menu {
+                    Button("导出在群羊只 CSV", systemImage: "checkmark.circle") { exportSheep(.present) }
+                        .disabled(presentSheepCount == 0)
+                    Button("导出离群羊只 CSV", systemImage: "arrowshape.turn.up.right.circle") { exportSheep(.removed) }
+                        .disabled(removedSheepCount == 0)
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .accessibilityLabel("导出羊只 CSV")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { isAddingSheep = true } label: { Image(systemName: "plus") }
@@ -146,11 +155,11 @@ struct HerdManagementView: View {
             isPresented: $isExportingSheep,
             document: exportDocument,
             contentType: .commaSeparatedText,
-            defaultFilename: InHerdSheepExport.fileName(farmName: farm.name)
+            defaultFilename: exportKind.fileName(farmName: farm.name)
         ) { result in
             switch result {
             case .success:
-                exportMessage = "已导出 \(presentSheepCount) 只在群羊只。文件为 UTF-8 CSV，可直接用 Excel 打开。"
+                exportMessage = "已导出 \(exportedSheepCount) 只\(exportKind.displayName)羊只。文件为 UTF-8 CSV，可直接用 Excel 打开。"
             case .failure(let error):
                 exportMessage = "导出失败：\(error.localizedDescription)"
             }
@@ -162,19 +171,33 @@ struct HerdManagementView: View {
         }
     }
 
-    private func exportPresentSheep() {
+    private func exportSheep(_ kind: HerdExportKind) {
         let farmID = farm.id
         do {
             let sheep = try modelContext.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
                 $0.farmID == farmID && $0.deletedAt == nil
-            })).filter(\.isCurrentlyPresent)
-            let pens = try modelContext.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
-                $0.farmID == farmID && $0.deletedAt == nil
             }))
-            exportDocument = InHerdSheepExportDocument(
-                data: InHerdSheepExport.csvData(farmID: farmID, sheep: sheep, pens: pens)
-            )
-            presentSheepCount = sheep.count
+            switch kind {
+            case .present:
+                let exportedSheep = sheep.filter(\.isCurrentlyPresent)
+                let pens = try modelContext.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+                    $0.farmID == farmID && $0.deletedAt == nil
+                }))
+                exportDocument = InHerdSheepExportDocument(
+                    data: InHerdSheepExport.csvData(farmID: farmID, sheep: exportedSheep, pens: pens)
+                )
+                exportedSheepCount = exportedSheep.count
+            case .removed:
+                let exportedSheep = sheep.filter { !$0.isCurrentlyPresent && !$0.isHistoricalArchive }
+                let removals = try modelContext.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+                    $0.farmID == farmID && $0.deletedAt == nil
+                }))
+                exportDocument = InHerdSheepExportDocument(
+                    data: RemovedSheepExport.csvData(farmID: farmID, sheep: exportedSheep, removals: removals)
+                )
+                exportedSheepCount = exportedSheep.count
+            }
+            exportKind = kind
             isExportingSheep = true
         } catch {
             exportMessage = "导出失败：\(error.localizedDescription)"
@@ -194,12 +217,14 @@ struct HerdManagementView: View {
             penOptions = pens.map { HerdPenOption(id: $0.id, name: $0.name) }
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             presentSheepCount = sourceSheep.lazy.filter(\.isCurrentlyPresent).count
+            removedSheepCount = sheep.lazy.filter { !$0.isCurrentlyPresent && !$0.isHistoricalArchive }.count
             rebuildSheepSnapshot()
         } catch {
             sourceSheep = []
             filteredSheep = []
             penOptions = []
             presentSheepCount = 0
+            removedSheepCount = 0
             hasBuiltSheepSnapshot = true
             exportMessage = "读取羊只档案失败：\(error.localizedDescription)"
         }
@@ -208,6 +233,25 @@ struct HerdManagementView: View {
     private func rebuildSheepSnapshot() {
         filteredSheep = makeFilteredSheep()
         hasBuiltSheepSnapshot = true
+    }
+}
+
+private enum HerdExportKind {
+    case present
+    case removed
+
+    var displayName: String {
+        switch self {
+        case .present: "在群"
+        case .removed: "离群"
+        }
+    }
+
+    func fileName(farmName: String) -> String {
+        switch self {
+        case .present: InHerdSheepExport.fileName(farmName: farmName)
+        case .removed: RemovedSheepExport.fileName(farmName: farmName)
+        }
     }
 }
 
@@ -975,6 +1019,7 @@ struct PenManagementView: View {
             ToolbarItem(placement: .topBarTrailing) { Button { isAddingPen = true } label: { Image(systemName: "plus") } }
         }
         .sheet(isPresented: $isAddingPen) { NavigationStack { AddPenView(account: account, farm: farm) } }
+        .farmExcelImport(account: account, farm: farm, sheets: ["圈舍"])
     }
 }
 
@@ -1124,6 +1169,7 @@ struct AddSheepView: View {
             ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
         }
         .alert("无法保存", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(errorMessage ?? "") }
+        .farmExcelImport(account: account, farm: farm, sheets: ["新建羊只"])
     }
 
     private func save() {
@@ -1155,6 +1201,7 @@ struct AddPenView: View {
             ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
         }
         .alert("无法保存", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(errorMessage ?? "") }
+        .farmExcelImport(account: account, farm: farm, sheets: ["圈舍"])
     }
 
     private func save() {

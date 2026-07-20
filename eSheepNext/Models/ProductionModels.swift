@@ -98,6 +98,7 @@ enum ProductionBatchStatus: String, CaseIterable, Codable, Sendable {
 enum ProductionBatchSource: String, CaseIterable, Codable, Sendable {
     case manual
     case historicalMigration
+    /// 仅为读取旧迁移 Store 保留；当前版本不再生成或展示推测批次。
     case historicalInference
 }
 

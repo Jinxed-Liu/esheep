@@ -7,7 +7,7 @@ struct AppleAuthorizationPayload: Sendable {
     let identityToken: String
     let authorizationCode: String
     let rawNonce: String
-    let displayName: String
+    let displayName: String?
 }
 
 enum AppleIdentityError: LocalizedError {
@@ -61,7 +61,7 @@ actor AppleIdentityActor {
             identityToken: identityToken,
             authorizationCode: authorizationCode,
             rawNonce: rawNonce,
-            displayName: formattedName.isEmpty ? "Apple 账户" : formattedName
+            displayName: formattedName.isEmpty ? nil : formattedName
         )
     }
 }

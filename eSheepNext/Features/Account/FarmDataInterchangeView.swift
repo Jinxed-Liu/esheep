@@ -12,6 +12,10 @@ struct FarmDataInterchangeView: View {
 
     @State private var isImporting = false
     @State private var preview: FarmImportPreview?
+    @State private var isImportingExcelTemplate = false
+    @State private var excelPreview: FarmExcelPreview?
+    @State private var isExportingExcelTemplate = false
+    @State private var excelTemplateDocument: FarmInterchangeDocument?
     @State private var isExporting = false
     @State private var exportDocument: FarmInterchangeDocument?
     @State private var message: String?
@@ -24,10 +28,34 @@ struct FarmDataInterchangeView: View {
 
     var body: some View {
         List {
-            Section("导入") {
-                Button("选择 XLSX、CSV 或 JSON") { isImporting = true }
+            Section("Excel 全功能录入") {
+                Button("下载全功能 Excel 模板") { exportExcelTemplate() }
+                Button("选择填好的 Excel 模板") { isImportingExcelTemplate = true }
                     .disabled(!CapabilitySet(role: farm.role).allows(.recordProduction))
-                Text("先在本机安全复制并校验，展示重复项和错误；确认后才通过牧场命令管道分批写入。")
+                Text("模板覆盖圈舍、羊只、称重、断奶、转群、离场、生产批次、饲喂、健康库存、繁殖冻精、配种方案、备注和提醒规则。先核对整份文件，确认后才原子写入。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if let excelPreview {
+                Section("Excel 预检") {
+                    LabeledContent("待写入", value: "\(excelPreview.rows.count) 条")
+                    LabeledContent("阻断错误", value: "\(excelPreview.errorCount) 条")
+                    LabeledContent("提醒", value: "\(excelPreview.warningCount) 条")
+                    ForEach(excelPreview.summaries) { item in
+                        LabeledContent(item.name, value: "\(item.rowCount) 条")
+                    }
+                    ForEach(excelPreview.issues.prefix(40)) { issue in
+                        Label("\(issue.sheet) 第 \(issue.row) 行 · \(issue.field)：\(issue.message)", systemImage: issue.severity == .error ? "xmark.octagon" : "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(issue.severity == .error ? .red : .secondary)
+                    }
+                    Button("确认并原子导入 \(excelPreview.rows.count) 条") { commitExcel(excelPreview) }
+                        .disabled(!excelPreview.canCommit)
+                }
+            }
+            Section("旧版羊只档案导入") {
+                Button("选择旧版 XLSX、CSV 或 JSON") { isImporting = true }
+                    .disabled(!CapabilitySet(role: farm.role).allows(.recordProduction))
+                Text("兼容旧的单表羊只档案文件；新录入建议使用上方全功能模板。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if let preview {
@@ -70,6 +98,13 @@ struct FarmDataInterchangeView: View {
         .fileImporter(isPresented: $isImporting, allowedContentTypes: [.officeOpenXMLSpreadsheet, .commaSeparatedText, .json]) { result in
             importFile(result)
         }
+        .fileImporter(isPresented: $isImportingExcelTemplate, allowedContentTypes: [.officeOpenXMLSpreadsheet]) { result in
+            importExcelTemplate(result)
+        }
+        .fileExporter(isPresented: $isExportingExcelTemplate, document: excelTemplateDocument, contentType: .officeOpenXMLSpreadsheet, defaultFilename: "eSheepNext全功能录入模板_v\(FarmExcelImportService.templateVersion).xlsx") { result in
+            if case .failure(let error) = result { message = "模板导出失败：\(error.localizedDescription)" }
+            else { message = "全功能 Excel 模板已导出。填写后回到此页执行预检。" }
+        }
         .fileExporter(isPresented: $isExporting, document: exportDocument, contentType: .officeOpenXMLSpreadsheet, defaultFilename: fileName()) { result in
             if case .failure(let error) = result { message = "导出失败：\(error.localizedDescription)" }
             else { message = "已生成真实 XLSX 工作簿。" }
@@ -92,6 +127,29 @@ struct FarmDataInterchangeView: View {
             let data = try SecureImportFileLoader.load(from: url)
             preview = try FarmDataInterchange.preview(data: data, fileExtension: url.pathExtension, existingEarTags: Set(farmSheep.map(\.earTag)))
         } catch { message = "导入失败：\(error.localizedDescription)" }
+    }
+
+    private func exportExcelTemplate() {
+        do {
+            excelTemplateDocument = FarmInterchangeDocument(data: try FarmExcelImportService.templateData())
+            isExportingExcelTemplate = true
+        } catch { message = "模板生成失败：\(error.localizedDescription)" }
+    }
+
+    private func importExcelTemplate(_ result: Result<URL, Error>) {
+        do {
+            let url = try result.get()
+            let data = try SecureImportFileLoader.load(from: url)
+            excelPreview = try FarmExcelImportService.preview(data: data, farm: farm, context: modelContext)
+        } catch { message = "Excel 预检失败：\(error.localizedDescription)" }
+    }
+
+    private func commitExcel(_ preview: FarmExcelPreview) {
+        do {
+            let count = try FarmExcelImportService.commit(preview, account: account, farm: farm, context: modelContext)
+            excelPreview = nil
+            message = "已原子导入 \(count) 条录入数据，并生成对应审计和待同步记录。"
+        } catch { message = "整批未写入：\(error.localizedDescription)" }
     }
 
     private func commit(_ preview: FarmImportPreview) {

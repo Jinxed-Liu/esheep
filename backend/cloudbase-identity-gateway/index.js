@@ -137,6 +137,11 @@ async function route({ request, pathname, fetchImpl, env, service }) {
   }
 
   const auth = await authenticate(fetchImpl, env, request, service);
+  if (request.method === "PATCH" && pathname === "/v1/account/profile") {
+    await service.consumeRateLimit("profile_update", auth.accountID, 20, 15 * 60);
+    const input = await readJSON(request);
+    return [200, await service.updateAccountDisplayName(auth.accountID, input.displayName)];
+  }
   if (request.method === "POST" && pathname === "/v1/auth/logout") {
     await cloudBaseRequest(fetchImpl, env.CLOUDBASE_AUTH_BASE_URL, "/auth/v1/logout", {}, { authorization: auth.bearer }).catch(() => undefined);
     return [204];

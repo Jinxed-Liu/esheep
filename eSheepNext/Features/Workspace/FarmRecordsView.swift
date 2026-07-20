@@ -10,6 +10,13 @@ struct FarmRecordsView: View {
 
     var body: some View {
         List {
+            Section("事件") {
+                NavigationLink {
+                    FarmEventHistoryView(account: account, farm: farm)
+                } label: {
+                    Label("事件记录", systemImage: "clock.arrow.circlepath")
+                }
+            }
             Section("羊群与圈舍") {
                 NavigationLink { AddSheepView(account: account, farm: farm) } label: { Label("新建羊只", systemImage: "plus.circle") }
                 NavigationLink { WeightEntryView(account: account, farm: farm) } label: { Label("称重", systemImage: "scalemass") }
@@ -98,6 +105,7 @@ struct WeightEntryView: View {
         .navigationTitle("称重")
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["称重"])
     }
 
     private func save() {
@@ -156,6 +164,7 @@ struct WeaningEntryView: View {
         .navigationTitle("断奶记录")
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["断奶"])
     }
 
     private func save() {
@@ -212,6 +221,7 @@ struct BreedingProgramListView: View {
         .toolbar {
             NavigationLink { BreedingProgramEntryView(account: account, farm: farm) } label: { Image(systemName: "plus") }
         }
+        .farmExcelImport(account: account, farm: farm, sheets: ["配种方案"])
     }
 }
 
@@ -266,6 +276,7 @@ struct BreedingProgramEntryView: View {
         .navigationTitle("新建配种方案")
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["配种方案"])
     }
 
     private func save() {
@@ -312,6 +323,7 @@ struct TransferEntryView: View {
         .navigationTitle("转群")
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["转群"])
     }
 
     private func save() {
@@ -367,6 +379,7 @@ struct HealthEntryView: View {
         .navigationTitle("健康记录")
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["健康记录"])
     }
 
     private func save() {
@@ -443,6 +456,7 @@ struct ReproductionEntryView: View {
         }
         .navigationTitle("繁殖记录")
         .toolbar { EntrySaveToolbar(action: save) }
+        .farmExcelImport(account: account, farm: farm, sheets: ["繁殖记录", "产羔"])
         .onChange(of: kind) { _, newKind in
             guard newKind != .breeding else { return }
             sireID = nil
@@ -508,6 +522,7 @@ struct NoteEntryView: View {
         .navigationTitle("备注")
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["备注"])
     }
 
     private func save() {

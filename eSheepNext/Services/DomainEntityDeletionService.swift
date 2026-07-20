@@ -24,7 +24,11 @@ enum DomainEntityDeletionService {
         case .feedIngredient: try context.fetch(FetchDescriptor<FeedIngredientRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
         case .feedRecipe: try context.fetch(FetchDescriptor<FeedRecipeRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
         case .feedRecipeComponent: try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
-        case .feed: try context.fetch(FetchDescriptor<FeedRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
+        case .feed:
+            try context.fetch(FetchDescriptor<FeedRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
+            for line in try context.fetch(FetchDescriptor<FeedRecordLine>()) where line.farmID == farmID && line.feedRecordID == id {
+                line.deletedAt = date
+            }
         case .feedLine: try context.fetch(FetchDescriptor<FeedRecordLine>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
         case .inventoryLot: try context.fetch(FetchDescriptor<InventoryLotRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date
         case .inventoryTransaction: try context.fetch(FetchDescriptor<InventoryTransactionRecord>()).first { $0.id == id && $0.farmID == farmID }?.deletedAt = date

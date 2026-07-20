@@ -79,5 +79,7 @@
 - 2026-07-19：使用 CloudBase CLI 的完整 COS 通道部署 Gateway 0.3.0，远端函数为 Active/Available，15 项运行配置完整且健康检查返回 200/0.3.0。Apple 路由的无效凭证返回 401 `apple_authentication_failed`，旧迁移响应已消失；CloudBase 自定义登录票据真实换回 access/refresh session，Apple client secret 向 Apple 验证返回预期 `invalid_grant`。首次限流文档不存在曾导致邮箱入口 500，补充 SDK `DOCUMENT_NOT_FOUND` 适配和回归测试后重新部署，邮箱格式错误返回 400、错误密码返回 400、未授权账户接口返回 401。部署探针账号已删除。真实 Apple 授权弹窗和邮箱验证码收取仍待真机交互。
 - 2026-07-19：迁移牧场云端启动所需的 Gateway 0.3.1 已通过完整 COS 通道部署到同一 Development 环境。健康检查返回 200/0.3.1；新增激活接口存在，未授权调用返回 401 `missing_access_token`。该证据只证明服务版本和鉴权边界，不替代真实迁移包上传、CloudKit 摘要核对或第二台设备重建。
 - 2026-07-19：真机迁移首次暴露 JSON UUID 大写、URL UUID 小写造成 CloudBase 文档键不一致；Gateway 0.3.2 统一牧场 UUID 后通过 13/13 测试并部署 Development。该项仍需等待当前真机基线完成上传与摘要核对。
+- 2026-07-20：仓库 Gateway 0.3.3 新增已认证账户显示名称修改接口，并禁止后续 Apple 登录元数据覆盖用户主动设置的名称；本地 Gateway 回归 16/16 通过，Development 部署与真机修改名称验收尚未执行。
+- 2026-07-20：固化健康、繁殖、分析、页面级 Excel、事件历史和生产批次基线前，iPhone 16 Pro（iOS 27.0）签名构建执行全部 122 项 XCTest，122 项通过、0 失败、0 跳过；同一基线的 `build-for-testing`、Worker 15/15、Gateway 16/16、Emoji 扫描及依赖审计通过。11 英寸 iPad 页面回归、两台 Development 设备 CloudKit 对账及 Gateway 0.3.3 部署未执行，不计入通过项。
 - 2026-07-18：iPhone 16 Pro 签名构建实际执行全部 82 项 XCTest，最终 82 项通过、0 失败。期间发现并修复 CSV 日期解析受系统区域设置影响的问题；11 英寸 iPad 与双账号云端流程仍未执行。
 - 两个真实 Apple/iCloud 账号互联和第 1 至第 7 日云端记录：未执行。

@@ -25,6 +25,7 @@ enum FarmCommandError: LocalizedError {
     case invalidFarmTimeZone
     case penHasCurrentSheep
     case protectedPenReferences
+    case protectedSheepReferences
     case sourceRecordNotFound
 
     var errorDescription: String? {
@@ -52,6 +53,7 @@ enum FarmCommandError: LocalizedError {
         case .invalidFarmTimeZone: "请选择有效的 IANA 时区。"
         case .penHasCurrentSheep: "圈舍内仍有在场羊只，请先转群后再停用。"
         case .protectedPenReferences: "圈舍仍被羊只或生产历史引用，不能直接删除；可以先停用。"
+        case .protectedSheepReferences: "该羊只已有生产历史或亲缘关系，不能直接删除建档事件；请删除或修正关联事实。"
         case .sourceRecordNotFound: "未找到可修正的原始记录。"
         }
     }
@@ -122,7 +124,7 @@ enum FarmCommand: Sendable {
     case removeSheep(sheepID: UUID, kind: RemovalKind, reason: String, amountText: String?, occurredAt: Date, note: String)
     case correctRemoval(originalID: UUID, kind: RemovalKind, reason: String, amountText: String?, occurredAt: Date, note: String, correctionReason: String)
     case restoreSheep(removalID: UUID)
-    case createBatch(name: String, purpose: String, startedAt: Date, note: String)
+    case createBatch(name: String, purpose: String, startedAt: Date, sheepIDs: [UUID], note: String)
     case assignSheepToBatch(batchID: UUID, sheepID: UUID, joinedAt: Date)
     case leaveBatch(batchID: UUID, sheepID: UUID, leftAt: Date, reason: String)
     case addIngredient(name: String, unit: String, dryMatterText: String?)
@@ -205,7 +207,7 @@ enum FarmCommand: Sendable {
         case .removeSheep(_, let kind, _, _, _, _): "记录\(kind.displayName)"
         case .correctRemoval(_, let kind, _, _, _, _, _): "修正\(kind.displayName)记录"
         case .restoreSheep: "恢复离场羊只"
-        case .createBatch(let name, _, _, _): "新建生产批次：\(name)"
+        case .createBatch(let name, _, _, _, _): "新建生产批次：\(name)"
         case .assignSheepToBatch: "加入生产批次"
         case .leaveBatch: "离开生产批次"
         case .addIngredient(let name, _, _): "新增原料：\(name)"
@@ -279,6 +281,40 @@ final class FarmCommandService {
         defer {
             if !committed { context.rollback() }
         }
+        try executeWithoutSaving(command, in: farm, context: context)
+        try context.save()
+        committed = true
+    }
+
+    /// Excel 等批量入口使用同一个权威写入管道，但整批只保存一次。
+    /// 任一命令失败都会回滚本批已插入的事实、审计记录和 Outbox，避免半导入。
+    func executeBatch(_ commands: [FarmCommand], in farm: FarmContext, context: ModelContext) throws {
+        guard !commands.isEmpty else { return }
+        var committed = false
+        defer {
+            if !committed { context.rollback() }
+        }
+        for command in commands {
+            try executeWithoutSaving(command, in: farm, context: context)
+        }
+        try context.save()
+        committed = true
+    }
+
+    /// 允许批量导入在上一条主数据命令生效后解析下一条引用，同时仍保持一次保存、整批回滚。
+    func executeBatch(in farm: FarmContext, context: ModelContext, nextCommand: () throws -> FarmCommand?) throws {
+        var committed = false
+        defer {
+            if !committed { context.rollback() }
+        }
+        while let command = try nextCommand() {
+            try executeWithoutSaving(command, in: farm, context: context)
+        }
+        try context.save()
+        committed = true
+    }
+
+    private func executeWithoutSaving(_ command: FarmCommand, in farm: FarmContext, context: ModelContext) throws {
         let farmID = farm.farmID
         let accountID = farm.accountID
         let cloudBinding = try context.fetch(FetchDescriptor<CloudFarmBinding>(predicate: #Predicate {
@@ -352,8 +388,6 @@ final class FarmCommandService {
             baseRevision: operation.baseRevision,
             payloadDigest: operation.payloadDigest
         ))
-        try context.save()
-        committed = true
     }
 
     @discardableResult
@@ -491,9 +525,24 @@ final class FarmCommandService {
             guard removals.contains(where: { $0.id == removalID && $0.farmID == farmID && $0.deletedAt == nil }) else {
                 throw FarmCommandError.removalNotFound
             }
-        case .createBatch(let name, let purpose, _, _):
+        case .createBatch(let name, let purpose, let startedAt, let sheepIDs, _):
             _ = try required(name, label: "批次名称")
             _ = try required(purpose, label: "生产目的")
+            guard !sheepIDs.isEmpty else { throw FarmCommandError.missingRequiredValue("批次羊只") }
+            guard Set(sheepIDs).count == sheepIDs.count else { throw FarmCommandError.duplicateBatchMembership }
+            let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            }))
+            let sheepByID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
+            let memberships = try context.fetch(FetchDescriptor<BatchMembershipRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            }))
+            let unavailableIDs = Set(memberships.lazy.filter { $0.leftAt == nil }.map(\.sheepID))
+            for sheepID in sheepIDs {
+                guard let item = sheepByID[sheepID], item.isCurrentlyPresent else { throw FarmCommandError.sheepNotFound }
+                guard item.enteredAt <= startedAt else { throw FarmCommandError.missingRequiredValue("不早于羊只入场时间的批次开始时间") }
+                guard !unavailableIDs.contains(sheepID) else { throw FarmCommandError.duplicateBatchMembership }
+            }
         case .assignSheepToBatch(let batchID, let sheepID, _):
             try assertBatch(batchID, farmID: farmID, context: context)
             try assertSheep(sheepID, farmID: farmID, context: context)
@@ -501,11 +550,13 @@ final class FarmCommandService {
             guard !memberships.contains(where: { $0.farmID == farmID && $0.batchID == batchID && $0.sheepID == sheepID && $0.deletedAt == nil && $0.leftAt == nil }) else {
                 throw FarmCommandError.duplicateBatchMembership
             }
-        case .leaveBatch(let batchID, let sheepID, _, _):
+        case .leaveBatch(let batchID, let sheepID, let leftAt, let reason):
             let memberships = try context.fetch(FetchDescriptor<BatchMembershipRecord>())
-            guard memberships.contains(where: { $0.farmID == farmID && $0.batchID == batchID && $0.sheepID == sheepID && $0.deletedAt == nil && $0.leftAt == nil }) else {
+            guard let membership = memberships.first(where: { $0.farmID == farmID && $0.batchID == batchID && $0.sheepID == sheepID && $0.deletedAt == nil && $0.leftAt == nil }) else {
                 throw FarmCommandError.batchMembershipNotFound
             }
+            guard leftAt >= membership.joinedAt else { throw FarmCommandError.missingRequiredValue("不早于批次开始时间的脱离时间") }
+            _ = try required(reason, label: "脱离原因")
         case .addIngredient(let name, let unit, let dryMatterText):
             _ = try required(name, label: "原料名称")
             _ = try required(unit, label: "单位")
@@ -604,6 +655,39 @@ final class FarmCommandService {
                 let hasReferences = sheep.contains { $0.farmID == farmID && ($0.currentPenID == entityID || $0.initialPenID == entityID) }
                     || transfers.contains { $0.farmID == farmID && ($0.fromPenID == entityID || $0.toPenID == entityID) }
                 guard !hasReferences else { throw FarmCommandError.protectedPenReferences }
+            }
+            if entityType == .sheep {
+                guard try !hasSheepReferences(entityID, farmID: farmID, context: context) else {
+                    throw FarmCommandError.protectedSheepReferences
+                }
+            }
+            if entityType == .inventoryTransaction,
+               let transaction = try context.fetch(FetchDescriptor<InventoryTransactionRecord>()).first(where: {
+                   $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
+               }) {
+                let transactions = try context.fetch(FetchDescriptor<InventoryTransactionRecord>()).filter {
+                    $0.farmID == farmID && $0.inventoryLotID == transaction.inventoryLotID && $0.deletedAt == nil
+                }
+                let balance = transactions.reduce(Decimal.zero) { $0 + inventoryContribution($1) }
+                guard balance - inventoryContribution(transaction) >= 0 else {
+                    throw FarmCommandError.insufficientInventory
+                }
+            }
+            if entityType == .semenTransaction,
+               let transaction = try context.fetch(FetchDescriptor<SemenTransactionRecord>()).first(where: {
+                   $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
+               }) {
+                let semen = try context.fetch(FetchDescriptor<SemenRecord>()).first {
+                    $0.id == transaction.semenID && $0.farmID == farmID
+                }
+                let initial = Decimal.stable(semen?.quantityText ?? "") ?? 0
+                let transactions = try context.fetch(FetchDescriptor<SemenTransactionRecord>()).filter {
+                    $0.farmID == farmID && $0.semenID == transaction.semenID && $0.deletedAt == nil
+                }
+                let balance = transactions.reduce(initial) { $0 + semenContribution($1) }
+                guard balance - semenContribution(transaction) >= 0 else {
+                    throw FarmCommandError.insufficientInventory
+                }
             }
         case .restoreTombstonedEntity(let tombstoneID):
             guard let tombstone = try context.fetch(FetchDescriptor<TombstoneRecord>()).first(where: { $0.id == tombstoneID && $0.farmID == farmID && $0.restoredAt == nil }) else {
@@ -782,9 +866,18 @@ final class FarmCommandService {
             removal.deletedAt = .now
             removal.revision += 1
             return appliedResult(.removal, removal.id, baseRevision: baseRevision, revision: removal.revision)
-        case .createBatch(let name, let purpose, let startedAt, let note):
+        case .createBatch(let name, let purpose, let startedAt, let sheepIDs, let note):
             let record = ProductionBatchRecord(farmID: farm.farmID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), purpose: purpose.trimmingCharacters(in: .whitespacesAndNewlines), startedAt: startedAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
             context.insert(record)
+            for sheepID in sheepIDs {
+                context.insert(BatchMembershipRecord(
+                    id: StableCloudUUID.derived(namespace: record.id, name: "batch-member-\(sheepID.uuidString.lowercased())"),
+                    farmID: farm.farmID,
+                    batchID: record.id,
+                    sheepID: sheepID,
+                    joinedAt: startedAt
+                ))
+            }
             return appliedResult(.productionBatch, record.id)
         case .assignSheepToBatch(let batchID, let sheepID, let joinedAt):
             let record = BatchMembershipRecord(farmID: farm.farmID, batchID: batchID, sheepID: sheepID, joinedAt: joinedAt)
@@ -798,6 +891,7 @@ final class FarmCommandService {
             membership.leftAt = leftAt
             membership.leaveReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
             membership.updatedAt = .now
+            try ProductionBatchLifecycle.reconcile(batchID: batchID, farmID: farm.farmID, context: context)
             return appliedResult(.batchMembership, membership.id, baseRevision: 1, revision: 2)
         case .addIngredient(let name, let unit, let dryMatterText):
             let record = FeedIngredientRecord(farmID: farm.farmID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), unit: unit.trimmingCharacters(in: .whitespacesAndNewlines), dryMatterText: dryMatterText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) })
@@ -1051,6 +1145,35 @@ final class FarmCommandService {
             case .receipt, .adjustment: partial + transaction.quantity
             case .consumption: partial - transaction.quantity
             }
+        }
+    }
+
+    private func hasSheepReferences(_ sheepID: UUID, farmID: UUID, context: ModelContext) throws -> Bool {
+        if try context.fetch(FetchDescriptor<WeightRecord>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }) { return true }
+        if try context.fetch(FetchDescriptor<WeaningRecord>()).contains(where: { $0.farmID == farmID && ($0.sheepID == sheepID || $0.damID == sheepID) && $0.deletedAt == nil }) { return true }
+        if try context.fetch(FetchDescriptor<TransferRecord>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }) { return true }
+        if try context.fetch(FetchDescriptor<RemovalRecord>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }) { return true }
+        if try context.fetch(FetchDescriptor<HealthRecord>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }) { return true }
+        if try context.fetch(FetchDescriptor<HealthSubjectLink>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID }) { return true }
+        if try context.fetch(FetchDescriptor<ReproductionRecord>()).contains(where: { $0.farmID == farmID && ($0.eweID == sheepID || $0.sireID == sheepID) && $0.deletedAt == nil }) { return true }
+        if try context.fetch(FetchDescriptor<NoteRecord>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }) { return true }
+        if try context.fetch(FetchDescriptor<BatchMembershipRecord>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }) { return true }
+        if try context.fetch(FetchDescriptor<LambingOffspringRecord>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID }) { return true }
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+        return sheep.contains { $0.farmID == farmID && $0.deletedAt == nil && ($0.damID == sheepID || $0.sireID == sheepID) }
+    }
+
+    private func inventoryContribution(_ transaction: InventoryTransactionRecord) -> Decimal {
+        switch transaction.kind {
+        case .receipt, .adjustment: transaction.quantity
+        case .consumption: -transaction.quantity
+        }
+    }
+
+    private func semenContribution(_ transaction: SemenTransactionRecord) -> Decimal {
+        switch transaction.kind {
+        case .receipt, .adjustment: transaction.quantity
+        case .consumption: -transaction.quantity
         }
     }
 }

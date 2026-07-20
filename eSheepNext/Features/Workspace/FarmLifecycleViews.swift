@@ -39,6 +39,7 @@ struct RemovalEntryView: View {
         .navigationTitle("离场记录")
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["离场"])
     }
 
     private func save() {
@@ -58,7 +59,7 @@ struct ProductionBatchListView: View {
     @State private var isCreating = false
 
     private var farmBatches: [ProductionBatchRecord] {
-        batches.filter { $0.farmID == farm.id && $0.deletedAt == nil }
+        ProductionBatchVisibility.userManaged(farmID: farm.id, batches: batches)
     }
 
     var body: some View {
@@ -91,12 +92,22 @@ struct ProductionBatchListView: View {
         .sheet(isPresented: $isCreating) {
             NavigationStack { CreateProductionBatchView(account: account, farm: farm) }
         }
+        .farmExcelImport(account: account, farm: farm, sheets: ["生产批次", "批次脱离"])
     }
+}
+
+private struct ProductionBatchCandidate: Identifiable, Equatable {
+    let id: UUID
+    let earTag: String
+    let sexName: String
+    let breed: String
 }
 
 private struct CreateProductionBatchView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Query private var sheep: [SheepRecord]
+    @Query private var memberships: [BatchMembershipRecord]
     let account: AccountProfile
     let farm: FarmRecord
     private let commandService = FarmCommandService()
@@ -105,26 +116,117 @@ private struct CreateProductionBatchView: View {
     @State private var purpose = "育肥"
     @State private var startedAt = Date.now
     @State private var note = ""
+    @State private var selectedIDs = Set<UUID>()
+    @State private var query = ""
+    @State private var visibleCandidates: [ProductionBatchCandidate] = []
     @State private var errorMessage: String?
+
+    init(account: AccountProfile, farm: FarmRecord) {
+        self.account = account
+        self.farm = farm
+        let farmID = farm.id
+        let activeStatus = SheepStatus.active.rawValue
+        _sheep = Query(
+            filter: #Predicate<SheepRecord> {
+                $0.farmID == farmID &&
+                    $0.deletedAt == nil &&
+                    $0.statusRawValue == activeStatus &&
+                    $0.isHistoricalArchive == false
+            },
+            sort: \SheepRecord.earTag
+        )
+        _memberships = Query(
+            filter: #Predicate<BatchMembershipRecord> {
+                $0.farmID == farmID && $0.deletedAt == nil && $0.leftAt == nil
+            }
+        )
+    }
 
     var body: some View {
         Form {
-            TextField("批次名称", text: $name)
-            TextField("生产目的", text: $purpose)
-            DatePicker("起始时间", selection: $startedAt)
-            TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
+            Section("批次信息") {
+                TextField("批次名称", text: $name)
+                TextField("生产目的", text: $purpose)
+                DatePicker("开始时间", selection: $startedAt, in: ...Date.now)
+                TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
+            }
+            Section {
+                if visibleCandidates.isEmpty {
+                    Text(query.isEmpty ? "没有可加入批次的在群羊只" : "没有匹配的羊只")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(visibleCandidates, id: \.id) { item in
+                        Button {
+                            if !selectedIDs.insert(item.id).inserted { selectedIDs.remove(item.id) }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: selectedIDs.contains(item.id) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selectedIDs.contains(item.id) ? AppTheme.brand : .secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.earTag).foregroundStyle(.primary)
+                                    Text("\(item.sexName) · \(item.breed)")
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            } header: {
+                HStack {
+                    Text("人工选择羊只")
+                    Spacer()
+                    Text("已选 \(selectedIDs.count) 只")
+                }
+            } footer: {
+                Text("已在其他未结束批次中的羊只不会重复显示。最后一只成员被手工移出时，批次自动归档；羊只仍可继续留养。")
+            }
         }
         .navigationTitle("新建生产批次")
+        .searchable(text: $query, prompt: "搜索耳号")
+        .onAppear(perform: rebuildCandidates)
+        .onChange(of: query) { _, _ in rebuildCandidates() }
+        .onChange(of: sheep.count) { _, _ in rebuildCandidates() }
+        .onChange(of: memberships.count) { _, _ in rebuildCandidates() }
+        .onChange(of: startedAt) { _, value in
+            let unavailableIDs = Set(memberships.map(\.sheepID))
+            let eligibleIDs = Set(sheep.filter {
+                $0.enteredAt <= value && !unavailableIDs.contains($0.id)
+            }.map(\.id))
+            selectedIDs.formIntersection(eligibleIDs)
+            rebuildCandidates()
+        }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存", action: save).disabled(selectedIDs.isEmpty)
+            }
         }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["生产批次"])
+    }
+
+    private func rebuildCandidates() {
+        // This derived state belongs to the sheet lifecycle. It changes only
+        // when the source query, date, or search text changes—not on every tap.
+        let unavailableIDs = Set(memberships.map(\.sheepID))
+        visibleCandidates = Array(sheep.lazy.filter {
+            $0.enteredAt <= startedAt &&
+                !unavailableIDs.contains($0.id) &&
+                (query.isEmpty || $0.earTag.localizedCaseInsensitiveContains(query))
+        }.map {
+            ProductionBatchCandidate(id: $0.id, earTag: $0.earTag, sexName: $0.sex.displayName, breed: $0.breed)
+        })
     }
 
     private func save() {
         do {
-            try commandService.execute(.createBatch(name: name, purpose: purpose, startedAt: startedAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            try commandService.execute(
+                .createBatch(name: name, purpose: purpose, startedAt: startedAt, sheepIDs: selectedIDs.sorted { $0.uuidString < $1.uuidString }, note: note),
+                in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
+                context: modelContext
+            )
             dismiss()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -139,58 +241,62 @@ private struct ProductionBatchDetailView: View {
     let farm: FarmRecord
     let batch: ProductionBatchRecord
     private let commandService = FarmCommandService()
-    @State private var sheepID: UUID?
-    @State private var joinedAt = Date.now
     @State private var errorMessage: String?
 
-    private var activeMemberships: [BatchMembershipRecord] {
-        memberships.filter { $0.farmID == farm.id && $0.batchID == batch.id && $0.deletedAt == nil && $0.leftAt == nil }
-    }
-    private var memberIDs: Set<UUID> { Set(activeMemberships.map(\.sheepID)) }
-    private var candidateSheep: [SheepRecord] {
-        sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active && !memberIDs.contains($0.id) }
+    private var batchMemberships: [BatchMembershipRecord] {
+        memberships.filter { $0.farmID == farm.id && $0.batchID == batch.id && $0.deletedAt == nil }
     }
     private var sheepNames: [UUID: String] { Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0.earTag) }) }
 
     var body: some View {
         List {
-            Section("当前成员") {
-                ForEach(activeMemberships, id: \.id) { membership in
-                    HStack {
-                        Text(sheepNames[membership.sheepID] ?? "已删除羊只")
-                        Spacer()
-                        Button("离开批次", role: .destructive) { leave(membership) }
-                    }
+            Section("批次") {
+                LabeledContent("状态", value: batch.status == .active ? "进行中" : "已归档")
+                LabeledContent("开始时间") { Text(batch.startedAt, format: .dateTime.year().month().day().hour().minute()) }
+                if let endedAt = batch.endedAt {
+                    LabeledContent("归档时间") { Text(endedAt, format: .dateTime.year().month().day().hour().minute()) }
                 }
-                if activeMemberships.isEmpty { Text("尚未加入羊只").foregroundStyle(.secondary) }
             }
-            if batch.status == .active {
-                Section("加入批次") {
-                    Picker("羊只", selection: $sheepID) {
-                        Text("请选择").tag(UUID?.none)
-                        ForEach(candidateSheep, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) }
+            Section("成员") {
+                ForEach(batchMemberships, id: \.id) { membership in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(sheepNames[membership.sheepID] ?? "已删除羊只")
+                            Spacer()
+                            Text(membership.leftAt == nil ? "批次中" : "已脱离")
+                                .font(.footnote)
+                                .foregroundStyle(membership.leftAt == nil ? AppTheme.brand : .secondary)
+                        }
+                        Text("加入于 \(membership.joinedAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        if let leftAt = membership.leftAt {
+                            Text("脱离于 \(leftAt.formatted(date: .abbreviated, time: .shortened)) · \(membership.leaveReason ?? "手工脱离")")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        } else if batch.status == .active {
+                            Button("移出批次", role: .destructive) { leave(membership) }
+                        }
                     }
-                    DatePicker("加入时间", selection: $joinedAt)
-                    Button("加入批次", action: add).disabled(sheepID == nil)
                 }
+                if batchMemberships.isEmpty { Text("该旧批次没有成员记录").foregroundStyle(.secondary) }
             }
         }
         .navigationTitle(batch.name)
         .recordErrorAlert($errorMessage)
-    }
-
-    private func add() {
-        guard let sheepID else { return }
-        do {
-            try commandService.execute(.assignSheepToBatch(batchID: batch.id, sheepID: sheepID, joinedAt: joinedAt), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
-            self.sheepID = nil
-        } catch { errorMessage = error.localizedDescription }
+        .farmExcelImport(account: account, farm: farm, sheets: ["批次脱离"])
     }
 
     private func leave(_ membership: BatchMembershipRecord) {
         do {
-            try commandService.execute(.leaveBatch(batchID: batch.id, sheepID: membership.sheepID, leftAt: .now, reason: "手动离开"), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
-        } catch { errorMessage = error.localizedDescription }
+            try commandService.execute(
+                .leaveBatch(batchID: batch.id, sheepID: membership.sheepID, leftAt: .now, reason: "手工脱离批次"),
+                in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
+                context: modelContext
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -283,6 +389,7 @@ struct InventoryManagementView: View {
         .sheet(isPresented: $isReceiving) {
             NavigationStack { ReceiveInventoryView(account: account, farm: farm) }
         }
+        .farmExcelImport(account: account, farm: farm, sheets: ["库存入库", "库存调整"])
     }
 
     private func balance(for lot: InventoryLotRecord) -> Decimal {
@@ -327,6 +434,7 @@ private struct ReceiveInventoryView: View {
             ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) }
         }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["库存入库"])
     }
 
     private func save() {
@@ -371,6 +479,7 @@ struct SemenLibraryView: View {
         .sheet(isPresented: $isAdding) {
             NavigationStack { AddSemenView(account: account, farm: farm) }
         }
+        .farmExcelImport(account: account, farm: farm, sheets: ["冻精入库", "冻精调整"])
     }
 }
 
@@ -402,6 +511,7 @@ private struct AddSemenView: View {
             ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) }
         }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["冻精入库"])
     }
 
     private func save() {

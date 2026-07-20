@@ -290,7 +290,11 @@ struct FarmSettingsView: View {
                 AccountAvatarEditor(account: account)
             }
             Section("账户") {
-                LabeledContent("显示名称", value: account.displayName)
+                NavigationLink {
+                    AccountDisplayNameEditor(account: account)
+                } label: {
+                    LabeledContent("显示名称", value: account.displayName)
+                }
                 LabeledContent("登录绑定", value: account.serverBindingState == .verified ? "CloudBase 已验证" : "等待 CloudBase 验证")
                 if SubscriptionFeatureConfiguration.isEnabled {
                     NavigationLink {
@@ -360,5 +364,88 @@ struct FarmSettingsView: View {
             }
         }
         .navigationTitle("设置")
+    }
+}
+
+@MainActor
+private struct AccountDisplayNameEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    let account: AccountProfile
+
+    @State private var displayName: String
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    @FocusState private var isNameFocused: Bool
+
+    init(account: AccountProfile) {
+        self.account = account
+        _displayName = State(initialValue: account.displayName)
+    }
+
+    private var normalizedName: String {
+        displayName.precomposedStringWithCompatibilityMapping
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSave: Bool {
+        !isSaving && !normalizedName.isEmpty && normalizedName.count <= 40 && normalizedName != account.displayName
+    }
+
+    var body: some View {
+        Form {
+            Section("账户名称") {
+                TextField("显示名称", text: $displayName)
+                    .textContentType(.name)
+                    .focused($isNameFocused)
+                    .submitLabel(.done)
+                    .onSubmit { if canSave { save() } }
+                Text("名称会同步到你的 eSheep+ 账户，并显示给同一牧场的协作成员。最多 40 个字符。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("修改名称")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                if isSaving {
+                    ProgressView()
+                } else {
+                    Button("保存", action: save)
+                        .disabled(!canSave)
+                }
+            }
+        }
+        .alert("无法修改名称", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "未知错误")
+        }
+        .onAppear { isNameFocused = true }
+    }
+
+    private func save() {
+        let submittedName = normalizedName
+        guard !submittedName.isEmpty, submittedName.count <= 40 else { return }
+        isSaving = true
+        Task {
+            defer { isSaving = false }
+            do {
+                let response = try await IdentityWorkerClient.shared.updateAccountDisplayName(submittedName)
+                guard response.accountID == account.effectiveAccountID else {
+                    throw IdentityWorkerError.server(code: "account_mismatch", message: "当前登录会话与本机账户不一致，请退出后重新登录。")
+                }
+                account.displayName = response.displayName
+                account.updatedAt = .now
+                try modelContext.save()
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 }

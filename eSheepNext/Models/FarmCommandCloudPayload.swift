@@ -147,8 +147,13 @@ enum FarmCommandCloudPayloadEncoder {
             payload.dates = ["occurredAt": occurredAt]
         case .restoreSheep(let removalID):
             payload.identifiers = ["removalID": removalID]
-        case .createBatch(let name, let purpose, let startedAt, let note):
-            payload.strings = ["name": name, "purpose": purpose, "note": note]
+        case .createBatch(let name, let purpose, let startedAt, let sheepIDs, let note):
+            payload.strings = [
+                "name": name,
+                "purpose": purpose,
+                "note": note,
+                "sheepIDs": sheepIDs.map { $0.uuidString.lowercased() }.joined(separator: ","),
+            ]
             payload.dates = ["startedAt": startedAt]
         case .assignSheepToBatch(let batchID, let sheepID, let joinedAt):
             payload.identifiers = ["batchID": batchID, "sheepID": sheepID]

@@ -103,7 +103,7 @@ class CollaborationService {
 
   async health() {
     await this.store.find({ type: "service_probe" }, 1);
-    return { status: "ok", environment: this.env.APP_ENVIRONMENT || "cloudbase-development", version: "0.3.2", database: "cloudbase-document" };
+    return { status: "ok", environment: this.env.APP_ENVIRONMENT || "cloudbase-development", version: "0.3.3", database: "cloudbase-document" };
   }
 
   async consumeRateLimit(scope, identity, limit, windowSeconds) {
@@ -127,10 +127,19 @@ class CollaborationService {
     if (current?.status === "deleted") throw new APIError(403, "account_unavailable", "该账号当前不可登录。");
     if (!current) {
       await this.store.set(documentID, { type: "account", accountID, displayName: displayName || "eSheep+ 用户", status: "active", createdAt: now(), updatedAt: now() });
-    } else if (displayName && displayName !== current.displayName) {
-      await this.store.update(documentID, { displayName, updatedAt: now() });
     }
-    return { ...current, accountID, displayName: displayName || current?.displayName || "eSheep+ 用户", status: current?.status || "active" };
+    return { ...current, accountID, displayName: current?.displayName || displayName || "eSheep+ 用户", status: current?.status || "active" };
+  }
+
+  async updateAccountDisplayName(accountID, rawDisplayName) {
+    const displayName = String(rawDisplayName || "").normalize("NFKC").trim();
+    if (!displayName) throw new APIError(400, "invalid_display_name", "显示名称不能为空。");
+    if ([...displayName].length > 40) throw new APIError(400, "invalid_display_name", "显示名称不能超过 40 个字符。");
+    const documentID = key("account", accountID);
+    const current = await this.store.get(documentID);
+    if (!current || current.status === "deleted") throw new APIError(403, "account_unavailable", "该账号当前不可用。");
+    await this.store.update(documentID, { displayName, updatedAt: now() });
+    return { accountID, displayName };
   }
 
   async recordAppleBinding(accountID, subjectHash, encryptedRefreshToken) {

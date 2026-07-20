@@ -67,7 +67,7 @@ final class FarmHistoryRebuilder {
             .filter { $0.farmID == farmID && $0.deletedAt == nil }
         let removals = try context.fetch(FetchDescriptor<RemovalRecord>())
             .filter { $0.farmID == farmID && $0.deletedAt == nil }
-        let memberships = try context.fetch(FetchDescriptor<BatchMembershipRecord>())
+        let batches = try context.fetch(FetchDescriptor<ProductionBatchRecord>())
             .filter { $0.farmID == farmID && $0.deletedAt == nil }
 
         for item in sheep {
@@ -117,13 +117,12 @@ final class FarmHistoryRebuilder {
                 item.revision += 1
             }
 
-            if let removal {
-                for membership in memberships where membership.sheepID == item.id && membership.leftAt == nil {
-                    membership.leftAt = removal.occurredAt
-                    membership.leaveReason = removal.kind.displayName
-                    membership.updatedAt = .now
-                }
-            }
+        }
+
+        // 批次生命周期与羊只是否离场无关。只有用户明确将成员脱离批次，成员关系才结束；
+        // 最后一位成员的手工脱离时间就是批次归档时间。
+        for batch in batches where batch.sourceRawValue == ProductionBatchSource.manual.rawValue {
+            try ProductionBatchLifecycle.reconcile(batchID: batch.id, farmID: farmID, context: context)
         }
 
         // `.distantPast` is a storage sentinel for an unknown legacy entry

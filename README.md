@@ -31,11 +31,13 @@
 这些步骤不能由仓库代码或无签名构建替代，尚未在本机伪造完成状态：
 
 1. Debug/Development 已启用正式迁移牧场的 iCloud 双设备同步与成员邀请入口；Staging 与 Release 继续关闭。真实双账号邀请、撤权、订阅、TestFlight 和 App Store 工作仍需单独验收。
-2. 仓库内 CloudBase Gateway 0.3.2 已覆盖邮箱、Apple、刷新、退出、删除、限流、迁移牧场 `provisioning → active` 目录状态，以及牧场 UUID 大小写统一。2026-07-19 已向 Development 完整 COS 部署 0.3.2；Apple 路由不再返回 `apple_cloudbase_migration_pending`。真实 Apple 系统授权、邮箱验证码注册和迁移牧场双设备重建仍需在真机分别完成交互验收。
+2. 仓库内 CloudBase Gateway 0.3.3 已覆盖邮箱、Apple、刷新、退出、删除、限流、账户显示名称修改、迁移牧场 `provisioning → active` 目录状态，以及牧场 UUID 大小写统一。2026-07-19 已向 Development 完整 COS 部署的仍是 0.3.2；0.3.3 的账户名称接口尚待部署。真实 Apple 系统授权、邮箱验证码注册和迁移牧场双设备重建仍需在真机分别完成交互验收。
 3. 登录成功后的业务写入只依赖本机 SwiftData；断网、CloudKit 关闭和重启不应阻断建羊、称重、转群、离场、修正、撤销、查询和备份恢复。
 4. 新增的 `com.sheepfarm.next.dev.widget` Bundle ID 仍需要有效描述文件才能在连接设备上运行 XCTest；无签名 App/Test/Widget 编译不受此限制。
 
 当前自动化基线以 `./tools/verify_local.sh` 的最新结果为准；真实登录、迁移包上传、同一场主双设备重建、断网续传和照片对账仍必须在两台真实 iCloud 设备上取得证据，不能由编译或模拟响应代替。
+
+2026-07-20 基线已在 iPhone 16 Pro（iOS 27.0）执行全部 122 项 XCTest，122 项通过、0 失败、0 跳过；`build-for-testing`、旧 Worker 15/15、CloudBase Gateway 16/16、Emoji 扫描与依赖审计也已通过。11 英寸 iPad 的完整页面回归、两台 Development 设备的真实 CloudKit 同步，以及 Gateway 0.3.3 部署仍未完成。
 
 云端准入按环境隔离：Development 只允许具有完整迁移提交、基线摘要和照片校验的正式迁移牧场，不再存在固定种子测试牧场路径；Staging/Production 云功能仍由构建开关关闭。迁移目录在完整上传前保持 provisioning，第二台设备和受邀成员只能发现 active 牧场。
 

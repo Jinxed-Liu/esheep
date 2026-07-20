@@ -19,7 +19,7 @@
 
 - [ ] 为 App 与 Widget 的 Development、Staging、Production Bundle ID 注册能力。
 - [ ] App 和 Widget 的 App Group 完全一致，并生成有效描述文件。
-- [ ] 在正式非 Beta Xcode 上执行全部 82 项 XCTest（2026-07-18 已在 iPhone 16 Pro 使用 Beta Xcode 实跑 82/82，不能替代正式 Xcode 门禁）。
+- [ ] 在正式非 Beta Xcode 上执行全部 122 项 XCTest（2026-07-20 已在 iPhone 16 Pro 使用 Beta Xcode 实跑 122/122，不能替代正式 Xcode 门禁）。
 - [ ] iPhone 16 Pro 与 11 英寸 iPad Pro 完成逐页、横竖屏、键盘、Dynamic Type、VoiceOver、深色模式、离线和失败态回归。
 - [ ] 使用两个真实 iCloud 账号完成七日 private/shared Zone、邀请、离线、冲突、撤权、重装、缓存重建、照片和最终对账验收。
 

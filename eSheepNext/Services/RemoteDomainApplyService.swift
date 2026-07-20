@@ -225,10 +225,29 @@ struct RemoteDomainApplyService {
         case .createBatch:
             if try exists(ProductionBatchRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             context.insert(ProductionBatchRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), purpose: try string("purpose", payload), startedAt: try date("startedAt", payload), note: payload.strings["note"] ?? ""))
+            let sheepIDs = (payload.strings["sheepIDs"] ?? "")
+                .split(separator: ",")
+                .compactMap { UUID(uuidString: String($0)) }
+            for sheepID in sheepIDs {
+                context.insert(BatchMembershipRecord(
+                    id: StableCloudUUID.derived(namespace: envelope.entityID, name: "batch-member-\(sheepID.uuidString.lowercased())"),
+                    farmID: envelope.farmID,
+                    batchID: envelope.entityID,
+                    sheepID: sheepID,
+                    joinedAt: try date("startedAt", payload)
+                ))
+            }
             return .applied(rebuildHistoryFrom: nil)
         case .assignBatchMembership:
             if try exists(BatchMembershipRecord.self, id: envelope.entityID, context: context) { return .duplicate }
-            context.insert(BatchMembershipRecord(id: envelope.entityID, farmID: envelope.farmID, batchID: try identifier("batchID", payload), sheepID: try identifier("sheepID", payload), joinedAt: try date("joinedAt", payload)))
+            let record = BatchMembershipRecord(id: envelope.entityID, farmID: envelope.farmID, batchID: try identifier("batchID", payload), sheepID: try identifier("sheepID", payload), joinedAt: try date("joinedAt", payload))
+            record.leftAt = optionalDate("leftAt", payload)
+            record.leaveReason = payload.optionalStrings["leaveReason"] ?? nil
+            record.updatedAt = envelope.modifiedAt
+            context.insert(record)
+            if record.leftAt != nil {
+                try ProductionBatchLifecycle.reconcile(batchID: record.batchID, farmID: envelope.farmID, context: context, changedAt: envelope.modifiedAt)
+            }
             return .applied(rebuildHistoryFrom: try date("joinedAt", payload))
         case .leaveBatchMembership:
             guard let record = try fetch(BatchMembershipRecord.self, id: envelope.entityID, context: context) else { throw RemoteDomainApplyError.missingReference("batchMembership") }
@@ -236,6 +255,7 @@ struct RemoteDomainApplyService {
             record.leftAt = try date("leftAt", payload)
             record.leaveReason = payload.strings["reason"] ?? ""
             record.updatedAt = envelope.modifiedAt
+            try ProductionBatchLifecycle.reconcile(batchID: record.batchID, farmID: envelope.farmID, context: context, changedAt: envelope.modifiedAt)
             return .applied(rebuildHistoryFrom: record.leftAt)
         case .addIngredient:
             if try exists(FeedIngredientRecord.self, id: envelope.entityID, context: context) { return .duplicate }

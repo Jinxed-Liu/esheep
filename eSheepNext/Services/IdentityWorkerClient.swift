@@ -125,6 +125,11 @@ struct WorkerAccountStatus: Codable, Sendable {
     let memberships: [Membership]
 }
 
+struct WorkerAccountProfileResponse: Codable, Sendable, Equatable {
+    let accountID: UUID
+    let displayName: String
+}
+
 struct WorkerFarmSecuritySnapshot: Codable, Sendable {
     struct Member: Codable, Sendable {
         let membershipID: String
@@ -318,6 +323,14 @@ actor IdentityWorkerClient {
         try await request(path: "/v1/account/status", method: "GET", body: Optional<String>.none)
     }
 
+    func updateAccountDisplayName(_ displayName: String) async throws -> WorkerAccountProfileResponse {
+        try await request(
+            path: "/v1/account/profile",
+            method: "PATCH",
+            body: AccountProfileUpdateBody(displayName: displayName)
+        )
+    }
+
     func farmSecuritySnapshot(farmID: UUID) async throws -> WorkerFarmSecuritySnapshot {
         try await request(path: "/v1/farms/\(farmID.uuidString.lowercased())/security-snapshot", method: "GET", body: Optional<String>.none)
     }
@@ -417,6 +430,7 @@ private struct PasswordRegistrationBody: Codable {
     let displayName: String
 }
 private struct PasswordLoginBody: Codable { let username: String; let password: String }
+private struct AccountProfileUpdateBody: Codable { let displayName: String }
 private struct FarmRegistrationBody: Codable { let farmID: UUID; let zoneName: String; let shareRecordName: String?; let status: String }
 private struct WorkerFarmRegistrationResponse: Codable { let farmID: UUID; let status: String }
 private struct InviteBody: Codable { let farmID: UUID; let role: FarmRole }

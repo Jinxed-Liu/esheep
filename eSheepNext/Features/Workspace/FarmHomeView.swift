@@ -180,7 +180,7 @@ private enum HomeMetricDestination: String, Hashable, Identifiable {
 
     var symbol: String {
         switch self {
-        case .sheep: "pawprint.fill"
+        case .sheep: "tag.fill"
         case .pens: "building.2"
         case .feeding: "leaf"
         }
@@ -193,14 +193,14 @@ private struct HomeMetric: View {
     let symbol: String
 
     var body: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 6) {
-                Image(systemName: symbol).foregroundStyle(AppTheme.brand)
-                Text(value).font(.title3.bold())
-                Text(title).font(.caption).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64, alignment: .leading)
+        VStack(alignment: .leading, spacing: 6) {
+            Image(systemName: symbol).foregroundStyle(AppTheme.brand)
+            Text(value).font(.title3.bold())
+            Text(title).font(.caption).foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64, alignment: .leading)
+        .padding(20)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 24))
         .frame(maxWidth: .infinity)
     }
 }

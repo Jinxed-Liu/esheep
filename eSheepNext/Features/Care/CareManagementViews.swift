@@ -44,7 +44,7 @@ struct CareManagementView: View {
             Section("快捷录入") {
                 Button { sheet = .health } label: { Label("治疗或疫苗", systemImage: "cross.case") }
                 Button { sheet = .reproduction } label: { Label("批量配种或孕检", systemImage: "heart.text.square") }
-                Button { sheet = .lambing } label: { Label("产羔并建立羔羊档案", systemImage: "pawprint") }
+                Button { sheet = .lambing } label: { Label("产羔并建立羔羊档案", systemImage: "birthday.cake") }
             }
             Section("管理") {
                 NavigationLink { HealthCatalogManagementView(account: account, farm: farm) } label: { Label("药品与疫苗目录", systemImage: "books.vertical") }
@@ -196,6 +196,7 @@ struct HealthBatchEntryView: View {
         .navigationTitle("治疗或疫苗")
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["健康记录"])
         .onChange(of: mode) { _, _ in selectedIDs.removeAll(); penID = nil }
         .onChange(of: kind) { _, _ in catalogID = nil; inventoryLotID = nil }
         .onChange(of: catalogID) { _, id in applyCatalog(id) }
@@ -244,6 +245,7 @@ struct HealthCatalogManagementView: View {
         .navigationTitle("药品与疫苗目录")
         .toolbar { Button { selectedItem = .init(id: UUID()) } label: { Image(systemName: "plus") } }
         .sheet(item: $selectedItem) { destination in NavigationStack { HealthCatalogEditorView(account: account, farm: farm, itemID: destination.id) } }
+        .farmExcelImport(account: account, farm: farm, sheets: ["健康目录"])
     }
 }
 
@@ -279,6 +281,7 @@ struct HealthCatalogEditorView: View {
         .navigationTitle("健康目录")
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["健康目录"])
         .onAppear {
             guard let item = catalogs.first(where: { $0.id == itemID && $0.farmID == farm.id }) else { return }
             kind = catalogHealthKind(item); name = item.name; category = item.category; unit = item.unit; dose = item.defaultDoseText ?? ""; route = item.defaultRoute; reminderDays = item.reminderIntervalDays.map(String.init) ?? ""; note = item.note; isActive = item.isActive
@@ -309,6 +312,7 @@ struct CareInventoryView: View {
         .navigationTitle("药品与疫苗库存")
         .toolbar { Button { receiving = true } label: { Image(systemName: "plus") } }
         .sheet(isPresented: $receiving) { NavigationStack { InventoryReceiveCareView(account: account, farm: farm) } }
+        .farmExcelImport(account: account, farm: farm, sheets: ["库存入库", "库存调整"])
     }
 }
 
@@ -322,6 +326,7 @@ private struct InventoryReceiveCareView: View {
     var body: some View {
         Form { Picker("目录", selection: $catalogID) { Text("手工填写").tag(UUID?.none); ForEach(farmCatalogs, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }; TextField("名称", text: $name); Picker("类型", selection: $kind) { ForEach(HealthRecordKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }; TextField("批号", text: $batchNumber); TextField("供应商", text: $supplier); TextField("单位", text: $unit); TextField("数量", text: $quantity).keyboardType(.decimalPad); Toggle("记录有效期", isOn: $hasExpiry); if hasExpiry { DatePicker("有效期", selection: $expiry, displayedComponents: .date) }; TextField("备注", text: $note) }
             .navigationTitle("库存入库").toolbar { EntrySaveToolbar(action: save) }.recordErrorAlert($errorMessage)
+            .farmExcelImport(account: account, farm: farm, sheets: ["库存入库"])
             .onChange(of: catalogID) { _, id in guard let item = farmCatalogs.first(where: { $0.id == id }) else { return }; name = item.name; kind = catalogHealthKind(item); unit = item.unit }
     }
     private func save() { do { try service.execute(.care(.receiveInventory(id: UUID(), catalogName: name, catalogItemID: catalogID, kindRawValue: kind.rawValue, batchNumber: batchNumber, supplier: supplier, unit: unit, expiresAt: hasExpiry ? expiry : nil, quantityText: quantity, occurredAt: .now, note: note)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); dismiss() } catch { errorMessage = error.localizedDescription } }
@@ -342,6 +347,7 @@ private struct CareInventoryLotDetailView: View {
             Section("流水") { ForEach(farmTransactions.sorted { $0.occurredAt > $1.occurredAt }, id: \.id) { value in LabeledContent(value.note.isEmpty ? value.kindRawValue : value.note, value: value.quantityText) } }
             Section { Button(lot.isActive ? "停用批次" : "重新启用") { setActive(!lot.isActive) } }
         }.navigationTitle("库存详情").recordErrorAlert($errorMessage)
+            .farmExcelImport(account: account, farm: farm, sheets: ["库存调整"])
     }
     private func adjust() { do { try service.execute(.care(.adjustInventory(id: UUID(), lotID: lot.id, quantityDeltaText: delta, occurredAt: .now, note: note)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); delta = ""; note = "" } catch { errorMessage = error.localizedDescription } }
     private func setActive(_ active: Bool) { do { try service.execute(.care(.setInventoryLotActive(lotID: lot.id, isActive: active)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext) } catch { errorMessage = error.localizedDescription } }
@@ -370,6 +376,7 @@ struct ReproductionBatchEntryView: View {
             DatePicker("发生时间", selection: $occurredAt); if kind != .abortion { DatePicker(kind == .breeding ? "孕检提醒" : "预产提醒", selection: $reminderAt) }; TextField("备注", text: $note, axis: .vertical)
         }
         .navigationTitle("批量配种或孕检").toolbar { EntrySaveToolbar(action: save) }.recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["繁殖记录"])
         .onAppear { updateReminder() }.onChange(of: kind) { _, _ in sireID = nil; semenID = nil; updateReminder() }.onChange(of: occurredAt) { _, _ in updateReminder() }
     }
     private func updateReminder() { let days = kind == .breeding ? (rule?.pregnancyCheckDays ?? 45) : (rule?.gestationDays ?? 150); reminderAt = Calendar.current.date(byAdding: .day, value: days, to: occurredAt) ?? occurredAt }
@@ -387,6 +394,7 @@ struct CareLambingEntryView: View {
     var body: some View {
         Form { Picker("母羊", selection: $eweID) { Text("请选择").tag(UUID?.none); ForEach(ewes, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }; Picker("公羊", selection: $sireID) { Text("未知或冻精").tag(UUID?.none); ForEach(rams, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }; Picker("冻精", selection: $semenID) { Text("未关联").tag(UUID?.none); ForEach(farmSemen, id: \.id) { Text($0.code).tag(UUID?.some($0.id)) } }; Picker("羔羊圈舍", selection: $penID) { Text("未分圈").tag(UUID?.none); ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }; DatePicker("产羔时间", selection: $occurredAt); Stepper("胎次：\(parity)", value: $parity, in: 1...20); LabeledContent("产羔总数", value: "\(rows.count)"); LabeledContent("死胎数", value: "\(rows.count(where: \.isStillborn))"); Section("逐只羔羊") { ForEach($rows) { $row in VStack { TextField("耳号", text: $row.earTag); Picker("性别", selection: $row.sex) { Text("公").tag(SheepSex.ram); Text("母").tag(SheepSex.ewe) }; TextField("初生重", text: $row.birthWeight).keyboardType(.decimalPad); Toggle("死胎", isOn: $row.isStillborn); Toggle("建立羊只档案", isOn: $row.createRecord).disabled(row.isStillborn) } }.onDelete { rows.remove(atOffsets: $0) }; Button("增加一只羔羊") { rows.append(LambFormRow()) } }; TextField("备注", text: $note, axis: .vertical) }
             .navigationTitle("产羔记录").toolbar { EntrySaveToolbar(action: save) }.recordErrorAlert($errorMessage)
+            .farmExcelImport(account: account, farm: farm, sheets: ["产羔"])
     }
     private func save() { guard let eweID else { errorMessage = "请选择母羊。"; return }; let offspring = rows.map { CareLambDraft(id: $0.id, sheepID: $0.sheepID, earTag: $0.earTag, sex: $0.sex, birthWeightText: $0.birthWeight, createSheepRecord: $0.isStillborn ? false : $0.createRecord, isStillborn: $0.isStillborn) }; let draft = CareLambingDraft(id: UUID(), eweID: eweID, occurredAt: occurredAt, sireID: sireID, semenID: semenID, parity: parity, birthDeadCount: offspring.count(where: \.isStillborn), offspring: offspring, penID: penID, note: note); do { try service.execute(.care(.recordLambing(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); dismiss() } catch { errorMessage = error.localizedDescription } }
 }
@@ -394,7 +402,7 @@ struct CareLambingEntryView: View {
 struct CareSemenView: View {
     @Query(sort: \SemenRecord.code) private var semen: [SemenRecord]
     let account: AccountProfile; let farm: FarmRecord
-    var body: some View { List { NavigationLink { SemenLibraryView(account: account, farm: farm) } label: { Label("新增冻精批次", systemImage: "plus") }; ForEach(semen.filter { $0.farmID == farm.id && $0.deletedAt == nil }, id: \.id) { record in NavigationLink { CareSemenDetailView(account: account, farm: farm, semen: record) } label: { Text(record.code) } } }.navigationTitle("冻精库存") }
+    var body: some View { List { NavigationLink { SemenLibraryView(account: account, farm: farm) } label: { Label("新增冻精批次", systemImage: "plus") }; ForEach(semen.filter { $0.farmID == farm.id && $0.deletedAt == nil }, id: \.id) { record in NavigationLink { CareSemenDetailView(account: account, farm: farm, semen: record) } label: { Text(record.code) } } }.navigationTitle("冻精库存").farmExcelImport(account: account, farm: farm, sheets: ["冻精入库", "冻精调整"]) }
 }
 
 private struct CareSemenDetailView: View {
@@ -402,7 +410,7 @@ private struct CareSemenDetailView: View {
     let account: AccountProfile; let farm: FarmRecord; let semen: SemenRecord; private let service = FarmCommandService()
     @State private var delta = ""; @State private var note = ""; @State private var errorMessage: String?
     private var balance: Decimal { let initial = Decimal.stable(semen.quantityText) ?? 0; return transactions.filter { $0.farmID == farm.id && $0.semenID == semen.id && $0.deletedAt == nil }.reduce(initial) { partial, value in switch value.kind { case .receipt, .adjustment: partial + value.quantity; case .consumption: partial - value.quantity } } }
-    var body: some View { Form { LabeledContent("编号", value: semen.code); LabeledContent("余量", value: balance.stableText); TextField("增减数量", text: $delta).keyboardType(.numbersAndPunctuation); TextField("原因", text: $note); Button("保存调整", action: save) }.navigationTitle("冻精详情").recordErrorAlert($errorMessage) }
+    var body: some View { Form { LabeledContent("编号", value: semen.code); LabeledContent("余量", value: balance.stableText); TextField("增减数量", text: $delta).keyboardType(.numbersAndPunctuation); TextField("原因", text: $note); Button("保存调整", action: save) }.navigationTitle("冻精详情").recordErrorAlert($errorMessage).farmExcelImport(account: account, farm: farm, sheets: ["冻精调整"]) }
     private func save() { do { try service.execute(.care(.adjustSemen(id: UUID(), semenID: semen.id, quantityDeltaText: delta, occurredAt: .now, note: note)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); delta = ""; note = "" } catch { errorMessage = error.localizedDescription } }
 }
 
@@ -410,7 +418,7 @@ struct CareRulesView: View {
     @Environment(\.modelContext) private var modelContext; @Query private var rules: [FarmCareRuleRecord]
     let account: AccountProfile; let farm: FarmRecord; private let service = FarmCommandService()
     @State private var checkDays = 45; @State private var gestationDays = 150; @State private var errorMessage: String?
-    var body: some View { Form { Stepper("配种后孕检：\(checkDays) 天", value: $checkDays, in: 1...365); Stepper("妊娠周期：\(gestationDays) 天", value: $gestationDays, in: 100...220); Button("保存规则", action: save) }.navigationTitle("提醒规则").onAppear { if let value = rules.first(where: { $0.farmID == farm.id }) { checkDays = value.pregnancyCheckDays; gestationDays = value.gestationDays } }.recordErrorAlert($errorMessage) }
+    var body: some View { Form { Stepper("配种后孕检：\(checkDays) 天", value: $checkDays, in: 1...365); Stepper("妊娠周期：\(gestationDays) 天", value: $gestationDays, in: 100...220); Button("保存规则", action: save) }.navigationTitle("提醒规则").onAppear { if let value = rules.first(where: { $0.farmID == farm.id }) { checkDays = value.pregnancyCheckDays; gestationDays = value.gestationDays } }.recordErrorAlert($errorMessage).farmExcelImport(account: account, farm: farm, sheets: ["提醒规则"]) }
     private func save() { do { try service.execute(.care(.updateRules(id: rules.first(where: { $0.farmID == farm.id })?.id ?? UUID(), pregnancyCheckDays: checkDays, gestationDays: gestationDays)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext) } catch { errorMessage = error.localizedDescription } }
 }
 

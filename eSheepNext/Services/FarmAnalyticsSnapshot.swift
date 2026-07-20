@@ -35,7 +35,18 @@ struct FarmAnalyticsSnapshot: Sendable {
     struct Offspring: Sendable, Hashable { let id: UUID; let sheepID: UUID?; let earTag: String; let sex: LambSex?; let birthWeight: Double? }
     struct Removal: Sendable, Hashable { let sheepID: UUID; let kind: RemovalKind; let occurredAt: Date }
     struct Transfer: Sendable, Hashable { let id: UUID; let sheepID: UUID; let toPenID: UUID?; let occurredAt: Date; let recordedAt: Date }
-    struct BatchMembership: Sendable, Hashable { let batchID: UUID; let sheepID: UUID; let joinedAt: Date; let leftAt: Date? }
+    struct BatchMembership: Sendable, Hashable {
+        let batchID: UUID
+        let sheepID: UUID
+        let joinedAt: Date
+        let leftAt: Date?
+
+        /// 批次归属按事实发生时间判断。脱离批次只影响其后的事实，
+        /// 不会从批次分析中抹掉加入后、脱离前已经发生的数据。
+        func contains(eventAt date: Date) -> Bool {
+            joinedAt <= date && (leftAt.map { date <= $0 } ?? true)
+        }
+    }
     struct Feed: Sendable, Hashable { let penID: UUID; let ingredientName: String; let kilograms: Double; let mode: FeedMode; let occurredAt: Date }
 
     let farmID: UUID
@@ -123,6 +134,7 @@ struct LambMonthStats: Identifiable, Sendable {
     var firstParity = 0; var multiParity = 0; var totalDams = 0; var maleLambs = 0; var femaleLambs = 0; var totalLambs = 0; var birthDead = 0
     var avgPerLamb = 0.0; var deathRate = 0.0; var multiPct = 0.0; var disappeared = 0; var culled = 0; var sold = 0; var inHerd = 0
     var maleWeightAverage = 0.0; var maleWeightCount = 0; var femaleWeightAverage = 0.0; var femaleWeightCount = 0
+    var maleADGAverage = 0.0; var maleADGCount = 0; var femaleADGAverage = 0.0; var femaleADGCount = 0
     var id: String { month }
 }
 
@@ -142,6 +154,10 @@ struct WeanMonthStats: Identifiable, Sendable {
     var averageAge: Double { ageCount > 0 ? Double(ageDays) / Double(ageCount) : 0 }
     var averageWeight: Double { weightCount > 0 ? weightSum / Double(weightCount) : 0 }
     var averageADG: Double { adgCount > 0 ? adgSum / Double(adgCount) : 0 }
+    var maleAverageWeight: Double { maleWeightCount > 0 ? maleWeightSum / Double(maleWeightCount) : 0 }
+    var femaleAverageWeight: Double { femaleWeightCount > 0 ? femaleWeightSum / Double(femaleWeightCount) : 0 }
+    var maleAverageADG: Double { maleADGCount > 0 ? maleADGSum / Double(maleADGCount) : 0 }
+    var femaleAverageADG: Double { femaleADGCount > 0 ? femaleADGSum / Double(femaleADGCount) : 0 }
 }
 
 struct LambWeaningAnalysis: Sendable {
@@ -157,7 +173,11 @@ struct LambWeaningAnalysis: Sendable {
 enum LambAnalyticsEngine {
     static func calculate(snapshot: FarmAnalyticsSnapshot, selectedYear: String?, selectedWeaningMonth: String = "全部") -> FarmLambAnalyticsResult {
         let sheepByID = Dictionary(uniqueKeysWithValues: snapshot.sheep.map { ($0.id, $0) })
-        let completeLambings = snapshot.lambings.filter { $0.hasCompleteAnalyticsData && (selectedYear == nil || FarmAnalyticsDate.year($0.occurredAt) == selectedYear) }
+        let yearLambings = snapshot.lambings.filter { selectedYear == nil || FarmAnalyticsDate.year($0.occurredAt) == selectedYear }
+        let completeLambings = yearLambings.filter(\.hasCompleteAnalyticsData)
+        let weaningBySheepID = Dictionary(grouping: snapshot.weanings, by: \.sheepID).compactMapValues { records in
+            records.max { $0.occurredAt < $1.occurredAt }
+        }
         var months: [String: LambMonthStats] = [:]
         var tagsByMonth: [String: Set<String>] = [:]
         for lambing in completeLambings {
@@ -168,9 +188,23 @@ enum LambAnalyticsEngine {
             if lambing.total >= 2 { stats.multiPct += Double(lambing.total) }
             for child in lambing.offspring {
                 tagsByMonth[month, default: []].insert(EarTag.normalized(child.earTag))
-                guard let weight = child.birthWeight, weight > 0 else { continue }
-                if child.sex == .male { stats.maleLambs += 1; stats.maleWeightCount += 1; stats.maleWeightAverage += weight }
-                else if child.sex == .female { stats.femaleLambs += 1; stats.femaleWeightCount += 1; stats.femaleWeightAverage += weight }
+                if child.sex == .male { stats.maleLambs += 1 }
+                else if child.sex == .female { stats.femaleLambs += 1 }
+                if let weight = child.birthWeight, weight > 0 {
+                    if child.sex == .male { stats.maleWeightCount += 1; stats.maleWeightAverage += weight }
+                    else if child.sex == .female { stats.femaleWeightCount += 1; stats.femaleWeightAverage += weight }
+                }
+                guard let sheepID = child.sheepID,
+                      let weaning = weaningBySheepID[sheepID],
+                      let birthWeight = weaning.birthWeight ?? child.birthWeight,
+                      birthWeight > 0,
+                      weaning.weanWeight > birthWeight else { continue }
+                let birthAt = weaning.birthAt ?? sheepByID[sheepID]?.birthAt ?? lambing.occurredAt
+                let ageDays = FarmAnalyticsDate.days(from: birthAt, to: weaning.occurredAt)
+                guard ageDays > 0 else { continue }
+                let adg = (weaning.weanWeight - birthWeight) / Double(ageDays) * 1000
+                if child.sex == .male { stats.maleADGCount += 1; stats.maleADGAverage += adg }
+                else if child.sex == .female { stats.femaleADGCount += 1; stats.femaleADGAverage += adg }
             }
             months[month] = stats
         }
@@ -190,6 +224,8 @@ enum LambAnalyticsEngine {
             stats.deathRate = stats.totalLambs > 0 ? Double(stats.birthDead) / Double(stats.totalLambs) : 0
             if stats.maleWeightCount > 0 { stats.maleWeightAverage /= Double(stats.maleWeightCount) }
             if stats.femaleWeightCount > 0 { stats.femaleWeightAverage /= Double(stats.femaleWeightCount) }
+            if stats.maleADGCount > 0 { stats.maleADGAverage /= Double(stats.maleADGCount) }
+            if stats.femaleADGCount > 0 { stats.femaleADGAverage /= Double(stats.femaleADGCount) }
             for tag in tagsByMonth[month] ?? [] { if let counts = removalsByTag[tag] { stats.disappeared += counts.disappeared; stats.culled += counts.culled; stats.sold += counts.sold } }
             stats.inHerd = (tagsByMonth[month] ?? []).intersection(activeTags).count
             months[month] = stats
@@ -199,7 +235,7 @@ enum LambAnalyticsEngine {
         let totalDead = sortedMonths.reduce(0) { $0 + $1.birthDead }
         let totalCull = sortedMonths.reduce(0) { $0 + $1.culled + $1.disappeared }
         let weaning = calculateWeaning(snapshot: snapshot, sheepByID: sheepByID, selectedYear: selectedYear, selectedMonth: selectedWeaningMonth)
-        return FarmLambAnalyticsResult(lambStats: LambStats(months: sortedMonths, totalLambs: totalLambs, mortalityRate: totalLambs > 0 ? Double(totalDead) / Double(totalLambs) : 0, deathCullRate: totalLambs > totalDead ? Double(totalCull) / Double(totalLambs - totalDead) : 0), weaning: weaning, incompleteLambingCount: snapshot.lambings.count - completeLambings.count)
+        return FarmLambAnalyticsResult(lambStats: LambStats(months: sortedMonths, totalLambs: totalLambs, mortalityRate: totalLambs > 0 ? Double(totalDead) / Double(totalLambs) : 0, deathCullRate: totalLambs > totalDead ? Double(totalCull) / Double(totalLambs - totalDead) : 0), weaning: weaning, incompleteLambingCount: yearLambings.count - completeLambings.count)
     }
 
     private static func calculateWeaning(snapshot: FarmAnalyticsSnapshot, sheepByID: [UUID: FarmAnalyticsSnapshot.Sheep], selectedYear: String?, selectedMonth: String) -> LambWeaningAnalysis {
@@ -374,6 +410,10 @@ enum WeightGainAnalyticsEngine {
             switch scope { case .all: return true; case .inHerdOnly: return !removed.contains(sheep.id); case .removedOnly: return removed.contains(sheep.id) }
         }.map(\.id)
         let pointMap = timelines(snapshot: snapshot, sheepIDs: Set(eligible), limit: limit)
+        return cohort(eligible: eligible, pointMap: pointMap)
+    }
+
+    private static func cohort(eligible: [UUID], pointMap: [UUID: [Point]]) -> WeightCohort {
         var weightsByDate: [Date: [Double]] = [:]; var adgByDate: [Date: [Double]] = [:]; var latestWeights: [Double] = []; var latestADGs: [Double] = []; var scatter: [WeightScatterPoint] = []
         for (sheepID, points) in pointMap {
             guard let latest = points.last else { continue }
@@ -397,8 +437,21 @@ enum WeightGainAnalyticsEngine {
     }
 
     static func cohort(snapshot: FarmAnalyticsSnapshot, batchID: UUID, snapshotDate: Date, scope: WeightSampleScope = .all) -> WeightCohort {
-        let candidates = Set(snapshot.batchMemberships.filter { $0.batchID == batchID && $0.joinedAt <= snapshotDate && ($0.leftAt.map { $0 >= snapshotDate } ?? true) }.map(\.sheepID))
-        return cohort(snapshot: snapshot, sheepIDs: candidates, snapshotDate: snapshotDate, scope: scope)
+        let memberships = snapshot.batchMemberships.filter { $0.batchID == batchID && $0.joinedAt <= snapshotDate }
+        let membershipBySheep = Dictionary(grouping: memberships, by: \.sheepID)
+        let removed = Set(snapshot.removals.filter { $0.occurredAt <= snapshotDate }.map(\.sheepID))
+        let eligible = snapshot.sheep.compactMap { sheep -> UUID? in
+            guard membershipBySheep[sheep.id] != nil else { return nil }
+            switch scope {
+            case .all: return sheep.id
+            case .inHerdOnly: return removed.contains(sheep.id) ? nil : sheep.id
+            case .removedOnly: return removed.contains(sheep.id) ? sheep.id : nil
+            }
+        }
+        let pointMap = timelines(snapshot: snapshot, sheepIDs: Set(eligible), limit: snapshotDate) { sheepID, occurredAt in
+            membershipBySheep[sheepID]?.contains(where: { $0.contains(eventAt: occurredAt) }) == true
+        }
+        return cohort(eligible: eligible, pointMap: pointMap)
     }
 
     static func trendline(for points: [WeightScatterPoint], kind: WeightRegressionKind) -> [WeightRegressionPoint] {
@@ -492,10 +545,15 @@ enum WeightGainAnalyticsEngine {
     }
 
     private struct Point { let date: Date; let weight: Double; let source: Int }
-    private static func timelines(snapshot: FarmAnalyticsSnapshot, sheepIDs: Set<UUID>, limit: Date) -> [UUID: [Point]] {
+    private static func timelines(
+        snapshot: FarmAnalyticsSnapshot,
+        sheepIDs: Set<UUID>,
+        limit: Date,
+        includes: (UUID, Date) -> Bool = { _, _ in true }
+    ) -> [UUID: [Point]] {
         var raw: [UUID: [Point]] = [:]
-        for weight in snapshot.weights where sheepIDs.contains(weight.sheepID) && weight.occurredAt <= limit { raw[weight.sheepID, default: []].append(Point(date: FarmAnalyticsDate.day(weight.occurredAt), weight: weight.kilograms, source: 0)) }
-        for weaning in snapshot.weanings where sheepIDs.contains(weaning.sheepID) && weaning.occurredAt <= limit { raw[weaning.sheepID, default: []].append(Point(date: FarmAnalyticsDate.day(weaning.occurredAt), weight: weaning.weanWeight, source: 1)) }
+        for weight in snapshot.weights where sheepIDs.contains(weight.sheepID) && weight.occurredAt <= limit && includes(weight.sheepID, weight.occurredAt) { raw[weight.sheepID, default: []].append(Point(date: FarmAnalyticsDate.day(weight.occurredAt), weight: weight.kilograms, source: 0)) }
+        for weaning in snapshot.weanings where sheepIDs.contains(weaning.sheepID) && weaning.occurredAt <= limit && includes(weaning.sheepID, weaning.occurredAt) { raw[weaning.sheepID, default: []].append(Point(date: FarmAnalyticsDate.day(weaning.occurredAt), weight: weaning.weanWeight, source: 1)) }
         return raw.mapValues { points in Dictionary(grouping: points, by: \.date).compactMap { date, sameDay in sameDay.sorted { $0.source < $1.source }.first.map { Point(date: date, weight: $0.weight, source: $0.source) } }.sorted { $0.date < $1.date } }
     }
     private static func pen(at date: Date, sheep: FarmAnalyticsSnapshot.Sheep, transfers: [FarmAnalyticsSnapshot.Transfer]) -> UUID? {

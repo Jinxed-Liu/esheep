@@ -253,10 +253,13 @@ struct MigrationCloudBootstrapService {
             values.append((.removal, value.id, value.revision, try FarmCommandCloudPayloadEncoder.encode(.removeSheep(sheepID: value.sheepID, kind: value.kind, reason: value.reason, amountText: value.amountText, occurredAt: value.occurredAt, note: value.note)), 30))
         }
         for value in try context.fetch(FetchDescriptor<ProductionBatchRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
-            values.append((.productionBatch, value.id, 1, try FarmCommandCloudPayloadEncoder.encode(.createBatch(name: value.name, purpose: value.purpose, startedAt: value.startedAt, note: value.note)), 10))
+            values.append((.productionBatch, value.id, 1, try FarmCommandCloudPayloadEncoder.encode(.createBatch(name: value.name, purpose: value.purpose, startedAt: value.startedAt, sheepIDs: [], note: value.note)), 10))
         }
         for value in try context.fetch(FetchDescriptor<BatchMembershipRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
-            values.append((.batchMembership, value.id, 1, try FarmCommandCloudPayloadEncoder.encode(.assignSheepToBatch(batchID: value.batchID, sheepID: value.sheepID, joinedAt: value.joinedAt)), 30))
+            var payload = try decodePayload(FarmCommandCloudPayloadEncoder.encode(.assignSheepToBatch(batchID: value.batchID, sheepID: value.sheepID, joinedAt: value.joinedAt)))
+            payload.optionalDates["leftAt"] = value.leftAt
+            payload.optionalStrings["leaveReason"] = value.leaveReason
+            values.append((.batchMembership, value.id, value.leftAt == nil ? 1 : 2, try JSONEncoder.cloud.encode(payload), 30))
         }
         for value in try context.fetch(FetchDescriptor<FeedIngredientRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
             var payload = try decodePayload(FarmCommandCloudPayloadEncoder.encode(.addIngredient(name: value.name, unit: value.unit, dryMatterText: value.dryMatterText)))

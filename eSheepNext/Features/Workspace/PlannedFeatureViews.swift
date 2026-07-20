@@ -73,6 +73,7 @@ struct IngredientLibraryView: View {
         .navigationTitle("原料库")
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { isAdding = true } label: { Image(systemName: "plus") } } }
         .sheet(isPresented: $isAdding) { NavigationStack { AddIngredientView(account: account, farm: farm) } }
+        .farmExcelImport(account: account, farm: farm, sheets: ["饲料原料"])
     }
 }
 
@@ -99,6 +100,7 @@ private struct AddIngredientView: View {
             ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
         }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["饲料原料"])
     }
 
     private func save() {
@@ -137,6 +139,7 @@ struct RecipeLibraryView: View {
         .navigationTitle("配方")
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { isAdding = true } label: { Image(systemName: "plus") } } }
         .sheet(isPresented: $isAdding) { NavigationStack { AddRecipeView(account: account, farm: farm) } }
+        .farmExcelImport(account: account, farm: farm, sheets: ["饲料配方", "配方组成"])
     }
 }
 
@@ -158,6 +161,7 @@ private struct AddRecipeView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
             }
             .recordErrorAlert($errorMessage)
+            .farmExcelImport(account: account, farm: farm, sheets: ["饲料配方"])
     }
 
     private func save() {
@@ -199,6 +203,7 @@ private struct RecipeDetailView: View {
         }
         .navigationTitle(recipe.name)
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["配方组成"])
     }
 
     private func addComponent() {
@@ -279,6 +284,7 @@ struct FeedEntryView: View {
             ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
         }
         .recordErrorAlert($errorMessage)
+        .farmExcelImport(account: account, farm: farm, sheets: ["投喂"])
         .onChange(of: ingredientID) { _, _ in ingredientBatchID = nil }
     }
 

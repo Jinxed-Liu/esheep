@@ -341,31 +341,70 @@ private enum CSVCodec {
     }
 }
 
-private enum XLSXCodec {
+struct XLSXSheet: Sendable, Equatable {
+    let name: String
+    let rows: [[String]]
+}
+
+enum XLSXCodec {
     static func encode(table: [[String]]) throws -> Data {
-        let sheetRows = table.enumerated().map { rowIndex, row in
+        try encode(sheets: [XLSXSheet(name: "羊只档案", rows: table)])
+    }
+
+    static func encode(sheets: [XLSXSheet]) throws -> Data {
+        guard !sheets.isEmpty else { throw FarmDataInterchangeError.malformedFile("工作簿不能为空。") }
+        var usedNames = Set<String>()
+        let normalized = sheets.enumerated().map { index, sheet -> XLSXSheet in
+            var base = String(sheet.name.prefix(31)).replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: "/", with: "-")
+            if base.isEmpty { base = "工作表\(index + 1)" }
+            var candidate = base, suffix = 2
+            while !usedNames.insert(candidate.lowercased()).inserted {
+                let tail = "-\(suffix)"; candidate = String(base.prefix(max(1, 31 - tail.count))) + tail; suffix += 1
+            }
+            return XLSXSheet(name: candidate, rows: sheet.rows)
+        }
+        var entries: [(String, Data)] = []
+        let overrides = normalized.indices.map { "<Override PartName=\"/xl/worksheets/sheet\($0 + 1).xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" }.joined()
+        entries.append(("[Content_Types].xml", Data("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>\(overrides)</Types>".utf8)))
+        entries.append(("_rels/.rels", Data("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>".utf8)))
+        let workbookSheets = normalized.enumerated().map { "<sheet name=\"\(xmlEscape($0.element.name))\" sheetId=\"\($0.offset + 1)\" r:id=\"rId\($0.offset + 1)\"/>" }.joined()
+        entries.append(("xl/workbook.xml", Data("<?xml version=\"1.0\" encoding=\"UTF-8\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>\(workbookSheets)</sheets></workbook>".utf8)))
+        let relationships = normalized.indices.map { "<Relationship Id=\"rId\($0 + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet\($0 + 1).xml\"/>" }.joined() + "<Relationship Id=\"rId\(normalized.count + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
+        entries.append(("xl/_rels/workbook.xml.rels", Data("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\(relationships)</Relationships>".utf8)))
+        entries.append(("xl/styles.xml", Data(stylesXML.utf8)))
+        for (sheetIndex, sheet) in normalized.enumerated() {
+            let sheetRows = sheet.rows.enumerated().map { rowIndex, row in
             let cells = row.enumerated().map { columnIndex, value in
                 let ref = "\(columnName(columnIndex + 1))\(rowIndex + 1)"
-                return "<c r=\"\(ref)\" t=\"inlineStr\"><is><t xml:space=\"preserve\">\(xmlEscape(value))</t></is></c>"
+                let style = rowIndex == 0 ? " s=\"1\"" : (value.hasPrefix("示例") ? " s=\"2\"" : "")
+                return "<c r=\"\(ref)\"\(style) t=\"inlineStr\"><is><t xml:space=\"preserve\">\(xmlEscape(value))</t></is></c>"
             }.joined()
             return "<row r=\"\(rowIndex + 1)\">\(cells)</row>"
-        }.joined()
-        let sheet = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>\(sheetRows)</sheetData></worksheet>"
-        let entries: [(String, Data)] = [
-            ("[Content_Types].xml", Data("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/></Types>".utf8)),
-            ("_rels/.rels", Data("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>".utf8)),
-            ("xl/workbook.xml", Data("<?xml version=\"1.0\" encoding=\"UTF-8\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets><sheet name=\"羊只档案\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>".utf8)),
-            ("xl/_rels/workbook.xml.rels", Data("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/></Relationships>".utf8)),
-            ("xl/worksheets/sheet1.xml", Data(sheet.utf8))
-        ]
+            }.joined()
+            let maxColumns = max(sheet.rows.map(\.count).max() ?? 1, 1)
+            let cols = (1...maxColumns).map { "<col min=\"\($0)\" max=\"\($0)\" width=\"18\" customWidth=\"1\"/>" }.joined()
+            let autoFilter = sheet.rows.count > 1 ? "<autoFilter ref=\"A1:\(columnName(maxColumns))\(sheet.rows.count)\"/>" : ""
+            let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews><cols>\(cols)</cols><sheetData>\(sheetRows)</sheetData>\(autoFilter)</worksheet>"
+            entries.append(("xl/worksheets/sheet\(sheetIndex + 1).xml", Data(xml.utf8)))
+        }
         return ZIPArchive.encode(entries)
     }
 
     static func decode(_ data: Data) throws -> [[String]] {
+        guard let first = try decodeSheets(data).first else { throw FarmDataInterchangeError.malformedFile("XLSX 缺少工作表。") }
+        return first.rows
+    }
+
+    static func decodeSheets(_ data: Data) throws -> [XLSXSheet] {
         let entries = try ZIPArchive.decode(data)
-        guard let sheet = entries["xl/worksheets/sheet1.xml"] else { throw FarmDataInterchangeError.malformedFile("XLSX 缺少第一个工作表。") }
         let shared = entries["xl/sharedStrings.xml"].map(SharedStringsParser.parse) ?? []
-        return WorksheetParser.parse(sheet, sharedStrings: shared)
+        let names = entries["xl/workbook.xml"].map(WorkbookSheetNameParser.parse) ?? []
+        var sheets: [XLSXSheet] = []
+        for index in 1...max(names.count, 1) {
+            guard let xml = entries["xl/worksheets/sheet\(index).xml"] else { continue }
+            sheets.append(XLSXSheet(name: names.indices.contains(index - 1) ? names[index - 1] : "工作表\(index)", rows: WorksheetParser.parse(xml, sharedStrings: shared)))
+        }
+        return sheets
     }
 
     private static func columnName(_ number: Int) -> String {
@@ -376,6 +415,18 @@ private enum XLSXCodec {
 
     private static func xmlEscape(_ value: String) -> String {
         value.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    private static let stylesXML = """
+    <?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/></font><font><i/><color rgb="FF666666"/><sz val="11"/><name val="Aptos"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2E7D5B"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF2F4F3"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>
+    """
+}
+
+private final class WorkbookSheetNameParser: NSObject, XMLParserDelegate {
+    private var names: [String] = []
+    static func parse(_ data: Data) -> [String] { let delegate = WorkbookSheetNameParser(); let parser = XMLParser(data: data); parser.delegate = delegate; parser.parse(); return delegate.names }
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        if elementName == "sheet", let name = attributeDict["name"] { names.append(name) }
     }
 }
 

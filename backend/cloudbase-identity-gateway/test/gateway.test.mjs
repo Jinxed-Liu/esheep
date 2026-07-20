@@ -53,11 +53,12 @@ async function invoke(handler, path, body, method, token) {
 
 function fakeService(overrides = {}) {
   return {
-    health: async () => ({ status: "ok", environment: "cloudbase-development", version: "0.3.2", database: "cloudbase-document" }),
+    health: async () => ({ status: "ok", environment: "cloudbase-development", version: "0.3.3", database: "cloudbase-document" }),
     ensureAccount: async (accountID, displayName) => ({ accountID, displayName: displayName || "eSheep+ 用户" }),
     consumeRateLimit: async () => ({ remaining: 1 }),
     recordAppleBinding: async () => undefined,
     appleCredential: async () => null,
+    updateAccountDisplayName: async (accountID, displayName) => ({ accountID, displayName }),
     ...overrides,
   };
 }
@@ -164,6 +165,25 @@ test("protected collaboration routes introspect the CloudBase access token", asy
   assert.deepEqual(result, { status: 200, json: { accountID, status: "active", memberships: [] } });
 });
 
+test("account profile update requires the current session and returns the normalized name", async () => {
+  const accountID = stableAccountID("profile-subject");
+  const updates = [];
+  const service = fakeService({
+    updateAccountDisplayName: async (...value) => {
+      updates.push(value);
+      return { accountID: value[0], displayName: "北山牧场" };
+    },
+  });
+  const fetchImpl = async (url, init) => {
+    assert.ok(String(url).endsWith("/auth/v1/token/introspect"));
+    assert.equal(init.headers.authorization, "Bearer access-token");
+    return Response.json({ sub: "profile-subject" });
+  };
+  const result = await invoke(createHandler({ fetchImpl, env, collaborationService: service }), "/identity/v1/account/profile", { displayName: "  北山牧场  " }, "PATCH", "access-token");
+  assert.deepEqual(result, { status: 200, json: { accountID, displayName: "北山牧场" } });
+  assert.deepEqual(updates, [[accountID, "  北山牧场  "]]);
+});
+
 function appleIdentityToken(rawNonce, subject = "apple-user-1") {
   const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: "apple-test-key" })).toString("base64url");
   const payload = Buffer.from(JSON.stringify({
@@ -204,6 +224,30 @@ test("Apple sign-in verifies Apple and returns a native CloudBase session", asyn
   assert.ok(bindings[0][2].ciphertext);
 });
 
+test("Apple sign-in without a name does not send a fallback that can overwrite the account", async () => {
+  const ensured = [];
+  const service = fakeService({
+    ensureAccount: async (accountID, displayName) => {
+      ensured.push({ accountID, displayName });
+      return { accountID, displayName: "已修改名称" };
+    },
+  });
+  const fetchImpl = async (url) => {
+    const value = String(url);
+    if (value === "https://appleid.apple.com/auth/keys") return Response.json({ keys: [{ ...appleSigningKeys.publicKey.export({ format: "jwk" }), kid: "apple-test-key", alg: "RS256" }] });
+    if (value === "https://appleid.apple.com/auth/token") return Response.json({ refresh_token: "apple-refresh-token" });
+    if (value.endsWith("/auth/v1/signin/custom")) return Response.json({ sub: "cloudbase-apple-subject", access_token: "access", refresh_token: "refresh", expires_in: 7200 });
+    throw new Error(`unexpected URL ${value}`);
+  };
+  const rawNonce = "nonce-without-name";
+  const result = await invoke(createHandler({ fetchImpl, env, collaborationService: service }), "/identity/v1/auth/apple", {
+    identityToken: appleIdentityToken(rawNonce), authorizationCode: "authorization-code", nonce: rawNonce,
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.json.displayName, "已修改名称");
+  assert.deepEqual(ensured, [{ accountID: stableAccountID("cloudbase-apple-subject"), displayName: "" }]);
+});
+
 test("Apple sign-in rejects a nonce mismatch without creating an account", async () => {
   const fetchImpl = async (url) => {
     if (String(url) === "https://appleid.apple.com/auth/keys") {
@@ -235,6 +279,18 @@ test("identity rate limits fail closed after the configured request count", asyn
   await service.consumeRateLimit("password_login", "client-1", 2, 900);
   await service.consumeRateLimit("password_login", "client-1", 2, 900);
   await assert.rejects(service.consumeRateLimit("password_login", "client-1", 2, 900), (error) => error.code === "rate_limited");
+});
+
+test("account display name is explicit, normalized, and never replaced by later login metadata", async () => {
+  const service = new CollaborationService({ store: new MemoryStore(), env: {} });
+  const accountID = randomUUID();
+  await service.ensureAccount(accountID, "Apple 初始名称");
+  const updated = await service.updateAccountDisplayName(accountID, "  北山牧场  ");
+  const afterLogin = await service.ensureAccount(accountID, "Apple 后续名称");
+  assert.deepEqual(updated, { accountID, displayName: "北山牧场" });
+  assert.equal(afterLogin.displayName, "北山牧场");
+  await assert.rejects(service.updateAccountDisplayName(accountID, "   "), (error) => error.code === "invalid_display_name");
+  await assert.rejects(service.updateAccountDisplayName(accountID, "羊".repeat(41)), (error) => error.code === "invalid_display_name");
 });
 
 test("invite remains pending until owner confirmation and generation changes only on confirmation", async () => {
