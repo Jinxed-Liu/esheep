@@ -1,4 +1,81 @@
+import SwiftData
 import SwiftUI
+
+/// 首页只在用户明确点击导出时读取事件快照，避免让首页长期维护全部历史记录查询。
+struct FarmEventExportLauncher: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+
+    let farmID: UUID
+    let farmName: String
+
+    @State private var state = FarmEventExportLoadState.loading
+    @State private var reloadGeneration = 0
+
+    var body: some View {
+        Group {
+            switch state {
+            case .loading:
+                NavigationStack {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("正在整理可导出的记录")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .navigationTitle("记录导出")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { closeToolbar }
+                }
+            case .loaded(let events):
+                FarmEventExportSheet(farmName: farmName, events: events)
+            case .failed(let message):
+                NavigationStack {
+                    ContentUnavailableView {
+                        Label("无法读取记录", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(message)
+                    } actions: {
+                        Button("重试") { reloadGeneration += 1 }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .navigationTitle("记录导出")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { closeToolbar }
+                }
+            }
+        }
+        .task(id: reloadGeneration) { await load() }
+    }
+
+    @ToolbarContentBuilder
+    private var closeToolbar: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button("取消") { dismiss() }
+        }
+    }
+
+    @MainActor
+    private func load() async {
+        state = .loading
+        do {
+            let events = try await FarmEventHistoryActor(container: modelContext.container).load(farmID: farmID)
+            guard !Task.isCancelled else { return }
+            state = .loaded(events)
+        } catch is CancellationError {
+            return
+        } catch {
+            state = .failed("整理事件记录失败：\(error.localizedDescription)")
+        }
+    }
+}
+
+private enum FarmEventExportLoadState {
+    case loading
+    case loaded([FarmEventSnapshot])
+    case failed(String)
+}
 
 struct FarmEventExportSheet: View {
     @Environment(\.dismiss) private var dismiss

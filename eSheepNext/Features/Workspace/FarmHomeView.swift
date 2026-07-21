@@ -17,10 +17,12 @@ struct FarmHomeView: View {
     @Binding var isMetricDetailPresented: Bool
     @State private var pendingOutboxCount = 0
     @State private var selectedMetric: HomeMetricDestination?
+    @State private var isEventExportPresented = false
     @Namespace private var metricTransition
 
     private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent } }
     private var farmPens: [PenRecord] { CurrentFarmOccupancy.occupiedPens(farmID: farm.id, sheep: sheep, pens: pens) }
+    private var canExport: Bool { CapabilitySet(role: farm.role).allows(.exportFarm) }
     private var todayFeedCount: Int {
         let start = Calendar.current.startOfDay(for: .now)
         return feedRecords.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.occurredAt >= start }.count
@@ -52,6 +54,10 @@ struct FarmHomeView: View {
             if selectedMetric == nil {
                 isMetricDetailPresented = false
             }
+        }
+        .sheet(isPresented: $isEventExportPresented) {
+            FarmEventExportLauncher(farmID: farm.id, farmName: farm.name)
+                .presentationDetents([.large])
         }
         .task(id: farm.id) {
             let farmID = farm.id
@@ -124,6 +130,12 @@ struct FarmHomeView: View {
                 HomeShortcut(title: "转群", symbol: "arrow.left.arrow.right") { session.requestRecordEntry(.transfer) }
                 HomeShortcut(title: "离场", symbol: "person.crop.circle.badge.minus") { session.requestRecordEntry(.removal) }
                 HomeShortcut(title: "投喂", symbol: "leaf") { session.selectedTab = .feeding }
+                HomeShortcut(title: "记录导出", symbol: "square.and.arrow.up") {
+                    isEventExportPresented = true
+                }
+                .disabled(!canExport)
+                .opacity(canExport ? 1 : 0.5)
+                .accessibilityHint(canExport ? "选择记录类型和发生时间范围" : "当前牧场角色没有导出权限")
             }
         }
     }
