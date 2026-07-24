@@ -22,14 +22,113 @@ enum RemoteDomainApplyError: LocalizedError {
     }
 }
 
+/// A replay-only index for a business store that has just been created or purged.
+/// Live sync deliberately does not use it because other writers may mutate that store.
+private final class RemoteDomainReplayIndex {
+    private struct FarmSheepKey: Hashable {
+        let farmID: UUID
+        let sheepID: UUID
+    }
+
+    private var entities: [ObjectIdentifier: [UUID: any PersistentModel]] = [:]
+    private var transfersBySheep: [FarmSheepKey: [TransferRecord]] = [:]
+    private var normalizedEarTagOwners: [UUID: [String: Set<UUID>]] = [:]
+    /// Farm rows do not carry a revision field. During an empty-store replay,
+    /// keep their revision lineage here instead of consulting the retained
+    /// local DomainOperation audit log from the cache being replaced.
+    private var farmRevisions: [UUID: Int] = [:]
+    func rebuildFromPendingInserts(in context: ModelContext) {
+        entities.removeAll(keepingCapacity: true)
+        transfersBySheep.removeAll(keepingCapacity: true)
+        normalizedEarTagOwners.removeAll(keepingCapacity: true)
+        for model in context.insertedModelsArray {
+            register(model)
+        }
+    }
+
+    func fetch<T: PersistentModel>(_ type: T.Type, id: UUID) -> T? where T: AnyObject {
+        entities[ObjectIdentifier(type)]?[id] as? T
+    }
+
+    func transfers(farmID: UUID, sheepID: UUID) -> [TransferRecord] {
+        transfersBySheep[FarmSheepKey(farmID: farmID, sheepID: sheepID)] ?? []
+    }
+
+    func hasEarTagConflict(farmID: UUID, normalizedEarTag: String, excluding sheepID: UUID) -> Bool {
+        normalizedEarTagOwners[farmID]?[normalizedEarTag]?.contains(where: { $0 != sheepID }) == true
+    }
+
+    func farmRevision(for farmID: UUID) -> Int {
+        farmRevisions[farmID] ?? 1
+    }
+
+    func setFarmRevision(_ revision: Int, for farmID: UUID) {
+        farmRevisions[farmID] = revision
+    }
+
+    func replaceEarTag(for sheep: SheepRecord, with normalizedEarTag: String) {
+        let oldTag = EarTag.normalized(sheep.earTag)
+        if oldTag != normalizedEarTag {
+            normalizedEarTagOwners[sheep.farmID]?[oldTag]?.remove(sheep.id)
+        }
+        normalizedEarTagOwners[sheep.farmID, default: [:]][normalizedEarTag, default: []].insert(sheep.id)
+    }
+
+    fileprivate func register(_ model: any PersistentModel) {
+        switch model {
+        case let value as PenRecord: register(value, id: value.id)
+        case let value as SheepRecord:
+            register(value, id: value.id)
+            normalizedEarTagOwners[value.farmID, default: [:]][EarTag.normalized(value.earTag), default: []].insert(value.id)
+        case let value as WeightRecord: register(value, id: value.id)
+        case let value as WeaningRecord: register(value, id: value.id)
+        case let value as BreedingProgramRecord: register(value, id: value.id)
+        case let value as TransferRecord:
+            if register(value, id: value.id) {
+                transfersBySheep[FarmSheepKey(farmID: value.farmID, sheepID: value.sheepID), default: []].append(value)
+            }
+        case let value as RemovalRecord: register(value, id: value.id)
+        case let value as ProductionBatchRecord: register(value, id: value.id)
+        case let value as BatchMembershipRecord: register(value, id: value.id)
+        case let value as FeedIngredientRecord: register(value, id: value.id)
+        case let value as FeedRecipeRecord: register(value, id: value.id)
+        case let value as FeedRecipeComponentRecord: register(value, id: value.id)
+        case let value as FeedRecord: register(value, id: value.id)
+        case let value as InventoryLotRecord: register(value, id: value.id)
+        case let value as HealthRecord: register(value, id: value.id)
+        case let value as ReproductionRecord: register(value, id: value.id)
+        case let value as SemenRecord: register(value, id: value.id)
+        case let value as NoteRecord: register(value, id: value.id)
+        default: break
+        }
+    }
+
+    @discardableResult
+    private func register<T: PersistentModel>(_ model: T, id: UUID) -> Bool {
+        let typeID = ObjectIdentifier(T.self)
+        let inserted = entities[typeID]?[id] == nil
+        entities[typeID, default: [:]][id] = model
+        return inserted
+    }
+}
+
 struct RemoteDomainApplyService {
+    private let replayIndex: RemoteDomainReplayIndex?
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }()
 
+    init(replayAssumesEmptyBusinessStore: Bool = false) {
+        replayIndex = replayAssumesEmptyBusinessStore ? RemoteDomainReplayIndex() : nil
+    }
+
     func apply(_ envelope: CloudOperationEnvelope, context: ModelContext) throws -> RemoteApplyOutcome {
+        try applyDecoded(envelope, context: context)
+    }
+
+    private func applyDecoded(_ envelope: CloudOperationEnvelope, context: ModelContext) throws -> RemoteApplyOutcome {
         let payload = try decoder.decode(FarmCommandCloudPayload.self, from: envelope.payload)
         if let expected = expectedEntityType(for: payload.kind), expected.rawValue != envelope.entityType {
             throw RemoteDomainApplyError.invalidPayload("kind")
@@ -39,20 +138,39 @@ struct RemoteDomainApplyService {
         case .care:
             guard let command = payload.careCommand else { throw RemoteDomainApplyError.invalidPayload("careCommand") }
             if try FarmCareCommandHandler.isApplied(command, farmID: envelope.farmID, context: context) { return .duplicate }
-            try FarmCareCommandHandler.validate(command, farmID: envelope.farmID, context: context)
-            let result = try FarmCareCommandHandler.apply(command, farmID: envelope.farmID, accountID: envelope.modifiedByAccountID, context: context, modifiedAt: envelope.modifiedAt)
+            let result = try FarmCareCommandHandler.validateAndApply(
+                command,
+                farmID: envelope.farmID,
+                accountID: envelope.modifiedByAccountID,
+                context: context,
+                modifiedAt: envelope.modifiedAt
+            )
+            replayIndex?.rebuildFromPendingInserts(in: context)
             guard result.entityType.rawValue == envelope.entityType, result.entityID == envelope.entityID else { throw RemoteDomainApplyError.invalidPayload("careCommand.target") }
             return .applied(rebuildHistoryFrom: command.rebuildHistoryFrom)
         case .createFarm:
             return .duplicate
         case .updateFarmLocation:
-            guard let farm = try context.fetch(FetchDescriptor<FarmRecord>()).first(where: { $0.id == envelope.farmID && $0.deletedAt == nil }) else {
+            let farmID = envelope.farmID
+            var farmDescriptor = FetchDescriptor<FarmRecord>(
+                predicate: #Predicate<FarmRecord> { $0.id == farmID && $0.deletedAt == nil }
+            )
+            farmDescriptor.fetchLimit = 1
+            guard let farm = try context.fetch(farmDescriptor).first else {
                 throw RemoteDomainApplyError.missingReference("farmID")
             }
-            let localRevision = try context.fetch(FetchDescriptor<DomainOperation>())
-                .filter { $0.farmID == envelope.farmID && $0.entityID == farm.id }
-                .map(\.resultingRevision)
-                .max() ?? 1
+            let localRevision: Int
+            if let replayIndex {
+                localRevision = replayIndex.farmRevision(for: farmID)
+            } else {
+                let entityID = farm.id
+                let operationDescriptor = FetchDescriptor<DomainOperation>(
+                    predicate: #Predicate<DomainOperation> { $0.farmID == farmID && $0.entityID == entityID }
+                )
+                localRevision = try context.fetch(operationDescriptor)
+                    .map(\.resultingRevision)
+                    .max() ?? 1
+            }
             guard localRevision == envelope.baseRevision else { return .conflict(localRevision: localRevision) }
             guard let latitude = Double(try string("latitude", payload)),
                   let longitude = Double(try string("longitude", payload)),
@@ -72,10 +190,11 @@ struct RemoteDomainApplyService {
             farm.horizontalAccuracyMeters = optionalString("horizontalAccuracyMeters", payload).flatMap(Double.init)
             farm.locationUpdatedAt = envelope.modifiedAt
             farm.updatedAt = envelope.modifiedAt
+            replayIndex?.setFarmRevision(envelope.revision, for: farmID)
             return .applied(rebuildHistoryFrom: nil)
         case .createPen:
             if try exists(PenRecord.self, id: envelope.entityID, context: context) { return .duplicate }
-            context.insert(PenRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), note: payload.strings["note"] ?? "", createdAt: envelope.modifiedAt))
+            insertIndexed(PenRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), note: payload.strings["note"] ?? "", createdAt: envelope.modifiedAt), context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .updatePen:
             guard let record = try fetch(PenRecord.self, id: try identifier("penID", payload), context: context) else { throw RemoteDomainApplyError.missingReference("penID") }
@@ -95,12 +214,22 @@ struct RemoteDomainApplyService {
         case .addSheep:
             if try exists(SheepRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let normalizedEarTag = EarTag.normalized(try string("earTag", payload))
-            let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
-            if sheep.contains(where: {
-                $0.farmID == envelope.farmID &&
-                $0.id != envelope.entityID &&
-                EarTag.normalized($0.earTag) == normalizedEarTag
-            }) {
+            let hasEarTagConflict: Bool
+            if let replayIndex {
+                hasEarTagConflict = replayIndex.hasEarTagConflict(
+                    farmID: envelope.farmID,
+                    normalizedEarTag: normalizedEarTag,
+                    excluding: envelope.entityID
+                )
+            } else {
+                let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+                hasEarTagConflict = sheep.contains(where: {
+                    $0.farmID == envelope.farmID &&
+                    $0.id != envelope.entityID &&
+                    EarTag.normalized($0.earTag) == normalizedEarTag
+                })
+            }
+            if hasEarTagConflict {
                 return .conflict(localRevision: 0)
             }
             let record = SheepRecord(
@@ -128,18 +257,43 @@ struct RemoteDomainApplyService {
             )
             record.revision = envelope.revision
             record.isBreedingRam = payload.integers["isBreedingRam"] == 1
+            record.legacyStatusSnapshotIsAuthoritative = payload.integers["legacyStatusSnapshotIsAuthoritative"] == 1
+            record.legacyPenSnapshotIsAuthoritative = payload.integers["legacyPenSnapshotIsAuthoritative"] == 1
+            if record.legacyStatusSnapshotIsAuthoritative == true,
+               let status = payload.strings["legacyStatusRawValue"].flatMap(SheepStatus.init(rawValue:)) {
+                record.statusRawValue = status.rawValue
+                record.removedAt = optionalDate("legacyRemovedAt", payload)
+            }
+            if record.legacyPenSnapshotIsAuthoritative == true, record.status == .active {
+                record.currentPenID = optionalID("legacyCurrentPenID", payload)
+            } else if record.status != .active {
+                record.currentPenID = nil
+            }
             record.updatedAt = envelope.modifiedAt
-            context.insert(record)
+            insertIndexed(record, context: context)
             return .applied(rebuildHistoryFrom: record.enteredAt)
         case .updateSheepProfile:
             guard let record = try fetch(SheepRecord.self, id: try identifier("sheepID", payload), context: context) else { throw RemoteDomainApplyError.missingReference("sheepID") }
             guard record.revision == envelope.baseRevision else { return .conflict(localRevision: record.revision) }
             let earTag = try string("earTag", payload)
             let normalized = EarTag.normalized(earTag)
-            let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
-            guard !sheep.contains(where: { $0.farmID == envelope.farmID && $0.id != record.id && EarTag.normalized($0.earTag) == normalized }) else {
+            let hasEarTagConflict: Bool
+            if let replayIndex {
+                hasEarTagConflict = replayIndex.hasEarTagConflict(
+                    farmID: envelope.farmID,
+                    normalizedEarTag: normalized,
+                    excluding: record.id
+                )
+            } else {
+                let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+                hasEarTagConflict = sheep.contains(where: {
+                    $0.farmID == envelope.farmID && $0.id != record.id && EarTag.normalized($0.earTag) == normalized
+                })
+            }
+            guard !hasEarTagConflict else {
                 return .conflict(localRevision: record.revision)
             }
+            replayIndex?.replaceEarTag(for: record, with: normalized)
             record.earTag = earTag
             record.breed = try string("breed", payload)
             record.sexRawValue = try string("sex", payload)
@@ -151,7 +305,7 @@ struct RemoteDomainApplyService {
             return .applied(rebuildHistoryFrom: nil)
         case .recordWeight:
             if try exists(WeightRecord.self, id: envelope.entityID, context: context) { return .duplicate }
-            context.insert(WeightRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: try identifier("sheepID", payload), kilogramsText: try string("kilogramsText", payload), occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? ""))
+            insertIndexed(WeightRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: try identifier("sheepID", payload), kilogramsText: try string("kilogramsText", payload), occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? ""), context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .correctWeight:
             if try exists(WeightRecord.self, id: envelope.entityID, context: context) { return .duplicate }
@@ -160,11 +314,11 @@ struct RemoteDomainApplyService {
             original.deletedAt = envelope.modifiedAt
             original.revision += 1
             context.insert(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.weight.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["reason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID))
-            context.insert(WeightRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: original.sheepID, kilogramsText: try string("kilogramsText", payload), occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? ""))
+            insertIndexed(WeightRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: original.sheepID, kilogramsText: try string("kilogramsText", payload), occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? ""), context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .recordWeaning:
             if try exists(WeaningRecord.self, id: envelope.entityID, context: context) { return .duplicate }
-            context.insert(WeaningRecord(
+            insertIndexed(WeaningRecord(
                 id: envelope.entityID,
                 farmID: envelope.farmID,
                 sheepID: try identifier("sheepID", payload),
@@ -176,13 +330,13 @@ struct RemoteDomainApplyService {
                 damID: optionalID("damID", payload),
                 litterSize: payload.integers["litterSize"],
                 note: payload.strings["note"] ?? ""
-            ))
+            ), context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .createBreedingProgram:
             if try exists(BreedingProgramRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             guard !payload.breedingProgramSteps.isEmpty else { throw RemoteDomainApplyError.invalidPayload("breedingProgramSteps") }
             let createdAt = try date("createdAt", payload)
-            context.insert(BreedingProgramRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), createdAt: createdAt))
+            insertIndexed(BreedingProgramRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), createdAt: createdAt), context: context)
             for step in payload.breedingProgramSteps.sorted(by: { $0.sortOrder < $1.sortOrder }) {
                 guard step.dayOffset >= 0, !step.action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw RemoteDomainApplyError.invalidPayload("breedingProgramSteps")
@@ -194,58 +348,119 @@ struct RemoteDomainApplyService {
             if try exists(TransferRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let sheepID = try identifier("sheepID", payload)
             guard let sheep = try fetch(SheepRecord.self, id: sheepID, context: context) else { throw RemoteDomainApplyError.missingReference("sheepID") }
+            releaseLegacyHistoryProjectionAuthority(for: sheep)
             let occurredAt = try date("occurredAt", payload)
-            let transfers = try context.fetch(FetchDescriptor<TransferRecord>()).filter { $0.farmID == envelope.farmID && $0.sheepID == sheepID && $0.deletedAt == nil }
+            let transfers: [TransferRecord]
+            if let replayIndex {
+                transfers = replayIndex.transfers(farmID: envelope.farmID, sheepID: sheepID).filter { $0.deletedAt == nil }
+            } else {
+                let farmID = envelope.farmID
+                transfers = try context.fetch(FetchDescriptor<TransferRecord>(
+                    predicate: #Predicate<TransferRecord> {
+                        $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil
+                    }
+                ))
+            }
             let record = TransferRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: sheepID, fromPenID: FarmHistoryTimeline.pen(for: sheep, at: occurredAt, transfers: transfers), toPenID: optionalID("toPenID", payload), occurredAt: occurredAt, note: payload.strings["note"] ?? "")
-            context.insert(record)
+            insertIndexed(record, context: context)
             return .applied(rebuildHistoryFrom: occurredAt)
         case .correctTransfer:
             if try exists(TransferRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let originalID = try identifier("originalID", payload)
             guard let original = try fetch(TransferRecord.self, id: originalID, context: context), original.deletedAt == nil,
                   let sheep = try fetch(SheepRecord.self, id: original.sheepID, context: context) else { throw RemoteDomainApplyError.missingReference("originalID") }
+            releaseLegacyHistoryProjectionAuthority(for: sheep)
             original.deletedAt = envelope.modifiedAt
             original.revision += 1
             context.insert(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.transfer.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["reason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID))
             let occurredAt = try date("occurredAt", payload)
-            let transfers = try context.fetch(FetchDescriptor<TransferRecord>()).filter { $0.farmID == envelope.farmID && $0.sheepID == original.sheepID && $0.deletedAt == nil }
-            context.insert(TransferRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: original.sheepID, fromPenID: FarmHistoryTimeline.pen(for: sheep, at: occurredAt, transfers: transfers), toPenID: optionalID("toPenID", payload), occurredAt: occurredAt, note: payload.strings["note"] ?? ""))
+            let sheepID = original.sheepID
+            let transfers: [TransferRecord]
+            if let replayIndex {
+                transfers = replayIndex.transfers(farmID: envelope.farmID, sheepID: sheepID).filter { $0.deletedAt == nil }
+            } else {
+                let farmID = envelope.farmID
+                transfers = try context.fetch(FetchDescriptor<TransferRecord>(
+                    predicate: #Predicate<TransferRecord> {
+                        $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil
+                    }
+                ))
+            }
+            let replacement = TransferRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: original.sheepID, fromPenID: FarmHistoryTimeline.pen(for: sheep, at: occurredAt, transfers: transfers), toPenID: optionalID("toPenID", payload), occurredAt: occurredAt, note: payload.strings["note"] ?? "")
+            insertIndexed(replacement, context: context)
             return .applied(rebuildHistoryFrom: occurredAt)
         case .removeSheep:
             if try exists(RemovalRecord.self, id: envelope.entityID, context: context) { return .duplicate }
+            let sheepID = try identifier("sheepID", payload)
+            guard let sheep = try fetch(SheepRecord.self, id: sheepID, context: context) else {
+                throw RemoteDomainApplyError.missingReference("sheepID")
+            }
+            releaseLegacyHistoryProjectionAuthority(for: sheep)
             let occurredAt = try date("occurredAt", payload)
-            context.insert(RemovalRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: try identifier("sheepID", payload), kind: RemovalKind(rawValue: try string("kind", payload)) ?? .culled, reason: try string("reason", payload), amountText: optionalString("amountText", payload), occurredAt: occurredAt, note: payload.strings["note"] ?? ""))
+            insertIndexed(RemovalRecord(
+                id: envelope.entityID,
+                farmID: envelope.farmID,
+                sheepID: sheepID,
+                kind: RemovalKind(rawValue: try string("kind", payload)) ?? .culled,
+                reason: try string("reason", payload),
+                amountText: optionalString("amountText", payload),
+                removalBatchID: optionalID("removalBatchID", payload),
+                batchTotalAmountText: optionalString("batchTotalAmountText", payload),
+                occurredAt: occurredAt,
+                note: payload.strings["note"] ?? ""
+            ), context: context)
             return .applied(rebuildHistoryFrom: occurredAt)
         case .correctRemoval:
             if try exists(RemovalRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let originalID = try identifier("originalID", payload)
             guard let original = try fetch(RemovalRecord.self, id: originalID, context: context), original.deletedAt == nil else { throw RemoteDomainApplyError.missingReference("originalID") }
+            guard let sheep = try fetch(SheepRecord.self, id: original.sheepID, context: context) else {
+                throw RemoteDomainApplyError.missingReference("sheepID")
+            }
+            releaseLegacyHistoryProjectionAuthority(for: sheep)
             original.deletedAt = envelope.modifiedAt
             original.revision += 1
             context.insert(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.removal.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["correctionReason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID))
             let occurredAt = try date("occurredAt", payload)
-            context.insert(RemovalRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: original.sheepID, kind: RemovalKind(rawValue: try string("kind", payload)) ?? .culled, reason: try string("reason", payload), amountText: optionalString("amountText", payload), occurredAt: occurredAt, note: payload.strings["note"] ?? ""))
+            let replacementKind = RemovalKind(rawValue: try string("kind", payload)) ?? .culled
+            let retainsBatch = original.removalBatchID != nil && replacementKind == original.kind
+            insertIndexed(RemovalRecord(
+                id: envelope.entityID,
+                farmID: envelope.farmID,
+                sheepID: original.sheepID,
+                kind: replacementKind,
+                reason: try string("reason", payload),
+                amountText: retainsBatch ? nil : optionalString("amountText", payload),
+                removalBatchID: retainsBatch ? original.removalBatchID : nil,
+                batchTotalAmountText: retainsBatch ? original.batchTotalAmountText : nil,
+                occurredAt: occurredAt,
+                note: payload.strings["note"] ?? ""
+            ), context: context)
             return .applied(rebuildHistoryFrom: occurredAt)
         case .restoreSheep:
             guard let record = try fetch(RemovalRecord.self, id: envelope.entityID, context: context) else { throw RemoteDomainApplyError.missingReference("removalID") }
             guard record.revision == envelope.baseRevision else { return .conflict(localRevision: record.revision) }
+            guard let sheep = try fetch(SheepRecord.self, id: record.sheepID, context: context) else {
+                throw RemoteDomainApplyError.missingReference("sheepID")
+            }
+            releaseLegacyHistoryProjectionAuthority(for: sheep)
             record.deletedAt = envelope.modifiedAt
             record.revision = envelope.revision
             return .applied(rebuildHistoryFrom: .distantPast)
         case .createBatch:
             if try exists(ProductionBatchRecord.self, id: envelope.entityID, context: context) { return .duplicate }
-            context.insert(ProductionBatchRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), purpose: try string("purpose", payload), startedAt: try date("startedAt", payload), note: payload.strings["note"] ?? ""))
+            insertIndexed(ProductionBatchRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), purpose: try string("purpose", payload), startedAt: try date("startedAt", payload), note: payload.strings["note"] ?? ""), context: context)
             let sheepIDs = (payload.strings["sheepIDs"] ?? "")
                 .split(separator: ",")
                 .compactMap { UUID(uuidString: String($0)) }
             for sheepID in sheepIDs {
-                context.insert(BatchMembershipRecord(
+                insertIndexed(BatchMembershipRecord(
                     id: StableCloudUUID.derived(namespace: envelope.entityID, name: "batch-member-\(sheepID.uuidString.lowercased())"),
                     farmID: envelope.farmID,
                     batchID: envelope.entityID,
                     sheepID: sheepID,
                     joinedAt: try date("startedAt", payload)
-                ))
+                ), context: context)
             }
             return .applied(rebuildHistoryFrom: nil)
         case .assignBatchMembership:
@@ -254,8 +469,8 @@ struct RemoteDomainApplyService {
             record.leftAt = optionalDate("leftAt", payload)
             record.leaveReason = payload.optionalStrings["leaveReason"] ?? nil
             record.updatedAt = envelope.modifiedAt
-            context.insert(record)
-            if record.leftAt != nil {
+            insertIndexed(record, context: context)
+            if replayIndex == nil, record.leftAt != nil {
                 try ProductionBatchLifecycle.reconcile(batchID: record.batchID, farmID: envelope.farmID, context: context, changedAt: envelope.modifiedAt)
             }
             return .applied(rebuildHistoryFrom: try date("joinedAt", payload))
@@ -265,27 +480,31 @@ struct RemoteDomainApplyService {
             record.leftAt = try date("leftAt", payload)
             record.leaveReason = payload.strings["reason"] ?? ""
             record.updatedAt = envelope.modifiedAt
-            try ProductionBatchLifecycle.reconcile(batchID: record.batchID, farmID: envelope.farmID, context: context, changedAt: envelope.modifiedAt)
+            if replayIndex == nil {
+                try ProductionBatchLifecycle.reconcile(batchID: record.batchID, farmID: envelope.farmID, context: context, changedAt: envelope.modifiedAt)
+            }
             return .applied(rebuildHistoryFrom: record.leftAt)
         case .addIngredient:
             if try exists(FeedIngredientRecord.self, id: envelope.entityID, context: context) { return .duplicate }
-            context.insert(FeedIngredientRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), unit: try string("unit", payload), dryMatterText: optionalString("dryMatterText", payload)))
+            insertIndexed(FeedIngredientRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), unit: try string("unit", payload), dryMatterText: optionalString("dryMatterText", payload)), context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .createRecipe:
             if try exists(FeedRecipeRecord.self, id: envelope.entityID, context: context) { return .duplicate }
-            context.insert(FeedRecipeRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), note: payload.strings["note"] ?? ""))
+            insertIndexed(FeedRecipeRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), note: payload.strings["note"] ?? ""), context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .addRecipeComponent:
             if try exists(FeedRecipeComponentRecord.self, id: envelope.entityID, context: context) { return .duplicate }
-            context.insert(FeedRecipeComponentRecord(id: envelope.entityID, farmID: envelope.farmID, recipeID: try identifier("recipeID", payload), ingredientID: try identifier("ingredientID", payload), kilogramsText: try string("kilogramsText", payload)))
+            insertIndexed(FeedRecipeComponentRecord(id: envelope.entityID, farmID: envelope.farmID, recipeID: try identifier("recipeID", payload), ingredientID: try identifier("ingredientID", payload), kilogramsText: try string("kilogramsText", payload)), context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .recordFeed:
             if try exists(FeedRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let record = FeedRecord(id: envelope.entityID, farmID: envelope.farmID, penID: try identifier("penID", payload), recipeID: optionalID("recipeID", payload), mode: FeedMode(rawValue: try string("mode", payload)) ?? .limited, occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? "")
-            context.insert(record)
-            let ingredients = try context.fetch(FetchDescriptor<FeedIngredientRecord>())
+            insertIndexed(record, context: context)
             for line in payload.feedLines {
-                guard let ingredient = ingredients.first(where: { $0.id == line.ingredientID && $0.farmID == envelope.farmID }) else { throw RemoteDomainApplyError.missingReference("ingredientID") }
+                guard let ingredient = try fetch(FeedIngredientRecord.self, id: line.ingredientID, context: context),
+                      ingredient.farmID == envelope.farmID else {
+                    throw RemoteDomainApplyError.missingReference("ingredientID")
+                }
                 context.insert(FeedRecordLine(
                     id: line.id,
                     farmID: envelope.farmID,
@@ -305,7 +524,7 @@ struct RemoteDomainApplyService {
         case .recordHealth:
             if try exists(HealthRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let record = HealthRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: optionalID("sheepID", payload), penID: optionalID("penID", payload), kind: HealthRecordKind(rawValue: try string("kind", payload)) ?? .treatment, itemNameSnapshot: try string("itemName", payload), occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? "", inventoryLotID: optionalID("inventoryLotID", payload), quantityText: optionalString("quantityText", payload))
-            context.insert(record)
+            insertIndexed(record, context: context)
             if let inventoryLotID = record.inventoryLotID, let quantity = record.quantityText {
                 context.insert(InventoryTransactionRecord(id: StableCloudUUID.derived(namespace: record.id, name: "inventory-consumption"), farmID: envelope.farmID, inventoryLotID: inventoryLotID, kind: .consumption, quantityText: quantity, occurredAt: record.occurredAt, sourceRecordID: record.id, note: record.itemNameSnapshot))
             }
@@ -313,7 +532,7 @@ struct RemoteDomainApplyService {
         case .receiveInventory:
             if try exists(InventoryLotRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let lot = InventoryLotRecord(id: envelope.entityID, farmID: envelope.farmID, catalogName: try string("catalogName", payload), kind: HealthRecordKind(rawValue: try string("kind", payload)) ?? .treatment, expiresAt: optionalDate("expiresAt", payload), startingQuantityText: try string("quantityText", payload))
-            context.insert(lot)
+            insertIndexed(lot, context: context)
             context.insert(InventoryTransactionRecord(id: StableCloudUUID.derived(namespace: lot.id, name: "inventory-receipt"), farmID: envelope.farmID, inventoryLotID: lot.id, kind: .receipt, quantityText: lot.startingQuantityText, occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? ""))
             FarmCareCommandHandler.refreshInventoryExpiryReminder(for: lot, context: context)
             return .applied(rebuildHistoryFrom: nil)
@@ -322,7 +541,7 @@ struct RemoteDomainApplyService {
             let record = SemenRecord(id: envelope.entityID, farmID: envelope.farmID, code: try string("code", payload), breed: try string("breed", payload), source: payload.strings["source"] ?? "", batchNumber: payload.strings["batchNumber"] ?? "", quantityText: "0", donorID: optionalID("donorID", payload))
             record.revision = envelope.revision
             record.updatedAt = envelope.modifiedAt
-            context.insert(record)
+            insertIndexed(record, context: context)
             context.insert(SemenTransactionRecord(id: StableCloudUUID.derived(namespace: record.id, name: "semen-receipt"), farmID: envelope.farmID, semenID: record.id, kind: .receipt, quantityText: try string("quantityText", payload), occurredAt: envelope.modifiedAt, sourceRecordID: record.id, note: "冻精入库"))
             return .applied(rebuildHistoryFrom: nil)
         case .recordReproduction:
@@ -335,7 +554,7 @@ struct RemoteDomainApplyService {
             let record = ReproductionRecord(id: envelope.entityID, farmID: envelope.farmID, eweID: try identifier("eweID", payload), kind: kind, occurredAt: try date("occurredAt", payload), sireID: optionalID("sireID", payload), semenID: optionalID("semenID", payload), batchID: optionalID("batchID", payload), relatedBreedingRecordID: optionalID("relatedBreedingRecordID", payload), semenNameSnapshot: optionalString("semenName", payload), semenDonorID: optionalID("semenDonorID", payload), semenDonorNameSnapshot: optionalString("semenDonorNameSnapshot", payload), semenDonorRegistrationNumberSnapshot: optionalString("semenDonorRegistrationNumberSnapshot", payload), semenDonorBreedSnapshot: optionalString("semenDonorBreedSnapshot", payload), paternalSource: optionalString("paternalSource", payload).flatMap(PaternalIdentitySource.init(rawValue:)), result: payload.strings["result"] ?? "", lambCount: lambCount, parity: payload.integers["parity"], birthDeadCount: payload.integers["birthDeadCount"], note: payload.strings["note"] ?? "")
             record.revision = envelope.revision
             record.updatedAt = envelope.modifiedAt
-            context.insert(record)
+            insertIndexed(record, context: context)
             for detail in payload.lambingOffspring {
                 if let sheepID = detail.sheepID, !(try exists(SheepRecord.self, id: sheepID, context: context)) {
                     throw RemoteDomainApplyError.missingReference("lambingOffspring.sheepID")
@@ -350,7 +569,7 @@ struct RemoteDomainApplyService {
             return .applied(rebuildHistoryFrom: nil)
         case .addNote:
             if try exists(NoteRecord.self, id: envelope.entityID, context: context) { return .duplicate }
-            context.insert(NoteRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: optionalID("sheepID", payload), penID: optionalID("penID", payload), text: try string("text", payload), occurredAt: try date("occurredAt", payload)))
+            insertIndexed(NoteRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: optionalID("sheepID", payload), penID: optionalID("penID", payload), text: try string("text", payload), occurredAt: try date("occurredAt", payload)), context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .tombstoneEntity:
             guard let entityTypeText = payload.strings["entityType"], let entityType = CloudEntityType(rawValue: entityTypeText), entityTypeText == envelope.entityType else {
@@ -358,7 +577,17 @@ struct RemoteDomainApplyService {
             }
             let entityID = try identifier("entityID", payload)
             guard entityID == envelope.entityID else { throw RemoteDomainApplyError.invalidPayload("entityID") }
-            if try context.fetch(FetchDescriptor<TombstoneRecord>()).contains(where: { $0.operationID == envelope.operationID }) { return .duplicate }
+            let operationID = envelope.operationID
+            var tombstoneDescriptor = FetchDescriptor<TombstoneRecord>(
+                predicate: #Predicate<TombstoneRecord> { $0.operationID == operationID }
+            )
+            tombstoneDescriptor.fetchLimit = 1
+            if try context.fetch(tombstoneDescriptor).first != nil { return .duplicate }
+            try releaseLegacyHistoryProjectionAuthority(
+                affectedBy: entityType,
+                entityID: entityID,
+                context: context
+            )
             try DomainEntityDeletionService.setDeletedAt(envelope.deletedAt ?? envelope.modifiedAt, type: entityType, id: entityID, farmID: envelope.farmID, context: context)
             context.insert(TombstoneRecord(
                 farmID: envelope.farmID,
@@ -372,11 +601,21 @@ struct RemoteDomainApplyService {
             return .applied(rebuildHistoryFrom: .distantPast)
         case .restoreTombstonedEntity:
             let tombstoneID = try identifier("tombstoneID", payload)
-            guard let tombstone = try context.fetch(FetchDescriptor<TombstoneRecord>()).first(where: { $0.id == tombstoneID && $0.farmID == envelope.farmID }),
+            let farmID = envelope.farmID
+            var tombstoneDescriptor = FetchDescriptor<TombstoneRecord>(
+                predicate: #Predicate<TombstoneRecord> { $0.id == tombstoneID && $0.farmID == farmID }
+            )
+            tombstoneDescriptor.fetchLimit = 1
+            guard let tombstone = try context.fetch(tombstoneDescriptor).first,
                   let entityType = CloudEntityType(rawValue: tombstone.entityType) else {
                 throw RemoteDomainApplyError.missingReference("tombstoneID")
             }
             if tombstone.restoredByOperationID == envelope.operationID { return .duplicate }
+            try releaseLegacyHistoryProjectionAuthority(
+                affectedBy: entityType,
+                entityID: tombstone.entityID,
+                context: context
+            )
             try DomainEntityDeletionService.setDeletedAt(nil, type: entityType, id: tombstone.entityID, farmID: envelope.farmID, context: context)
             tombstone.restoredAt = envelope.modifiedAt
             tombstone.restoredByOperationID = envelope.operationID
@@ -386,6 +625,7 @@ struct RemoteDomainApplyService {
                 throw RemoteDomainApplyError.invalidPayload("resolvedPayload")
             }
             let changedAt = try ConflictDomainMergeService.apply(payload: resolvedPayload, entityType: entityType, entityID: envelope.entityID, farmID: envelope.farmID, revision: envelope.revision, context: context)
+            replayIndex?.rebuildFromPendingInserts(in: context)
             return .applied(rebuildHistoryFrom: changedAt)
         case .recoverEntity:
             guard let sourcePayload = payload.dataValues["resolvedPayload"],
@@ -466,6 +706,32 @@ struct RemoteDomainApplyService {
         }
     }
 
+    private func releaseLegacyHistoryProjectionAuthority(for sheep: SheepRecord) {
+        sheep.legacyStatusSnapshotIsAuthoritative = false
+        sheep.legacyPenSnapshotIsAuthoritative = false
+    }
+
+    private func releaseLegacyHistoryProjectionAuthority(
+        affectedBy entityType: CloudEntityType,
+        entityID: UUID,
+        context: ModelContext
+    ) throws {
+        let sheepID: UUID?
+        switch entityType {
+        case .transfer:
+            sheepID = try fetch(TransferRecord.self, id: entityID, context: context)?.sheepID
+        case .removal:
+            sheepID = try fetch(RemovalRecord.self, id: entityID, context: context)?.sheepID
+        default:
+            sheepID = nil
+        }
+        guard let sheepID,
+              let sheep = try fetch(SheepRecord.self, id: sheepID, context: context) else {
+            return
+        }
+        releaseLegacyHistoryProjectionAuthority(for: sheep)
+    }
+
     private func string(_ key: String, _ payload: FarmCommandCloudPayload) throws -> String {
         guard let value = payload.strings[key] else { throw RemoteDomainApplyError.invalidPayload(key) }
         return value
@@ -493,34 +759,76 @@ struct RemoteDomainApplyService {
         payload.optionalDates[key] ?? nil
     }
 
+    private func insertIndexed<T: PersistentModel>(_ model: T, context: ModelContext) {
+        context.insert(model)
+        replayIndex?.register(model)
+    }
+
     private func exists<T: PersistentModel>(_ type: T.Type, id: UUID, context: ModelContext) throws -> Bool where T: AnyObject {
-        try fetch(type, id: id, context: context) != nil
+        if let replayIndex {
+            // Every entity type queried through exists is registered at its
+            // exact insertion site. Because replay starts from an empty/purged
+            // business store, a cache miss is authoritative and avoids an
+            // unindexed negative SQL scan for every baseline entity.
+            return replayIndex.fetch(type, id: id) != nil
+        }
+        return try fetch(type, id: id, context: context) != nil
     }
 
     private func fetch<T: PersistentModel>(_ type: T.Type, id: UUID, context: ModelContext) throws -> T? where T: AnyObject {
-        try context.fetch(FetchDescriptor<T>()).first { record in
-            switch record {
-            case let value as PenRecord: value.id == id
-            case let value as SheepRecord: value.id == id
-            case let value as WeightRecord: value.id == id
-            case let value as WeaningRecord: value.id == id
-            case let value as BreedingProgramRecord: value.id == id
-            case let value as TransferRecord: value.id == id
-            case let value as RemovalRecord: value.id == id
-            case let value as ProductionBatchRecord: value.id == id
-            case let value as BatchMembershipRecord: value.id == id
-            case let value as FeedIngredientRecord: value.id == id
-            case let value as FeedRecipeRecord: value.id == id
-            case let value as FeedRecipeComponentRecord: value.id == id
-            case let value as FeedRecord: value.id == id
-            case let value as InventoryLotRecord: value.id == id
-            case let value as HealthRecord: value.id == id
-            case let value as ReproductionRecord: value.id == id
-            case let value as SemenRecord: value.id == id
-            case let value as NoteRecord: value.id == id
-            default: false
-            }
+        if let cached = replayIndex?.fetch(type, id: id) {
+            return cached
         }
+        let fetched: T? = switch type {
+        case is PenRecord.Type:
+            try fetchFirst(FetchDescriptor<PenRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is SheepRecord.Type:
+            try fetchFirst(FetchDescriptor<SheepRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is WeightRecord.Type:
+            try fetchFirst(FetchDescriptor<WeightRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is WeaningRecord.Type:
+            try fetchFirst(FetchDescriptor<WeaningRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is BreedingProgramRecord.Type:
+            try fetchFirst(FetchDescriptor<BreedingProgramRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TransferRecord.Type:
+            try fetchFirst(FetchDescriptor<TransferRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is RemovalRecord.Type:
+            try fetchFirst(FetchDescriptor<RemovalRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is ProductionBatchRecord.Type:
+            try fetchFirst(FetchDescriptor<ProductionBatchRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is BatchMembershipRecord.Type:
+            try fetchFirst(FetchDescriptor<BatchMembershipRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is FeedIngredientRecord.Type:
+            try fetchFirst(FetchDescriptor<FeedIngredientRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is FeedRecipeRecord.Type:
+            try fetchFirst(FetchDescriptor<FeedRecipeRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is FeedRecipeComponentRecord.Type:
+            try fetchFirst(FetchDescriptor<FeedRecipeComponentRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is FeedRecord.Type:
+            try fetchFirst(FetchDescriptor<FeedRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is InventoryLotRecord.Type:
+            try fetchFirst(FetchDescriptor<InventoryLotRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is HealthRecord.Type:
+            try fetchFirst(FetchDescriptor<HealthRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is ReproductionRecord.Type:
+            try fetchFirst(FetchDescriptor<ReproductionRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is SemenRecord.Type:
+            try fetchFirst(FetchDescriptor<SemenRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is NoteRecord.Type:
+            try fetchFirst(FetchDescriptor<NoteRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        default:
+            nil
+        }
+        if let fetched {
+            replayIndex?.register(fetched)
+        }
+        return fetched
+    }
+
+    private func fetchFirst<T: PersistentModel>(_ descriptor: FetchDescriptor<T>, context: ModelContext) throws -> T? {
+        var descriptor = descriptor
+        descriptor.fetchLimit = 1
+        return try context.fetch(descriptor).first
     }
 }
 

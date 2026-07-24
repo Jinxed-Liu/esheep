@@ -191,7 +191,7 @@ private struct WeightGainAnalysisView: View {
 
     private var cutoff: Date {
         guard let snapshot = analytics.snapshot else { return .now }
-        return (snapshot.weights.map(\.occurredAt) + snapshot.weanings.map(\.occurredAt)).max() ?? .now
+        return snapshot.weightSamples.map(\.occurredAt).max() ?? .now
     }
     private var cohort: WeightCohort { analytics.weightCohort ?? WeightCohort(sheepIDs: [], latestAverageWeight: nil, latestAverageADG: nil, weightTrend: [], adgTrend: [], scatter: []) }
     private var farmPens: [FarmAnalyticsSnapshot.Pen] {
@@ -526,7 +526,7 @@ private struct LambSnapshotIndex {
     let sheepByID: [UUID: FarmAnalyticsSnapshot.Sheep]
     let penNameByID: [UUID: String]
     let latestWeaningBySheepID: [UUID: FarmAnalyticsSnapshot.Weaning]
-    let latestWeightBySheepID: [UUID: FarmAnalyticsSnapshot.Weight]
+    let latestWeightBySheepID: [UUID: SheepWeightSample]
     let lambingBySheepID: [UUID: FarmAnalyticsSnapshot.Lambing]
 
     init(snapshot: FarmAnalyticsSnapshot) {
@@ -535,7 +535,8 @@ private struct LambSnapshotIndex {
         latestWeaningBySheepID = Dictionary(grouping: snapshot.weanings, by: \.sheepID).compactMapValues { records in
             records.max { $0.occurredAt < $1.occurredAt }
         }
-        latestWeightBySheepID = Dictionary(grouping: snapshot.weights, by: \.sheepID).compactMapValues { records in
+        let canonicalWeights = SheepWeightSampleBuilder.dailyCanonical(snapshot.weightSamples)
+        latestWeightBySheepID = Dictionary(grouping: canonicalWeights, by: \.sheepID).compactMapValues { records in
             records.max { $0.occurredAt < $1.occurredAt }
         }
         var lambingLookup: [UUID: FarmAnalyticsSnapshot.Lambing] = [:]
@@ -741,7 +742,7 @@ private struct LambDetailFacts: Identifiable {
     let breed: String?
     let pen: String?
     let weaning: FarmAnalyticsSnapshot.Weaning?
-    let latestWeight: FarmAnalyticsSnapshot.Weight?
+    let latestWeight: SheepWeightSample?
     let fallbackBirthAt: Date?
     let note: String?
 
@@ -801,7 +802,7 @@ private struct LambIndividualDetailCard: View {
                     }
                     GridRow {
                         DetailFact(label: "断奶日龄", value: facts.weaningAge.map { "\($0) 天" } ?? "未记录")
-                        DetailFact(label: "最近称重", value: latestWeightText)
+                        DetailFact(label: "最近体重", value: latestWeightText)
                     }
                 }
                 .padding(.top, 8)

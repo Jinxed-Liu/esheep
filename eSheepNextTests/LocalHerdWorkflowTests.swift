@@ -63,6 +63,56 @@ final class LocalHerdWorkflowTests: XCTestCase {
         XCTAssertEqual(sheep.currentPenID, penC.id)
     }
 
+    func testSameDayRemovalFastPathProjectsEveryRemovalKindAndCurrentCount() throws {
+        let fixture = try makeFixture()
+        let pen = PenRecord(farmID: fixture.farm.id, name: "离群前圈舍")
+        let kinds = RemovalKind.allCases
+        let sheep = kinds.enumerated().map { index, _ in
+            SheepRecord(
+                farmID: fixture.farm.id,
+                earTag: "R\(index + 1)",
+                breed: "湖羊",
+                sex: .ewe,
+                penID: pen.id,
+                enteredAt: Date.now.addingTimeInterval(-86_400)
+            )
+        }
+        fixture.context.insert(pen)
+        sheep.forEach(fixture.context.insert)
+        let today = Calendar.current.startOfDay(for: .now)
+        fixture.context.insert(DailyPenCountRecord(
+            farmID: fixture.farm.id,
+            penID: pen.id,
+            purpose: sheep[0].purpose,
+            date: today,
+            count: sheep.count
+        ))
+        try fixture.context.save()
+
+        for (item, kind) in zip(sheep, kinds) {
+            try fixture.service.execute(
+                .removeSheep(
+                    sheepID: item.id,
+                    kind: kind,
+                    reason: kind.displayName,
+                    amountText: nil,
+                    occurredAt: .now,
+                    note: ""
+                ),
+                in: fixture.farmContext,
+                context: fixture.context
+            )
+            XCTAssertEqual(item.status, kind.resultingStatus)
+            XCTAssertNil(item.currentPenID)
+        }
+
+        let currentCounts = try fixture.context.fetch(FetchDescriptor<DailyPenCountRecord>()).filter {
+            $0.farmID == fixture.farm.id && $0.penID == pen.id && $0.date == today
+        }
+        XCTAssertEqual(currentCounts.count, 1)
+        XCTAssertEqual(currentCounts.first?.count, 0)
+    }
+
     func testHistorySnapshotLoadsOneSheepAsOneBackgroundUpdate() async throws {
         let fixture = try makeFixture()
         let pen = PenRecord(farmID: fixture.farm.id, name: "当前圈")

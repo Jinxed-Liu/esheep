@@ -1,3 +1,4 @@
+import ESMotion
 import SwiftData
 import SwiftUI
 
@@ -5,33 +6,57 @@ import SwiftUI
 struct eSheepNextApp: App {
     @UIApplicationDelegateAdaptor(CloudShareAppDelegate.self) private var cloudShareDelegate
 
-    private let modelContainer: ModelContainer
-
+    @State private var bootstrap = AppBootstrapController()
     @State private var session = AppSession()
-    @State private var collaboration: CloudCollaborationStore
     @State private var subscription = SubscriptionService()
     @State private var notifications = FarmNotificationService()
-
-    init() {
-        do {
-            modelContainer = try AppSchema.makeContainer()
-        } catch {
-            fatalError("无法初始化本地数据存储：\(error.localizedDescription)")
-        }
-        let collaboration = CloudCollaborationStore(container: modelContainer)
-        _collaboration = State(initialValue: collaboration)
-        FarmBackgroundRefresh.register(collaboration: collaboration)
-    }
+    @State private var preferences = AppPreferences()
+    @State private var motionEngine = MotionEngine()
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environment(session)
-                .environment(collaboration)
-                .environment(subscription)
-                .environment(notifications)
-                .tint(AppTheme.brand)
+            if let modelContainer = bootstrap.modelContainer,
+               let collaboration = bootstrap.collaboration {
+                MotionHost(engine: motionEngine) {
+                    RootView()
+                        .environment(session)
+                        .environment(collaboration)
+                        .environment(subscription)
+                        .environment(notifications)
+                        .environment(preferences)
+                        .environment(\.locale, preferences.language.locale)
+                        .preferredColorScheme(preferences.appearance.preferredColorScheme)
+                        .transaction {
+                            if preferences.shouldReduceMotion {
+                                $0.animation = nil
+                            }
+                        }
+                        .tint(AppTheme.brand)
+                        .modelContainer(modelContainer)
+                }
+                .onChange(
+                    of: preferences.reduceMotionEnabled,
+                    initial: true
+                ) { _, reduceMotion in
+                    motionEngine.updatePreferences(
+                        reduceMotion: reduceMotion,
+                        powerSaving: preferences.powerSavingEnabled
+                    )
+                }
+                .onChange(
+                    of: preferences.powerSavingEnabled,
+                    initial: true
+                ) { _, powerSaving in
+                    motionEngine.updatePreferences(
+                        reduceMotion: preferences.reduceMotionEnabled,
+                        powerSaving: powerSaving
+                    )
+                }
+            } else if let failure = bootstrap.failure {
+                LocalStoreRecoveryView(bootstrap: bootstrap, failure: failure)
+            } else {
+                ProgressView("正在检查本地数据")
+            }
         }
-        .modelContainer(modelContainer)
     }
 }

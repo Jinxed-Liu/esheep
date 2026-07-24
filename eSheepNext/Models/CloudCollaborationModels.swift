@@ -297,6 +297,11 @@ final class CloudOperationReceipt {
     var recordName: String
     var serverChangeTag: String?
     var databaseScopeRawValue: String
+    /// The exact CloudKit zone that produced this acknowledgement. Optional
+    /// keeps existing SwiftData stores eligible for lightweight migration;
+    /// a legacy nil value is deliberately not treated as proof for any zone.
+    var zoneName: String?
+    var zoneOwnerName: String?
     var confirmedAt: Date
 
     init(
@@ -306,6 +311,8 @@ final class CloudOperationReceipt {
         recordName: String,
         serverChangeTag: String?,
         databaseScope: CloudDatabaseScope,
+        zoneName: String? = nil,
+        zoneOwnerName: String? = nil,
         confirmedAt: Date = .now
     ) {
         self.id = id
@@ -314,6 +321,8 @@ final class CloudOperationReceipt {
         self.recordName = recordName
         self.serverChangeTag = serverChangeTag
         self.databaseScopeRawValue = databaseScope.rawValue
+        self.zoneName = zoneName
+        self.zoneOwnerName = zoneOwnerName
         self.confirmedAt = confirmedAt
     }
 }

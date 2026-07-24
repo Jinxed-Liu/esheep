@@ -74,6 +74,11 @@ struct FarmWorkspaceView: View {
             .tabViewSearchActivation(.searchTabSelection)
             .tabBarMinimizeBehavior(.onScrollDown)
             .scrollEdgeEffectHidden(true, for: [.top, .bottom])
+            .safeAreaInset(edge: .top, spacing: 0) {
+                AccountAccessWorkspaceBanner(
+                    authenticationMethod: account.authenticationMethod
+                )
+            }
             .onChange(of: session.pendingSearchQuery, initial: true) { _, pendingQuery in
                 guard let pendingQuery else { return }
                 searchQuery = pendingQuery
@@ -134,6 +139,10 @@ private struct FarmSwitcher: View {
 
             Button("新建牧场", systemImage: "plus") {
                 session.isCreateFarmPresented = true
+            }
+
+            Button("加入牧场", systemImage: "person.badge.plus") {
+                session.isJoinFarmPresented = true
             }
         } label: {
             HStack(spacing: 6) {

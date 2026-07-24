@@ -13,6 +13,38 @@ const hash = (value) => createHash("sha256").update(value).digest("hex");
 const key = (type, id) => `${type}_${hash(String(id)).slice(0, 40)}`;
 const canonicalFarmID = (value) => String(value || "").trim().toLowerCase();
 const inviteAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+const maximumAvatarBytes = 60 * 1024;
+
+function validatedAvatar(input) {
+  const dataBase64 = String(input?.dataBase64 || "").trim();
+  const digest = String(input?.digest || "").trim().toLowerCase();
+  const maximumBase64Length = Math.ceil(maximumAvatarBytes / 3) * 4;
+  if (!dataBase64 || dataBase64.length > maximumBase64Length || !/^[A-Za-z0-9+/]+={0,2}$/.test(dataBase64)) {
+    throw new APIError(400, "invalid_avatar", "头像数据无效或超过 60 KB。");
+  }
+  const data = Buffer.from(dataBase64, "base64");
+  if (!data.length || data.length > maximumAvatarBytes || data.toString("base64") !== dataBase64) {
+    throw new APIError(400, "invalid_avatar", "头像数据无效或超过 60 KB。");
+  }
+  if (data.length < 4 || data[0] !== 0xFF || data[1] !== 0xD8 || data[2] !== 0xFF || data[data.length - 2] !== 0xFF || data[data.length - 1] !== 0xD9) {
+    throw new APIError(400, "invalid_avatar_format", "头像必须是有效的 JPEG 图片。");
+  }
+  const actualDigest = createHash("sha256").update(data).digest("hex");
+  if (!/^[a-f0-9]{64}$/.test(digest) || digest !== actualDigest) {
+    throw new APIError(400, "invalid_avatar_digest", "头像内容摘要不匹配。");
+  }
+  return { dataBase64, digest };
+}
+
+function canonicalJSON(value) {
+  if (Array.isArray(value)) return value.map(canonicalJSON);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalJSON(value[key])]));
+  }
+  return value;
+}
+
+const canonicalJSONString = (value) => JSON.stringify(canonicalJSON(value));
 
 function inviteCode() {
   return Array.from(randomBytes(8), (byte) => inviteAlphabet[byte % inviteAlphabet.length]).join("");
@@ -103,7 +135,7 @@ class CollaborationService {
 
   async health() {
     await this.store.find({ type: "service_probe" }, 1);
-    return { status: "ok", environment: this.env.APP_ENVIRONMENT || "cloudbase-development", version: "0.3.3", database: "cloudbase-document" };
+    return { status: "ok", environment: this.env.APP_ENVIRONMENT || "cloudbase-development", version: "0.4.0", database: "cloudbase-document" };
   }
 
   async consumeRateLimit(scope, identity, limit, windowSeconds) {
@@ -140,6 +172,58 @@ class CollaborationService {
     if (!current || current.status === "deleted") throw new APIError(403, "account_unavailable", "该账号当前不可用。");
     await this.store.update(documentID, { displayName, updatedAt: now() });
     return { accountID, displayName };
+  }
+
+  async accountAvatar(accountID, includeData = false) {
+    const account = await this.store.get(key("account", accountID));
+    if (!account || account.status === "deleted") throw new APIError(403, "account_unavailable", "该账号当前不可用。");
+    const hasAvatar = typeof account.avatarDataBase64 === "string" &&
+      account.avatarDataBase64.length > 0 &&
+      typeof account.avatarDigest === "string" &&
+      account.avatarDigest.length > 0;
+    const result = {
+      accountID,
+      revision: Number.isSafeInteger(account.avatarRevision) ? account.avatarRevision : null,
+      digest: hasAvatar ? account.avatarDigest : null,
+      hasAvatar,
+    };
+    if (includeData) result.dataBase64 = hasAvatar ? account.avatarDataBase64 : null;
+    return result;
+  }
+
+  async updateAccountAvatar(accountID, input) {
+    const avatar = validatedAvatar(input);
+    const operation = async (store) => {
+      const documentID = key("account", accountID);
+      const current = await store.get(documentID);
+      if (!current || current.status === "deleted") throw new APIError(403, "account_unavailable", "该账号当前不可用。");
+      const revision = Math.max(Date.now(), Number(current.avatarRevision || 0) + 1);
+      await store.update(documentID, {
+        avatarDataBase64: avatar.dataBase64,
+        avatarDigest: avatar.digest,
+        avatarRevision: revision,
+        updatedAt: now(),
+      });
+      return { accountID, revision, digest: avatar.digest, hasAvatar: true };
+    };
+    return this.store.transaction ? this.store.transaction(operation) : operation(this.store);
+  }
+
+  async removeAccountAvatar(accountID) {
+    const operation = async (store) => {
+      const documentID = key("account", accountID);
+      const current = await store.get(documentID);
+      if (!current || current.status === "deleted") throw new APIError(403, "account_unavailable", "该账号当前不可用。");
+      const revision = Math.max(Date.now(), Number(current.avatarRevision || 0) + 1);
+      await store.update(documentID, {
+        avatarDataBase64: null,
+        avatarDigest: null,
+        avatarRevision: revision,
+        updatedAt: now(),
+      });
+      return { accountID, revision, digest: null, hasAvatar: false };
+    };
+    return this.store.transaction ? this.store.transaction(operation) : operation(this.store);
   }
 
   async recordAppleBinding(accountID, subjectHash, encryptedRefreshToken) {
@@ -183,8 +267,23 @@ class CollaborationService {
     const documentID = key("device", input.deviceID);
     const current = await this.store.get(documentID);
     if (current && current.accountID !== accountID) throw new APIError(409, "device_owned_by_another_account", "该设备已绑定其他账号。");
+    const publicKeyJWK = canonicalJSONString(input.publicKeyJWK);
+    if (current?.publicKeyJWK) {
+      let currentKey;
+      try {
+        currentKey = canonicalJSONString(JSON.parse(current.publicKeyJWK));
+      } catch {
+        throw new APIError(409, "device_key_mismatch", "该设备已有不同的注册公钥，请先撤销旧设备。" );
+      }
+      if (currentKey !== publicKeyJWK) throw new APIError(409, "device_key_mismatch", "该设备已有不同的注册公钥，请先撤销旧设备。");
+    }
+    const trustSetChanged = !current || current.status !== "active";
     const timestamp = now();
-    await this.store.set(documentID, { type: "device", deviceID: input.deviceID, accountID, publicKeyJWK: JSON.stringify(input.publicKeyJWK), displayName: String(input.displayName || "设备").slice(0, 80), status: "active", registeredAt: current?.registeredAt || timestamp, updatedAt: timestamp });
+    await this.store.set(documentID, { type: "device", deviceID: input.deviceID, accountID, publicKeyJWK, displayName: String(input.displayName || "设备").slice(0, 80), status: "active", registeredAt: current?.registeredAt || timestamp, updatedAt: timestamp });
+    if (trustSetChanged) {
+      const memberships = await this.store.find({ type: "membership", accountID, status: "active" });
+      await Promise.all(memberships.map((item) => this.bumpGeneration(item.farmID, timestamp)));
+    }
     return { deviceID: input.deviceID, registeredAt: current?.registeredAt || timestamp };
   }
 
@@ -387,7 +486,14 @@ class CollaborationService {
     const invites = await this.store.find({ type: "invite" });
     await Promise.all(invites.filter((item) => item.createdByAccountID === accountID || item.redeemedByAccountID === accountID).map((item) => this.store.remove(item._documentID)));
     await this.store.remove(key("apple_credential", accountID)).catch(() => undefined);
-    await this.store.update(key("account", accountID), { status: "deleted", displayName: "已删除账户", updatedAt: timestamp });
+    await this.store.update(key("account", accountID), {
+      status: "deleted",
+      displayName: "已删除账户",
+      avatarDataBase64: null,
+      avatarDigest: null,
+      avatarRevision: Date.now(),
+      updatedAt: timestamp,
+    });
     await this.store.set(key("deletion", jobID), { type: "deletion", deletionJobID: jobID, accountID, status: "completed", createdAt: timestamp, completedAt: timestamp });
     return { deletionJobID: jobID, status: "completed" };
   }

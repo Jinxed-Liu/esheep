@@ -182,7 +182,8 @@ enum CloudOperationSecurity {
             case .care:
                 return payload.careCommand?.requiredCapability ?? .recordProduction
             case .updateFarmLocation: return .editFarmLocation
-            case .tombstoneEntity, .restoreTombstonedEntity, .correctWeight, .correctTransfer, .correctRemoval: return .deleteProtectedFacts
+            case .tombstoneEntity, .restoreTombstonedEntity: return .deleteProtectedFacts
+            case .correctWeight, .correctTransfer, .correctRemoval: return .editHistoricalFacts
             case .resolveConflict: return .resolveConflicts
             case .recoverEntity: return .recoverFarm
             default: break
@@ -192,6 +193,27 @@ enum CloudOperationSecurity {
     }
 
     static func validate(
+        envelope: CloudOperationEnvelope,
+        claims: CapabilityCertificateClaims,
+        devicePublicKeyX963: Data,
+        authorizationDate: Date? = nil
+    ) throws {
+        try validateAuthenticityAndIntegrity(
+            envelope: envelope,
+            claims: claims,
+            devicePublicKeyX963: devicePublicKeyX963,
+            authorizationDate: authorizationDate
+        )
+        try validateRequiredCapability(envelope: envelope, claims: claims)
+    }
+
+    /// Verifies that the operation is the exact payload signed by the scoped
+    /// device while its capability certificate was valid. This deliberately
+    /// does not decide whether the certificate grants the operation's required
+    /// capability; rebuild can safely discard a trusted operation already
+    /// represented by an immutable migration baseline without authorizing its
+    /// replay.
+    static func validateAuthenticityAndIntegrity(
         envelope: CloudOperationEnvelope,
         claims: CapabilityCertificateClaims,
         devicePublicKeyX963: Data,
@@ -212,12 +234,20 @@ enum CloudOperationSecurity {
               claims.deviceID == envelope.modifiedByDeviceID else {
             throw CloudContractError.certificateScopeMismatch
         }
-        let required = requiredCapability(for: envelope)
-        guard claims.capabilities.contains(required) else { throw CloudContractError.capabilityDenied }
         let publicKey = try P256.Signing.PublicKey(x963Representation: devicePublicKeyX963)
         let signature = try P256.Signing.ECDSASignature(rawRepresentation: envelope.operationSignature)
         guard publicKey.isValidSignature(signature, for: envelope.canonicalSigningData) else {
             throw CloudContractError.invalidDeviceSignature
+        }
+    }
+
+    static func validateRequiredCapability(
+        envelope: CloudOperationEnvelope,
+        claims: CapabilityCertificateClaims
+    ) throws {
+        let required = requiredCapability(for: envelope)
+        guard claims.capabilities.contains(required) else {
+            throw CloudContractError.capabilityDenied
         }
     }
 }

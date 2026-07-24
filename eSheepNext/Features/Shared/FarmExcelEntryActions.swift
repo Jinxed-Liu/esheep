@@ -66,29 +66,74 @@ struct FarmExcelEntryActions: View {
         } catch { message = "预检失败：\(error.localizedDescription)" }
     }
 
-    private func commit(_ preview: FarmExcelPreview) {
+    @discardableResult
+    private func commit(_ preview: FarmExcelPreview) -> Bool {
         do {
             let count = try FarmExcelImportService.commit(preview, account: account, farm: farm, context: modelContext)
             self.preview = nil
-            message = "已导入 \(count) 条记录。"
-        } catch { message = "整批未写入：\(error.localizedDescription)" }
+            if preview.removalBatchSummaries.isEmpty {
+                message = "已导入 \(count) 条记录。"
+            } else {
+                message = "已导入 \(count) 条羊只记录；同批出售只保留一笔总售卖金额。"
+            }
+            return true
+        } catch {
+            message = "整批未写入：\(error.localizedDescription)"
+            return false
+        }
     }
 }
 
 private struct FarmExcelPagePreviewView: View {
     @Environment(\.dismiss) private var dismiss
     let preview: FarmExcelPreview
-    let onCommit: () -> Void
+    let onCommit: () -> Bool
+    @State private var isCommitting = false
 
     var body: some View {
         List {
             Section("核对结果") {
-                LabeledContent("待导入", value: "\(preview.rows.count) 条")
+                LabeledContent("Excel 数据行", value: "\(preview.rows.count) 行")
+                LabeledContent("待写入记录", value: "\(preview.expandedRecordCount) 条")
                 LabeledContent("阻断错误", value: "\(preview.errorCount) 条")
                 LabeledContent("提醒", value: "\(preview.warningCount) 条")
             }
+            if isCommitting {
+                Section {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("正在写入并校准羊群历史…")
+                    }
+                }
+            }
             ForEach(preview.summaries) { item in
                 LabeledContent(item.name, value: "\(item.rowCount) 条")
+            }
+            if !preview.removalBatchSummaries.isEmpty {
+                Section {
+                    ForEach(preview.removalBatchSummaries) { batch in
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack {
+                                Text("第 \(batch.rowNumber) 行 · \(batch.kind)")
+                                Spacer()
+                                Text("\(batch.sheepCount) 只")
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let total = batch.totalAmountText {
+                                LabeledContent("总售卖金额", value: total)
+                                    .font(.subheadline)
+                            } else {
+                                Text("不涉及售卖金额")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("离场批次")
+                } footer: {
+                    Text("每个出售批次只有一笔总售卖金额，不拆分或推算单羊价格。")
+                }
             }
             if !preview.issues.isEmpty {
                 Section("需要处理") {
@@ -102,8 +147,33 @@ private struct FarmExcelPagePreviewView: View {
         }
         .navigationTitle("Excel 导入预检")
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) { Button("确认导入", action: onCommit).disabled(!preview.canCommit) }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("取消") { dismiss() }
+                    .disabled(isCommitting)
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button(action: beginCommit) {
+                    if isCommitting {
+                        ProgressView()
+                    } else {
+                        Text("确认导入")
+                    }
+                }
+                .disabled(!preview.canCommit || isCommitting)
+            }
+        }
+        .interactiveDismissDisabled(isCommitting)
+    }
+
+    private func beginCommit() {
+        guard !isCommitting else { return }
+        isCommitting = true
+        Task { @MainActor in
+            // 先让进度状态完成一帧渲染，再进入受事务保护的同步写入。
+            await Task.yield()
+            if !onCommit() {
+                isCommitting = false
+            }
         }
     }
 }

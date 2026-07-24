@@ -176,6 +176,54 @@ describe("Development Worker and D1 integration", () => {
     expect(after?.generation).toBe((before?.generation ?? 0) + 1);
   });
 
+  it("changes security generation only for the first registration of a device key", async () => {
+    const owner = await seedAccount("设备测试场主");
+    const farmID = crypto.randomUUID();
+    const deviceID = crypto.randomUUID();
+    const publicKeyJWK = {
+      kty: "EC",
+      crv: "P-256",
+      x: "trusted-device-key-x",
+      y: "trusted-device-key-y",
+    };
+    const registerFarm = await call("/v1/farms/register", authenticatedJSON(owner.token, "POST", {
+      farmID,
+      zoneName: `farm_${farmID}`,
+    }));
+    expect(registerFarm.status).toBe(201);
+    const generation = async () => env.DB.prepare("SELECT security_generation AS generation FROM farm_directories WHERE id = ?")
+      .bind(farmID).first<{ generation: number }>();
+    await expect(generation()).resolves.toMatchObject({ generation: 1 });
+
+    const firstRegistration = await call("/v1/devices/register", authenticatedJSON(owner.token, "POST", {
+      deviceID,
+      publicKeyJWK,
+      displayName: "iPhone Air",
+    }));
+    expect(firstRegistration.status).toBe(201);
+    await expect(generation()).resolves.toMatchObject({ generation: 2 });
+
+    const idempotentRegistration = await call("/v1/devices/register", authenticatedJSON(owner.token, "POST", {
+      deviceID,
+      publicKeyJWK: { y: publicKeyJWK.y, x: publicKeyJWK.x, crv: publicKeyJWK.crv, kty: publicKeyJWK.kty },
+      displayName: "iPhone Air（重命名）",
+    }));
+    expect(idempotentRegistration.status).toBe(201);
+    await expect(generation()).resolves.toMatchObject({ generation: 2 });
+
+    const replacedKey = await call("/v1/devices/register", authenticatedJSON(owner.token, "POST", {
+      deviceID,
+      publicKeyJWK: { ...publicKeyJWK, x: "replacement-device-key-x" },
+      displayName: "伪造设备",
+    }));
+    expect(replacedKey.status).toBe(409);
+    await expect(replacedKey.json()).resolves.toMatchObject({ error: { code: "device_key_mismatch" } });
+    await expect(generation()).resolves.toMatchObject({ generation: 2 });
+    const storedDevice = await env.DB.prepare("SELECT public_key_jwk AS publicKeyJWK FROM devices WHERE id = ?")
+      .bind(deviceID).first<{ publicKeyJWK: string }>();
+    expect(storedDevice?.publicKeyJWK).toBe(JSON.stringify(publicKeyJWK, Object.keys(publicKeyJWK).sort()));
+  });
+
   it("locks invite redemption after five failures in fifteen minutes", async () => {
     const member = await seedAccount("邀请码测试");
     for (let index = 0; index < 5; index += 1) {

@@ -123,6 +123,57 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertTrue(insight.details.contains("平均体重：40.0kg"))
     }
 
+    func testPenAnalyticsReaderTreatsWeaningAndBirthAsWeightSamples() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "pen-unified-weight-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let weanedSheepID = UUID()
+        let newbornSheepID = UUID()
+        let birthAt = Date(timeIntervalSince1970: 1_000)
+        let weaningAt = Date(timeIntervalSince1970: 2_000)
+        let lambing = ReproductionRecord(
+            farmID: farmID,
+            eweID: UUID(),
+            kind: .lambing,
+            occurredAt: birthAt,
+            lambCount: 1,
+            parity: 1,
+            birthDeadCount: 0
+        )
+        context.insert(WeaningRecord(
+            farmID: farmID,
+            sheepID: weanedSheepID,
+            occurredAt: weaningAt,
+            weanWeightText: "20",
+            birthAt: birthAt,
+            birthWeightText: "3"
+        ))
+        context.insert(lambing)
+        context.insert(LambingOffspringRecord(
+            farmID: farmID,
+            lambingRecordID: lambing.id,
+            sheepID: newbornSheepID,
+            legacyEarTag: "L002",
+            sexRawValue: LambSex.female.rawValue,
+            birthWeightText: "4"
+        ))
+        try context.save()
+
+        let insight = try await PenAnalyticsReadActor(container: container).insight(
+            farmID: farmID,
+            penName: "羔羊圈",
+            members: [
+                PenHerdMemberSnapshot(id: weanedSheepID, purpose: "羔羊"),
+                PenHerdMemberSnapshot(id: newbornSheepID, purpose: "羔羊")
+            ]
+        )
+
+        XCTAssertTrue(insight.details.contains("平均体重：12.0kg"))
+    }
+
     func testSpotlightDeepLinkPreservesFarmAndEntityIdentity() throws {
         let farmID = UUID()
         let sheepID = UUID()
@@ -399,6 +450,76 @@ final class FarmDomainTests: XCTestCase {
         )
         XCTAssertEqual(
             DailyPenCountTimeline.count(for: pen.id, purpose: sheep.purpose, at: dayThree, records: daily, calendar: calendar),
+            0
+        )
+    }
+
+    func testHistoryRebuildSkipsCalendarDaysWithoutEvents() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let entryDay = calendar.date(from: DateComponents(year: 2020, month: 1, day: 1))!
+        let removalDay = calendar.date(from: DateComponents(year: 2040, month: 1, day: 1))!
+        let endDay = calendar.date(from: DateComponents(year: 2050, month: 1, day: 1))!
+        let account = AccountProfile(appleUserIdentifier: "sparse-history-owner", displayName: "场主")
+        let farm = FarmRecord(ownerAccountID: account.id, name: "稀疏历史测试场")
+        let pen = PenRecord(farmID: farm.id, name: "育成舍")
+        let sheep = SheepRecord(
+            farmID: farm.id,
+            earTag: "SPARSE-001",
+            breed: "湖羊",
+            purpose: "育成羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: entryDay
+        )
+        let removal = RemovalRecord(
+            farmID: farm.id,
+            sheepID: sheep.id,
+            kind: .sold,
+            reason: "出售",
+            occurredAt: removalDay
+        )
+        context.insert(account)
+        context.insert(farm)
+        context.insert(pen)
+        context.insert(sheep)
+        context.insert(removal)
+        try context.save()
+
+        var replayedDays: [Date] = []
+        try FarmHistoryRebuilder(
+            calendar: calendar,
+            dailyReplayObserver: { replayedDays.append($0) }
+        ).rebuild(
+            farmID: farm.id,
+            context: context,
+            from: entryDay,
+            through: endDay
+        )
+
+        XCTAssertEqual(replayedDays, [entryDay, removalDay])
+        let daily = try context.fetch(FetchDescriptor<DailyPenCountRecord>())
+            .filter { $0.farmID == farm.id }
+        XCTAssertEqual(
+            DailyPenCountTimeline.count(
+                for: pen.id,
+                purpose: sheep.purpose,
+                at: calendar.date(byAdding: .day, value: -1, to: removalDay)!,
+                records: daily,
+                calendar: calendar
+            ),
+            1
+        )
+        XCTAssertEqual(
+            DailyPenCountTimeline.count(
+                for: pen.id,
+                purpose: sheep.purpose,
+                at: endDay,
+                records: daily,
+                calendar: calendar
+            ),
             0
         )
     }

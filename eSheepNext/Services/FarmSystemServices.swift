@@ -106,6 +106,10 @@ enum FarmBackgroundRefresh {
                 task.setTaskCompleted(success: false)
                 return
             }
+            guard AppPreferenceStorage.isBackgroundRefreshEnabled else {
+                refreshTask.setTaskCompleted(success: true)
+                return
+            }
             schedule()
             let work = Task { @MainActor in
                 await collaboration.synchronizeNow()
@@ -116,6 +120,7 @@ enum FarmBackgroundRefresh {
     }
 
     static func schedule() {
+        guard AppPreferenceStorage.isBackgroundRefreshEnabled else { return }
         let request = BGAppRefreshTaskRequest(identifier: identifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
         do {

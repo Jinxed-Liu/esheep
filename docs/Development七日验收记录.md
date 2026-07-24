@@ -2,6 +2,17 @@
 
 本记录只用于本次完成正式提交和云端基线校验的迁移牧场。没有实际执行、截图、日志与摘要证据的项目必须保留“未执行”，不得提前标记通过。
 
+## 同账号双真机预验收
+
+- 状态：已通过（用户于 2026-07-24 确认）
+- 范围：同一账号、两台真实 iPhone、Development private Zone、正式迁移牧场。
+- 已验收：初始全量收敛、增量同步、离线续传、重复操作幂等、照片摘要、缓存重建与最终对账。
+- 设备：iPhone 16 Pro、iPhone Air。
+- Bundle ID：`com.sheepfarm.next.dev`
+- CloudKit Container：`iCloud.com.sheepfarm.next.dev`
+- 账号、farmID、Zone 名称、最终实体摘要、截图和设备数据库属于线下验收证据包，不提交到源码仓库。
+- 边界：该结论只关闭同账号 private Zone 门禁，不代表两个账号的 CKShare、角色、撤权或七日 shared Zone 验收完成。
+
 ## 固定环境
 
 - Bundle ID：`com.sheepfarm.next.dev`
@@ -82,5 +93,10 @@
 - 2026-07-20：仓库 Gateway 0.3.3 新增已认证账户显示名称修改接口，并禁止后续 Apple 登录元数据覆盖用户主动设置的名称；本地 Gateway 回归 16/16 通过，Development 部署与真机修改名称验收尚未执行。
 - 2026-07-20：固化健康、繁殖、分析、页面级 Excel、事件历史和生产批次基线前，iPhone 16 Pro（iOS 27.0）签名构建执行全部 122 项 XCTest，122 项通过、0 失败、0 跳过；同一基线的 `build-for-testing`、Worker 15/15、Gateway 16/16、Emoji 扫描及依赖审计通过。11 英寸 iPad 页面回归、两台 Development 设备 CloudKit 对账及 Gateway 0.3.3 部署未执行，不计入通过项。
 - 2026-07-20：完成系谱与繁殖闭环后，iPhone 16 Pro（iOS 27.0）签名构建执行全部 128 项 XCTest，128 项通过、0 失败、0 跳过；另有系谱、旧产羔载荷解码、重复远端重放和 checkpoint 全历史恢复聚焦回归 7/7 通过。覆盖本场种公羊、普通公羊排除、外部供体、关联本场种公羊的供体、未知父本、150 天历史同舍候选、人工确认、权限/跨场/性别/循环/日期校验、配种至产羔关联、修正/撤销/恢复、后续转舍与称重保护、Excel 原子导入、本地备份恢复及供体先于引用的恢复顺序。候选只排序不自动确权；仓库未用合成数据伪造训练模型，无内置模型时按确定性规则排序。11 英寸 iPad 完整流程和两台 Development 设备的关系/供体 CloudKit 对账未执行，不计入通过项。
+- 2026-07-24：用户确认同一账号在 iPhone 16 Pro 与 iPhone Air 的 Development private Zone 云同步验收完成，覆盖离线续传、照片、幂等和缓存重建；两个账号 shared Zone 与第 1 至第 7 日记录仍保持未执行。
+- 2026-07-24：当前仓库包含 289 个 XCTest 方法，App/Test/Widget 双架构 `build-for-testing` 成功。最初两次隔离模拟器测试因 Xcode 27 beta 的 `waiting for workers to materialize`、Simulator Service Hub 退出而未执行到测试断言；改用保留 CloudKit Entitlement 的本地签名构建后，新增迁移与恢复测试 4/4 通过。其余测试仍需在稳定 Xcode/Simulator 或完成备份后的签名真机上全量重跑。
+- 2026-07-24：`./tools/verify_local.sh` 完整通过，覆盖 Emoji、App/Test/Widget 编译、Worker 16/16、Gateway 20/20 与生产依赖审计；另行执行的跟踪文件常见凭据模式扫描无命中。该结果不替代 XCTest 运行、真机交互或云端验收。
+- 2026-07-24：使用保留 CloudKit Entitlement 的本地签名模拟器构建完成冷启动，应用正常进入登录页；模拟器未配置 iCloud，因此仅作为启动冒烟，不计入 CloudKit 或真机验收。对应迁移测试结果包为 `/tmp/eSheepNext-migration-signed-20260724.xcresult`。
+- 2026-07-24：随后尝试执行全部 XCTest，已输出的业务、云重建、迁移、导入导出、设置和搜索用例均未见断言失败，但 Xcode 27 beta 在结束阶段关闭 Clone Simulator 并卡在 `Finalize test log`，结果包未完成写入。该次运行不计为全量通过，正式门禁仍保持未完成。
 - 2026-07-18：iPhone 16 Pro 签名构建实际执行全部 82 项 XCTest，最终 82 项通过、0 失败。期间发现并修复 CSV 日期解析受系统区域设置影响的问题；11 英寸 iPad 与双账号云端流程仍未执行。
 - 两个真实 Apple/iCloud 账号互联和第 1 至第 7 日云端记录：未执行。

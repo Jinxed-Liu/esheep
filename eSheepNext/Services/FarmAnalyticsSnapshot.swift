@@ -77,7 +77,9 @@ struct FarmAnalyticsSnapshot: Sendable {
         let farmSheep = sheep.filter { $0.farmID == farmID && $0.deletedAt == nil }.map {
             Sheep(id: $0.id, earTag: $0.earTag, breed: $0.breed, purpose: $0.purpose, sex: $0.sex, status: $0.status, initialPenID: $0.initialPenID, currentPenID: $0.currentPenID, birthAt: $0.birthAt, enteredAt: $0.enteredAt, removedAt: $0.removedAt)
         }
-        let offspringByLambing = Dictionary(grouping: offspring.filter { $0.farmID == farmID }, by: \.lambingRecordID)
+        let offspringByLambing = Dictionary(grouping: offspring.filter {
+            $0.farmID == farmID && $0.deletedAt == nil && !$0.deletedByLambingRevocation
+        }, by: \.lambingRecordID)
         let lambings = reproduction.filter { $0.farmID == farmID && $0.deletedAt == nil && $0.kind == .lambing }.map { record in
             Lambing(
                 id: record.id,
@@ -121,6 +123,156 @@ enum FarmAnalyticsDate {
     static func year(_ date: Date) -> String { String(calendar.component(.year, from: date)) }
     static func monthNumber(_ date: Date) -> String { String(format: "%02d", calendar.component(.month, from: date)) }
     static func days(from start: Date, to end: Date) -> Int { calendar.dateComponents([.day], from: day(start), to: day(end)).day ?? 0 }
+}
+
+enum SheepWeightSource: Int, Sendable, Hashable {
+    case weighing = 0
+    case weaning = 1
+    case lambingBirth = 2
+    case weaningBirth = 3
+
+    var displayName: String {
+        switch self {
+        case .weighing: "称重"
+        case .weaning: "断奶重"
+        case .lambingBirth, .weaningBirth: "初生重"
+        }
+    }
+}
+
+struct SheepWeightSample: Identifiable, Sendable, Hashable {
+    let id: UUID
+    let sheepID: UUID
+    let kilogramsText: String
+    let kilograms: Double
+    let occurredAt: Date
+    let source: SheepWeightSource
+
+    init(
+        id: UUID,
+        sheepID: UUID,
+        kilogramsText: String,
+        kilograms: Double,
+        occurredAt: Date,
+        source: SheepWeightSource
+    ) {
+        self.id = id
+        self.sheepID = sheepID
+        self.kilogramsText = kilogramsText
+        self.kilograms = kilograms
+        self.occurredAt = occurredAt
+        self.source = source
+    }
+
+    init(id: UUID, sheepID: UUID, kilograms: Double, occurredAt: Date, source: SheepWeightSource) {
+        self.init(
+            id: id,
+            sheepID: sheepID,
+            kilogramsText: Decimal(kilograms).stableText,
+            kilograms: kilograms,
+            occurredAt: occurredAt,
+            source: source
+        )
+    }
+}
+
+enum SheepWeightSampleBuilder {
+    private struct DayKey: Hashable {
+        let sheepID: UUID
+        let day: Date
+    }
+
+    /// 同一只羊同一天只保留一个统计点：常规称重优先，其次是断奶重、产羔初生重、断奶补录初生重。
+    /// 同来源一天多次记录时采用当天最后一次，保证图表、最近体重和 ADG 使用同一口径。
+    static func dailyCanonical(_ samples: [SheepWeightSample]) -> [SheepWeightSample] {
+        let valid = samples.filter { $0.kilograms > 0 && $0.kilograms.isFinite }
+        let grouped = Dictionary(grouping: valid) {
+            DayKey(sheepID: $0.sheepID, day: FarmAnalyticsDate.day($0.occurredAt))
+        }
+        return grouped.values.compactMap { sameDay in
+            sameDay.sorted(by: isPreferred).first
+        }.sorted {
+            if $0.occurredAt != $1.occurredAt { return $0.occurredAt < $1.occurredAt }
+            if $0.sheepID != $1.sheepID { return $0.sheepID.uuidString < $1.sheepID.uuidString }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    /// 单羊档案保留同一天的多次真实称重，只合并同羊、同日、同体重的跨来源重复事实。
+    /// 例如产羔自动生成的初生重与产羔明细是同一个事实，不应在曲线上出现两次。
+    static func deduplicatingEquivalentFacts(_ samples: [SheepWeightSample]) -> [SheepWeightSample] {
+        let valid = samples.filter { $0.kilograms > 0 && $0.kilograms.isFinite }
+        var result: [SheepWeightSample] = []
+        for sample in valid.sorted(by: isPreferred) {
+            if sample.source != .weighing,
+               result.contains(where: { existing in
+                   existing.sheepID == sample.sheepID
+                       && FarmAnalyticsDate.day(existing.occurredAt) == FarmAnalyticsDate.day(sample.occurredAt)
+                       && abs(existing.kilograms - sample.kilograms) < 0.000_001
+                       && existing.source.rawValue <= sample.source.rawValue
+               }) {
+                continue
+            }
+            result.append(sample)
+        }
+        return result.sorted {
+            if $0.occurredAt != $1.occurredAt { return $0.occurredAt < $1.occurredAt }
+            if $0.source.rawValue != $1.source.rawValue { return $0.source.rawValue < $1.source.rawValue }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    private static func isPreferred(_ lhs: SheepWeightSample, _ rhs: SheepWeightSample) -> Bool {
+        if lhs.source.rawValue != rhs.source.rawValue { return lhs.source.rawValue < rhs.source.rawValue }
+        if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt > rhs.occurredAt }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+}
+
+extension FarmAnalyticsSnapshot {
+    /// 统一体重事实读取层。底层事件仍保持各自模型，统计时将常规称重、断奶重和初生重视为同一只羊的体重样本。
+    var weightSamples: [SheepWeightSample] {
+        var samples = weights.map {
+            SheepWeightSample(
+                id: $0.id,
+                sheepID: $0.sheepID,
+                kilograms: $0.kilograms,
+                occurredAt: $0.occurredAt,
+                source: .weighing
+            )
+        }
+        for weaning in weanings {
+            samples.append(SheepWeightSample(
+                id: StableCloudUUID.derived(namespace: weaning.id, name: "weight-sample-weaning"),
+                sheepID: weaning.sheepID,
+                kilograms: weaning.weanWeight,
+                occurredAt: weaning.occurredAt,
+                source: .weaning
+            ))
+            if let birthAt = weaning.birthAt, let birthWeight = weaning.birthWeight {
+                samples.append(SheepWeightSample(
+                    id: StableCloudUUID.derived(namespace: weaning.id, name: "weight-sample-weaning-birth"),
+                    sheepID: weaning.sheepID,
+                    kilograms: birthWeight,
+                    occurredAt: birthAt,
+                    source: .weaningBirth
+                ))
+            }
+        }
+        for lambing in lambings {
+            for offspring in lambing.offspring {
+                guard let sheepID = offspring.sheepID, let birthWeight = offspring.birthWeight else { continue }
+                samples.append(SheepWeightSample(
+                    id: StableCloudUUID.derived(namespace: offspring.id, name: "weight-sample-lambing-birth"),
+                    sheepID: sheepID,
+                    kilograms: birthWeight,
+                    occurredAt: lambing.occurredAt,
+                    source: .lambingBirth
+                ))
+            }
+        }
+        return samples
+    }
 }
 
 struct FarmLambAnalyticsResult: Sendable {
@@ -544,17 +696,24 @@ enum WeightGainAnalyticsEngine {
         return (0..<rowCount).map { values[$0][columnCount - 1] }
     }
 
-    private struct Point { let date: Date; let weight: Double; let source: Int }
+    private struct Point { let date: Date; let weight: Double }
     private static func timelines(
         snapshot: FarmAnalyticsSnapshot,
         sheepIDs: Set<UUID>,
         limit: Date,
         includes: (UUID, Date) -> Bool = { _, _ in true }
     ) -> [UUID: [Point]] {
+        let samples = SheepWeightSampleBuilder.dailyCanonical(snapshot.weightSamples.filter {
+            sheepIDs.contains($0.sheepID) && $0.occurredAt <= limit && includes($0.sheepID, $0.occurredAt)
+        })
         var raw: [UUID: [Point]] = [:]
-        for weight in snapshot.weights where sheepIDs.contains(weight.sheepID) && weight.occurredAt <= limit && includes(weight.sheepID, weight.occurredAt) { raw[weight.sheepID, default: []].append(Point(date: FarmAnalyticsDate.day(weight.occurredAt), weight: weight.kilograms, source: 0)) }
-        for weaning in snapshot.weanings where sheepIDs.contains(weaning.sheepID) && weaning.occurredAt <= limit && includes(weaning.sheepID, weaning.occurredAt) { raw[weaning.sheepID, default: []].append(Point(date: FarmAnalyticsDate.day(weaning.occurredAt), weight: weaning.weanWeight, source: 1)) }
-        return raw.mapValues { points in Dictionary(grouping: points, by: \.date).compactMap { date, sameDay in sameDay.sorted { $0.source < $1.source }.first.map { Point(date: date, weight: $0.weight, source: $0.source) } }.sorted { $0.date < $1.date } }
+        for sample in samples {
+            raw[sample.sheepID, default: []].append(Point(
+                date: FarmAnalyticsDate.day(sample.occurredAt),
+                weight: sample.kilograms
+            ))
+        }
+        return raw.mapValues { $0.sorted { $0.date < $1.date } }
     }
     private static func pen(at date: Date, sheep: FarmAnalyticsSnapshot.Sheep, transfers: [FarmAnalyticsSnapshot.Transfer]) -> UUID? {
         let last = transfers.filter { $0.sheepID == sheep.id && $0.occurredAt <= date }.sorted { $0.occurredAt == $1.occurredAt ? $0.recordedAt < $1.recordedAt : $0.occurredAt < $1.occurredAt }.last

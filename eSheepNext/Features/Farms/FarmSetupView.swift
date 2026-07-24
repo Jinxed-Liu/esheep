@@ -21,12 +21,17 @@ struct FarmSetupView: View {
                 }
                 .buttonStyle(.glassProminent)
 
+                Button("加入牧场") {
+                    session.isJoinFarmPresented = true
+                }
+                .buttonStyle(.glass)
+
                 Button("从 eSheep+ 导入") {
                     isMigrationPresented = true
                 }
                 .buttonStyle(.glass)
 
-                Text("导入会先在独立临时库中预览和对账；确认后创建正式牧场。本机可立即使用，Development 会在联网后自动准备 iCloud 同步。")
+                Text("导入会先检查并预览全部数据；确认后再创建牧场，联网时会自动同步。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -64,7 +69,7 @@ struct CreateFarmSheet: View {
                 }
 
                 Section {
-                    Text("创建后，你将作为该牧场的牧场主。成员协作与 CloudKit 共享将在账户服务器完成绑定后开放。")
+                    Text("创建后，你将成为该牧场的牧场主。账号准备完成后即可邀请成员协作。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

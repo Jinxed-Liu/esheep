@@ -46,6 +46,30 @@ final class SheepDetailSnapshotActorTests: XCTestCase {
             kilogramsText: "90",
             occurredAt: Date(timeIntervalSince1970: 900)
         )
+        let weaning = WeaningRecord(
+            farmID: farmID,
+            sheepID: sheep.id,
+            occurredAt: Date(timeIntervalSince1970: 250),
+            weanWeightText: "25",
+            birthAt: sheep.birthAt,
+            birthWeightText: "3.2"
+        )
+        let unrelatedWeaning = WeaningRecord(
+            farmID: farmID,
+            sheepID: otherSheep.id,
+            occurredAt: Date(timeIntervalSince1970: 950),
+            weanWeightText: "70",
+            birthAt: Date(timeIntervalSince1970: 40),
+            birthWeightText: "5"
+        )
+        let birthDetail = LambingOffspringRecord(
+            farmID: farmID,
+            lambingRecordID: UUID(),
+            sheepID: sheep.id,
+            legacyEarTag: sheep.earTag,
+            sexRawValue: LambSex.female.rawValue,
+            birthWeightText: "3.2"
+        )
         let transfer = TransferRecord(
             farmID: farmID,
             sheepID: sheep.id,
@@ -99,6 +123,9 @@ final class SheepDetailSnapshotActorTests: XCTestCase {
         context.insert(olderWeight)
         context.insert(newerWeight)
         context.insert(unrelatedWeight)
+        context.insert(weaning)
+        context.insert(unrelatedWeaning)
+        context.insert(birthDetail)
         context.insert(transfer)
         context.insert(directHealth)
         context.insert(linkedHealth)
@@ -123,11 +150,14 @@ final class SheepDetailSnapshotActorTests: XCTestCase {
         let reader = SheepDetailSnapshotActor(container: container)
         let snapshot = try await reader.load(farmID: farmID, sheepID: sheep.id, subject: subject)
 
-        XCTAssertEqual(snapshot.weights.map(\.id), [newerWeight.id, olderWeight.id])
+        XCTAssertEqual(snapshot.weights.map(\.kilograms), [42.5, 25, 40, 3.2])
+        XCTAssertEqual(snapshot.weights.map(\.source), [.weighing, .weaning, .weighing, .lambingBirth])
         XCTAssertEqual(snapshot.photos.map(\.id), [photo.id])
-        XCTAssertEqual(snapshot.timeline.count, 7)
+        XCTAssertEqual(snapshot.timeline.count, 9)
         XCTAssertEqual(snapshot.timeline.map(\.date), snapshot.timeline.map(\.date).sorted(by: >))
         XCTAssertEqual(snapshot.timeline.first?.id, photo.id)
+        XCTAssertTrue(snapshot.timeline.contains { $0.title == "断奶重" && $0.detail == "25 千克" })
+        XCTAssertTrue(snapshot.timeline.contains { $0.title == "初生重" && $0.detail == "3.2 千克" })
         XCTAssertEqual(snapshot.lifecycleInsight.summary, "S3-SH030 湖羊")
         XCTAssertEqual(snapshot.reproductionInsight.summary, "S3-SH030 共1胎")
 

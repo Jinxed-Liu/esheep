@@ -7,6 +7,30 @@ enum CloudRebuildBundleValidator {
               bundle.assets.allSatisfy({ $0.envelope.farmID == bundle.farmID }) else {
             throw CloudRebuildError.farmMismatch
         }
+        if bundle.authorityProofVersion == CloudRebuildActor.currentAuthorityProofVersion {
+            guard let proofs = bundle.operationSourceProofs,
+                  proofs.allSatisfy({ $0.farmID == bundle.farmID }) else {
+                throw CloudContractError.malformedRecord
+            }
+            let mapper = CloudRecordMapper()
+            let proofNames = proofs.map(\.recordName)
+            let proofOperationIDs = proofs.map(\.operationID)
+            guard Set(proofNames).count == proofNames.count,
+                  Set(proofOperationIDs).count == proofOperationIDs.count,
+                  proofs.allSatisfy({
+                      $0.recordName == mapper.recordName(for: $0.operationID) &&
+                          !$0.envelopeDigest.isEmpty
+                  }) else {
+                throw CloudContractError.malformedRecord
+            }
+            let proofsByOperationID = Dictionary(uniqueKeysWithValues: proofs.map { ($0.operationID, $0) })
+            for operation in bundle.operations {
+                guard let proof = proofsByOperationID[operation.operationID],
+                      proof.envelopeDigest == (try CloudRebuildOperationSourceProof.digest(operation)) else {
+                    throw CloudContractError.malformedRecord
+                }
+            }
+        }
         try validateReferences(operations: bundle.operations, assets: bundle.assets)
     }
 

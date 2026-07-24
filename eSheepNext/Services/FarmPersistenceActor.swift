@@ -15,6 +15,12 @@ struct CloudFarmBindingSnapshot: Sendable {
     let databaseScope: CloudDatabaseScope
     let shareRecordName: String?
     let state: CloudFarmBindingState
+    let lastErrorCode: String?
+}
+
+struct CloudRecoveryRootExpectation: Sendable {
+    let binding: CloudFarmBindingSnapshot
+    let baseline: OwnerFarmRecoveryBaselineIdentity
 }
 
 struct CloudTrustSnapshot: Sendable {
@@ -30,12 +36,70 @@ struct FarmCacheReplacementResult: Sendable, Equatable {
     let entityDigest: String
 }
 
+private struct LocalPhotoAssetSnapshot {
+    let id: UUID
+    let farmID: UUID
+    let sheepID: UUID?
+    let legacySourceKey: String
+    let originalEarTag: String
+    let relativePath: String
+    let sha256: String
+    let mimeType: String
+    let sourceSHA256: String
+    let sourcePixelWidth: Int
+    let sourcePixelHeight: Int
+    let cloudPixelWidth: Int
+    let cloudPixelHeight: Int
+    let capturedAt: Date?
+    let cloudRecordName: String?
+    let wasCloudAuthoritative: Bool
+    let recoveryRecordName: String?
+    let recoveryBackedUpAt: Date?
+    let createdAt: Date
+
+    init(_ asset: PhotoAssetRecord) {
+        id = asset.id
+        farmID = asset.farmID
+        sheepID = asset.sheepID
+        legacySourceKey = asset.legacySourceKey
+        originalEarTag = asset.originalEarTag
+        relativePath = asset.relativePath
+        sha256 = asset.sha256
+        mimeType = asset.mimeType
+        sourceSHA256 = asset.sourceSHA256
+        sourcePixelWidth = asset.sourcePixelWidth
+        sourcePixelHeight = asset.sourcePixelHeight
+        cloudPixelWidth = asset.cloudPixelWidth
+        cloudPixelHeight = asset.cloudPixelHeight
+        capturedAt = asset.capturedAt
+        cloudRecordName = asset.cloudRecordName
+        wasCloudAuthoritative = asset.isCloudAuthoritative
+        recoveryRecordName = asset.recoveryRecordName
+        recoveryBackedUpAt = asset.recoveryBackedUpAt
+        createdAt = asset.createdAt
+    }
+}
+
 actor FarmPersistenceActor {
+    private struct ValidatedLiveOperation {
+        let record: CKRecord
+        let envelope: CloudOperationEnvelope
+        let receiptIdentity: OperationReceiptIdentity
+    }
+
     private let container: ModelContainer
     private let mapper = CloudRecordMapper()
+    private let capabilitySigningPublicKeyPEMOverride: String?
+    private var recoveredBaselineCache: [UUID: MigrationCloudBaselineSnapshot] = [:]
 
-    init(container: ModelContainer) {
+    init(container: ModelContainer, capabilitySigningPublicKeyPEMOverride: String? = nil) {
         self.container = container
+        self.capabilitySigningPublicKeyPEMOverride = capabilitySigningPublicKeyPEMOverride
+    }
+
+    private var capabilitySigningPublicKeyPEM: String? {
+        capabilitySigningPublicKeyPEMOverride ??
+            (Bundle.main.object(forInfoDictionaryKey: "CAPABILITY_SIGNING_PUBLIC_KEY_PEM") as? String)
     }
 
     func cloudTrustSnapshot(farmID: UUID) throws -> CloudTrustSnapshot {
@@ -44,23 +108,131 @@ actor FarmPersistenceActor {
         let revoked = try context.fetch(FetchDescriptor<RevokedCapabilityCertificateRecord>())
             .filter { $0.farmID == farmID }
         return CloudTrustSnapshot(
-            capabilityPublicKeyPEM: Bundle.main.object(forInfoDictionaryKey: "CAPABILITY_SIGNING_PUBLIC_KEY_PEM") as? String,
+            capabilityPublicKeyPEM: capabilitySigningPublicKeyPEM,
             devicePublicKeys: Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0.publicKeyX963) }),
             revokedCertificateIDs: Set(revoked.map(\.serverCertificateID))
         )
     }
 
-    func setRebuildLock(farmID: UUID, enabled: Bool, errorCode: String?) throws {
+    /// Records a recovery-engine failure only when the binding is still the
+    /// exact rebuild lock observed at the start of that attempt. A delegate
+    /// may install a stronger security reason while CloudKit is fetching; an
+    /// older attempt must never overwrite it or downgrade an active binding.
+    @discardableResult
+    func recordRecoveryEngineFailureIfUnchanged(
+        farmID: UUID,
+        expectedLastErrorCode: String?,
+        failureCode: String
+    ) throws -> Bool {
+        try transitionRecoveryBindingIfUnchanged(
+            farmID: farmID,
+            expectedState: .rebuildingCache,
+            expectedLastErrorCode: expectedLastErrorCode,
+            newState: .rebuildingCache,
+            newLastErrorCode: failureCode
+        )
+    }
+
+    /// Compare-and-swap for every rebuild/recovery state transition. Security
+    /// callbacks may change either the state or its reason while another actor
+    /// is suspended; only the exact observer is allowed to finish its phase.
+    @discardableResult
+    func transitionRecoveryBindingIfUnchanged(
+        farmID: UUID,
+        expectedState: CloudFarmBindingState,
+        expectedLastErrorCode: String?,
+        newState: CloudFarmBindingState,
+        newLastErrorCode: String?
+    ) throws -> Bool {
         let context = ModelContext(container)
         guard let binding = try context.fetch(FetchDescriptor<CloudFarmBinding>()).first(where: { $0.farmID == farmID }) else {
             throw CloudSyncError.farmBindingMissing
         }
-        if enabled {
-            binding.stateRawValue = CloudFarmBindingState.rebuildingCache.rawValue
-        } else if binding.state == .rebuildingCache {
-            binding.stateRawValue = CloudFarmBindingState.active.rawValue
+        guard binding.state == expectedState,
+              binding.lastErrorCode == expectedLastErrorCode else {
+            return false
         }
-        binding.lastErrorCode = errorCode
+        binding.stateRawValue = newState.rawValue
+        binding.lastErrorCode = newLastErrorCode
+        binding.updatedAt = .now
+        try context.save()
+        return true
+    }
+
+    /// Activates only the farm that remained locked throughout a successful
+    /// recovery-engine fetch. A concurrent account or access change wins and
+    /// leaves the binding fail-closed.
+    func recoveryRootExpectation(
+        farmID: UUID,
+        scope: CloudDatabaseScope,
+        expectedLastErrorCode: String
+    ) throws -> CloudRecoveryRootExpectation {
+        let context = ModelContext(container)
+        let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>()).filter {
+                $0.farmID == farmID &&
+                $0.databaseScope == scope &&
+                $0.state == .rebuildingCache &&
+                $0.lastErrorCode == expectedLastErrorCode
+        }
+        guard bindings.count == 1, let binding = bindings.first,
+              binding.zoneName == CloudZoneName.forFarm(farmID) else {
+            throw CloudSyncError.farmBindingMissing
+        }
+        let farms = try context.fetch(FetchDescriptor<FarmRecord>()).filter {
+            $0.id == farmID &&
+                $0.ownerAccountID == binding.ownerAccountID &&
+                $0.deletedAt == nil
+        }
+        guard farms.count == 1,
+              let baseline = try OwnerFarmRecoveryCoordinator.localRecoveryIdentity(
+                  farmID: farmID,
+                  ownerAccountID: binding.ownerAccountID,
+                  scope: scope,
+                  context: context
+              ) else {
+            throw CloudSyncError.recoveryCatchUpFailed("本机缺少可与云端根记录逐项核对的 v2 基线身份。")
+        }
+        return CloudRecoveryRootExpectation(
+            binding: CloudFarmBindingSnapshot(
+                farmID: binding.farmID,
+                ownerAccountID: binding.ownerAccountID,
+                zoneName: binding.zoneName,
+                zoneOwnerName: binding.zoneOwnerName,
+                databaseScope: binding.databaseScope,
+                shareRecordName: binding.shareRecordName,
+                state: binding.state,
+                lastErrorCode: binding.lastErrorCode
+            ),
+            baseline: baseline
+        )
+    }
+
+    func activateAfterRecoveryCatchUp(
+        farmID: UUID,
+        expected: CloudRecoveryRootExpectation
+    ) throws {
+        let context = ModelContext(container)
+        let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>()).filter { $0.farmID == farmID }
+        guard bindings.count == 1, let binding = bindings.first else {
+            throw CloudSyncError.farmBindingMissing
+        }
+        guard binding.state == .rebuildingCache,
+              binding.farmID == expected.binding.farmID,
+              binding.ownerAccountID == expected.binding.ownerAccountID,
+              binding.databaseScope == expected.binding.databaseScope,
+              binding.zoneName == expected.binding.zoneName,
+              binding.zoneOwnerName == expected.binding.zoneOwnerName,
+              binding.lastErrorCode == expected.binding.lastErrorCode,
+              try OwnerFarmRecoveryCoordinator.localRecoveryIdentity(
+                  farmID: farmID,
+                  ownerAccountID: binding.ownerAccountID,
+                  scope: binding.databaseScope,
+                  context: context
+              ) == expected.baseline else {
+            throw CloudSyncError.inactiveFarm
+        }
+        binding.stateRawValue = CloudFarmBindingState.active.rawValue
+        binding.lastErrorCode = nil
         binding.updatedAt = .now
         try context.save()
     }
@@ -115,12 +287,33 @@ actor FarmPersistenceActor {
         let outbox = try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.farmID == bundle.farmID }
         let pendingOutbox = outbox.filter { $0.status != .confirmed }
         let pendingIDs = Set(pendingOutbox.map(\.operationID))
-        let pendingOperations = try context.fetch(FetchDescriptor<DomainOperation>())
-            .filter { $0.farmID == bundle.farmID && pendingIDs.contains($0.id) }
-            .sorted {
-                if $0.occurredAt != $1.occurredAt { return $0.occurredAt < $1.occurredAt }
-                return $0.id.uuidString < $1.id.uuidString
+        let pendingOutboxByOperationID = Dictionary(grouping: pendingOutbox, by: \.operationID)
+        let authoritativeByOperationID = Dictionary(uniqueKeysWithValues: bundle.operations.map { ($0.operationID, $0) })
+        let retainedUploadTransfers = try context.fetch(FetchDescriptor<CloudAssetTransfer>()).filter {
+            $0.farmID == bundle.farmID && $0.direction == .upload
+        }
+        let incompleteUploadAssetIDs = Set(retainedUploadTransfers.compactMap { transfer -> UUID? in
+            transfer.status == .completed ? nil : transfer.assetID
+        })
+        let localPhotoSnapshots = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+            .filter {
+                $0.farmID == bundle.farmID &&
+                    $0.deletedAt == nil &&
+                    (!$0.isCloudAuthoritative || incompleteUploadAssetIDs.contains($0.id))
             }
+            .map(LocalPhotoAssetSnapshot.init)
+        let pendingOperationPairs = try context.fetch(FetchDescriptor<DomainOperation>())
+            .filter { $0.farmID == bundle.farmID && pendingIDs.contains($0.id) }
+            .compactMap { operation -> (operation: DomainOperation, envelope: CloudOperationEnvelope)? in
+                guard let envelope = Self.recoveredPendingEnvelope(operation) else { return nil }
+                return (operation, envelope)
+            }
+        let pendingOperationByID = Dictionary(
+            uniqueKeysWithValues: pendingOperationPairs.map { ($0.envelope.operationID, $0) }
+        )
+        let orderedPendingOperations = CloudRebuildActor.sortedOperations(
+            pendingOperationPairs.map(\.envelope)
+        ).compactMap { pendingOperationByID[$0.operationID] }
 
         do {
             try purgeConfirmedBusinessCache(farmID: bundle.farmID, context: context)
@@ -128,61 +321,21 @@ actor FarmPersistenceActor {
             farm.ownerAccountID = bundle.root.ownerAccountID
             farm.updatedAt = bundle.root.modifiedAt
 
-            var applied = 0
-            var earliestHistoryChange: Date?
-            let service = RemoteDomainApplyService()
-            for envelope in bundle.operations {
-                guard envelope.farmID == bundle.farmID else { throw CloudRebuildError.farmMismatch }
-                switch try service.apply(envelope, context: context) {
-                case .applied(let changedAt):
-                    applied += 1
-                    if let changedAt { earliestHistoryChange = min(earliestHistoryChange ?? changedAt, changedAt) }
-                case .duplicate:
-                    break
-                case .conflict:
-                    throw CloudRebuildError.blockingIssues(1)
-                }
-                context.insert(CloudOperationReceipt(
-                    farmID: bundle.farmID,
-                    operationID: envelope.operationID,
-                    recordName: mapper.recordName(for: envelope.operationID),
-                    serverChangeTag: nil,
-                    databaseScope: bundle.scope
-                ))
-            }
-
-            for operation in pendingOperations {
-                guard let entityID = operation.entityID else { continue }
-                let envelope = CloudOperationEnvelope(
-                    farmID: operation.farmID,
-                    entityID: entityID,
-                    entityType: operation.entityType,
-                    schemaVersion: operation.schemaVersion,
-                    revision: operation.resultingRevision,
-                    baseRevision: operation.baseRevision,
-                    operationID: operation.id,
-                    modifiedAt: operation.occurredAt,
-                    modifiedByAccountID: operation.accountID,
-                    modifiedByDeviceID: operation.modifiedByDeviceID ?? UUID(),
-                    payload: operation.payload,
-                    payloadDigest: operation.payloadDigest,
-                    capabilityCertificate: operation.capabilityCertificate,
-                    operationSignature: operation.operationSignature ?? Data(),
-                    deletedAt: nil
-                )
-                switch try service.apply(envelope, context: context) {
-                case .applied(let changedAt):
-                    if let changedAt { earliestHistoryChange = min(earliestHistoryChange ?? changedAt, changedAt) }
-                case .duplicate:
-                    break
-                case .conflict:
-                    throw CloudRebuildError.blockingIssues(1)
-                }
-            }
-
+            // Insert verified assets before replaying tombstones so a deleted
+            // cloud photo cannot be resurrected by the cache replacement.
             let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             let stagingRoot = support.appending(path: "CloudRebuild/\(bundle.sessionID.uuidString.lowercased())", directoryHint: .isDirectory)
-            let assetRoot = support.appending(path: "CloudAssets/\(bundle.farmID.uuidString.lowercased())/\(bundle.sessionID.uuidString.lowercased())", directoryHint: .isDirectory)
+            // A process can crash after the cache save but before the rebuild
+            // session is marked completed. A retry must never reuse that
+            // already-active directory: if the retry later rolls back, its
+            // cleanup would otherwise delete files referenced by the prior
+            // committed cache. Give every replacement attempt its own root so
+            // failure cleanup is confined to files created by this attempt.
+            let assetRootRelativePath = "CloudAssets/\(bundle.farmID.uuidString.lowercased())/\(bundle.sessionID.uuidString.lowercased())/\(UUID().uuidString.lowercased())"
+            let assetRoot = support.appending(
+                path: "eSheepNext/\(assetRootRelativePath)",
+                directoryHint: .isDirectory
+            )
             try FileManager.default.createDirectory(at: assetRoot, withIntermediateDirectories: true)
             createdAssetRoot = assetRoot
             for snapshot in bundle.assets {
@@ -191,7 +344,7 @@ actor FarmPersistenceActor {
                 let destination = assetRoot.appending(path: fileName)
                 try? FileManager.default.removeItem(at: destination)
                 try FileManager.default.copyItem(at: source, to: destination)
-                let relativePath = "CloudAssets/\(bundle.farmID.uuidString.lowercased())/\(bundle.sessionID.uuidString.lowercased())/\(fileName)"
+                let relativePath = "\(assetRootRelativePath)/\(fileName)"
                 let photo = PhotoAssetRecord(
                     id: snapshot.envelope.assetID,
                     farmID: bundle.farmID,
@@ -206,10 +359,141 @@ actor FarmPersistenceActor {
                 photo.cloudPixelWidth = snapshot.envelope.pixelWidth
                 photo.cloudPixelHeight = snapshot.envelope.pixelHeight
                 photo.capturedAt = snapshot.envelope.capturedAt
+                photo.createdAt = snapshot.envelope.createdAt
                 photo.cloudRecordName = snapshot.cloudRecordName
                 photo.isCloudAuthoritative = true
                 context.insert(photo)
             }
+
+            var applied = 0
+            var earliestHistoryChange: Date?
+            // purgeConfirmedBusinessCache has made this farm's business cache
+            // empty; keep replay lookups in memory without changing live sync.
+            let service = RemoteDomainApplyService(replayAssumesEmptyBusinessStore: true)
+            for envelope in bundle.operations {
+                guard envelope.farmID == bundle.farmID else { throw CloudRebuildError.farmMismatch }
+                switch try service.apply(envelope, context: context) {
+                case .applied(let changedAt):
+                    applied += 1
+                    if let changedAt { earliestHistoryChange = min(earliestHistoryChange ?? changedAt, changedAt) }
+                case .duplicate:
+                    break
+                case .conflict(let localRevision):
+                    throw CloudRebuildError.operationReplayConflict(
+                        stage: "云端权威操作",
+                        operationID: envelope.operationID,
+                        baseRevision: envelope.baseRevision,
+                        localRevision: localRevision
+                    )
+                }
+                context.insert(CloudOperationReceipt(
+                    farmID: bundle.farmID,
+                    operationID: envelope.operationID,
+                    recordName: mapper.recordName(for: envelope.operationID),
+                    serverChangeTag: nil,
+                    databaseScope: bundle.scope
+                ))
+            }
+
+            for pending in orderedPendingOperations {
+                let operation = pending.operation
+                let envelope = pending.envelope
+                let entityID = envelope.entityID
+                let operationOutbox = pendingOutboxByOperationID[operation.id] ?? []
+                if let authoritative = authoritativeByOperationID[operation.id] {
+                    if Self.pendingOperation(operation, exactlyMatches: authoritative) {
+                        var foundMismatchedOutbox = false
+                        for item in operationOutbox {
+                            if Self.outboxItem(item, exactlyMatches: operation) {
+                                item.statusRawValue = OutboxStatus.confirmed.rawValue
+                                item.errorMessage = nil
+                                item.nextRetryAt = nil
+                                item.cloudRecordName = mapper.recordName(for: operation.id)
+                            } else {
+                                foundMismatchedOutbox = true
+                                Self.blockRecoveredPendingOutbox(
+                                    [item],
+                                    detail: "本机 Outbox 与已上云的同 operationID 操作内容不一致。"
+                                )
+                            }
+                        }
+                        if foundMismatchedOutbox {
+                            try Self.insertRecoveredPendingConflict(
+                                operation: operation,
+                                remote: authoritative,
+                                reasonCode: "rebuildOutboxIdentityMismatch",
+                                context: context
+                            )
+                        } else {
+                            try Self.removeResolvedRecoveredConflicts(
+                                for: operation,
+                                context: context
+                            )
+                        }
+                    } else {
+                        Self.blockRecoveredPendingOutbox(
+                            operationOutbox,
+                            detail: "本机操作与云端同 operationID 的不可变内容不一致。"
+                        )
+                        try Self.insertRecoveredPendingConflict(
+                            operation: operation,
+                            remote: authoritative,
+                            reasonCode: "rebuildOperationIdentityMismatch",
+                            status: .quarantined,
+                            context: context
+                        )
+                    }
+                    continue
+                }
+                guard !operationOutbox.isEmpty,
+                      operationOutbox.allSatisfy(Self.isReplayableRecoveredOutbox) else {
+                    continue
+                }
+                do {
+                    switch try service.apply(envelope, context: context) {
+                    case .applied(let changedAt):
+                        if let changedAt { earliestHistoryChange = min(earliestHistoryChange ?? changedAt, changedAt) }
+                    case .duplicate:
+                        break
+                    case .conflict(let remoteRevision):
+                        let remote = bundle.operations
+                            .filter { $0.entityID == entityID }
+                            .max(by: { $0.revision < $1.revision })
+                        Self.blockRecoveredPendingOutbox(
+                            operationOutbox,
+                            detail: "云端权威版本 \(remoteRevision) 与本机操作基线 \(operation.baseRevision) 不一致，已停止自动覆盖。"
+                        )
+                        try Self.insertRecoveredPendingConflict(
+                            operation: operation,
+                            remote: remote,
+                            fallbackRemoteRevision: remoteRevision,
+                            reasonCode: "rebuildPendingBaseRevisionMismatch",
+                            context: context
+                        )
+                    }
+                } catch {
+                    let remote = bundle.operations
+                        .filter { $0.entityID == entityID }
+                        .max(by: { $0.revision < $1.revision })
+                    Self.blockRecoveredPendingOutbox(
+                        operationOutbox,
+                        detail: "本机未确认操作无法在权威缓存上安全重放：\(error.localizedDescription)"
+                    )
+                    try Self.insertRecoveredPendingConflict(
+                        operation: operation,
+                        remote: remote,
+                        reasonCode: "rebuildPendingReplayRejected",
+                        context: context
+                    )
+                }
+            }
+
+            try Self.restoreLocalPhotoAssets(
+                localPhotoSnapshots,
+                authoritativeAssets: bundle.assets,
+                retainedUploadTransfers: retainedUploadTransfers,
+                context: context
+            )
 
             if let snapshot = bundle.membershipSnapshot {
                 context.insert(FarmMembershipSnapshotRecord(
@@ -223,11 +507,36 @@ actor FarmPersistenceActor {
                     signature: snapshot.signature
                 ))
             }
+            if let bootstrap = bundle.bootstrap {
+                let commits = try context.fetch(FetchDescriptor<MigrationCommitRecord>())
+                let commit: MigrationCommitRecord
+                if let existing = commits.first(where: { $0.farmID == bundle.farmID }) {
+                    commit = existing
+                } else {
+                    commit = MigrationCommitRecord(
+                        sessionID: bundle.sessionID,
+                        sourceChecksum: "cloud-recovered:\(bootstrap.digest)",
+                        farmID: bundle.farmID,
+                        ownerAccountID: bundle.root.ownerAccountID,
+                        recordCountsJSON: "{\"cloudRecovered\":true,\"entityCount\":\(bootstrap.entityCount)}",
+                        assetsRelativeDirectory: "",
+                        committedAt: bundle.root.modifiedAt
+                    )
+                    context.insert(commit)
+                }
+                commit.baselineDigest = bootstrap.digest
+                commit.baselineEntityCount = bootstrap.entityCount
+                commit.baselinePhotoCount = bootstrap.photoCount
+                commit.cloudState = .synced
+                commit.cloudSyncedAt = .now
+                commit.cloudLastError = nil
+                farm.isLocalOnlyMigration = false
+            }
             try FarmHistoryRebuilder().rebuild(farmID: bundle.farmID, context: context, from: earliestHistoryChange ?? .distantPast)
             try context.save()
             return FarmCacheReplacementResult(
                 appliedOperationCount: applied,
-                preservedOutboxCount: pendingOutbox.count,
+                preservedOutboxCount: pendingOutbox.filter { $0.status != .confirmed }.count,
                 highestRevision: bundle.operations.map(\.revision).max() ?? 0,
                 entityDigest: Self.entityDigest(bundle.operations)
             )
@@ -240,29 +549,314 @@ actor FarmPersistenceActor {
         }
     }
 
-    func pendingRecordIDs(maxOutboxItems: Int = 25) throws -> [(CKRecord.ID, CloudDatabaseScope)] {
+    private static func restoreLocalPhotoAssets(
+        _ snapshots: [LocalPhotoAssetSnapshot],
+        authoritativeAssets: [CloudRebuildAssetSnapshot],
+        retainedUploadTransfers: [CloudAssetTransfer],
+        context: ModelContext
+    ) throws {
+        let authoritativeByID = Dictionary(uniqueKeysWithValues: authoritativeAssets.map { ($0.envelope.assetID, $0) })
+        for snapshot in snapshots {
+            var restoredID = snapshot.id
+            if let authoritative = authoritativeByID[snapshot.id] {
+                let matchingTransfers = retainedUploadTransfers.filter { $0.assetID == snapshot.id }
+                if Self.localPhotoSnapshot(
+                    snapshot,
+                    exactlyMatches: authoritative.envelope,
+                    uploadTransfers: matchingTransfers
+                ) {
+                    for transfer in matchingTransfers {
+                        transfer.statusRawValue = CloudAssetTransferStatus.completed.rawValue
+                        transfer.transferredByteCount = transfer.byteCount
+                        transfer.lastErrorCode = nil
+                        transfer.nextRetryAt = nil
+                        transfer.remoteRecordName = authoritative.cloudRecordName
+                        transfer.updatedAt = .now
+                    }
+                    continue
+                }
+                let hasCloudLineage = snapshot.wasCloudAuthoritative ||
+                    snapshot.cloudRecordName != nil ||
+                    snapshot.legacySourceKey.hasPrefix("cloud:")
+                if hasCloudLineage,
+                   authoritative.envelope.payloadDigest == snapshot.sha256,
+                   let cloudRow = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first(where: {
+                       $0.id == snapshot.id && $0.farmID == snapshot.farmID
+                   }) {
+                    // This is a local metadata edit of an existing cloud
+                    // photo (for example capturedAt). Overlay the local row
+                    // and keep its upload pending instead of accepting stale
+                    // cloud metadata as confirmation.
+                    Self.applyLocalPhotoSnapshot(snapshot, id: snapshot.id, to: cloudRow)
+                    cloudRow.cloudRecordName = authoritative.cloudRecordName
+                    for transfer in matchingTransfers {
+                        transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+                        transfer.transferredByteCount = 0
+                        transfer.lastErrorCode = nil
+                        transfer.nextRetryAt = nil
+                        transfer.remoteRecordName = nil
+                        transfer.localRelativePath = snapshot.relativePath
+                        transfer.updatedAt = .now
+                    }
+                    continue
+                }
+                // Preserve both immutable assets. The cloud ID keeps its
+                // authoritative record; the unsynced local file receives a
+                // fresh identity and remains queued for upload.
+                restoredID = UUID()
+                for transfer in retainedUploadTransfers where transfer.assetID == snapshot.id {
+                    transfer.assetID = restoredID
+                    transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+                    transfer.transferredByteCount = 0
+                    transfer.lastErrorCode = nil
+                    transfer.nextRetryAt = nil
+                    transfer.remoteRecordName = nil
+                    transfer.updatedAt = .now
+                }
+                context.insert(SecurityIncidentRecord(
+                    farmID: snapshot.farmID,
+                    incidentType: "rebuildLocalAssetIdentityCollision",
+                    recordName: authoritative.cloudRecordName,
+                    detail: "云端与本机未上传照片使用同一 assetID 但摘要不同；本机照片已换用新 ID 保留。"
+                ))
+            }
+
+            let restored = PhotoAssetRecord(
+                id: restoredID,
+                farmID: snapshot.farmID,
+                sheepID: snapshot.sheepID,
+                legacySourceKey: snapshot.legacySourceKey,
+                originalEarTag: snapshot.originalEarTag,
+                relativePath: snapshot.relativePath,
+                sha256: snapshot.sha256,
+                mimeType: snapshot.mimeType
+            )
+            Self.applyLocalPhotoSnapshot(snapshot, id: restoredID, to: restored)
+            context.insert(restored)
+        }
+    }
+
+    private static func localPhotoSnapshot(
+        _ snapshot: LocalPhotoAssetSnapshot,
+        exactlyMatches envelope: FarmAssetEnvelope,
+        uploadTransfers: [CloudAssetTransfer]
+    ) -> Bool {
+        let byteCountMatches = uploadTransfers.isEmpty || uploadTransfers.contains { $0.byteCount == envelope.byteCount }
+        return snapshot.farmID == envelope.farmID &&
+            snapshot.id == envelope.assetID &&
+            snapshot.sheepID == envelope.entityID &&
+            snapshot.sourceSHA256 == envelope.sourceDigest &&
+            snapshot.sha256 == envelope.payloadDigest &&
+            snapshot.mimeType == envelope.mimeType &&
+            snapshot.cloudPixelWidth == envelope.pixelWidth &&
+            snapshot.cloudPixelHeight == envelope.pixelHeight &&
+            CloudRebuildRootSnapshot.milliseconds(snapshot.capturedAt ?? .distantPast) ==
+                CloudRebuildRootSnapshot.milliseconds(envelope.capturedAt ?? .distantPast) &&
+            CloudRebuildRootSnapshot.milliseconds(snapshot.createdAt) ==
+                CloudRebuildRootSnapshot.milliseconds(envelope.createdAt) &&
+            byteCountMatches
+    }
+
+    private static func applyLocalPhotoSnapshot(
+        _ snapshot: LocalPhotoAssetSnapshot,
+        id: UUID,
+        to asset: PhotoAssetRecord
+    ) {
+        asset.id = id
+        asset.farmID = snapshot.farmID
+        asset.sheepID = snapshot.sheepID
+        asset.legacySourceKey = snapshot.legacySourceKey
+        asset.originalEarTag = snapshot.originalEarTag
+        asset.relativePath = snapshot.relativePath
+        asset.sha256 = snapshot.sha256
+        asset.mimeType = snapshot.mimeType
+        asset.sourceSHA256 = snapshot.sourceSHA256
+        asset.sourcePixelWidth = snapshot.sourcePixelWidth
+        asset.sourcePixelHeight = snapshot.sourcePixelHeight
+        asset.cloudPixelWidth = snapshot.cloudPixelWidth
+        asset.cloudPixelHeight = snapshot.cloudPixelHeight
+        asset.capturedAt = snapshot.capturedAt
+        asset.cloudRecordName = snapshot.cloudRecordName
+        asset.recoveryRecordName = snapshot.recoveryRecordName
+        asset.isCloudAuthoritative = false
+        asset.recoveryBackedUpAt = snapshot.recoveryBackedUpAt
+        asset.createdAt = snapshot.createdAt
+        asset.deletedAt = nil
+    }
+
+    private static func recoveredPendingEnvelope(_ operation: DomainOperation) -> CloudOperationEnvelope? {
+        guard let entityID = operation.entityID else { return nil }
+        return CloudOperationEnvelope(
+            farmID: operation.farmID,
+            entityID: entityID,
+            entityType: operation.entityType,
+            schemaVersion: operation.schemaVersion,
+            revision: operation.resultingRevision,
+            baseRevision: operation.baseRevision,
+            operationID: operation.id,
+            modifiedAt: operation.occurredAt,
+            modifiedByAccountID: operation.accountID,
+            modifiedByDeviceID: operation.modifiedByDeviceID ?? StableCloudUUID.derived(
+                namespace: operation.id,
+                name: "missing-pending-device"
+            ),
+            payload: operation.payload,
+            payloadDigest: operation.payloadDigest,
+            capabilityCertificate: operation.capabilityCertificate,
+            operationSignature: operation.operationSignature ?? Data(),
+            deletedAt: nil
+        )
+    }
+
+    private static func pendingOperation(
+        _ operation: DomainOperation,
+        exactlyMatches authoritative: CloudOperationEnvelope
+    ) -> Bool {
+        operation.id == authoritative.operationID &&
+            operation.farmID == authoritative.farmID &&
+            operation.accountID == authoritative.modifiedByAccountID &&
+            operation.entityID == authoritative.entityID &&
+            operation.entityType == authoritative.entityType &&
+            operation.schemaVersion == authoritative.schemaVersion &&
+            operation.baseRevision == authoritative.baseRevision &&
+            operation.resultingRevision == authoritative.revision &&
+            operation.payload == authoritative.payload &&
+            operation.payloadDigest == authoritative.payloadDigest &&
+            CloudPayloadDigest.hex(for: operation.payload) == operation.payloadDigest &&
+            operation.modifiedByDeviceID == authoritative.modifiedByDeviceID &&
+            operation.capabilityCertificate == authoritative.capabilityCertificate &&
+            operation.operationSignature == authoritative.operationSignature
+    }
+
+    private static func outboxItem(
+        _ item: OutboxItem,
+        exactlyMatches operation: DomainOperation
+    ) -> Bool {
+        item.operationID == operation.id &&
+            item.farmID == operation.farmID &&
+            item.accountID == operation.accountID &&
+            item.entityType == operation.entityType &&
+            item.entityID == operation.entityID &&
+            item.baseRevision == operation.baseRevision &&
+            item.payloadDigest == operation.payloadDigest
+    }
+
+    private static func isReplayableRecoveredOutbox(_ item: OutboxItem) -> Bool {
+        switch item.status {
+        case .pending, .uploading, .awaitingConfirmation, .retryableFailure:
+            return true
+        case .confirmed, .rejectedPermission, .blockedConflict:
+            return false
+        }
+    }
+
+    private static func blockRecoveredPendingOutbox(
+        _ items: [OutboxItem],
+        detail: String
+    ) {
+        for item in items {
+            item.statusRawValue = OutboxStatus.blockedConflict.rawValue
+            item.errorMessage = detail
+            item.nextRetryAt = nil
+            item.cloudRecordName = nil
+        }
+    }
+
+    private static func removeResolvedRecoveredConflicts(
+        for operation: DomainOperation,
+        context: ModelContext
+    ) throws {
+        guard let entityID = operation.entityID else { return }
+        for conflict in try context.fetch(FetchDescriptor<SyncConflictRecord>()) where
+            conflict.farmID == operation.farmID &&
+            conflict.entityID == entityID &&
+            conflict.entityType == operation.entityType &&
+            conflict.localPayloadDigest == operation.payloadDigest &&
+            (conflict.statusRawValue == SyncConflictStatus.unresolved.rawValue ||
+                conflict.statusRawValue == SyncConflictStatus.quarantined.rawValue) {
+            context.delete(conflict)
+        }
+    }
+
+    private static func insertRecoveredPendingConflict(
+        operation: DomainOperation,
+        remote: CloudOperationEnvelope?,
+        fallbackRemoteRevision: Int? = nil,
+        reasonCode: String,
+        status: SyncConflictStatus = .unresolved,
+        context: ModelContext
+    ) throws {
+        guard let entityID = operation.entityID else { return }
+        let conflict = SyncConflictRecord(
+            farmID: operation.farmID,
+            entityID: entityID,
+            entityType: operation.entityType,
+            localRevision: operation.resultingRevision,
+            remoteRevision: remote?.revision ?? fallbackRemoteRevision ?? operation.baseRevision,
+            localPayload: operation.payload,
+            remotePayload: remote?.payload ?? Data(),
+            remoteAccountID: remote?.modifiedByAccountID,
+            remoteDeviceID: remote?.modifiedByDeviceID,
+            reasonCode: reasonCode,
+            status: status
+        )
+        if let remote {
+            conflict.remoteEnvelopeData = try JSONEncoder.cloud.encode(remote)
+        }
+        context.insert(conflict)
+    }
+
+    func pendingRecordIDs(
+        maxOutboxItems: Int = 25,
+        farmID restrictedFarmID: UUID? = nil
+    ) throws -> [(CKRecord.ID, CloudDatabaseScope)] {
         let context = ModelContext(container)
         let pending = OutboxStatus.pending.rawValue
         let uploading = OutboxStatus.uploading.rawValue
         let awaiting = OutboxStatus.awaitingConfirmation.rawValue
-        var primaryDescriptor = FetchDescriptor<OutboxItem>(
-            predicate: #Predicate {
-                $0.statusRawValue == pending || $0.statusRawValue == uploading || $0.statusRawValue == awaiting
-            },
-            sortBy: [SortDescriptor(\.createdAt)]
-        )
+        var primaryDescriptor: FetchDescriptor<OutboxItem>
+        if let restrictedFarmID {
+            primaryDescriptor = FetchDescriptor<OutboxItem>(
+                predicate: #Predicate {
+                    $0.farmID == restrictedFarmID &&
+                        ($0.statusRawValue == pending || $0.statusRawValue == uploading || $0.statusRawValue == awaiting)
+                },
+                sortBy: [SortDescriptor(\.createdAt)]
+            )
+        } else {
+            primaryDescriptor = FetchDescriptor<OutboxItem>(
+                predicate: #Predicate {
+                    $0.statusRawValue == pending || $0.statusRawValue == uploading || $0.statusRawValue == awaiting
+                },
+                sortBy: [SortDescriptor(\.createdAt)]
+            )
+        }
         primaryDescriptor.fetchLimit = max(1, maxOutboxItems)
         var outbox = try context.fetch(primaryDescriptor)
         if outbox.count < maxOutboxItems {
             let retryable = OutboxStatus.retryableFailure.rawValue
-            var retryDescriptor = FetchDescriptor<OutboxItem>(
-                predicate: #Predicate { $0.statusRawValue == retryable },
-                sortBy: [SortDescriptor(\.createdAt)]
-            )
-            retryDescriptor.fetchLimit = maxOutboxItems - outbox.count
-            outbox.append(contentsOf: try context.fetch(retryDescriptor).filter {
+            let retryDescriptor: FetchDescriptor<OutboxItem>
+            if let restrictedFarmID {
+                retryDescriptor = FetchDescriptor<OutboxItem>(
+                    predicate: #Predicate {
+                        $0.farmID == restrictedFarmID && $0.statusRawValue == retryable
+                    },
+                    sortBy: [SortDescriptor(\.createdAt)]
+                )
+            } else {
+                retryDescriptor = FetchDescriptor<OutboxItem>(
+                    predicate: #Predicate { $0.statusRawValue == retryable },
+                    sortBy: [SortDescriptor(\.createdAt)]
+                )
+            }
+            // Eligibility must be evaluated before applying the batch limit.
+            // Otherwise an older rate-limited prefix can hide later rows whose
+            // retry time has already arrived and make the migration tail look
+            // empty even though immediately schedulable work exists.
+            let eligibleRetryable = try context.fetch(retryDescriptor).filter {
                 $0.nextRetryAt == nil || $0.nextRetryAt! <= .now
-            })
+            }
+            outbox.append(contentsOf: eligibleRetryable.prefix(maxOutboxItems - outbox.count))
         }
         let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
         let operationIDs = Set(outbox.map(\.operationID))
@@ -286,7 +880,11 @@ actor FarmPersistenceActor {
             guard let binding = bindingValues[item.farmID] else { continue }
             let zoneID = CKRecordZone.ID(zoneName: binding.zoneName, ownerName: binding.ownerName)
             var recordNames = [mapper.recordName(for: item.operationID)]
-            if let entityID = item.entityID { recordNames.append(mapper.entityRecordName(for: entityID)) }
+            if let entityID = item.entityID,
+               let operation = operationByID[item.operationID],
+               !Self.isRefreshedBootstrap(operation) {
+                recordNames.append(mapper.entityRecordName(for: entityID))
+            }
             for recordName in recordNames {
                 let key = "\(binding.scope.rawValue)|\(zoneID.zoneName)|\(recordName)"
                 if seen.insert(key).inserted {
@@ -305,6 +903,93 @@ actor FarmPersistenceActor {
         return result
     }
 
+    func refreshedBootstrapEntityRecordNames(farmID: UUID) throws -> Set<String> {
+        let context = ModelContext(container)
+        let confirmed = OutboxStatus.confirmed.rawValue
+        let outbox = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        var operationByID: [UUID: DomainOperation] = [:]
+        var duplicateOperationIDs = Set<UUID>()
+        for operation in operations {
+            if operationByID.updateValue(operation, forKey: operation.id) != nil {
+                duplicateOperationIDs.insert(operation.id)
+            }
+        }
+
+        let refreshedEntityIDs = Set(operations.compactMap { operation -> UUID? in
+            guard !duplicateOperationIDs.contains(operation.id),
+                  Self.isRefreshedBootstrap(operation) else { return nil }
+            return operation.entityID
+        })
+        let protectedEntityIDs = Set(outbox.compactMap { item -> UUID? in
+            guard item.statusRawValue != confirmed else { return nil }
+            guard !duplicateOperationIDs.contains(item.operationID),
+                  let operation = operationByID[item.operationID] else {
+                // An unconfirmed projection whose operation is missing or
+                // ambiguous is not safe to classify as obsolete.
+                return item.entityID
+            }
+            guard !Self.isRefreshedBootstrap(operation) else { return nil }
+            return operation.entityID
+        })
+        return Set(refreshedEntityIDs.subtracting(protectedEntityIDs).map(mapper.entityRecordName(for:)))
+    }
+
+    /// Initial migration projections have no server record yet and must not
+    /// pay for a lookup per entity. Updates, however, need the existing
+    /// CKRecord system fields so CloudKit treats the save as an optimistic
+    /// modification instead of another insert.
+    func entityRecordRequiresServerFetch(
+        _ recordID: CKRecord.ID,
+        scope: CloudDatabaseScope
+    ) throws -> Bool {
+        guard let entityID = mapper.entityID(from: recordID) else { return false }
+        let context = ModelContext(container)
+        guard let binding = try activeBinding(matching: recordID.zoneID, scope: scope, context: context) else {
+            return false
+        }
+        let farmID = binding.farmID
+        let confirmed = OutboxStatus.confirmed.rawValue
+        let candidates = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.entityID == entityID && $0.statusRawValue != confirmed
+        }))
+        let candidateIDs = Set(candidates.map(\.operationID))
+        let operation = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID && $0.entityID == entityID
+        }))
+            .filter { candidateIDs.contains($0.id) }
+            .max(by: {
+                if $0.resultingRevision != $1.resultingRevision { return $0.resultingRevision < $1.resultingRevision }
+                return $0.createdAt < $1.createdAt
+            })
+        return (operation?.baseRevision ?? 0) > 0
+    }
+
+    private func activeBinding(
+        matching zoneID: CKRecordZone.ID,
+        scope: CloudDatabaseScope,
+        context: ModelContext
+    ) throws -> CloudFarmBinding? {
+        let zoneName = zoneID.zoneName
+        let ownerName = zoneID.ownerName
+        let scopeRawValue = scope.rawValue
+        let active = CloudFarmBindingState.active.rawValue
+        var descriptor = FetchDescriptor<CloudFarmBinding>(predicate: #Predicate {
+            $0.zoneName == zoneName &&
+                $0.zoneOwnerName == ownerName &&
+                $0.databaseScopeRawValue == scopeRawValue &&
+                $0.stateRawValue == active
+        })
+        descriptor.fetchLimit = 2
+        let matches = try context.fetch(descriptor)
+        guard matches.count == 1 else { return nil }
+        return matches[0]
+    }
+
     func bindingSnapshot(farmID: UUID) throws -> CloudFarmBindingSnapshot? {
         let context = ModelContext(container)
         let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
@@ -316,7 +1001,35 @@ actor FarmPersistenceActor {
             zoneOwnerName: binding.zoneOwnerName,
             databaseScope: binding.databaseScope,
             shareRecordName: binding.shareRecordName,
-            state: binding.state
+            state: binding.state,
+            lastErrorCode: binding.lastErrorCode
+        )
+    }
+
+    func uniqueActiveBindingSnapshot(
+        farmID: UUID,
+        scope: CloudDatabaseScope
+    ) throws -> CloudFarmBindingSnapshot? {
+        let context = ModelContext(container)
+        let active = CloudFarmBindingState.active.rawValue
+        let scopeRawValue = scope.rawValue
+        var descriptor = FetchDescriptor<CloudFarmBinding>(predicate: #Predicate {
+            $0.farmID == farmID &&
+                $0.stateRawValue == active &&
+                $0.databaseScopeRawValue == scopeRawValue
+        })
+        descriptor.fetchLimit = 2
+        let bindings = try context.fetch(descriptor)
+        guard bindings.count == 1, let binding = bindings.first else { return nil }
+        return CloudFarmBindingSnapshot(
+            farmID: binding.farmID,
+            ownerAccountID: binding.ownerAccountID,
+            zoneName: binding.zoneName,
+            zoneOwnerName: binding.zoneOwnerName,
+            databaseScope: binding.databaseScope,
+            shareRecordName: binding.shareRecordName,
+            state: binding.state,
+            lastErrorCode: binding.lastErrorCode
         )
     }
 
@@ -355,9 +1068,190 @@ actor FarmPersistenceActor {
     func migrationCloudBaseline(farmID: UUID) throws -> MigrationCloudBaselineSnapshot? {
         let context = ModelContext(container)
         guard let commit = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first(where: {
-            $0.farmID == farmID && !$0.baselineDigest.isEmpty && $0.baselineEntityCount > 0 && $0.cloudState != .failed
+            $0.farmID == farmID &&
+                !$0.baselineDigest.isEmpty &&
+                $0.baselineEntityCount > 0 &&
+                $0.cloudStateRawValue != MigrationCloudState.localCommitted.rawValue
         }) else { return nil }
-        return MigrationCloudBaselineSnapshot(digest: commit.baselineDigest, entityCount: commit.baselineEntityCount, photoCount: commit.baselinePhotoCount)
+        var version = 1
+        var cutoffAt: Date?
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        for operation in try context.fetch(FetchDescriptor<DomainOperation>()).filter({ $0.farmID == farmID }) {
+            guard let payload = try? decoder.decode(FarmCommandCloudPayload.self, from: operation.payload),
+                  payload.kind == .bootstrapEntity else { continue }
+            let candidateVersion = payload.integers["baselineVersion"] ?? 1
+            guard candidateVersion >= version else { continue }
+            let candidateCutoff = payload.dates["baselineCutoffAt"]
+            if candidateVersion > version {
+                version = candidateVersion
+                cutoffAt = candidateCutoff
+            } else if let candidateCutoff {
+                cutoffAt = max(cutoffAt ?? candidateCutoff, candidateCutoff)
+            }
+        }
+        if version < 2 || cutoffAt == nil {
+            if let cached = recoveredBaselineCache[farmID],
+               cached.digest == commit.baselineDigest,
+               cached.entityCount == commit.baselineEntityCount,
+               cached.photoCount == commit.baselinePhotoCount {
+                return cached
+            }
+            if let (_, bundle) = try RecoveredBaselineReuploadRepairService.completedRecoveryBundle(
+                commit: commit,
+                context: context
+            ), let bootstrap = bundle.bootstrap,
+               bootstrap.digest == commit.baselineDigest,
+               bootstrap.entityCount == commit.baselineEntityCount,
+               bootstrap.photoCount == commit.baselinePhotoCount,
+               bootstrap.normalizedVersion >= 2,
+               let recoveredCutoff = bootstrap.cutoffAt {
+                let recovered = MigrationCloudBaselineSnapshot(
+                    digest: commit.baselineDigest,
+                    entityCount: commit.baselineEntityCount,
+                    photoCount: commit.baselinePhotoCount,
+                    version: bootstrap.normalizedVersion,
+                    cutoffAt: recoveredCutoff
+                )
+                recoveredBaselineCache[farmID] = recovered
+                return recovered
+            }
+        }
+        return MigrationCloudBaselineSnapshot(
+            digest: commit.baselineDigest,
+            entityCount: commit.baselineEntityCount,
+            photoCount: commit.baselinePhotoCount,
+            version: version,
+            cutoffAt: cutoffAt
+        )
+    }
+
+    /// Restores only evidence that can be derived exactly from the immutable
+    /// baseline operation. A confirmed row without a matching receipt is
+    /// safely requeued so CloudKit can prove the immutable record again.
+    @discardableResult
+    func repairMigrationCloudReadyEvidence(farmID: UUID) throws -> Int {
+        _ = try backfillLegacyReceiptZoneIdentity(farmID: farmID)
+        let context = ModelContext(container)
+        let commits = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).filter {
+            $0.farmID == farmID &&
+                !$0.baselineDigest.isEmpty &&
+                $0.baselineEntityCount > 0 &&
+                $0.cloudStateRawValue != MigrationCloudState.localCommitted.rawValue
+        }
+        guard commits.count == 1, let commit = commits.first else {
+            throw MigrationCloudReadyEvidenceError.baselineMissing
+        }
+        let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>()).filter {
+            $0.farmID == farmID &&
+                $0.ownerAccountID == commit.ownerAccountID &&
+                $0.state == .active &&
+                $0.databaseScope == .privateDatabase
+        }
+        guard bindings.count == 1, let binding = bindings.first else {
+            throw MigrationCloudReadyEvidenceError.bindingMismatch
+        }
+        let required = try MigrationBaselineV2EvidenceContract.requiredOperations(
+            commit: commit,
+            farmID: farmID,
+            context: context
+        )
+        let repaired = try MigrationBaselineV2EvidenceContract.repairOutboxes(
+            required: required,
+            commit: commit,
+            databaseScope: binding.databaseScope,
+            zoneName: binding.zoneName,
+            zoneOwnerName: binding.zoneOwnerName,
+            context: context
+        )
+        if repaired > 0 { try context.save() }
+        return repaired
+    }
+
+    /// A CloudKit root may become ready only when every operation selected by
+    /// the current v2 baseline has an exact confirmed Outbox row and a matching
+    /// durable receipt in the active private database. Photos use the same
+    /// fail-closed rule against their immutable payload digest.
+    func verifiedMigrationCloudBaselineForReady(farmID: UUID) throws -> MigrationCloudBaselineSnapshot? {
+        _ = try backfillLegacyReceiptZoneIdentity(farmID: farmID)
+        let context = ModelContext(container)
+        let commits = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).filter {
+            $0.farmID == farmID &&
+                !$0.baselineDigest.isEmpty &&
+                $0.baselineEntityCount > 0 &&
+                $0.cloudStateRawValue != MigrationCloudState.localCommitted.rawValue
+        }
+        guard commits.count == 1, let commit = commits.first else { return nil }
+        let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>()).filter {
+            $0.farmID == farmID &&
+                $0.ownerAccountID == commit.ownerAccountID &&
+                $0.state == .active &&
+                $0.databaseScope == .privateDatabase
+        }
+        guard bindings.count == 1, let binding = bindings.first else {
+            throw MigrationCloudReadyEvidenceError.bindingMismatch
+        }
+        let required = try MigrationBaselineV2EvidenceContract.requiredOperations(
+            commit: commit,
+            farmID: farmID,
+            context: context
+        )
+        let outboxes = try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.farmID == farmID }
+        let receipts = try context.fetch(FetchDescriptor<CloudOperationReceipt>()).filter { $0.farmID == farmID }
+        let outboxesByOperationID = Dictionary(grouping: outboxes, by: \.operationID)
+        let receiptsByOperationID = Dictionary(grouping: receipts, by: \.operationID)
+        for operation in required.operations {
+            let matching = outboxesByOperationID[operation.id] ?? []
+            let expectedRecordName = mapper.recordName(for: operation.id)
+            guard matching.count == 1,
+                  let item = matching.first,
+                  item.accountID == operation.accountID,
+                  item.entityType == operation.entityType,
+                  item.entityID == operation.entityID,
+                  item.baseRevision == operation.baseRevision,
+                  item.payloadDigest == operation.payloadDigest,
+                  item.status == .confirmed,
+                  item.cloudRecordName == expectedRecordName else {
+                throw MigrationCloudReadyEvidenceError.outboxMismatch
+            }
+            guard (receiptsByOperationID[operation.id] ?? []).contains(where: {
+                $0.operationID == operation.id &&
+                    $0.databaseScopeRawValue == binding.databaseScopeRawValue &&
+                    $0.recordName == expectedRecordName &&
+                    $0.zoneName == binding.zoneName &&
+                    $0.zoneOwnerName == binding.zoneOwnerName
+            }) else {
+                throw MigrationCloudReadyEvidenceError.receiptMissing
+            }
+        }
+
+        let photos = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).filter {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }
+        guard photos.count == commit.baselinePhotoCount else {
+            throw MigrationCloudReadyEvidenceError.photoMismatch
+        }
+        let uploads = try context.fetch(FetchDescriptor<CloudAssetTransfer>()).filter {
+            $0.farmID == farmID && $0.direction == .upload
+        }
+        for photo in photos {
+            guard !photo.sha256.isEmpty,
+                  uploads.contains(where: {
+                      $0.assetID == photo.id &&
+                          $0.payloadDigest == photo.sha256 &&
+                          $0.status == .completed
+                  }) else {
+                throw MigrationCloudReadyEvidenceError.photoMismatch
+            }
+        }
+
+        return MigrationCloudBaselineSnapshot(
+            digest: commit.baselineDigest,
+            entityCount: commit.baselineEntityCount,
+            photoCount: commit.baselinePhotoCount,
+            version: required.version,
+            cutoffAt: required.cutoffAt
+        )
     }
 
     /// 云端准入必须在服务层执行：Development 只接收已完成本地对账
@@ -425,28 +1319,48 @@ actor FarmPersistenceActor {
             farms.append(farm)
         }
         let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
-        let binding = bindings.first(where: { $0.farmID == farmID }) ?? CloudFarmBinding(farmID: farmID, ownerAccountID: ownerAccountID, databaseScope: .privateDatabase)
-        if binding.modelContext == nil { context.insert(binding) }
+        let binding: CloudFarmBinding
+        if let existing = bindings.first(where: { $0.farmID == farmID }) {
+            binding = existing
+        } else {
+            binding = CloudFarmBinding(
+                farmID: farmID,
+                ownerAccountID: ownerAccountID,
+                databaseScope: .privateDatabase,
+                state: .active
+            )
+            context.insert(binding)
+        }
         binding.shareRecordName = shareRecordName
-        binding.stateRawValue = CloudFarmBindingState.active.rawValue
         binding.updatedAt = .now
         try context.save()
     }
 
-    func record(for recordID: CKRecord.ID, scope: CloudDatabaseScope, device: DeviceIdentityActor) async -> CKRecord? {
+    func record(
+        for recordID: CKRecord.ID,
+        scope: CloudDatabaseScope,
+        device: DeviceIdentityActor,
+        existingEntityRecord: CKRecord? = nil
+    ) async -> CKRecord? {
         do {
             let context = ModelContext(container)
+            guard let binding = try activeBinding(
+                matching: recordID.zoneID,
+                scope: scope,
+                context: context
+            ) else { return nil }
+            let farmID = binding.farmID
             let operationID: UUID?
             if let direct = mapper.operationID(from: recordID) {
                 operationID = direct
             } else if let entityID = mapper.entityID(from: recordID) {
                 let confirmed = OutboxStatus.confirmed.rawValue
                 let candidates = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
-                    $0.entityID == entityID && $0.statusRawValue != confirmed
+                    $0.farmID == farmID && $0.entityID == entityID && $0.statusRawValue != confirmed
                 }))
                 let candidateIDs = Set(candidates.map(\.operationID))
                 operationID = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
-                    $0.entityID == entityID
+                    $0.farmID == farmID && $0.entityID == entityID
                 }))
                     .filter { candidateIDs.contains($0.id) }
                     .max(by: {
@@ -456,7 +1370,7 @@ actor FarmPersistenceActor {
             } else if let entityID = mapper.tombstoneEntityID(from: recordID) {
                 let tombstoneKind = DomainOperationKind.tombstoneEntity.rawValue
                 operationID = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
-                    $0.entityID == entityID && $0.kindRawValue == tombstoneKind
+                    $0.farmID == farmID && $0.entityID == entityID && $0.kindRawValue == tombstoneKind
                 }))
                     .max(by: { $0.createdAt < $1.createdAt })?.id
             } else {
@@ -464,12 +1378,29 @@ actor FarmPersistenceActor {
             }
             guard let operationID else { return nil }
             guard let operation = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
-                      $0.id == operationID
+                      $0.id == operationID && $0.farmID == farmID
                   })).first,
                   let item = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
-                      $0.operationID == operationID
+                      $0.operationID == operationID && $0.farmID == farmID
                   })).first,
                   let entityID = operation.entityID else { return nil }
+            // Baseline v2 refreshes are an immutable operation stream. Older
+            // builds may have left mutable entity projections serialized in
+            // CKSyncEngine. Never reconstruct those stale projections, even if
+            // automatic syncing races the explicit state cleanup at launch.
+            if mapper.entityID(from: recordID) != nil,
+               Self.isRefreshedBootstrap(operation) {
+                return nil
+            }
+            var existingEntityRecordIsVerifiedAncestor = false
+            if mapper.entityID(from: recordID) != nil, let existingEntityRecord {
+                existingEntityRecordIsVerifiedAncestor = try projectionIsVerifiedAncestor(
+                    existingEntityRecord,
+                    of: operation,
+                    scope: scope,
+                    context: context
+                )
+            }
             let identity = try await device.identity()
             let certificates = try context.fetch(FetchDescriptor<CapabilityCertificateRecord>())
             guard let certificate = certificates
@@ -507,6 +1438,14 @@ actor FarmPersistenceActor {
                 deletedAt: tombstone?.deletedAt
             )
             let signature = try await device.sign(envelope.canonicalSigningData)
+            let bindingValidationContext = ModelContext(container)
+            guard let currentBinding = try activeBinding(
+                matching: recordID.zoneID,
+                scope: scope,
+                context: bindingValidationContext
+            ), currentBinding.farmID == operation.farmID else {
+                return nil
+            }
             envelope = CloudOperationEnvelope(
                 farmID: envelope.farmID,
                 entityID: envelope.entityID,
@@ -534,7 +1473,12 @@ actor FarmPersistenceActor {
             item.attemptCount += 1
             try context.save()
             if mapper.entityID(from: recordID) != nil {
-                return mapper.entityRecord(from: envelope, zoneID: recordID.zoneID)
+                return mapper.entityRecord(
+                    from: envelope,
+                    zoneID: recordID.zoneID,
+                    existingRecord: existingEntityRecord,
+                    existingRecordIsVerifiedAncestor: existingEntityRecordIsVerifiedAncestor
+                )
             }
             if recordID.recordName.hasPrefix("tombstone_"), let tombstone, let operationID = tombstone.operationID {
                 let value = FarmTombstoneEnvelope(
@@ -557,50 +1501,112 @@ actor FarmPersistenceActor {
         }
     }
 
+    private func projectionIsVerifiedAncestor(
+        _ server: CKRecord,
+        of candidate: DomainOperation,
+        scope: CloudDatabaseScope,
+        context: ModelContext
+    ) throws -> Bool {
+        guard let entityID = candidate.entityID else { return false }
+        let farmID = candidate.farmID
+        let history = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID && $0.entityID == entityID
+        }))
+        var confirmedOperationRecordNames = Set<String>()
+        let scopeRawValue = scope.rawValue
+        let zoneName = server.recordID.zoneID.zoneName
+        let zoneOwnerName = server.recordID.zoneID.ownerName
+        for operation in history {
+            let operationID = operation.id
+            let recordName = mapper.recordName(for: operationID)
+            var descriptor = FetchDescriptor<CloudOperationReceipt>(predicate: #Predicate {
+                $0.farmID == farmID &&
+                    $0.operationID == operationID &&
+                    $0.recordName == recordName &&
+                    $0.databaseScopeRawValue == scopeRawValue &&
+                    $0.zoneName == zoneName &&
+                    $0.zoneOwnerName == zoneOwnerName
+            })
+            descriptor.fetchLimit = 1
+            if try !context.fetch(descriptor).isEmpty {
+                confirmedOperationRecordNames.insert(recordName)
+            }
+        }
+        return CloudEntityProjectionLineage.isVerifiedAncestor(
+            server: server,
+            candidate: candidate,
+            history: history,
+            confirmedOperationRecordNames: confirmedOperationRecordNames,
+            mapper: mapper
+        )
+    }
+
     func confirmSavedRecords(_ records: [CKRecord], scope: CloudDatabaseScope) throws {
         let context = ModelContext(container)
         let outbox = try context.fetch(FetchDescriptor<OutboxItem>())
         let operations = try context.fetch(FetchDescriptor<DomainOperation>())
         var receipts = try context.fetch(FetchDescriptor<CloudOperationReceipt>())
-        var affectedOperationIDs = Set<UUID>()
+        var affectedOperations: [(farmID: UUID, operationID: UUID, zoneName: String, zoneOwnerName: String)] = []
         for record in records {
-            let operationID = mapper.operationID(from: record.recordID) ??
-                ((record[CloudRecordField.operationID] as? String).flatMap(UUID.init(uuidString:)))
-            guard let operationID,
-                  let item = outbox.first(where: { $0.operationID == operationID }) else { continue }
-            affectedOperationIDs.insert(operationID)
-            if !receipts.contains(where: { $0.operationID == operationID && $0.recordName == record.recordID.recordName }) {
+            guard let target = try validatedSentRecordTarget(
+                record,
+                scope: scope,
+                outbox: outbox,
+                operations: operations,
+                context: context
+            ) else { continue }
+            let operationID = target.operation.id
+            let item = target.item
+            if !affectedOperations.contains(where: {
+                $0.farmID == item.farmID && $0.operationID == operationID
+            }) {
+                affectedOperations.append((
+                    item.farmID,
+                    operationID,
+                    record.recordID.zoneID.zoneName,
+                    record.recordID.zoneID.ownerName
+                ))
+            }
+            if !receipts.contains(where: {
+                $0.farmID == item.farmID &&
+                    $0.operationID == operationID &&
+                    $0.recordName == record.recordID.recordName &&
+                    $0.databaseScopeRawValue == scope.rawValue &&
+                    $0.zoneName == record.recordID.zoneID.zoneName &&
+                    $0.zoneOwnerName == record.recordID.zoneID.ownerName
+            }) {
                 let receipt = CloudOperationReceipt(
                     farmID: item.farmID,
                     operationID: operationID,
                     recordName: record.recordID.recordName,
                     serverChangeTag: record.recordChangeTag,
-                    databaseScope: scope
+                    databaseScope: scope,
+                    zoneName: record.recordID.zoneID.zoneName,
+                    zoneOwnerName: record.recordID.zoneID.ownerName
                 )
                 context.insert(receipt)
                 receipts.append(receipt)
             }
         }
-        for operationID in affectedOperationIDs {
-            guard let item = outbox.first(where: { $0.operationID == operationID }),
-                  let operation = operations.first(where: { $0.id == operationID }) else { continue }
-            var requiredNames: Set<String> = [mapper.recordName(for: operationID)]
-            if let entityID = operation.entityID {
-                let latestOperation = operations
-                    .filter { $0.farmID == operation.farmID && $0.entityID == entityID }
-                    .max(by: {
-                        if $0.resultingRevision != $1.resultingRevision { return $0.resultingRevision < $1.resultingRevision }
-                        return $0.createdAt < $1.createdAt
-                    })
-                if latestOperation?.id == operationID {
-                    requiredNames.insert(mapper.entityRecordName(for: entityID))
-                }
-            }
-            if operation.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue,
-               let entityID = operation.entityID {
-                requiredNames.insert(mapper.tombstoneRecordName(for: entityID))
-            }
-            let confirmedNames = Set(receipts.filter { $0.operationID == operationID }.map(\.recordName))
+        for affected in affectedOperations {
+            let farmID = affected.farmID
+            let operationID = affected.operationID
+            guard let item = outbox.first(where: {
+                $0.farmID == farmID && $0.operationID == operationID
+            }), let operation = operations.first(where: {
+                $0.farmID == farmID && $0.id == operationID
+            }) else { continue }
+            let scopeRawValue = scope.rawValue
+            let zoneName = affected.zoneName
+            let zoneOwnerName = affected.zoneOwnerName
+            let requiredNames = requiredReceiptNames(for: operation, in: operations)
+            let confirmedNames = Set(receipts.filter {
+                    $0.farmID == farmID &&
+                    $0.operationID == operationID &&
+                    $0.databaseScopeRawValue == scopeRawValue &&
+                    $0.zoneName == zoneName &&
+                    $0.zoneOwnerName == zoneOwnerName
+            }.map(\.recordName))
             if requiredNames.isSubset(of: confirmedNames) {
                 item.statusRawValue = OutboxStatus.confirmed.rawValue
                 item.errorMessage = nil
@@ -610,6 +1616,239 @@ actor FarmPersistenceActor {
             }
         }
         try context.save()
+    }
+
+    private func requiredReceiptNames(
+        for operation: DomainOperation,
+        in operations: [DomainOperation]
+    ) -> Set<String> {
+        var names: Set<String> = [mapper.recordName(for: operation.id)]
+        if let entityID = operation.entityID, !Self.isRefreshedBootstrap(operation) {
+            let latestOperation = operations
+                .filter { $0.farmID == operation.farmID && $0.entityID == entityID }
+                .max(by: {
+                    if $0.resultingRevision != $1.resultingRevision {
+                        return $0.resultingRevision < $1.resultingRevision
+                    }
+                    return $0.createdAt < $1.createdAt
+                })
+            if latestOperation?.id == operation.id {
+                names.insert(mapper.entityRecordName(for: entityID))
+            }
+        }
+        if operation.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue,
+           let entityID = operation.entityID {
+            names.insert(mapper.tombstoneRecordName(for: entityID))
+        }
+        return names
+    }
+
+    private func validatedSentRecordTarget(
+        _ record: CKRecord,
+        scope: CloudDatabaseScope,
+        outbox: [OutboxItem],
+        operations: [DomainOperation],
+        context: ModelContext
+    ) throws -> (item: OutboxItem, operation: DomainOperation)? {
+        guard let binding = try activeBinding(
+            matching: record.recordID.zoneID,
+            scope: scope,
+            context: context
+        ) else { return nil }
+        let operationID = mapper.operationID(from: record.recordID) ??
+            ((record[CloudRecordField.operationID] as? String).flatMap(UUID.init(uuidString:)))
+        guard let operationID else { return nil }
+        let matchingItems = outbox.filter {
+            $0.operationID == operationID && $0.farmID == binding.farmID
+        }
+        let matchingOperations = operations.filter {
+            $0.id == operationID && $0.farmID == binding.farmID
+        }
+        guard matchingItems.count == 1,
+              matchingOperations.count == 1,
+              let item = matchingItems.first,
+              let operation = matchingOperations.first else { return nil }
+        var expectedRecordNames: Set<String> = [mapper.recordName(for: operationID)]
+        if let entityID = operation.entityID, !Self.isRefreshedBootstrap(operation) {
+            expectedRecordNames.insert(mapper.entityRecordName(for: entityID))
+        }
+        if operation.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue,
+           let entityID = operation.entityID {
+            expectedRecordNames.insert(mapper.tombstoneRecordName(for: entityID))
+        }
+        guard expectedRecordNames.contains(record.recordID.recordName) else { return nil }
+        return (item, operation)
+    }
+
+    /// Adds the current zone identity to receipts written by the immediately
+    /// preceding schema, but only when the local store itself provides a full
+    /// proof chain. Receipts older than the current binding identity timestamp,
+    /// rebuild receipts without a server change tag, ambiguous operations, and
+    /// incomplete outbox rows remain zone-less and must be confirmed again.
+    @discardableResult
+    func backfillLegacyReceiptZoneIdentity(farmID: UUID) throws -> Int {
+        let context = ModelContext(container)
+        let active = CloudFarmBindingState.active.rawValue
+        var bindingDescriptor = FetchDescriptor<CloudFarmBinding>(predicate: #Predicate {
+            $0.farmID == farmID && $0.stateRawValue == active
+        })
+        bindingDescriptor.fetchLimit = 2
+        let bindings = try context.fetch(bindingDescriptor)
+        guard bindings.count == 1,
+              let binding = bindings.first,
+              binding.databaseScope == .privateDatabase,
+              binding.zoneName == CloudZoneName.forFarm(farmID),
+              binding.zoneOwnerName == CKCurrentUserDefaultName else { return 0 }
+        let farms = try context.fetch(FetchDescriptor<FarmRecord>()).filter {
+            $0.id == farmID && $0.deletedAt == nil
+        }
+        guard farms.count == 1,
+              farms[0].ownerAccountID == binding.ownerAccountID else { return 0 }
+
+        let confirmed = OutboxStatus.confirmed.rawValue
+        let items = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.statusRawValue == confirmed
+        }))
+        var itemByOperationID: [UUID: OutboxItem] = [:]
+        var ambiguousItemIDs = Set<UUID>()
+        for item in items {
+            if itemByOperationID.updateValue(item, forKey: item.operationID) != nil {
+                ambiguousItemIDs.insert(item.operationID)
+            }
+        }
+
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        var operationByID: [UUID: DomainOperation] = [:]
+        var ambiguousOperationIDs = Set<UUID>()
+        for operation in operations {
+            if operationByID.updateValue(operation, forKey: operation.id) != nil {
+                ambiguousOperationIDs.insert(operation.id)
+            }
+        }
+
+        let scopeRawValue = binding.databaseScopeRawValue
+        // `updatedAt` is also touched by non-identity sync maintenance while a
+        // long upload is running. `createdAt` is the safe lower bound here:
+        // deleting/recreating the binding necessarily creates a later value.
+        let identityEstablishedAt = binding.createdAt
+        let receipts = try context.fetch(FetchDescriptor<CloudOperationReceipt>(predicate: #Predicate {
+            $0.farmID == farmID && $0.databaseScopeRawValue == scopeRawValue
+        }))
+        var updated = 0
+        for receipt in receipts {
+            guard receipt.zoneName == nil,
+                  receipt.zoneOwnerName == nil,
+                  receipt.confirmedAt >= identityEstablishedAt,
+                  receipt.serverChangeTag?.isEmpty == false,
+                  !ambiguousItemIDs.contains(receipt.operationID),
+                  !ambiguousOperationIDs.contains(receipt.operationID),
+                  let item = itemByOperationID[receipt.operationID],
+                  let operation = operationByID[receipt.operationID],
+                  receipt.recordName == mapper.recordName(for: operation.id),
+                  item.cloudRecordName == receipt.recordName,
+                  item.payloadDigest == operation.payloadDigest,
+                  CloudPayloadDigest.hex(for: operation.payload) == operation.payloadDigest else { continue }
+            receipt.zoneName = binding.zoneName
+            receipt.zoneOwnerName = binding.zoneOwnerName
+            updated += 1
+        }
+        if updated > 0 { try context.save() }
+        return updated
+    }
+
+    /// Baseline v2 only requires the immutable operation record. A previous
+    /// build could save that record successfully and then mark the same Outbox
+    /// row blocked when its obsolete mutable projection conflicted. Reconcile
+    /// those rows from durable operation receipts without reopening any real
+    /// operation-record conflict.
+    @discardableResult
+    func reconcileRefreshedBootstrapOutbox(farmID: UUID) throws -> Int {
+        let context = ModelContext(container)
+        let active = CloudFarmBindingState.active.rawValue
+        var bindingDescriptor = FetchDescriptor<CloudFarmBinding>(predicate: #Predicate {
+            $0.farmID == farmID && $0.stateRawValue == active
+        })
+        bindingDescriptor.fetchLimit = 2
+        let bindings = try context.fetch(bindingDescriptor)
+        guard bindings.count == 1, let binding = bindings.first else { return 0 }
+        let bindingScope = binding.databaseScopeRawValue
+        let bindingZoneName = binding.zoneName
+        let bindingZoneOwnerName = binding.zoneOwnerName
+        let confirmed = OutboxStatus.confirmed.rawValue
+        let candidates = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.statusRawValue != confirmed
+        }))
+        guard !candidates.isEmpty else { return 0 }
+
+        let candidateOperationIDs = Set(candidates.map(\.operationID))
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        var operationByID: [UUID: DomainOperation] = [:]
+        var duplicateOperationIDs = Set<UUID>()
+        for operation in operations where candidateOperationIDs.contains(operation.id) {
+            if operationByID.updateValue(operation, forKey: operation.id) != nil {
+                duplicateOperationIDs.insert(operation.id)
+            }
+        }
+        let refreshedOperationIDs = Set(candidates.compactMap { item -> UUID? in
+            guard !duplicateOperationIDs.contains(item.operationID),
+                  let operation = operationByID[item.operationID],
+                  item.payloadDigest == operation.payloadDigest,
+                  CloudPayloadDigest.hex(for: operation.payload) == operation.payloadDigest,
+                  Self.isRefreshedBootstrap(operation) else { return nil }
+            return operation.id
+        })
+        guard !refreshedOperationIDs.isEmpty else { return 0 }
+
+        let confirmedOperationIDs = Set<UUID>(try context.fetch(FetchDescriptor<CloudOperationReceipt>(predicate: #Predicate {
+            $0.farmID == farmID &&
+                $0.databaseScopeRawValue == bindingScope &&
+                $0.zoneName == bindingZoneName &&
+                $0.zoneOwnerName == bindingZoneOwnerName
+        })).compactMap { receipt -> UUID? in
+            guard receipt.farmID == farmID,
+                  refreshedOperationIDs.contains(receipt.operationID),
+                  receipt.recordName == mapper.recordName(for: receipt.operationID) else { return nil }
+            return receipt.operationID
+        })
+
+        var reconciled = 0
+        let blocked = OutboxStatus.blockedConflict.rawValue
+        for item in candidates where refreshedOperationIDs.contains(item.operationID) {
+            guard let operation = operationByID[item.operationID],
+                  item.payloadDigest == operation.payloadDigest else { continue }
+            if confirmedOperationIDs.contains(item.operationID) {
+                item.statusRawValue = confirmed
+                item.errorMessage = nil
+                item.nextRetryAt = nil
+                item.cloudRecordName = mapper.recordName(for: item.operationID)
+                reconciled += 1
+            } else if item.statusRawValue == blocked,
+                      item.errorMessage?.hasPrefix("云端已有不同内容：实体版本") == true {
+                // The stale entity projection is now suppressed at both the
+                // CKSyncEngine state and record-construction boundaries. If
+                // its immutable operation did not save in the old batch,
+                // retry exactly that operation. Any genuine operation-record
+                // conflict receives a different error and remains blocked.
+                item.statusRawValue = OutboxStatus.pending.rawValue
+                item.errorMessage = nil
+                item.nextRetryAt = nil
+                reconciled += 1
+            }
+        }
+        if reconciled > 0 { try context.save() }
+        return reconciled
+    }
+
+    private static func isRefreshedBootstrap(_ operation: DomainOperation) -> Bool {
+        guard operation.kindRawValue == DomainOperationKind.bootstrapEntity.rawValue else { return false }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let payload = try? decoder.decode(FarmCommandCloudPayload.self, from: operation.payload) else { return false }
+        return payload.kind == .bootstrapEntity && (payload.integers["baselineVersion"] ?? 1) >= 2
     }
 
     func markFailedRecords(
@@ -630,17 +1869,49 @@ actor FarmPersistenceActor {
 
         let context = ModelContext(container)
         let outbox = try context.fetch(FetchDescriptor<OutboxItem>())
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>())
         for failure in failures {
             if failure.error.code == .serverRecordChanged,
                let serverRecord = failure.error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord,
                CloudRecordIdempotency.equivalent(client: failure.record, server: serverRecord) {
                 continue
             }
-            let operationID = mapper.operationID(from: failure.record.recordID) ??
-                ((failure.record[CloudRecordField.operationID] as? String).flatMap(UUID.init(uuidString:)))
-            guard let operationID,
-                  let item = outbox.first(where: { $0.operationID == operationID }) else { continue }
-            let classification = CloudErrorClassifier.classify(failure.error)
+            guard let target = try validatedSentRecordTarget(
+                failure.record,
+                scope: scope,
+                outbox: outbox,
+                operations: operations,
+                context: context
+            ) else { continue }
+            let operation = target.operation
+            let item = target.item
+            let classification: CloudErrorClassifier.Result
+            if failure.error.code == .serverRecordChanged,
+               let serverRecord = failure.error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord,
+               failure.record.recordType == CloudRecordType.farmEntity.rawValue,
+               serverRecord.recordType == CloudRecordType.farmEntity.rawValue {
+                if try projectionIsVerifiedAncestor(
+                    serverRecord,
+                    of: operation,
+                    scope: scope,
+                    context: context
+                ) {
+                    classification = CloudErrorClassifier.Result(
+                        status: .retryableFailure,
+                        message: "云端实体在发送期间发生变化，已重新排队。",
+                        retryAt: .now.addingTimeInterval(1)
+                    )
+                } else {
+                    let revisions = CloudEntityProjectionPolicy.revisions(client: failure.record, server: serverRecord)
+                    classification = CloudErrorClassifier.Result(
+                        status: .blockedConflict,
+                        message: "云端已有不同内容：实体版本 \(revisions.remote.map(String.init) ?? "未知") 与本地操作基线 \(revisions.base.map(String.init) ?? "未知") 不属于同一已确认操作链，已停止自动覆盖。",
+                        retryAt: nil
+                    )
+                }
+            } else {
+                classification = CloudErrorClassifier.classify(failure.error)
+            }
             item.statusRawValue = classification.status.rawValue
             item.errorMessage = classification.message
             item.nextRetryAt = classification.retryAt
@@ -648,13 +1919,22 @@ actor FarmPersistenceActor {
         try context.save()
     }
 
-    func deferUnresolvedUploadsAfterBatchError(_ error: Error) throws {
+    func deferUnresolvedUploadsAfterBatchError(_ error: Error, farmID restrictedFarmID: UUID? = nil) throws {
         let context = ModelContext(container)
         let uploading = OutboxStatus.uploading.rawValue
         let awaiting = OutboxStatus.awaitingConfirmation.rawValue
-        let items = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
-            $0.statusRawValue == uploading || $0.statusRawValue == awaiting
-        }))
+        let descriptor: FetchDescriptor<OutboxItem>
+        if let restrictedFarmID {
+            descriptor = FetchDescriptor<OutboxItem>(predicate: #Predicate {
+                $0.farmID == restrictedFarmID &&
+                    ($0.statusRawValue == uploading || $0.statusRawValue == awaiting)
+            })
+        } else {
+            descriptor = FetchDescriptor<OutboxItem>(predicate: #Predicate {
+                $0.statusRawValue == uploading || $0.statusRawValue == awaiting
+            })
+        }
+        let items = try context.fetch(descriptor)
         for item in items {
             item.statusRawValue = OutboxStatus.retryableFailure.rawValue
             item.errorMessage = "CloudKit 批次未全部完成，已保留并等待重试：\(error.localizedDescription)"
@@ -663,34 +1943,127 @@ actor FarmPersistenceActor {
         if !items.isEmpty { try context.save() }
     }
 
-    func ingest(_ records: [CKRecord], scope: CloudDatabaseScope) async throws {
+    @discardableResult
+    func ingest(
+        _ records: [CKRecord],
+        scope: CloudDatabaseScope,
+        recoveryFarmID: UUID? = nil,
+        recoveryOperationSources: [String: CloudRebuildOperationSourceProof]? = nil
+    ) async throws -> Set<UUID> {
+        let eligibilityContext = ModelContext(container)
+        let acceptedRecords = try recordsEligibleForLiveIngest(
+            records,
+            scope: scope,
+            recoveryFarmID: recoveryFarmID,
+            context: eligibilityContext
+        )
+        guard !acceptedRecords.isEmpty else { return [] }
+
+        // Persist a verifiable trust snapshot before evaluating operations in
+        // the same CloudKit event. Unknown snapshot signers are still resolved
+        // through the identity service preflight in CloudSyncActor; a snapshot
+        // can never introduce its own signing key.
+        let validator = MembershipSnapshotActor(modelContainer: container, persistence: self)
+        var rejectedRecoveryMembership = false
+        for record in acceptedRecords where record.recordType == CloudRecordType.farmMembershipSnapshot.rawValue {
+            do {
+                _ = try await validator.validate(record)
+            } catch {
+                if CloudZoneName.farmID(from: record.recordID.zoneID.zoneName) == recoveryFarmID {
+                    rejectedRecoveryMembership = true
+                }
+                let incidentContext = ModelContext(container)
+                incidentContext.insert(SecurityIncidentRecord(
+                    farmID: CloudZoneName.farmID(from: record.recordID.zoneID.zoneName),
+                    incidentType: error is CloudContractError && (error as? CloudContractError) == .membershipSnapshotRollback ? "membershipSnapshotRollback" : "invalidMembershipSnapshot",
+                    recordName: record.recordID.recordName,
+                    detail: error.localizedDescription
+                ))
+                try incidentContext.save()
+            }
+        }
+        if rejectedRecoveryMembership {
+            throw CloudSyncError.recoveryCatchUpFailed("云端成员快照未通过验证，牧场继续保持锁定。")
+        }
+
+        // Membership validation writes through its own context. Start a fresh
+        // one so newly trusted device keys and revocations are visible below.
         let context = ModelContext(container)
-        try ingestFarmRoots(records, scope: scope, context: context)
-        try ingestFarmAssets(records, context: context)
+        let rejectedRecoveryRoot = try ingestFarmRoots(
+            acceptedRecords,
+            scope: scope,
+            recoveryFarmID: recoveryFarmID,
+            context: context
+        )
+        let rejectedRecoveryAsset = try ingestFarmAssets(
+            acceptedRecords,
+            recoveryFarmID: recoveryFarmID,
+            context: context
+        )
         let existingReceipts = try context.fetch(FetchDescriptor<CloudOperationReceipt>())
-        var receivedOperationIDs = Set(existingReceipts.map(\.operationID))
+        var receivedReceipts = Set(existingReceipts.compactMap(Self.receiptIdentity))
+        var scheduledReceipts = receivedReceipts
+        var rejectedRecoveryOperation = false
         let devices = try context.fetch(FetchDescriptor<DeviceIdentityRecord>())
         let revokedCertificates = try context.fetch(FetchDescriptor<RevokedCapabilityCertificateRecord>())
-        let certificatePublicKey = Bundle.main.object(forInfoDictionaryKey: "CAPABILITY_SIGNING_PUBLIC_KEY_PEM") as? String
+        let certificatePublicKey = capabilitySigningPublicKeyPEM
         var historyRebuilds: [UUID: Date] = [:]
-        for record in records where record.recordType == CloudRecordType.farmOperation.rawValue || record.recordType == CloudRecordType.farmEntity.rawValue {
+        var validatedByOperationID: [UUID: ValidatedLiveOperation] = [:]
+        var rejectedDuplicateOperationIDs = Set<UUID>()
+
+        // FarmOperation is the immutable authority. FarmEntity is only a
+        // mutable read projection and must never advance the local cache or
+        // manufacture an immutable-operation receipt.
+        for record in acceptedRecords where record.recordType == CloudRecordType.farmOperation.rawValue {
             do {
                 let envelope = try mapper.operationEnvelope(from: record)
+                guard CloudZoneName.farmID(from: record.recordID.zoneID.zoneName) == envelope.farmID,
+                      record.recordID.recordName == mapper.recordName(for: envelope.operationID) else {
+                    throw CloudContractError.malformedRecord
+                }
                 guard CloudPayloadDigest.hex(for: envelope.payload) == envelope.payloadDigest else {
                     throw CloudContractError.invalidPayloadDigest
                 }
-                if receivedOperationIDs.contains(envelope.operationID) { continue }
+                if envelope.farmID == recoveryFarmID,
+                   let provenSource = recoveryOperationSources?[record.recordID.recordName] {
+                    guard try provenSource.exactlyMatches(record: record, envelope: envelope) else {
+                        throw CloudContractError.malformedRecord
+                    }
+                    // The exact immutable source was already replayed by the
+                    // verified cache switch. Reapplying the entire history to
+                    // its final state would be both quadratic and would turn
+                    // older revisions into false conflicts.
+                    continue
+                }
+                let receiptIdentity = OperationReceiptIdentity(
+                    farmID: envelope.farmID,
+                    operationID: envelope.operationID,
+                    recordName: record.recordID.recordName,
+                    scopeRawValue: scope.rawValue,
+                    zoneName: record.recordID.zoneID.zoneName,
+                    zoneOwnerName: record.recordID.zoneID.ownerName
+                )
+                if scheduledReceipts.contains(receiptIdentity) { continue }
                 guard let certificatePublicKey, !certificatePublicKey.isEmpty else {
                     try quarantine(envelope: envelope, recordName: record.recordID.recordName, reason: "capabilityPublicKeyMissing", context: context)
+                    if envelope.farmID == recoveryFarmID {
+                        rejectedRecoveryOperation = true
+                    }
                     continue
                 }
                 let claims = try CapabilityCertificateVerifier.verify(envelope.capabilityCertificate, publicKeyPEM: certificatePublicKey)
                 if revokedCertificates.contains(where: { $0.farmID == envelope.farmID && $0.serverCertificateID == claims.certificateID }) {
                     try quarantine(envelope: envelope, recordName: record.recordID.recordName, reason: "capabilityRevoked", context: context)
+                    if envelope.farmID == recoveryFarmID {
+                        rejectedRecoveryOperation = true
+                    }
                     continue
                 }
                 guard let device = devices.first(where: { $0.id == claims.deviceID && $0.accountID == claims.accountID }) else {
                     try quarantine(envelope: envelope, recordName: record.recordID.recordName, reason: "devicePublicKeyMissing", context: context)
+                    if envelope.farmID == recoveryFarmID {
+                        rejectedRecoveryOperation = true
+                    }
                     continue
                 }
                 try CloudOperationSecurity.validate(
@@ -699,44 +2072,34 @@ actor FarmPersistenceActor {
                     devicePublicKeyX963: device.publicKeyX963,
                     authorizationDate: record.modificationDate ?? record.creationDate
                 )
-                let outcome = try RemoteDomainApplyService().apply(envelope, context: context)
-                switch outcome {
-                case .applied(let changedAt):
-                    if let changedAt {
-                        historyRebuilds[envelope.farmID] = min(historyRebuilds[envelope.farmID] ?? changedAt, changedAt)
-                    }
-                case .duplicate:
-                    break
-                case .conflict(let localRevision):
-                    let localPayload = try context.fetch(FetchDescriptor<DomainOperation>())
-                        .filter { $0.farmID == envelope.farmID && $0.entityID == envelope.entityID }
-                        .max(by: { $0.resultingRevision < $1.resultingRevision })?.payload ?? Data()
-                    let conflict = SyncConflictRecord(
+                let candidate = ValidatedLiveOperation(
+                    record: record,
+                    envelope: envelope,
+                    receiptIdentity: receiptIdentity
+                )
+                if let existing = validatedByOperationID[envelope.operationID],
+                   existing.envelope != envelope {
+                    validatedByOperationID[envelope.operationID] = nil
+                    rejectedDuplicateOperationIDs.insert(envelope.operationID)
+                    if envelope.farmID == recoveryFarmID { rejectedRecoveryOperation = true }
+                    context.insert(SecurityIncidentRecord(
                         farmID: envelope.farmID,
-                        entityID: envelope.entityID,
-                        entityType: envelope.entityType,
-                        localRevision: localRevision,
-                        remoteRevision: envelope.revision,
-                        localPayload: localPayload,
-                        remotePayload: envelope.payload,
-                        remoteAccountID: envelope.modifiedByAccountID,
-                        remoteDeviceID: envelope.modifiedByDeviceID,
-                        reasonCode: "baseRevisionMismatch"
-                    )
-                    conflict.remoteEnvelopeData = try JSONEncoder.cloud.encode(envelope)
-                    context.insert(conflict)
-                    continue
+                        incidentType: "duplicateImmutableOperationMismatch",
+                        recordName: record.recordID.recordName,
+                        accountID: envelope.modifiedByAccountID,
+                        deviceID: envelope.modifiedByDeviceID,
+                        detail: "同一 operationID 在一个云端批次中出现不可变内容不一致，已拒绝应用。"
+                    ))
+                } else if !rejectedDuplicateOperationIDs.contains(envelope.operationID) {
+                    validatedByOperationID[envelope.operationID] = candidate
+                    scheduledReceipts.insert(receiptIdentity)
                 }
-                context.insert(CloudOperationReceipt(
-                    farmID: envelope.farmID,
-                    operationID: envelope.operationID,
-                    recordName: record.recordID.recordName,
-                    serverChangeTag: record.recordChangeTag,
-                    databaseScope: scope
-                ))
-                receivedOperationIDs.insert(envelope.operationID)
             } catch {
                 let mappedEnvelope = try? mapper.operationEnvelope(from: record)
+                let mappedFarmID = mappedEnvelope?.farmID ?? CloudZoneName.farmID(from: record.recordID.zoneID.zoneName)
+                if mappedFarmID == recoveryFarmID {
+                    rejectedRecoveryOperation = true
+                }
                 context.insert(SecurityIncidentRecord(
                     farmID: mappedEnvelope?.farmID,
                     incidentType: (error as? CloudContractError) == .expiredCertificate
@@ -749,33 +2112,389 @@ actor FarmPersistenceActor {
                 ))
             }
         }
+
+        let sortedEnvelopes = CloudRebuildActor.sortedOperations(
+            validatedByOperationID.values.map(\.envelope)
+        )
+        var pending = sortedEnvelopes.compactMap { validatedByOperationID[$0.operationID] }
+        let service = RemoteDomainApplyService()
+
+        // A CKSyncEngine callback does not promise operation order. Apply all
+        // verified immutable records in deterministic replay order, and retry
+        // dependency gaps after other records in the same batch make progress.
+        while !pending.isEmpty {
+            var deferred: [ValidatedLiveOperation] = []
+            var madeProgress = false
+            for candidate in pending {
+                let envelope = candidate.envelope
+                do {
+                    let outcome = try service.apply(envelope, context: context)
+                    switch outcome {
+                    case .applied(let changedAt):
+                        madeProgress = true
+                        if let changedAt {
+                            historyRebuilds[envelope.farmID] = min(
+                                historyRebuilds[envelope.farmID] ?? changedAt,
+                                changedAt
+                            )
+                        }
+                    case .duplicate:
+                        madeProgress = true
+                    case .conflict(let localRevision):
+                        if localRevision < envelope.baseRevision {
+                            deferred.append(candidate)
+                            continue
+                        }
+                        try insertLiveConflict(
+                            envelope: envelope,
+                            localRevision: localRevision,
+                            context: context
+                        )
+                        if envelope.farmID == recoveryFarmID {
+                            rejectedRecoveryOperation = true
+                        }
+                        continue
+                    }
+                    context.insert(CloudOperationReceipt(
+                        farmID: envelope.farmID,
+                        operationID: envelope.operationID,
+                        recordName: candidate.record.recordID.recordName,
+                        serverChangeTag: candidate.record.recordChangeTag,
+                        databaseScope: scope,
+                        zoneName: candidate.record.recordID.zoneID.zoneName,
+                        zoneOwnerName: candidate.record.recordID.zoneID.ownerName
+                    ))
+                    receivedReceipts.insert(candidate.receiptIdentity)
+                } catch let error as RemoteDomainApplyError {
+                    if case .missingReference = error {
+                        deferred.append(candidate)
+                        continue
+                    }
+                    if envelope.farmID == recoveryFarmID { rejectedRecoveryOperation = true }
+                    context.insert(SecurityIncidentRecord(
+                        farmID: envelope.farmID,
+                        incidentType: "malformedCloudOperation",
+                        recordName: candidate.record.recordID.recordName,
+                        accountID: envelope.modifiedByAccountID,
+                        deviceID: envelope.modifiedByDeviceID,
+                        detail: error.localizedDescription
+                    ))
+                } catch {
+                    if envelope.farmID == recoveryFarmID { rejectedRecoveryOperation = true }
+                    context.insert(SecurityIncidentRecord(
+                        farmID: envelope.farmID,
+                        incidentType: "malformedCloudOperation",
+                        recordName: candidate.record.recordID.recordName,
+                        accountID: envelope.modifiedByAccountID,
+                        deviceID: envelope.modifiedByDeviceID,
+                        detail: error.localizedDescription
+                    ))
+                }
+            }
+            pending = deferred
+            if !madeProgress { break }
+        }
+
+        let recoveryRequiredFarmIDs = try lockFarmsForLiveOperationGaps(
+            pending,
+            recoveryFarmID: recoveryFarmID,
+            context: context
+        )
+        if recoveryFarmID.map(recoveryRequiredFarmIDs.contains) == true {
+            rejectedRecoveryOperation = true
+        }
         for (farmID, changedAt) in historyRebuilds {
             try FarmHistoryRebuilder().rebuild(farmID: farmID, context: context, from: changedAt)
         }
         try context.save()
-        let validator = MembershipSnapshotActor(modelContainer: container, persistence: self)
-        for record in records where record.recordType == CloudRecordType.farmMembershipSnapshot.rawValue {
-            do {
-                _ = try await validator.validate(record)
-            } catch {
-                let incidentContext = ModelContext(container)
-                incidentContext.insert(SecurityIncidentRecord(
-                    farmID: CloudZoneName.farmID(from: record.recordID.zoneID.zoneName),
-                    incidentType: error is CloudContractError && (error as? CloudContractError) == .membershipSnapshotRollback ? "membershipSnapshotRollback" : "invalidMembershipSnapshot",
-                    recordName: record.recordID.recordName,
-                    detail: error.localizedDescription
-                ))
-                try incidentContext.save()
+        if rejectedRecoveryRoot || rejectedRecoveryAsset || rejectedRecoveryOperation {
+            throw CloudSyncError.recoveryCatchUpFailed("云端增量中存在未能验证或应用的记录，牧场继续保持锁定。")
+        }
+        return recoveryRequiredFarmIDs
+    }
+
+    private func insertLiveConflict(
+        envelope: CloudOperationEnvelope,
+        localRevision: Int,
+        context: ModelContext
+    ) throws {
+        let alreadyRecorded = try context.fetch(FetchDescriptor<SyncConflictRecord>()).contains {
+            $0.farmID == envelope.farmID &&
+                $0.entityID == envelope.entityID &&
+                $0.remoteRevision == envelope.revision &&
+                $0.remotePayloadDigest == envelope.payloadDigest &&
+                ($0.statusRawValue == SyncConflictStatus.unresolved.rawValue ||
+                    $0.statusRawValue == SyncConflictStatus.quarantined.rawValue)
+        }
+        guard !alreadyRecorded else { return }
+        let localPayload = try context.fetch(FetchDescriptor<DomainOperation>())
+            .filter { $0.farmID == envelope.farmID && $0.entityID == envelope.entityID }
+            .max(by: { $0.resultingRevision < $1.resultingRevision })?.payload ?? Data()
+        let conflict = SyncConflictRecord(
+            farmID: envelope.farmID,
+            entityID: envelope.entityID,
+            entityType: envelope.entityType,
+            localRevision: localRevision,
+            remoteRevision: envelope.revision,
+            localPayload: localPayload,
+            remotePayload: envelope.payload,
+            remoteAccountID: envelope.modifiedByAccountID,
+            remoteDeviceID: envelope.modifiedByDeviceID,
+            reasonCode: "baseRevisionMismatch"
+        )
+        conflict.remoteEnvelopeData = try JSONEncoder.cloud.encode(envelope)
+        context.insert(conflict)
+    }
+
+    private func lockFarmsForLiveOperationGaps(
+        _ gaps: [ValidatedLiveOperation],
+        recoveryFarmID: UUID?,
+        context: ModelContext
+    ) throws -> Set<UUID> {
+        guard !gaps.isEmpty else { return [] }
+        let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
+        var affectedFarmIDs = Set<UUID>()
+        var recordedOperationIDs = Set<UUID>()
+        for gap in gaps {
+            let envelope = gap.envelope
+            guard let binding = bindings.first(where: {
+                $0.farmID == envelope.farmID &&
+                    $0.zoneName == gap.record.recordID.zoneID.zoneName &&
+                    $0.zoneOwnerName == gap.record.recordID.zoneID.ownerName &&
+                    ($0.state == .active || ($0.farmID == recoveryFarmID && $0.state == .rebuildingCache))
+            }) else { continue }
+            binding.stateRawValue = CloudFarmBindingState.rebuildingCache.rawValue
+            binding.lastErrorCode = "liveOperationGap"
+            binding.updatedAt = .now
+            affectedFarmIDs.insert(envelope.farmID)
+            guard recordedOperationIDs.insert(envelope.operationID).inserted else { continue }
+            context.insert(SecurityIncidentRecord(
+                farmID: envelope.farmID,
+                incidentType: "liveOperationGap",
+                recordName: gap.record.recordID.recordName,
+                accountID: envelope.modifiedByAccountID,
+                deviceID: envelope.modifiedByDeviceID,
+                detail: "云端操作 revision \(envelope.revision) 缺少可验证的基线 revision \(envelope.baseRevision)，已锁定缓存并要求完整重建。"
+            ))
+        }
+        return affectedFarmIDs
+    }
+
+    /// Finds records whose capability is signed by the configured authority
+    /// but whose signing device key is not yet present locally. The record's
+    /// farm must match exactly one eligible binding for its CloudKit zone
+    /// before it can trigger an identity-service refresh.
+    func farmIDsRequiringDeviceTrustRefresh(
+        for records: [CKRecord],
+        scope: CloudDatabaseScope,
+        recoveryFarmID: UUID? = nil,
+        recoveryOperationRecordNames: Set<String> = []
+    ) throws -> Set<UUID> {
+        let context = ModelContext(container)
+        let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>()).filter {
+            $0.databaseScope == scope &&
+                ($0.state == .active || ($0.farmID == recoveryFarmID && $0.state == .rebuildingCache))
+        }
+        let groupedBindings = Dictionary(grouping: bindings) {
+            LiveIngestZone(name: $0.zoneName, ownerName: $0.zoneOwnerName)
+        }
+        let devices = try context.fetch(FetchDescriptor<DeviceIdentityRecord>())
+        let revoked = try context.fetch(FetchDescriptor<RevokedCapabilityCertificateRecord>())
+        guard let publicKeyPEM = capabilitySigningPublicKeyPEM,
+              !publicKeyPEM.isEmpty else { return [] }
+
+        var farmIDs = Set<UUID>()
+        for record in records {
+            if record.recordType == CloudRecordType.farmOperation.rawValue,
+               recoveryOperationRecordNames.contains(record.recordID.recordName) {
+                // The completed rebuild already validated this exact immutable
+                // source. The later ingest proof checks its CloudKit version;
+                // trust preflight only needs to inspect records added since.
+                continue
             }
+            let zone = LiveIngestZone(
+                name: record.recordID.zoneID.zoneName,
+                ownerName: record.recordID.zoneID.ownerName
+            )
+            guard let matches = groupedBindings[zone], matches.count == 1,
+                  let binding = matches.first else { continue }
+
+            let identity: (farmID: UUID, accountID: UUID, deviceID: UUID, certificate: String)?
+            switch record.recordType {
+            case CloudRecordType.farmOperation.rawValue:
+                if let envelope = try? mapper.operationEnvelope(from: record) {
+                    identity = (
+                        envelope.farmID,
+                        envelope.modifiedByAccountID,
+                        envelope.modifiedByDeviceID,
+                        envelope.capabilityCertificate
+                    )
+                } else {
+                    identity = nil
+                }
+            case CloudRecordType.farmAsset.rawValue, CloudRecordType.farmMembershipSnapshot.rawValue:
+                if let farmText = record[CloudRecordField.farmID] as? String,
+                   let farmID = UUID(uuidString: farmText),
+                   let accountText = record[CloudRecordField.modifiedByAccountID] as? String,
+                   let accountID = UUID(uuidString: accountText),
+                   let deviceText = record[CloudRecordField.modifiedByDeviceID] as? String,
+                   let deviceID = UUID(uuidString: deviceText),
+                   let certificate = record[CloudRecordField.capabilityCertificate] as? String {
+                    identity = (farmID, accountID, deviceID, certificate)
+                } else {
+                    identity = nil
+                }
+            default:
+                identity = nil
+            }
+            guard let identity,
+                  identity.farmID == binding.farmID,
+                  let claims = try? CapabilityCertificateVerifier.verify(
+                      identity.certificate,
+                      publicKeyPEM: publicKeyPEM
+                  ),
+                  claims.farmID == identity.farmID,
+                  claims.accountID == identity.accountID,
+                  claims.deviceID == identity.deviceID,
+                  claims.isValid(at: record.modificationDate ?? record.creationDate ?? .now),
+                  !revoked.contains(where: {
+                      $0.farmID == identity.farmID &&
+                          $0.serverCertificateID == claims.certificateID
+                  }),
+                  !devices.contains(where: {
+                      $0.id == identity.deviceID && $0.accountID == identity.accountID
+                  }) else { continue }
+            farmIDs.insert(identity.farmID)
+        }
+        return farmIDs
+    }
+
+    func lockForDeviceTrustRecovery(farmIDs: Set<UUID>, detail: String) throws {
+        guard !farmIDs.isEmpty else { return }
+        let context = ModelContext(container)
+        let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
+        for binding in bindings where farmIDs.contains(binding.farmID) && binding.state != .accessRevoked {
+            binding.stateRawValue = CloudFarmBindingState.rebuildingCache.rawValue
+            binding.lastErrorCode = "deviceTrustRefreshRequired"
+            binding.updatedAt = .now
+            context.insert(SecurityIncidentRecord(
+                farmID: binding.farmID,
+                incidentType: "deviceTrustRefreshRequired",
+                detail: detail
+            ))
+        }
+        try context.save()
+    }
+
+    private struct LiveIngestZone: Hashable {
+        let name: String
+        let ownerName: String
+    }
+
+    private struct OperationReceiptIdentity: Hashable {
+        let farmID: UUID
+        let operationID: UUID
+        let recordName: String
+        let scopeRawValue: String
+        let zoneName: String
+        let zoneOwnerName: String
+    }
+
+    private static func receiptIdentity(_ receipt: CloudOperationReceipt) -> OperationReceiptIdentity? {
+        guard let zoneName = receipt.zoneName,
+              let zoneOwnerName = receipt.zoneOwnerName else { return nil }
+        return OperationReceiptIdentity(
+            farmID: receipt.farmID,
+            operationID: receipt.operationID,
+            recordName: receipt.recordName,
+            scopeRawValue: receipt.databaseScopeRawValue,
+            zoneName: zoneName,
+            zoneOwnerName: zoneOwnerName
+        )
+    }
+
+    /// Reloads and re-verifies the newest completed bundle, including every
+    /// immutable source observed before v2 canonicalization. The nil-state
+    /// CKSyncEngine catch-up can then skip exact history, apply only records
+    /// created after the snapshot, and reject mutations of proven sources.
+    func provenOperationSourcesForRecovery(
+        farmID: UUID,
+        scope: CloudDatabaseScope
+    ) throws -> [String: CloudRebuildOperationSourceProof] {
+        let context = ModelContext(container)
+        guard try context.fetch(FetchDescriptor<CloudFarmBinding>()).contains(where: {
+            $0.farmID == farmID &&
+                $0.databaseScope == scope &&
+                $0.state == .rebuildingCache
+        }) else {
+            throw CloudSyncError.farmBindingMissing
+        }
+        guard let session = try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>())
+            .filter({ $0.farmID == farmID && $0.databaseScope == scope })
+            .max(by: {
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }),
+              session.status == .completed,
+              session.completedAt != nil else {
+            throw CloudSyncError.recoveryCatchUpFailed("缺少已完成重建的不可变来源证明。")
+        }
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let workspace = support.appending(path: session.stagingRelativePath, directoryHint: .isDirectory)
+        let data = try Data(contentsOf: workspace.appending(path: "bundle.json"))
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let bundle = try decoder.decode(CloudRebuildBundle.self, from: data)
+        guard CloudRebuildActor.hasCurrentAuthorityProof(bundle),
+              bundle.sessionID == session.id,
+              bundle.farmID == farmID,
+              bundle.scope == scope,
+              bundle.recordCount == session.fetchedRecordCount,
+              bundle.pageCount == session.pageCount,
+              bundle.operations.count == session.fetchedOperationCount,
+              bundle.assets.count == session.downloadedAssetCount,
+              session.entityDigest == CloudRebuildActor.entityDigest(bundle.operations),
+              let proofs = bundle.operationSourceProofs else {
+            throw CloudSyncError.recoveryCatchUpFailed("已完成重建的不可变来源证明不完整。")
+        }
+        try CloudRebuildBundleValidator.validate(bundle)
+        try CloudRebuildStagingBuilder.verify(bundle: bundle, workspace: workspace)
+        return Dictionary(uniqueKeysWithValues: proofs.map { ($0.recordName, $0) })
+    }
+
+    private func recordsEligibleForLiveIngest(
+        _ records: [CKRecord],
+        scope: CloudDatabaseScope,
+        recoveryFarmID: UUID?,
+        context: ModelContext
+    ) throws -> [CKRecord] {
+        let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
+        let eligibleZoneList: [LiveIngestZone] = bindings.compactMap { binding in
+            let isActive = binding.state == .active
+            let isAuthorizedRecovery = binding.farmID == recoveryFarmID && binding.state == .rebuildingCache
+            guard binding.databaseScope == scope, isActive || isAuthorizedRecovery else { return nil }
+            return LiveIngestZone(name: binding.zoneName, ownerName: binding.zoneOwnerName)
+        }
+        let eligibleZones = Set(eligibleZoneList)
+        return records.filter { record in
+            eligibleZones.contains(LiveIngestZone(
+                name: record.recordID.zoneID.zoneName,
+                ownerName: record.recordID.zoneID.ownerName
+            ))
         }
     }
 
-    private func ingestFarmAssets(_ records: [CKRecord], context: ModelContext) throws {
+    private func ingestFarmAssets(
+        _ records: [CKRecord],
+        recoveryFarmID: UUID?,
+        context: ModelContext
+    ) throws -> Bool {
+        var rejectedRecoveryRecord = false
         let existing = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
         let transfers = try context.fetch(FetchDescriptor<CloudAssetTransfer>())
         let devices = try context.fetch(FetchDescriptor<DeviceIdentityRecord>())
         let revokedCertificates = try context.fetch(FetchDescriptor<RevokedCapabilityCertificateRecord>())
-        let certificatePublicKey = Bundle.main.object(forInfoDictionaryKey: "CAPABILITY_SIGNING_PUBLIC_KEY_PEM") as? String
+        let certificatePublicKey = capabilitySigningPublicKeyPEM
         for record in records where record.recordType == CloudRecordType.farmAsset.rawValue {
             guard let farmText = record[CloudRecordField.farmID] as? String,
                   let farmID = UUID(uuidString: farmText),
@@ -787,6 +2506,9 @@ actor FarmPersistenceActor {
                   let deviceID = UUID(uuidString: deviceText),
                   let certificate = record[CloudRecordField.capabilityCertificate] as? String,
                   let signature = record[CloudRecordField.signature] as? Data else {
+                if CloudZoneName.farmID(from: record.recordID.zoneID.zoneName) == recoveryFarmID {
+                    rejectedRecoveryRecord = true
+                }
                 context.insert(SecurityIncidentRecord(farmID: nil, incidentType: "malformedFarmAsset", recordName: record.recordID.recordName, detail: "照片记录缺少牧场、资产或校验字段。"))
                 continue
             }
@@ -811,40 +2533,229 @@ actor FarmPersistenceActor {
                 capabilityCertificate: certificate,
                 signature: signature
             )
+            let authorizationDate: Date
+            let signatureFormat: FarmAssetSignatureFormat
             do {
+                authorizationDate = try mapper.assetAuthorizationDate(from: record)
                 guard let certificatePublicKey, !certificatePublicKey.isEmpty else { throw CloudContractError.invalidCertificate }
                 let claims = try CapabilityCertificateVerifier.verify(certificate, publicKeyPEM: certificatePublicKey)
                 guard claims.farmID == farmID, claims.accountID == accountID, claims.deviceID == deviceID,
-                      claims.capabilities.contains(.recordProduction), claims.isValid(at: envelope.createdAt),
+                      claims.capabilities.contains(.recordProduction), claims.isValid(at: authorizationDate),
                       !revokedCertificates.contains(where: { $0.farmID == farmID && $0.serverCertificateID == claims.certificateID }),
                       let device = devices.first(where: { $0.id == deviceID && $0.accountID == accountID }) else {
                     throw CloudContractError.capabilityDenied
                 }
-                try DeviceSignatureVerifier.verify(signature: signature, data: envelope.canonicalSigningData, publicKeyX963: device.publicKeyX963)
+                signatureFormat = try FarmAssetSignatureVerifier.verify(
+                    envelope: envelope,
+                    declaredVersion: try mapper.assetSignatureVersion(from: record),
+                    publicKeyX963: device.publicKeyX963
+                )
             } catch {
+                if farmID == recoveryFarmID {
+                    rejectedRecoveryRecord = true
+                }
                 context.insert(SecurityIncidentRecord(farmID: farmID, incidentType: "invalidFarmAssetSignature", recordName: record.recordID.recordName, accountID: accountID, deviceID: deviceID, detail: error.localizedDescription))
                 continue
             }
             let asset: PhotoAssetRecord
-            if let value = existing.first(where: { $0.id == assetID }) {
+            let existingAsset = existing.first(where: { $0.id == assetID })
+            if let value = existingAsset {
                 asset = value
             } else {
                 asset = PhotoAssetRecord(id: assetID, farmID: farmID, sheepID: linkedID, legacySourceKey: "cloud:\(record.recordID.recordName)", originalEarTag: "", relativePath: "", sha256: digest, mimeType: mimeType)
                 context.insert(asset)
             }
+            if signatureFormat == .legacyV1 {
+                let payloadChanged = asset.sha256 != digest
+                let trustedCapturedAt = existingAsset?.capturedAt
+                let trustedCreatedAt = existingAsset?.createdAt ?? record.creationDate ?? authorizationDate
+                asset.farmID = farmID
+                asset.sheepID = linkedID
+                asset.sourceSHA256 = sourceDigest
+                asset.sha256 = digest
+                asset.mimeType = mimeType
+                asset.cloudPixelWidth = envelope.pixelWidth
+                asset.cloudPixelHeight = envelope.pixelHeight
+                // Legacy signatures do not cover either date. Keep metadata
+                // already held locally; on a new device use only CloudKit's
+                // server-authored creation time and leave capturedAt unknown.
+                asset.capturedAt = trustedCapturedAt
+                asset.createdAt = trustedCreatedAt
+                asset.cloudRecordName = record.recordID.recordName
+                asset.isCloudAuthoritative = false
+                if payloadChanged {
+                    asset.relativePath = ""
+                    for transfer in transfers where transfer.assetID == assetID && transfer.direction == .download {
+                        transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+                        transfer.payloadDigest = digest
+                        transfer.byteCount = byteCount
+                        transfer.transferredByteCount = 0
+                        transfer.lastErrorCode = nil
+                        transfer.nextRetryAt = nil
+                        transfer.remoteRecordName = record.recordID.recordName
+                        transfer.updatedAt = .now
+                    }
+                }
+                if asset.relativePath.isEmpty && !transfers.contains(where: {
+                    $0.assetID == assetID && $0.direction == .download && $0.status != .failed
+                }) {
+                    context.insert(CloudAssetTransfer(
+                        farmID: farmID,
+                        assetID: assetID,
+                        localRelativePath: "",
+                        payloadDigest: digest,
+                        byteCount: byteCount,
+                        direction: .download,
+                        sourceDigest: sourceDigest
+                    ))
+                }
+                let uploadTransfers = transfers.filter {
+                    $0.farmID == farmID && $0.assetID == assetID && $0.direction == .upload
+                }
+                if Self.prepareLegacyAssetForV2Resign(
+                    asset,
+                    recordName: record.recordID.recordName,
+                    sourceDigest: sourceDigest,
+                    payloadDigest: digest,
+                    byteCount: byteCount,
+                    uploadTransfers: uploadTransfers
+                ) {
+                    context.insert(CloudAssetTransfer(
+                        farmID: farmID,
+                        assetID: assetID,
+                        localRelativePath: asset.relativePath,
+                        payloadDigest: digest,
+                        byteCount: byteCount,
+                        direction: .upload,
+                        sourceDigest: sourceDigest
+                    ))
+                }
+                continue
+            }
             asset.sourceSHA256 = sourceDigest
-            asset.cloudPixelWidth = (record[CloudRecordField.pixelWidth] as? NSNumber)?.intValue ?? 0
-            asset.cloudPixelHeight = (record[CloudRecordField.pixelHeight] as? NSNumber)?.intValue ?? 0
-            asset.capturedAt = record[CloudRecordField.capturedAt] as? Date
+            let incompleteUploads = transfers.filter {
+                $0.farmID == farmID &&
+                    $0.assetID == assetID &&
+                    $0.direction == .upload &&
+                    $0.status != .completed
+            }
+            if !incompleteUploads.isEmpty,
+               !Self.photoAsset(asset, exactlyMatches: envelope, uploadTransfers: incompleteUploads) {
+                // A recovery reset may fetch the old cloud metadata while a
+                // local capturedAt edit is still waiting to upload. Preserve
+                // that local envelope; otherwise the subsequent upload would
+                // write the stale value back and permanently lose the edit.
+                asset.cloudRecordName = record.recordID.recordName
+                asset.isCloudAuthoritative = false
+                for transfer in incompleteUploads where transfer.status == .uploading {
+                    transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+                    transfer.transferredByteCount = 0
+                    transfer.lastErrorCode = nil
+                    transfer.nextRetryAt = nil
+                    transfer.updatedAt = .now
+                }
+                continue
+            }
+
+            let payloadChanged = asset.sha256 != digest
+            asset.farmID = farmID
+            asset.sheepID = linkedID
+            asset.sourceSHA256 = sourceDigest
+            asset.sha256 = digest
+            asset.mimeType = mimeType
+            asset.cloudPixelWidth = envelope.pixelWidth
+            asset.cloudPixelHeight = envelope.pixelHeight
+            asset.capturedAt = envelope.capturedAt
+            asset.createdAt = envelope.createdAt
             asset.cloudRecordName = record.recordID.recordName
             asset.isCloudAuthoritative = true
+            for transfer in incompleteUploads {
+                transfer.statusRawValue = CloudAssetTransferStatus.completed.rawValue
+                transfer.transferredByteCount = transfer.byteCount
+                transfer.lastErrorCode = nil
+                transfer.nextRetryAt = nil
+                transfer.remoteRecordName = record.recordID.recordName
+                transfer.updatedAt = .now
+            }
+            if payloadChanged {
+                asset.relativePath = ""
+                for transfer in transfers where transfer.assetID == assetID && transfer.direction == .download {
+                    transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+                    transfer.payloadDigest = digest
+                    transfer.byteCount = byteCount
+                    transfer.transferredByteCount = 0
+                    transfer.lastErrorCode = nil
+                    transfer.nextRetryAt = nil
+                    transfer.remoteRecordName = record.recordID.recordName
+                    transfer.updatedAt = .now
+                }
+            }
             if asset.relativePath.isEmpty && !transfers.contains(where: { $0.assetID == assetID && $0.direction == .download && $0.status != .failed }) {
                 context.insert(CloudAssetTransfer(farmID: farmID, assetID: assetID, localRelativePath: "", payloadDigest: digest, byteCount: byteCount, direction: .download, sourceDigest: sourceDigest))
             }
         }
+        return rejectedRecoveryRecord
     }
 
-    private func ingestFarmRoots(_ records: [CKRecord], scope: CloudDatabaseScope, context: ModelContext) throws {
+    private static func photoAsset(
+        _ asset: PhotoAssetRecord,
+        exactlyMatches envelope: FarmAssetEnvelope,
+        uploadTransfers: [CloudAssetTransfer]
+    ) -> Bool {
+        let transferMatches = uploadTransfers.contains {
+            $0.payloadDigest == envelope.payloadDigest &&
+                $0.byteCount == envelope.byteCount &&
+                ($0.sourceDigest.isEmpty || $0.sourceDigest == envelope.sourceDigest)
+        }
+        return asset.farmID == envelope.farmID &&
+            asset.id == envelope.assetID &&
+            asset.sheepID == envelope.entityID &&
+            asset.sourceSHA256 == envelope.sourceDigest &&
+            asset.sha256 == envelope.payloadDigest &&
+            asset.mimeType == envelope.mimeType &&
+            asset.cloudPixelWidth == envelope.pixelWidth &&
+            asset.cloudPixelHeight == envelope.pixelHeight &&
+            CloudRebuildRootSnapshot.milliseconds(asset.capturedAt ?? .distantPast) ==
+                CloudRebuildRootSnapshot.milliseconds(envelope.capturedAt ?? .distantPast) &&
+            CloudRebuildRootSnapshot.milliseconds(asset.createdAt) ==
+                CloudRebuildRootSnapshot.milliseconds(envelope.createdAt) &&
+            transferMatches
+    }
+
+    /// Returns true when the caller must insert a new upload transfer.
+    @discardableResult
+    static func prepareLegacyAssetForV2Resign(
+        _ asset: PhotoAssetRecord,
+        recordName: String,
+        sourceDigest: String,
+        payloadDigest: String,
+        byteCount: Int64,
+        uploadTransfers: [CloudAssetTransfer]
+    ) -> Bool {
+        asset.cloudRecordName = recordName
+        asset.isCloudAuthoritative = false
+        for transfer in uploadTransfers {
+            transfer.localRelativePath = asset.relativePath
+            transfer.payloadDigest = payloadDigest
+            transfer.byteCount = byteCount
+            transfer.sourceDigest = sourceDigest
+            transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+            transfer.transferredByteCount = 0
+            transfer.lastErrorCode = "旧版照片签名已验证，等待当前设备重签 v2。"
+            transfer.nextRetryAt = nil
+            transfer.remoteRecordName = recordName
+            transfer.updatedAt = .now
+        }
+        return uploadTransfers.isEmpty
+    }
+
+    private func ingestFarmRoots(
+        _ records: [CKRecord],
+        scope: CloudDatabaseScope,
+        recoveryFarmID: UUID?,
+        context: ModelContext
+    ) throws -> Bool {
+        var rejectedRecoveryRecord = false
         let farms = try context.fetch(FetchDescriptor<FarmRecord>())
         let accounts = try context.fetch(FetchDescriptor<AccountProfile>())
         let localAccountID = accounts.first?.effectiveAccountID
@@ -860,6 +2771,9 @@ actor FarmPersistenceActor {
                         continue
                     }
                     if farm.name != root.name || farm.ownerAccountID != root.ownerAccountID {
+                        if root.farmID == recoveryFarmID {
+                            rejectedRecoveryRecord = true
+                        }
                         context.insert(SecurityIncidentRecord(
                             farmID: root.farmID,
                             incidentType: "unsignedFarmRootModification",
@@ -881,6 +2795,9 @@ actor FarmPersistenceActor {
                     updatedAt: root.modifiedAt
                 ))
             } catch {
+                if CloudZoneName.farmID(from: record.recordID.zoneID.zoneName) == recoveryFarmID {
+                    rejectedRecoveryRecord = true
+                }
                 context.insert(SecurityIncidentRecord(
                     farmID: CloudZoneName.farmID(from: record.recordID.zoneID.zoneName),
                     incidentType: "malformedFarmRoot",
@@ -889,6 +2806,7 @@ actor FarmPersistenceActor {
                 ))
             }
         }
+        return rejectedRecoveryRecord
     }
 
     private func quarantine(envelope: CloudOperationEnvelope, recordName: String, reason: String, context: ModelContext) throws {
@@ -917,13 +2835,74 @@ actor FarmPersistenceActor {
         ))
     }
 
-    func recordUnexpectedDeletions(_ deletions: [CKDatabase.RecordZoneChange.Deletion]) throws {
+    func recordUnexpectedDeletions(
+        _ deletions: [CKDatabase.RecordZoneChange.Deletion],
+        recoveryFarmID: UUID? = nil,
+        recoveryAuthoritativeOperationRecordNames: Set<String>? = nil
+    ) throws -> Set<UUID> {
         let context = ModelContext(container)
+        let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
+        let activeZoneList: [LiveIngestZone] = bindings.compactMap { binding in
+            let isActive = binding.state == .active
+            let isAuthorizedRecovery = binding.farmID == recoveryFarmID && binding.state == .rebuildingCache
+            guard isActive || isAuthorizedRecovery else { return nil }
+            return LiveIngestZone(name: binding.zoneName, ownerName: binding.zoneOwnerName)
+        }
+        let activeZones = Set(activeZoneList)
         let operations = try context.fetch(FetchDescriptor<DomainOperation>())
         let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>())
         let assets = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
         let transfers = try context.fetch(FetchDescriptor<CloudAssetTransfer>())
-        for deletion in deletions where deletion.recordType == CloudRecordType.farmEntity.rawValue || deletion.recordType == CloudRecordType.farmAsset.rawValue {
+        var rejectedRecoveryDeletion = false
+        var authoritativeRecoveryFarmIDs = Set<UUID>()
+
+        for deletion in deletions where
+            deletion.recordType == CloudRecordType.farmOperation.rawValue &&
+            activeZones.contains(LiveIngestZone(
+                name: deletion.recordID.zoneID.zoneName,
+                ownerName: deletion.recordID.zoneID.ownerName
+            )) {
+            let zone = LiveIngestZone(
+                name: deletion.recordID.zoneID.zoneName,
+                ownerName: deletion.recordID.zoneID.ownerName
+            )
+            let matchingBindings = bindings.filter {
+                $0.zoneName == zone.name &&
+                    $0.zoneOwnerName == zone.ownerName &&
+                    ($0.state == .active || ($0.farmID == recoveryFarmID && $0.state == .rebuildingCache))
+            }
+            guard mapper.operationID(from: deletion.recordID) != nil,
+                  matchingBindings.count == 1,
+                  let binding = matchingBindings.first else { continue }
+            if binding.farmID == recoveryFarmID,
+               let recoveryAuthoritativeOperationRecordNames,
+               !recoveryAuthoritativeOperationRecordNames.contains(deletion.recordID.recordName) {
+                context.insert(SecurityIncidentRecord(
+                    farmID: binding.farmID,
+                    incidentType: "historicalOperationDeletionExcludedByRebuildProof",
+                    recordName: deletion.recordID.recordName,
+                    detail: "该不可变操作删除不在本次已验证重建来源中，视为权威基线之前的历史清理记录。"
+                ))
+                continue
+            }
+            binding.stateRawValue = CloudFarmBindingState.rebuildingCache.rawValue
+            binding.lastErrorCode = "immutableOperationHardDelete"
+            binding.updatedAt = .now
+            authoritativeRecoveryFarmIDs.insert(binding.farmID)
+            context.insert(SecurityIncidentRecord(
+                farmID: binding.farmID,
+                incidentType: "immutableOperationHardDelete",
+                recordName: deletion.recordID.recordName,
+                detail: "检测到不可变云端操作被硬删除，已锁定本地缓存并要求按 ready 根记录完整重建。"
+            ))
+            if binding.farmID == recoveryFarmID {
+                rejectedRecoveryDeletion = true
+            }
+        }
+
+        for deletion in deletions where
+            activeZones.contains(LiveIngestZone(name: deletion.recordID.zoneID.zoneName, ownerName: deletion.recordID.zoneID.ownerName)) &&
+            (deletion.recordType == CloudRecordType.farmEntity.rawValue || deletion.recordType == CloudRecordType.farmAsset.rawValue) {
             var farmID = CloudZoneName.farmID(from: deletion.recordID.zoneID.zoneName)
             var entityID: UUID?
             if deletion.recordType == CloudRecordType.farmEntity.rawValue,
@@ -943,6 +2922,9 @@ actor FarmPersistenceActor {
                 recordName: deletion.recordID.recordName,
                 detail: "检测到没有合法 Tombstone 的 CloudKit 实体硬删除，未删除本地数据。"
             ))
+            if farmID == recoveryFarmID {
+                rejectedRecoveryDeletion = true
+            }
             if deletion.recordType == CloudRecordType.farmAsset.rawValue,
                let farmID, let assetID = entityID,
                let asset = assets.first(where: { $0.id == assetID && $0.recoveryRecordName != nil }),
@@ -951,6 +2933,10 @@ actor FarmPersistenceActor {
             }
         }
         try context.save()
+        if rejectedRecoveryDeletion {
+            throw CloudSyncError.recoveryCatchUpFailed("云端增量中存在没有合法 Tombstone 的硬删除，牧场继续保持锁定。")
+        }
+        return authoritativeRecoveryFarmIDs
     }
 
     func saveEngineState(_ serialization: CKSyncEngine.State.Serialization, scope: CloudDatabaseScope) throws {
@@ -984,6 +2970,93 @@ actor FarmPersistenceActor {
         try context.save()
     }
 
+    /// Removes one explicitly authorized obsolete local migration only after
+    /// proving that its exact formal replacement is the active owner cloud farm
+    /// created from the same verified source. The explicit IDs keep this
+    /// destructive repair from widening to unrelated same-name farms.
+    func purgeSupersededLocalMigrationFarm(
+        obsoleteFarmID: UUID,
+        replacementFarmID: UUID,
+        ownerAccountID: UUID
+    ) throws -> Bool {
+        let context = ModelContext(container)
+        let farms = try context.fetch(FetchDescriptor<FarmRecord>())
+        let commits = try context.fetch(FetchDescriptor<MigrationCommitRecord>())
+        let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
+        guard obsoleteFarmID != replacementFarmID,
+              let replacementFarm = farms.first(where: {
+                  $0.id == replacementFarmID &&
+                      $0.ownerAccountID == ownerAccountID &&
+                      !$0.isLocalOnlyMigration &&
+                      $0.deletedAt == nil
+              }),
+              let replacementCommit = commits.first(where: {
+                  $0.farmID == replacementFarmID &&
+                      $0.ownerAccountID == ownerAccountID &&
+                      $0.statusRawValue == MigrationCommitStatus.completed.rawValue &&
+                      $0.cloudStateRawValue == MigrationCloudState.synced.rawValue &&
+                      !$0.sourceChecksum.isEmpty
+              }),
+              bindings.contains(where: {
+                  $0.farmID == replacementFarmID &&
+                      $0.ownerAccountID == ownerAccountID &&
+                      $0.databaseScope == .privateDatabase &&
+                      $0.state == .active
+              }) else { return false }
+
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let obsoleteAssetDirectory = support.appending(
+            path: "MigrationAssets/\(obsoleteFarmID.uuidString.lowercased())",
+            directoryHint: .isDirectory
+        )
+        guard let legacyFarm = farms.first(where: {
+            $0.id == obsoleteFarmID && $0.isLocalOnlyMigration && $0.deletedAt == nil
+        }), let legacyCommit = commits.first(where: {
+            $0.farmID == obsoleteFarmID &&
+                $0.statusRawValue == MigrationCommitStatus.completed.rawValue &&
+                $0.cloudStateRawValue == MigrationCloudState.localCommitted.rawValue &&
+                !$0.sourceChecksum.isEmpty
+        }) else {
+            if FileManager.default.fileExists(atPath: obsoleteAssetDirectory.path) {
+                try FileManager.default.removeItem(at: obsoleteAssetDirectory)
+            }
+            return false
+        }
+        guard legacyFarm.name == replacementFarm.name,
+              legacyCommit.sourceChecksum == replacementCommit.sourceChecksum,
+              !bindings.contains(where: {
+                  $0.farmID == obsoleteFarmID && $0.state == .active
+              }) else { return false }
+
+            let farmID = obsoleteFarmID
+            try purgeFarmCache(farmID: farmID, context: context)
+            for value in try context.fetch(FetchDescriptor<SemenDonorRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<PedigreeChangeRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<DomainOperation>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<OutboxItem>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<TombstoneRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<CloudOperationReceipt>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<SyncConflictRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<CloudAssetTransfer>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<FarmMembershipSnapshotRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<MigrationAuditRecord>()) where value.sessionID == legacyCommit.sessionID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<MigrationCommitRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<CapabilityCertificateRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<RevokedCapabilityCertificateRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<CloudFarmBinding>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<CloudRebuildIssueRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<CloudSyncDiagnosticSnapshotRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<FarmCheckpointRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<FarmRecoveryAssetRecord>()) where value.farmID == farmID { context.delete(value) }
+            for value in try context.fetch(FetchDescriptor<SecurityIncidentRecord>()) where value.farmID == farmID { context.delete(value) }
+        try context.save()
+        if FileManager.default.fileExists(atPath: obsoleteAssetDirectory.path) {
+            try FileManager.default.removeItem(at: obsoleteAssetDirectory)
+        }
+        return true
+    }
+
     private func purgeFarmCache(farmID: UUID, context: ModelContext) throws {
         for value in try context.fetch(FetchDescriptor<PenRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<SheepRecord>()) where value.farmID == farmID { context.delete(value) }
@@ -1006,6 +3079,8 @@ actor FarmPersistenceActor {
         for value in try context.fetch(FetchDescriptor<HealthRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<ReproductionRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<SemenRecord>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<SemenDonorRecord>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<PedigreeChangeRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<NoteRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<PhotoAssetRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<HealthSubjectLink>()) where value.farmID == farmID { context.delete(value) }
@@ -1043,6 +3118,8 @@ actor FarmPersistenceActor {
         for value in try context.fetch(FetchDescriptor<HealthRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<ReproductionRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<SemenRecord>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<SemenDonorRecord>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<PedigreeChangeRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<NoteRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<PhotoAssetRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<HealthSubjectLink>()) where value.farmID == farmID { context.delete(value) }
@@ -1056,7 +3133,15 @@ actor FarmPersistenceActor {
         for value in try context.fetch(FetchDescriptor<FarmActivity>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<TombstoneRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<CloudOperationReceipt>()) where value.farmID == farmID { context.delete(value) }
-        for value in try context.fetch(FetchDescriptor<SyncConflictRecord>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<SyncConflictRecord>()) where value.farmID == farmID {
+            // Unresolved/quarantined evidence belongs to retained local
+            // Outbox work. Removing it would leave blocked operations without
+            // any user-review path after an otherwise successful rebuild.
+            if value.statusRawValue != SyncConflictStatus.unresolved.rawValue &&
+                value.statusRawValue != SyncConflictStatus.quarantined.rawValue {
+                context.delete(value)
+            }
+        }
         for value in try context.fetch(FetchDescriptor<CloudAssetTransfer>()) where value.farmID == farmID && value.direction == .download { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<FarmMembershipSnapshotRecord>()) where value.farmID == farmID { context.delete(value) }
     }
@@ -1071,20 +3156,47 @@ actor FarmPersistenceActor {
     func upsertBinding(farmID: UUID, ownerAccountID: UUID, scope: CloudDatabaseScope, shareRecordName: String?, zoneOwnerName: String = CKCurrentUserDefaultName, state: CloudFarmBindingState) throws {
         let context = ModelContext(container)
         let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
-        let binding = bindings.first(where: { $0.farmID == farmID }) ?? CloudFarmBinding(farmID: farmID, ownerAccountID: ownerAccountID, databaseScope: scope)
+        let existingBinding = bindings.first(where: { $0.farmID == farmID })
+        guard existingBinding?.state != .rebuildingCache else {
+            throw CloudSyncError.inactiveFarm
+        }
+        let binding = existingBinding ?? CloudFarmBinding(farmID: farmID, ownerAccountID: ownerAccountID, databaseScope: scope)
+        let bindingIdentityChanged = existingBinding.map {
+            $0.databaseScopeRawValue != scope.rawValue ||
+                $0.zoneOwnerName != zoneOwnerName ||
+                $0.zoneName != CloudZoneName.forFarm(farmID)
+        } ?? true
         if binding.modelContext == nil { context.insert(binding) }
         binding.databaseScopeRawValue = scope.rawValue
+        binding.zoneName = CloudZoneName.forFarm(farmID)
         binding.zoneOwnerName = zoneOwnerName
         binding.shareRecordName = shareRecordName
         binding.stateRawValue = state.rawValue
         binding.updatedAt = .now
+        if bindingIdentityChanged {
+            try requeueConfirmedOutboxWithoutMatchingReceipt(
+                farmID: farmID,
+                scope: scope,
+                zoneName: binding.zoneName,
+                zoneOwnerName: binding.zoneOwnerName,
+                context: context
+            )
+        }
         if scope == .privateDatabase,
            let farm = try context.fetch(FetchDescriptor<FarmRecord>()).first(where: { $0.id == farmID }) {
             farm.ownerAccountID = ownerAccountID
             farm.roleRawValue = FarmRole.owner.rawValue
             farm.membershipStatusRawValue = FarmMembershipStatus.active.rawValue
             farm.updatedAt = .now
-            let receipts = try context.fetch(FetchDescriptor<CloudOperationReceipt>())
+            let scopeRawValue = scope.rawValue
+            let currentZoneName = binding.zoneName
+            let currentZoneOwnerName = binding.zoneOwnerName
+            let receipts = try context.fetch(FetchDescriptor<CloudOperationReceipt>()).filter {
+                $0.farmID == farmID &&
+                    $0.databaseScopeRawValue == scopeRawValue &&
+                    $0.zoneName == currentZoneName &&
+                    $0.zoneOwnerName == currentZoneOwnerName
+            }
             let confirmed = Set(receipts.map(\.operationID))
             for operation in try context.fetch(FetchDescriptor<DomainOperation>())
             where operation.farmID == farmID && !confirmed.contains(operation.id) {
@@ -1092,6 +3204,51 @@ actor FarmPersistenceActor {
             }
         }
         try context.save()
+    }
+
+    private func requeueConfirmedOutboxWithoutMatchingReceipt(
+        farmID: UUID,
+        scope: CloudDatabaseScope,
+        zoneName: String,
+        zoneOwnerName: String,
+        context: ModelContext
+    ) throws {
+        let confirmed = OutboxStatus.confirmed.rawValue
+        let items = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.statusRawValue == confirmed
+        }))
+        guard !items.isEmpty else { return }
+
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        let scopeRawValue = scope.rawValue
+        let receipts = try context.fetch(FetchDescriptor<CloudOperationReceipt>(predicate: #Predicate {
+            $0.farmID == farmID &&
+                $0.databaseScopeRawValue == scopeRawValue &&
+                $0.zoneName == zoneName &&
+                $0.zoneOwnerName == zoneOwnerName
+        }))
+        for item in items {
+            let matchingOperations = operations.filter { $0.id == item.operationID }
+            guard matchingOperations.count == 1, let operation = matchingOperations.first else {
+                item.statusRawValue = OutboxStatus.pending.rawValue
+                item.errorMessage = nil
+                item.nextRetryAt = nil
+                item.cloudRecordName = nil
+                continue
+            }
+            let confirmedNames = Set(receipts.filter {
+                $0.operationID == item.operationID
+            }.map(\.recordName))
+            guard !requiredReceiptNames(for: operation, in: operations).isSubset(of: confirmedNames) else {
+                continue
+            }
+            item.statusRawValue = OutboxStatus.pending.rawValue
+            item.errorMessage = nil
+            item.nextRetryAt = nil
+            item.cloudRecordName = nil
+        }
     }
 
     func saveCapability(_ response: WorkerCapabilityResponse, accountID: UUID, farmID: UUID, deviceID: UUID) throws {
@@ -1113,10 +3270,15 @@ actor FarmPersistenceActor {
             expiresAt: Date(timeIntervalSince1970: TimeInterval(response.expiresAt))
         ))
         if let binding = try context.fetch(FetchDescriptor<CloudFarmBinding>()).first(where: { $0.farmID == farmID }) {
-            if binding.databaseScope == .privateDatabase && response.role == .owner {
-                binding.stateRawValue = CloudFarmBindingState.active.rawValue
-            } else {
-                binding.stateRawValue = CloudFarmBindingState.requiresAccountReview.rawValue
+            // Capability refresh can run concurrently with cache recovery.
+            // It may update credentials, but only the recovery CAS may remove
+            // a rebuilding lock or its engine-reset claim.
+            if binding.state != .rebuildingCache {
+                if binding.databaseScope == .privateDatabase && response.role == .owner {
+                    binding.stateRawValue = CloudFarmBindingState.active.rawValue
+                } else {
+                    binding.stateRawValue = CloudFarmBindingState.requiresAccountReview.rawValue
+                }
             }
             binding.updatedAt = .now
         }
@@ -1165,8 +3327,12 @@ actor FarmPersistenceActor {
             $0.farmID == farmID && $0.statusRawValue == blocked
         })).filter {
             // New builds prefix a real payload conflict explicitly. Only
-            // legacy ambiguous failures are eligible for one-time recheck.
-            $0.errorMessage?.hasPrefix("云端已有不同内容") != true
+            // legacy ambiguous failures and the old mutable-projection insert
+            // bug are eligible for one-time recheck. If the server revision is
+            // genuinely incompatible, the new failure handler replaces this
+            // transport text with an explicit operation-lineage conflict and
+            // it will not be requeued again.
+            CloudBlockedConflictRecovery.isEligible($0.errorMessage)
         }
         for item in items {
             item.statusRawValue = OutboxStatus.pending.rawValue
@@ -1192,6 +3358,20 @@ actor FarmPersistenceActor {
 
     func saveSecuritySnapshot(_ snapshot: WorkerFarmSecuritySnapshot) throws {
         let context = ModelContext(container)
+        let devices = try context.fetch(FetchDescriptor<DeviceIdentityRecord>())
+        let validatedDevices = try snapshot.devices.map { device -> (WorkerFarmSecuritySnapshot.Device, Data) in
+            guard let publicKey = Self.x963PublicKey(fromJWKJSON: device.publicKeyJWK) else {
+                throw CloudContractError.invalidDeviceSignature
+            }
+            if let existing = devices.first(where: { $0.id == device.deviceID }),
+               (existing.accountID != device.accountID || existing.publicKeyX963 != publicKey) {
+                // Device IDs are immutable identities. A rotated key must be
+                // registered under a new device ID instead of replacing a
+                // trusted key during recovery.
+                throw CloudContractError.invalidDeviceSignature
+            }
+            return (device, publicKey)
+        }
         let memberships = try context.fetch(FetchDescriptor<FarmMembershipBinding>())
         for member in snapshot.members {
             let status: FarmMembershipStatus = switch member.status {
@@ -1232,9 +3412,7 @@ actor FarmPersistenceActor {
             farm.membershipStatusRawValue = localMember.status
             farm.updatedAt = .now
         }
-        let devices = try context.fetch(FetchDescriptor<DeviceIdentityRecord>())
-        for device in snapshot.devices {
-            guard let publicKey = Self.x963PublicKey(fromJWKJSON: device.publicKeyJWK) else { continue }
+        for (device, publicKey) in validatedDevices {
             if let existing = devices.first(where: { $0.id == device.deviceID }) {
                 existing.publicKeyX963 = publicKey
                 existing.isRegistered = true
@@ -1285,8 +3463,47 @@ actor FarmPersistenceActor {
             throw CloudContractError.membershipSnapshotRollback
         }
         if let same = existing.first(where: { $0.generation == value.generation }) {
+            guard value.issuedAt >= same.issuedAt else {
+                throw CloudContractError.membershipSnapshotRollback
+            }
+            if value.payload != same.payload {
+                guard value.issuedAt > same.issuedAt,
+                      let oldEnvelope = try? JSONDecoder.membershipPersistence.decode(
+                          FarmMembershipSnapshotEnvelope.self,
+                          from: same.payload
+                      ),
+                      let newEnvelope = try? JSONDecoder.membershipPersistence.decode(
+                          FarmMembershipSnapshotEnvelope.self,
+                          from: value.payload
+                      ),
+                      oldEnvelope.farmID == newEnvelope.farmID,
+                      oldEnvelope.generation == newEnvelope.generation,
+                      oldEnvelope.members.count == newEnvelope.members.count,
+                      oldEnvelope.members.allSatisfy(newEnvelope.members.contains),
+                      oldEnvelope.devices.allSatisfy(newEnvelope.devices.contains),
+                      oldEnvelope.revokedCertificates.allSatisfy(newEnvelope.revokedCertificates.contains) else {
+                    throw CloudContractError.membershipSnapshotRollback
+                }
+                // CloudBase 0.3.x historically did not bump generation for a
+                // newly registered device. Accept only an owner-signed,
+                // strictly newer, additive trust update at the same generation;
+                // membership changes, key replacement, and revocation rollback
+                // remain forbidden.
+                same.issuedAt = value.issuedAt
+                same.payload = value.payload
+                same.payloadDigest = CloudPayloadDigest.hex(for: value.payload)
+                same.signedByAccountID = value.signedByAccountID
+                same.signedByDeviceID = value.signedByDeviceID
+                same.capabilityCertificate = value.capabilityCertificate
+                same.signature = value.signature
+            }
             same.cloudRecordName = value.cloudRecordName ?? same.cloudRecordName
             same.validatedAt = value.validatedAt ?? same.validatedAt
+            if let binding = try context.fetch(FetchDescriptor<CloudFarmBinding>()).first(where: { $0.farmID == value.farmID }) {
+                binding.securityGeneration = max(binding.securityGeneration, value.generation)
+                binding.lastMembershipSnapshotAt = max(binding.lastMembershipSnapshotAt ?? .distantPast, value.issuedAt)
+                binding.updatedAt = .now
+            }
             if let accountID = try context.fetch(FetchDescriptor<AccountProfile>()).first?.effectiveAccountID {
                 try Self.activateSharedFarmIfFullyVerified(farmID: value.farmID, accountID: accountID, context: context)
             }
@@ -1319,9 +3536,84 @@ actor FarmPersistenceActor {
         try context.save()
     }
 
+    /// Persists keys and revocations only after MembershipSnapshotActor has
+    /// authenticated the snapshot with an already trusted owner device.
+    func saveValidatedMembershipSnapshotRecord(
+        _ value: MembershipSnapshotRecordValue,
+        envelope: FarmMembershipSnapshotEnvelope
+    ) throws {
+        guard envelope.farmID == value.farmID,
+              envelope.generation == value.generation else {
+            throw CloudContractError.malformedRecord
+        }
+
+        let validationContext = ModelContext(container)
+        let existingDevices = try validationContext.fetch(FetchDescriptor<DeviceIdentityRecord>())
+        for device in envelope.devices {
+            guard let publicKey = Self.x963PublicKey(fromJWKJSON: device.publicKeyJWK) else {
+                throw CloudContractError.invalidDeviceSignature
+            }
+            if let existing = existingDevices.first(where: { $0.id == device.deviceID }),
+               (existing.accountID != device.accountID || existing.publicKeyX963 != publicKey) {
+                // A stable device identifier may never silently change owner
+                // or key through a membership snapshot.
+                throw CloudContractError.invalidDeviceSignature
+            }
+        }
+
+        try saveMembershipSnapshotRecord(value)
+
+        let context = ModelContext(container)
+        let devices = try context.fetch(FetchDescriptor<DeviceIdentityRecord>())
+        for device in envelope.devices {
+            guard let publicKey = Self.x963PublicKey(fromJWKJSON: device.publicKeyJWK) else {
+                throw CloudContractError.invalidDeviceSignature
+            }
+            if let existing = devices.first(where: { $0.id == device.deviceID }) {
+                existing.isRegistered = true
+                existing.lastRegisteredAt = .now
+            } else {
+                let record = DeviceIdentityRecord(
+                    id: device.deviceID,
+                    accountID: device.accountID,
+                    publicKeyX963: publicKey,
+                    usesSecureEnclave: false
+                )
+                record.isRegistered = true
+                record.lastRegisteredAt = .now
+                context.insert(record)
+            }
+        }
+        let revoked = try context.fetch(FetchDescriptor<RevokedCapabilityCertificateRecord>())
+        let certificates = try context.fetch(FetchDescriptor<CapabilityCertificateRecord>())
+        for item in envelope.revokedCertificates {
+            let revokedAt = Date(timeIntervalSince1970: TimeInterval(item.revokedAt))
+            if !revoked.contains(where: {
+                $0.farmID == envelope.farmID &&
+                    $0.serverCertificateID == item.certificateID
+            }) {
+                context.insert(RevokedCapabilityCertificateRecord(
+                    serverCertificateID: item.certificateID,
+                    farmID: envelope.farmID,
+                    revokedAt: revokedAt
+                ))
+            }
+            if let certificate = certificates.first(where: {
+                $0.farmID == envelope.farmID &&
+                    $0.serverCertificateID == item.certificateID
+            }) {
+                certificate.revokedAt = revokedAt
+            }
+        }
+        try context.save()
+    }
+
     private static func activateSharedFarmIfFullyVerified(farmID: UUID, accountID: UUID, context: ModelContext) throws {
         guard let binding = try context.fetch(FetchDescriptor<CloudFarmBinding>()).first(where: {
-            $0.farmID == farmID && $0.databaseScope == .sharedDatabase && $0.state != .accessRevoked
+            $0.farmID == farmID &&
+                $0.databaseScope == .sharedDatabase &&
+                $0.state != .accessRevoked &&
+                $0.state != .rebuildingCache
         }) else { return }
         let snapshots = try context.fetch(FetchDescriptor<FarmMembershipSnapshotRecord>())
             .filter { $0.farmID == farmID && $0.validatedAt != nil }

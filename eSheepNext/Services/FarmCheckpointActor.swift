@@ -46,10 +46,50 @@ struct FarmCheckpointRestoreResult: Sendable, Equatable {
     let photoAssetIDs: [UUID]
 }
 
+struct FarmCheckpointCreationTaskRegistry {
+    struct Lease: Sendable {
+        fileprivate let token: UUID
+        let task: Task<UUID, any Error>
+        let startedNewTask: Bool
+    }
+
+    private struct Entry {
+        let token: UUID
+        let task: Task<UUID, any Error>
+    }
+
+    private var entriesByFarmID: [UUID: Entry] = [:]
+
+    mutating func acquire(
+        farmID: UUID,
+        operation: @escaping @Sendable () async throws -> UUID
+    ) -> Lease {
+        if let existing = entriesByFarmID[farmID] {
+            return Lease(token: existing.token, task: existing.task, startedNewTask: false)
+        }
+        let entry = Entry(
+            token: UUID(),
+            task: Task<UUID, any Error> { try await operation() }
+        )
+        entriesByFarmID[farmID] = entry
+        return Lease(token: entry.token, task: entry.task, startedNewTask: true)
+    }
+
+    mutating func release(_ lease: Lease, farmID: UUID) {
+        guard lease.startedNewTask, entriesByFarmID[farmID]?.token == lease.token else { return }
+        entriesByFarmID.removeValue(forKey: farmID)
+    }
+
+    func contains(farmID: UUID) -> Bool {
+        entriesByFarmID[farmID] != nil
+    }
+}
+
 actor FarmCheckpointActor {
     private let modelContainer: ModelContainer
     private let cloudContainer: CKContainer
     private let recoveryKeys: FarmRecoveryKeyActor
+    private var checkpointCreationTasks = FarmCheckpointCreationTaskRegistry()
 
     init(modelContainer: ModelContainer, containerIdentifier: String? = Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String, recoveryKeys: FarmRecoveryKeyActor = .shared) {
         self.modelContainer = modelContainer
@@ -61,19 +101,70 @@ actor FarmCheckpointActor {
         let context = ModelContext(modelContainer)
         let checkpoints = try context.fetch(FetchDescriptor<FarmCheckpointRecord>()).filter { $0.farmID == farmID }
         guard let latest = checkpoints.max(by: { $0.createdAt < $1.createdAt }) else { return .initialCloudSetup }
-        let confirmed = try context.fetch(FetchDescriptor<CloudOperationReceipt>()).filter { $0.farmID == farmID && $0.confirmedAt > latest.operationWatermark }
+        // A local file/row may exist while its CloudKit upload or verification is
+        // still running (or was interrupted). Do not manufacture another large
+        // checkpoint while that recovery point remains unfinished.
+        guard latest.cloudRecordName != nil, latest.verifiedAt != nil else { return nil }
+        // Receipts are acknowledgements, so their own confirmation time must be
+        // compared with checkpoint creation. The operation watermark describes
+        // domain history and can be much older than the checkpoint upload.
+        let confirmed = try context.fetch(FetchDescriptor<CloudOperationReceipt>()).filter { $0.farmID == farmID && $0.confirmedAt > latest.createdAt }
         if confirmed.count >= 100 { return .operationThreshold }
         if !confirmed.isEmpty && Date().timeIntervalSince(latest.createdAt) >= 86_400 { return .scheduled }
         return nil
     }
 
     func createCheckpoint(farmID: UUID, reason: FarmCheckpointReason) async throws -> UUID {
+        let lease = checkpointCreationTasks.acquire(farmID: farmID) { [self] in
+            try await performCreateCheckpoint(farmID: farmID, reason: reason)
+        }
+        defer { checkpointCreationTasks.release(lease, farmID: farmID) }
+        return try await lease.task.value
+    }
+
+    private func performCreateCheckpoint(farmID: UUID, reason: FarmCheckpointReason) async throws -> UUID {
         let context = ModelContext(modelContainer)
         guard let binding = try context.fetch(FetchDescriptor<CloudFarmBinding>()).first(where: {
             $0.farmID == farmID && $0.databaseScope == .privateDatabase && $0.state == .active
         }) else { throw FarmCheckpointError.ownerBindingRequired }
         let operations = try context.fetch(FetchDescriptor<DomainOperation>())
             .filter { $0.farmID == farmID && $0.entityID != nil }
+        let watermark = operations.map(\.occurredAt).max() ?? .distantPast
+        let currentEntityCount = Set(operations.compactMap { operation in
+            operation.entityID.map { "\(operation.entityType)|\($0.uuidString.lowercased())" }
+        }).count
+        let assets = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+            .filter { $0.farmID == farmID && $0.deletedAt == nil }
+            .map { FarmCheckpointManifest.AssetReference(assetID: $0.id, payloadDigest: $0.sha256, recoveryRecordName: $0.recoveryRecordName) }
+
+        if reason == .initialCloudSetup {
+            let compatible = try context.fetch(FetchDescriptor<FarmCheckpointRecord>())
+                .filter { checkpoint in
+                    checkpoint.farmID == farmID &&
+                    FarmCheckpointResumePolicy.isCompatible(
+                        checkpointReason: checkpoint.reasonRawValue,
+                        requestedReason: reason,
+                        checkpointWatermark: checkpoint.operationWatermark,
+                        currentWatermark: watermark,
+                        checkpointEntityCount: checkpoint.entityCount,
+                        currentEntityCount: currentEntityCount,
+                        checkpointAssetCount: checkpoint.assetCount,
+                        currentAssetCount: assets.count,
+                        checkpointSecurityGeneration: checkpoint.securityGeneration,
+                        currentSecurityGeneration: binding.securityGeneration
+                    )
+                }
+            if let completed = compatible
+                .filter({ $0.cloudRecordName != nil && $0.verifiedAt != nil })
+                .max(by: { $0.createdAt < $1.createdAt }) {
+                return completed.id
+            }
+            if let resumable = compatible
+                .filter({ $0.cloudRecordName == nil && $0.verifiedAt == nil && Self.hasCompleteLocalFile($0) })
+                .max(by: { $0.createdAt < $1.createdAt }) {
+                return try await uploadCheckpoint(resumable, context: context)
+            }
+        }
         let entitySnapshots = try FarmCheckpointOperationHistory.snapshots(
             operations: operations,
             farmID: farmID,
@@ -82,9 +173,6 @@ actor FarmCheckpointActor {
         let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>()).filter { $0.farmID == farmID }.compactMap { value -> FarmTombstoneEnvelope? in
             guard let operationID = value.operationID else { return nil }
             return FarmTombstoneEnvelope(tombstoneID: value.id, farmID: value.farmID, entityType: value.entityType, entityID: value.entityID, revision: value.revision, deletedAt: value.deletedAt, deletedByAccountID: value.deletedByAccountID, reason: value.reason, operationID: operationID, restoresTombstoneID: value.restoredByOperationID)
-        }
-        let assets = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }.map {
-            FarmCheckpointManifest.AssetReference(assetID: $0.id, payloadDigest: $0.sha256, recoveryRecordName: $0.recoveryRecordName)
         }
         let grouped = Dictionary(grouping: entitySnapshots, by: \.entityType)
         // Checkpoint v2 keeps the complete operation history, but the user-facing
@@ -99,7 +187,6 @@ actor FarmCheckpointActor {
             return CloudPayloadDigest.hex(for: Data(ordered.flatMap { Array($0.payloadDigest.utf8) }))
         }
         let checkpointID = UUID()
-        let watermark = operations.map(\.occurredAt).max() ?? .distantPast
         let manifest = FarmCheckpointManifest(
             schemaVersion: 2,
             checkpointID: checkpointID,
@@ -132,20 +219,46 @@ actor FarmCheckpointActor {
         context.insert(local)
         try context.save()
 
+        return try await uploadCheckpoint(local, context: context)
+    }
+
+    private func uploadCheckpoint(_ local: FarmCheckpointRecord, context: ModelContext) async throws -> UUID {
+        guard Self.hasCompleteLocalFile(local) else { throw FarmCheckpointError.checkpointMissing }
+        let farmID = local.farmID
+        let checkpointID = local.id
+        let fileURL = Self.absoluteURL(for: local.encryptedRelativePath)
         let zoneID = CKRecordZone.ID(zoneName: CloudZoneName.recovery(for: farmID), ownerName: CKCurrentUserDefaultName)
-        _ = try await cloudContainer.privateCloudDatabase.modifyRecordZones(saving: [CKRecordZone(zoneID: zoneID)], deleting: [])
+        let database = cloudContainer.privateCloudDatabase
+        _ = try await database.modifyRecordZones(saving: [CKRecordZone(zoneID: zoneID)], deleting: [])
         let recordID = CKRecord.ID(recordName: "checkpoint_\(checkpointID.uuidString.lowercased())", zoneID: zoneID)
+        do {
+            let existing = try await database.record(for: recordID)
+            guard existing[CloudRecordField.farmID] as? String == farmID.uuidString.lowercased(),
+                  existing[CloudRecordField.entityID] as? String == checkpointID.uuidString.lowercased(),
+                  existing[CloudRecordField.payloadDigest] as? String == local.manifestDigest,
+                  existing[CloudRecordField.asset] as? CKAsset != nil else {
+                throw FarmCheckpointError.digestMismatch
+            }
+            local.cloudRecordName = recordID.recordName
+            local.verifiedAt = .now
+            try context.save()
+            try await pruneOldCheckpoints(farmID: farmID, keeping: 3)
+            return checkpointID
+        } catch let error as CKError where error.code == .unknownItem {
+            // The previous process stopped before CloudKit committed the
+            // deterministic record. Reuse the same local checkpoint and ID.
+        }
         let record = CKRecord(recordType: CloudRecordType.farmCheckpoint.rawValue, recordID: recordID)
         record[CloudRecordField.farmID] = farmID.uuidString.lowercased() as CKRecordValue
         record[CloudRecordField.entityID] = checkpointID.uuidString.lowercased() as CKRecordValue
-        record[CloudRecordField.schemaVersion] = manifest.schemaVersion as CKRecordValue
-        record[CloudRecordField.modifiedAt] = manifest.createdAt as CKRecordValue
-        record["operationWatermark"] = watermark as CKRecordValue
-        record[CloudRecordField.generation] = binding.securityGeneration as CKRecordValue
+        record[CloudRecordField.schemaVersion] = 2 as CKRecordValue
+        record[CloudRecordField.modifiedAt] = local.createdAt as CKRecordValue
+        record["operationWatermark"] = local.operationWatermark as CKRecordValue
+        record[CloudRecordField.generation] = local.securityGeneration as CKRecordValue
         record[CloudRecordField.payloadDigest] = local.manifestDigest as CKRecordValue
         record[CloudRecordField.byteCount] = local.byteCount as CKRecordValue
         record[CloudRecordField.asset] = CKAsset(fileURL: fileURL)
-        let result = try await cloudContainer.privateCloudDatabase.modifyRecords(saving: [record], deleting: [], savePolicy: .changedKeys, atomically: true)
+        let result = try await database.modifyRecords(saving: [record], deleting: [], savePolicy: .changedKeys, atomically: true)
         _ = try result.saveResults[recordID]?.get()
         local.cloudRecordName = recordID.recordName
         local.verifiedAt = .now
@@ -238,8 +351,19 @@ actor FarmCheckpointActor {
     private func pruneOldCheckpoints(farmID: UUID, keeping count: Int) async throws {
         let context = ModelContext(modelContainer)
         let all = try context.fetch(FetchDescriptor<FarmCheckpointRecord>()).filter { $0.farmID == farmID }.sorted { $0.createdAt > $1.createdAt }
+        let verified = all.filter { $0.cloudRecordName != nil && $0.verifiedAt != nil }
+        let retainedIDs = Set(verified.prefix(count).map(\.id))
+        let latestVerifiedAt = verified.first?.createdAt
+        let removable = all.filter {
+            FarmCheckpointPrunePolicy.shouldRemove(
+                isVerified: $0.cloudRecordName != nil && $0.verifiedAt != nil,
+                isRetained: retainedIDs.contains($0.id),
+                createdAt: $0.createdAt,
+                latestVerifiedAt: latestVerifiedAt
+            )
+        }
         let zoneID = CKRecordZone.ID(zoneName: CloudZoneName.recovery(for: farmID), ownerName: CKCurrentUserDefaultName)
-        for old in all.dropFirst(count) {
+        for old in removable {
             let fileURL = Self.absoluteURL(for: old.encryptedRelativePath)
             try? FileManager.default.removeItem(at: fileURL)
             if let name = old.cloudRecordName {
@@ -248,6 +372,24 @@ actor FarmCheckpointActor {
             context.delete(old)
         }
         try context.save()
+    }
+
+    @discardableResult
+    func cleanupInterruptedCheckpoints(farmID: UUID) throws -> Int {
+        // This method is also called during cold-start recovery. Never race a
+        // currently running creator for the same farm.
+        guard !checkpointCreationTasks.contains(farmID: farmID) else { return 0 }
+        let context = ModelContext(modelContainer)
+        let all = try context.fetch(FetchDescriptor<FarmCheckpointRecord>()).filter { $0.farmID == farmID }
+        let interrupted = all.filter {
+            $0.cloudRecordName == nil && $0.verifiedAt == nil
+        }
+        for checkpoint in interrupted {
+            try? FileManager.default.removeItem(at: Self.absoluteURL(for: checkpoint.encryptedRelativePath))
+            context.delete(checkpoint)
+        }
+        if !interrupted.isEmpty { try context.save() }
+        return interrupted.count
     }
 
     private static func baseDirectory() throws -> URL {
@@ -267,11 +409,55 @@ actor FarmCheckpointActor {
         return (try? baseDirectory().appending(path: path)) ?? URL(fileURLWithPath: path)
     }
 
+    private static func hasCompleteLocalFile(_ checkpoint: FarmCheckpointRecord) -> Bool {
+        let url = absoluteURL(for: checkpoint.encryptedRelativePath)
+        guard FileManager.default.fileExists(atPath: url.path),
+              let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
+            return false
+        }
+        return Int64(size) == checkpoint.byteCount
+    }
+
     private static func relativePath(for url: URL) -> String {
         guard let root = try? baseDirectory().standardizedFileURL.path, url.standardizedFileURL.path.hasPrefix(root + "/") else { return url.path }
         return String(url.standardizedFileURL.path.dropFirst(root.count + 1))
     }
 
+}
+
+enum FarmCheckpointResumePolicy {
+    static func isCompatible(
+        checkpointReason: String,
+        requestedReason: FarmCheckpointReason,
+        checkpointWatermark: Date,
+        currentWatermark: Date,
+        checkpointEntityCount: Int,
+        currentEntityCount: Int,
+        checkpointAssetCount: Int,
+        currentAssetCount: Int,
+        checkpointSecurityGeneration: Int,
+        currentSecurityGeneration: Int
+    ) -> Bool {
+        checkpointReason == requestedReason.rawValue &&
+            checkpointWatermark == currentWatermark &&
+            checkpointEntityCount == currentEntityCount &&
+            checkpointAssetCount == currentAssetCount &&
+            checkpointSecurityGeneration == currentSecurityGeneration
+    }
+}
+
+enum FarmCheckpointPrunePolicy {
+    static func shouldRemove(
+        isVerified: Bool,
+        isRetained: Bool,
+        createdAt: Date,
+        latestVerifiedAt: Date?
+    ) -> Bool {
+        guard !isRetained else { return false }
+        if isVerified { return true }
+        guard let latestVerifiedAt else { return false }
+        return createdAt <= latestVerifiedAt
+    }
 }
 
 enum FarmCheckpointOperationHistory {

@@ -177,9 +177,36 @@ async function logoutSession(env: Env, auth: AuthContext): Promise<Response> {
 async function registerDevice(request: Request, env: Env, auth: AuthContext): Promise<Response> {
   const input = await body<{ deviceID: string; publicKeyJWK: JsonWebKey; displayName?: string }>(request);
   if (!input.deviceID || !input.publicKeyJWK) throw new APIError(400, "invalid_device", "设备标识或公钥缺失。");
+  const existing = await env.DB.prepare("SELECT account_id, public_key_jwk, status FROM devices WHERE id = ?")
+    .bind(input.deviceID).first<{ account_id: string; public_key_jwk: string; status: string }>();
+  if (existing && existing.account_id !== auth.accountID) {
+    throw new APIError(409, "device_owned_by_another_account", "该设备已绑定其他账号。");
+  }
+  const publicKeyJWK = JSON.stringify(input.publicKeyJWK, Object.keys(input.publicKeyJWK).sort());
+  if (existing) {
+    let existingKey: string;
+    try {
+      const value = JSON.parse(existing.public_key_jwk) as JsonWebKey;
+      existingKey = JSON.stringify(value, Object.keys(value).sort());
+    } catch {
+      throw new APIError(409, "device_key_mismatch", "该设备已有不同的注册公钥，请先撤销旧设备。");
+    }
+    if (existingKey !== publicKeyJWK) {
+      throw new APIError(409, "device_key_mismatch", "该设备已有不同的注册公钥，请先撤销旧设备。");
+    }
+  }
   const timestamp = now();
-  await env.DB.prepare("INSERT INTO devices (id, account_id, public_key_jwk, display_name, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET public_key_jwk = excluded.public_key_jwk, display_name = excluded.display_name, status = 'active', last_seen_at = excluded.last_seen_at")
-    .bind(input.deviceID, auth.accountID, JSON.stringify(input.publicKeyJWK), input.displayName?.trim() || "Apple 设备", timestamp, timestamp).run();
+  const statements = [
+    env.DB.prepare("INSERT INTO devices (id, account_id, public_key_jwk, display_name, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, status = 'active', last_seen_at = excluded.last_seen_at")
+      .bind(input.deviceID, auth.accountID, publicKeyJWK, input.displayName?.trim() || "Apple 设备", timestamp, timestamp),
+  ];
+  if (!existing || existing.status !== "active") {
+    statements.push(
+      env.DB.prepare("UPDATE farm_directories SET security_generation = security_generation + 1, updated_at = ? WHERE id IN (SELECT farm_id FROM memberships WHERE account_id = ? AND status = 'active')")
+        .bind(timestamp, auth.accountID),
+    );
+  }
+  await env.DB.batch(statements);
   return json({ deviceID: input.deviceID, registeredAt: timestamp }, 201);
 }
 

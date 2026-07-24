@@ -45,11 +45,34 @@ struct FarmEventSnapshot: Identifiable, Sendable {
     let detail: String
     let note: String
     let fields: [FarmEventField]
+    let searchableText: String
 
-    var searchableText: String {
-        ([title, subject, detail, note] + fields.flatMap { [$0.label, $0.value] })
-            .joined(separator: " ")
-            .localizedLowercase
+    init(
+        id: UUID,
+        entityType: CloudEntityType,
+        category: FarmEventCategory,
+        occurredAt: Date,
+        recordedAt: Date,
+        title: String,
+        subject: String,
+        detail: String,
+        note: String,
+        fields: [FarmEventField]
+    ) {
+        self.id = id
+        self.entityType = entityType
+        self.category = category
+        self.occurredAt = occurredAt
+        self.recordedAt = recordedAt
+        self.title = title
+        self.subject = subject
+        self.detail = detail
+        self.note = note
+        self.fields = fields
+        searchableText = FarmEventSearch.normalized(
+            ([title, subject, detail, note] + fields.flatMap { [$0.label, $0.value] })
+                .joined(separator: " ")
+        )
     }
 }
 
@@ -58,6 +81,53 @@ struct FarmEventField: Sendable, Identifiable {
     let value: String
 
     var id: String { label + "\u{0}" + value }
+}
+
+struct FarmEventRowIdentity: Hashable, Sendable {
+    let entityType: String
+    let entityID: UUID
+}
+
+extension FarmEventSnapshot {
+    var rowIdentity: FarmEventRowIdentity {
+        FarmEventRowIdentity(entityType: entityType.rawValue, entityID: id)
+    }
+
+    var editCapability: FarmCapability? {
+        switch entityType {
+        case .sheep:
+            .recordProduction
+        case .weight, .transfer, .removal, .health, .reproduction:
+            .editHistoricalFacts
+        default:
+            nil
+        }
+    }
+}
+
+enum FarmEventSearch {
+    static func normalized(_ value: String) -> String {
+        value.precomposedStringWithCanonicalMapping
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: Locale(identifier: "zh_Hans_CN")
+            )
+    }
+
+    static func filter(
+        _ events: [FarmEventSnapshot],
+        query: String,
+        category: FarmEventCategory?,
+        scope: FarmEventExportScope
+    ) -> [FarmEventSnapshot] {
+        let normalizedQuery = normalized(query)
+        return events.filter { event in
+            (category == nil || event.category == category) &&
+                scope.includes(event) &&
+                (normalizedQuery.isEmpty || event.searchableText.contains(normalizedQuery))
+        }
+    }
 }
 
 actor FarmEventHistoryActor {
@@ -69,8 +139,12 @@ actor FarmEventHistoryActor {
 
     func load(farmID: UUID) throws -> [FarmEventSnapshot] {
         let context = ModelContext(container)
-        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID }
-        let pens = try context.fetch(FetchDescriptor<PenRecord>()).filter { $0.farmID == farmID }
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
         let sheepByID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
         let sheepName = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0.earTag) })
         let penName = Dictionary(uniqueKeysWithValues: pens.map { ($0.id, $0.name) })
@@ -78,13 +152,17 @@ actor FarmEventHistoryActor {
         dateFormatter.locale = Locale(identifier: "en_US_POSIX")
         dateFormatter.calendar = Calendar(identifier: .gregorian)
         dateFormatter.dateFormat = "yyyy-MM-dd"
-        let lotName = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<InventoryLotRecord>())
-            .filter { $0.farmID == farmID }
+        let lotName = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<InventoryLotRecord>(predicate: #Predicate {
+                $0.farmID == farmID
+            }))
             .map { ($0.id, $0.catalogName + ($0.batchNumber.isEmpty ? "" : " · " + $0.batchNumber)) })
-        let semenName = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<SemenRecord>())
-            .filter { $0.farmID == farmID }
+        let semenName = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<SemenRecord>(predicate: #Predicate {
+                $0.farmID == farmID
+            }))
             .map { ($0.id, $0.code + ($0.batchNumber.isEmpty ? "" : " · " + $0.batchNumber)) })
-        let subjectLinks = try context.fetch(FetchDescriptor<HealthSubjectLink>()).filter { $0.farmID == farmID }
+        let subjectLinks = try context.fetch(FetchDescriptor<HealthSubjectLink>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
         let subjectIDsByHealthID = Dictionary(grouping: subjectLinks, by: \.healthRecordID)
             .mapValues { $0.map(\.sheepID) }
 
@@ -113,9 +191,11 @@ actor FarmEventHistoryActor {
             )
         })
 
-        let weights = try context.fetch(FetchDescriptor<WeightRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let weights = try context.fetch(FetchDescriptor<WeightRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
         events.append(contentsOf: weights.map { record in
-            FarmEventSnapshot(
+            return FarmEventSnapshot(
                 id: record.id, entityType: .weight, category: .herd,
                 occurredAt: record.occurredAt, recordedAt: record.recordedAt,
                 title: "称重", subject: sheepName[record.sheepID] ?? "未知羊只",
@@ -124,7 +204,9 @@ actor FarmEventHistoryActor {
             )
         })
 
-        let weanings = try context.fetch(FetchDescriptor<WeaningRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let weanings = try context.fetch(FetchDescriptor<WeaningRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
         events.append(contentsOf: weanings.map { record in
             let child = sheepByID[record.sheepID]
             let birthAt = record.birthAt ?? child?.birthAt
@@ -158,7 +240,9 @@ actor FarmEventHistoryActor {
             )
         })
 
-        let transfers = try context.fetch(FetchDescriptor<TransferRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
         events.append(contentsOf: transfers.map { record in
             let from = record.fromPenID.flatMap { penName[$0] } ?? "未分圈"
             let to = record.toPenID.flatMap { penName[$0] } ?? "未分圈"
@@ -171,24 +255,41 @@ actor FarmEventHistoryActor {
             )
         })
 
-        let removals = try context.fetch(FetchDescriptor<RemovalRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let removals = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let removalBatchCounts = Dictionary(grouping: removals.compactMap { record in
+            record.removalBatchID.map { ($0, record.id) }
+        }, by: \.0).mapValues(\.count)
         events.append(contentsOf: removals.map { record in
-            FarmEventSnapshot(
+            var fields = [
+                FarmEventField(label: "类型", value: record.kind.displayName),
+                FarmEventField(label: "原因", value: record.reason)
+            ]
+            if let batchID = record.removalBatchID {
+                fields.append(.init(label: "同批离场数量", value: "\(removalBatchCounts[batchID] ?? 1) 只"))
+                if record.kind == .sold {
+                    fields.append(.init(label: "同批总售卖金额", value: record.batchTotalAmountText ?? "未填写"))
+                }
+            } else {
+                fields.append(.init(label: "售卖金额", value: record.amountText ?? "未填写"))
+            }
+            return FarmEventSnapshot(
                 id: record.id, entityType: .removal, category: .herd,
                 occurredAt: record.occurredAt, recordedAt: record.recordedAt,
                 title: record.kind.displayName, subject: sheepName[record.sheepID] ?? "未知羊只",
                 detail: record.reason, note: record.note,
-                fields: [
-                    .init(label: "类型", value: record.kind.displayName),
-                    .init(label: "原因", value: record.reason),
-                    .init(label: "金额", value: record.amountText ?? "未填写")
-                ]
+                fields: fields
             )
         })
 
-        let feedLines = try context.fetch(FetchDescriptor<FeedRecordLine>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let feedLines = try context.fetch(FetchDescriptor<FeedRecordLine>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
         let feedLinesByRecordID = Dictionary(grouping: feedLines, by: \.feedRecordID)
-        let feeds = try context.fetch(FetchDescriptor<FeedRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let feeds = try context.fetch(FetchDescriptor<FeedRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
         events.append(contentsOf: feeds.map { record in
             let location = penName[record.penID] ?? "未知圈舍"
             let meal = record.mealName.isEmpty ? record.mode.displayName : record.mealName
@@ -215,7 +316,9 @@ actor FarmEventHistoryActor {
             )
         })
 
-        let health = try context.fetch(FetchDescriptor<HealthRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let health = try context.fetch(FetchDescriptor<HealthRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
         events.append(contentsOf: health.map { record in
             let linkedNames = (subjectIDsByHealthID[record.id] ?? []).compactMap { sheepName[$0] }
             let subject: String
@@ -242,7 +345,9 @@ actor FarmEventHistoryActor {
             )
         })
 
-        let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
         events.append(contentsOf: reproduction.map { record in
             var detail = record.result
             if record.kind == .lambing { detail = "产羔 \(record.lambCount) 只" }
@@ -265,7 +370,9 @@ actor FarmEventHistoryActor {
             )
         })
 
-        let notes = try context.fetch(FetchDescriptor<NoteRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let notes = try context.fetch(FetchDescriptor<NoteRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
         events.append(contentsOf: notes.map { record in
             let target = record.sheepID.flatMap { sheepName[$0] } ?? record.penID.flatMap { penName[$0] } ?? "未关联对象"
             return FarmEventSnapshot(
@@ -276,8 +383,10 @@ actor FarmEventHistoryActor {
             )
         })
 
-        let inventoryTransactions = try context.fetch(FetchDescriptor<InventoryTransactionRecord>()).filter {
-            $0.farmID == farmID && $0.deletedAt == nil && $0.kind != .consumption && !$0.note.hasPrefix("删除健康记录反向恢复库存：")
+        let inventoryTransactions = try context.fetch(FetchDescriptor<InventoryTransactionRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        })).filter {
+            $0.kind != .consumption && !$0.note.hasPrefix("删除健康记录反向恢复库存：")
         }
         events.append(contentsOf: inventoryTransactions.map { record in
             let kind = record.kind == .receipt ? "药品疫苗入库" : "药品疫苗盘点"
@@ -290,8 +399,10 @@ actor FarmEventHistoryActor {
             )
         })
 
-        let semenTransactions = try context.fetch(FetchDescriptor<SemenTransactionRecord>()).filter {
-            $0.farmID == farmID && $0.deletedAt == nil && $0.kind != .consumption && !$0.note.hasPrefix("撤销繁殖记录反向恢复冻精：")
+        let semenTransactions = try context.fetch(FetchDescriptor<SemenTransactionRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        })).filter {
+            $0.kind != .consumption && !$0.note.hasPrefix("撤销繁殖记录反向恢复冻精：")
         }
         events.append(contentsOf: semenTransactions.map { record in
             let kind = record.kind == .receipt ? "冻精入库" : "冻精盘点"
@@ -330,6 +441,7 @@ struct FarmEventHistoryView: View {
     @State private var category: FarmEventCategory?
     @State private var recordScope = FarmEventExportScope.all
     @State private var query = ""
+    @State private var pendingEditor: FarmEventEditDestination?
     @State private var pendingDeletion: FarmEventSnapshot?
     @State private var isPresentingExport = false
     @State private var isLoading = true
@@ -343,53 +455,68 @@ struct FarmEventHistoryView: View {
         CapabilitySet(role: farm.role).allows(.exportFarm)
     }
 
+    private func canEdit(_ event: FarmEventSnapshot) -> Bool {
+        guard let capability = event.editCapability else { return false }
+        return CapabilitySet(role: farm.role).allows(capability)
+    }
+
     private var visibleEvents: [FarmEventSnapshot] {
-        events.filter { event in
-            (category == nil || event.category == category) &&
-                recordScope.includes(event) &&
-                (query.isEmpty || event.searchableText.contains(query.localizedLowercase))
-        }
+        FarmEventSearch.filter(events, query: query, category: category, scope: recordScope)
+    }
+
+    private var hasActiveSearchOrFilter: Bool {
+        !FarmEventSearch.normalized(query).isEmpty || category != nil || recordScope != .all
     }
 
     var body: some View {
         List {
             if isLoading && events.isEmpty {
-                HStack { Spacer(); ProgressView("正在整理事件记录"); Spacer() }
+                ProgressView("正在整理事件记录")
+                    .frame(maxWidth: .infinity, minHeight: 360)
+                    .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
             } else if visibleEvents.isEmpty {
                 ContentUnavailableView(
-                    query.isEmpty && category == nil && recordScope == .all ? "暂无事件记录" : "没有匹配的事件",
+                    hasActiveSearchOrFilter ? "没有匹配的事件" : "暂无事件记录",
                     systemImage: "clock.arrow.circlepath",
                     description: Text("生产录入完成后会按发生时间倒序显示在这里。")
                 )
+                .frame(maxWidth: .infinity, minHeight: 360)
+                .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
             } else {
-                ForEach(visibleEvents) { event in
-                    NavigationLink {
-                        FarmEventDetailView(event: event, farmName: farm.name, canExport: canExport)
-                    } label: {
-                        FarmEventRow(event: event)
-                    }
-                    .listRowInsets(.init(top: 7, leading: 16, bottom: 7, trailing: 16))
+                ForEach(visibleEvents, id: \.rowIdentity) { event in
+                    FarmEventHistoryRowLink(
+                        event: event,
+                        farmName: farm.name,
+                        canExport: canExport,
+                        canEdit: canEdit(event),
+                        canDelete: canDelete,
+                        requestEditing: { beginEditing(event) },
+                        requestDeletion: { pendingDeletion = event }
+                    )
+                    .listRowInsets(.init(top: 7, leading: 16, bottom: 7, trailing: 12))
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if canDelete {
                             Button("删除", systemImage: "trash", role: .destructive) {
                                 pendingDeletion = event
                             }
                         }
-                    }
-                    .contextMenu {
-                        if canDelete {
-                            Button("删除事件", systemImage: "trash", role: .destructive) {
-                                pendingDeletion = event
+                        if canEdit(event) {
+                            Button("编辑", systemImage: "pencil") {
+                                beginEditing(event)
                             }
+                            .tint(AppTheme.brand)
                         }
                     }
                 }
             }
         }
         .navigationTitle("事件记录")
-        .searchable(text: $query, prompt: "搜索耳号、圈舍、项目或备注")
+        .searchable(
+            text: $query,
+            prompt: "搜索耳号、圈舍、项目或备注"
+        )
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -441,8 +568,16 @@ struct FarmEventHistoryView: View {
         }
         .task(id: farm.id) { await reload() }
         .refreshable { await reload() }
-        .sheet(item: $pendingDeletion, onDismiss: { Task { await reload() } }) { event in
-            FarmEventDeletionSheet(account: account, farm: farm, event: event)
+        .sheet(item: $pendingEditor, onDismiss: {
+            Task { await reload(showsProgress: false) }
+        }) { destination in
+            FarmEventEditSheet(account: account, farm: farm, destination: destination)
+        }
+        .sheet(item: $pendingDeletion) { event in
+            FarmEventDeletionSheet(account: account, farm: farm, event: event) {
+                events.removeAll { $0.id == event.id && $0.entityType == event.entityType }
+                Task { await reload(showsProgress: false) }
+            }
                 .presentationDetents([.medium])
         }
         .sheet(isPresented: $isPresentingExport) {
@@ -452,8 +587,9 @@ struct FarmEventHistoryView: View {
     }
 
     @MainActor
-    private func reload() async {
-        isLoading = true
+    private func reload(showsProgress: Bool = true) async {
+        if showsProgress { isLoading = true }
+        defer { isLoading = false }
         do {
             events = try await FarmEventHistoryActor(container: modelContext.container).load(farmID: farm.id)
         } catch is CancellationError {
@@ -461,7 +597,83 @@ struct FarmEventHistoryView: View {
         } catch {
             errorMessage = "读取事件记录失败：\(error.localizedDescription)"
         }
-        isLoading = false
+    }
+
+    @MainActor
+    private func beginEditing(_ event: FarmEventSnapshot) {
+        let entityID = event.id
+        let farmID = farm.id
+        do {
+            switch event.entityType {
+            case .sheep:
+                guard let record = try modelContext.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                    $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
+                })).first else { throw FarmEventEditError.recordUnavailable }
+                pendingEditor = .sheep(record)
+            case .weight:
+                guard let record = try modelContext.fetch(FetchDescriptor<WeightRecord>(predicate: #Predicate {
+                    $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
+                })).first else { throw FarmEventEditError.recordUnavailable }
+                pendingEditor = .weight(record)
+            case .transfer:
+                guard let record = try modelContext.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+                    $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
+                })).first else { throw FarmEventEditError.recordUnavailable }
+                pendingEditor = .transfer(record)
+            case .removal:
+                guard let record = try modelContext.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+                    $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
+                })).first else { throw FarmEventEditError.recordUnavailable }
+                pendingEditor = .removal(record)
+            case .health:
+                guard let record = try modelContext.fetch(FetchDescriptor<HealthRecord>(predicate: #Predicate {
+                    $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
+                })).first else { throw FarmEventEditError.recordUnavailable }
+                pendingEditor = .health(record)
+            case .reproduction:
+                guard let record = try modelContext.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
+                    $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
+                })).first else { throw FarmEventEditError.recordUnavailable }
+                pendingEditor = .reproduction(record)
+            default:
+                throw FarmEventEditError.unsupported
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct FarmEventHistoryRowLink: View {
+    let event: FarmEventSnapshot
+    let farmName: String
+    let canExport: Bool
+    let canEdit: Bool
+    let canDelete: Bool
+    let requestEditing: () -> Void
+    let requestDeletion: () -> Void
+
+    var body: some View {
+        NavigationLink {
+            FarmEventDetailView(
+                event: event,
+                farmName: farmName,
+                canExport: canExport,
+                canEdit: canEdit,
+                requestEditing: requestEditing
+            )
+        } label: {
+            FarmEventRow(event: event)
+                .contentShape(.rect)
+        }
+        .contextMenu {
+            if canEdit {
+                Button("编辑事件", systemImage: "pencil", action: requestEditing)
+            }
+            if canDelete {
+                Button("删除事件", systemImage: "trash", role: .destructive, action: requestDeletion)
+            }
+        }
     }
 }
 
@@ -497,6 +709,8 @@ private struct FarmEventDetailView: View {
     let event: FarmEventSnapshot
     let farmName: String
     let canExport: Bool
+    let canEdit: Bool
+    let requestEditing: () -> Void
 
     @State private var document: FarmEventCSVExportDocument?
     @State private var isExporting = false
@@ -528,6 +742,11 @@ private struct FarmEventDetailView: View {
         .navigationTitle("事件详情")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            if canEdit {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("编辑", systemImage: "pencil", action: requestEditing)
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("导出", systemImage: "square.and.arrow.up", action: prepareExport)
                     .disabled(!canExport)
@@ -566,6 +785,75 @@ private struct FarmEventDetailView: View {
     }
 }
 
+private enum FarmEventEditDestination: Identifiable {
+    case sheep(SheepRecord)
+    case weight(WeightRecord)
+    case transfer(TransferRecord)
+    case removal(RemovalRecord)
+    case health(HealthRecord)
+    case reproduction(ReproductionRecord)
+
+    var id: FarmEventRowIdentity {
+        switch self {
+        case .sheep(let record):
+            FarmEventRowIdentity(entityType: CloudEntityType.sheep.rawValue, entityID: record.id)
+        case .weight(let record):
+            FarmEventRowIdentity(entityType: CloudEntityType.weight.rawValue, entityID: record.id)
+        case .transfer(let record):
+            FarmEventRowIdentity(entityType: CloudEntityType.transfer.rawValue, entityID: record.id)
+        case .removal(let record):
+            FarmEventRowIdentity(entityType: CloudEntityType.removal.rawValue, entityID: record.id)
+        case .health(let record):
+            FarmEventRowIdentity(entityType: CloudEntityType.health.rawValue, entityID: record.id)
+        case .reproduction(let record):
+            FarmEventRowIdentity(entityType: CloudEntityType.reproduction.rawValue, entityID: record.id)
+        }
+    }
+}
+
+private enum FarmEventEditError: LocalizedError {
+    case recordUnavailable
+    case unsupported
+
+    var errorDescription: String? {
+        switch self {
+        case .recordUnavailable:
+            "这条事件已被修正、删除或同步更新，请刷新后重试。"
+        case .unsupported:
+            "这类事件是账本或派生事实，不能直接改写；请从对应业务入口执行修正。"
+        }
+    }
+}
+
+private struct FarmEventEditSheet: View {
+    let account: AccountProfile
+    let farm: FarmRecord
+    let destination: FarmEventEditDestination
+
+    var body: some View {
+        NavigationStack {
+            switch destination {
+            case .sheep(let record):
+                EditSheepProfileView(account: account, farm: farm, sheep: record)
+            case .weight(let record):
+                CorrectWeightView(account: account, farm: farm, record: record)
+            case .transfer(let record):
+                CorrectTransferView(account: account, farm: farm, record: record)
+            case .removal(let record):
+                CorrectRemovalView(account: account, farm: farm, record: record)
+            case .health(let record):
+                HealthCorrectionView(account: account, farm: farm, record: record)
+            case .reproduction(let record):
+                if record.kind == .lambing {
+                    LambingCorrectionView(account: account, farm: farm, record: record)
+                } else {
+                    ReproductionCorrectionView(account: account, farm: farm, record: record)
+                }
+            }
+        }
+    }
+}
+
 private struct FarmEventDeletionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -573,6 +861,7 @@ private struct FarmEventDeletionSheet: View {
     let account: AccountProfile
     let farm: FarmRecord
     let event: FarmEventSnapshot
+    let onDeleted: () -> Void
 
     @State private var reason = "录入错误"
     @State private var isDeleting = false
@@ -610,22 +899,30 @@ private struct FarmEventDeletionSheet: View {
         }
     }
 
+    @MainActor
     private func delete() {
+        guard !isDeleting else { return }
         isDeleting = true
-        defer { isDeleting = false }
-        do {
-            try FarmCommandService().execute(
-                .tombstoneEntity(
-                    entityType: event.entityType,
-                    entityID: event.id,
-                    reason: "事件记录删除：" + reason.trimmingCharacters(in: .whitespacesAndNewlines)
-                ),
-                in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
-                context: modelContext
-            )
-            dismiss()
-        } catch {
-            errorMessage = error.localizedDescription
+        Task { @MainActor in
+            // Let SwiftUI render the progress state before entering the
+            // authoritative synchronous write pipeline.
+            await Task.yield()
+            do {
+                try FarmCommandService().execute(
+                    .tombstoneEntity(
+                        entityType: event.entityType,
+                        entityID: event.id,
+                        reason: "事件记录删除：" + reason.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ),
+                    in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
+                    context: modelContext
+                )
+                onDeleted()
+                dismiss()
+            } catch {
+                isDeleting = false
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

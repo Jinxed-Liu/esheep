@@ -204,7 +204,7 @@ struct MigrationCommitService {
             copy.recordedAt = value.recordedAt; copy.revision = value.revision; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(RemovalRecord.self, farmID: farmID, source: source) {
-            let copy = RemovalRecord(id: value.id, farmID: farmID, sheepID: value.sheepID, kind: value.kind, reason: value.reason, amountText: value.amountText, occurredAt: value.occurredAt, note: value.note)
+            let copy = RemovalRecord(id: value.id, farmID: farmID, sheepID: value.sheepID, kind: value.kind, reason: value.reason, amountText: value.amountText, removalBatchID: value.removalBatchID, batchTotalAmountText: value.batchTotalAmountText, occurredAt: value.occurredAt, note: value.note)
             copy.recordedAt = value.recordedAt; copy.revision = value.revision; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(ProductionBatchRecord.self, farmID: farmID, source: source) {

@@ -24,6 +24,7 @@ enum CloudRecordField {
     static let pixelWidth = "pixelWidth"
     static let pixelHeight = "pixelHeight"
     static let capturedAt = "capturedAt"
+    static let assetSignatureVersion = "assetSignatureVersion"
     static let generation = "generation"
     static let issuedAt = "issuedAt"
     static let signature = "signature"
@@ -31,6 +32,8 @@ enum CloudRecordField {
     static let bootstrapDigest = "bootstrapDigest"
     static let bootstrapEntityCount = "bootstrapEntityCount"
     static let bootstrapPhotoCount = "bootstrapPhotoCount"
+    static let bootstrapVersion = "bootstrapVersion"
+    static let bootstrapCutoffAt = "bootstrapCutoffAt"
 }
 
 struct CloudRecordMapper: Sendable {
@@ -51,8 +54,36 @@ struct CloudRecordMapper: Sendable {
         return record(from: envelope, recordType: .farmEntity, recordID: recordID)
     }
 
+    /// FarmEntity is a mutable latest-state projection. CloudKit requires an
+    /// existing record's system fields (especially its change tag) for an
+    /// optimistic update, so reuse the fetched server object only after its
+    /// operation lineage has been verified as an ancestor of this operation.
+    /// Returning a fresh record for an incompatible server value deliberately
+    /// lets CloudKit report a conflict instead of overwriting another device.
+    func entityRecord(
+        from envelope: CloudOperationEnvelope,
+        zoneID: CKRecordZone.ID,
+        existingRecord: CKRecord?,
+        existingRecordIsVerifiedAncestor: Bool = false
+    ) -> CKRecord {
+        let recordID = CKRecord.ID(recordName: entityRecordName(for: envelope.entityID), zoneID: zoneID)
+        guard let existingRecord,
+              CloudEntityProjectionPolicy.canApply(
+                envelope: envelope,
+                to: existingRecord,
+                ancestorIsVerified: existingRecordIsVerifiedAncestor
+              ) else {
+            return record(from: envelope, recordType: .farmEntity, recordID: recordID)
+        }
+        return apply(envelope, to: existingRecord)
+    }
+
     private func record(from envelope: CloudOperationEnvelope, recordType: CloudRecordType, recordID: CKRecord.ID) -> CKRecord {
         let record = CKRecord(recordType: recordType.rawValue, recordID: recordID)
+        return apply(envelope, to: record)
+    }
+
+    private func apply(_ envelope: CloudOperationEnvelope, to record: CKRecord) -> CKRecord {
         record[CloudRecordField.farmID] = envelope.farmID.uuidString.lowercased() as CKRecordValue
         record[CloudRecordField.entityID] = envelope.entityID.uuidString.lowercased() as CKRecordValue
         record[CloudRecordField.entityType] = envelope.entityType as CKRecordValue
@@ -69,6 +100,10 @@ struct CloudRecordMapper: Sendable {
         record[CloudRecordField.operationSignature] = envelope.operationSignature as CKRecordValue
         if let deletedAt = envelope.deletedAt {
             record[CloudRecordField.deletedAt] = deletedAt as CKRecordValue
+        } else {
+            // A restore operation must clear a tombstone left on the mutable
+            // projection rather than inheriting it from the fetched record.
+            record[CloudRecordField.deletedAt] = nil
         }
         return record
     }
@@ -139,14 +174,58 @@ struct CloudRecordMapper: Sendable {
         record[CloudRecordField.modifiedByDeviceID] = envelope.modifiedByDeviceID.uuidString.lowercased() as CKRecordValue
         record[CloudRecordField.capabilityCertificate] = envelope.capabilityCertificate as CKRecordValue
         record[CloudRecordField.signature] = envelope.signature as CKRecordValue
+        record[CloudRecordField.assetSignatureVersion] = 2 as CKRecordValue
         if let capturedAt = envelope.capturedAt { record[CloudRecordField.capturedAt] = capturedAt as CKRecordValue }
         record[CloudRecordField.asset] = CKAsset(fileURL: fileURL)
         return record
     }
 
-    func membershipSnapshotRecord(record: FarmMembershipSnapshotRecord, zoneID: CKRecordZone.ID) -> CKRecord {
+    /// A missing marker is the only implicit legacy form. Any explicit value
+    /// must be one of the protocol versions we understand; malformed strings,
+    /// booleans, fractions, and future versions fail closed.
+    func assetSignatureVersion(from record: CKRecord) throws -> Int? {
+        guard let rawValue = record[CloudRecordField.assetSignatureVersion] else {
+            return nil
+        }
+        guard !(rawValue is Bool),
+              let version = rawValue as? Int,
+              version == FarmAssetSignatureFormat.legacyV1.rawValue ||
+                version == FarmAssetSignatureFormat.v2.rawValue else {
+            throw CloudContractError.invalidDeviceSignature
+        }
+        return version
+    }
+
+    func assetAuthorizationDate(from record: CKRecord) throws -> Date {
+        try Self.assetAuthorizationDate(
+            modificationDate: record.modificationDate,
+            creationDate: record.creationDate
+        )
+    }
+
+    static func assetAuthorizationDate(
+        modificationDate: Date?,
+        creationDate: Date?
+    ) throws -> Date {
+        guard let value = modificationDate ?? creationDate else {
+            throw CloudContractError.capabilityDenied
+        }
+        return value
+    }
+
+    func membershipSnapshotRecord(
+        record: FarmMembershipSnapshotRecord,
+        zoneID: CKRecordZone.ID,
+        existingRecord: CKRecord? = nil
+    ) -> CKRecord {
         let recordID = CKRecord.ID(recordName: "membership_snapshot", zoneID: zoneID)
-        let cloud = CKRecord(recordType: CloudRecordType.farmMembershipSnapshot.rawValue, recordID: recordID)
+        let cloud: CKRecord
+        if let existingRecord, existingRecord.recordID == recordID,
+           existingRecord.recordType == CloudRecordType.farmMembershipSnapshot.rawValue {
+            cloud = existingRecord
+        } else {
+            cloud = CKRecord(recordType: CloudRecordType.farmMembershipSnapshot.rawValue, recordID: recordID)
+        }
         cloud[CloudRecordField.farmID] = record.farmID.uuidString.lowercased() as CKRecordValue
         cloud[CloudRecordField.generation] = record.generation as CKRecordValue
         cloud[CloudRecordField.issuedAt] = record.issuedAt as CKRecordValue
@@ -236,5 +315,164 @@ struct CloudRecordMapper: Sendable {
         if let value = value as? Int { return value }
         if let value = value as? NSNumber { return value.intValue }
         return nil
+    }
+}
+
+enum CloudEntityProjectionPolicy {
+    static func canApply(
+        envelope: CloudOperationEnvelope,
+        to server: CKRecord,
+        ancestorIsVerified: Bool = false
+    ) -> Bool {
+        guard matchesProjection(
+            record: server,
+            recordID: CKRecord.ID(
+                recordName: "entity_\(envelope.entityID.uuidString.lowercased())",
+                zoneID: server.recordID.zoneID
+            ),
+            farmID: envelope.farmID.uuidString.lowercased(),
+            entityID: envelope.entityID.uuidString.lowercased(),
+            entityType: envelope.entityType
+        ), let serverRevision = integer(server[CloudRecordField.revision]) else {
+            return false
+        }
+
+        if serverRevision == envelope.revision &&
+            server[CloudRecordField.operationID] as? String == envelope.operationID.uuidString.lowercased() &&
+            server[CloudRecordField.payloadDigest] as? String == envelope.payloadDigest {
+            return true
+        }
+
+        return ancestorIsVerified && serverRevision <= envelope.baseRevision
+    }
+
+    /// Revision equality is necessary but not sufficient for retry. The caller
+    /// must also prove that the server operation belongs to the local immutable
+    /// lineage; the boolean keeps that authorization explicit at the call site.
+    static func canRetry(
+        client: CKRecord,
+        against server: CKRecord,
+        ancestorIsVerified: Bool = false
+    ) -> Bool {
+        guard let farmID = client[CloudRecordField.farmID] as? String,
+              let entityID = client[CloudRecordField.entityID] as? String,
+              let entityType = client[CloudRecordField.entityType] as? String,
+              matchesProjection(
+                record: server,
+                recordID: client.recordID,
+                farmID: farmID,
+                entityID: entityID,
+                entityType: entityType
+              ),
+              let baseRevision = integer(client[CloudRecordField.baseRevision]),
+              let serverRevision = integer(server[CloudRecordField.revision]) else {
+            return false
+        }
+        return ancestorIsVerified && serverRevision == baseRevision
+    }
+
+    static func revisions(client: CKRecord, server: CKRecord) -> (base: Int?, remote: Int?) {
+        (integer(client[CloudRecordField.baseRevision]), integer(server[CloudRecordField.revision]))
+    }
+
+    private static func matchesProjection(
+        record: CKRecord,
+        recordID: CKRecord.ID,
+        farmID: String,
+        entityID: String,
+        entityType: String
+    ) -> Bool {
+        record.recordType == CloudRecordType.farmEntity.rawValue &&
+            record.recordID == recordID &&
+            record[CloudRecordField.farmID] as? String == farmID &&
+            record[CloudRecordField.entityID] as? String == entityID &&
+            record[CloudRecordField.entityType] as? String == entityType
+    }
+
+    private static func integer(_ value: CKRecordValue?) -> Int? {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        return nil
+    }
+}
+
+/// Verifies that a mutable server projection belongs to the local immutable
+/// operation chain. This allows a later operation to repair a skipped
+/// intermediate projection without treating a different device's branch as
+/// its own base revision.
+enum CloudEntityProjectionLineage {
+    static func isVerifiedAncestor(
+        server: CKRecord,
+        candidate: DomainOperation,
+        history: [DomainOperation],
+        confirmedOperationRecordNames: Set<String>,
+        mapper: CloudRecordMapper = CloudRecordMapper()
+    ) -> Bool {
+        guard let entityID = candidate.entityID,
+              server.recordType == CloudRecordType.farmEntity.rawValue,
+              server.recordID.recordName == mapper.entityRecordName(for: entityID),
+              server[CloudRecordField.farmID] as? String == candidate.farmID.uuidString.lowercased(),
+              server[CloudRecordField.entityID] as? String == entityID.uuidString.lowercased(),
+              server[CloudRecordField.entityType] as? String == candidate.entityType,
+              let serverRevision = integer(server[CloudRecordField.revision]),
+              let serverOperationIDText = server[CloudRecordField.operationID] as? String,
+              let serverOperationID = UUID(uuidString: serverOperationIDText),
+              let serverPayloadDigest = server[CloudRecordField.payloadDigest] as? String else {
+            return false
+        }
+
+        if serverRevision == candidate.resultingRevision {
+            return serverOperationID == candidate.id && serverPayloadDigest == candidate.payloadDigest
+        }
+        guard serverRevision <= candidate.baseRevision else { return false }
+
+        let entityHistory = history.filter {
+            $0.farmID == candidate.farmID &&
+            $0.entityID == entityID &&
+            $0.entityType == candidate.entityType
+        }
+        guard let serverOperation = entityHistory.first(where: {
+            $0.resultingRevision == serverRevision &&
+            $0.id == serverOperationID &&
+            $0.payloadDigest == serverPayloadDigest
+        }) else {
+            return false
+        }
+
+        var previousRevision = serverOperation.resultingRevision
+        guard previousRevision == serverRevision else { return false }
+        if previousRevision == candidate.baseRevision { return true }
+
+        for revision in (serverRevision + 1)...candidate.baseRevision {
+            let bridges = entityHistory.filter {
+                $0.baseRevision == previousRevision && $0.resultingRevision == revision
+            }
+            guard bridges.count == 1, let bridge = bridges.first,
+                  confirmedOperationRecordNames.contains(mapper.recordName(for: bridge.id)) else {
+                return false
+            }
+            previousRevision = bridge.resultingRevision
+        }
+        return previousRevision == candidate.baseRevision
+    }
+
+    private static func integer(_ value: CKRecordValue?) -> Int? {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        return nil
+    }
+}
+
+enum CloudBlockedConflictRecovery {
+    static func isEligible(_ message: String?) -> Bool {
+        guard let message else { return true }
+        if message.contains("record to insert already exists") { return true }
+        if message.hasPrefix("云端实体版本") {
+            let revisions = message
+                .split(whereSeparator: { !$0.isNumber })
+                .compactMap { Int($0) }
+            return revisions.count >= 2 && revisions[0] < revisions[1]
+        }
+        return !message.hasPrefix("云端已有不同内容")
     }
 }

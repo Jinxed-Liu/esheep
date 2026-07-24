@@ -4,6 +4,39 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+struct MigrationUploadCardSnapshot: Equatable {
+    let cloudState: MigrationCloudState
+    let baselineEntityCount: Int
+    let confirmedBaselineCount: Int
+    let baselinePhotoCount: Int
+    let confirmedOperationCount: Int
+    let pendingCount: Int
+    let uploadingCount: Int
+    let blockedCount: Int
+    let rejectedCount: Int
+    let activePhotoCount: Int
+    let cloudPhotoAssetCount: Int
+    let retainedHistoricalPhotoAssetCount: Int
+
+    var isComplete: Bool { cloudState == .synced }
+
+    var progressCompletedCount: Int {
+        min(max(confirmedBaselineCount, 0), max(baselineEntityCount, 0))
+    }
+
+    var currentOutstandingCount: Int {
+        max(pendingCount, 0) + max(uploadingCount, 0)
+    }
+
+    var currentBlockedCount: Int {
+        max(blockedCount, 0) + max(rejectedCount, 0)
+    }
+
+    var confirmedAfterBaselineCount: Int {
+        max(confirmedOperationCount - confirmedBaselineCount, 0)
+    }
+}
+
 struct CloudCollaborationCenterView: View {
     @Environment(CloudCollaborationStore.self) private var collaboration
     @Environment(AppSession.self) private var session
@@ -38,6 +71,11 @@ struct CloudCollaborationCenterView: View {
     @State private var rejectedOutboxCount = 0
     @State private var blockedOutboxCount = 0
     @State private var confirmedBaselineCount = 0
+    @State private var confirmedOutboxCount = 0
+    @State private var activePhotoCount = 0
+    @State private var cloudPhotoAssetCount = 0
+    @State private var retainedHistoricalPhotoAssetCount = 0
+    @State private var hasLoadedUploadMetrics = false
 
     private var binding: CloudFarmBinding? { cloudBindings.first(where: { $0.farmID == farm.id }) }
     private var farmMemberships: [FarmMembershipBinding] { memberships.filter { $0.farmID == farm.id } }
@@ -89,28 +127,28 @@ struct CloudCollaborationCenterView: View {
 
     var body: some View {
         List {
-            if let migrationCommit {
-                migrationUploadSection(migrationCommit)
-            }
-
-            identitySection
-            cloudStatusSection
-            syncSection
             if farm.role == .owner { ownerCollaborationSection }
-            if MemberSharingConfiguration.isEnabled && farm.role != .owner {
-                joinSection
+            memberSection
+            if let error = collaboration.lastErrorMessage {
+                Section("需要处理") {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                    Button("重试") {
+                        Task {
+                            await collaboration.synchronizeNow()
+                            await refreshStatus()
+                        }
+                    }
+                    .disabled(collaboration.isSynchronizing)
+                }
             }
-            if MemberSharingConfiguration.isEnabled {
-                memberSection
-            }
-            safetySection
-            if farm.role == .owner { recoverySection }
-            accountSection
+            if farm.role != .owner { accountSection }
         }
         .refreshable {
             await refreshStatus()
         }
-        .navigationTitle("云端协作")
+        .navigationTitle("成员与共享")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await refreshStatus()
@@ -133,12 +171,6 @@ struct CloudCollaborationCenterView: View {
             Button("完成", role: .cancel) {}
         } message: {
             Text(successMessage ?? "")
-        }
-        .confirmationDialog("确认删除账户", isPresented: $deletionConfirmation, titleVisibility: .visible) {
-            Button("删除账户", role: .destructive) { deleteAccount() }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("存在自有云端牧场时，身份服务会拒绝删除。删除成功后本机身份令牌会被清除。")
         }
     }
 
@@ -165,14 +197,29 @@ struct CloudCollaborationCenterView: View {
     }
 
     private func migrationUploadSection(_ commit: MigrationCommitRecord) -> some View {
-        Section {
+        let snapshot = MigrationUploadCardSnapshot(
+            cloudState: commit.cloudState,
+            baselineEntityCount: commit.baselineEntityCount,
+            confirmedBaselineCount: confirmedBaselineCount,
+            baselinePhotoCount: commit.baselinePhotoCount,
+            confirmedOperationCount: confirmedOutboxCount,
+            pendingCount: pendingOutboxCount,
+            uploadingCount: uploadingOutboxCount,
+            blockedCount: blockedOutboxCount,
+            rejectedCount: rejectedOutboxCount,
+            activePhotoCount: activePhotoCount,
+            cloudPhotoAssetCount: cloudPhotoAssetCount,
+            retainedHistoricalPhotoAssetCount: retainedHistoricalPhotoAssetCount
+        )
+
+        return Section {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 10) {
-                    Image(systemName: commit.cloudState == .synced ? "checkmark.icloud.fill" : "icloud.and.arrow.up")
+                    Image(systemName: snapshot.isComplete ? "checkmark.icloud.fill" : "icloud.and.arrow.up")
                         .font(.title2)
                         .foregroundStyle(commit.cloudState == .failed ? .red : AppTheme.brand)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("迁移数据上传")
+                        Text(snapshot.isComplete ? "迁移数据已上传" : "迁移数据上传")
                             .font(.headline)
                         Text(commit.cloudState.displayName)
                             .font(.subheadline)
@@ -181,17 +228,57 @@ struct CloudCollaborationCenterView: View {
                     Spacer(minLength: 0)
                 }
 
-                if commit.baselineEntityCount > 0 {
+                if !hasLoadedUploadMetrics {
+                    ProgressView("正在核对当前同步状态")
+                        .font(.footnote)
+                } else if snapshot.isComplete {
+                    Text("当前同步：待上传 \(snapshot.pendingCount.formatted()) · 处理中 \(snapshot.uploadingCount.formatted()) · 阻塞 \(snapshot.currentBlockedCount.formatted())")
+                        .font(.footnote)
+                        .foregroundStyle(snapshot.currentOutstandingCount == 0 && snapshot.currentBlockedCount == 0 ? Color.secondary : Color.orange)
+                    if snapshot.retainedHistoricalPhotoAssetCount > 0 {
+                        Text("有效照片 \(snapshot.activePhotoCount.formatted()) 张 · 云端资产 \(snapshot.cloudPhotoAssetCount.formatted()) 份（含 \(snapshot.retainedHistoricalPhotoAssetCount.formatted()) 份删除历史）")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("有效照片 \(snapshot.activePhotoCount.formatted()) 张 · 云端资产 \(snapshot.cloudPhotoAssetCount.formatted()) 份")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    DisclosureGroup("查看迁移技术明细") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            LabeledContent(
+                                "迁移基线写入",
+                                value: "\(snapshot.progressCompletedCount.formatted()) / \(snapshot.baselineEntityCount.formatted())"
+                            )
+                            LabeledContent("当前已确认写入", value: snapshot.confirmedOperationCount.formatted())
+                            LabeledContent("迁移时照片", value: "\(snapshot.baselinePhotoCount.formatted()) 张")
+                            if snapshot.confirmedAfterBaselineCount > 0 {
+                                LabeledContent("迁移基线外写入", value: snapshot.confirmedAfterBaselineCount.formatted())
+                            }
+                            if let syncedAt = commit.cloudSyncedAt {
+                                LabeledContent("完成时间", value: syncedAt.formatted(date: .abbreviated, time: .shortened))
+                            }
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    }
+                    .font(.footnote)
+                } else if commit.baselineEntityCount > 0 {
                     ProgressView(
-                        value: Double(min(confirmedBaselineCount, commit.baselineEntityCount)),
+                        value: Double(snapshot.progressCompletedCount),
                         total: Double(commit.baselineEntityCount)
                     )
-                    Text("基线已确认 \(confirmedBaselineCount.formatted()) / \(commit.baselineEntityCount.formatted()) · 阻塞 \(blockedOutboxCount.formatted()) · 照片 \(commit.baselinePhotoCount.formatted()) 张")
+                    Text("迁移基线已确认 \(snapshot.progressCompletedCount.formatted()) / \(commit.baselineEntityCount.formatted()) · 待上传 \(snapshot.pendingCount.formatted()) · 处理中 \(snapshot.uploadingCount.formatted()) · 阻塞 \(snapshot.currentBlockedCount.formatted())")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("待迁移照片 \(commit.baselinePhotoCount.formatted()) 张 · 已生成云端资产 \(snapshot.cloudPhotoAssetCount.formatted()) 份")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
 
-                if let error = commit.cloudLastError {
+                if commit.cloudState != .synced, let error = commit.cloudLastError {
                     Text(error)
                         .font(.footnote)
                         .foregroundStyle(.red)
@@ -201,7 +288,7 @@ struct CloudCollaborationCenterView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if commit.cloudState == .failed || commit.cloudLastError != nil {
+                if commit.cloudState != .synced && (commit.cloudState == .failed || commit.cloudLastError != nil) {
                     Button("继续上传") {
                         Task { await collaboration.resumeAutomaticMigrationUploads(accountID: account.effectiveAccountID) }
                     }
@@ -259,52 +346,49 @@ struct CloudCollaborationCenterView: View {
     }
 
     private var ownerCollaborationSection: some View {
-        Section("场主协作") {
+        Section("邀请成员") {
             if !canPrepareCloud && binding?.state != .active {
-                Label("当前牧场不能启用云协作", systemImage: "lock.fill")
-                    .foregroundStyle(.secondary)
-                Text(cloudAdmissionDescription)
+                Text("当前牧场还不能邀请成员，请稍后重试。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else if binding?.state != .active {
                 Button { prepareCloudFarm() } label: {
-                    Label("继续准备云端牧场", systemImage: "icloud.and.arrow.up")
+                    Label("开启成员共享", systemImage: "person.2.badge.plus")
                 }
-                .disabled(isWorking || account.serverBindingState != .verified)
+                .disabled(isWorking)
             } else {
-                if MemberSharingConfiguration.isEnabled && isSyncedFormalFarm {
-                    Button { presentShare() } label: {
-                        Label("打开系统共享", systemImage: "person.2.badge.plus")
+                if isSyncedFormalFarm {
+                    Picker("成员角色", selection: $inviteRole) {
+                        Text("管理员").tag(FarmRole.administrator)
+                        Text("员工").tag(FarmRole.worker)
+                    }
+
+                    Button("发送共享邀请") {
+                        createInvite()
                     }
                     .disabled(isWorking)
-                } else if MemberSharingConfiguration.isEnabled {
-                    Label("正式牧场基线核对完成后可邀请成员", systemImage: "clock.badge.checkmark")
-                        .foregroundStyle(.secondary)
                 } else {
-                    Label("场主双设备同步已启用", systemImage: "iphone.gen2.radiowaves.left.and.right")
+                    Label("正在准备成员共享，完成后即可发送邀请", systemImage: "clock")
                         .foregroundStyle(.secondary)
                 }
             }
 
-            if isSyncedFormalFarm && MemberSharingConfiguration.isEnabled {
-                Picker("邀请角色", selection: $inviteRole) {
-                    Text("管理员").tag(FarmRole.administrator)
-                    Text("员工").tag(FarmRole.worker)
-                }
-                Button("生成一次性邀请码") { createInvite() }
-                    .disabled(isWorking || binding?.state != .active)
-
-                if let generatedInvite {
-                    LabeledContent("邀请码", value: generatedInvite.code)
-                        .fontDesign(.monospaced)
-                        .textSelection(.enabled)
-                    LabeledContent("有效期至", value: Date(timeIntervalSince1970: TimeInterval(generatedInvite.expiresAt)).formatted(date: .abbreviated, time: .shortened))
-                    Text("必须同时向同一成员定向发送系统 CKShare 链接。邀请码本身不包含共享链接。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Button("确认已接受共享的成员") { confirmLatestInvite() }
-                        .disabled(isWorking)
-                }
+            if let generatedInvite {
+                LabeledContent("邀请码", value: generatedInvite.code)
+                    .fontDesign(.monospaced)
+                    .textSelection(.enabled)
+                LabeledContent(
+                    "有效期至",
+                    value: Date(timeIntervalSince1970: TimeInterval(generatedInvite.expiresAt))
+                        .formatted(date: .abbreviated, time: .shortened)
+                )
+                Text("将共享邀请和邀请码发给同一位成员。成员完成申请后，回到这里确认加入。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button("重新打开共享邀请") { presentShare() }
+                    .disabled(isWorking)
+                Button("确认成员已加入") { confirmLatestInvite() }
+                    .disabled(isWorking)
             }
         }
     }
@@ -328,17 +412,16 @@ struct CloudCollaborationCenterView: View {
     }
 
     private var memberSection: some View {
-        Section("成员与证书") {
+        Section("牧场成员") {
             if farmMemberships.isEmpty {
-                ContentUnavailableView("尚无成员快照", systemImage: "person.2", description: Text("身份服务连接后下拉刷新。"))
+                Text("暂无可显示的成员")
+                    .foregroundStyle(.secondary)
             } else {
                 ForEach(farmMemberships, id: \.id) { member in
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(member.displayName ?? member.role.displayName).font(.headline)
+                            Text(member.displayName ?? "牧场成员").font(.headline)
                             Text(member.role.displayName).font(.subheadline).foregroundStyle(.secondary)
-                            Text(member.accountID.uuidString.lowercased()).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
-                            Text(member.statusRawValue).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         if farm.role == .owner && member.role != .owner {
@@ -355,20 +438,8 @@ struct CloudCollaborationCenterView: View {
                     }
                 }
             }
-            if let certificate = farmCertificates.first(where: \.isUsable) {
-                LabeledContent("当前证书", value: certificate.roleRawValue)
-                LabeledContent("剩余有效期", value: certificate.expiresAt.formatted(.relative(presentation: .numeric)))
-            } else {
-                LabeledContent("当前证书", value: "不可用")
-            }
-            if let snapshot = membershipSnapshots.first(where: { $0.farmID == farm.id }) {
-                LabeledContent("安全 generation", value: snapshot.generation.formatted())
-                LabeledContent("快照签发", value: snapshot.issuedAt.formatted(date: .abbreviated, time: .shortened))
-            } else {
-                LabeledContent("成员安全快照", value: "尚未发布")
-            }
-            Button("刷新成员与能力证书") { refreshMembershipAndCapability() }
-                .disabled(isWorking || account.serverBindingState != .verified)
+            Button("刷新成员列表") { refreshMembershipAndCapability() }
+                .disabled(isWorking)
         }
     }
 
@@ -385,7 +456,7 @@ struct CloudCollaborationCenterView: View {
                 CloudMetricRow(title: "安全事件", value: farmIncidents.count, systemImage: "checkmark.shield")
             }
             NavigationLink {
-                CloudRebuildCenterView(farm: farm, binding: binding)
+                CloudRebuildCenterView(farm: farm)
             } label: {
                 let farmSessions = rebuildSessions.filter { $0.farmID == farm.id }
                 CloudMetricRow(
@@ -417,13 +488,11 @@ struct CloudCollaborationCenterView: View {
     }
 
     private var accountSection: some View {
-        Section("账户") {
+        Section {
             if farm.role != .owner, let localMembership = farmMemberships.first(where: { $0.accountID == account.effectiveAccountID }) {
                 Button("退出共享牧场", role: .destructive) { leaveSharedFarm(localMembership) }
                     .disabled(isWorking)
             }
-            Button("删除账户", role: .destructive) { deletionConfirmation = true }
-                .disabled(isWorking || account.serverBindingState != .verified)
         }
     }
 
@@ -440,9 +509,7 @@ struct CloudCollaborationCenterView: View {
     }
 
     private func refreshStatus() async {
-        refreshOutboxCounts()
         await collaboration.refreshAccountAvailability()
-        await collaboration.captureDiagnostics(farmID: farm.id)
         guard account.serverBindingState == .verified, IdentityWorkerConfiguration.baseURL != nil else { return }
         do {
             let membership = MembershipActor(persistence: collaboration.persistence)
@@ -474,6 +541,9 @@ struct CloudCollaborationCenterView: View {
         blockedOutboxCount = (try? modelContext.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
             $0.farmID == farmID && $0.statusRawValue == blocked
         }))) ?? 0
+        confirmedOutboxCount = (try? modelContext.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.statusRawValue == confirmed
+        }))) ?? 0
         let bootstrapKind = DomainOperationKind.bootstrapEntity.rawValue
         let baselineOperationIDs = Set((try? modelContext.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
             $0.farmID == farmID && $0.kindRawValue == bootstrapKind
@@ -481,6 +551,19 @@ struct CloudCollaborationCenterView: View {
         confirmedBaselineCount = (try? modelContext.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
             $0.farmID == farmID && $0.statusRawValue == confirmed
         })))?.count(where: { baselineOperationIDs.contains($0.operationID) }) ?? 0
+
+        activePhotoCount = (try? modelContext.fetchCount(FetchDescriptor<PhotoAssetRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))) ?? 0
+        cloudPhotoAssetCount = (try? modelContext.fetchCount(FetchDescriptor<PhotoAssetRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.cloudRecordName != nil
+        }))) ?? 0
+        retainedHistoricalPhotoAssetCount = (try? modelContext.fetchCount(FetchDescriptor<PhotoAssetRecord>(predicate: #Predicate {
+            $0.farmID == farmID
+                && $0.deletedAt != nil
+                && $0.cloudRecordName != nil
+        }))) ?? 0
+        hasLoadedUploadMetrics = true
     }
 
     private func prepareCloudFarm() {
@@ -504,7 +587,7 @@ struct CloudCollaborationCenterView: View {
             _ = try await collaboration.checkpoints.createCheckpoint(farmID: farm.id, reason: .initialCloudSetup)
             await MainActor.run {
                 sharePresentation = CloudSharePresentation(share: share)
-                successMessage = "正式牧场云端协作、系统共享和能力证书已经建立。"
+                successMessage = "成员共享已开启，可以发送邀请了。"
             }
         }
     }
@@ -554,7 +637,7 @@ struct CloudCollaborationCenterView: View {
             _ = try await collaboration.membershipSnapshots.publish(farmID: farm.id, accountID: account.effectiveAccountID)
             await MainActor.run {
                 self.generatedInvite = nil
-                successMessage = "邀请码与已接受的系统共享参与者已完成绑定。"
+                successMessage = "成员已确认加入牧场。"
             }
         }
     }
@@ -565,7 +648,7 @@ struct CloudCollaborationCenterView: View {
             try await service.changeRole(memberID: member.serverMembershipID, farmID: farm.id, role: role)
             _ = try await service.refresh(farmID: farm.id)
             _ = try await collaboration.membershipSnapshots.publish(farmID: farm.id, accountID: account.effectiveAccountID)
-            await MainActor.run { successMessage = "成员角色已更新，旧能力证书已撤销。" }
+            await MainActor.run { successMessage = "成员角色已更新。" }
         }
     }
 
@@ -590,7 +673,7 @@ struct CloudCollaborationCenterView: View {
                 }
             }
             _ = try await collaboration.checkpoints.createCheckpoint(farmID: farm.id, reason: .afterMemberRevocation)
-            await MainActor.run { successMessage = "成员能力与系统共享访问已撤销。" }
+            await MainActor.run { successMessage = "成员已从牧场移除。" }
         }
     }
 
@@ -605,7 +688,7 @@ struct CloudCollaborationCenterView: View {
             }
             await collaboration.synchronizeNow()
             await collaboration.maintainRecovery(farmID: farm.id)
-            await MainActor.run { successMessage = "成员快照和能力证书已刷新。" }
+            await MainActor.run { successMessage = "成员列表已刷新。" }
         }
     }
 
@@ -646,11 +729,11 @@ struct CloudCollaborationCenterView: View {
 
 private struct CloudRebuildCenterView: View {
     @Environment(CloudCollaborationStore.self) private var collaboration
+    @Query(sort: \CloudFarmBinding.updatedAt, order: .reverse) private var bindings: [CloudFarmBinding]
     @Query(sort: \CloudRebuildSessionRecord.updatedAt, order: .reverse) private var sessions: [CloudRebuildSessionRecord]
     @Query(sort: \CloudRebuildIssueRecord.createdAt, order: .reverse) private var issues: [CloudRebuildIssueRecord]
 
     let farm: FarmRecord
-    let binding: CloudFarmBinding?
 
     @State private var isWorking = false
     @State private var message: String?
@@ -658,9 +741,17 @@ private struct CloudRebuildCenterView: View {
 
     private var farmSessions: [CloudRebuildSessionRecord] { sessions.filter { $0.farmID == farm.id } }
     private var current: CloudRebuildSessionRecord? { farmSessions.first }
+    private var binding: CloudFarmBinding? { bindings.first(where: { $0.farmID == farm.id }) }
     private var currentIssues: [CloudRebuildIssueRecord] {
         guard let current else { return [] }
         return issues.filter { $0.sessionID == current.id }
+    }
+    private var showsEngineResetRetry: Bool {
+        guard binding?.state == .rebuildingCache else { return false }
+        switch binding?.lastErrorCode {
+        case "engineResetPending", "engineResetInProgress", "engineResetFailed": return true
+        default: return false
+        }
     }
 
     var body: some View {
@@ -761,14 +852,33 @@ private struct CloudRebuildCenterView: View {
                 .disabled(isWorking)
             Text("切换仅替换当前牧场的已确认云端缓存；账号、其他牧场、本机配置和未确认 Outbox 不参与替换。")
                 .font(.footnote).foregroundStyle(.secondary)
-        case .failed, .cancelled:
+        case .failed:
+            if session.lastErrorCode == "commitFailed" {
+                Button("重新切换已校验缓存") { commit(session.id) }
+                    .disabled(isWorking)
+                Text("直接复用已经完成下载和校验的 staging，不会重新全量拉取。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                Button("重新执行此会话") { resume(session.id) }
+                    .disabled(isWorking)
+                Text("失败结果不会覆盖旧工作库，staging 证据会保留供复核。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        case .cancelled:
             Button("重新执行此会话") { resume(session.id) }
                 .disabled(isWorking)
-            Text("失败结果不会覆盖旧工作库，staging 证据会保留供复核。")
+            Text("已取消的会话会从头重新执行。")
                 .font(.footnote).foregroundStyle(.secondary)
         case .completed:
             LabeledContent("已保留 Outbox", value: session.preservedOutboxCount.formatted())
             LabeledContent("已应用操作", value: session.appliedOperationCount.formatted())
+            if showsEngineResetRetry {
+                Button("重新连接增量同步") { retryEngineReset() }
+                    .disabled(isWorking)
+                Text("权威缓存已经切换完成；这里只重建增量同步引擎，不会重新下载整座牧场。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -803,6 +913,15 @@ private struct CloudRebuildCenterView: View {
         }
     }
 
+    private func retryEngineReset() {
+        runTask {
+            try await collaboration.retryCompletedRebuildEngineReset(farmID: farm.id)
+            await MainActor.run {
+                message = "增量同步已经重新连接，牧场只读保护已解除。"
+            }
+        }
+    }
+
     private func runTask(_ operation: @escaping () async throws -> Void) {
         guard !isWorking else { return }
         isWorking = true
@@ -828,31 +947,39 @@ private struct CloudMetricRow: View {
     }
 }
 
-private struct CloudConflictCenterView: View {
+struct CloudConflictCenterView: View {
     @Query(sort: \SyncConflictRecord.detectedAt, order: .reverse) private var conflicts: [SyncConflictRecord]
     let account: AccountProfile
     let farm: FarmRecord
 
+    private var unresolvedConflicts: [SyncConflictRecord] {
+        conflicts.filter {
+            $0.farmID == farm.id
+                && ($0.statusRawValue == SyncConflictStatus.unresolved.rawValue
+                    || $0.statusRawValue == SyncConflictStatus.quarantined.rawValue)
+        }
+    }
+
     var body: some View {
-        List(conflicts.filter { $0.farmID == farm.id }, id: \.id) { conflict in
+        List(unresolvedConflicts, id: \.id) { conflict in
             NavigationLink {
                 CloudConflictDetailView(account: account, farm: farm, conflict: conflict)
             } label: {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(conflict.entityType).font(.headline)
-                    Text("本地 revision \(conflict.localRevision)，云端 revision \(conflict.remoteRevision)")
-                    Text(conflict.statusRawValue).foregroundStyle(.secondary)
+                    Text(conflict.displayName).font(.headline)
+                    Text(conflict.businessTypeName).foregroundStyle(.secondary)
                     Text(conflict.detectedAt, format: .dateTime.year().month().day().hour().minute())
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
         .overlay {
-            if conflicts.allSatisfy({ $0.farmID != farm.id }) {
-                ContentUnavailableView("没有冲突", systemImage: "checkmark.circle")
+            if unresolvedConflicts.isEmpty {
+                ContentUnavailableView("没有需要处理的数据异常", systemImage: "checkmark.circle")
             }
         }
-        .navigationTitle("冲突中心")
+        .navigationTitle("数据异常处理")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -869,43 +996,41 @@ private struct CloudConflictDetailView: View {
 
     var body: some View {
         List {
-            Section("差异") {
-                LabeledContent("实体", value: conflict.entityType)
-                LabeledContent("本地 revision", value: conflict.localRevision.formatted())
-                LabeledContent("云端 revision", value: conflict.remoteRevision.formatted())
-                LabeledContent("本地摘要", value: String(conflict.localPayloadDigest.prefix(12)))
-                LabeledContent("云端摘要", value: String(conflict.remotePayloadDigest.prefix(12)))
-                if let accountID = conflict.remoteAccountID {
-                    LabeledContent("远端账号", value: String(accountID.uuidString.lowercased().prefix(12)))
+            Section("记录") {
+                LabeledContent("名称", value: conflict.displayName)
+                LabeledContent("业务类型", value: conflict.businessTypeName)
+                LabeledContent("发现时间") {
+                    Text(conflict.detectedAt, format: .dateTime.year().month().day().hour().minute())
                 }
-                Text(conflict.reasonCode).font(.footnote).foregroundStyle(.secondary)
+                Text("这条记录在本机和云端都发生过更改，请选择要保留的版本。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            Section("场主决定") {
-                TextField("处理说明", text: $note, axis: .vertical)
-                Button("采用本地版本") { resolve(.acceptLocal) }
+            Section("选择保留版本") {
+                TextField("处理说明（可选）", text: $note, axis: .vertical)
+                Button("保留本机版本") { resolve(.acceptLocal) }
                     .disabled(!canResolve)
                 Button("采用云端版本") { resolve(.acceptRemote) }
                     .disabled(!canResolve)
                 if conflict.entityType == CloudEntityType.note.rawValue {
                     TextField("合并后的备注", text: $mergedText, axis: .vertical)
-                    Button("保存手动合并") { resolve(.mergeText(mergedText)) }
+                    Button("使用合并后的备注") { resolve(.mergeText(mergedText)) }
                         .disabled(!canResolve || mergedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                Text("库存、繁殖和批次冲突不会做字段拼接；无论选择哪一方，都必须重新通过业务约束校验。")
+                Text("选择后，应用会再次检查记录是否符合当前牧场的业务规则。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            if let operationID = conflict.resolutionOperationID {
+            if conflict.resolvedAt != nil {
                 Section("解决结果") {
-                    LabeledContent("状态", value: conflict.statusRawValue)
-                    LabeledContent("解决操作", value: String(operationID.uuidString.lowercased().prefix(12)))
+                    LabeledContent("状态", value: "已处理")
                     if let resolvedAt = conflict.resolvedAt {
                         LabeledContent("完成时间", value: resolvedAt.formatted(date: .abbreviated, time: .shortened))
                     }
                 }
             }
         }
-        .navigationTitle("冲突详情")
+        .navigationTitle("选择记录版本")
         .navigationBarTitleDisplayMode(.inline)
         .alert("处理结果", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("完成", role: .cancel) {}
@@ -913,7 +1038,7 @@ private struct CloudConflictDetailView: View {
     }
 
     private var canResolve: Bool {
-        farm.role == .owner && !isWorking &&
+        CapabilitySet(role: farm.role).allows(.resolveConflicts) && !isWorking &&
         (conflict.statusRawValue == SyncConflictStatus.unresolved.rawValue || conflict.statusRawValue == SyncConflictStatus.quarantined.rawValue)
     }
 
@@ -923,14 +1048,14 @@ private struct CloudConflictDetailView: View {
         Task {
             defer { isWorking = false }
             do {
-                let operationID = try await collaboration.conflicts.resolve(
+                _ = try await collaboration.conflicts.resolve(
                     conflictID: conflict.id,
                     decision: decision,
                     note: note,
                     farm: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role)
                 )
                 await collaboration.synchronizeNow()
-                message = "冲突已生成解决操作 \(String(operationID.uuidString.lowercased().prefix(12)))，业务模型已更新并进入同步队列。"
+                message = "数据异常已处理，所选版本会自动保存。"
             } catch {
                 message = error.localizedDescription
             }
@@ -938,11 +1063,62 @@ private struct CloudConflictDetailView: View {
     }
 }
 
-private struct CloudRecoveryCenterView: View {
+private extension SyncConflictRecord {
+    var displayName: String {
+        for payload in [localPayload, remotePayload] {
+            guard let object = try? JSONSerialization.jsonObject(with: payload),
+                  let dictionary = object as? [String: Any] else { continue }
+            for key in ["name", "earTag", "title", "displayName", "subject"] {
+                if let value = dictionary[key] as? String,
+                   !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return value
+                }
+            }
+        }
+        return "\(businessTypeName)记录"
+    }
+
+    var businessTypeName: String {
+        switch entityType {
+        case CloudEntityType.farm.rawValue: "牧场"
+        case CloudEntityType.pen.rawValue: "圈舍"
+        case CloudEntityType.sheep.rawValue: "羊只"
+        case CloudEntityType.weight.rawValue: "称重"
+        case CloudEntityType.weaning.rawValue: "断奶"
+        case CloudEntityType.transfer.rawValue: "转群"
+        case CloudEntityType.removal.rawValue: "离场"
+        case CloudEntityType.productionBatch.rawValue, CloudEntityType.batchMembership.rawValue: "生产批次"
+        case CloudEntityType.feedIngredient.rawValue,
+             CloudEntityType.feedRecipe.rawValue,
+             CloudEntityType.feedRecipeComponent.rawValue,
+             CloudEntityType.feed.rawValue,
+             CloudEntityType.feedLine.rawValue,
+             CloudEntityType.feedIngredientBatch.rawValue: "饲喂"
+        case CloudEntityType.inventoryLot.rawValue, CloudEntityType.inventoryTransaction.rawValue: "库存"
+        case CloudEntityType.health.rawValue,
+             CloudEntityType.healthCatalogItem.rawValue,
+             CloudEntityType.healthSubjectLink.rawValue,
+             CloudEntityType.careBatch.rawValue,
+             CloudEntityType.careRule.rawValue,
+             CloudEntityType.careReminder.rawValue: "健康与照护"
+        case CloudEntityType.reproduction.rawValue,
+             CloudEntityType.semen.rawValue,
+             CloudEntityType.semenDonor.rawValue,
+             CloudEntityType.semenTransaction.rawValue,
+             CloudEntityType.breedingProgram.rawValue,
+             CloudEntityType.breedingProgramStep.rawValue,
+             CloudEntityType.lambingOffspring.rawValue,
+             CloudEntityType.pedigreeChange.rawValue: "繁殖"
+        case CloudEntityType.note.rawValue: "备注"
+        case CloudEntityType.photoAsset.rawValue: "照片"
+        default: "牧场业务"
+        }
+    }
+}
+
+struct CloudRecoveryCenterView: View {
     @Environment(CloudCollaborationStore.self) private var collaboration
     @Query(sort: \FarmCheckpointRecord.createdAt, order: .reverse) private var checkpoints: [FarmCheckpointRecord]
-    @Query(sort: \CloudAssetTransfer.updatedAt, order: .reverse) private var transfers: [CloudAssetTransfer]
-    @Query(sort: \FarmRecoveryAssetRecord.createdAt, order: .reverse) private var recoveryAssets: [FarmRecoveryAssetRecord]
     let account: AccountProfile
     let farm: FarmRecord
 
@@ -956,14 +1132,13 @@ private struct CloudRecoveryCenterView: View {
     @State private var restoreCandidateID: UUID?
 
     private var farmCheckpoints: [FarmCheckpointRecord] { checkpoints.filter { $0.farmID == farm.id } }
-    private var farmTransfers: [CloudAssetTransfer] { transfers.filter { $0.farmID == farm.id } }
 
     var body: some View {
         List {
-            Section("恢复密钥") {
+            Section("恢复包") {
                 Button("导出恢复包") { exportRecoveryPackage() }
                     .disabled(isWorking)
-                SecureField("输入恢复码后导入", text: $importedRecoveryCode)
+                SecureField("恢复码", text: $importedRecoveryCode)
                     .textInputAutocapitalization(.characters)
                     .fontDesign(.monospaced)
                 Button("选择恢复包并导入") { isImporting = true }
@@ -974,13 +1149,12 @@ private struct CloudRecoveryCenterView: View {
                     Text(recoveryCode).font(.body.monospaced()).textSelection(.enabled)
                 }
             }
-            Section("结构化恢复点") {
-                Button("创建手动恢复点") { createCheckpoint() }
+            Section("恢复点") {
+                Button("创建恢复点") { createCheckpoint() }
                     .disabled(isWorking)
                 ForEach(farmCheckpoints, id: \.id) { checkpoint in
                     VStack(alignment: .leading, spacing: 5) {
                         Text(FarmCheckpointReason(rawValue: checkpoint.reasonRawValue)?.displayName ?? checkpoint.reasonRawValue).font(.headline)
-                        Text("\(checkpoint.entityCount) 个实体，\(checkpoint.assetCount) 张照片引用")
                         Text(checkpoint.createdAt, format: .dateTime.year().month().day().hour().minute())
                             .font(.caption).foregroundStyle(.secondary)
                         HStack {
@@ -995,21 +1169,8 @@ private struct CloudRecoveryCenterView: View {
                     }
                 }
             }
-            Section("照片传输") {
-                LabeledContent("共享区估算", value: ByteCountFormatter.string(fromByteCount: farmTransfers.filter { $0.direction == .upload }.reduce(0) { $0 + $1.byteCount }, countStyle: .file))
-                LabeledContent("恢复区估算", value: ByteCountFormatter.string(fromByteCount: recoveryAssets.filter { $0.farmID == farm.id }.reduce(0) { $0 + $1.byteCount }, countStyle: .file))
-                ForEach(farmTransfers, id: \.id) { transfer in
-                    VStack(alignment: .leading, spacing: 4) {
-                        LabeledContent(transfer.directionRawValue, value: transfer.statusRawValue)
-                        ProgressView(value: transfer.byteCount == 0 ? 0 : Double(transfer.transferredByteCount), total: max(1, Double(transfer.byteCount)))
-                        if transfer.status == .failed {
-                            Button("重试") { retry(transfer) }.buttonStyle(.borderless)
-                        }
-                    }
-                }
-            }
         }
-        .navigationTitle("恢复与照片")
+        .navigationTitle("云端恢复")
         .navigationBarTitleDisplayMode(.inline)
         .fileExporter(isPresented: $isExporting, document: exportDocument, contentType: .eSheepRecovery, defaultFilename: "\(farm.name).esheep-recovery") { result in
             if case .failure(let error) = result { message = error.localizedDescription }
@@ -1021,13 +1182,13 @@ private struct CloudRecoveryCenterView: View {
             Button("完成", role: .cancel) {}
         } message: { Text(message ?? "") }
         .confirmationDialog("确认从恢复点重建", isPresented: Binding(get: { restoreCandidateID != nil }, set: { if !$0 { restoreCandidateID = nil } }), titleVisibility: .visible) {
-            Button("生成恢复操作", role: .destructive) {
+            Button("开始恢复", role: .destructive) {
                 if let id = restoreCandidateID { restore(id) }
                 restoreCandidateID = nil
             }
             Button("取消", role: .cancel) { restoreCandidateID = nil }
         } message: {
-            Text("系统会重新校验实体引用和业务约束，为恢复内容生成新的签名操作；任何冲突都会阻断本次提交。")
+            Text("恢复前会检查数据完整性；如发现异常，本次恢复不会写入。")
         }
     }
 
@@ -1059,14 +1220,14 @@ private struct CloudRecoveryCenterView: View {
     private func createCheckpoint() {
         runTask {
             _ = try await collaboration.checkpoints.createCheckpoint(farmID: farm.id, reason: .manual)
-            await MainActor.run { message = "恢复点已加密并保存到场主私有恢复区。" }
+            await MainActor.run { message = "恢复点已创建。" }
         }
     }
 
     private func verify(_ checkpoint: FarmCheckpointRecord) {
         runTask {
             _ = try await collaboration.checkpoints.verifyCheckpoint(id: checkpoint.id)
-            await MainActor.run { message = "恢复点的密钥、摘要、牧场编号和实体载荷校验通过。" }
+            await MainActor.run { message = "恢复点检查通过，可以执行恢复。" }
         }
     }
 
@@ -1081,15 +1242,8 @@ private struct CloudRecoveryCenterView: View {
             }
             await collaboration.synchronizeNow()
             await MainActor.run {
-                message = "已生成 \(result.recoveryOperationIDs.count) 个恢复操作，并校验恢复照片。"
+                message = "恢复已完成，共恢复 \(result.recoveryOperationIDs.count) 条记录。"
             }
-        }
-    }
-
-    private func retry(_ transfer: CloudAssetTransfer) {
-        runTask {
-            try await collaboration.photoTransfers.retry(transferID: transfer.id)
-            await MainActor.run { message = "照片传输已完成。" }
         }
     }
 

@@ -57,7 +57,7 @@ struct AccountAvatarEditor: View {
             VStack(spacing: 8) {
                 Text(account.displayName)
                     .font(.title3.bold())
-                Text("头像仅保存在当前设备的账户资料中")
+                Text("头像会同步到使用同一 eSheep+ 账号的设备")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -75,7 +75,7 @@ struct AccountAvatarEditor: View {
             }
 
             if isProcessing {
-                ProgressView("正在处理照片")
+                ProgressView("正在同步头像")
                     .font(.footnote)
             }
         }
@@ -104,9 +104,11 @@ struct AccountAvatarEditor: View {
                       let avatarData = ProfileAvatarProcessor.makeJPEG(from: sourceData) else {
                     throw ProfileAvatarError.invalidImage
                 }
-                account.avatarImageData = avatarData
-                account.updatedAt = .now
-                try modelContext.save()
+                try await AccountAvatarCloudSyncService.shared.upload(
+                    avatarData,
+                    account: account,
+                    context: modelContext
+                )
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } catch is CancellationError {
                 return
@@ -118,13 +120,18 @@ struct AccountAvatarEditor: View {
     }
 
     private func removeAvatar() {
-        account.avatarImageData = nil
-        account.updatedAt = .now
-        do {
-            try modelContext.save()
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        } catch {
-            errorMessage = error.localizedDescription
+        isProcessing = true
+        Task {
+            defer { isProcessing = false }
+            do {
+                try await AccountAvatarCloudSyncService.shared.remove(
+                    account: account,
+                    context: modelContext
+                )
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }
@@ -136,7 +143,7 @@ private enum ProfileAvatarError: LocalizedError {
 }
 
 private enum ProfileAvatarProcessor {
-    static func makeJPEG(from data: Data, side: CGFloat = 640) -> Data? {
+    static func makeJPEG(from data: Data, side: CGFloat = 384) -> Data? {
         guard let source = UIImage(data: data) else { return nil }
         let sourceSize = source.size
         guard sourceSize.width > 0, sourceSize.height > 0 else { return nil }
@@ -153,6 +160,6 @@ private enum ProfileAvatarProcessor {
             context.fill(CGRect(x: 0, y: 0, width: side, height: side))
             source.draw(in: CGRect(origin: origin, size: drawSize))
         }
-        return image.jpegData(compressionQuality: 0.86)
+        return image.jpegData(compressionQuality: 0.82)
     }
 }

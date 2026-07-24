@@ -115,6 +115,7 @@ final class FarmSessionTests: XCTestCase {
         let session = AppSession()
         session.selectedFarmID = UUID()
         session.selectedTab = .feeding
+        session.isReauthenticationPresented = true
         let revision = session.authenticationRevision
 
         session.authenticationDidSignOut()
@@ -122,16 +123,68 @@ final class FarmSessionTests: XCTestCase {
         XCTAssertNil(session.selectedFarmID)
         XCTAssertEqual(session.selectedTab, .home)
         XCTAssertEqual(session.authenticationRevision, revision + 1)
+        XCTAssertTrue(session.accountAccessStatus.requiresSignIn)
+        XCTAssertFalse(session.isReauthenticationPresented)
         XCTAssertNotNil(session.authenticationNotice)
     }
 
     func testSuccessfulAuthenticationSelectsTheAccountProfile() {
-        let session = AppSession()
+        var persistedProfileID: UUID?
+        let session = AppSession(
+            activeAccountProfileID: nil,
+            persistActiveAccountProfileID: { persistedProfileID = $0 }
+        )
         let profileID = UUID()
 
         session.authenticationDidSucceed(accountProfileID: profileID)
 
         XCTAssertEqual(session.activeAccountProfileID, profileID)
+        XCTAssertEqual(persistedProfileID, profileID)
+        XCTAssertEqual(session.accountAccessStatus, .checking)
+        XCTAssertFalse(session.isReauthenticationPresented)
+    }
+
+    func testAuthenticationRefreshReturnsToCheckingWithoutBlockingLocalSession() {
+        let session = AppSession(activeAccountProfileID: nil)
+        session.authenticationCheckDidFinish(
+            .localOnly("网络不可用"),
+            automaticallyPresentReauthentication: false
+        )
+        let revision = session.authenticationRevision
+
+        session.requestAuthenticationRefresh()
+
+        XCTAssertEqual(session.accountAccessStatus, .checking)
+        XCTAssertEqual(session.authenticationRevision, revision + 1)
+    }
+
+    func testReauthenticationSheetOnlyAutoPresentsOnFirstDefinitiveFailure() {
+        let session = AppSession(activeAccountProfileID: nil)
+
+        session.authenticationCheckDidFinish(
+            .requiresSignIn("会话已失效"),
+            automaticallyPresentReauthentication: true
+        )
+        XCTAssertTrue(session.isReauthenticationPresented)
+
+        session.isReauthenticationPresented = false
+        session.authenticationCheckDidFinish(
+            .requiresSignIn("会话仍然失效"),
+            automaticallyPresentReauthentication: true
+        )
+
+        XCTAssertFalse(session.isReauthenticationPresented)
+    }
+
+    func testAutomaticCloudRecoveryIsSingleFlightPerAccount() {
+        let session = AppSession(activeAccountProfileID: nil)
+        let accountID = UUID()
+
+        XCTAssertTrue(session.beginAutomaticCloudRecovery(accountID: accountID))
+        XCTAssertFalse(session.beginAutomaticCloudRecovery(accountID: accountID))
+
+        session.finishAutomaticCloudRecovery(accountID: accountID)
+        XCTAssertTrue(session.beginAutomaticCloudRecovery(accountID: accountID))
     }
 
     private func makeContainer() throws -> ModelContainer {

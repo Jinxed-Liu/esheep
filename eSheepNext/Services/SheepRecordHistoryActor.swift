@@ -21,6 +21,8 @@ struct SheepHistoryRemoval: Identifiable, Sendable, Hashable {
     let kind: RemovalKind
     let reason: String
     let amountText: String?
+    let removalBatchID: UUID?
+    let batchTotalAmountText: String?
     let occurredAt: Date
     let note: String
 }
@@ -95,7 +97,16 @@ actor SheepRecordHistoryActor {
             }.sorted { $0.occurredAt > $1.occurredAt },
             removals: removals.compactMap { record in
                 guard record.deletedAt == nil else { return nil }
-                return SheepHistoryRemoval(id: record.id, kind: record.kind, reason: record.reason, amountText: record.amountText, occurredAt: record.occurredAt, note: record.note)
+                return SheepHistoryRemoval(
+                    id: record.id,
+                    kind: record.kind,
+                    reason: record.reason,
+                    amountText: record.amountText,
+                    removalBatchID: record.removalBatchID,
+                    batchTotalAmountText: record.batchTotalAmountText,
+                    occurredAt: record.occurredAt,
+                    note: record.note
+                )
             }.sorted { $0.occurredAt > $1.occurredAt },
             tombstones: tombstones.compactMap { record in
                 guard relatedIDs.contains(record.entityID), !record.reason.hasPrefix("修正：") else { return nil }

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 enum IdentityWorkerConfiguration {
@@ -128,6 +129,14 @@ struct WorkerAccountStatus: Codable, Sendable {
 struct WorkerAccountProfileResponse: Codable, Sendable, Equatable {
     let accountID: UUID
     let displayName: String
+}
+
+struct WorkerAccountAvatarResponse: Codable, Sendable, Equatable {
+    let accountID: UUID
+    let revision: Int64?
+    let digest: String?
+    let hasAvatar: Bool
+    let dataBase64: String?
 }
 
 struct WorkerFarmSecuritySnapshot: Codable, Sendable {
@@ -331,6 +340,41 @@ actor IdentityWorkerClient {
         )
     }
 
+    func accountAvatarMetadata() async throws -> WorkerAccountAvatarResponse {
+        try await request(
+            path: "/v1/account/avatar",
+            method: "GET",
+            body: Optional<String>.none
+        )
+    }
+
+    func accountAvatarContent() async throws -> WorkerAccountAvatarResponse {
+        try await request(
+            path: "/v1/account/avatar/content",
+            method: "GET",
+            body: Optional<String>.none,
+            timeout: 30
+        )
+    }
+
+    func updateAccountAvatar(_ data: Data) async throws -> WorkerAccountAvatarResponse {
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return try await request(
+            path: "/v1/account/avatar",
+            method: "PUT",
+            body: AccountAvatarUpdateBody(dataBase64: data.base64EncodedString(), digest: digest),
+            timeout: 30
+        )
+    }
+
+    func removeAccountAvatar() async throws -> WorkerAccountAvatarResponse {
+        try await request(
+            path: "/v1/account/avatar",
+            method: "DELETE",
+            body: Optional<String>.none
+        )
+    }
+
     func farmSecuritySnapshot(farmID: UUID) async throws -> WorkerFarmSecuritySnapshot {
         try await request(path: "/v1/farms/\(farmID.uuidString.lowercased())/security-snapshot", method: "GET", body: Optional<String>.none)
     }
@@ -350,7 +394,8 @@ actor IdentityWorkerClient {
         method: String,
         body: Body,
         authenticated: Bool = true,
-        allowRefresh: Bool = true
+        allowRefresh: Bool = true,
+        timeout: TimeInterval = 15
     ) async throws -> Response {
         guard let baseURL = IdentityWorkerConfiguration.baseURL else { throw IdentityWorkerError.notConfigured }
         let url = IdentityWorkerConfiguration.endpointURL(baseURL: baseURL, path: path)
@@ -368,7 +413,7 @@ actor IdentityWorkerClient {
             }
             request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
         }
-        request.timeoutInterval = 15
+        request.timeoutInterval = timeout
         let data: Data
         let response: URLResponse
         do {
@@ -382,7 +427,14 @@ actor IdentityWorkerClient {
         guard let http = response as? HTTPURLResponse else { throw IdentityWorkerError.invalidResponse }
         if http.statusCode == 401, authenticated, allowRefresh {
             try await refresh()
-            return try await self.request(path: path, method: method, body: body, authenticated: true, allowRefresh: false)
+            return try await self.request(
+                path: path,
+                method: method,
+                body: body,
+                authenticated: true,
+                allowRefresh: false,
+                timeout: timeout
+            )
         }
         guard (200..<300).contains(http.statusCode) else {
             if let envelope = try? decoder.decode(WorkerErrorEnvelope.self, from: data) {
@@ -431,6 +483,7 @@ private struct PasswordRegistrationBody: Codable {
 }
 private struct PasswordLoginBody: Codable { let username: String; let password: String }
 private struct AccountProfileUpdateBody: Codable { let displayName: String }
+private struct AccountAvatarUpdateBody: Codable { let dataBase64: String; let digest: String }
 private struct FarmRegistrationBody: Codable { let farmID: UUID; let zoneName: String; let shareRecordName: String?; let status: String }
 private struct WorkerFarmRegistrationResponse: Codable { let farmID: UUID; let status: String }
 private struct InviteBody: Codable { let farmID: UUID; let role: FarmRole }

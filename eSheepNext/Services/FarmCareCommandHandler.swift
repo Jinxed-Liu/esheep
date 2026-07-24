@@ -148,6 +148,64 @@ enum FarmCareCommandHandler {
         }
     }
 
+    static func validateAndApply(
+        _ command: CareCommand,
+        farmID: UUID,
+        accountID: UUID,
+        context: ModelContext,
+        modifiedAt: Date = .now
+    ) throws -> CareApplyResult {
+        switch command {
+        case .recordHealth(let draft):
+            let subjects = try healthSubjects(draft, farmID: farmID, context: context)
+            try validateHealth(
+                draft,
+                subjects: subjects,
+                farmID: farmID,
+                inventoryCreditSourceID: nil,
+                context: context
+            )
+            return try applyHealth(draft, subjects: subjects, farmID: farmID, context: context)
+
+        case .correctHealth(let originalID, let replacement, let reason):
+            let descriptor = FetchDescriptor<HealthRecord>(predicate: #Predicate {
+                $0.id == originalID && $0.farmID == farmID && $0.deletedAt == nil
+            })
+            guard let original = try context.fetch(descriptor).first else {
+                throw FarmCommandError.sourceRecordNotFound
+            }
+            try require(reason, "修正原因")
+            let subjects = try healthSubjects(replacement, farmID: farmID, context: context)
+            try validateHealth(
+                replacement,
+                subjects: subjects,
+                farmID: farmID,
+                inventoryCreditSourceID: original.id,
+                context: context
+            )
+            return try applyHealthCorrection(
+                original: original,
+                replacement: replacement,
+                subjects: subjects,
+                reason: reason,
+                accountID: accountID,
+                farmID: farmID,
+                context: context,
+                modifiedAt: modifiedAt
+            )
+
+        default:
+            try validate(command, farmID: farmID, context: context)
+            return try apply(
+                command,
+                farmID: farmID,
+                accountID: accountID,
+                context: context,
+                modifiedAt: modifiedAt
+            )
+        }
+    }
+
     static func apply(_ command: CareCommand, farmID: UUID, accountID: UUID, context: ModelContext, modifiedAt: Date = .now) throws -> CareApplyResult {
         switch command {
         case .upsertHealthCatalog(let id, let kindRawValue, let name, let category, let unit, let dose, let route, let interval, let note, let isActive):
@@ -165,11 +223,23 @@ enum FarmCareCommandHandler {
             return try applyHealth(draft, farmID: farmID, context: context)
 
         case .correctHealth(let originalID, let replacement, let reason):
-            guard let original = try context.fetch(FetchDescriptor<HealthRecord>()).first(where: { $0.id == originalID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sourceRecordNotFound }
-            try DomainEntityDeletionService.setDeletedAt(modifiedAt, type: .health, id: original.id, farmID: farmID, context: context)
-            context.insert(TombstoneRecord(farmID: farmID, entityType: CloudEntityType.health.rawValue, entityID: originalID, deletedByAccountID: accountID, reason: "修正：\(reason.trimmed)"))
-            let result = try applyHealth(replacement, farmID: farmID, context: context)
-            return CareApplyResult(entityType: result.entityType, entityID: result.entityID, baseRevision: 1, resultingRevision: 2)
+            let descriptor = FetchDescriptor<HealthRecord>(predicate: #Predicate {
+                $0.id == originalID && $0.farmID == farmID && $0.deletedAt == nil
+            })
+            guard let original = try context.fetch(descriptor).first else {
+                throw FarmCommandError.sourceRecordNotFound
+            }
+            let subjects = try healthSubjects(replacement, farmID: farmID, context: context)
+            return try applyHealthCorrection(
+                original: original,
+                replacement: replacement,
+                subjects: subjects,
+                reason: reason,
+                accountID: accountID,
+                farmID: farmID,
+                context: context,
+                modifiedAt: modifiedAt
+            )
 
         case .receiveInventory(let id, let catalogName, let catalogItemID, let kindRawValue, let batchNumber, let supplier, let unit, let expiresAt, let quantityText, let occurredAt, let note):
             let quantity = Decimal.stable(quantityText) ?? 0
@@ -356,14 +426,24 @@ enum FarmCareCommandHandler {
     }
 
     static func inventoryBalance(_ lot: InventoryLotRecord, context: ModelContext) throws -> Decimal {
-        try context.fetch(FetchDescriptor<InventoryTransactionRecord>()).filter { $0.farmID == lot.farmID && $0.inventoryLotID == lot.id && $0.deletedAt == nil }.reduce(0) { partial, transaction in
+        let farmID = lot.farmID
+        let lotID = lot.id
+        let transactions = try context.fetch(FetchDescriptor<InventoryTransactionRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.inventoryLotID == lotID && $0.deletedAt == nil
+        }))
+        return transactions.reduce(0) { partial, transaction in
             switch transaction.kind { case .receipt, .adjustment: partial + transaction.quantity; case .consumption: partial - transaction.quantity }
         }
     }
 
     static func semenBalance(_ semen: SemenRecord, context: ModelContext) throws -> Decimal {
         let initial = Decimal.stable(semen.quantityText) ?? 0
-        return try context.fetch(FetchDescriptor<SemenTransactionRecord>()).filter { $0.farmID == semen.farmID && $0.semenID == semen.id && $0.deletedAt == nil }.reduce(initial) { partial, transaction in
+        let farmID = semen.farmID
+        let semenID = semen.id
+        let transactions = try context.fetch(FetchDescriptor<SemenTransactionRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.semenID == semenID && $0.deletedAt == nil
+        }))
+        return transactions.reduce(initial) { partial, transaction in
             switch transaction.kind { case .receipt, .adjustment: partial + transaction.quantity; case .consumption: partial - transaction.quantity }
         }
     }
@@ -417,8 +497,22 @@ enum FarmCareCommandHandler {
     }
 
     private static func applyHealth(_ draft: CareHealthDraft, farmID: UUID, context: ModelContext) throws -> CareApplyResult {
-        if try context.fetch(FetchDescriptor<HealthRecord>()).contains(where: { $0.id == draft.id && $0.farmID == farmID }) { return .init(entityType: .health, entityID: draft.id, baseRevision: 0, resultingRevision: 1) }
         let subjects = try healthSubjects(draft, farmID: farmID, context: context)
+        return try applyHealth(draft, subjects: subjects, farmID: farmID, context: context)
+    }
+
+    private static func applyHealth(
+        _ draft: CareHealthDraft,
+        subjects: [SheepRecord],
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> CareApplyResult {
+        let draftID = draft.id
+        if try context.fetch(FetchDescriptor<HealthRecord>(predicate: #Predicate {
+            $0.id == draftID && $0.farmID == farmID
+        })).isEmpty == false {
+            return .init(entityType: .health, entityID: draft.id, baseRevision: 0, resultingRevision: 1)
+        }
         context.insert(CareBatchRecord(id: draft.batchID, farmID: farmID, kind: .health, occurredAt: draft.occurredAt, note: draft.note.trimmed))
         let record = HealthRecord(id: draft.id, farmID: farmID, sheepID: subjects.count == 1 ? subjects[0].id : nil, penID: draft.penID, kind: draft.kind, itemNameSnapshot: draft.itemName.trimmed, occurredAt: draft.occurredAt, note: draft.note.trimmed, inventoryLotID: draft.inventoryLotID, catalogItemID: draft.catalogItemID, batchID: draft.batchID, quantityText: draft.dosePerSubjectText?.trimmed.nilIfEmpty, unit: draft.unit.trimmed, route: draft.route.trimmed)
         context.insert(record)
@@ -432,8 +526,48 @@ enum FarmCareCommandHandler {
         return .init(entityType: .health, entityID: draft.id, baseRevision: 0, resultingRevision: 1)
     }
 
+    private static func applyHealthCorrection(
+        original: HealthRecord,
+        replacement: CareHealthDraft,
+        subjects: [SheepRecord],
+        reason: String,
+        accountID: UUID,
+        farmID: UUID,
+        context: ModelContext,
+        modifiedAt: Date
+    ) throws -> CareApplyResult {
+        try DomainEntityDeletionService.setDeletedAt(
+            modifiedAt,
+            type: .health,
+            id: original.id,
+            farmID: farmID,
+            context: context
+        )
+        context.insert(TombstoneRecord(
+            farmID: farmID,
+            entityType: CloudEntityType.health.rawValue,
+            entityID: original.id,
+            deletedByAccountID: accountID,
+            reason: "修正：\(reason.trimmed)"
+        ))
+        let result = try applyHealth(
+            replacement,
+            subjects: subjects,
+            farmID: farmID,
+            context: context
+        )
+        return CareApplyResult(
+            entityType: result.entityType,
+            entityID: result.entityID,
+            baseRevision: 1,
+            resultingRevision: 2
+        )
+    }
+
     private static func healthSubjects(_ draft: CareHealthDraft, farmID: UUID, context: ModelContext) throws -> [SheepRecord] {
-        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
         if !draft.subjectIDs.isEmpty {
             let ids = Set(draft.subjectIDs)
             guard ids.count == draft.subjectIDs.count else { throw FarmCommandError.invalidReproductionRecord }
@@ -442,9 +576,18 @@ enum FarmCareCommandHandler {
             return selected.sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }
         }
         guard let penID = draft.penID else { throw FarmCommandError.missingRequiredValue("健康记录对象") }
-        let transfers = try context.fetch(FetchDescriptor<TransferRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let transfersBySheepID = Dictionary(grouping: transfers, by: \.sheepID)
         let selected = sheep.filter { record in
-            record.enteredAt <= draft.occurredAt && (record.removedAt == nil || record.removedAt! > draft.occurredAt) && FarmHistoryTimeline.pen(for: record, at: draft.occurredAt, transfers: transfers) == penID
+            record.enteredAt <= draft.occurredAt &&
+                (record.removedAt == nil || record.removedAt! > draft.occurredAt) &&
+                FarmHistoryTimeline.pen(
+                    for: record,
+                    at: draft.occurredAt,
+                    transfers: transfersBySheepID[record.id] ?? []
+                ) == penID
         }
         guard !selected.isEmpty else { throw FarmCommandError.missingRequiredValue("圈舍历史羊只") }
         return selected.sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }
@@ -462,15 +605,36 @@ enum FarmCareCommandHandler {
 
     private static func validateHealth(_ draft: CareHealthDraft, farmID: UUID, inventoryCreditSourceID: UUID?, context: ModelContext) throws {
         let subjects = try healthSubjects(draft, farmID: farmID, context: context)
+        try validateHealth(
+            draft,
+            subjects: subjects,
+            farmID: farmID,
+            inventoryCreditSourceID: inventoryCreditSourceID,
+            context: context
+        )
+    }
+
+    private static func validateHealth(
+        _ draft: CareHealthDraft,
+        subjects: [SheepRecord],
+        farmID: UUID,
+        inventoryCreditSourceID: UUID?,
+        context: ModelContext
+    ) throws {
         try require(draft.itemName, "药品或疫苗名称")
         guard let lotID = draft.inventoryLotID else { return }
         let dose = try positive(draft.dosePerSubjectText ?? "", "每只剂量")
         let lot = try inventoryLot(lotID, farmID: farmID, context: context)
         var available = try inventoryBalance(lot, context: context)
         if let sourceID = inventoryCreditSourceID {
-            let transactions = try context.fetch(FetchDescriptor<InventoryTransactionRecord>())
+            let transactions = try context.fetch(FetchDescriptor<InventoryTransactionRecord>(predicate: #Predicate {
+                $0.farmID == farmID &&
+                    $0.inventoryLotID == lotID &&
+                    $0.sourceRecordID == sourceID &&
+                    $0.deletedAt == nil
+            }))
             available += transactions
-                .filter { $0.farmID == farmID && $0.inventoryLotID == lotID && $0.sourceRecordID == sourceID && $0.kind == .consumption && $0.deletedAt == nil }
+                .filter { $0.kind == .consumption }
                 .reduce(0) { $0 + $1.quantity }
         }
         guard available >= dose * Decimal(subjects.count) else { throw FarmCommandError.insufficientInventory }
@@ -478,7 +642,9 @@ enum FarmCareCommandHandler {
 
     private static func validateReproductionBatch(_ draft: CareReproductionBatchDraft, farmID: UUID, semenCreditSourceID: UUID?, context: ModelContext) throws {
         guard [.breeding, .pregnancyCheck, .abortion].contains(draft.kind), !draft.subjects.isEmpty else { throw FarmCommandError.invalidReproductionRecord }
-        let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
         let eweIDs = Set(draft.subjects.map(\.eweID))
         guard eweIDs.count == draft.subjects.count,
               draft.subjects.allSatisfy({ subject in sheep.contains { $0.id == subject.eweID && $0.farmID == farmID && $0.deletedAt == nil && $0.sex == .ewe } }) else { throw FarmCommandError.reproductionSubjectMustBeEwe }

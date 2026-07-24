@@ -236,12 +236,19 @@ struct SheepRecordHistoryView: View {
         Section("离场") {
             if records.isEmpty { Text("暂无离场记录").foregroundStyle(.secondary) }
             ForEach(records, id: \.id) { record in
-                historyRow(title: record.kind.displayName + " · " + record.reason, date: record.occurredAt, note: record.note) {
+                historyRow(title: removalTitle(record), date: record.occurredAt, note: record.note) {
                     Button("修正") { editingRemoval = record }
                     Button("撤销并恢复在场") { restoreRemoval(record) }
                 }
             }
         }
+    }
+
+    private func removalTitle(_ record: RemovalRecord) -> String {
+        let base = record.kind.displayName + " · " + record.reason
+        guard record.removalBatchID != nil, record.kind == .sold,
+              let total = record.batchTotalAmountText else { return base }
+        return base + " · 同批总额 " + total
     }
 
     @ViewBuilder private func restorableSection(_ records: [TombstoneRecord]) -> some View {
@@ -297,7 +304,7 @@ private struct RecordDeletionTarget {
     let title: String
 }
 
-private struct CorrectWeightView: View {
+struct CorrectWeightView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     let account: AccountProfile; let farm: FarmRecord; let record: WeightRecord
@@ -308,7 +315,7 @@ private struct CorrectWeightView: View {
     private func execute(_ command: FarmCommand) { do { try FarmCommandService().execute(command, in: .init(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); dismiss() } catch { errorMessage = error.localizedDescription } }
 }
 
-private struct CorrectTransferView: View {
+struct CorrectTransferView: View {
     @Environment(\.dismiss) private var dismiss; @Environment(\.modelContext) private var modelContext; @Query(sort: \PenRecord.name) private var pens: [PenRecord]
     let account: AccountProfile; let farm: FarmRecord; let record: TransferRecord
     @State private var toPenID: UUID?; @State private var occurredAt: Date; @State private var note: String; @State private var reason = ""; @State private var errorMessage: String?
@@ -317,11 +324,11 @@ private struct CorrectTransferView: View {
     private func save() { do { try FarmCommandService().execute(.correctTransfer(originalID: record.id, toPenID: toPenID, occurredAt: occurredAt, note: note, reason: reason), in: .init(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); dismiss() } catch { errorMessage = error.localizedDescription } }
 }
 
-private struct CorrectRemovalView: View {
+struct CorrectRemovalView: View {
     @Environment(\.dismiss) private var dismiss; @Environment(\.modelContext) private var modelContext
     let account: AccountProfile; let farm: FarmRecord; let record: RemovalRecord
     @State private var kind: RemovalKind; @State private var reason: String; @State private var amount: String; @State private var occurredAt: Date; @State private var note: String; @State private var correctionReason = ""; @State private var errorMessage: String?
     init(account: AccountProfile, farm: FarmRecord, record: RemovalRecord) { self.account = account; self.farm = farm; self.record = record; _kind = State(initialValue: record.kind); _reason = State(initialValue: record.reason); _amount = State(initialValue: record.amountText ?? ""); _occurredAt = State(initialValue: record.occurredAt); _note = State(initialValue: record.note) }
-    var body: some View { Form { Section("替代记录") { Picker("类型", selection: $kind) { ForEach(RemovalKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }; TextField("离场原因", text: $reason); TextField("金额（可选）", text: $amount).keyboardType(.decimalPad); DatePicker("发生时间", selection: $occurredAt); TextField("备注", text: $note) }; Section("修正原因") { TextField("必填", text: $correctionReason, axis: .vertical) } }.navigationTitle("修正离场").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) } }.recordErrorAlert($errorMessage) }
-    private func save() { do { try FarmCommandService().execute(.correctRemoval(originalID: record.id, kind: kind, reason: reason, amountText: amount, occurredAt: occurredAt, note: note, correctionReason: correctionReason), in: .init(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); dismiss() } catch { errorMessage = error.localizedDescription } }
+    var body: some View { Form { Section("替代记录") { Picker("类型", selection: $kind) { ForEach(RemovalKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }; TextField("离场原因", text: $reason); if record.removalBatchID != nil { if record.kind == .sold { LabeledContent("同批总售卖金额", value: record.batchTotalAmountText ?? "未填写") }; Text("同批离场只有一笔总额，不能在单羊修正中改写。").font(.footnote).foregroundStyle(.secondary) } else { TextField("售卖金额（可选）", text: $amount).keyboardType(.decimalPad) }; DatePicker("发生时间", selection: $occurredAt); TextField("备注", text: $note) }; Section("修正原因") { TextField("必填", text: $correctionReason, axis: .vertical) } }.navigationTitle("修正离场").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) } }.recordErrorAlert($errorMessage) }
+    private func save() { do { try FarmCommandService().execute(.correctRemoval(originalID: record.id, kind: kind, reason: reason, amountText: record.removalBatchID == nil ? amount : nil, occurredAt: occurredAt, note: note, correctionReason: correctionReason), in: .init(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); dismiss() } catch { errorMessage = error.localizedDescription } }
 }

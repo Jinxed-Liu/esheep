@@ -1,10 +1,8 @@
 import Charts
+import ESMotion
 import SwiftUI
 
 struct FarmWeatherDetailView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
-
     let farm: FarmRecord
     let initialWeather: FarmWeatherSnapshot?
 
@@ -12,12 +10,37 @@ struct FarmWeatherDetailView: View {
     @State private var loadError: String?
     @State private var selectedChartMetric: WeatherChartMetric = .temperature
 
+    init(
+        farm: FarmRecord,
+        initialWeather: FarmWeatherSnapshot?,
+        initialDetail: FarmWeatherDetailSnapshot? = nil
+    ) {
+        self.farm = farm
+        self.initialWeather = initialWeather
+        _detail = State(initialValue: initialDetail)
+    }
+
     var body: some View {
+        MotionActivationGate(
+            plan: MotionActivationPlan(
+                contentDelay: .zero,
+                motionDelay: .milliseconds(250)
+            )
+        ) { activation in
+            weatherContent(activation: activation)
+        }
+    }
+
+    private func weatherContent(activation: MotionActivationPhase) -> some View {
         ZStack {
             MetalWeatherBackground(
                 kind: currentWeather?.visualKind ?? .clear,
+                intensity: currentWeather?.visualIntensity.rawValue ?? 0,
+                cloudCover: currentWeather?.visualCloudCover ?? 0,
+                wind: currentWeather?.visualWind ?? 0,
                 isDaylight: currentWeather?.isDaylight ?? true,
-                isPaused: reduceMotion || scenePhase != .active
+                isPaused: !activation.playsContinuousMotion,
+                renderScale: 0.50
             )
             .ignoresSafeArea()
 
@@ -93,7 +116,7 @@ struct FarmWeatherDetailView: View {
                     .font(.system(size: 76, weight: .ultraLight, design: .rounded))
                     .tracking(-4)
                     .contentTransition(.numericText())
-                Text(weather.visualKind.displayName)
+                Text(weather.visualDescription)
                     .font(.title3.weight(.medium))
                 Text("体感 \(weather.apparentTemperatureText)  ·  最高/最低 \(weather.highLowText)")
                     .font(.subheadline.weight(.medium))

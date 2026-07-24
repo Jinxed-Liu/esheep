@@ -142,15 +142,19 @@ enum FarmCommandCloudPayloadEncoder {
             payload.optionalIdentifiers = ["toPenID": toPenID]
             payload.dates = ["occurredAt": occurredAt]
             payload.strings = ["note": note, "reason": reason]
-        case .removeSheep(let sheepID, let kind, let reason, let amountText, let occurredAt, let note):
+        case .removeSheep(let sheepID, let kind, let reason, let amountText, let occurredAt, let note, _, let removalBatchID, let batchTotalAmountText):
             payload.identifiers = ["sheepID": sheepID]
+            payload.optionalIdentifiers = ["removalBatchID": removalBatchID]
             payload.strings = ["kind": kind.rawValue, "reason": reason, "note": note]
-            payload.optionalStrings = ["amountText": amountText]
+            payload.optionalStrings = [
+                "amountText": stableDecimalText(amountText),
+                "batchTotalAmountText": stableDecimalText(batchTotalAmountText),
+            ]
             payload.dates = ["occurredAt": occurredAt]
         case .correctRemoval(let originalID, let kind, let reason, let amountText, let occurredAt, let note, let correctionReason):
             payload.identifiers = ["originalID": originalID]
             payload.strings = ["kind": kind.rawValue, "reason": reason, "note": note, "correctionReason": correctionReason]
-            payload.optionalStrings = ["amountText": amountText]
+            payload.optionalStrings = ["amountText": stableDecimalText(amountText)]
             payload.dates = ["occurredAt": occurredAt]
         case .restoreSheep(let removalID):
             payload.identifiers = ["removalID": removalID]
@@ -223,5 +227,11 @@ enum FarmCommandCloudPayloadEncoder {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(payload)
+    }
+
+    private static func stableDecimalText(_ value: String?) -> String? {
+        value.flatMap {
+            Decimal.stable($0.trimmingCharacters(in: .whitespacesAndNewlines))?.stableText
+        }
     }
 }

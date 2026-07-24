@@ -3,6 +3,145 @@ import XCTest
 @testable import eSheepNext
 
 final class FarmEventHistoryTests: XCTestCase {
+    func testEventEditCapabilitiesDistinguishFactsFromLedgers() {
+        func event(_ entityType: CloudEntityType) -> FarmEventSnapshot {
+            FarmEventSnapshot(
+                id: UUID(),
+                entityType: entityType,
+                category: .herd,
+                occurredAt: .now,
+                recordedAt: .now,
+                title: "测试",
+                subject: "A001",
+                detail: "",
+                note: "",
+                fields: []
+            )
+        }
+
+        XCTAssertEqual(event(.sheep).editCapability, .recordProduction)
+        XCTAssertEqual(event(.weight).editCapability, .editHistoricalFacts)
+        XCTAssertEqual(event(.transfer).editCapability, .editHistoricalFacts)
+        XCTAssertEqual(event(.removal).editCapability, .editHistoricalFacts)
+        XCTAssertEqual(event(.health).editCapability, .editHistoricalFacts)
+        XCTAssertEqual(event(.reproduction).editCapability, .editHistoricalFacts)
+        XCTAssertNil(event(.feed).editCapability)
+        XCTAssertNil(event(.inventoryTransaction).editCapability)
+        XCTAssertNil(event(.semenTransaction).editCapability)
+    }
+
+    @MainActor
+    func testAdministratorCanCorrectHistoryButCannotDeleteIt() throws {
+        let container = try AppSchema.makeContainer(name: "event-edit-permission-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let sheep = SheepRecord(farmID: farmID, earTag: "A001", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: .now)
+        let weight = WeightRecord(farmID: farmID, sheepID: sheep.id, kilogramsText: "40", occurredAt: .now)
+        context.insert(sheep)
+        context.insert(weight)
+        try context.save()
+
+        let service = FarmCommandService()
+        let farmContext = FarmContext(accountID: UUID(), farmID: farmID, role: .administrator)
+        try service.execute(
+            .correctWeight(
+                originalID: weight.id,
+                kilogramsText: "41.5",
+                occurredAt: weight.occurredAt,
+                note: "复称",
+                reason: "录入错误"
+            ),
+            in: farmContext,
+            context: context
+        )
+
+        XCTAssertNotNil(weight.deletedAt)
+        XCTAssertEqual(
+            try context.fetch(FetchDescriptor<WeightRecord>()).first(where: { $0.deletedAt == nil })?.kilogramsText,
+            "41.5"
+        )
+        XCTAssertThrowsError(
+            try service.execute(
+                .tombstoneEntity(entityType: .weight, entityID: weight.id, reason: "删除"),
+                in: farmContext,
+                context: context
+            )
+        ) { error in
+            XCTAssertEqual(error.localizedDescription, FarmPermissionError.denied(.deleteProtectedFacts).localizedDescription)
+        }
+    }
+
+    func testSearchMatchesNormalizedEventContentAndKeepsCurrentOrder() {
+        let first = FarmEventSnapshot(
+            id: UUID(),
+            entityType: .removal,
+            category: .herd,
+            occurredAt: Date(timeIntervalSince1970: 200),
+            recordedAt: Date(timeIntervalSince1970: 200),
+            title: "出售",
+            subject: "A-001",
+            detail: "客户自提",
+            note: "Café 批次",
+            fields: [.init(label: "圈舍", value: "东一圈")]
+        )
+        let second = FarmEventSnapshot(
+            id: UUID(),
+            entityType: .note,
+            category: .note,
+            occurredAt: Date(timeIntervalSince1970: 100),
+            recordedAt: Date(timeIntervalSince1970: 100),
+            title: "备注",
+            subject: "B-002",
+            detail: "观察采食",
+            note: "",
+            fields: []
+        )
+
+        XCTAssertEqual(
+            FarmEventSearch.filter([first, second], query: "  a-001  ", category: nil, scope: .all).map(\.id),
+            [first.id]
+        )
+        XCTAssertEqual(
+            FarmEventSearch.filter([first, second], query: "CAFE", category: nil, scope: .all).map(\.id),
+            [first.id]
+        )
+        XCTAssertEqual(
+            FarmEventSearch.filter([first, second], query: "", category: nil, scope: .all).map(\.id),
+            [first.id, second.id]
+        )
+        XCTAssertTrue(FarmEventSearch.filter([first, second], query: "A-001", category: .note, scope: .all).isEmpty)
+    }
+
+    func testEventRowIdentityIncludesEntityType() {
+        let sharedID = UUID()
+        let weight = FarmEventSnapshot(
+            id: sharedID,
+            entityType: .weight,
+            category: .herd,
+            occurredAt: .now,
+            recordedAt: .now,
+            title: "称重",
+            subject: "A-001",
+            detail: "42 千克",
+            note: "",
+            fields: []
+        )
+        let note = FarmEventSnapshot(
+            id: sharedID,
+            entityType: .note,
+            category: .note,
+            occurredAt: .now,
+            recordedAt: .now,
+            title: "备注",
+            subject: "A-001",
+            detail: "观察采食",
+            note: "",
+            fields: []
+        )
+
+        XCTAssertNotEqual(weight.rowIdentity, note.rowIdentity)
+    }
+
     func testTimelineIncludesFarmEventsAndSortsByOccurredAtDescending() async throws {
         let container = try AppSchema.makeContainer(name: "event-history-\(UUID().uuidString)", isStoredInMemoryOnly: true)
         let context = ModelContext(container)
@@ -27,6 +166,48 @@ final class FarmEventHistoryTests: XCTestCase {
         XCTAssertEqual(events.map(\.occurredAt), events.map(\.occurredAt).sorted(by: >))
         XCTAssertEqual(events.first?.subject, "E001")
         XCTAssertFalse(events.contains { $0.detail.contains("其他牧场") || $0.detail.contains("已撤销") })
+    }
+
+    func testRemovalBatchHistoryUsesOneBatchTotalWithoutPerSheepAmount() async throws {
+        let container = try AppSchema.makeContainer(name: "event-removal-batch-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let batchID = UUID()
+        let first = SheepRecord(farmID: farmID, earTag: "A001", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: .now)
+        let second = SheepRecord(farmID: farmID, earTag: "A002", breed: "杜泊", sex: .ram, penID: nil, enteredAt: .now)
+        let occurredAt = Date(timeIntervalSince1970: 300)
+        context.insert(first)
+        context.insert(second)
+        context.insert(RemovalRecord(
+            farmID: farmID,
+            sheepID: first.id,
+            kind: .sold,
+            reason: "整批出售",
+            removalBatchID: batchID,
+            batchTotalAmountText: "2500",
+            occurredAt: occurredAt
+        ))
+        context.insert(RemovalRecord(
+            farmID: farmID,
+            sheepID: second.id,
+            kind: .sold,
+            reason: "整批出售",
+            removalBatchID: batchID,
+            batchTotalAmountText: "2500",
+            occurredAt: occurredAt
+        ))
+        try context.save()
+
+        let events = try await FarmEventHistoryActor(container: container).load(farmID: farmID)
+        let removals = events.filter { $0.entityType == .removal }
+
+        XCTAssertEqual(removals.count, 2)
+        for event in removals {
+            let fields = Dictionary(uniqueKeysWithValues: event.fields.map { ($0.label, $0.value) })
+            XCTAssertEqual(fields["同批离场数量"], "2 只")
+            XCTAssertEqual(fields["同批总售卖金额"], "2500")
+            XCTAssertNil(fields["售卖金额"])
+        }
     }
 
     func testWeaningEventContainsLambAndPedigreeExportFields() async throws {
@@ -106,6 +287,39 @@ final class FarmEventHistoryTests: XCTestCase {
         XCTAssertEqual(try context.fetch(FetchDescriptor<TombstoneRecord>()).filter { $0.entityID == feed.id }.count, 1)
         XCTAssertEqual(try context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.entityID == feed.id && $0.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue }.count, 1)
         XCTAssertEqual(try context.fetch(FetchDescriptor<OutboxItem>()).count, 1)
+    }
+
+    @MainActor
+    func testDeletingNonTimelineEventDoesNotReplayDailyHerdHistory() throws {
+        let container = try AppSchema.makeContainer(name: "event-delete-no-history-replay-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let pen = PenRecord(farmID: farmID, name: "一号圈")
+        let enteredAt = Date.now.addingTimeInterval(-86_400)
+        let sheep = SheepRecord(farmID: farmID, earTag: "P001", breed: "湖羊", sex: .ewe, penID: pen.id, enteredAt: enteredAt)
+        let weight = WeightRecord(farmID: farmID, sheepID: sheep.id, kilogramsText: "42", occurredAt: .now)
+        let marker = DailyPenCountRecord(
+            farmID: farmID,
+            penID: pen.id,
+            purpose: sheep.purpose,
+            date: Calendar.current.startOfDay(for: enteredAt),
+            count: 1
+        )
+        context.insert(pen)
+        context.insert(sheep)
+        context.insert(weight)
+        context.insert(marker)
+        try context.save()
+
+        try FarmCommandService().execute(
+            .tombstoneEntity(entityType: .weight, entityID: weight.id, reason: "录入错误"),
+            in: FarmContext(accountID: UUID(), farmID: farmID, role: .owner),
+            context: context
+        )
+
+        let daily = try context.fetch(FetchDescriptor<DailyPenCountRecord>()).filter { $0.farmID == farmID }
+        XCTAssertEqual(daily.map(\.id), [marker.id])
+        XCTAssertNotNil(weight.deletedAt)
     }
 
     @MainActor

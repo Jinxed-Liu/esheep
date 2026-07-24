@@ -1,3 +1,4 @@
+import ESMotion
 import OSLog
 import SwiftUI
 
@@ -7,9 +8,8 @@ struct FarmWeatherHero: View {
     let syncText: String
     @Binding var isDetailPresented: Bool
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
     @State private var weather: FarmWeatherSnapshot?
+    @State private var prefetchedDetail: FarmWeatherDetailSnapshot?
     @State private var isLoading = false
     @State private var weatherError: String?
     @Namespace private var weatherTransition
@@ -22,17 +22,25 @@ struct FarmWeatherHero: View {
             } label: {
                 weatherCard
                     .contentShape(.rect(cornerRadius: 28))
-                    .matchedTransitionSource(id: transitionID, in: weatherTransition) { source in
-                        source
-                            .background(AppTheme.pageBackground)
-                            .clipShape(RoundedRectangle(cornerRadius: 28))
-                    }
+                    .motionTransitionSource(
+                        id: MotionTransitionID(transitionID),
+                        in: weatherTransition,
+                        spec: weatherTransitionSpec
+                    )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MotionSurfaceButtonStyle())
             .frame(maxWidth: .infinity)
             .navigationDestination(isPresented: $isDetailPresented) {
-                FarmWeatherDetailView(farm: farm, initialWeather: weather)
-                    .navigationTransition(.zoom(sourceID: transitionID, in: weatherTransition))
+                FarmWeatherDetailView(
+                    farm: farm,
+                    initialWeather: weather,
+                    initialDetail: prefetchedDetail
+                )
+                    .motionTransitionDestination(
+                        id: MotionTransitionID(transitionID),
+                        in: weatherTransition,
+                        spec: weatherTransitionSpec
+                    )
             }
         } else {
             weatherCard
@@ -43,8 +51,12 @@ struct FarmWeatherHero: View {
         ZStack {
             MetalWeatherBackground(
                 kind: weather?.visualKind ?? .clear,
+                intensity: weather?.visualIntensity.rawValue ?? 0,
+                cloudCover: weather?.visualCloudCover ?? 0,
+                wind: weather?.visualWind ?? 0,
                 isDaylight: weather?.isDaylight ?? true,
-                isPaused: reduceMotion || scenePhase != .active
+                isPaused: isDetailPresented,
+                renderScale: 0.75
             )
 
             readabilityGradient
@@ -75,6 +87,9 @@ struct FarmWeatherHero: View {
         .task(id: farm.locationUpdatedAt) {
             await loadWeather()
         }
+        .task(id: farm.locationUpdatedAt) {
+            await prefetchDetail()
+        }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(farm.locationSnapshot == nil ? [] : .isButton)
         .accessibilityHint(farm.locationSnapshot == nil ? "" : "打开完整天气")
@@ -82,6 +97,13 @@ struct FarmWeatherHero: View {
 
     private var transitionID: String {
         "farm-weather-\(farm.id.uuidString)"
+    }
+
+    private var weatherTransitionSpec: MotionTransitionSpec {
+        MotionTransitionSpec(
+            preset: .card,
+            cornerRadius: 28
+        )
     }
 
     private var readabilityGradient: some View {
@@ -137,7 +159,7 @@ struct FarmWeatherHero: View {
                         .font(.system(size: 50, weight: .ultraLight, design: .rounded))
                         .tracking(-2)
                         .contentTransition(.numericText())
-                    Text(weather.visualKind.displayName)
+                    Text(weather.visualDescription)
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.white.opacity(0.86))
                 }
@@ -195,6 +217,7 @@ struct FarmWeatherHero: View {
     private func loadWeather() async {
         guard let location = farm.locationSnapshot else {
             weather = nil
+            prefetchedDetail = nil
             weatherError = nil
             isLoading = false
             return
@@ -204,7 +227,7 @@ struct FarmWeatherHero: View {
         defer { isLoading = false }
         do {
             let snapshot = try await FarmWeatherRepository.shared.currentWeather(for: farm.id, location: location)
-            withAnimation(.smooth(duration: 0.7)) {
+            withAnimation(MotionAnimations.ambientChange) {
                 weather = snapshot
             }
         } catch {
@@ -213,47 +236,67 @@ struct FarmWeatherHero: View {
             Logger.weather.error("WeatherKit current request failed: \(error.localizedDescription, privacy: .public)")
         }
     }
+
+    private func prefetchDetail() async {
+        prefetchedDetail = nil
+        guard let location = farm.locationSnapshot else { return }
+        do {
+            let snapshot = try await FarmWeatherRepository.shared.detailedWeather(
+                for: farm.id,
+                location: location
+            )
+            guard !Task.isCancelled else { return }
+            prefetchedDetail = snapshot
+        } catch {
+            Logger.weather.info("Weather detail prefetch deferred: \(error.localizedDescription, privacy: .public)")
+        }
+    }
 }
 
 private extension Logger {
     static let weather = Logger(subsystem: Bundle.main.bundleIdentifier ?? "eSheepNext", category: "Weather")
 }
 
-struct MetalWeatherBackground: View {
-    let kind: FarmWeatherSnapshot.VisualKind
-    let isDaylight: Bool
-    let isPaused: Bool
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: isPaused)) { timeline in
-            let animationTime = isPaused ? 0 : timeline.date.timeIntervalSinceReferenceDate
-            Rectangle()
-                .fill(.white)
-                .visualEffect { content, proxy in
-                    content.colorEffect(
-                        ShaderLibrary.farmWeatherBackground(
-                            .float2(proxy.size),
-                            .float(animationTime),
-                            .float(kind.rawValue),
-                            .float(isDaylight ? 1 : 0)
-                        )
-                    )
-                }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-}
-
 extension FarmWeatherSnapshot.VisualKind {
-    var displayName: String {
+    func displayName(intensity: FarmWeatherSnapshot.VisualIntensity) -> String {
         switch self {
         case .clear: "晴朗"
+        case .partlyCloudy: "少云"
         case .cloudy: "多云"
-        case .rain: "降雨"
-        case .snow: "降雪"
-        case .storm: "雷暴"
+        case .rain, .sunRain:
+            switch intensity {
+            case .none, .light: "小雨"
+            case .moderate: "中雨"
+            case .heavy: "大雨"
+            case .extreme: "暴雨"
+            }
+        case .snow, .sunSnow:
+            switch intensity {
+            case .none, .light: "小雪"
+            case .moderate: "中雪"
+            case .heavy: "大雪"
+            case .extreme: "暴雪"
+            }
+        case .storm:
+            switch intensity {
+            case .none, .light: "雷阵雨"
+            case .moderate: "雷雨"
+            case .heavy: "强雷雨"
+            case .extreme: "强雷暴"
+            }
         case .fog: "雾"
+        case .haze: "霾"
+        case .wind: "大风"
+        case .dust: "扬沙"
+        case .freezingRain: "冻雨"
+        case .sleet: "雨夹雪"
+        case .hail: "冰雹"
+        case .blowingSnow: "风吹雪"
+        case .tropicalStorm: "热带风暴"
+        case .heat: "高温"
+        case .frigid: "严寒"
+        case .smoke: "烟霾"
+        case .blizzard: "暴风雪"
         }
     }
 }

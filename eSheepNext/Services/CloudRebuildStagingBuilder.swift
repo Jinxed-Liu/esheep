@@ -31,29 +31,8 @@ enum CloudRebuildStagingBuilder {
             updatedAt: bundle.root.modifiedAt
         ))
 
-        let service = RemoteDomainApplyService()
-        let mapper = CloudRecordMapper()
-        var earliestHistoryChange: Date?
-        for envelope in bundle.operations {
-            switch try service.apply(envelope, context: context) {
-            case .applied(let changedAt):
-                if let changedAt {
-                    earliestHistoryChange = min(earliestHistoryChange ?? changedAt, changedAt)
-                }
-            case .duplicate:
-                break
-            case .conflict:
-                throw CloudRebuildError.stagingValidation("操作 \(envelope.operationID.uuidString) 产生业务冲突。")
-            }
-            context.insert(CloudOperationReceipt(
-                farmID: bundle.farmID,
-                operationID: envelope.operationID,
-                recordName: mapper.recordName(for: envelope.operationID),
-                serverChangeTag: nil,
-                databaseScope: bundle.scope
-            ))
-        }
-
+        // Assets must exist before tombstone operations are replayed; otherwise
+        // a deleted cloud photo is inserted after its deletion and reappears.
         for snapshot in bundle.assets {
             let source = workspace.appending(path: snapshot.relativePath)
             guard FileManager.default.fileExists(atPath: source.path) else {
@@ -77,9 +56,38 @@ enum CloudRebuildStagingBuilder {
             photo.cloudPixelWidth = snapshot.envelope.pixelWidth
             photo.cloudPixelHeight = snapshot.envelope.pixelHeight
             photo.capturedAt = snapshot.envelope.capturedAt
+            photo.createdAt = snapshot.envelope.createdAt
             photo.cloudRecordName = snapshot.cloudRecordName
             photo.isCloudAuthoritative = true
             context.insert(photo)
+        }
+
+        // The staging business store starts empty, so a replay-local index can
+        // safely avoid thousands of unindexed existence/reference table scans.
+        let service = RemoteDomainApplyService(replayAssumesEmptyBusinessStore: true)
+        let mapper = CloudRecordMapper()
+        var earliestHistoryChange: Date?
+        for (index, envelope) in bundle.operations.enumerated() {
+            if index.isMultiple(of: 500) {
+                try Task.checkCancellation()
+            }
+            switch try service.apply(envelope, context: context) {
+            case .applied(let changedAt):
+                if let changedAt {
+                    earliestHistoryChange = min(earliestHistoryChange ?? changedAt, changedAt)
+                }
+            case .duplicate:
+                break
+            case .conflict:
+                throw CloudRebuildError.stagingValidation("操作 \(envelope.operationID.uuidString) 产生业务冲突。")
+            }
+            context.insert(CloudOperationReceipt(
+                farmID: bundle.farmID,
+                operationID: envelope.operationID,
+                recordName: mapper.recordName(for: envelope.operationID),
+                serverChangeTag: nil,
+                databaseScope: bundle.scope
+            ))
         }
 
         if let snapshot = bundle.membershipSnapshot {

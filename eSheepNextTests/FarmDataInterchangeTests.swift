@@ -112,6 +112,193 @@ final class FarmDataInterchangeTests: XCTestCase {
         XCTAssertFalse(sheets.contains { $0.name == "转群" })
     }
 
+    func testRemovalExcelTemplateUsesOneBatchTotalInsteadOfPerSheepAmount() throws {
+        let data = try FarmExcelImportService.templateData(sheetNames: ["离场"])
+        let sheets = try XLSXCodec.decodeSheets(data)
+        let removal = try XCTUnwrap(sheets.first { $0.name == "离场" })
+
+        XCTAssertEqual(
+            removal.rows.first,
+            ["导入键", "羊只耳号列表", "类型", "原因", "总售卖金额", "发生日期", "备注"]
+        )
+        XCTAssertTrue(removal.rows.first?.contains("金额") == false)
+        XCTAssertTrue(data.range(of: Data("不填写或推算单羊价格".utf8)) != nil)
+    }
+
+    func testRemovalExcelBatchImportsOneTotalWithoutPerSheepPrices() throws {
+        let container = try AppSchema.makeContainer(name: "excel-removal-batch-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let owner = AccountProfile(appleUserIdentifier: "excel-removal-owner", displayName: "场主")
+        let farm = FarmRecord(ownerAccountID: owner.effectiveAccountID, name: "测试场")
+        let first = SheepRecord(farmID: farm.id, earTag: "A001", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: date("2026-01-01"))
+        let second = SheepRecord(farmID: farm.id, earTag: "A002", breed: "杜泊", sex: .ram, penID: nil, enteredAt: date("2026-01-01"))
+        context.insert(owner); context.insert(farm); context.insert(first); context.insert(second)
+        try context.save()
+        let workbook = try XLSXCodec.encode(sheets: [.init(name: "离场", rows: [
+            ["导入键", "羊只耳号列表", "类型", "原因", "总售卖金额", "发生日期", "备注"],
+            ["sale-2026-01", "A001; A002", "出售", "整批出售", "2500.00", "2026-07-21", "同车出栏"]
+        ])])
+
+        let preview = try FarmExcelImportService.preview(
+            data: workbook,
+            farm: farm,
+            context: context,
+            allowedSheetNames: ["离场"]
+        )
+
+        XCTAssertTrue(preview.canCommit, preview.issues.map(\.message).joined(separator: "\n"))
+        XCTAssertEqual(preview.rows.count, 1)
+        XCTAssertEqual(preview.expandedRecordCount, 2)
+        XCTAssertEqual(preview.removalBatchSummaries.first?.sheepCount, 2)
+        XCTAssertEqual(preview.removalBatchSummaries.first?.totalAmountText, "2500")
+        XCTAssertEqual(try FarmExcelImportService.commit(preview, account: owner, farm: farm, context: context), 2)
+
+        let removals = try context.fetch(FetchDescriptor<RemovalRecord>()).filter { $0.farmID == farm.id && $0.deletedAt == nil }
+        XCTAssertEqual(removals.count, 2)
+        XCTAssertEqual(Set(removals.compactMap(\.removalBatchID)).count, 1)
+        XCTAssertTrue(removals.allSatisfy { $0.removalBatchID != nil })
+        XCTAssertTrue(removals.allSatisfy { $0.amountText == nil })
+        XCTAssertTrue(removals.allSatisfy { $0.batchTotalAmountText == "2500" })
+        XCTAssertEqual(Set(removals.map(\.sheepID)), [first.id, second.id])
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.farmID == farm.id }
+        XCTAssertEqual(operations.count, 2)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let payloads = try operations.map {
+            try decoder.decode(FarmCommandCloudPayload.self, from: $0.payload)
+        }
+        let payloadBatchIDs = payloads.compactMap { payload in
+            payload.optionalIdentifiers["removalBatchID"].flatMap { $0 }
+        }
+        XCTAssertEqual(Set(payloadBatchIDs).count, 1)
+        XCTAssertTrue(payloads.allSatisfy { $0.optionalStrings["amountText"].flatMap { $0 } == nil })
+        XCTAssertTrue(payloads.allSatisfy { $0.optionalStrings["batchTotalAmountText"].flatMap { $0 } == "2500" })
+        XCTAssertEqual(try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.farmID == farm.id }.count, 2)
+    }
+
+    func testLegacySingleSheepRemovalHeadersRemainCompatibleAsOneSheepBatch() throws {
+        let container = try AppSchema.makeContainer(name: "excel-removal-legacy-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let owner = AccountProfile(appleUserIdentifier: "excel-removal-legacy-owner", displayName: "场主")
+        let farm = FarmRecord(ownerAccountID: owner.effectiveAccountID, name: "测试场")
+        let sheep = SheepRecord(farmID: farm.id, earTag: "A001", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: date("2026-01-01"))
+        context.insert(owner); context.insert(farm); context.insert(sheep); try context.save()
+        let workbook = try XLSXCodec.encode(sheets: [.init(name: "离场", rows: [
+            ["导入键", "耳号", "类型", "原因", "金额", "发生日期", "备注"],
+            ["legacy-sale-1", "A001", "出售", "出售", "1200", "2026-07-21", "旧模板"]
+        ])])
+
+        let preview = try FarmExcelImportService.preview(
+            data: workbook,
+            farm: farm,
+            context: context,
+            allowedSheetNames: ["离场"]
+        )
+
+        XCTAssertTrue(preview.canCommit, preview.issues.map(\.message).joined(separator: "\n"))
+        XCTAssertEqual(preview.rows.first?["羊只耳号列表"], "A001")
+        XCTAssertEqual(preview.rows.first?["总售卖金额"], "1200")
+        XCTAssertEqual(preview.removalBatchSummaries.first?.sheepCount, 1)
+        XCTAssertEqual(try FarmExcelImportService.commit(preview, account: owner, farm: farm, context: context), 1)
+        let removal = try XCTUnwrap(context.fetch(FetchDescriptor<RemovalRecord>()).first { $0.farmID == farm.id })
+        XCTAssertNil(removal.amountText)
+        XCTAssertNotNil(removal.removalBatchID)
+        XCTAssertEqual(removal.batchTotalAmountText, "1200")
+    }
+
+    func testRemovalBatchRequiresOneTotalAndRejectsRepeatedEarTags() throws {
+        let container = try AppSchema.makeContainer(name: "excel-removal-validation-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let owner = AccountProfile(appleUserIdentifier: "excel-removal-validation-owner", displayName: "场主")
+        let farm = FarmRecord(ownerAccountID: owner.effectiveAccountID, name: "测试场")
+        context.insert(owner); context.insert(farm)
+        context.insert(SheepRecord(farmID: farm.id, earTag: "A001", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: date("2026-01-01")))
+        context.insert(SheepRecord(farmID: farm.id, earTag: "A002", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: date("2026-01-01")))
+        try context.save()
+        let workbook = try XLSXCodec.encode(sheets: [.init(name: "离场", rows: [
+            ["导入键", "羊只耳号列表", "类型", "原因", "总售卖金额", "发生日期", "备注"],
+            ["sale-no-total", "A001;A001", "出售", "出售", "", "2026-07-21", ""],
+            ["death-with-total", "A002", "死亡", "疾病", "500", "2026-07-21", ""]
+        ])])
+
+        let preview = try FarmExcelImportService.preview(
+            data: workbook,
+            farm: farm,
+            context: context,
+            allowedSheetNames: ["离场"]
+        )
+
+        XCTAssertFalse(preview.canCommit)
+        XCTAssertTrue(preview.issues.contains { $0.row == 2 && $0.field == "总售卖金额" && $0.severity == .error })
+        XCTAssertTrue(preview.issues.contains { $0.row == 2 && $0.field == "羊只耳号列表" && $0.severity == .error })
+        XCTAssertTrue(preview.issues.contains { $0.row == 3 && $0.field == "总售卖金额" && $0.severity == .error })
+    }
+
+    func testLargeRemovalBatchImportDoesNotRepeatWholeHerdHistoryWork() throws {
+        let container = try AppSchema.makeContainer(name: "excel-removal-large-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let owner = AccountProfile(appleUserIdentifier: "excel-removal-large-owner", displayName: "场主")
+        let farm = FarmRecord(ownerAccountID: owner.effectiveAccountID, name: "测试场")
+        let sheep = (0..<20).map { index in
+            SheepRecord(
+                farmID: farm.id,
+                earTag: String(format: "SALE-%03d", index),
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                enteredAt: .now.addingTimeInterval(-86_400)
+            )
+        }
+        context.insert(owner)
+        context.insert(farm)
+        sheep.forEach(context.insert)
+        try context.save()
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        let row = FarmExcelRow(
+            sheet: "离场",
+            rowNumber: 2,
+            values: [
+                "导入键": "large-sale",
+                "羊只耳号列表": sheep.map(\.earTag).joined(separator: ";"),
+                "类型": "出售",
+                "原因": "整批出售",
+                "总售卖金额": "20000",
+                "发生日期": formatter.string(from: .now.addingTimeInterval(-2 * 86_400)),
+                "备注": "性能回归",
+            ]
+        )
+        let preview = FarmExcelPreview(rows: [row], issues: [], summaries: [.init(name: "离场", rowCount: 1)])
+        var historyRebuildCount = 0
+        var rebuiltSheepIDs = Set<UUID>()
+        let commandService = FarmCommandService(historyRebuildObserver: { sheepIDs, _ in
+            historyRebuildCount += 1
+            rebuiltSheepIDs.formUnion(sheepIDs)
+        })
+
+        let startedAt = Date.timeIntervalSinceReferenceDate
+        let imported = try FarmExcelImportService.commit(
+            preview,
+            account: owner,
+            farm: farm,
+            context: context,
+            commandService: commandService
+        )
+        let elapsed = Date.timeIntervalSinceReferenceDate - startedAt
+        print("LARGE_REMOVAL_IMPORT_SECONDS=\(elapsed)")
+
+        XCTAssertEqual(imported, sheep.count)
+        XCTAssertEqual(historyRebuildCount, 1)
+        XCTAssertEqual(rebuiltSheepIDs, Set(sheep.map(\.id)))
+        XCTAssertTrue(sheep.allSatisfy { $0.status == .removed && $0.removedAt != nil })
+        XCTAssertEqual(try context.fetch(FetchDescriptor<RemovalRecord>()).filter { $0.farmID == farm.id }.count, sheep.count)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.farmID == farm.id }.count, sheep.count)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.farmID == farm.id }.count, sheep.count)
+    }
+
     func testPageExcelPreviewIgnoresOtherEntrySheetsAndOnlyCommitsCurrentPage() throws {
         let container = try AppSchema.makeContainer(name: "excel-page-scope-\(UUID().uuidString)", isStoredInMemoryOnly: true)
         let context = ModelContext(container)
@@ -214,6 +401,33 @@ final class FarmDataInterchangeTests: XCTestCase {
         XCTAssertFalse(try context.fetch(FetchDescriptor<PenRecord>()).contains { $0.farmID == farm.id })
         XCTAssertFalse(try context.fetch(FetchDescriptor<DomainOperation>()).contains { $0.farmID == farm.id })
         XCTAssertFalse(try context.fetch(FetchDescriptor<OutboxItem>()).contains { $0.farmID == farm.id })
+    }
+
+    func testCommandBatchFlushesRemovalProjectionBeforeLaterMembershipValidation() throws {
+        let container = try AppSchema.makeContainer(name: "excel-history-flush-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let owner = AccountProfile(appleUserIdentifier: "excel-history-flush-owner", displayName: "场主")
+        let farm = FarmRecord(ownerAccountID: owner.effectiveAccountID, name: "测试场")
+        let enteredAt = Date.now.addingTimeInterval(-86_400)
+        let sheep = SheepRecord(farmID: farm.id, earTag: "FLUSH-001", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: enteredAt)
+        context.insert(owner)
+        context.insert(farm)
+        context.insert(sheep)
+        try context.save()
+        let farmContext = FarmContext(accountID: owner.effectiveAccountID, farmID: farm.id, role: farm.role)
+
+        XCTAssertThrowsError(try FarmCommandService().executeBatch([
+            .removeSheep(sheepID: sheep.id, kind: .sold, reason: "出售", amountText: "1000", occurredAt: .now, note: ""),
+            .createBatch(name: "不应创建", purpose: "育肥", startedAt: enteredAt, sheepIDs: [sheep.id], note: ""),
+        ], in: farmContext, context: context)) { error in
+            XCTAssertEqual(error.localizedDescription, FarmCommandError.sheepNotFound.localizedDescription)
+        }
+
+        XCTAssertEqual(sheep.status, .active)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<RemovalRecord>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<ProductionBatchRecord>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<DomainOperation>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<OutboxItem>()).isEmpty)
     }
 
     private func date(_ value: String) -> Date {

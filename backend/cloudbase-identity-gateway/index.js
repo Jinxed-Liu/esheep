@@ -142,6 +142,20 @@ async function route({ request, pathname, fetchImpl, env, service }) {
     const input = await readJSON(request);
     return [200, await service.updateAccountDisplayName(auth.accountID, input.displayName)];
   }
+  if (request.method === "GET" && pathname === "/v1/account/avatar") {
+    return [200, await service.accountAvatar(auth.accountID, false)];
+  }
+  if (request.method === "GET" && pathname === "/v1/account/avatar/content") {
+    return [200, await service.accountAvatar(auth.accountID, true)];
+  }
+  if (request.method === "PUT" && pathname === "/v1/account/avatar") {
+    await service.consumeRateLimit("avatar_update", auth.accountID, 20, 15 * 60);
+    return [200, await service.updateAccountAvatar(auth.accountID, await readJSON(request))];
+  }
+  if (request.method === "DELETE" && pathname === "/v1/account/avatar") {
+    await service.consumeRateLimit("avatar_update", auth.accountID, 20, 15 * 60);
+    return [200, await service.removeAccountAvatar(auth.accountID)];
+  }
   if (request.method === "POST" && pathname === "/v1/auth/logout") {
     await cloudBaseRequest(fetchImpl, env.CLOUDBASE_AUTH_BASE_URL, "/auth/v1/logout", {}, { authorization: auth.bearer }).catch(() => undefined);
     return [204];

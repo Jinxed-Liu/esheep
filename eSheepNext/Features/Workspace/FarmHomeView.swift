@@ -1,3 +1,4 @@
+import ESMotion
 import SwiftData
 import SwiftUI
 
@@ -44,7 +45,11 @@ struct FarmHomeView: View {
         .background(AppTheme.pageBackground)
         .navigationDestination(item: $selectedMetric) { destination in
             metricDestination(destination)
-                .navigationTransition(.zoom(sourceID: destination.id, in: metricTransition))
+                .motionTransitionDestination(
+                    id: MotionTransitionID(destination.id),
+                    in: metricTransition,
+                    spec: metricTransitionSpec
+                )
                 .toolbarVisibility(.hidden, for: .tabBar)
         }
         .onChange(of: selectedMetric) { _, destination in
@@ -95,16 +100,24 @@ struct FarmHomeView: View {
         } label: {
             HomeMetric(title: destination.title, value: "\(value)", symbol: destination.symbol)
                 .contentShape(.rect(cornerRadius: 20))
-                .matchedTransitionSource(id: destination.id, in: metricTransition) { source in
-                    source
-                        .background(AppTheme.pageBackground)
-                        .clipShape(.rect(cornerRadius: 20))
-                }
+                .motionTransitionSource(
+                    id: MotionTransitionID(destination.id),
+                    in: metricTransition,
+                    spec: metricTransitionSpec,
+                    background: AppTheme.pageBackground
+                )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionSurfaceButtonStyle())
         .frame(maxWidth: .infinity)
         .accessibilityLabel("\(destination.title)，\(value)")
         .accessibilityHint("打开完整页面")
+    }
+
+    private var metricTransitionSpec: MotionTransitionSpec {
+        MotionTransitionSpec(
+            preset: .listItem,
+            cornerRadius: 20
+        )
     }
 
     @ViewBuilder

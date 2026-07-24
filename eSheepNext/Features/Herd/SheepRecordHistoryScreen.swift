@@ -120,7 +120,11 @@ struct SheepRecordHistoryScreen: View {
                 emptyRow("暂无离场记录")
             } else {
                 ForEach(records) { record in
-                    historyRow(title: record.kind.displayName + " · " + record.reason, date: record.occurredAt, note: record.note) {
+                    historyRow(
+                        title: removalTitle(record),
+                        date: record.occurredAt,
+                        note: record.note
+                    ) {
                         Button("修正") { editingRemoval = record }
                         Button("撤销并恢复在场") {
                             execute(.restoreSheep(removalID: record.id))
@@ -130,6 +134,13 @@ struct SheepRecordHistoryScreen: View {
                 }
             }
         }
+    }
+
+    private func removalTitle(_ record: SheepHistoryRemoval) -> String {
+        let base = record.kind.displayName + " · " + record.reason
+        guard record.removalBatchID != nil, record.kind == .sold,
+              let total = record.batchTotalAmountText else { return base }
+        return base + " · 同批总额 " + total
     }
 
     private func tombstoneCard(_ records: [SheepHistoryTombstone]) -> some View {
@@ -365,7 +376,16 @@ private struct SnapshotCorrectRemovalView: View {
             Section("替代记录") {
                 Picker("类型", selection: $kind) { ForEach(RemovalKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }
                 TextField("离场原因", text: $reason)
-                TextField("金额（可选）", text: $amount).keyboardType(.decimalPad)
+                if record.removalBatchID != nil {
+                    if record.kind == .sold {
+                        LabeledContent("同批总售卖金额", value: record.batchTotalAmountText ?? "未填写")
+                    }
+                    Text("同批离场只有一笔总额，不能在单羊修正中改写。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    TextField("售卖金额（可选）", text: $amount).keyboardType(.decimalPad)
+                }
                 DatePicker("发生时间", selection: $occurredAt)
                 TextField("备注", text: $note)
             }
@@ -384,7 +404,7 @@ private struct SnapshotCorrectRemovalView: View {
             originalID: record.id,
             kind: kind,
             reason: reason,
-            amountText: amount,
+            amountText: record.removalBatchID == nil ? amount : nil,
             occurredAt: occurredAt,
             note: note,
             correctionReason: correctionReason

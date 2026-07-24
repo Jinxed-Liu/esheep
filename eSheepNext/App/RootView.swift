@@ -6,6 +6,8 @@ struct RootView: View {
     @Environment(AppSession.self) private var session
     @Environment(CloudCollaborationStore.self) private var collaboration
     @Environment(SubscriptionService.self) private var subscription
+    @Environment(AppPreferences.self) private var preferences
+    @Environment(\.scenePhase) private var scenePhase
     @Query private var accounts: [AccountProfile]
     @Query(sort: \FarmRecord.updatedAt, order: .reverse) private var farms: [FarmRecord]
     @Query private var cloudBindings: [CloudFarmBinding]
@@ -14,36 +16,33 @@ struct RootView: View {
     @Query private var pens: [PenRecord]
     @Query private var feeds: [FeedRecord]
     @Query private var migrationCommits: [MigrationCommitRecord]
-    @State private var credentialStatus: AppleCredentialStatus = .checking
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         @Bindable var session = session
 
         Group {
-            if let account = activeAccount {
-                switch credentialStatus {
-                case .authorized, .transferred:
-                    if visibleFarms.isEmpty {
-                        FarmSetupView(account: account)
-                    } else {
-                        FarmWorkspaceView(account: account, farms: visibleFarms)
-                    }
-                case .checking:
-                    ProgressView("正在验证 Apple 登录状态")
-                case .requiresSignIn:
-                    WelcomeView(reauthenticationRequired: true)
-                case .unavailable(let message):
-                    ContentUnavailableView("无法验证登录状态", systemImage: "person.crop.circle.badge.exclamationmark", description: Text(message))
+            if let account = activeAccount, hasPersistedLocalAccount(for: account) {
+                if visibleFarms.isEmpty {
+                    FarmSetupView(account: account)
+                } else {
+                    FarmWorkspaceView(account: account, farms: visibleFarms)
                 }
             } else {
-                WelcomeView()
+                WelcomeView(reauthenticationRequired: activeAccount != nil)
             }
         }
         .sheet(isPresented: $session.isCreateFarmPresented) {
             if let account = activeAccount {
                 CreateFarmSheet(account: account)
             }
+        }
+        .sheet(isPresented: $session.isJoinFarmPresented) {
+            if let account = activeAccount {
+                JoinFarmView(account: account)
+            }
+        }
+        .sheet(isPresented: $session.isReauthenticationPresented) {
+            WelcomeView(reauthenticationRequired: true)
         }
         .task(id: visibleFarms.map(\.id)) {
             session.reconcileActiveFarm(with: visibleFarms)
@@ -52,11 +51,15 @@ struct RootView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                preferences.refreshSystemPowerState()
                 session.consumePendingNavigationRequest()
                 session.consumeSystemNavigationTarget()
             } else if phase == .background {
                 FarmBackgroundRefresh.schedule()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
+            preferences.refreshSystemPowerState()
         }
         .onOpenURL { url in
             guard let target = FarmSystemIntegrationService.target(from: url) else { return }
@@ -85,52 +88,83 @@ struct RootView: View {
             await FarmSystemIntegrationService.publish(snapshot)
         }
         .task(id: authenticationTaskID) {
-            if let account = activeAccount {
-                guard account.serverBindingState == .verified,
-                      SecureAccountStore.hasWorkerSession(for: account.effectiveAccountID) else {
-                    credentialStatus = .requiresSignIn
-                    await collaboration.refreshAccountAvailability()
-                    subscription.reset()
-                    return
-                }
-                credentialStatus = await restoredCredentialStatus(for: account)
-            } else {
-                credentialStatus = .requiresSignIn
-            }
-            await collaboration.refreshAccountAvailability()
-            if let account = activeAccount {
-                await subscription.activate(accountID: account.effectiveAccountID)
-            } else {
-                subscription.reset()
-            }
+            await verifyActiveAccount()
         }
         .task(id: foregroundCloudSyncTaskID) {
+            let activeFarmIDs = Set(activeCloudBindings.filter { $0.state == .active }.map(\.farmID))
             guard scenePhase == .active,
+                  session.accountAccessStatus.allowsCloudOperations,
                   CloudFeatureConfiguration.isEnabled,
                   activeAccount?.serverBindingState == .verified,
                   !migrationCommits.contains(where: {
-                      $0.ownerAccountID == activeAccount?.effectiveAccountID && $0.cloudState != .synced
+                      activeFarmIDs.contains($0.farmID) &&
+                      $0.ownerAccountID == activeAccount?.effectiveAccountID &&
+                      $0.cloudState != .synced
                   }),
-                  activeCloudBindings.contains(where: { $0.state == .active }) else { return }
+                  !activeFarmIDs.isEmpty else { return }
             await collaboration.synchronizeNow()
+        }
+        .task(id: accountAvatarCloudTaskID) {
+            guard scenePhase == .active,
+                  session.accountAccessStatus.allowsCloudOperations,
+                  let account = activeAccount,
+                  account.serverBindingState == .verified,
+                  IdentityWorkerConfiguration.baseURL != nil else { return }
+            while !Task.isCancelled {
+                do {
+                    try await AccountAvatarCloudSyncService.shared.synchronize(
+                        account: account,
+                        context: modelContext
+                    )
+                } catch is CancellationError {
+                    return
+                } catch {
+                    // Avatar sync must never block farm access. The editor
+                    // presents explicit upload/removal errors to the user.
+                    #if DEBUG
+                    print("[AccountAvatarCloudSync] \(error)")
+                    #endif
+                }
+                do {
+                    try await Task.sleep(for: preferences.avatarSyncInterval)
+                } catch {
+                    return
+                }
+            }
         }
         .task(id: migrationCloudTaskID) {
             guard scenePhase == .active,
+                  session.accountAccessStatus.allowsCloudOperations,
                   let account = activeAccount,
                   account.serverBindingState == .verified else { return }
+            let accountID = account.effectiveAccountID
+            guard session.beginAutomaticCloudRecovery(accountID: accountID) else { return }
+            defer { session.finishAutomaticCloudRecovery(accountID: accountID) }
+
+            // The authoritative source device must be allowed to finish its
+            // immutable migration upload before any recovery root preflight.
+            // A slow CloudKit root read must never sit in front of the Outbox
+            // drain and make an in-progress migration appear stalled.
+            await collaboration.resumeAutomaticMigrationUploads(accountID: accountID)
+            guard !Task.isCancelled else { return }
             do {
-                _ = try MigrationCloudBootstrapService().upgradeEligibleLegacyFarms(
-                    accountID: account.effectiveAccountID,
-                    context: modelContext
-                )
+                _ = try await OwnerFarmRecoveryCoordinator(
+                    modelContainer: modelContext.container
+                ).stageMismatchedActiveOwnerFarms(accountID: accountID)
+            } catch is CancellationError {
+                return
             } catch {
+                // A transient root preflight failure must not prevent a farm
+                // already locked in rebuildingCache from resuming its staged
+                // recovery on this foreground pass.
                 collaboration.lastErrorMessage = error.localizedDescription
             }
-            await collaboration.discoverAndRestoreOwnerFarms(accountID: account.effectiveAccountID)
-            await collaboration.resumeAutomaticMigrationUploads(accountID: account.effectiveAccountID)
+            await collaboration.discoverAndRestoreOwnerFarms(accountID: accountID)
         }
         .task(id: maintenanceTaskID) {
-            guard let account = activeAccount, account.serverBindingState == .verified else { return }
+            guard session.accountAccessStatus.allowsCloudOperations,
+                  let account = activeAccount,
+                  account.serverBindingState == .verified else { return }
             while !Task.isCancelled {
                 let farmIDs = activeCloudBindings.filter { $0.state == .active }.map(\.farmID)
                 await collaboration.performIdentityMaintenance(accountID: account.effectiveAccountID, farmIDs: farmIDs)
@@ -157,34 +191,46 @@ struct RootView: View {
         return accounts.first(where: { $0.id == profileID })
     }
 
-    private func restoredCredentialStatus(for account: AccountProfile) async -> AppleCredentialStatus {
-        let appleStatus: AppleCredentialStatus
-        if account.authenticationMethod == .password {
-            appleStatus = .authorized
-        } else {
-            appleStatus = await AppleCredentialVerifier.currentStatus()
-            if appleStatus == .requiresSignIn { return .requiresSignIn }
+    private func hasPersistedLocalAccount(for account: AccountProfile) -> Bool {
+        SecureAccountStore.hasPersistedSession(for: account.effectiveAccountID)
+    }
+
+    private func verifyActiveAccount() async {
+        guard scenePhase == .active else { return }
+        guard let account = activeAccount else {
+            session.authenticationCheckDidFinish(
+                .requiresSignIn("请登录账户后继续。"),
+                automaticallyPresentReauthentication: false
+            )
+            subscription.reset()
+            return
         }
 
-        do {
-            let remote = try await IdentityWorkerClient.shared.restoreSession()
-            guard remote.accountID == account.effectiveAccountID, remote.status == "active" else {
-                try? SecureAccountStore.removeLoginSecrets()
-                return .requiresSignIn
-            }
-            return appleStatus == .transferred ? .transferred : .authorized
-        } catch is URLError {
-            return appleStatus == .transferred ? .transferred : .authorized
-        } catch let error as IdentityWorkerError {
-            if case .networkUnavailable = error {
-                return appleStatus == .transferred ? .transferred : .authorized
-            }
-            try? SecureAccountStore.removeLoginSecrets()
-            return .requiresSignIn
-        } catch {
-            try? SecureAccountStore.removeLoginSecrets()
-            return .requiresSignIn
+        guard account.serverBindingState == .verified,
+              hasPersistedLocalAccount(for: account) else {
+            session.authenticationCheckDidFinish(
+                .requiresSignIn("本机登录会话不存在，请重新登录。"),
+                automaticallyPresentReauthentication: false
+            )
+            subscription.reset()
+            return
         }
+
+        let status = await AccountAccessResolver.resolve(for: account)
+        guard !Task.isCancelled else { return }
+
+        session.authenticationCheckDidFinish(
+            status,
+            automaticallyPresentReauthentication: true
+        )
+
+        guard status.allowsCloudOperations else {
+            subscription.reset()
+            return
+        }
+
+        await collaboration.refreshAccountAvailability()
+        await subscription.activate(accountID: account.effectiveAccountID)
     }
 
     private var visibleFarms: [FarmRecord] {
@@ -203,36 +249,39 @@ struct RootView: View {
     private var maintenanceTaskID: String {
         let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
         let farmPart = activeCloudBindings.filter { $0.state == .active }.map(\.farmID.uuidString).sorted().joined(separator: ",")
-        return "\(accountPart)|\(farmPart)"
+        return "\(accountPart)|\(farmPart)|\(session.accountAccessStatus.taskKey)"
     }
 
     private var authenticationTaskID: String {
-        return "\(session.activeAccountProfileID?.uuidString ?? "none")|\(session.authenticationRevision)"
+        "\(scenePhase)|\(session.activeAccountProfileID?.uuidString ?? "none")|\(session.authenticationRevision)"
     }
 
     private var foregroundCloudSyncTaskID: String {
         let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
-        let bindingPart = activeCloudBindings
-            .filter { $0.state == .active }
-            .map { $0.farmID.uuidString }
+        let activeFarmIDs = Set(activeCloudBindings.filter { $0.state == .active }.map(\.farmID))
+        let bindingPart = activeFarmIDs
+            .map(\.uuidString)
             .sorted()
             .joined(separator: ",")
-        return "\(scenePhase)|\(accountPart)|\(bindingPart)"
+        let migrationPart = migrationCommits
+            .filter { activeFarmIDs.contains($0.farmID) }
+            .map { "\($0.farmID.uuidString):\($0.cloudState.rawValue)" }
+            .sorted()
+            .joined(separator: ",")
+        return "\(scenePhase)|\(accountPart)|\(bindingPart)|\(migrationPart)|\(session.accountAccessStatus.taskKey)"
     }
 
     private var migrationCloudTaskID: String {
         let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
-        let commitPart = migrationCommits
-            .filter { $0.ownerAccountID == activeAccount?.effectiveAccountID }
-            // Do not include cloud state, retry count or Outbox state here. The
-            // upload task mutates those values itself; using them as task
-            // identity makes SwiftUI cancel and recreate the same upload while
-            // it is provisioning the CloudKit zone.
-            .map { "\($0.id.uuidString):\($0.baselineDigest)" }
-            .sorted()
-            .joined(separator: ",")
-        let legacyPart = farms.filter(\.isLocalOnlyMigration).map(\.id.uuidString).sorted().joined(separator: ",")
-        return "\(scenePhase)|\(accountPart)|\(commitPart)|\(legacyPart)"
+        // Cache replacement inserts the recovered migration commit and legacy
+        // cleanup deletes the superseded one. Neither may change this task's
+        // identity or SwiftUI will cancel and restart the recovery mid-commit.
+        return "\(scenePhase)|\(accountPart)|\(session.accountAccessStatus.taskKey)"
+    }
+
+    private var accountAvatarCloudTaskID: String {
+        let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
+        return "\(scenePhase)|\(accountPart)|\(preferences.effectivePowerSavingEnabled)|\(session.accountAccessStatus.taskKey)"
     }
 
     private var systemSnapshotRevision: String {

@@ -7,6 +7,7 @@
 - 登录页同时提供邮箱验证码注册、账号密码登录和 Sign in with Apple；无牧场首页和牧场设置均提供退出登录。退出会撤销 CloudBase Session，只清除本机登录令牌与 Apple 登录标识，保留牧场缓存和设备身份。
 - 已保存的本地工作区不再绕过真实会话门禁：只有持久化 CloudBase Session 有效，且 Apple 账号主体校验一致时才进入牧场；服务不可用或账号主体不一致会明确拒绝登录，不再显示为“迁移中”后继续使用本地身份。
 - 多牧场本地隔离：每条业务实体、操作审计和 Outbox 都强制携带 `farmID`。
+- SwiftData 已冻结为正式 `1.0.0` 版本化 Schema，并通过显式 `SchemaMigrationPlan` 打开持久化容器；启动失败不再崩溃，而是进入可重试、可导出诊断、可隔离原库的恢复入口。
 - 统一命令管道：角色能力校验、业务验证、SwiftData 保存、`DomainOperation` 审计和 Outbox 入队。
 - 首页可直接进入建羊、称重、转群和离场；统一导航也支持搜索结果和 App Intent 直接打开羊只详情。
 - 圈舍支持改名、备注、停用和重新启用；羊只支持修改耳号、品种、性别、出生日期和备注。耳号在牧场内永久唯一，圈舍仍有在群羊或受保护历史引用时拒绝破坏性操作。
@@ -33,14 +34,14 @@
 
 这些步骤不能由仓库代码或无签名构建替代，尚未在本机伪造完成状态：
 
-1. Debug/Development 已启用正式迁移牧场的 iCloud 双设备同步与成员邀请入口；Staging 与 Release 继续关闭。真实双账号邀请、撤权、订阅、TestFlight 和 App Store 工作仍需单独验收。
-2. 仓库内 CloudBase Gateway 0.3.3 已覆盖邮箱、Apple、刷新、退出、删除、限流、账户显示名称修改、迁移牧场 `provisioning → active` 目录状态，以及牧场 UUID 大小写统一。2026-07-19 已向 Development 完整 COS 部署的仍是 0.3.2；0.3.3 的账户名称接口尚待部署。真实 Apple 系统授权、邮箱验证码注册和迁移牧场双设备重建仍需在真机分别完成交互验收。
+1. Debug/Development 已启用正式迁移牧场的 iCloud 双设备同步与成员邀请入口；同一账号两台真机的 private Zone 同步、断网续传、照片和重建已由用户在 2026-07-24 确认验收通过。两个不同账号的 shared Zone 邀请、撤权和连续七日验收仍未执行；Staging 与 Release 继续关闭。
+2. 仓库内 CloudBase Gateway 0.4.0 已覆盖邮箱、Apple、刷新、退出、删除、限流、账户显示名称与头像同步、迁移牧场 `provisioning → active` 目录状态，以及牧场 UUID 大小写统一。0.4.0 Development 部署和同账号头像跨设备一致性已取得真机证据；独立 Production 环境及双账号协作仍需单独验收。
 3. 登录成功后的业务写入只依赖本机 SwiftData；断网、CloudKit 关闭和重启不应阻断建羊、称重、转群、离场、修正、撤销、查询和备份恢复。
 4. 新增的 `com.sheepfarm.next.dev.widget` Bundle ID 仍需要有效描述文件才能在连接设备上运行 XCTest；无签名 App/Test/Widget 编译不受此限制。
 
-当前自动化基线以 `./tools/verify_local.sh` 的最新结果为准；真实登录、迁移包上传、同一场主双设备重建、断网续传和照片对账仍必须在两台真实 iCloud 设备上取得证据，不能由编译或模拟响应代替。
+当前自动化基线以 `./tools/verify_local.sh` 的最新结果为准；同账号双真机验收与两个不同账号的共享协作验收必须分别记录，不能由编译、模拟响应或头像同步互相替代。
 
-2026-07-20 系谱与繁殖闭环已在 iPhone 16 Pro（iOS 27.0）执行全部 128 项 XCTest，128 项通过、0 失败、0 跳过；系谱、旧载荷与 checkpoint 全历史恢复聚焦回归 7/7 通过。`build-for-testing`、旧 Worker 15/15、CloudBase Gateway 16/16、Emoji 扫描与依赖审计以 `./tools/verify_local.sh` 的最新成功结果为准。11 英寸 iPad 的完整页面回归、两台 Development 设备的真实 CloudKit 关系/供体同步，以及 Gateway 0.3.3 部署仍未完成。
+2026-07-20 系谱与繁殖闭环已在 iPhone 16 Pro（iOS 27.0）执行全部 128 项 XCTest，128 项通过、0 失败、0 跳过；系谱、旧载荷与 checkpoint 全历史恢复聚焦回归 7/7 通过。当前仓库包含 289 个 XCTest 方法；2026-07-24 `./tools/verify_local.sh` 完整通过，覆盖 App/Test/Widget 双架构编译、Worker 16/16、CloudBase Gateway 20/20、Emoji 扫描及生产依赖审计，跟踪文件凭据模式扫描无命中。带 CloudKit Entitlement 的签名模拟器冷启动进入登录页，新增迁移与恢复测试 4/4 通过；其余 XCTest、11 英寸 iPad 完整页面回归和双账号 shared Zone 七日验收仍未完成。
 
 云端准入按环境隔离：Development 只允许具有完整迁移提交、基线摘要和照片校验的正式迁移牧场，不再存在固定种子测试牧场路径；Staging/Production 云功能仍由构建开关关闭。迁移目录在完整上传前保持 provisioning，第二台设备和受邀成员只能发现 active 牧场。
 

@@ -411,19 +411,34 @@ final class RemovalRecord {
     var kindRawValue: String
     var reason: String
     var amountText: String?
+    var removalBatchID: UUID?
+    var batchTotalAmountText: String?
     var occurredAt: Date
     var recordedAt: Date
     var note: String
     var revision: Int
     var deletedAt: Date?
 
-    init(id: UUID = UUID(), farmID: UUID, sheepID: UUID, kind: RemovalKind, reason: String, amountText: String? = nil, occurredAt: Date, note: String = "") {
+    init(
+        id: UUID = UUID(),
+        farmID: UUID,
+        sheepID: UUID,
+        kind: RemovalKind,
+        reason: String,
+        amountText: String? = nil,
+        removalBatchID: UUID? = nil,
+        batchTotalAmountText: String? = nil,
+        occurredAt: Date,
+        note: String = ""
+    ) {
         self.id = id
         self.farmID = farmID
         self.sheepID = sheepID
         self.kindRawValue = kind.rawValue
         self.reason = reason
         self.amountText = amountText
+        self.removalBatchID = removalBatchID
+        self.batchTotalAmountText = batchTotalAmountText
         self.occurredAt = occurredAt
         self.recordedAt = .now
         self.note = note

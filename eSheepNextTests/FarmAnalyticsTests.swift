@@ -74,7 +74,34 @@ final class FarmAnalyticsTests: XCTestCase {
         XCTAssertEqual(lambResult.weaning.months.first?.averageADG ?? 0, 1_777.777_777, accuracy: 0.001)
 
         let cohort = WeightGainAnalyticsEngine.cohort(snapshot: snapshot, snapshotDate: dayTen)
+        XCTAssertEqual(cohort.weightTrend.map(\.value), [3, 20])
         XCTAssertEqual(try XCTUnwrap(cohort.weightTrend.last?.value), 20, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(cohort.latestAverageADG), 17.0 / 9.0, accuracy: 0.001)
+    }
+
+    func testWeightAnalysisUsesWeaningAndBirthWithoutStandaloneWeightRecords() throws {
+        let farmID = UUID()
+        let lambID = UUID()
+        let birthAt = makeDate(year: 2026, month: 4, day: 1)
+        let weaningAt = makeDate(year: 2026, month: 5, day: 1)
+        let snapshot = FarmAnalyticsSnapshot(
+            farmID: farmID,
+            sheep: [
+                .init(id: lambID, earTag: "L-WEAN", breed: "湖羊", purpose: "断奶羔羊", sex: .ewe, status: .active, initialPenID: nil, currentPenID: nil, birthAt: birthAt, enteredAt: birthAt, removedAt: nil)
+            ],
+            pens: [],
+            weights: [],
+            weanings: [
+                .init(id: UUID(), sheepID: lambID, occurredAt: weaningAt, weanWeight: 18.2, birthAt: birthAt, birthWeight: 3.2, damID: nil, litterSize: 1)
+            ],
+            lambings: [], removals: [], transfers: [], batchMemberships: [], feeds: []
+        )
+
+        let cohort = WeightGainAnalyticsEngine.cohort(snapshot: snapshot, snapshotDate: weaningAt)
+
+        XCTAssertEqual(cohort.weightTrend.map(\.value), [3.2, 18.2])
+        XCTAssertEqual(try XCTUnwrap(cohort.latestAverageWeight), 18.2, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(cohort.latestAverageADG), 0.5, accuracy: 0.001)
     }
 
     func testLambMonthlySexAveragesUseValidSamplesAndBirthCohort() throws {

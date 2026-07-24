@@ -17,19 +17,17 @@ struct FarmRecordsView: View {
                     Label("事件记录与导出", systemImage: "clock.arrow.circlepath")
                 }
             }
-            Section("羊群与圈舍") {
-                NavigationLink { AddSheepView(account: account, farm: farm) } label: { Label("新建羊只", systemImage: "plus.circle") }
-                NavigationLink { WeightEntryView(account: account, farm: farm) } label: { Label("称重", systemImage: "scalemass") }
-                NavigationLink { WeaningEntryView(account: account, farm: farm) } label: { Label("断奶", systemImage: "arrow.down.to.line.compact") }
-                NavigationLink { TransferEntryView(account: account, farm: farm) } label: { Label("转群", systemImage: "arrow.left.arrow.right") }
-                NavigationLink { RemovalEntryView(account: account, farm: farm) } label: { Label("出售、淘汰或死亡", systemImage: "person.crop.circle.badge.minus") }
-                NavigationLink { ProductionBatchListView(account: account, farm: farm) } label: { Label("生产批次", systemImage: "square.3.layers.3d") }
-                NavigationLink { HerdManagementView(account: account, farm: farm) } label: { Label("羊只档案", systemImage: "list.bullet") }
-                NavigationLink { PenManagementView(account: account, farm: farm) } label: { Label("圈舍管理", systemImage: "building.2") }
-            }
-            Section("健康与繁殖") {
-                NavigationLink { CareManagementView(account: account, farm: farm) } label: { Label("健康、库存、繁殖与提醒", systemImage: "cross.case.fill") }
-                NavigationLink { BreedingProgramListView(account: account, farm: farm) } label: { Label("配种方案", systemImage: "list.number") }
+            Section("业务录入") {
+                NavigationLink {
+                    HerdRecordCenterView(account: account, farm: farm)
+                } label: {
+                    Label("羊群与圈舍", systemImage: "list.bullet.rectangle")
+                }
+                NavigationLink {
+                    CareManagementView(account: account, farm: farm)
+                } label: {
+                    Label("健康与繁殖", systemImage: "cross.case.fill")
+                }
             }
             Section("补充") {
                 NavigationLink { NoteEntryView(account: account, farm: farm) } label: { Label("备注", systemImage: "note.text") }
@@ -80,6 +78,45 @@ private struct PendingCareReminderDestination: Identifiable, Hashable {
     let id: UUID
 }
 
+private struct HerdRecordCenterView: View {
+    let account: AccountProfile
+    let farm: FarmRecord
+
+    var body: some View {
+        List {
+            Section("快捷录入") {
+                NavigationLink { AddSheepView(account: account, farm: farm) } label: {
+                    Label("新建羊只", systemImage: "plus.circle")
+                }
+                NavigationLink { WeightEntryView(account: account, farm: farm) } label: {
+                    Label("称重", systemImage: "scalemass")
+                }
+                NavigationLink { WeaningEntryView(account: account, farm: farm) } label: {
+                    Label("断奶", systemImage: "arrow.down.to.line.compact")
+                }
+                NavigationLink { TransferEntryView(account: account, farm: farm) } label: {
+                    Label("转群", systemImage: "arrow.left.arrow.right")
+                }
+                NavigationLink { RemovalEntryView(account: account, farm: farm) } label: {
+                    Label("出售、淘汰或死亡", systemImage: "person.crop.circle.badge.minus")
+                }
+            }
+            Section("档案与管理") {
+                NavigationLink { ProductionBatchListView(account: account, farm: farm) } label: {
+                    Label("生产批次", systemImage: "square.3.layers.3d")
+                }
+                NavigationLink { HerdManagementView(account: account, farm: farm) } label: {
+                    Label("羊只档案", systemImage: "list.bullet")
+                }
+                NavigationLink { PenManagementView(account: account, farm: farm) } label: {
+                    Label("圈舍管理", systemImage: "building.2")
+                }
+            }
+        }
+        .navigationTitle("羊群与圈舍")
+    }
+}
+
 struct WeightEntryView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -94,10 +131,17 @@ struct WeightEntryView: View {
     @State private var errorMessage: String?
 
     private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active } }
+    private var sheepCandidates: [SheepEarTagSearchCandidate] { farmSheep.map { .init(sheep: $0) } }
 
     var body: some View {
         Form {
-            SheepPicker(sheep: farmSheep, selection: $sheepID)
+            Section("称重羊只") {
+                SheepEarTagSingleSearchField(
+                    candidates: sheepCandidates,
+                    selection: $sheepID,
+                    emptySelectionText: "尚未确认称重羊只"
+                )
+            }
             TextField("体重（千克）", text: $kilograms).keyboardType(.decimalPad)
             DatePicker("称重时间", selection: $occurredAt)
             TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
@@ -109,7 +153,7 @@ struct WeightEntryView: View {
     }
 
     private func save() {
-        guard let sheepID else { errorMessage = "请选择羊只。"; return }
+        guard let sheepID else { errorMessage = "请先搜索并确认称重羊只。"; return }
         do {
             try commandService.execute(.recordWeight(sheepID: sheepID, kilogramsText: kilograms, occurredAt: occurredAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
             dismiss()
@@ -138,15 +182,26 @@ struct WeaningEntryView: View {
 
     private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active } }
     private var ewes: [SheepRecord] { farmSheep.filter { $0.sex == .ewe } }
+    private var sheepCandidates: [SheepEarTagSearchCandidate] { farmSheep.map { .init(sheep: $0) } }
+    private var damCandidates: [SheepEarTagSearchCandidate] { ewes.map { .init(sheep: $0) } }
 
     var body: some View {
         Form {
-            Section("羊只") {
-                SheepPicker(sheep: farmSheep, selection: $sheepID)
-                Picker("母本（可选）", selection: $damID) {
-                    Text("未关联").tag(UUID?.none)
-                    ForEach(ewes, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) }
-                }
+            Section("断奶羊只") {
+                SheepEarTagSingleSearchField(
+                    candidates: sheepCandidates,
+                    selection: $sheepID,
+                    emptySelectionText: "尚未确认断奶羊只"
+                )
+            }
+            Section("母本（可选）") {
+                SheepEarTagSingleSearchField(
+                    candidates: damCandidates,
+                    selection: $damID,
+                    prompt: "输入母本耳号搜索",
+                    emptySelectionText: "未关联母本",
+                    accessibilityName: "母本耳号"
+                )
             }
             Section("断奶指标") {
                 TextField("断奶重（千克）", text: $weanWeight).keyboardType(.decimalPad)
@@ -168,7 +223,7 @@ struct WeaningEntryView: View {
     }
 
     private func save() {
-        guard let sheepID else { errorMessage = "请选择羊只。"; return }
+        guard let sheepID else { errorMessage = "请先搜索并确认断奶羊只。"; return }
         do {
             try commandService.execute(
                 .recordWeaning(
@@ -307,10 +362,17 @@ struct TransferEntryView: View {
 
     private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active } }
     private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
+    private var sheepCandidates: [SheepEarTagSearchCandidate] { farmSheep.map { .init(sheep: $0) } }
 
     var body: some View {
         Form {
-            SheepPicker(sheep: farmSheep, selection: $sheepID)
+            Section("转群羊只") {
+                SheepEarTagSingleSearchField(
+                    candidates: sheepCandidates,
+                    selection: $sheepID,
+                    emptySelectionText: "尚未确认转群羊只"
+                )
+            }
             Section("目标圈舍") {
                 Picker("转入", selection: $penID) {
                     Text("离开圈舍").tag(UUID?.none)
@@ -327,64 +389,9 @@ struct TransferEntryView: View {
     }
 
     private func save() {
-        guard let sheepID else { errorMessage = "请选择羊只。"; return }
+        guard let sheepID else { errorMessage = "请先搜索并确认转群羊只。"; return }
         do {
             try commandService.execute(.transferSheep(sheepID: sheepID, toPenID: penID, occurredAt: occurredAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
-            dismiss()
-        } catch { errorMessage = error.localizedDescription }
-    }
-}
-
-struct HealthEntryView: View {
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.modelContext) private var modelContext
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
-    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
-    @Query private var inventoryLots: [InventoryLotRecord]
-    let account: AccountProfile
-    let farm: FarmRecord
-    private let commandService = FarmCommandService()
-    @State private var sheepID: UUID?
-    @State private var penID: UUID?
-    @State private var kind = HealthRecordKind.treatment
-    @State private var itemName = ""
-    @State private var quantity = ""
-    @State private var inventoryLotID: UUID?
-    @State private var occurredAt = Date.now
-    @State private var note = ""
-    @State private var errorMessage: String?
-
-    private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active } }
-    private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
-    private var matchingLots: [InventoryLotRecord] { inventoryLots.filter { $0.farmID == farm.id && $0.isActive && $0.kindRawValue == kind.rawValue } }
-
-    var body: some View {
-        Form {
-            Picker("类型", selection: $kind) { ForEach(HealthRecordKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }
-            Section("对象") {
-                Picker("羊只", selection: $sheepID) { Text("不指定").tag(UUID?.none); ForEach(farmSheep, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }
-                Picker("圈舍", selection: $penID) { Text("不指定").tag(UUID?.none); ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }
-            }
-            TextField("药品或疫苗名称", text: $itemName)
-            Picker("库存批次（可选）", selection: $inventoryLotID) {
-                Text("不关联库存").tag(UUID?.none)
-                ForEach(matchingLots, id: \.id) { lot in
-                    Text(lot.catalogName).tag(UUID?.some(lot.id))
-                }
-            }
-            TextField("用量（可选）", text: $quantity).keyboardType(.decimalPad)
-            DatePicker("发生时间", selection: $occurredAt)
-            TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
-        }
-        .navigationTitle("健康记录")
-        .toolbar { EntrySaveToolbar(action: save) }
-        .recordErrorAlert($errorMessage)
-        .farmExcelImport(account: account, farm: farm, sheets: ["健康记录"])
-    }
-
-    private func save() {
-        do {
-            try commandService.execute(.recordHealth(sheepID: sheepID, penID: penID, kind: kind, itemName: itemName, occurredAt: occurredAt, note: note, inventoryLotID: inventoryLotID, quantityText: quantity), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
             dismiss()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -404,9 +411,18 @@ struct NoteEntryView: View {
     @State private var occurredAt = Date.now
     @State private var errorMessage: String?
 
+    private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
+    private var sheepCandidates: [SheepEarTagSearchCandidate] { farmSheep.map { .init(sheep: $0) } }
+
     var body: some View {
         Form {
-            Picker("羊只", selection: $sheepID) { Text("不指定").tag(UUID?.none); ForEach(sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil }, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) } }
+            Section("羊只（可选）") {
+                SheepEarTagSingleSearchField(
+                    candidates: sheepCandidates,
+                    selection: $sheepID,
+                    emptySelectionText: "未关联羊只"
+                )
+            }
             Picker("圈舍", selection: $penID) { Text("不指定").tag(UUID?.none); ForEach(pens.filter { $0.farmID == farm.id && $0.deletedAt == nil }, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }
             DatePicker("发生时间", selection: $occurredAt)
             TextField("备注内容", text: $text, axis: .vertical).lineLimit(4...8)
@@ -425,26 +441,43 @@ struct NoteEntryView: View {
     }
 }
 
-struct SheepPicker: View {
-    let sheep: [SheepRecord]
-    @Binding var selection: UUID?
-
-    var body: some View {
-        Section("羊只") {
-            Picker("耳号", selection: $selection) {
-                Text("请选择").tag(UUID?.none)
-                ForEach(sheep, id: \.id) { Text($0.earTag).tag(UUID?.some($0.id)) }
-            }
-        }
-    }
-}
-
 struct EntrySaveToolbar: ToolbarContent {
     let action: () -> Void
+    let isSaving: Bool
+    @State private var isPerformingAction = false
+
+    init(action: @escaping () -> Void, isSaving: Bool = false) {
+        self.action = action
+        self.isSaving = isSaving
+    }
+
+    private var showsProgress: Bool {
+        isSaving || isPerformingAction
+    }
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .cancellationAction) { DismissButton() }
-        ToolbarItem(placement: .confirmationAction) { Button("保存", action: action) }
+        ToolbarItem(placement: .confirmationAction) {
+            Button(action: performAction) {
+                if showsProgress {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("保存")
+                }
+            }
+            .disabled(showsProgress)
+            .accessibilityLabel(showsProgress ? "正在保存" : "保存")
+        }
+    }
+
+    private func performAction() {
+        guard !showsProgress else { return }
+        isPerformingAction = true
+        Task { @MainActor in
+            await Task.yield()
+            action()
+            isPerformingAction = false
+        }
     }
 }
 

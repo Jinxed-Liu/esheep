@@ -63,11 +63,27 @@ actor MembershipSnapshotActor {
             throw PhotoTransferError.bindingMissing
         }
         let zoneID = CKRecordZone.ID(zoneName: binding.zoneName, ownerName: binding.zoneOwnerName)
-        let record = mapper.membershipSnapshotRecord(record: local, zoneID: zoneID)
-        let result = try await cloudContainer.privateCloudDatabase.modifyRecords(saving: [record], deleting: [], savePolicy: .changedKeys, atomically: true)
+        let recordID = CKRecord.ID(recordName: "membership_snapshot", zoneID: zoneID)
+        let existingRecord: CKRecord?
+        do {
+            existingRecord = try await cloudContainer.privateCloudDatabase.record(for: recordID)
+        } catch let error as CKError where error.code == .unknownItem {
+            existingRecord = nil
+        }
+        let record = mapper.membershipSnapshotRecord(
+            record: local,
+            zoneID: zoneID,
+            existingRecord: existingRecord
+        )
+        let result = try await cloudContainer.privateCloudDatabase.modifyRecords(
+            saving: [record],
+            deleting: [],
+            savePolicy: .ifServerRecordUnchanged,
+            atomically: true
+        )
         _ = try result.saveResults[record.recordID]?.get()
         value = MembershipSnapshotRecordValue(id: value.id, farmID: value.farmID, generation: value.generation, issuedAt: value.issuedAt, payload: value.payload, signedByAccountID: value.signedByAccountID, signedByDeviceID: value.signedByDeviceID, capabilityCertificate: value.capabilityCertificate, signature: value.signature, cloudRecordName: record.recordID.recordName, validatedAt: .now)
-        try await persistence.saveMembershipSnapshotRecord(value)
+        try await persistence.saveValidatedMembershipSnapshotRecord(value, envelope: envelope)
         return value
     }
 

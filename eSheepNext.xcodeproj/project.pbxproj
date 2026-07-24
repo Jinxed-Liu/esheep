@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		E5A100302FC6000100A00001 /* eSheepNextWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E5A100312FC6000100A00001 /* eSheepNextWidget.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		E5A200012FC7000100A00001 /* ESMotion in Frameworks */ = {isa = PBXBuildFile; productRef = E5A200042FC7000100A00001 /* ESMotion */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -96,6 +97,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E5A200012FC7000100A00001 /* ESMotion in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -161,6 +163,7 @@
 			);
 			name = eSheepNext;
 			packageProductDependencies = (
+				E5A200042FC7000100A00001 /* ESMotion */,
 			);
 			productName = eSheepNext;
 			productReference = E5A100062FC6000100A00001 /* eSheepNext.app */;
@@ -243,6 +246,9 @@
 			);
 			mainGroup = E5A100022FC6000100A00001;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				E5A200032FC7000100A00001 /* XCRemoteSwiftPackageReference "ESMotion" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E5A100072FC6000100A00001 /* Products */;
 			projectDirPath = "";
@@ -379,6 +385,11 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
 				MARKETING_VERSION = 3.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.dev;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -430,6 +441,11 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
 				MARKETING_VERSION = 3.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -529,6 +545,11 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
 				MARKETING_VERSION = 3.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -701,6 +722,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		E5A200032FC7000100A00001 /* XCRemoteSwiftPackageReference "ESMotion" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Jinxed-Liu/ESMotion.git";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		E5A200042FC7000100A00001 /* ESMotion */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E5A200032FC7000100A00001 /* XCRemoteSwiftPackageReference "ESMotion" */;
+			productName = ESMotion;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = E5A100012FC6000100A00001 /* Project object */;
 }

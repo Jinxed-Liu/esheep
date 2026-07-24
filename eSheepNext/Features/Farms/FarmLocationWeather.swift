@@ -29,25 +29,122 @@ struct FarmWeatherAlert: Identifiable, Sendable, Equatable {
 struct FarmWeatherSnapshot: Sendable, Equatable {
     enum VisualKind: Float, Sendable {
         case clear = 0
-        case cloudy = 1
-        case rain = 2
-        case snow = 3
-        case storm = 4
-        case fog = 5
+        case partlyCloudy = 1
+        case cloudy = 2
+        case rain = 3
+        case snow = 4
+        case storm = 5
+        case fog = 6
+        case haze = 7
+        case wind = 8
+        case dust = 9
+        case freezingRain = 10
+        case sleet = 11
+        case hail = 12
+        case blowingSnow = 13
+        case sunRain = 14
+        case sunSnow = 15
+        case tropicalStorm = 16
+        case heat = 17
+        case frigid = 18
+        case smoke = 19
+        case blizzard = 20
 
-        init(symbolName: String) {
-            if symbolName.contains("bolt") {
-                self = .storm
-            } else if symbolName.contains("snow") || symbolName.contains("sleet") {
-                self = .snow
-            } else if symbolName.contains("rain") || symbolName.contains("drizzle") {
-                self = .rain
-            } else if symbolName.contains("fog") || symbolName.contains("haze") {
-                self = .fog
-            } else if symbolName.contains("cloud") {
-                self = .cloudy
-            } else {
+        init(condition: WeatherCondition) {
+            switch condition {
+            case .clear:
                 self = .clear
+            case .mostlyClear, .partlyCloudy:
+                self = .partlyCloudy
+            case .cloudy, .mostlyCloudy:
+                self = .cloudy
+            case .drizzle, .rain, .heavyRain:
+                self = .rain
+            case .flurries, .snow, .heavySnow:
+                self = .snow
+            case .isolatedThunderstorms, .scatteredThunderstorms, .thunderstorms, .strongStorms:
+                self = .storm
+            case .foggy:
+                self = .fog
+            case .haze:
+                self = .haze
+            case .breezy, .windy:
+                self = .wind
+            case .blowingDust:
+                self = .dust
+            case .freezingDrizzle, .freezingRain:
+                self = .freezingRain
+            case .sleet, .wintryMix:
+                self = .sleet
+            case .hail:
+                self = .hail
+            case .blowingSnow:
+                self = .blowingSnow
+            case .sunShowers:
+                self = .sunRain
+            case .sunFlurries:
+                self = .sunSnow
+            case .hurricane, .tropicalStorm:
+                self = .tropicalStorm
+            case .hot:
+                self = .heat
+            case .frigid:
+                self = .frigid
+            case .smoky:
+                self = .smoke
+            case .blizzard:
+                self = .blizzard
+            @unknown default:
+                self = .cloudy
+            }
+        }
+    }
+
+    enum VisualIntensity: Float, Sendable {
+        case none = 0
+        case light = 0.25
+        case moderate = 0.50
+        case heavy = 0.75
+        case extreme = 1.0
+
+        init(condition: WeatherCondition, precipitationMillimetersPerHour: Double) {
+            let measuredLevel: Self? = if precipitationMillimetersPerHour > 0.05 {
+                if precipitationMillimetersPerHour < 2.5 {
+                    .light
+                } else if precipitationMillimetersPerHour < 7.6 {
+                    .moderate
+                } else if precipitationMillimetersPerHour < 50 {
+                    .heavy
+                } else {
+                    .extreme
+                }
+            } else {
+                nil
+            }
+
+            switch condition {
+            case .drizzle, .freezingDrizzle, .flurries:
+                self = measuredLevel ?? .light
+            case .rain, .snow, .sleet, .wintryMix, .freezingRain:
+                self = measuredLevel ?? .moderate
+            case .heavyRain, .heavySnow:
+                let measured = measuredLevel ?? .heavy
+                self = measured.rawValue >= Self.heavy.rawValue ? measured : .heavy
+            case .isolatedThunderstorms:
+                self = measuredLevel ?? .light
+            case .scatteredThunderstorms, .thunderstorms:
+                self = measuredLevel ?? .heavy
+            case .strongStorms, .blizzard, .hurricane, .tropicalStorm:
+                self = .extreme
+            case .blowingSnow, .hail, .windy, .blowingDust:
+                self = .heavy
+            case .breezy, .sunFlurries, .sunShowers:
+                self = measuredLevel ?? .light
+            case .clear, .cloudy, .foggy, .frigid, .haze, .hot, .mostlyClear,
+                 .mostlyCloudy, .partlyCloudy, .smoky:
+                self = .none
+            @unknown default:
+                self = .moderate
             }
         }
     }
@@ -72,8 +169,15 @@ struct FarmWeatherSnapshot: Sendable, Equatable {
     let moonriseText: String
     let moonsetText: String
     let visualKind: VisualKind
+    let visualIntensity: VisualIntensity
+    let visualCloudCover: Float
+    let visualWind: Float
     let isDaylight: Bool
     let observedAt: Date
+
+    var visualDescription: String {
+        visualKind.displayName(intensity: visualIntensity)
+    }
 }
 
 struct FarmHourlyWeather: Identifiable, Sendable, Equatable {
@@ -135,7 +239,15 @@ actor FarmWeatherRepository {
         let fetchedAt: Date
     }
 
+    private struct DetailRequest {
+        let id: UUID
+        let locationUpdatedAt: Date
+        let task: Task<FarmWeatherDetailSnapshot, Error>
+    }
+
     private var detailCache: [UUID: DetailCacheEntry] = [:]
+    private var detailRequests: [UUID: DetailRequest] = [:]
+
     func currentWeather(for farmID: UUID, location: FarmLocationSnapshot) async throws -> FarmWeatherSnapshot {
         if let cached = cache[farmID],
            cached.locationUpdatedAt == location.updatedAt,
@@ -171,6 +283,9 @@ actor FarmWeatherRepository {
     ) -> FarmWeatherSnapshot {
         let current = weather.currentWeather
         let today = weather.dailyForecast.forecast.first
+        let precipitationMillimetersPerHour = current.precipitationIntensity
+            .converted(to: Self.millimetersPerHour)
+            .value
         var timeStyle = Date.FormatStyle(date: .omitted, time: .shortened)
         timeStyle.timeZone = TimeZone(identifier: location.timeZoneIdentifier) ?? .current
         return FarmWeatherSnapshot(
@@ -195,7 +310,13 @@ actor FarmWeatherRepository {
             moonPhaseSymbol: today?.moon.phase.symbolName ?? "moon.stars.fill",
             moonriseText: today?.moon.moonrise?.formatted(timeStyle) ?? "—",
             moonsetText: today?.moon.moonset?.formatted(timeStyle) ?? "—",
-            visualKind: .init(symbolName: current.symbolName),
+            visualKind: .init(condition: current.condition),
+            visualIntensity: .init(
+                condition: current.condition,
+                precipitationMillimetersPerHour: precipitationMillimetersPerHour
+            ),
+            visualCloudCover: Float(min(max(current.cloudCover, 0), 1)),
+            visualWind: Self.normalizedVisualWind(current.wind),
             isDaylight: current.isDaylight,
             observedAt: .now
         )
@@ -208,71 +329,101 @@ actor FarmWeatherRepository {
             return cached.snapshot
         }
 
+        if let request = detailRequests[farmID],
+           request.locationUpdatedAt == location.updatedAt {
+            return try await request.task.value
+        }
+
+        let requestID = UUID()
+        let task = Task<FarmWeatherDetailSnapshot, Error> {
+            do {
+                return try await Self.fetchDetailedWeather(for: location)
+            } catch {
+                let weatherKitFailure = Self.diagnosticDescription(for: error)
+                Self.logger.error("WeatherKit detail request failed: \(weatherKitFailure, privacy: .public)")
+                #if DEBUG
+                print("[WeatherKit][detail] \(weatherKitFailure)")
+                #endif
+                throw RepositoryError.weatherKitFailed(weatherKitFailure)
+            }
+        }
+        detailRequests[farmID] = DetailRequest(
+            id: requestID,
+            locationUpdatedAt: location.updatedAt,
+            task: task
+        )
+
+        do {
+            let snapshot = try await task.value
+            if detailRequests[farmID]?.id == requestID {
+                detailRequests.removeValue(forKey: farmID)
+            }
+            detailCache[farmID] = DetailCacheEntry(
+                snapshot: snapshot,
+                locationUpdatedAt: location.updatedAt,
+                fetchedAt: .now
+            )
+            cache[farmID] = CacheEntry(snapshot: snapshot.current, locationUpdatedAt: location.updatedAt)
+            return snapshot
+        } catch {
+            if detailRequests[farmID]?.id == requestID {
+                detailRequests.removeValue(forKey: farmID)
+            }
+            throw error
+        }
+    }
+
+    private static func fetchDetailedWeather(
+        for location: FarmLocationSnapshot
+    ) async throws -> FarmWeatherDetailSnapshot {
         let coordinate = CLLocation(latitude: location.latitude, longitude: location.longitude)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: location.timeZoneIdentifier) ?? .current
         let today = calendar.startOfDay(for: .now)
         let historyStart = calendar.date(byAdding: .day, value: -7, to: today) ?? today
-        let forecastEnd = calendar.date(byAdding: .day, value: 7, to: today) ?? today
 
-        let snapshot: FarmWeatherDetailSnapshot
-        do {
-            async let aggregateWeather = WeatherService.shared.weather(for: coordinate)
-            async let hourlyForecast = WeatherService.shared.weather(for: coordinate, including: .hourly)
-            async let historicalForecast = WeatherService.shared.weather(
-                for: coordinate,
-                including: .daily(startDate: historyStart, endDate: today)
-            )
-            async let futureForecast = WeatherService.shared.weather(
-                for: coordinate,
-                including: .daily(startDate: today, endDate: forecastEnd)
-            )
-
-            let (aggregate, hourly, history, future) = try await (
-                aggregateWeather,
-                hourlyForecast,
-                historicalForecast,
-                futureForecast
-            )
-            snapshot = FarmWeatherDetailSnapshot(
-                current: Self.currentSnapshot(from: aggregate, location: location),
-                hourly: hourly.forecast.prefix(24).map {
-                    FarmHourlyWeather(
-                        date: $0.date,
-                        symbolName: $0.symbolName,
-                        temperatureText: Self.temperatureText($0.temperature),
-                        precipitationChanceText: $0.precipitationChance.formatted(.percent.precision(.fractionLength(0))),
-                        temperatureValue: $0.temperature.converted(to: .celsius).value,
-                        precipitationChanceValue: $0.precipitationChance,
-                        windSpeedText: $0.wind.speed.formatted(.measurement(width: .abbreviated)),
-                        windSpeedValue: $0.wind.speed.converted(to: .kilometersPerHour).value
-                    )
-                },
-                history: history.forecast.suffix(7).map(Self.dailySnapshot),
-                forecast: future.forecast.prefix(7).map(Self.dailySnapshot),
-                alerts: (aggregate.weatherAlerts ?? []).map(Self.alertSnapshot)
-            )
-        } catch {
-            let weatherKitFailure = Self.diagnosticDescription(for: error)
-            Self.logger.error("WeatherKit detail request failed: \(weatherKitFailure, privacy: .public)")
-            #if DEBUG
-            print("[WeatherKit][detail] \(weatherKitFailure)")
-            #endif
-            throw RepositoryError.weatherKitFailed(weatherKitFailure)
-        }
-        detailCache[farmID] = DetailCacheEntry(
-            snapshot: snapshot,
-            locationUpdatedAt: location.updatedAt,
-            fetchedAt: .now
+        async let aggregateWeather = WeatherService.shared.weather(for: coordinate)
+        async let historicalForecast = WeatherService.shared.weather(
+            for: coordinate,
+            including: .daily(startDate: historyStart, endDate: today)
         )
-        cache[farmID] = CacheEntry(snapshot: snapshot.current, locationUpdatedAt: location.updatedAt)
-        return snapshot
+
+        let (aggregate, history) = try await (aggregateWeather, historicalForecast)
+        return FarmWeatherDetailSnapshot(
+            current: Self.currentSnapshot(from: aggregate, location: location),
+            hourly: aggregate.hourlyForecast.forecast.prefix(24).map {
+                FarmHourlyWeather(
+                    date: $0.date,
+                    symbolName: $0.symbolName,
+                    temperatureText: Self.temperatureText($0.temperature),
+                    precipitationChanceText: $0.precipitationChance.formatted(.percent.precision(.fractionLength(0))),
+                    temperatureValue: $0.temperature.converted(to: .celsius).value,
+                    precipitationChanceValue: $0.precipitationChance,
+                    windSpeedText: $0.wind.speed.formatted(.measurement(width: .abbreviated)),
+                    windSpeedValue: $0.wind.speed.converted(to: .kilometersPerHour).value
+                )
+            },
+            history: history.forecast.suffix(7).map(Self.dailySnapshot),
+            forecast: aggregate.dailyForecast.forecast.prefix(7).map(Self.dailySnapshot),
+            alerts: (aggregate.weatherAlerts ?? []).map(Self.alertSnapshot)
+        )
     }
 
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "eSheepNext",
         category: "WeatherRepository"
     )
+
+    private static let millimetersPerHour = UnitSpeed(
+        symbol: "mm/h",
+        converter: UnitConverterLinear(coefficient: 1.0 / 3_600_000.0)
+    )
+
+    private static func normalizedVisualWind(_ wind: Wind) -> Float {
+        let speed = wind.speed.converted(to: .kilometersPerHour).value
+        let gust = wind.gust?.converted(to: .kilometersPerHour).value ?? speed
+        return Float(min(max(max(speed, gust) / 100.0, 0), 1))
+    }
 
     private static func diagnosticDescription(for error: Error) -> String {
         let nsError = error as NSError

@@ -76,6 +76,8 @@ enum ConflictDomainMergeService {
             value.kindRawValue = payload.strings["kind"] ?? value.kindRawValue
             value.reason = reason
             value.amountText = payload.optionalStrings["amountText"] ?? nil
+            value.removalBatchID = payload.optionalIdentifiers["removalBatchID"] ?? nil
+            value.batchTotalAmountText = payload.optionalStrings["batchTotalAmountText"] ?? nil
             value.occurredAt = payload.dates["occurredAt"] ?? value.occurredAt
             value.note = payload.strings["note"] ?? ""
             value.revision = revision

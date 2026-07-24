@@ -285,90 +285,12 @@ struct FarmSettingsView: View {
     let farm: FarmRecord
 
     var body: some View {
-        List {
-            Section {
-                AccountAvatarEditor(account: account)
-            }
-            Section("账户") {
-                NavigationLink {
-                    AccountDisplayNameEditor(account: account)
-                } label: {
-                    LabeledContent("显示名称", value: account.displayName)
-                }
-                LabeledContent("登录绑定", value: account.serverBindingState == .verified ? "CloudBase 已验证" : "等待 CloudBase 验证")
-                if SubscriptionFeatureConfiguration.isEnabled {
-                    NavigationLink {
-                        SubscriptionSettingsView(account: account)
-                    } label: {
-                        Label("订阅与购买", systemImage: "creditcard")
-                    }
-                }
-                Text("原始 Apple 登录标识只保存在本机 Keychain，不写入牧场数据。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            Section("当前牧场") {
-                LabeledContent("名称", value: farm.name)
-                LabeledContent("角色", value: farm.role.displayName)
-                LabeledContent("本地数据", value: "按牧场隔离")
-                if CapabilitySet(role: farm.role).allows(.editFarmLocation) {
-                    NavigationLink {
-                        FarmLocationSettingsView(account: account, farm: farm)
-                    } label: {
-                        LabeledContent("牧场位置", value: farm.locationSnapshot?.displayName ?? "尚未设置")
-                    }
-                } else {
-                    LabeledContent("牧场位置", value: farm.locationSnapshot?.displayName ?? "尚未设置")
-                    Text("牧场位置仅可由场主或管理员修改。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("隐私与安全") {
-                Text("第三方 AI 默认关闭；未得到用户同意不会发送牧场数据。应用不使用广告、跟踪或 ATT。")
-                Text("订阅交易由 App Store 验证并按当前 eSheep+ 账户绑定；切换账号不会串用其他账号的权益。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                ForEach(LegalDocument.allCases) { document in
-                    NavigationLink(document.title) {
-                        LegalDocumentView(document: document)
-                    }
-                }
-            }
-            Section("云端协作") {
-                if CloudFeatureConfiguration.isEnabled {
-                    NavigationLink {
-                        CloudCollaborationCenterView(account: account, farm: farm)
-                    } label: {
-                        Label("身份、共享与同步", systemImage: "person.2.icloud")
-                    }
-                } else {
-                    LabeledContent("业务数据", value: "仅保存在本机")
-                    Text("当前开发阶段未启用 CloudKit；登录只用于验证 eSheep+ 账户。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                NavigationLink {
-                    SystemServicesSettingsView(farm: farm)
-                } label: {
-                    Label("通知与系统能力", systemImage: "bell.badge")
-                }
-            }
-            Section("数据") {
-                NavigationLink {
-                    FarmDataInterchangeView(account: account, farm: farm)
-                } label: {
-                    Label("导入与导出", systemImage: "arrow.up.arrow.down.square")
-                }
-            }
-            Section("账户操作") {
-                AccountSignOutButton()
-            }
-        }
-        .navigationTitle("设置")
+        SettingsHomeView(account: account, farm: farm)
     }
 }
 
 @MainActor
-private struct AccountDisplayNameEditor: View {
+struct AccountDisplayNameEditor: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     let account: AccountProfile

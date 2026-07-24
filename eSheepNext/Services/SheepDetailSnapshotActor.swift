@@ -36,6 +36,7 @@ struct SheepDetailWeightSnapshot: Identifiable, Sendable, Hashable {
     let kilogramsText: String
     let kilograms: Double
     let occurredAt: Date
+    let source: SheepWeightSource
 }
 
 struct SheepDetailPhotoSnapshot: Identifiable, Sendable, Hashable {
@@ -89,6 +90,24 @@ actor SheepDetailSnapshotActor {
             },
             sortBy: [SortDescriptor(\WeightRecord.occurredAt, order: .reverse)]
         ))
+        let weanings = try context.fetch(FetchDescriptor<WeaningRecord>(
+            predicate: #Predicate {
+                $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil
+            },
+            sortBy: [SortDescriptor(\WeaningRecord.occurredAt, order: .reverse)]
+        ))
+        let birthDetails = try context.fetch(FetchDescriptor<LambingOffspringRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil && $0.deletedByLambingRevocation == false
+        }))
+        var birthDateByLambingID: [UUID: Date] = [:]
+        for lambingID in Set(birthDetails.map(\.lambingRecordID)) {
+            let targetID = lambingID
+            if let record = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.id == targetID && $0.deletedAt == nil
+            })).first, record.kind == .lambing {
+                birthDateByLambingID[lambingID] = record.occurredAt
+            }
+        }
         let transfers = try context.fetch(FetchDescriptor<TransferRecord>(
             predicate: #Predicate {
                 $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil
@@ -118,12 +137,58 @@ actor SheepDetailSnapshotActor {
         }
         try Task.checkCancellation()
 
-        let weightValues = weights.map { record in
-            SheepDetailWeightSnapshot(
+        var weightSamples = weights.map { record in
+            SheepWeightSample(
                 id: record.id,
+                sheepID: record.sheepID,
                 kilogramsText: record.kilogramsText,
                 kilograms: NSDecimalNumber(decimal: record.kilograms).doubleValue,
-                occurredAt: record.occurredAt
+                occurredAt: record.occurredAt,
+                source: record.note == "初生重" ? .lambingBirth : .weighing
+            )
+        }
+        for record in weanings {
+            weightSamples.append(SheepWeightSample(
+                id: StableCloudUUID.derived(namespace: record.id, name: "weight-sample-weaning"),
+                sheepID: record.sheepID,
+                kilogramsText: record.weanWeightText,
+                kilograms: NSDecimalNumber(decimal: record.weanWeight).doubleValue,
+                occurredAt: record.occurredAt,
+                source: .weaning
+            ))
+            if let birthAt = record.birthAt,
+               let birthWeightText = record.birthWeightText,
+               let birthWeight = Decimal.stable(birthWeightText) {
+                weightSamples.append(SheepWeightSample(
+                    id: StableCloudUUID.derived(namespace: record.id, name: "weight-sample-weaning-birth"),
+                    sheepID: record.sheepID,
+                    kilogramsText: birthWeightText,
+                    kilograms: NSDecimalNumber(decimal: birthWeight).doubleValue,
+                    occurredAt: birthAt,
+                    source: .weaningBirth
+                ))
+            }
+        }
+        let fallbackBirthAt = subject.birthAt ?? weanings.compactMap(\.birthAt).min()
+        for detail in birthDetails {
+            guard let occurredAt = birthDateByLambingID[detail.lambingRecordID] ?? fallbackBirthAt,
+                  let birthWeight = Decimal.stable(detail.birthWeightText) else { continue }
+            weightSamples.append(SheepWeightSample(
+                id: StableCloudUUID.derived(namespace: detail.id, name: "weight-sample-lambing-birth"),
+                sheepID: sheepID,
+                kilogramsText: detail.birthWeightText,
+                kilograms: NSDecimalNumber(decimal: birthWeight).doubleValue,
+                occurredAt: occurredAt,
+                source: .lambingBirth
+            ))
+        }
+        let weightValues = SheepWeightSampleBuilder.deduplicatingEquivalentFacts(weightSamples).reversed().map { sample in
+            SheepDetailWeightSnapshot(
+                id: sample.id,
+                kilogramsText: sample.kilogramsText,
+                kilograms: sample.kilograms,
+                occurredAt: sample.occurredAt,
+                source: sample.source
             )
         }
         let photoValues = photos.map { record in
@@ -136,7 +201,7 @@ actor SheepDetailSnapshotActor {
         }.sorted { $0.displayedAt > $1.displayedAt }
 
         var timeline = weightValues.map {
-            SheepDetailTimelineEntry(id: $0.id, title: "称重", detail: "\($0.kilogramsText) 千克", date: $0.occurredAt)
+            SheepDetailTimelineEntry(id: $0.id, title: $0.source.displayName, detail: "\($0.kilogramsText) 千克", date: $0.occurredAt)
         }
         timeline.append(contentsOf: transfers.map {
             SheepDetailTimelineEntry(id: $0.id, title: "转群", detail: $0.note, date: $0.occurredAt)

@@ -16,6 +16,8 @@ enum MigrationCloudBootstrapError: LocalizedError {
     case duplicateEarTag
     case missingPhoto(String)
     case photoDigestMismatch(String)
+    case invalidExistingBaselineOperation
+    case conflictingBaselineOutbox
 
     var errorDescription: String? {
         switch self {
@@ -26,19 +28,379 @@ enum MigrationCloudBootstrapError: LocalizedError {
         case .duplicateEarTag: "迁移牧场存在重复耳号，不能生成云端基线。"
         case .missingPhoto(let key): "迁移照片文件缺失：\(key)。"
         case .photoDigestMismatch(let key): "迁移照片摘要不一致：\(key)。"
+        case .invalidExistingBaselineOperation: "已有迁移基线操作与当前已验证快照不一致，已停止自动覆盖。"
+        case .conflictingBaselineOutbox: "迁移基线的本地上传凭据重复或不一致，已停止自动覆盖。"
         }
+    }
+}
+
+enum MigrationCloudReadyEvidenceError: LocalizedError {
+    case baselineMissing
+    case invalidBaselineOperation
+    case baselineSetMismatch
+    case bindingMismatch
+    case outboxMismatch
+    case receiptMissing
+    case photoMismatch
+
+    var errorDescription: String? {
+        switch self {
+        case .baselineMissing: "缺少可验证的迁移云端基线。"
+        case .invalidBaselineOperation: "迁移基线操作的身份、载荷或摘要不一致。"
+        case .baselineSetMismatch: "迁移基线操作集与已验证的数量或摘要不一致。"
+        case .bindingMismatch: "迁移牧场缺少唯一的场主私有云端绑定。"
+        case .outboxMismatch: "迁移基线的本地上传凭据缺失、重复或未确认。"
+        case .receiptMissing: "迁移基线缺少与当前牧场和数据库范围匹配的云端回执。"
+        case .photoMismatch: "迁移照片缺少摘要匹配的已完成上传凭据。"
+        }
+    }
+}
+
+struct MigrationBaselineV2RequiredSet {
+    let operations: [DomainOperation]
+    let version: Int
+    let cutoffAt: Date
+}
+
+enum MigrationBaselineV2EvidenceContract {
+    static let summaryPrefix = "迁移云端基线："
+    static let currentVersion = 2
+
+    private struct LogicalEntity: Hashable {
+        let entityType: String
+        let entityID: UUID
+    }
+
+    private struct LogicalSlot: Hashable {
+        let entity: LogicalEntity
+        let slot: String
+    }
+
+    private struct ParsedOperation {
+        let operation: DomainOperation
+        let snapshot: BootstrapEntityEnvelopeV1
+        let version: Int
+        let cutoffAt: Date?
+        let slot: String
+        let digestLine: String
+    }
+
+    static func requiredOperations(
+        commit: MigrationCommitRecord,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> MigrationBaselineV2RequiredSet {
+        guard commit.farmID == farmID,
+              commit.status == .completed,
+              !commit.baselineDigest.isEmpty,
+              commit.baselineEntityCount > 0,
+              commit.baselinePhotoCount >= 0 else {
+            throw MigrationCloudReadyEvidenceError.baselineMissing
+        }
+
+        let farmOperations = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            $0.farmID == farmID
+        }
+        let parsed = try farmOperations.compactMap { try parseBootstrapOperation($0) }
+        guard parsed.contains(where: { $0.version == currentVersion }),
+              let cutoffAt = parsed
+                .filter({ $0.version == currentVersion })
+                .compactMap(\.cutoffAt)
+                .max() else {
+            throw MigrationCloudReadyEvidenceError.baselineSetMismatch
+        }
+
+        var deletedBeforeCutoff = Set<LogicalEntity>()
+        for operation in farmOperations where operation.occurredAt <= cutoffAt {
+            guard operation.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue else { continue }
+            guard CloudPayloadDigest.hex(for: operation.payload) == operation.payloadDigest,
+                  let payload = try? decodePayload(operation.payload),
+                  payload.kind == .tombstoneEntity,
+                  let entityType = payload.strings["entityType"],
+                  let entityID = payload.identifiers["entityID"] else {
+                throw MigrationCloudReadyEvidenceError.invalidBaselineOperation
+            }
+            deletedBeforeCutoff.insert(.init(entityType: entityType, entityID: entityID))
+        }
+
+        var candidates: [LogicalSlot: [ParsedOperation]] = [:]
+        for value in parsed where value.version <= currentVersion {
+            let key = LogicalSlot(
+                entity: .init(entityType: value.snapshot.entityType, entityID: value.snapshot.entityID),
+                slot: value.slot
+            )
+            candidates[key, default: []].append(value)
+        }
+
+        var selected: [ParsedOperation] = []
+        for (slot, values) in candidates {
+            guard let selectedVersion = values.map(\.version).max() else { continue }
+            let sameVersion = values.filter { $0.version == selectedVersion }
+            let selectedCutoff = sameVersion.compactMap(\.cutoffAt).max()
+            let newest = sameVersion.filter { $0.cutoffAt == selectedCutoff }
+            guard newest.count == 1, let value = newest.first else {
+                throw MigrationCloudReadyEvidenceError.invalidBaselineOperation
+            }
+            if deletedBeforeCutoff.contains(slot.entity), selectedVersion < currentVersion {
+                continue
+            }
+            selected.append(value)
+        }
+
+        let operationIDs = Set(selected.map { $0.operation.id })
+        guard operationIDs.count == selected.count,
+              selected.count == commit.baselineEntityCount else {
+            throw MigrationCloudReadyEvidenceError.baselineSetMismatch
+        }
+        let digest = CloudPayloadDigest.hex(
+            for: Data(selected.map(\.digestLine).sorted().joined(separator: "\n").utf8)
+        )
+        guard digest == commit.baselineDigest else {
+            throw MigrationCloudReadyEvidenceError.baselineSetMismatch
+        }
+        for value in selected {
+            let sourceDigest = CloudPayloadDigest.hex(for: value.snapshot.sourcePayload)
+            let expectedID = StableMigrationID.uuid(
+                sessionID: commit.sessionID,
+                sourceKey: "cloud-bootstrap:\(value.snapshot.entityType):\(value.snapshot.entityID.uuidString.lowercased()):\(sourceDigest)"
+            )
+            guard value.operation.id == expectedID,
+                  value.operation.accountID == commit.ownerAccountID else {
+                throw MigrationCloudReadyEvidenceError.invalidBaselineOperation
+            }
+        }
+        return .init(
+            operations: selected.map(\.operation),
+            version: currentVersion,
+            cutoffAt: cutoffAt
+        )
+    }
+
+    @discardableResult
+    static func repairOutboxes(
+        required: MigrationBaselineV2RequiredSet,
+        commit: MigrationCommitRecord,
+        databaseScope: CloudDatabaseScope?,
+        zoneName: String? = nil,
+        zoneOwnerName: String? = nil,
+        context: ModelContext
+    ) throws -> Int {
+        let mapper = CloudRecordMapper()
+        let outboxes = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.farmID == commit.farmID
+        }
+        var outboxesByOperationID = Dictionary(grouping: outboxes, by: \.operationID)
+        let allOutboxes = try context.fetch(FetchDescriptor<OutboxItem>())
+        let allOutboxIDs = Set(allOutboxes.map(\.id))
+        let receipts = try context.fetch(FetchDescriptor<CloudOperationReceipt>()).filter {
+            $0.farmID == commit.farmID
+        }
+        let receiptsByOperationID = Dictionary(grouping: receipts, by: \.operationID)
+        var repairCount = 0
+        for operation in required.operations {
+            let matching = outboxesByOperationID[operation.id] ?? []
+            let item: OutboxItem
+            if matching.isEmpty {
+                let expectedID = StableMigrationID.uuid(
+                    sessionID: commit.sessionID,
+                    sourceKey: "cloud-bootstrap-outbox:\(operation.id.uuidString.lowercased())"
+                )
+                guard !allOutboxIDs.contains(expectedID) else {
+                    throw MigrationCloudReadyEvidenceError.outboxMismatch
+                }
+                item = OutboxItem(
+                    id: expectedID,
+                    farmID: operation.farmID,
+                    accountID: operation.accountID,
+                    operationID: operation.id,
+                    entityType: operation.entityType,
+                    entityID: operation.entityID,
+                    baseRevision: operation.baseRevision,
+                    payloadDigest: operation.payloadDigest
+                )
+                context.insert(item)
+                outboxesByOperationID[operation.id] = [item]
+                repairCount += 1
+            } else {
+                guard matching.count == 1, let existing = matching.first else {
+                    throw MigrationCloudReadyEvidenceError.outboxMismatch
+                }
+                item = existing
+            }
+            guard item.farmID == operation.farmID,
+                  item.accountID == operation.accountID,
+                  item.operationID == operation.id,
+                  item.entityType == operation.entityType,
+                  item.entityID == operation.entityID,
+                  item.baseRevision == operation.baseRevision,
+                  item.payloadDigest == operation.payloadDigest else {
+                throw MigrationCloudReadyEvidenceError.outboxMismatch
+            }
+
+            guard item.status == .confirmed, let databaseScope else { continue }
+            let expectedRecordName = mapper.recordName(for: operation.id)
+            let hasReceipt = (receiptsByOperationID[operation.id] ?? []).contains {
+                $0.farmID == operation.farmID &&
+                    $0.operationID == operation.id &&
+                    $0.databaseScopeRawValue == databaseScope.rawValue &&
+                    $0.recordName == expectedRecordName &&
+                    $0.zoneName == zoneName &&
+                    $0.zoneOwnerName == zoneOwnerName
+            }
+            if hasReceipt {
+                if item.cloudRecordName != expectedRecordName {
+                    item.cloudRecordName = expectedRecordName
+                    repairCount += 1
+                }
+            } else {
+                // An immutable operation can be sent again safely. CKSyncEngine
+                // will either save it or confirm byte-identical server state.
+                item.statusRawValue = OutboxStatus.pending.rawValue
+                item.cloudRecordName = nil
+                item.errorMessage = nil
+                item.nextRetryAt = nil
+                repairCount += 1
+            }
+        }
+        return repairCount
+    }
+
+    static func validateExistingOperation(
+        _ operation: DomainOperation,
+        commit: MigrationCommitRecord,
+        accountID: UUID,
+        entityType: CloudEntityType,
+        entityID: UUID,
+        sourceRevision: Int,
+        sourcePayload: Data,
+        slot: Int
+    ) throws {
+        guard let parsed = try parseBootstrapOperation(operation),
+              operation.accountID == accountID,
+              operation.accountID == commit.ownerAccountID,
+              parsed.snapshot.entityType == entityType.rawValue,
+              parsed.snapshot.entityID == entityID,
+              parsed.snapshot.sourceRevision == max(1, sourceRevision),
+              parsed.snapshot.sourcePayload == sourcePayload,
+              parsed.slot == String(slot) else {
+            throw MigrationCloudBootstrapError.invalidExistingBaselineOperation
+        }
+        let sourceDigest = CloudPayloadDigest.hex(for: sourcePayload)
+        let expectedID = StableMigrationID.uuid(
+            sessionID: commit.sessionID,
+            sourceKey: "cloud-bootstrap:\(entityType.rawValue):\(entityID.uuidString.lowercased()):\(sourceDigest)"
+        )
+        guard operation.id == expectedID else {
+            throw MigrationCloudBootstrapError.invalidExistingBaselineOperation
+        }
+    }
+
+    private static func parseBootstrapOperation(_ operation: DomainOperation) throws -> ParsedOperation? {
+        let looksLikeBaseline = operation.kindRawValue == DomainOperationKind.bootstrapEntity.rawValue ||
+            operation.summary.hasPrefix(summaryPrefix)
+        guard looksLikeBaseline else { return nil }
+        guard operation.kindRawValue == DomainOperationKind.bootstrapEntity.rawValue,
+              operation.schemaVersion >= 2,
+              operation.baseRevision == 0,
+              CloudPayloadDigest.hex(for: operation.payload) == operation.payloadDigest,
+              let payload = try? decodePayload(operation.payload),
+              payload.kind == .bootstrapEntity,
+              let snapshotData = payload.dataValues["snapshot"],
+              let snapshot = try? decodeSnapshot(snapshotData),
+              snapshot.schemaVersion == BootstrapEntityEnvelopeV1.schemaVersion,
+              snapshot.sourcePayloadDigest == CloudPayloadDigest.hex(for: snapshot.sourcePayload),
+              operation.entityType == snapshot.entityType,
+              operation.entityID == snapshot.entityID,
+              operation.resultingRevision == snapshot.sourceRevision else {
+            throw MigrationCloudReadyEvidenceError.invalidBaselineOperation
+        }
+
+        let version = payload.integers["baselineVersion"] ?? 1
+        guard version == 1 || version == currentVersion else {
+            throw MigrationCloudReadyEvidenceError.invalidBaselineOperation
+        }
+        let slot: String
+        let cutoffAt: Date?
+        var expected = FarmCommandCloudPayload(kind: .bootstrapEntity)
+        expected.dataValues["snapshot"] = snapshotData
+        if version == currentVersion {
+            guard let value = payload.strings["baselineSlot"],
+                  !value.isEmpty,
+                  let cutoff = payload.dates["baselineCutoffAt"] else {
+                throw MigrationCloudReadyEvidenceError.invalidBaselineOperation
+            }
+            slot = value
+            cutoffAt = cutoff
+            expected.integers["baselineVersion"] = currentVersion
+            expected.strings["baselineSlot"] = value
+            expected.dates["baselineCutoffAt"] = cutoff
+        } else {
+            slot = try legacyBaselineSlot(snapshot)
+            cutoffAt = nil
+        }
+        guard try JSONEncoder.cloud.encode(expected) == operation.payload else {
+            throw MigrationCloudReadyEvidenceError.invalidBaselineOperation
+        }
+        let sourceDigest = CloudPayloadDigest.hex(for: snapshot.sourcePayload)
+        return .init(
+            operation: operation,
+            snapshot: snapshot,
+            version: version,
+            cutoffAt: cutoffAt,
+            slot: slot,
+            digestLine: "\(snapshot.entityType):\(snapshot.entityID.uuidString.lowercased()):\(sourceDigest)"
+        )
+    }
+
+    private static func legacyBaselineSlot(_ snapshot: BootstrapEntityEnvelopeV1) throws -> String {
+        switch CloudEntityType(rawValue: snapshot.entityType) {
+        case .farm:
+            let payload = try decodePayload(snapshot.sourcePayload)
+            return payload.kind == .updateFarmLocation ? "1" : "0"
+        case .semenDonor:
+            let payload = try decodePayload(snapshot.sourcePayload)
+            if case .upsertSemenDonor(let draft) = payload.careCommand {
+                return draft.linkedRamID == nil ? "5" : "25"
+            }
+            return "5"
+        case .pen, .breedingProgram, .productionBatch, .feedIngredient, .feedRecipe, .inventoryLot, .semen:
+            return "10"
+        case .sheep, .feedRecipeComponent:
+            return "20"
+        case .weight, .weaning, .transfer, .removal, .batchMembership, .feed, .health, .reproduction, .note:
+            return "30"
+        case .pedigreeChange:
+            return "35"
+        default:
+            return "revision-\(snapshot.sourceRevision)"
+        }
+    }
+
+    private static func decodePayload(_ data: Data) throws -> FarmCommandCloudPayload {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(FarmCommandCloudPayload.self, from: data)
+    }
+
+    private static func decodeSnapshot(_ data: Data) throws -> BootstrapEntityEnvelopeV1 {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(BootstrapEntityEnvelopeV1.self, from: data)
     }
 }
 
 @MainActor
 struct MigrationCloudBootstrapService {
-    private static let summaryPrefix = "迁移云端基线："
+    private static let summaryPrefix = MigrationBaselineV2EvidenceContract.summaryPrefix
+    private static let currentBaselineVersion = MigrationBaselineV2EvidenceContract.currentVersion
 
     func prepare(
         commit: MigrationCommitRecord,
         farm: FarmRecord,
         accountID: UUID,
-        context: ModelContext
+        context: ModelContext,
+        allowsExistingBinding: Bool = false,
+        forceRefresh: Bool = false
     ) throws -> MigrationCloudBootstrapResult {
         guard farm.deletedAt == nil else { throw MigrationCloudBootstrapError.farmMissing }
         guard farm.ownerAccountID == accountID, commit.ownerAccountID == accountID else {
@@ -48,9 +410,12 @@ struct MigrationCloudBootstrapService {
             throw MigrationCloudBootstrapError.commitMissing
         }
         let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>()).filter { $0.farmID == farm.id }
-        guard bindings.isEmpty else { throw MigrationCloudBootstrapError.conflictingCloudBinding }
+        guard bindings.isEmpty || (allowsExistingBinding && bindings.allSatisfy({
+            $0.databaseScope == .privateDatabase && $0.state == .active && $0.ownerAccountID == accountID
+        })) else { throw MigrationCloudBootstrapError.conflictingCloudBinding }
 
-        if commit.cloudState != .localCommitted,
+        if !forceRefresh,
+           commit.cloudState != .localCommitted,
            !commit.baselineDigest.isEmpty,
            commit.baselineEntityCount > 0 {
             return .init(
@@ -99,9 +464,18 @@ struct MigrationCloudBootstrapService {
         }
 
         let existing = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
-            $0.farmID == farm.id && $0.summary.hasPrefix(Self.summaryPrefix)
+            $0.farmID == farm.id && $0.kindRawValue == DomainOperationKind.bootstrapEntity.rawValue
         }
-        let existingIDs = Set(existing.map(\.id))
+        var existingByID: [UUID: DomainOperation] = [:]
+        for operation in existing {
+            guard existingByID.updateValue(operation, forKey: operation.id) == nil else {
+                throw MigrationCloudBootstrapError.invalidExistingBaselineOperation
+            }
+        }
+        var baselineOutboxes = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.farmID == farm.id
+        }
+        let allOutboxes = try context.fetch(FetchDescriptor<OutboxItem>())
         var digestLines: [String] = []
         var insertedCount = 0
         let bootstrapAuthorizedAt = Date.now
@@ -112,7 +486,52 @@ struct MigrationCloudBootstrapService {
                 sourceKey: "cloud-bootstrap:\(item.entityType.rawValue):\(item.entityID.uuidString.lowercased()):\(sourceDigest)"
             )
             digestLines.append("\(item.entityType.rawValue):\(item.entityID.uuidString.lowercased()):\(sourceDigest)")
-            guard !existingIDs.contains(operationID) else { continue }
+            if let existingOperation = existingByID[operationID] {
+                try MigrationBaselineV2EvidenceContract.validateExistingOperation(
+                    existingOperation,
+                    commit: commit,
+                    accountID: accountID,
+                    entityType: item.entityType,
+                    entityID: item.entityID,
+                    sourceRevision: item.revision,
+                    sourcePayload: item.sourcePayload,
+                    slot: item.order
+                )
+                let matchingOutboxes = baselineOutboxes.filter { $0.operationID == operationID }
+                if matchingOutboxes.isEmpty {
+                    let outboxID = StableMigrationID.uuid(
+                        sessionID: commit.sessionID,
+                        sourceKey: "cloud-bootstrap-outbox:\(operationID.uuidString.lowercased())"
+                    )
+                    guard !allOutboxes.contains(where: { $0.id == outboxID }) else {
+                        throw MigrationCloudBootstrapError.conflictingBaselineOutbox
+                    }
+                    let repaired = OutboxItem(
+                        id: outboxID,
+                        farmID: existingOperation.farmID,
+                        accountID: existingOperation.accountID,
+                        operationID: existingOperation.id,
+                        entityType: existingOperation.entityType,
+                        entityID: existingOperation.entityID,
+                        baseRevision: existingOperation.baseRevision,
+                        payloadDigest: existingOperation.payloadDigest
+                    )
+                    context.insert(repaired)
+                    baselineOutboxes.append(repaired)
+                    insertedCount += 1
+                } else {
+                    guard matchingOutboxes.count == 1,
+                          let outbox = matchingOutboxes.first,
+                          outbox.accountID == existingOperation.accountID,
+                          outbox.entityType == existingOperation.entityType,
+                          outbox.entityID == existingOperation.entityID,
+                          outbox.baseRevision == existingOperation.baseRevision,
+                          outbox.payloadDigest == existingOperation.payloadDigest else {
+                        throw MigrationCloudBootstrapError.conflictingBaselineOutbox
+                    }
+                }
+                continue
+            }
 
             let snapshot = BootstrapEntityEnvelopeV1(
                 entityType: item.entityType.rawValue,
@@ -122,6 +541,9 @@ struct MigrationCloudBootstrapService {
             )
             var wrapper = FarmCommandCloudPayload(kind: .bootstrapEntity)
             wrapper.dataValues["snapshot"] = try JSONEncoder.cloud.encode(snapshot)
+            wrapper.integers["baselineVersion"] = Self.currentBaselineVersion
+            wrapper.dates["baselineCutoffAt"] = bootstrapAuthorizedAt
+            wrapper.strings["baselineSlot"] = String(item.order)
             let payload = try JSONEncoder.cloud.encode(wrapper)
             let operation = DomainOperation(
                 id: operationID,
@@ -139,7 +561,7 @@ struct MigrationCloudBootstrapService {
                 payload: payload
             )
             context.insert(operation)
-            context.insert(OutboxItem(
+            let outbox = OutboxItem(
                 id: StableMigrationID.uuid(sessionID: commit.sessionID, sourceKey: "cloud-bootstrap-outbox:\(operationID.uuidString.lowercased())"),
                 farmID: farm.id,
                 accountID: accountID,
@@ -148,7 +570,9 @@ struct MigrationCloudBootstrapService {
                 entityID: operation.entityID,
                 baseRevision: operation.baseRevision,
                 payloadDigest: operation.payloadDigest
-            ))
+            )
+            context.insert(outbox)
+            baselineOutboxes.append(outbox)
             insertedCount += 1
         }
 
@@ -168,6 +592,72 @@ struct MigrationCloudBootstrapService {
             baselineDigest: digest,
             wasAlreadyPrepared: insertedCount == 0
         )
+    }
+
+    /// Version 1 migration snapshots omitted the authoritative legacy sheep
+    /// status/current-pen flags. Refresh an already-synced owner farm once so
+    /// reinstall recovery produces the same herd as the verified source device.
+    func refreshEligibleSyncedBaselines(accountID: UUID, context: ModelContext) throws -> [MigrationCloudBootstrapResult] {
+        let farms = try context.fetch(FetchDescriptor<FarmRecord>())
+        let bindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>())
+        let commits = try context.fetch(FetchDescriptor<MigrationCommitRecord>()).filter {
+            $0.ownerAccountID == accountID && $0.status == .completed && $0.cloudState == .synced
+        }
+        var results: [MigrationCloudBootstrapResult] = []
+        for commit in commits {
+            guard let farm = farms.first(where: {
+                $0.id == commit.farmID && $0.ownerAccountID == accountID && !$0.isLocalOnlyMigration && $0.deletedAt == nil
+            }), bindings.contains(where: {
+                $0.farmID == farm.id && $0.ownerAccountID == accountID && $0.databaseScope == .privateDatabase && $0.state == .active
+            }) else { continue }
+
+            let farmBootstrapOperations = operations.filter {
+                $0.farmID == farm.id && $0.kindRawValue == DomainOperationKind.bootstrapEntity.rawValue
+            }
+            var hasVersion2 = false
+            for operation in farmBootstrapOperations {
+                guard CloudPayloadDigest.hex(for: operation.payload) == operation.payloadDigest,
+                      let payload = try? decodePayload(operation.payload),
+                      payload.kind == .bootstrapEntity else {
+                    throw MigrationCloudBootstrapError.invalidExistingBaselineOperation
+                }
+                hasVersion2 = hasVersion2 ||
+                    (payload.integers["baselineVersion"] ?? 1) >= Self.currentBaselineVersion
+            }
+            if hasVersion2 {
+                _ = try MigrationBaselineV2EvidenceContract.requiredOperations(
+                    commit: commit,
+                    farmID: farm.id,
+                    context: context
+                )
+                continue
+            }
+            if let (_, bundle) = try RecoveredBaselineReuploadRepairService.completedRecoveryBundle(
+                commit: commit,
+                context: context
+            ) {
+                guard let bootstrap = bundle.bootstrap,
+                      bootstrap.normalizedVersion >= Self.currentBaselineVersion,
+                      bootstrap.digest == commit.baselineDigest,
+                      bootstrap.entityCount == commit.baselineEntityCount,
+                      bootstrap.photoCount == commit.baselinePhotoCount else {
+                    throw MigrationCloudBootstrapError.invalidExistingBaselineOperation
+                }
+                continue
+            }
+
+            results.append(try prepare(
+                commit: commit,
+                farm: farm,
+                accountID: accountID,
+                context: context,
+                allowsExistingBinding: true,
+                forceRefresh: true
+            ))
+            try context.save()
+        }
+        return results
     }
 
     func upgradeEligibleLegacyFarms(accountID: UUID, context: ModelContext) throws -> [MigrationCloudBootstrapResult] {
@@ -240,9 +730,14 @@ struct MigrationCloudBootstrapService {
             payload.strings["purpose"] = value.purpose
             payload.integers["isHistoricalArchive"] = value.isHistoricalArchive ? 1 : 0
             payload.integers["isBreedingRam"] = value.isBreedingRam ? 1 : 0
+            payload.integers["legacyStatusSnapshotIsAuthoritative"] = value.legacyStatusSnapshotIsAuthoritative == true ? 1 : 0
+            payload.integers["legacyPenSnapshotIsAuthoritative"] = value.legacyPenSnapshotIsAuthoritative == true ? 1 : 0
+            payload.strings["legacyStatusRawValue"] = value.statusRawValue
             payload.optionalIdentifiers["damID"] = value.damID
             payload.optionalIdentifiers["sireID"] = value.sireID
+            payload.optionalIdentifiers["legacyCurrentPenID"] = value.currentPenID
             payload.optionalIdentifiers["semenDonorID"] = value.semenDonorID
+            payload.optionalDates["legacyRemovedAt"] = value.removedAt
             payload.optionalStrings["damProvenance"] = value.damProvenanceRawValue
             payload.optionalStrings["sireProvenance"] = value.sireProvenanceRawValue
             payload.optionalStrings["semenDonorNameSnapshot"] = value.semenDonorNameSnapshot
@@ -265,7 +760,7 @@ struct MigrationCloudBootstrapService {
             values.append((.transfer, value.id, value.revision, try FarmCommandCloudPayloadEncoder.encode(.transferSheep(sheepID: value.sheepID, toPenID: value.toPenID, occurredAt: value.occurredAt, note: value.note)), 30))
         }
         for value in try context.fetch(FetchDescriptor<RemovalRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
-            values.append((.removal, value.id, value.revision, try FarmCommandCloudPayloadEncoder.encode(.removeSheep(sheepID: value.sheepID, kind: value.kind, reason: value.reason, amountText: value.amountText, occurredAt: value.occurredAt, note: value.note)), 30))
+            values.append((.removal, value.id, value.revision, try FarmCommandCloudPayloadEncoder.encode(.removeSheep(sheepID: value.sheepID, kind: value.kind, reason: value.reason, amountText: value.amountText, occurredAt: value.occurredAt, note: value.note, recordID: value.id, removalBatchID: value.removalBatchID, batchTotalAmountText: value.batchTotalAmountText)), 30))
         }
         for value in try context.fetch(FetchDescriptor<ProductionBatchRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
             values.append((.productionBatch, value.id, 1, try FarmCommandCloudPayloadEncoder.encode(.createBatch(name: value.name, purpose: value.purpose, startedAt: value.startedAt, sheepIDs: [], note: value.note)), 10))

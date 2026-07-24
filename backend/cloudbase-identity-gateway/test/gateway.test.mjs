@@ -53,12 +53,21 @@ async function invoke(handler, path, body, method, token) {
 
 function fakeService(overrides = {}) {
   return {
-    health: async () => ({ status: "ok", environment: "cloudbase-development", version: "0.3.3", database: "cloudbase-document" }),
+    health: async () => ({ status: "ok", environment: "cloudbase-development", version: "0.4.0", database: "cloudbase-document" }),
     ensureAccount: async (accountID, displayName) => ({ accountID, displayName: displayName || "eSheep+ 用户" }),
     consumeRateLimit: async () => ({ remaining: 1 }),
     recordAppleBinding: async () => undefined,
     appleCredential: async () => null,
     updateAccountDisplayName: async (accountID, displayName) => ({ accountID, displayName }),
+    accountAvatar: async (accountID, includeData) => ({
+      accountID,
+      revision: 1,
+      digest: "a".repeat(64),
+      hasAvatar: true,
+      ...(includeData ? { dataBase64: Buffer.from([0xFF, 0xD8, 0xFF, 0xD9]).toString("base64") } : {}),
+    }),
+    updateAccountAvatar: async (accountID) => ({ accountID, revision: 2, digest: "b".repeat(64), hasAvatar: true }),
+    removeAccountAvatar: async (accountID) => ({ accountID, revision: 3, digest: null, hasAvatar: false }),
     ...overrides,
   };
 }
@@ -184,6 +193,49 @@ test("account profile update requires the current session and returns the normal
   assert.deepEqual(updates, [[accountID, "  北山牧场  "]]);
 });
 
+test("account avatar routes are authenticated and keep metadata separate from image content", async () => {
+  const accountID = stableAccountID("avatar-route-subject");
+  const calls = [];
+  const service = fakeService({
+    accountAvatar: async (receivedAccountID, includeData) => {
+      calls.push(["fetch", receivedAccountID, includeData]);
+      return {
+        accountID: receivedAccountID,
+        revision: 7,
+        digest: "c".repeat(64),
+        hasAvatar: true,
+        ...(includeData ? { dataBase64: "/9j/2Q==" } : {}),
+      };
+    },
+    updateAccountAvatar: async (receivedAccountID, input) => {
+      calls.push(["update", receivedAccountID, input]);
+      return { accountID: receivedAccountID, revision: 8, digest: input.digest, hasAvatar: true };
+    },
+    removeAccountAvatar: async (receivedAccountID) => {
+      calls.push(["remove", receivedAccountID]);
+      return { accountID: receivedAccountID, revision: 9, digest: null, hasAvatar: false };
+    },
+  });
+  const fetchImpl = async () => Response.json({ sub: "avatar-route-subject" });
+  const handler = createHandler({ fetchImpl, env, collaborationService: service });
+  const metadata = await invoke(handler, "/identity/v1/account/avatar", undefined, "GET", "access-token");
+  const content = await invoke(handler, "/identity/v1/account/avatar/content", undefined, "GET", "access-token");
+  const updated = await invoke(handler, "/identity/v1/account/avatar", { dataBase64: "/9j/2Q==", digest: "d".repeat(64) }, "PUT", "access-token");
+  const removed = await invoke(handler, "/identity/v1/account/avatar", undefined, "DELETE", "access-token");
+
+  assert.equal(metadata.status, 200);
+  assert.equal("dataBase64" in metadata.json, false);
+  assert.equal(content.json.dataBase64, "/9j/2Q==");
+  assert.equal(updated.json.revision, 8);
+  assert.equal(removed.json.hasAvatar, false);
+  assert.deepEqual(calls, [
+    ["fetch", accountID, false],
+    ["fetch", accountID, true],
+    ["update", accountID, { dataBase64: "/9j/2Q==", digest: "d".repeat(64) }],
+    ["remove", accountID],
+  ]);
+});
+
 function appleIdentityToken(rawNonce, subject = "apple-user-1") {
   const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: "apple-test-key" })).toString("base64url");
   const payload = Buffer.from(JSON.stringify({
@@ -293,6 +345,72 @@ test("account display name is explicit, normalized, and never replaced by later 
   await assert.rejects(service.updateAccountDisplayName(accountID, "羊".repeat(41)), (error) => error.code === "invalid_display_name");
 });
 
+test("account avatar is versioned, digest-checked, downloadable, and removable", async () => {
+  const service = new CollaborationService({ store: new MemoryStore(), env: {} });
+  const accountID = randomUUID();
+  const jpeg = Buffer.from([0xFF, 0xD8, 0xFF, 0xD9]);
+  const dataBase64 = jpeg.toString("base64");
+  const digest = createHash("sha256").update(jpeg).digest("hex");
+  await service.ensureAccount(accountID, "头像账户");
+
+  const empty = await service.accountAvatar(accountID);
+  assert.deepEqual(empty, { accountID, revision: null, digest: null, hasAvatar: false });
+
+  const updated = await service.updateAccountAvatar(accountID, { dataBase64, digest });
+  assert.equal(updated.hasAvatar, true);
+  assert.equal(updated.digest, digest);
+  const metadata = await service.accountAvatar(accountID);
+  const content = await service.accountAvatar(accountID, true);
+  assert.equal("dataBase64" in metadata, false);
+  assert.equal(content.dataBase64, dataBase64);
+  assert.equal(content.revision, updated.revision);
+
+  const removed = await service.removeAccountAvatar(accountID);
+  assert.equal(removed.hasAvatar, false);
+  assert.ok(removed.revision > updated.revision);
+  assert.deepEqual(await service.accountAvatar(accountID, true), {
+    accountID,
+    revision: removed.revision,
+    digest: null,
+    hasAvatar: false,
+    dataBase64: null,
+  });
+});
+
+test("account avatar rejects malformed, oversized, non-JPEG, and digest-mismatched data", async () => {
+  const service = new CollaborationService({ store: new MemoryStore(), env: {} });
+  const accountID = randomUUID();
+  await service.ensureAccount(accountID, "头像校验");
+
+  await assert.rejects(
+    service.updateAccountAvatar(accountID, { dataBase64: "not-base64", digest: "0".repeat(64) }),
+    (error) => error.code === "invalid_avatar",
+  );
+  const oversized = Buffer.alloc(60 * 1024 + 1, 0);
+  oversized[0] = 0xFF;
+  oversized[1] = 0xD8;
+  oversized[2] = 0xFF;
+  oversized[oversized.length - 2] = 0xFF;
+  oversized[oversized.length - 1] = 0xD9;
+  await assert.rejects(
+    service.updateAccountAvatar(accountID, {
+      dataBase64: oversized.toString("base64"),
+      digest: createHash("sha256").update(oversized).digest("hex"),
+    }),
+    (error) => error.code === "invalid_avatar",
+  );
+  const pngLike = Buffer.from([0x89, 0x50, 0x4E, 0x47]).toString("base64");
+  await assert.rejects(
+    service.updateAccountAvatar(accountID, { dataBase64: pngLike, digest: createHash("sha256").update(Buffer.from(pngLike, "base64")).digest("hex") }),
+    (error) => error.code === "invalid_avatar_format",
+  );
+  const jpeg = Buffer.from([0xFF, 0xD8, 0xFF, 0xD9]).toString("base64");
+  await assert.rejects(
+    service.updateAccountAvatar(accountID, { dataBase64: jpeg, digest: "0".repeat(64) }),
+    (error) => error.code === "invalid_avatar_digest",
+  );
+});
+
 test("invite remains pending until owner confirmation and generation changes only on confirmation", async () => {
   const store = new MemoryStore();
   const service = new CollaborationService({ store, env: {} });
@@ -353,6 +471,46 @@ test("farm identity is canonical across uppercase JSON and lowercase URL paths",
   assert.equal((await service.issueCapability(owner, { farmID: uppercaseFarmID, deviceID })).role, "owner");
   assert.equal((await service.securitySnapshot(owner, lowercaseFarmID)).farmID, lowercaseFarmID);
   assert.equal((await service.activateFarm(owner, lowercaseFarmID)).farmID, lowercaseFarmID);
+});
+
+test("device registration changes security generation only when the trusted key set changes", async () => {
+  const store = new MemoryStore();
+  const service = new CollaborationService({ store, env: {} });
+  const owner = randomUUID();
+  const farmID = randomUUID();
+  const deviceID = randomUUID();
+  const publicKeyJWK = {
+    kty: "EC",
+    crv: "P-256",
+    x: "trusted-device-key-x",
+    y: "trusted-device-key-y",
+  };
+
+  await service.ensureAccount(owner, "设备测试场主");
+  await service.registerFarm(owner, { farmID, zoneName: `farm_${farmID}` });
+  assert.equal((await service.securitySnapshot(owner, farmID)).generation, 1);
+
+  await service.registerDevice(owner, { deviceID, publicKeyJWK, displayName: "iPhone Air" });
+  assert.equal((await service.securitySnapshot(owner, farmID)).generation, 2);
+
+  await service.registerDevice(owner, {
+    deviceID,
+    publicKeyJWK: { y: publicKeyJWK.y, x: publicKeyJWK.x, crv: publicKeyJWK.crv, kty: publicKeyJWK.kty },
+    displayName: "iPhone Air（重命名）",
+  });
+  assert.equal((await service.securitySnapshot(owner, farmID)).generation, 2);
+
+  await assert.rejects(
+    service.registerDevice(owner, {
+      deviceID,
+      publicKeyJWK: { ...publicKeyJWK, x: "replacement-device-key-x" },
+      displayName: "伪造设备",
+    }),
+    (error) => error.status === 409 && error.code === "device_key_mismatch",
+  );
+  const snapshot = await service.securitySnapshot(owner, farmID);
+  assert.equal(snapshot.generation, 2);
+  assert.deepEqual(JSON.parse(snapshot.devices.find((device) => device.deviceID === deviceID).publicKeyJWK), publicKeyJWK);
 });
 
 test("capability certificate is an ES256 JWS with a 64-byte P1363 signature", () => {

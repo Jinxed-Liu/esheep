@@ -10,7 +10,7 @@ struct SystemServicesSettingsView: View {
 
     var body: some View {
         List {
-            Section("通知") {
+            Section {
                 LabeledContent("系统权限", value: notificationStatusText)
                 if notifications.authorizationStatus == .notDetermined {
                     Button("允许通知") {
@@ -28,17 +28,8 @@ struct SystemServicesSettingsView: View {
                     Text(message).font(.footnote).foregroundStyle(.red)
                 }
             }
-
-            Section("系统集成") {
-                LabeledContent("Spotlight", value: "按牧场隔离索引")
-                LabeledContent("快捷指令", value: "羊只、圈舍、任务、称重、投喂")
-                LabeledContent("后台刷新", value: "系统择机补偿同步")
-                Text("后台执行时间由 iOS 决定；失败操作会保留在 Outbox，并在前台或下一次后台机会继续处理。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
         }
-        .navigationTitle("通知与系统能力")
+        .navigationTitle("通知")
         .navigationBarTitleDisplayMode(.inline)
         .task { await notifications.refreshAuthorizationStatus() }
     }

@@ -15,6 +15,14 @@ enum LegalDocument: String, CaseIterable, Identifiable {
         }
     }
 
+    var systemImage: String {
+        switch self {
+        case .terms: "doc.text"
+        case .privacy: "hand.raised"
+        case .iCloud: "icloud"
+        }
+    }
+
     var sections: [(heading: String, body: String)] {
         switch self {
         case .terms:
@@ -28,14 +36,14 @@ enum LegalDocument: String, CaseIterable, Identifiable {
             [
                 ("收集范围", "应用处理账号标识、设备身份、牧场生产数据和用户主动添加的照片。应用不投放广告、不跨 App 跟踪，也不出售个人信息。"),
                 ("用途", "数据仅用于登录、离线记录、用户授权的牧场协作、恢复、订阅校验和故障诊断。"),
-                ("存储与共享", "牧场数据按 farmID 隔离。云协作使用用户的 iCloud 私有或共享数据库；受邀成员只能在其角色允许的范围内操作。"),
+                ("存储与共享", "不同牧场的数据彼此隔离。启用云协作后，受邀成员只能在其角色允许的范围内查看或操作当前牧场。"),
                 ("控制权", "用户可导出数据、退出共享牧场或申请删除账户。账户删除会撤销服务端会话、设备和共享关系；自有云端牧场需先处理。"),
             ]
         case .iCloud:
             [
-                ("使用方式", "启用云协作后，应用会在配置的 CloudKit Container 中为符合准入条件的牧场创建独立 Zone，并通过 CKShare 邀请成员。"),
-                ("旧版牧场导入", "旧版数据会先在本机临时库完成校验。Development 云同步启用时，正式建场后会自动上传至您登录的 iCloud；上传失败不影响本机继续使用。"),
-                ("删除与恢复", "退出共享会移除本机共享缓存；场主恢复使用独立的校验与 staging 流程。iCloud 账户状态和系统服务可影响同步时效。"),
+                ("使用方式", "启用云协作后，当前牧场会保存到你的 iCloud，并可通过系统共享邀请指定成员。每个牧场的数据彼此独立。"),
+                ("旧版牧场导入", "导入旧版数据时，应用会先在本机完整检查；确认成功后再保存并同步。网络不可用时仍可继续使用本机数据。"),
+                ("删除与恢复", "退出共享牧场后，本机会移除该牧场的共享数据。牧场主可使用恢复包或恢复点找回数据；iCloud 账户状态和网络会影响同步时效。"),
             ]
         }
     }

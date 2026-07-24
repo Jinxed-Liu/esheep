@@ -127,11 +127,17 @@ enum SecureAccountStore {
         return try? JSONDecoder().decode(StoredWorkerSession.self, from: stored)
     }
 
-    static func hasWorkerSession(for accountID: UUID, now: Date = .now) -> Bool {
+    static func hasPersistedSession(for accountID: UUID) -> Bool {
         guard let session = workerSession(),
-              session.accountID == accountID,
-              session.canResumeOffline(now: now) else { return false }
+              session.accountID == accountID else { return false }
         return (try? data(account: "worker-refresh-token")) != nil
+    }
+
+    static func hasWorkerSession(for accountID: UUID, now: Date = .now) -> Bool {
+        guard hasPersistedSession(for: accountID),
+              let session = workerSession(),
+              session.canResumeOffline(now: now) else { return false }
+        return true
     }
 
     static func saveSynchronizable(_ data: Data, account: String) throws {

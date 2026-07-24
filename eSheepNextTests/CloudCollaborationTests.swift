@@ -5,8 +5,115 @@ import UIKit
 import XCTest
 @testable import eSheepNext
 
+private actor CloudSyncHardDeadlineTestGate {
+    private var isOpen = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            if isOpen {
+                continuation.resume()
+            } else {
+                self.continuation = continuation
+            }
+        }
+    }
+
+    func open() {
+        isOpen = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private final class CloudSyncHardDeadlineTestCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func increment() {
+        lock.lock()
+        storage += 1
+        lock.unlock()
+    }
+}
+
 @MainActor
 final class CloudCollaborationTests: XCTestCase {
+    func testCloudSyncHardDeadlineReturnsWithoutWaitingForUncooperativeTask() async throws {
+        let gate = CloudSyncHardDeadlineTestGate()
+        let cancellations = CloudSyncHardDeadlineTestCounter()
+        let task = Task<Void, any Error> {
+            await gate.wait()
+        }
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        do {
+            try await CloudSyncHardDeadline.wait(
+                for: task,
+                timeout: .milliseconds(50),
+                onCancellation: cancellations.increment
+            )
+            XCTFail("不响应取消的同步任务必须触发硬超时")
+        } catch let error as CloudSyncHardDeadlineError {
+            XCTAssertEqual(error, .timedOut)
+        }
+
+        XCTAssertLessThan(startedAt.duration(to: clock.now), .seconds(1))
+        XCTAssertEqual(cancellations.value, 1)
+        XCTAssertTrue(task.isCancelled)
+        await gate.open()
+        _ = await task.result
+    }
+
+    func testCloudSyncHardDeadlineDoesNotCancelCompletedTask() async throws {
+        let cancellations = CloudSyncHardDeadlineTestCounter()
+        let task = Task<Void, any Error> {}
+
+        try await CloudSyncHardDeadline.wait(
+            for: task,
+            timeout: .milliseconds(50),
+            onCancellation: cancellations.increment
+        )
+        try await Task.sleep(for: .milliseconds(75))
+
+        XCTAssertEqual(cancellations.value, 0)
+        XCTAssertFalse(task.isCancelled)
+    }
+
+    func testCompletedMigrationCardSeparatesFrozenBaselineFromCurrentSyncState() {
+        let snapshot = MigrationUploadCardSnapshot(
+            cloudState: .synced,
+            baselineEntityCount: 21_251,
+            confirmedBaselineCount: 21_251,
+            baselinePhotoCount: 7,
+            confirmedOperationCount: 21_270,
+            pendingCount: 0,
+            uploadingCount: 0,
+            blockedCount: 0,
+            rejectedCount: 0,
+            activePhotoCount: 7,
+            cloudPhotoAssetCount: 8,
+            retainedHistoricalPhotoAssetCount: 1
+        )
+
+        XCTAssertTrue(snapshot.isComplete)
+        XCTAssertEqual(snapshot.progressCompletedCount, 21_251)
+        XCTAssertEqual(snapshot.confirmedAfterBaselineCount, 19)
+        XCTAssertEqual(snapshot.currentOutstandingCount, 0)
+        XCTAssertEqual(snapshot.currentBlockedCount, 0)
+        XCTAssertEqual(snapshot.activePhotoCount, 7)
+        XCTAssertEqual(snapshot.cloudPhotoAssetCount, 8)
+        XCTAssertEqual(snapshot.retainedHistoricalPhotoAssetCount, 1)
+    }
+
     func testCloudRecordMapperRoundTripsOperationEnvelope() throws {
         let privateKey = P256.Signing.PrivateKey()
         let payload = Data("{\"value\":1}".utf8)
@@ -26,6 +133,205 @@ final class CloudCollaborationTests: XCTestCase {
         XCTAssertEqual(try mapper.operationEnvelope(from: entityRecord), envelope)
         XCTAssertEqual(entityRecord.recordType, CloudRecordType.farmEntity.rawValue)
         XCTAssertEqual(entityRecord.recordID.recordName, "entity_\(envelope.entityID.uuidString.lowercased())")
+    }
+
+    func testPhotoAssetSignatureV2AuthenticatesMetadataAtCloudKitMillisecondPrecision() {
+        let farmID = UUID()
+        let assetID = UUID()
+        let accountID = UUID()
+        let deviceID = UUID()
+        let createdAt = Date(timeIntervalSince1970: 1_735_689_600.123_1)
+        func envelope(capturedAt: Date?, createdAt: Date) -> FarmAssetEnvelope {
+            FarmAssetEnvelope(
+                farmID: farmID,
+                assetID: assetID,
+                entityID: nil,
+                sourceDigest: "source",
+                payloadDigest: "payload",
+                mimeType: "image/jpeg",
+                pixelWidth: 1_024,
+                pixelHeight: 768,
+                capturedAt: capturedAt,
+                byteCount: 42,
+                createdAt: createdAt,
+                modifiedByAccountID: accountID,
+                modifiedByDeviceID: deviceID,
+                capabilityCertificate: "test",
+                signature: Data()
+            )
+        }
+        let original = envelope(capturedAt: createdAt, createdAt: createdAt)
+        let metadataChanged = envelope(
+            capturedAt: createdAt.addingTimeInterval(60),
+            createdAt: createdAt
+        )
+        XCTAssertEqual(original.canonicalSigningData, metadataChanged.canonicalSigningData)
+        XCTAssertNotEqual(original.canonicalSigningDataV2, metadataChanged.canonicalSigningDataV2)
+
+        let sameCloudKitMillisecond = envelope(
+            capturedAt: createdAt.addingTimeInterval(0.000_1),
+            createdAt: createdAt.addingTimeInterval(0.000_1)
+        )
+        XCTAssertEqual(original.canonicalSigningDataV2, sameCloudKitMillisecond.canonicalSigningDataV2)
+    }
+
+    func testPhotoAssetSignatureVerifierAcceptsV2AndNarrowLegacyFallback() throws {
+        let privateKey = P256.Signing.PrivateKey()
+        let farmID = UUID()
+        let assetID = UUID()
+        let accountID = UUID()
+        let deviceID = UUID()
+        let createdAt = Date(timeIntervalSince1970: 1_735_689_600.123)
+        func envelope(signature: Data, capturedAt: Date? = nil) -> FarmAssetEnvelope {
+            FarmAssetEnvelope(
+                farmID: farmID,
+                assetID: assetID,
+                entityID: UUID(uuidString: "00000000-0000-0000-0000-000000000001"),
+                sourceDigest: "source",
+                payloadDigest: "payload",
+                mimeType: "image/jpeg",
+                pixelWidth: 1_024,
+                pixelHeight: 768,
+                capturedAt: capturedAt,
+                byteCount: 42,
+                createdAt: createdAt,
+                modifiedByAccountID: accountID,
+                modifiedByDeviceID: deviceID,
+                capabilityCertificate: "test",
+                signature: signature
+            )
+        }
+
+        let unsigned = envelope(signature: Data())
+        let v2 = envelope(signature: try privateKey.signature(for: unsigned.canonicalSigningDataV2).rawRepresentation)
+        XCTAssertEqual(
+            try FarmAssetSignatureVerifier.verify(
+                envelope: v2,
+                declaredVersion: 2,
+                publicKeyX963: privateKey.publicKey.x963Representation
+            ),
+            .v2
+        )
+
+        let legacy = envelope(signature: try privateKey.signature(for: unsigned.canonicalSigningData).rawRepresentation)
+        XCTAssertEqual(
+            try FarmAssetSignatureVerifier.verify(
+                envelope: legacy,
+                declaredVersion: nil,
+                publicKeyX963: privateKey.publicKey.x963Representation
+            ),
+            .legacyV1
+        )
+        XCTAssertEqual(
+            try FarmAssetSignatureVerifier.verify(
+                envelope: legacy,
+                declaredVersion: 2,
+                publicKeyX963: privateKey.publicKey.x963Representation
+            ),
+            .legacyV1,
+            "旧客户端 changedKeys 更新会遗留 v2 marker，但完整 v1 签名仍必须独立成立"
+        )
+
+        let tamperedMetadata = envelope(
+            signature: v2.signature,
+            capturedAt: createdAt.addingTimeInterval(60)
+        )
+        XCTAssertThrowsError(try FarmAssetSignatureVerifier.verify(
+            envelope: tamperedMetadata,
+            declaredVersion: 2,
+            publicKeyX963: privateKey.publicKey.x963Representation
+        ))
+    }
+
+    func testPhotoAssetSignatureVersionParserRejectsExplicitInvalidValues() throws {
+        let mapper = CloudRecordMapper()
+        let record = CKRecord(recordType: CloudRecordType.farmAsset.rawValue)
+        XCTAssertNil(try mapper.assetSignatureVersion(from: record))
+
+        for invalidValue: any CKRecordValue in [3 as CKRecordValue, 1.5 as CKRecordValue, "2" as CKRecordValue, true as CKRecordValue] {
+            record[CloudRecordField.assetSignatureVersion] = invalidValue
+            XCTAssertThrowsError(try mapper.assetSignatureVersion(from: record))
+        }
+
+        record[CloudRecordField.assetSignatureVersion] = 1 as CKRecordValue
+        XCTAssertEqual(try mapper.assetSignatureVersion(from: record), 1)
+        record[CloudRecordField.assetSignatureVersion] = 2 as CKRecordValue
+        XCTAssertEqual(try mapper.assetSignatureVersion(from: record), 2)
+    }
+
+    func testPhotoAssetAuthorizationUsesOnlyServerTimestamps() throws {
+        let creation = Date(timeIntervalSince1970: 100)
+        let modification = Date(timeIntervalSince1970: 200)
+        XCTAssertEqual(
+            try CloudRecordMapper.assetAuthorizationDate(
+                modificationDate: modification,
+                creationDate: creation
+            ),
+            modification
+        )
+        XCTAssertEqual(
+            try CloudRecordMapper.assetAuthorizationDate(
+                modificationDate: nil,
+                creationDate: creation
+            ),
+            creation
+        )
+        XCTAssertThrowsError(try CloudRecordMapper.assetAuthorizationDate(
+            modificationDate: nil,
+            creationDate: nil
+        ))
+    }
+
+    func testLegacyPhotoLiveIngestRequeuesExistingUploadForV2Resign() {
+        let farmID = UUID()
+        let assetID = UUID()
+        let asset = PhotoAssetRecord(
+            id: assetID,
+            farmID: farmID,
+            sheepID: UUID(),
+            legacySourceKey: "cloud:asset_\(assetID.uuidString.lowercased())",
+            originalEarTag: "",
+            relativePath: "FarmAssets/photo.jpg",
+            sha256: "payload-v2",
+            mimeType: "image/jpeg"
+        )
+        asset.isCloudAuthoritative = true
+        let upload = CloudAssetTransfer(
+            farmID: farmID,
+            assetID: assetID,
+            localRelativePath: "old.jpg",
+            payloadDigest: "old-payload",
+            byteCount: 1,
+            direction: .upload,
+            sourceDigest: "old-source"
+        )
+        upload.statusRawValue = CloudAssetTransferStatus.completed.rawValue
+        upload.transferredByteCount = 1
+
+        XCTAssertFalse(FarmPersistenceActor.prepareLegacyAssetForV2Resign(
+            asset,
+            recordName: "asset_\(assetID.uuidString.lowercased())",
+            sourceDigest: "source-v2",
+            payloadDigest: "payload-v2",
+            byteCount: 42,
+            uploadTransfers: [upload]
+        ))
+        XCTAssertFalse(asset.isCloudAuthoritative)
+        XCTAssertEqual(upload.status, .pending)
+        XCTAssertEqual(upload.transferredByteCount, 0)
+        XCTAssertEqual(upload.localRelativePath, asset.relativePath)
+        XCTAssertEqual(upload.payloadDigest, "payload-v2")
+        XCTAssertEqual(upload.sourceDigest, "source-v2")
+        XCTAssertNil(upload.nextRetryAt)
+
+        XCTAssertTrue(FarmPersistenceActor.prepareLegacyAssetForV2Resign(
+            asset,
+            recordName: "asset_\(assetID.uuidString.lowercased())",
+            sourceDigest: "source-v2",
+            payloadDigest: "payload-v2",
+            byteCount: 42,
+            uploadTransfers: []
+        ))
     }
 
     func testZoneWideShareUsesSystemRecordName() {
@@ -147,6 +453,402 @@ final class CloudCollaborationTests: XCTestCase {
         XCTAssertTrue(CloudRecordIdempotency.equivalent(client: client, server: server))
         server[CloudRecordField.payloadDigest] = "different" as CKRecordValue
         XCTAssertFalse(CloudRecordIdempotency.equivalent(client: client, server: server))
+    }
+
+    func testEntityProjectionUpdateReusesFetchedServerRecordAndClearsDeletion() throws {
+        let mapper = CloudRecordMapper()
+        let zoneID = CKRecordZone.ID(zoneName: CloudZoneName.forFarm(UUID()), ownerName: CKCurrentUserDefaultName)
+        let create = makeEnvelope(
+            payload: Data("{\"value\":1}".utf8),
+            signature: Data([1]),
+            revision: 1,
+            baseRevision: 0,
+            operationID: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!,
+            deletedAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        let server = mapper.entityRecord(from: create, zoneID: zoneID)
+        let update = makeEnvelope(
+            payload: Data("{\"value\":2}".utf8),
+            signature: Data([2]),
+            revision: 2,
+            baseRevision: 1,
+            operationID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!,
+            deletedAt: nil
+        )
+
+        let prepared = mapper.entityRecord(
+            from: update,
+            zoneID: zoneID,
+            existingRecord: server,
+            existingRecordIsVerifiedAncestor: true
+        )
+
+        XCTAssertTrue(prepared === server, "更新必须保留服务器 CKRecord 的 system fields/changeTag")
+        XCTAssertEqual(try mapper.operationEnvelope(from: prepared), update)
+        XCTAssertNil(prepared[CloudRecordField.deletedAt])
+    }
+
+    func testEntityProjectionDoesNotReuseDivergedServerRevision() throws {
+        let mapper = CloudRecordMapper()
+        let zoneID = CKRecordZone.ID(zoneName: CloudZoneName.forFarm(UUID()), ownerName: CKCurrentUserDefaultName)
+        let remote = makeEnvelope(
+            payload: Data("{\"remote\":true}".utf8),
+            signature: Data([1]),
+            revision: 2,
+            baseRevision: 1,
+            operationID: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
+        )
+        let server = mapper.entityRecord(from: remote, zoneID: zoneID)
+        let local = makeEnvelope(
+            payload: Data("{\"local\":true}".utf8),
+            signature: Data([2]),
+            revision: 2,
+            baseRevision: 1,
+            operationID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!
+        )
+
+        let prepared = mapper.entityRecord(from: local, zoneID: zoneID, existingRecord: server)
+
+        XCTAssertFalse(prepared === server, "分叉版本不得带着服务器 changeTag 静默覆盖")
+        XCTAssertFalse(CloudEntityProjectionPolicy.canRetry(client: prepared, against: server))
+        XCTAssertEqual(try mapper.operationEnvelope(from: server), remote)
+    }
+
+    func testEntityProjectionRaceAtBaseRevisionIsRetryable() {
+        let mapper = CloudRecordMapper()
+        let zoneID = CKRecordZone.ID(zoneName: CloudZoneName.forFarm(UUID()), ownerName: CKCurrentUserDefaultName)
+        let serverEnvelope = makeEnvelope(
+            payload: Data("{\"value\":1}".utf8),
+            signature: Data([1]),
+            revision: 1,
+            baseRevision: 0
+        )
+        let localEnvelope = makeEnvelope(
+            payload: Data("{\"value\":2}".utf8),
+            signature: Data([2]),
+            revision: 2,
+            baseRevision: 1,
+            operationID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!
+        )
+        let server = mapper.entityRecord(from: serverEnvelope, zoneID: zoneID)
+        let client = mapper.entityRecord(from: localEnvelope, zoneID: zoneID)
+
+        XCTAssertTrue(CloudEntityProjectionPolicy.canRetry(
+            client: client,
+            against: server,
+            ancestorIsVerified: true
+        ))
+    }
+
+    func testEntityProjectionCanFastForwardOnlyThroughConfirmedLocalLineage() {
+        let mapper = CloudRecordMapper()
+        let farmID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let accountID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+        let entityID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let bootstrapID = UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
+        let bridgeID = UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!
+        let candidateID = UUID(uuidString: "cccccccc-cccc-cccc-cccc-cccccccccccc")!
+        let bootstrapPayload = Data("{\"value\":1}".utf8)
+        let bridgePayload = Data("{\"value\":2}".utf8)
+        let candidatePayload = Data("{\"value\":3}".utf8)
+        let bootstrap = DomainOperation(
+            id: bootstrapID,
+            farmID: farmID,
+            accountID: accountID,
+            kind: .bootstrapEntity,
+            summary: "基线",
+            entityType: CloudEntityType.weight.rawValue,
+            entityID: entityID,
+            baseRevision: 0,
+            resultingRevision: 1,
+            payload: bootstrapPayload
+        )
+        let bridge = DomainOperation(
+            id: bridgeID,
+            farmID: farmID,
+            accountID: accountID,
+            kind: .care,
+            summary: "中间修改",
+            entityType: CloudEntityType.weight.rawValue,
+            entityID: entityID,
+            baseRevision: 1,
+            resultingRevision: 2,
+            payload: bridgePayload
+        )
+        let candidate = DomainOperation(
+            id: candidateID,
+            farmID: farmID,
+            accountID: accountID,
+            kind: .care,
+            summary: "最新修改",
+            entityType: CloudEntityType.weight.rawValue,
+            entityID: entityID,
+            baseRevision: 2,
+            resultingRevision: 3,
+            payload: candidatePayload
+        )
+        let serverEnvelope = makeEnvelope(
+            payload: bootstrapPayload,
+            signature: Data([1]),
+            revision: 1,
+            baseRevision: 0,
+            operationID: bootstrapID
+        )
+        let zoneID = CKRecordZone.ID(zoneName: CloudZoneName.forFarm(farmID), ownerName: CKCurrentUserDefaultName)
+        let server = mapper.entityRecord(from: serverEnvelope, zoneID: zoneID)
+        let history = [bootstrap, bridge, candidate]
+
+        XCTAssertFalse(CloudEntityProjectionLineage.isVerifiedAncestor(
+            server: server,
+            candidate: candidate,
+            history: history,
+            confirmedOperationRecordNames: []
+        ))
+        XCTAssertTrue(CloudEntityProjectionLineage.isVerifiedAncestor(
+            server: server,
+            candidate: candidate,
+            history: history,
+            confirmedOperationRecordNames: [mapper.recordName(for: bridgeID)]
+        ))
+
+        server[CloudRecordField.operationID] = UUID().uuidString.lowercased() as CKRecordValue
+        XCTAssertFalse(CloudEntityProjectionLineage.isVerifiedAncestor(
+            server: server,
+            candidate: candidate,
+            history: history,
+            confirmedOperationRecordNames: [mapper.recordName(for: bridgeID)]
+        ))
+    }
+
+    func testUpdatedEntityRequiresServerFetchButCreateDoesNot() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "entity-server-fetch-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let accountID = UUID()
+        let entityID = UUID()
+        context.insert(FarmRecord(id: farmID, ownerAccountID: accountID, name: "测试牧场"))
+        context.insert(CloudFarmBinding(
+            farmID: farmID,
+            ownerAccountID: accountID,
+            databaseScope: .privateDatabase,
+            state: .active
+        ))
+        let create = DomainOperation(
+            farmID: farmID,
+            accountID: accountID,
+            kind: .addSheep,
+            summary: "建档",
+            entityType: CloudEntityType.sheep.rawValue,
+            entityID: entityID,
+            baseRevision: 0,
+            resultingRevision: 1
+        )
+        let createOutbox = OutboxItem(
+            farmID: farmID,
+            accountID: accountID,
+            operationID: create.id,
+            entityType: create.entityType,
+            entityID: entityID,
+            baseRevision: 0,
+            payloadDigest: create.payloadDigest
+        )
+        context.insert(create)
+        context.insert(createOutbox)
+        try context.save()
+        let mapper = CloudRecordMapper()
+        let recordID = CKRecord.ID(
+            recordName: mapper.entityRecordName(for: entityID),
+            zoneID: CKRecordZone.ID(zoneName: CloudZoneName.forFarm(farmID), ownerName: CKCurrentUserDefaultName)
+        )
+        let persistence = FarmPersistenceActor(container: container)
+        let createRequiresFetch = try await persistence.entityRecordRequiresServerFetch(
+            recordID,
+            scope: .privateDatabase
+        )
+        XCTAssertFalse(createRequiresFetch)
+
+        let update = DomainOperation(
+            farmID: farmID,
+            accountID: accountID,
+            kind: .updateSheepProfile,
+            summary: "更新",
+            entityType: CloudEntityType.sheep.rawValue,
+            entityID: entityID,
+            baseRevision: 1,
+            resultingRevision: 2
+        )
+        context.insert(update)
+        context.insert(OutboxItem(
+            farmID: farmID,
+            accountID: accountID,
+            operationID: update.id,
+            entityType: update.entityType,
+            entityID: entityID,
+            baseRevision: 1,
+            payloadDigest: update.payloadDigest
+        ))
+        try context.save()
+
+        let updateRequiresFetch = try await persistence.entityRecordRequiresServerFetch(
+            recordID,
+            scope: .privateDatabase
+        )
+        XCTAssertTrue(updateRequiresFetch)
+    }
+
+    func testMigrationUploadProgressWatchdogStopsOnlyAfterConsecutiveNoProgress() {
+        var watchdog = MigrationUploadProgressWatchdog(maximumConsecutiveNoProgressPasses: 3)
+
+        XCTAssertFalse(watchdog.observe(scheduledRecordCount: 10, unconfirmedBefore: 100, unconfirmedAfter: 100))
+        XCTAssertFalse(watchdog.observe(scheduledRecordCount: 10, unconfirmedBefore: 100, unconfirmedAfter: 101))
+        XCTAssertTrue(watchdog.observe(scheduledRecordCount: 10, unconfirmedBefore: 101, unconfirmedAfter: 101))
+        XCTAssertEqual(watchdog.consecutiveNoProgressPasses, 3)
+
+        watchdog.reset()
+        XCTAssertFalse(watchdog.observe(scheduledRecordCount: 10, unconfirmedBefore: 101, unconfirmedAfter: 90))
+        XCTAssertEqual(watchdog.consecutiveNoProgressPasses, 0)
+        XCTAssertFalse(watchdog.observe(scheduledRecordCount: 0, unconfirmedBefore: 90, unconfirmedAfter: 90))
+        XCTAssertEqual(watchdog.consecutiveNoProgressPasses, 0)
+    }
+
+    func testPendingRecordIDsFiltersRetryTimeBeforeBatchLimit() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "retry-eligibility-before-limit-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let accountID = UUID()
+        context.insert(CloudFarmBinding(
+            farmID: farmID,
+            ownerAccountID: accountID,
+            databaseScope: .privateDatabase,
+            state: .active
+        ))
+
+        let future = OutboxItem(farmID: farmID, accountID: accountID, operationID: UUID())
+        future.statusRawValue = OutboxStatus.retryableFailure.rawValue
+        future.createdAt = .now.addingTimeInterval(-120)
+        future.nextRetryAt = .now.addingTimeInterval(3_600)
+        let due = OutboxItem(farmID: farmID, accountID: accountID, operationID: UUID())
+        due.statusRawValue = OutboxStatus.retryableFailure.rawValue
+        due.createdAt = .now.addingTimeInterval(-60)
+        due.nextRetryAt = .now.addingTimeInterval(-1)
+        context.insert(future)
+        context.insert(due)
+        try context.save()
+
+        let records = try await FarmPersistenceActor(container: container).pendingRecordIDs(
+            maxOutboxItems: 1,
+            farmID: farmID
+        )
+        let mapper = CloudRecordMapper()
+
+        XCTAssertEqual(records.map { $0.0.recordName }, [mapper.recordName(for: due.operationID)])
+    }
+
+    func testPendingRecordIDsRestrictsAcceleratedBatchToMigrationFarm() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "migration-farm-scoped-batch-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let migrationFarmID = UUID()
+        let unrelatedFarmID = UUID()
+        context.insert(CloudFarmBinding(
+            farmID: migrationFarmID,
+            ownerAccountID: accountID,
+            databaseScope: .privateDatabase,
+            state: .active
+        ))
+        context.insert(CloudFarmBinding(
+            farmID: unrelatedFarmID,
+            ownerAccountID: accountID,
+            databaseScope: .privateDatabase,
+            state: .active
+        ))
+        let unrelated = OutboxItem(farmID: unrelatedFarmID, accountID: accountID, operationID: UUID())
+        unrelated.createdAt = .now.addingTimeInterval(-120)
+        let migration = OutboxItem(farmID: migrationFarmID, accountID: accountID, operationID: UUID())
+        migration.createdAt = .now.addingTimeInterval(-60)
+        context.insert(unrelated)
+        context.insert(migration)
+        try context.save()
+
+        let records = try await FarmPersistenceActor(container: container).pendingRecordIDs(
+            maxOutboxItems: 1,
+            farmID: migrationFarmID
+        )
+        let mapper = CloudRecordMapper()
+
+        XCTAssertEqual(records.map { $0.0.recordName }, [mapper.recordName(for: migration.operationID)])
+        XCTAssertFalse(records.contains { $0.0.recordName == mapper.recordName(for: unrelated.operationID) })
+    }
+
+    func testBatchErrorDeferralDoesNotMutateAnotherFarm() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "migration-farm-scoped-deferral-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let migrationFarmID = UUID()
+        let unrelatedFarmID = UUID()
+        let migration = OutboxItem(farmID: migrationFarmID, accountID: accountID, operationID: UUID())
+        migration.statusRawValue = OutboxStatus.uploading.rawValue
+        let unrelated = OutboxItem(farmID: unrelatedFarmID, accountID: accountID, operationID: UUID())
+        unrelated.statusRawValue = OutboxStatus.awaitingConfirmation.rawValue
+        context.insert(migration)
+        context.insert(unrelated)
+        try context.save()
+
+        try await FarmPersistenceActor(container: container).deferUnresolvedUploadsAfterBatchError(
+            NSError(domain: "test", code: 1),
+            farmID: migrationFarmID
+        )
+        let refreshed = ModelContext(container)
+        let values = try refreshed.fetch(FetchDescriptor<OutboxItem>())
+
+        XCTAssertEqual(values.first(where: { $0.id == migration.id })?.status, .retryableFailure)
+        XCTAssertEqual(values.first(where: { $0.id == unrelated.id })?.status, .awaitingConfirmation)
+    }
+
+    func testLegacyProjectionInsertCollisionIsRequeuedWithoutReopeningRealVersionConflict() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let accountID = UUID()
+        let legacy = OutboxItem(farmID: farmID, accountID: accountID, operationID: UUID())
+        legacy.statusRawValue = OutboxStatus.blockedConflict.rawValue
+        legacy.errorMessage = "云端已有不同内容，已停止自动重试。record to insert already exists"
+        let genuine = OutboxItem(farmID: farmID, accountID: accountID, operationID: UUID())
+        genuine.statusRawValue = OutboxStatus.blockedConflict.rawValue
+        genuine.errorMessage = "云端实体版本 2 与本地操作基线 1 不一致，已停止自动覆盖。"
+        let lagging = OutboxItem(farmID: farmID, accountID: accountID, operationID: UUID())
+        lagging.statusRawValue = OutboxStatus.blockedConflict.rawValue
+        lagging.errorMessage = "云端实体版本 1 与本地操作基线 2 不一致，已停止自动覆盖。"
+        let unverified = OutboxItem(farmID: farmID, accountID: accountID, operationID: UUID())
+        unverified.statusRawValue = OutboxStatus.blockedConflict.rawValue
+        unverified.errorMessage = "云端已有不同内容：实体版本 1 与本地操作基线 2 不属于同一已确认操作链。"
+        context.insert(legacy)
+        context.insert(genuine)
+        context.insert(lagging)
+        context.insert(unverified)
+        try context.save()
+
+        let count = try await FarmPersistenceActor(container: container).requeueBlockedConflicts(farmID: farmID)
+        let refreshed = ModelContext(container)
+        let values = try refreshed.fetch(FetchDescriptor<OutboxItem>())
+
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(values.first(where: { $0.id == legacy.id })?.status, .pending)
+        XCTAssertEqual(values.first(where: { $0.id == genuine.id })?.status, .blockedConflict)
+        XCTAssertEqual(values.first(where: { $0.id == lagging.id })?.status, .pending)
+        XCTAssertEqual(values.first(where: { $0.id == unverified.id })?.status, .blockedConflict)
     }
 
     func testCommandPipelineStoresFullPayloadAndStableTarget() throws {
@@ -354,6 +1056,240 @@ final class CloudCollaborationTests: XCTestCase {
         XCTAssertEqual(restored.name, "恢复舍")
     }
 
+    func testInitialCheckpointResumeRequiresAnUnchangedRecoveryBoundary() {
+        let watermark = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertTrue(FarmCheckpointResumePolicy.isCompatible(
+            checkpointReason: FarmCheckpointReason.initialCloudSetup.rawValue,
+            requestedReason: .initialCloudSetup,
+            checkpointWatermark: watermark,
+            currentWatermark: watermark,
+            checkpointEntityCount: 100,
+            currentEntityCount: 100,
+            checkpointAssetCount: 7,
+            currentAssetCount: 7,
+            checkpointSecurityGeneration: 2,
+            currentSecurityGeneration: 2
+        ))
+        XCTAssertFalse(FarmCheckpointResumePolicy.isCompatible(
+            checkpointReason: FarmCheckpointReason.initialCloudSetup.rawValue,
+            requestedReason: .initialCloudSetup,
+            checkpointWatermark: watermark,
+            currentWatermark: watermark.addingTimeInterval(1),
+            checkpointEntityCount: 100,
+            currentEntityCount: 100,
+            checkpointAssetCount: 7,
+            currentAssetCount: 7,
+            checkpointSecurityGeneration: 2,
+            currentSecurityGeneration: 2
+        ))
+        XCTAssertFalse(FarmCheckpointResumePolicy.isCompatible(
+            checkpointReason: FarmCheckpointReason.initialCloudSetup.rawValue,
+            requestedReason: .initialCloudSetup,
+            checkpointWatermark: watermark,
+            currentWatermark: watermark,
+            checkpointEntityCount: 100,
+            currentEntityCount: 100,
+            checkpointAssetCount: 7,
+            currentAssetCount: 8,
+            checkpointSecurityGeneration: 2,
+            currentSecurityGeneration: 2
+        ))
+    }
+
+    func testCheckpointCreationRegistrySharesOneTaskPerFarm() async throws {
+        let farmID = UUID()
+        let expectedCheckpointID = UUID()
+        let gate = CloudSyncHardDeadlineTestGate()
+        let executions = CloudSyncHardDeadlineTestCounter()
+        var registry = FarmCheckpointCreationTaskRegistry()
+
+        let first = registry.acquire(farmID: farmID) {
+            executions.increment()
+            await gate.wait()
+            return expectedCheckpointID
+        }
+        let second = registry.acquire(farmID: farmID) {
+            executions.increment()
+            return UUID()
+        }
+
+        XCTAssertTrue(first.startedNewTask)
+        XCTAssertFalse(second.startedNewTask)
+        XCTAssertTrue(registry.contains(farmID: farmID))
+        await gate.open()
+        let firstResult = try await first.task.value
+        let secondResult = try await second.task.value
+        XCTAssertEqual(firstResult, expectedCheckpointID)
+        XCTAssertEqual(secondResult, expectedCheckpointID)
+        XCTAssertEqual(executions.value, 1)
+
+        registry.release(second, farmID: farmID)
+        XCTAssertTrue(registry.contains(farmID: farmID))
+        registry.release(first, farmID: farmID)
+        XCTAssertFalse(registry.contains(farmID: farmID))
+    }
+
+    func testAutomaticCheckpointWaitsForLatestUnfinishedCheckpoint() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "unfinished-checkpoint-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let createdAt = Date.now.addingTimeInterval(-3_600)
+        let checkpoint = FarmCheckpointRecord(
+            farmID: farmID,
+            reasonRawValue: FarmCheckpointReason.operationThreshold.rawValue,
+            operationWatermark: createdAt.addingTimeInterval(-3_600),
+            manifestDigest: "digest",
+            encryptedRelativePath: "interrupted.checkpoint",
+            byteCount: 1,
+            entityCount: 1,
+            assetCount: 0,
+            securityGeneration: 1
+        )
+        checkpoint.createdAt = createdAt
+        context.insert(checkpoint)
+        for index in 0..<100 {
+            context.insert(CloudOperationReceipt(
+                farmID: farmID,
+                operationID: UUID(),
+                recordName: "op_\(index)",
+                serverChangeTag: nil,
+                databaseScope: .privateDatabase,
+                confirmedAt: createdAt.addingTimeInterval(60)
+            ))
+        }
+        try context.save()
+
+        let reason = try await FarmCheckpointActor(modelContainer: container).shouldCreateAutomaticCheckpoint(farmID: farmID)
+
+        XCTAssertNil(reason)
+    }
+
+    func testOperationThresholdCountsReceiptsConfirmedAfterCheckpointCreation() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "checkpoint-confirmation-boundary-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let createdAt = Date.now.addingTimeInterval(-3_600)
+        let checkpoint = FarmCheckpointRecord(
+            farmID: farmID,
+            reasonRawValue: FarmCheckpointReason.scheduled.rawValue,
+            operationWatermark: createdAt.addingTimeInterval(7_200),
+            manifestDigest: "digest",
+            encryptedRelativePath: "verified.checkpoint",
+            byteCount: 1,
+            entityCount: 1,
+            assetCount: 0,
+            securityGeneration: 1
+        )
+        checkpoint.createdAt = createdAt
+        checkpoint.cloudRecordName = "checkpoint_\(checkpoint.id.uuidString.lowercased())"
+        checkpoint.verifiedAt = createdAt.addingTimeInterval(1)
+        context.insert(checkpoint)
+        for index in 0..<100 {
+            context.insert(CloudOperationReceipt(
+                farmID: farmID,
+                operationID: UUID(),
+                recordName: "op_\(index)",
+                serverChangeTag: nil,
+                databaseScope: .privateDatabase,
+                confirmedAt: createdAt.addingTimeInterval(60)
+            ))
+        }
+        try context.save()
+
+        let reason = try await FarmCheckpointActor(modelContainer: container).shouldCreateAutomaticCheckpoint(farmID: farmID)
+
+        XCTAssertEqual(reason, .operationThreshold)
+    }
+
+    func testInterruptedCheckpointCleanupRemovesNewerUnverifiedRowsButPreservesVerified() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "interrupted-checkpoint-cleanup-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "checkpoint-cleanup-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let verifiedURL = directory.appending(path: "verified.checkpoint")
+        let interruptedURL = directory.appending(path: "interrupted.checkpoint")
+        try Data([1]).write(to: verifiedURL)
+        try Data([2]).write(to: interruptedURL)
+        let verifiedCreatedAt = Date.now.addingTimeInterval(-120)
+        let verified = FarmCheckpointRecord(
+            farmID: farmID,
+            reasonRawValue: FarmCheckpointReason.scheduled.rawValue,
+            operationWatermark: verifiedCreatedAt,
+            manifestDigest: "verified",
+            encryptedRelativePath: verifiedURL.path,
+            byteCount: 1,
+            entityCount: 1,
+            assetCount: 0,
+            securityGeneration: 1
+        )
+        verified.createdAt = verifiedCreatedAt
+        verified.cloudRecordName = "checkpoint_\(verified.id.uuidString.lowercased())"
+        verified.verifiedAt = verifiedCreatedAt.addingTimeInterval(1)
+        let interrupted = FarmCheckpointRecord(
+            farmID: farmID,
+            reasonRawValue: FarmCheckpointReason.operationThreshold.rawValue,
+            operationWatermark: verifiedCreatedAt,
+            manifestDigest: "interrupted",
+            encryptedRelativePath: interruptedURL.path,
+            byteCount: 1,
+            entityCount: 1,
+            assetCount: 0,
+            securityGeneration: 1
+        )
+        interrupted.createdAt = verifiedCreatedAt.addingTimeInterval(60)
+        context.insert(verified)
+        context.insert(interrupted)
+        try context.save()
+
+        let removed = try await FarmCheckpointActor(modelContainer: container).cleanupInterruptedCheckpoints(farmID: farmID)
+        let remaining = try ModelContext(container).fetch(FetchDescriptor<FarmCheckpointRecord>())
+
+        XCTAssertEqual(removed, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: interruptedURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: verifiedURL.path))
+        XCTAssertEqual(remaining.map(\.id), [verified.id])
+    }
+
+    func testCheckpointPruningKeepsRetainedAndNewerInterruptedRecoveryPoints() {
+        let verifiedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertFalse(FarmCheckpointPrunePolicy.shouldRemove(
+            isVerified: true,
+            isRetained: true,
+            createdAt: verifiedAt,
+            latestVerifiedAt: verifiedAt
+        ))
+        XCTAssertTrue(FarmCheckpointPrunePolicy.shouldRemove(
+            isVerified: true,
+            isRetained: false,
+            createdAt: verifiedAt.addingTimeInterval(-1),
+            latestVerifiedAt: verifiedAt
+        ))
+        XCTAssertTrue(FarmCheckpointPrunePolicy.shouldRemove(
+            isVerified: false,
+            isRetained: false,
+            createdAt: verifiedAt.addingTimeInterval(-1),
+            latestVerifiedAt: verifiedAt
+        ))
+        XCTAssertFalse(FarmCheckpointPrunePolicy.shouldRemove(
+            isVerified: false,
+            isRetained: false,
+            createdAt: verifiedAt.addingTimeInterval(1),
+            latestVerifiedAt: verifiedAt
+        ))
+    }
+
     func testCheckpointKeepsAndReplaysFullPedigreeOperationHistory() throws {
         let sourceContainer = try AppSchema.makeContainer(name: "checkpoint-source-\(UUID().uuidString)", isStoredInMemoryOnly: true)
         let source = ModelContext(sourceContainer)
@@ -436,6 +1372,29 @@ final class CloudCollaborationTests: XCTestCase {
         XCTAssertGreaterThan(optimized.byteCount, 0)
     }
 
+    func testPhotoTransferResolvesFormalMigrationAssetsFromLegacySupportRoot() {
+        let support = URL(fileURLWithPath: "/tmp/test-application-support", isDirectory: true)
+        let migrated = PhotoTransferActor.localAssetURL(
+            for: "MigrationAssets/farm/session/photo.bin",
+            applicationSupportDirectory: support
+        )
+        let captured = PhotoTransferActor.localAssetURL(
+            for: "CloudAssets/farm/photo.heic",
+            applicationSupportDirectory: support
+        )
+
+        XCTAssertEqual(migrated.path, "/tmp/test-application-support/MigrationAssets/farm/session/photo.bin")
+        XCTAssertEqual(captured.path, "/tmp/test-application-support/eSheepNext/CloudAssets/farm/photo.heic")
+    }
+
+    func testPhotoTransferRequeuesOnlyInterruptedInFlightStatesAfterRelaunch() {
+        XCTAssertTrue(PhotoTransferInterruptionPolicy.shouldRequeue(status: .uploading))
+        XCTAssertTrue(PhotoTransferInterruptionPolicy.shouldRequeue(status: .downloading))
+        XCTAssertFalse(PhotoTransferInterruptionPolicy.shouldRequeue(status: .pending))
+        XCTAssertFalse(PhotoTransferInterruptionPolicy.shouldRequeue(status: .failed))
+        XCTAssertFalse(PhotoTransferInterruptionPolicy.shouldRequeue(status: .completed))
+    }
+
     func testCertificateIsValidatedAtOperationTimeNotDownloadTime() {
         let issued = Date(timeIntervalSince1970: 1_700_000_000)
         let claims = CapabilityCertificateClaims(
@@ -458,16 +1417,20 @@ final class CloudCollaborationTests: XCTestCase {
         payload: Data,
         signature: Data,
         entityType: String = CloudEntityType.weight.rawValue,
-        modifiedAt: Date = Date(timeIntervalSince1970: 1_700_000_000)
+        modifiedAt: Date = Date(timeIntervalSince1970: 1_700_000_000),
+        revision: Int = 1,
+        baseRevision: Int = 0,
+        operationID: UUID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
+        deletedAt: Date? = nil
     ) -> CloudOperationEnvelope {
         CloudOperationEnvelope(
             farmID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
             entityID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
             entityType: entityType,
             schemaVersion: 2,
-            revision: 1,
-            baseRevision: 0,
-            operationID: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
+            revision: revision,
+            baseRevision: baseRevision,
+            operationID: operationID,
             modifiedAt: modifiedAt,
             modifiedByAccountID: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!,
             modifiedByDeviceID: UUID(uuidString: "55555555-5555-5555-5555-555555555555")!,
@@ -475,7 +1438,7 @@ final class CloudCollaborationTests: XCTestCase {
             payloadDigest: CloudPayloadDigest.hex(for: payload),
             capabilityCertificate: "test-certificate",
             operationSignature: signature,
-            deletedAt: nil
+            deletedAt: deletedAt
         )
     }
 

@@ -1,9 +1,34 @@
 import Foundation
 import SwiftData
 
+enum AppSchemaV1: VersionedSchema {
+    static let versionIdentifier = Schema.Version(1, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
+}
+
+enum AppSchemaMigrationPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [AppSchemaV1.self]
+    }
+
+    // V1 freezes the schema that shipped before formal versioning was
+    // introduced. Future schema versions must add an explicit lightweight or
+    // custom stage here; opening a store must never trigger business commands.
+    static var stages: [MigrationStage] {
+        []
+    }
+}
+
 enum AppSchema {
-    static func makeSchema() -> Schema {
-        Schema([
+    static let currentVersion = "1.0.0"
+
+    static func defaultStoreURL(name: String = "eSheepNext") -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "\(name).store")
+    }
+
+    static var modelTypes: [any PersistentModel.Type] {
+        [
             AccountProfile.self,
             FarmRecord.self,
             FarmActivity.self,
@@ -61,7 +86,11 @@ enum AppSchema {
             CloudRebuildSessionRecord.self,
             CloudRebuildIssueRecord.self,
             CloudSyncDiagnosticSnapshotRecord.self,
-        ])
+        ]
+    }
+
+    static func makeSchema() -> Schema {
+        Schema(versionedSchema: AppSchemaV1.self)
     }
 
     static func makeConfiguration(
@@ -97,13 +126,17 @@ enum AppSchema {
         if let url {
             configuration = ModelConfiguration(name, schema: schema, url: url, allowsSave: true, cloudKitDatabase: .none)
         } else if !isStoredInMemoryOnly {
-            let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            let storeURL = defaultStoreURL(name: name)
+            let directory = storeURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let storeURL = directory.appending(path: "\(name).store")
             configuration = ModelConfiguration(name, schema: schema, url: storeURL, allowsSave: true, cloudKitDatabase: .none)
         } else {
             configuration = ModelConfiguration(name, schema: schema, isStoredInMemoryOnly: isStoredInMemoryOnly, cloudKitDatabase: .none)
         }
-        return try ModelContainer(for: schema, configurations: [configuration])
+        return try ModelContainer(
+            for: schema,
+            migrationPlan: AppSchemaMigrationPlan.self,
+            configurations: [configuration]
+        )
     }
 }

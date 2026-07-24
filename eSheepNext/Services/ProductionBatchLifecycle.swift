@@ -19,13 +19,11 @@ enum ProductionBatchVisibility {
 }
 
 enum ProductionBatchLifecycle {
-    static func reconcile(batchID: UUID, farmID: UUID, context: ModelContext, changedAt: Date = .now) throws {
-        guard let batch = try context.fetch(FetchDescriptor<ProductionBatchRecord>()).first(where: {
-            $0.id == batchID && $0.farmID == farmID && $0.deletedAt == nil
-        }) else { return }
-        let members = try context.fetch(FetchDescriptor<BatchMembershipRecord>()).filter {
-            $0.farmID == farmID && $0.batchID == batchID && $0.deletedAt == nil
-        }
+    static func reconcile(
+        batch: ProductionBatchRecord,
+        members: [BatchMembershipRecord],
+        changedAt: Date = .now
+    ) {
         guard !members.isEmpty else { return }
 
         let activeMemberExists = members.contains { $0.leftAt == nil }
@@ -36,5 +34,16 @@ enum ProductionBatchLifecycle {
             batch.endedAt = projectedEnd
             batch.updatedAt = changedAt
         }
+    }
+
+    static func reconcile(batchID: UUID, farmID: UUID, context: ModelContext, changedAt: Date = .now) throws {
+        let batchDescriptor = FetchDescriptor<ProductionBatchRecord>(predicate: #Predicate {
+            $0.id == batchID && $0.farmID == farmID && $0.deletedAt == nil
+        })
+        guard let batch = try context.fetch(batchDescriptor).first else { return }
+        let members = try context.fetch(FetchDescriptor<BatchMembershipRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.batchID == batchID && $0.deletedAt == nil
+        }))
+        reconcile(batch: batch, members: members, changedAt: changedAt)
     }
 }

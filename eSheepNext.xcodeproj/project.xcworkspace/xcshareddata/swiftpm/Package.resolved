@@ -1,0 +1,24 @@
+{
+  "originHash" : "8bc5bb991c11a24009e75ff40c2ae9ed64c42ae26662de2443d0507ae437ed7d",
+  "pins" : [
+    {
+      "identity" : "esmotion",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Jinxed-Liu/ESMotion.git",
+      "state" : {
+        "revision" : "c236df09ee8004471ce2c2427f1a56027a49ff23",
+        "version" : "0.1.1"
+      }
+    },
+    {
+      "identity" : "lottie-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/airbnb/lottie-spm.git",
+      "state" : {
+        "revision" : "0aff16288f8dc1e3dab35cbf5cf45979673fd3df",
+        "version" : "4.6.1"
+      }
+    }
+  ],
+  "version" : 3
+}

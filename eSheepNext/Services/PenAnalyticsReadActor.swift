@@ -77,25 +77,69 @@ actor PenAnalyticsReadActor {
         let weanings = try context.fetch(FetchDescriptor<WeaningRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
         }))
+        let birthDetails = try context.fetch(FetchDescriptor<LambingOffspringRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil && $0.deletedByLambingRevocation == false
+        }))
+        let lambings = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        })).filter { $0.kind == .lambing }
+        let lambingDateByID = Dictionary(uniqueKeysWithValues: lambings.map { ($0.id, $0.occurredAt) })
         let memberIDs = Set(members.map(\.id))
-        var samples = weights.compactMap { record -> PenHerdWeightSample? in
+        var unifiedSamples = weights.compactMap { record -> SheepWeightSample? in
             guard memberIDs.contains(record.sheepID) else { return nil }
-            return PenHerdWeightSample(
+            return SheepWeightSample(
+                id: record.id,
                 sheepID: record.sheepID,
-                occurredAt: record.occurredAt,
+                kilogramsText: record.kilogramsText,
                 kilograms: NSDecimalNumber(decimal: record.kilograms).doubleValue,
-                sourcePriority: 0
+                occurredAt: record.occurredAt,
+                source: record.note == "初生重" ? .lambingBirth : .weighing
             )
         }
-        samples.append(contentsOf: weanings.compactMap { record -> PenHerdWeightSample? in
-            guard memberIDs.contains(record.sheepID) else { return nil }
-            return PenHerdWeightSample(
+        for record in weanings where memberIDs.contains(record.sheepID) {
+            unifiedSamples.append(SheepWeightSample(
+                id: StableCloudUUID.derived(namespace: record.id, name: "weight-sample-weaning"),
                 sheepID: record.sheepID,
-                occurredAt: record.occurredAt,
+                kilogramsText: record.weanWeightText,
                 kilograms: NSDecimalNumber(decimal: record.weanWeight).doubleValue,
-                sourcePriority: 1
+                occurredAt: record.occurredAt,
+                source: .weaning
+            ))
+            if let birthAt = record.birthAt,
+               let birthWeightText = record.birthWeightText,
+               let birthWeight = Decimal.stable(birthWeightText) {
+                unifiedSamples.append(SheepWeightSample(
+                    id: StableCloudUUID.derived(namespace: record.id, name: "weight-sample-weaning-birth"),
+                    sheepID: record.sheepID,
+                    kilogramsText: birthWeightText,
+                    kilograms: NSDecimalNumber(decimal: birthWeight).doubleValue,
+                    occurredAt: birthAt,
+                    source: .weaningBirth
+                ))
+            }
+        }
+        for detail in birthDetails {
+            guard let sheepID = detail.sheepID,
+                  memberIDs.contains(sheepID),
+                  let occurredAt = lambingDateByID[detail.lambingRecordID],
+                  let birthWeight = Decimal.stable(detail.birthWeightText) else { continue }
+            unifiedSamples.append(SheepWeightSample(
+                id: StableCloudUUID.derived(namespace: detail.id, name: "weight-sample-lambing-birth"),
+                sheepID: sheepID,
+                kilogramsText: detail.birthWeightText,
+                kilograms: NSDecimalNumber(decimal: birthWeight).doubleValue,
+                occurredAt: occurredAt,
+                source: .lambingBirth
+            ))
+        }
+        let samples = SheepWeightSampleBuilder.dailyCanonical(unifiedSamples).map { sample in
+            PenHerdWeightSample(
+                sheepID: sample.sheepID,
+                occurredAt: sample.occurredAt,
+                kilograms: sample.kilograms,
+                sourcePriority: sample.source.rawValue
             )
-        })
+        }
         try Task.checkCancellation()
         return PenHerdInsightBuilder.insight(penName: penName, members: members, weightSamples: samples)
     }

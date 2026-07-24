@@ -17,12 +17,27 @@ struct FarmExcelRow: Sendable, Equatable, Identifiable {
     let values: [String: String]
     var id: String { "\(sheet):\(rowNumber)" }
     subscript(_ field: String) -> String { values[field]?.trimmed ?? "" }
+
+    func listValues(_ field: String) -> [String] {
+        self[field]
+            .components(separatedBy: CharacterSet(charactersIn: ";；,，、\n"))
+            .map(\.trimmed)
+            .filter { !$0.isEmpty }
+    }
 }
 
 struct FarmExcelSheetSummary: Sendable, Equatable, Identifiable {
     let name: String
     let rowCount: Int
     var id: String { name }
+}
+
+struct FarmExcelRemovalBatchSummary: Sendable, Equatable, Identifiable {
+    let id: String
+    let rowNumber: Int
+    let kind: String
+    let sheepCount: Int
+    let totalAmountText: String?
 }
 
 struct FarmExcelPreview: Sendable, Equatable, Identifiable {
@@ -33,6 +48,23 @@ struct FarmExcelPreview: Sendable, Equatable, Identifiable {
     var errorCount: Int { issues.count { $0.severity == .error } }
     var warningCount: Int { issues.count { $0.severity == .warning } }
     var canCommit: Bool { !rows.isEmpty && errorCount == 0 }
+    var removalBatchSummaries: [FarmExcelRemovalBatchSummary] {
+        rows.filter { $0.sheet == "离场" }.map { row in
+            let total = Decimal.stable(row["总售卖金额"]).map(\.stableText)
+            return FarmExcelRemovalBatchSummary(
+                id: row.id,
+                rowNumber: row.rowNumber,
+                kind: row["类型"],
+                sheepCount: row.listValues("羊只耳号列表").count,
+                totalAmountText: total
+            )
+        }
+    }
+    var expandedRecordCount: Int {
+        rows.reduce(into: 0) { count, row in
+            count += row.sheet == "离场" ? row.listValues("羊只耳号列表").count : 1
+        }
+    }
 }
 
 private struct FarmExcelSheetSchema {
@@ -45,7 +77,7 @@ private struct FarmExcelSheetSchema {
 
 @MainActor
 enum FarmExcelImportService {
-    static let templateVersion = 2
+    static let templateVersion = 3
 
     private static let schemas: [FarmExcelSheetSchema] = [
         .init(name: "圈舍", capability: .recordProduction, columns: ["导入键", "圈舍名称", "备注"], required: ["导入键", "圈舍名称"], example: ["示例-pen-01", "育肥一圈", "南侧圈舍"]),
@@ -53,7 +85,7 @@ enum FarmExcelImportService {
         .init(name: "称重", capability: .recordProduction, columns: ["导入键", "耳号", "体重kg", "发生日期", "备注"], required: ["导入键", "耳号", "体重kg", "发生日期"], example: ["示例-weight-01", "A001", "35.6", "2026-07-19", "晨间称重"]),
         .init(name: "断奶", capability: .recordProduction, columns: ["导入键", "耳号", "断奶重kg", "发生日期", "出生日期", "出生重kg", "日增重kg", "母羊耳号", "胎只数", "备注"], required: ["导入键", "耳号", "断奶重kg", "发生日期"], example: ["示例-wean-01", "A001", "22.5", "2026-07-19", "2026-03-01", "3.6", "0.28", "E001", "2", ""]),
         .init(name: "转群", capability: .recordProduction, columns: ["导入键", "耳号", "转入圈舍", "发生日期", "备注"], required: ["导入键", "耳号", "转入圈舍", "发生日期"], example: ["示例-transfer-01", "A001", "育肥二圈", "2026-07-19", ""]),
-        .init(name: "离场", capability: .recordProduction, columns: ["导入键", "耳号", "类型", "原因", "金额", "发生日期", "备注"], required: ["导入键", "耳号", "类型", "原因", "发生日期"], example: ["示例-remove-01", "A001", "出售", "正常销售", "1200", "2026-07-19", ""]),
+        .init(name: "离场", capability: .recordProduction, columns: ["导入键", "羊只耳号列表", "类型", "原因", "总售卖金额", "发生日期", "备注"], required: ["导入键", "羊只耳号列表", "类型", "原因", "发生日期"], example: ["示例-remove-01", "A001;A002", "出售", "正常销售", "2400", "2026-07-19", "同一行代表同一批离场"]),
         .init(name: "生产批次", capability: .recordProduction, columns: ["导入键", "批次名称", "生产目的", "开始日期", "羊只耳号列表", "备注"], required: ["导入键", "批次名称", "生产目的", "开始日期", "羊只耳号列表"], example: ["示例-batch-01", "2026春羔育肥", "育肥", "2026-07-01", "A001;A002", "只允许人工选择"]),
         .init(name: "批次脱离", capability: .recordProduction, columns: ["导入键", "批次名称", "耳号", "脱离日期", "原因"], required: ["导入键", "批次名称", "耳号", "脱离日期", "原因"], example: ["示例-leave-01", "2026春羔育肥", "A001", "2026-10-01", "留养"]),
         .init(name: "饲料原料", capability: .manageCatalogs, columns: ["导入键", "原料名称", "单位", "干物质"], required: ["导入键", "原料名称", "单位"], example: ["示例-ingredient-01", "玉米", "千克", "0.88"]),
@@ -75,6 +107,13 @@ enum FarmExcelImportService {
         .init(name: "提醒规则", capability: .manageCatalogs, columns: ["导入键", "孕检间隔天", "妊娠周期天"], required: ["导入键", "孕检间隔天", "妊娠周期天"], example: ["示例-rule-01", "45", "150"])
     ]
 
+    private static let legacyColumnAliases: [String: [String: [String]]] = [
+        "离场": [
+            "羊只耳号列表": ["耳号"],
+            "总售卖金额": ["金额"],
+        ],
+    ]
+
     static func templateData() throws -> Data {
         try templateData(sheetNames: Set(schemas.map(\.name)))
     }
@@ -89,6 +128,7 @@ enum FarmExcelImportService {
             ["新建羊只核对", "只核对当前牧场已有耳号和本文件内重复耳号；不会要求新耳号预先存在。"],
             ["引用核对", "称重、断奶、转群等事件的耳号，以及圈舍、目录、库存批号、冻精等引用，必须已在当前牧场存在或在本文件前置工作表中创建。"],
             ["批量列表", "多个耳号使用英文分号 ; 分隔。组合明细使用 | 分列、使用 ; 分条。"],
+            ["离场批次", "离场表每行代表同一次离场；可填写多个耳号。出售时只填写整批总售卖金额，不填写或推算单羊价格。"],
             ["事务", "整份文件通过权限、业务校验、SwiftData、审计和 Outbox 管道一次提交；任一阻断错误会整批回滚。"],
             ["不支持", "历史修正、撤销、恢复、删除不通过 Excel 执行，请在 App 内逐条确认。"]
         ])
@@ -104,16 +144,21 @@ enum FarmExcelImportService {
         for schema in selectedSchemas {
             guard let table = byName[schema.name], let header = table.first else { continue }
             let trimmedHeader = header.map(\.trimmed)
-            for requiredColumn in schema.columns where !trimmedHeader.contains(requiredColumn) {
-                issues.append(.init(sheet: schema.name, row: 1, field: requiredColumn, message: "缺少模板字段“\(requiredColumn)”。", severity: .error))
-            }
             let indexes = Dictionary(uniqueKeysWithValues: trimmedHeader.enumerated().map { ($0.element, $0.offset) })
+            let aliases = legacyColumnAliases[schema.name] ?? [:]
+            func sourceIndex(for column: String) -> Int? {
+                if let index = indexes[column] { return index }
+                return aliases[column]?.compactMap { indexes[$0] }.first
+            }
+            for column in schema.columns where sourceIndex(for: column) == nil {
+                issues.append(.init(sheet: schema.name, row: 1, field: column, message: "缺少模板字段“\(column)”。", severity: .error))
+            }
             var count = 0
             for (offset, source) in table.dropFirst().enumerated() {
                 let rowNumber = offset + 2
                 if source.allSatisfy({ $0.trimmed.isEmpty }) || source.first?.trimmed.hasPrefix("示例") == true { continue }
                 var values: [String: String] = [:]
-                for column in schema.columns { if let index = indexes[column], source.indices.contains(index) { values[column] = source[index].trimmed } }
+                for column in schema.columns { if let index = sourceIndex(for: column), source.indices.contains(index) { values[column] = source[index].trimmed } }
                 let row = FarmExcelRow(sheet: schema.name, rowNumber: rowNumber, values: values)
                 rows.append(row); count += 1
                 for field in schema.required where row[field].isEmpty { issues.append(.init(sheet: schema.name, row: rowNumber, field: field, message: "不能为空。", severity: .error)) }
@@ -133,11 +178,21 @@ enum FarmExcelImportService {
     private static func validateFormats(_ row: FarmExcelRow, issues: inout [FarmExcelIssue]) {
         let dateFields = ["入场日期", "出生日期", "发生日期", "开始日期", "脱离日期", "有效期", "入库日期", "提醒日期", "创建日期"]
         for field in dateFields where !row[field].isEmpty && parseDate(row[field]) == nil { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: field, message: "请使用 yyyy-MM-dd。", severity: .error)) }
-        let positiveFields = ["体重kg", "断奶重kg", "出生重kg", "日增重kg", "金额", "干物质", "用量kg", "默认剂量", "数量", "每只剂量", "每只冻精数量"]
+        let positiveFields = ["体重kg", "断奶重kg", "出生重kg", "日增重kg", "总售卖金额", "干物质", "用量kg", "默认剂量", "数量", "每只剂量", "每只冻精数量"]
         for field in positiveFields where !row[field].isEmpty && (Decimal.stable(row[field]).map { $0 > 0 } != true) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: field, message: "必须是大于零的数值。", severity: .error)) }
         for field in ["调整数量"] where !row[field].isEmpty && (Decimal.stable(row[field]).map { $0 != 0 } != true) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: field, message: "必须是非零数值。", severity: .error)) }
         if row.sheet == "新建羊只", !["母羊", "公羊", "未知"].contains(row["性别"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "性别", message: "只能填写母羊、公羊或未知。", severity: .error)) }
-        if row.sheet == "离场", !["出售", "淘汰", "死亡", "转出"].contains(row["类型"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "类型", message: "只能填写出售、淘汰、死亡或转出。", severity: .error)) }
+        if row.sheet == "离场" {
+            if !["出售", "淘汰", "死亡", "转出"].contains(row["类型"]) {
+                issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "类型", message: "只能填写出售、淘汰、死亡或转出。", severity: .error))
+            }
+            if row["类型"] == "出售", row["总售卖金额"].isEmpty {
+                issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "总售卖金额", message: "同批出售必须填写一笔总售卖金额。", severity: .error))
+            }
+            if row["类型"] != "出售", !row["总售卖金额"].isEmpty {
+                issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "总售卖金额", message: "只有出售批次可以填写总售卖金额。", severity: .error))
+            }
+        }
         if ["健康目录", "库存入库", "健康记录"].contains(row.sheet), !["治疗", "疫苗"].contains(row["类型"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "类型", message: "只能填写治疗或疫苗。", severity: .error)) }
         if row.sheet == "繁殖记录", !["配种", "孕检", "流产"].contains(row["类型"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "类型", message: "只能填写配种、孕检或流产；产羔请使用产羔表。", severity: .error)) }
         if row.sheet == "冻精供体", !row["状态"].isEmpty, !["在用", "停用"].contains(row["状态"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "状态", message: "只能填写在用或停用。", severity: .error)) }
@@ -191,6 +246,15 @@ enum FarmExcelImportService {
         for row in rows where row.sheet == "冻精供体" && !row["登记号"].isEmpty {
             let registration = row["登记号"].normalizedLookup
             if !donorRegistrationsSeen.insert(registration).inserted { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "登记号", message: "与本文件其他供体登记号重复。", severity: .error)) }
+        }
+        var removalTagsSeen = Set<String>()
+        for row in rows where row.sheet == "离场" {
+            for tag in row.listValues("羊只耳号列表") {
+                let normalized = EarTag.normalized(tag)
+                if !normalized.isEmpty, !removalTagsSeen.insert(normalized).inserted {
+                    issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "羊只耳号列表", message: "耳号 \(tag) 在本文件的离场批次中重复。", severity: .error))
+                }
+            }
         }
         for row in rows {
             let tagFields = ["耳号", "羊只耳号", "母羊耳号", "母本耳号", "种公羊耳号", "关联种公羊耳号", "母羊耳号列表", "羊只耳号列表"]
@@ -250,13 +314,23 @@ enum FarmExcelImportService {
         let rows = preview.rows.sorted { (order[$0.sheet] ?? 999, $0.rowNumber) < (order[$1.sheet] ?? 999, $1.rowNumber) }
         var index = 0
         var followups: [ExcelFollowup] = []
+        var followupIndex = 0
         let farmContext = FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role)
         try commandService.executeBatch(in: farmContext, context: context) {
-            if !followups.isEmpty {
-                return try followupCommand(followups.removeFirst(), farmID: farm.id, context: context)
+            if followups.indices.contains(followupIndex) {
+                defer { followupIndex += 1 }
+                return try followupCommand(followups[followupIndex], farmID: farm.id, context: context)
             }
             guard rows.indices.contains(index) else { return nil }
             let row = rows[index]; index += 1
+            if row.sheet == "离场" {
+                let commands = try removalCommands(for: row, farmID: farm.id, context: context)
+                guard let first = commands.first else {
+                    throw FarmDataInterchangeError.malformedFile("离场批次没有可导入的羊只。")
+                }
+                followups.append(contentsOf: commands.dropFirst().map(ExcelFollowup.command))
+                return first
+            }
             if row.sheet == "冻精供体", !row["关联种公羊耳号"].isEmpty,
                try existingDonor(for: row, farmID: farm.id, context: context) == nil {
                 followups.append(.linkNewDonor(row))
@@ -266,16 +340,19 @@ enum FarmExcelImportService {
             }
             return try command(for: row, farmID: farm.id, context: context)
         }
-        return rows.count
+        return preview.expandedRecordCount
     }
 
     private enum ExcelFollowup {
+        case command(FarmCommand)
         case linkNewDonor(FarmExcelRow)
         case linkSemenDonor(FarmExcelRow)
     }
 
     private static func followupCommand(_ followup: ExcelFollowup, farmID: UUID, context: ModelContext) throws -> FarmCommand {
         switch followup {
+        case .command(let command):
+            return command
         case .linkNewDonor(let row):
             let id = StableCloudUUID.derived(namespace: farmID, name: "excel-v\(templateVersion):\(row.sheet):\(row["导入键"].lowercased())")
             guard let ram = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && EarTag.normalized($0.earTag) == EarTag.normalized(row["关联种公羊耳号"]) }) else { throw FarmCommandError.sheepNotFound }
@@ -303,7 +380,11 @@ enum FarmExcelImportService {
         case "称重": return .recordWeight(sheepID: try sheep(row["耳号"]).id, kilogramsText: row["体重kg"], occurredAt: parseDate(row["发生日期"])!, note: row["备注"])
         case "断奶": return .recordWeaning(sheepID: try sheep(row["耳号"]).id, weanWeightText: row["断奶重kg"], occurredAt: parseDate(row["发生日期"])!, birthAt: parseDate(row["出生日期"]), birthWeightText: row["出生重kg"].nilIfEmpty, averageDailyGainText: row["日增重kg"].nilIfEmpty, damID: try row["母羊耳号"].nilIfEmpty.map { try sheep($0).id }, litterSize: Int(row["胎只数"]), note: row["备注"])
         case "转群": return .transferSheep(sheepID: try sheep(row["耳号"]).id, toPenID: try pen(row["转入圈舍"]).id, occurredAt: parseDate(row["发生日期"])!, note: row["备注"])
-        case "离场": return .removeSheep(sheepID: try sheep(row["耳号"]).id, kind: removalKind(row["类型"]), reason: row["原因"], amountText: row["金额"].nilIfEmpty, occurredAt: parseDate(row["发生日期"])!, note: row["备注"])
+        case "离场":
+            guard let command = try removalCommands(for: row, farmID: farmID, context: context).first else {
+                throw FarmDataInterchangeError.malformedFile("离场批次没有可导入的羊只。")
+            }
+            return command
         case "生产批次": return .createBatch(name: row["批次名称"], purpose: row["生产目的"], startedAt: parseDate(row["开始日期"])!, sheepIDs: try splitList(row["羊只耳号列表"]).map { try sheep($0).id }, note: row["备注"])
         case "批次脱离": let batch = try context.fetch(FetchDescriptor<ProductionBatchRecord>()).first { $0.farmID == farmID && $0.deletedAt == nil && $0.name.normalizedLookup == row["批次名称"].normalizedLookup }; guard let batch else { throw FarmCommandError.batchNotFound }; return .leaveBatch(batchID: batch.id, sheepID: try sheep(row["耳号"]).id, leftAt: parseDate(row["脱离日期"])!, reason: row["原因"])
         case "饲料原料": return .addIngredient(name: row["原料名称"], unit: row["单位"], dryMatterText: row["干物质"].nilIfEmpty)
@@ -324,6 +405,35 @@ enum FarmExcelImportService {
         case "备注": return .addNote(sheepID: try row["耳号"].nilIfEmpty.map { try sheep($0).id }, penID: try optionalPen(row["圈舍"], pen: pen)?.id, text: row["内容"], occurredAt: parseDate(row["发生日期"])!)
         case "提醒规则": let existingID = try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first { $0.farmID == farmID }?.id; return .care(.updateRules(id: existingID ?? id, pregnancyCheckDays: Int(row["孕检间隔天"]) ?? 0, gestationDays: Int(row["妊娠周期天"]) ?? 0))
         default: throw FarmDataInterchangeError.malformedFile("不支持的工作表 \(row.sheet)。")
+        }
+    }
+
+    private static func removalCommands(for row: FarmExcelRow, farmID: UUID, context: ModelContext) throws -> [FarmCommand] {
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }
+        let sheepByTag = Dictionary(uniqueKeysWithValues: sheep.map { (EarTag.normalized($0.earTag), $0) })
+        let batchID = StableCloudUUID.derived(
+            namespace: farmID,
+            name: "excel-v\(templateVersion):离场:\(row["导入键"].lowercased()):batch"
+        )
+        let kind = removalKind(row["类型"])
+        let batchTotal = kind == .sold ? row["总售卖金额"].nilIfEmpty : nil
+        return try row.listValues("羊只耳号列表").map { tag in
+            let normalizedTag = EarTag.normalized(tag)
+            guard let sheep = sheepByTag[normalizedTag] else { throw FarmCommandError.sheepNotFound }
+            let recordID = StableCloudUUID.derived(namespace: batchID, name: "member:\(normalizedTag)")
+            return .removeSheep(
+                sheepID: sheep.id,
+                kind: kind,
+                reason: row["原因"],
+                amountText: nil,
+                occurredAt: parseDate(row["发生日期"])!,
+                note: row["备注"],
+                recordID: recordID,
+                removalBatchID: batchID,
+                batchTotalAmountText: batchTotal
+            )
         }
     }
 

@@ -598,7 +598,7 @@ struct SheepDetailView: View {
                         PointMark(x: .value("日期", record.occurredAt), y: .value("体重", record.kilograms))
                     }
                     .frame(height: 160)
-                    .accessibilityLabel("\(sheep.earTag)体重变化曲线，共\(records.count)次称重")
+                    .accessibilityLabel("\(sheep.earTag)体重变化曲线，共\(records.count)个体重数据点")
                 }
             }
         }

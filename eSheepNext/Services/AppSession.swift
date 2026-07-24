@@ -48,11 +48,17 @@ enum FarmSessionError: LocalizedError {
 @MainActor
 @Observable
 final class AppSession {
+    @ObservationIgnored private let persistActiveAccountProfileID: (UUID) -> Void
+    @ObservationIgnored private var automaticCloudRecoveryAccountIDs = Set<UUID>()
+
     var activeAccountProfileID: UUID?
     var selectedFarmID: UUID?
     var selectedTab: AppTab = .home
     var isCreateFarmPresented = false
+    var isJoinFarmPresented = false
+    var isReauthenticationPresented = false
     var lastSyncDescription = "本地记录待同步"
+    var accountAccessStatus: AccountAccessStatus = .checking
     var authenticationRevision = 0
     var authenticationNotice: String?
     var pendingRecordEntry: PendingRecordEntry?
@@ -60,8 +66,14 @@ final class AppSession {
     var pendingSheepID: UUID?
     var pendingCareReminderID: UUID?
 
-    init() {
-        activeAccountProfileID = SecureAccountStore.activeAccountProfileID()
+    init(
+        activeAccountProfileID: UUID? = SecureAccountStore.activeAccountProfileID(),
+        persistActiveAccountProfileID: @escaping (UUID) -> Void = { identifier in
+            _ = try? SecureAccountStore.saveActiveAccountProfileID(identifier)
+        }
+    ) {
+        self.activeAccountProfileID = activeAccountProfileID
+        self.persistActiveAccountProfileID = persistActiveAccountProfileID
     }
 
     func reconcileActiveFarm(with farms: [FarmRecord]) {
@@ -145,8 +157,10 @@ final class AppSession {
     func authenticationDidSucceed(accountProfileID: UUID? = nil) {
         if let accountProfileID {
             activeAccountProfileID = accountProfileID
-            try? SecureAccountStore.saveActiveAccountProfileID(accountProfileID)
+            persistActiveAccountProfileID(accountProfileID)
         }
+        accountAccessStatus = .checking
+        isReauthenticationPresented = false
         authenticationNotice = nil
         authenticationRevision += 1
     }
@@ -154,8 +168,40 @@ final class AppSession {
     func authenticationDidSignOut(warning: String? = nil) {
         selectedFarmID = nil
         selectedTab = .home
-        authenticationNotice = warning ?? "已退出登录。本机牧场缓存仍保留并与其他账号隔离；重新登录同一账号后可继续使用。"
+        let notice = warning ?? "已退出登录。本机牧场缓存仍保留并与其他账号隔离；重新登录同一账号后可继续使用。"
+        accountAccessStatus = .requiresSignIn(notice)
+        isReauthenticationPresented = false
+        authenticationNotice = notice
         authenticationRevision += 1
+    }
+
+    func authenticationCheckDidFinish(
+        _ status: AccountAccessStatus,
+        automaticallyPresentReauthentication: Bool
+    ) {
+        let wasReauthenticationRequired = accountAccessStatus.requiresSignIn
+        accountAccessStatus = status
+
+        if status.requiresSignIn {
+            if automaticallyPresentReauthentication && !wasReauthenticationRequired {
+                isReauthenticationPresented = true
+            }
+        } else {
+            isReauthenticationPresented = false
+        }
+    }
+
+    func requestAuthenticationRefresh() {
+        accountAccessStatus = .checking
+        authenticationRevision += 1
+    }
+
+    func beginAutomaticCloudRecovery(accountID: UUID) -> Bool {
+        automaticCloudRecoveryAccountIDs.insert(accountID).inserted
+    }
+
+    func finishAutomaticCloudRecovery(accountID: UUID) {
+        automaticCloudRecoveryAccountIDs.remove(accountID)
     }
 
     @discardableResult

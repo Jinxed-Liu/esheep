@@ -10,8 +10,12 @@ enum CloudRebuildError: LocalizedError, Equatable {
     case sessionNotResumable
     case lowerMembershipGeneration(cloud: Int, worker: Int)
     case blockingIssues(Int)
+    case operationReplayConflict(stage: String, operationID: UUID, baseRevision: Int, localRevision: Int)
     case noAuthoritativeOperations
     case farmMismatch
+    case commitInProgress
+    case authoritativeRootChanged
+    case authoritativeBaselineChanged
     case stagingValidation(String)
     case cancelled
 
@@ -24,8 +28,13 @@ enum CloudRebuildError: LocalizedError, Equatable {
         case .sessionNotResumable: "该重建会话不能继续执行。"
         case .lowerMembershipGeneration(let cloud, let worker): "云端成员快照 generation 为 \(cloud)，低于身份服务的 \(worker)。"
         case .blockingIssues(let count): "重建存在 \(count) 个阻断问题。"
+        case .operationReplayConflict(let stage, let operationID, let baseRevision, let localRevision):
+            "重建重放\(stage)时发生 revision 冲突：operation \(operationID.uuidString.lowercased())，base \(baseRevision)，local \(localRevision)。"
         case .noAuthoritativeOperations: "云端 Zone 中没有可验证的权威业务操作。"
         case .farmMismatch: "重建记录与目标牧场不一致。"
+        case .commitInProgress: "当前牧场正在切换已校验缓存，不能同时建立或取消重建会话。"
+        case .authoritativeRootChanged: "云端牧场根记录在 staging 完成后已更新，必须重新执行全量重建。"
+        case .authoritativeBaselineChanged: "云端迁移基线在 staging 完成后已更新，必须重新执行全量重建。"
         case .stagingValidation(let detail): "staging 牧场校验失败：\(detail)"
         case .cancelled: "重建已取消。"
         }
@@ -37,6 +46,62 @@ struct CloudRebuildRootSnapshot: Codable, Sendable, Equatable {
     let name: String
     let ownerAccountID: UUID
     let modifiedAt: Date
+    /// ISO-8601 encoding used by older bundles drops fractional seconds. New
+    /// bundles retain the exact CloudKit root identity at millisecond precision.
+    let modifiedAtMilliseconds: Int64?
+
+    init(
+        farmID: UUID,
+        name: String,
+        ownerAccountID: UUID,
+        modifiedAt: Date
+    ) {
+        self.farmID = farmID
+        self.name = name
+        self.ownerAccountID = ownerAccountID
+        self.modifiedAt = modifiedAt
+        self.modifiedAtMilliseconds = Self.milliseconds(modifiedAt)
+    }
+
+    static func milliseconds(_ date: Date) -> Int64 {
+        Int64((date.timeIntervalSince1970 * 1_000).rounded())
+    }
+}
+
+struct CloudRebuildBootstrapSnapshot: Codable, Sendable, Equatable {
+    let digest: String
+    let entityCount: Int
+    let photoCount: Int
+    /// Optional for decoding version-1 staging bundles created before the
+    /// baseline identity was persisted. A missing value means baseline v1.
+    let version: Int?
+    /// Store the cutoff as integer milliseconds so JSON round-tripping cannot
+    /// lose sub-second precision through ISO-8601 date encoding.
+    let cutoffAtMilliseconds: Int64?
+
+    init(
+        digest: String,
+        entityCount: Int,
+        photoCount: Int,
+        version: Int? = nil,
+        cutoffAt: Date? = nil
+    ) {
+        self.digest = digest
+        self.entityCount = entityCount
+        self.photoCount = photoCount
+        self.version = version
+        self.cutoffAtMilliseconds = Self.milliseconds(cutoffAt)
+    }
+
+    var normalizedVersion: Int { version ?? 1 }
+
+    var cutoffAt: Date? {
+        cutoffAtMilliseconds.map { Date(timeIntervalSince1970: Double($0) / 1_000) }
+    }
+
+    static func milliseconds(_ date: Date?) -> Int64? {
+        date.map { Int64(($0.timeIntervalSince1970 * 1_000).rounded()) }
+    }
 }
 
 struct CloudRebuildAssetSnapshot: Codable, Sendable, Equatable {
@@ -57,11 +122,66 @@ struct CloudRebuildMembershipSnapshot: Codable, Sendable, Equatable {
     let cloudRecordName: String
 }
 
+struct CloudRebuildOperationSourceProof: Codable, Sendable, Equatable {
+    let recordName: String
+    let farmID: UUID
+    let operationID: UUID
+    let envelopeDigest: String
+    let serverChangeTag: String?
+    let serverModifiedAtMilliseconds: Int64?
+
+    init(record: CKRecord, envelope: CloudOperationEnvelope) throws {
+        recordName = record.recordID.recordName
+        farmID = envelope.farmID
+        operationID = envelope.operationID
+        envelopeDigest = try Self.digest(envelope)
+        serverChangeTag = record.recordChangeTag
+        serverModifiedAtMilliseconds = record.modificationDate.map {
+            Int64(($0.timeIntervalSince1970 * 1_000).rounded())
+        }
+    }
+
+    func exactlyMatches(record: CKRecord, envelope: CloudOperationEnvelope) throws -> Bool {
+        guard record.recordType == CloudRecordType.farmOperation.rawValue,
+              record.recordID.recordName == recordName,
+              envelope.farmID == farmID,
+              envelope.operationID == operationID,
+              record.recordChangeTag == serverChangeTag,
+              record.modificationDate.map({
+                  Int64(($0.timeIntervalSince1970 * 1_000).rounded())
+              }) == serverModifiedAtMilliseconds else {
+            return false
+        }
+        // A non-nil CloudKit change tag identifies the exact immutable record
+        // version already hashed and validated in the completed rebuild. Local
+        // test records have no server tag, so retain the digest fallback.
+        if serverChangeTag != nil {
+            return true
+        }
+        return try Self.digest(envelope) == envelopeDigest
+    }
+
+    static func digest(_ envelope: CloudOperationEnvelope) throws -> String {
+        CloudPayloadDigest.hex(for: try JSONEncoder.cloud.encode(envelope))
+    }
+}
+
 struct CloudRebuildBundle: Codable, Sendable, Equatable {
     let sessionID: UUID
     let farmID: UUID
     let scope: CloudDatabaseScope
     let root: CloudRebuildRootSnapshot
+    /// Version 1 proves every retained envelope was sourced from an immutable
+    /// FarmOperation record and any FarmEntity projection was byte-for-byte
+    /// equivalent. Older completed bundles remain readable for an engine-only
+    /// upgrade, but may never perform a new cache commit.
+    let authorityProofVersion: Int?
+    /// Exact immutable records observed by the authoritative query, including
+    /// trusted pre-cutoff operations intentionally absorbed by a v2 baseline.
+    /// The nil-state CKSyncEngine catch-up uses this proof to distinguish old
+    /// history from records created after the rebuild snapshot.
+    let operationSourceProofs: [CloudRebuildOperationSourceProof]?
+    let bootstrap: CloudRebuildBootstrapSnapshot?
     let operations: [CloudOperationEnvelope]
     let assets: [CloudRebuildAssetSnapshot]
     let membershipSnapshot: CloudRebuildMembershipSnapshot?
@@ -69,15 +189,52 @@ struct CloudRebuildBundle: Codable, Sendable, Equatable {
     let pageCount: Int
     let recordCount: Int
     let createdAt: Date
+
+    init(
+        sessionID: UUID,
+        farmID: UUID,
+        scope: CloudDatabaseScope,
+        root: CloudRebuildRootSnapshot,
+        authorityProofVersion: Int? = nil,
+        operationSourceProofs: [CloudRebuildOperationSourceProof]? = nil,
+        bootstrap: CloudRebuildBootstrapSnapshot?,
+        operations: [CloudOperationEnvelope],
+        assets: [CloudRebuildAssetSnapshot],
+        membershipSnapshot: CloudRebuildMembershipSnapshot?,
+        deletedRecordNames: [String],
+        pageCount: Int,
+        recordCount: Int,
+        createdAt: Date
+    ) {
+        self.sessionID = sessionID
+        self.farmID = farmID
+        self.scope = scope
+        self.root = root
+        self.authorityProofVersion = authorityProofVersion
+        self.operationSourceProofs = operationSourceProofs
+        self.bootstrap = bootstrap
+        self.operations = operations
+        self.assets = assets
+        self.membershipSnapshot = membershipSnapshot
+        self.deletedRecordNames = deletedRecordNames
+        self.pageCount = pageCount
+        self.recordCount = recordCount
+        self.createdAt = createdAt
+    }
 }
 
 actor CloudRebuildActor {
+    static let currentAuthorityProofVersion = 2
     private let modelContainer: ModelContainer
     private let cloudContainer: CKContainer
     private let persistence: FarmPersistenceActor
     private let worker: IdentityWorkerClient
     private let mapper = CloudRecordMapper()
     private var activeTasks: [UUID: Task<Void, Never>] = [:]
+    private var activeTaskTokens: [UUID: UUID] = [:]
+    /// Prevents a second session from superseding a commit while the actor is
+    /// re-entrant across the persistence await.
+    private var committingFarmIDs = Set<UUID>()
 
     init(
         modelContainer: ModelContainer,
@@ -94,69 +251,298 @@ actor CloudRebuildActor {
     @discardableResult
     func rebuild(farmID: UUID, scope: CloudDatabaseScope, reason: CloudRebuildReason) async throws -> UUID {
         guard CloudFeatureConfiguration.isEnabled else { throw CloudRebuildError.featureDisabled }
-        guard let binding = try await persistence.bindingSnapshot(farmID: farmID), binding.databaseScope == scope else {
+        guard let binding = try await persistence.bindingSnapshot(farmID: farmID),
+              binding.databaseScope == scope,
+              Self.canBeginRebuild(from: binding) else {
             throw CloudRebuildError.bindingMissing
         }
         let sessionID = UUID()
         let relativePath = "CloudRebuild/\(sessionID.uuidString.lowercased())"
-        try createSession(id: sessionID, farmID: farmID, scope: scope, reason: reason, relativePath: relativePath)
-        try await persistence.setRebuildLock(farmID: farmID, enabled: true, errorCode: nil)
+        let locked = try await persistence.transitionRecoveryBindingIfUnchanged(
+            farmID: farmID,
+            expectedState: binding.state,
+            expectedLastErrorCode: binding.lastErrorCode,
+            newState: .rebuildingCache,
+            newLastErrorCode: nil
+        )
+        guard locked else { throw CloudRebuildError.bindingMissing }
+        do {
+            try createSession(id: sessionID, farmID: farmID, scope: scope, reason: reason, relativePath: relativePath)
+        } catch {
+            _ = try? await persistence.transitionRecoveryBindingIfUnchanged(
+                farmID: farmID,
+                expectedState: .rebuildingCache,
+                expectedLastErrorCode: nil,
+                newState: binding.state,
+                newLastErrorCode: binding.lastErrorCode
+            )
+            throw error
+        }
         startBuild(sessionID: sessionID, binding: binding)
         return sessionID
+    }
+
+    static func canBeginRebuild(from binding: CloudFarmBindingSnapshot) -> Bool {
+        if binding.state == .active { return true }
+        guard binding.state == .rebuildingCache else { return false }
+        switch binding.lastErrorCode {
+        case nil,
+             "baselineIdentityMismatch",
+             "deviceTrustRefreshRequired",
+             "immutableOperationHardDelete",
+             "engineResetPending",
+             "engineResetFailed",
+             "recoveryValidationFailed",
+             "rebuildValidationFailed",
+             "rebuildCommitFailed",
+             "rebuildCommitRequiresFreshRebuild",
+             "rebuildCancelled":
+            return true
+        default:
+            return false
+        }
     }
 
     func rebuildAndCommit(farmID: UUID, scope: CloudDatabaseScope, reason: CloudRebuildReason) async throws -> CloudRebuildResult {
         let sessionID = try await rebuild(farmID: farmID, scope: scope, reason: reason)
         if let task = activeTasks[sessionID] { await task.value }
-        return try await commit(sessionID: sessionID)
+        return try await uncancelledCommit(sessionID: sessionID, allowsPreparedRetry: false)
+    }
+
+    /// Reuses a fully built staging store when only the final cache switch
+    /// failed. A transient or inherited cancellation at the CloudKit root
+    /// check must not discard a completed full download and replay.
+    func rebuildOrRetryPreparedCommit(
+        farmID: UUID,
+        scope: CloudDatabaseScope,
+        reason: CloudRebuildReason
+    ) async throws -> CloudRebuildResult {
+        if let binding = try await persistence.bindingSnapshot(farmID: farmID),
+           binding.databaseScope == scope,
+           Self.canRetryPreparedCommit(from: binding),
+           let sessionID = try retryablePreparedSessionID(farmID: farmID, scope: scope) {
+            return try await uncancelledCommit(sessionID: sessionID, allowsPreparedRetry: true)
+        }
+        return try await rebuildAndCommit(farmID: farmID, scope: scope, reason: reason)
+    }
+
+    static func canRetryPreparedCommit(from binding: CloudFarmBindingSnapshot) -> Bool {
+        guard binding.state == .rebuildingCache else { return false }
+        switch binding.lastErrorCode {
+        case nil, "engineResetPending", "rebuildCommitFailed":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Returns durable proof that the newest rebuild for this farm/scope
+    /// already switched the authoritative cache and only engine activation is
+    /// left. Re-verify the local bundle and staging store so a stale error
+    /// string or an older completed session cannot skip a required rebuild.
+    func verifiedCompletedCacheSwitch(
+        farmID: UUID,
+        scope: CloudDatabaseScope
+    ) throws -> CloudRebuildResult? {
+        guard !committingFarmIDs.contains(farmID) else { return nil }
+        let context = ModelContext(modelContainer)
+        guard let latest = try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>())
+            .filter({ $0.farmID == farmID })
+            .max(by: {
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }),
+              latest.databaseScope == scope,
+              latest.status == .completed,
+              latest.completedAt != nil,
+              activeTasks[latest.id] == nil else {
+            return nil
+        }
+        let bundle = try loadBundle(sessionID: latest.id)
+        guard Self.hasCurrentAuthorityProof(bundle),
+              bundle.sessionID == latest.id,
+              bundle.farmID == farmID,
+              bundle.scope == scope,
+              bundle.recordCount == latest.fetchedRecordCount,
+              bundle.pageCount == latest.pageCount,
+              bundle.operations.count == latest.fetchedOperationCount,
+              bundle.assets.count == latest.downloadedAssetCount else {
+            return nil
+        }
+        try CloudRebuildBundleValidator.validate(bundle)
+        guard latest.entityDigest == Self.entityDigest(bundle.operations) else {
+            return nil
+        }
+        try CloudRebuildStagingBuilder.verify(
+            bundle: bundle,
+            workspace: try workspaceURL(sessionID: latest.id)
+        )
+        return CloudRebuildResult(
+            sessionID: latest.id,
+            farmID: farmID,
+            fetchedRecordCount: latest.fetchedRecordCount,
+            fetchedOperationCount: latest.fetchedOperationCount,
+            fetchedAssetCount: latest.fetchedAssetCount,
+            appliedOperationCount: latest.appliedOperationCount,
+            preservedOutboxCount: latest.preservedOutboxCount,
+            highestRevision: latest.highestRevision,
+            entityDigest: latest.entityDigest,
+            completedAt: latest.completedAt!
+        )
     }
 
     func cancel(sessionID: UUID) async throws {
+        guard let session = try session(id: sessionID) else { throw CloudRebuildError.sessionMissing }
+        guard !committingFarmIDs.contains(session.farmID), session.status != .committing else {
+            throw CloudRebuildError.commitInProgress
+        }
+        guard try isLatestSession(sessionID, farmID: session.farmID) else {
+            throw CloudRebuildError.sessionNotResumable
+        }
         activeTasks[sessionID]?.cancel()
         activeTasks[sessionID] = nil
-        guard let session = try session(id: sessionID) else { throw CloudRebuildError.sessionMissing }
+        activeTaskTokens[sessionID] = nil
         try updateSession(sessionID) { value in
             value.statusRawValue = CloudRebuildStatus.cancelled.rawValue
             value.lastErrorCode = "cancelled"
             value.lastErrorMessage = CloudRebuildError.cancelled.localizedDescription
         }
-        try await persistence.setRebuildLock(farmID: session.farmID, enabled: false, errorCode: "rebuildCancelled")
+        _ = try await persistence.transitionRecoveryBindingIfUnchanged(
+            farmID: session.farmID,
+            expectedState: .rebuildingCache,
+            expectedLastErrorCode: nil,
+            newState: .active,
+            newLastErrorCode: "rebuildCancelled"
+        )
     }
 
     func resume(sessionID: UUID) async throws {
         guard let current = try session(id: sessionID) else { throw CloudRebuildError.sessionMissing }
         guard [.failed, .cancelled].contains(current.status) else { throw CloudRebuildError.sessionNotResumable }
-        guard let binding = try await persistence.bindingSnapshot(farmID: current.farmID) else { throw CloudRebuildError.bindingMissing }
-        try removeStagingContents(sessionID: sessionID)
-        try updateSession(sessionID) { value in
-            value.statusRawValue = CloudRebuildStatus.preparing.rawValue
-            value.progress = 0
-            value.pageCount = 0
-            value.fetchedRecordCount = 0
-            value.fetchedOperationCount = 0
-            value.fetchedAssetCount = 0
-            value.downloadedAssetCount = 0
-            value.lastErrorCode = nil
-            value.lastErrorMessage = nil
-            value.retryAt = nil
+        guard !committingFarmIDs.contains(current.farmID),
+              try isLatestSession(sessionID, farmID: current.farmID) else {
+            throw CloudRebuildError.sessionNotResumable
         }
-        try await persistence.setRebuildLock(farmID: current.farmID, enabled: true, errorCode: nil)
+        guard let binding = try await persistence.bindingSnapshot(farmID: current.farmID) else {
+            throw CloudRebuildError.bindingMissing
+        }
+        let expectedBinding: (CloudFarmBindingState, String?)
+        switch current.status {
+        case .cancelled where binding.state == .active && binding.lastErrorCode == "rebuildCancelled":
+            expectedBinding = (.active, "rebuildCancelled")
+        case .failed where binding.state == .rebuildingCache &&
+            (binding.lastErrorCode == "rebuildValidationFailed" ||
+                binding.lastErrorCode == "rebuildCommitRequiresFreshRebuild"):
+            expectedBinding = (.rebuildingCache, binding.lastErrorCode)
+        default:
+            throw CloudRebuildError.bindingMissing
+        }
+        let relocked = try await persistence.transitionRecoveryBindingIfUnchanged(
+            farmID: current.farmID,
+            expectedState: expectedBinding.0,
+            expectedLastErrorCode: expectedBinding.1,
+            newState: .rebuildingCache,
+            newLastErrorCode: nil
+        )
+        guard relocked else { throw CloudRebuildError.bindingMissing }
+        do {
+            try removeStagingContents(sessionID: sessionID)
+            try updateSession(sessionID) { value in
+                value.statusRawValue = CloudRebuildStatus.preparing.rawValue
+                value.progress = 0
+                value.pageCount = 0
+                value.fetchedRecordCount = 0
+                value.fetchedOperationCount = 0
+                value.fetchedAssetCount = 0
+                value.downloadedAssetCount = 0
+                value.lastErrorCode = nil
+                value.lastErrorMessage = nil
+                value.retryAt = nil
+            }
+        } catch {
+            _ = try? await persistence.transitionRecoveryBindingIfUnchanged(
+                farmID: current.farmID,
+                expectedState: .rebuildingCache,
+                expectedLastErrorCode: nil,
+                newState: expectedBinding.0,
+                newLastErrorCode: expectedBinding.1
+            )
+            throw error
+        }
         startBuild(sessionID: sessionID, binding: binding)
     }
 
-    func commit(sessionID: UUID) async throws -> CloudRebuildResult {
+    func commit(sessionID: UUID, allowsPreparedRetry: Bool = false) async throws -> CloudRebuildResult {
         guard let current = try session(id: sessionID) else { throw CloudRebuildError.sessionMissing }
-        guard current.status == .readyToCommit else { throw CloudRebuildError.sessionNotReady }
+        let isLatest = try isLatestSession(sessionID, farmID: current.farmID)
+        let isPreparedRetry = allowsPreparedRetry && (
+            (current.status == .failed && current.lastErrorCode == "commitFailed") ||
+            current.status == .committing
+        )
+        guard isLatest, current.status == .readyToCommit || isPreparedRetry else {
+            throw CloudRebuildError.sessionNotReady
+        }
+        guard let commitBinding = try await persistence.bindingSnapshot(farmID: current.farmID),
+              commitBinding.state == .rebuildingCache,
+              commitBinding.databaseScope == current.databaseScope,
+              [nil, "engineResetPending", "rebuildCommitFailed"].contains(commitBinding.lastErrorCode) else {
+            throw CloudRebuildError.bindingMissing
+        }
+        guard committingFarmIDs.insert(current.farmID).inserted else {
+            throw CloudRebuildError.commitInProgress
+        }
+        defer { committingFarmIDs.remove(current.farmID) }
         try updateSession(sessionID) { value in
             value.statusRawValue = CloudRebuildStatus.committing.rawValue
             value.progress = 0.95
+            value.lastErrorCode = nil
+            value.lastErrorMessage = nil
         }
+        var reusableStagingVerified = false
         do {
             let bundle = try loadBundle(sessionID: sessionID)
-            guard bundle.farmID == current.farmID else { throw CloudRebuildError.farmMismatch }
+            guard bundle.sessionID == sessionID,
+                  bundle.farmID == current.farmID,
+                  bundle.scope == current.databaseScope else {
+                throw CloudRebuildError.farmMismatch
+            }
+            guard Self.hasCurrentAuthorityProof(bundle) else {
+                throw CloudRebuildError.stagingValidation(
+                    "旧重建包没有不可变 FarmOperation 来源证明，必须重新获取云端权威快照。"
+                )
+            }
+            guard bundle.recordCount == current.fetchedRecordCount,
+                  bundle.pageCount == current.pageCount,
+                  bundle.operations.count == current.fetchedOperationCount,
+                  bundle.assets.count == current.downloadedAssetCount else {
+                throw CloudRebuildError.stagingValidation("已完成 staging 与重建会话计数不一致。")
+            }
+            let blockingIssueCount = try issues(sessionID: sessionID).filter { $0.severity == .blocking }.count
+            guard blockingIssueCount == 0 else {
+                throw CloudRebuildError.blockingIssues(blockingIssueCount)
+            }
+            try CloudRebuildBundleValidator.validate(bundle)
             try CloudRebuildStagingBuilder.verify(bundle: bundle, workspace: workspaceURL(sessionID: sessionID))
+            reusableStagingVerified = true
+            try await validateAuthoritativeRootStillMatches(bundle: bundle)
+            try requireCommitSession(sessionID, farmID: current.farmID)
+            guard let lockedBinding = try await persistence.bindingSnapshot(farmID: current.farmID),
+                  lockedBinding.state == .rebuildingCache,
+                  lockedBinding.databaseScope == bundle.scope,
+                  lockedBinding.ownerAccountID == commitBinding.ownerAccountID,
+                  lockedBinding.zoneName == commitBinding.zoneName,
+                  lockedBinding.zoneOwnerName == commitBinding.zoneOwnerName,
+                  lockedBinding.lastErrorCode == commitBinding.lastErrorCode else {
+                throw CloudRebuildError.bindingMissing
+            }
             let commit = try await persistence.replaceConfirmedFarmCache(using: bundle)
             try CloudEngineStateDiskStore.remove(scope: bundle.scope)
+            let markedForEngineReset = try await persistence.recordRecoveryEngineFailureIfUnchanged(
+                farmID: current.farmID,
+                expectedLastErrorCode: lockedBinding.lastErrorCode,
+                failureCode: "engineResetPending"
+            )
+            guard markedForEngineReset else { throw CloudRebuildError.bindingMissing }
             let result = CloudRebuildResult(
                 sessionID: sessionID,
                 farmID: current.farmID,
@@ -180,31 +566,108 @@ actor CloudRebuildActor {
                 value.lastErrorCode = nil
                 value.lastErrorMessage = nil
             }
-            try await persistence.setRebuildLock(farmID: current.farmID, enabled: false, errorCode: nil)
+            // Keep the farm locked until the caller has also reset its
+            // incremental engine. Unlocking here exposes a window where live
+            // sync can reuse tokens from the cache that was just replaced.
             return result
         } catch {
+            let requiresFreshRebuild = Self.commitFailureRequiresFreshRebuild(
+                error,
+                reusableStagingVerified: reusableStagingVerified
+            )
+            let sessionErrorCode = requiresFreshRebuild
+                ? "commitRequiresFreshRebuild"
+                : "commitFailed"
+            let bindingErrorCode = requiresFreshRebuild
+                ? "rebuildCommitRequiresFreshRebuild"
+                : "rebuildCommitFailed"
             try? updateSession(sessionID) { value in
                 value.statusRawValue = CloudRebuildStatus.failed.rawValue
-                value.lastErrorCode = "commitFailed"
+                value.lastErrorCode = sessionErrorCode
                 value.lastErrorMessage = error.localizedDescription
             }
-            try? await persistence.setRebuildLock(farmID: current.farmID, enabled: true, errorCode: "rebuildCommitFailed")
+            _ = try? await persistence.recordRecoveryEngineFailureIfUnchanged(
+                farmID: current.farmID,
+                expectedLastErrorCode: commitBinding.lastErrorCode,
+                failureCode: bindingErrorCode
+            )
             throw error
+        }
+    }
+
+    static func commitFailureRequiresFreshRebuild(
+        _ error: Error,
+        reusableStagingVerified: Bool
+    ) -> Bool {
+        guard reusableStagingVerified else { return true }
+        // Every CloudRebuildError represents changed authority, invalid
+        // staging, identity mismatch, or another semantic failure. Reusing
+        // that same bundle cannot repair it. Non-domain errors after a fully
+        // verified staging pass (for example a transient CK/network or disk
+        // switch failure) may safely retry the prepared commit.
+        return error is CloudRebuildError ||
+            error is CloudContractError ||
+            error is RemoteDomainApplyError ||
+            error is FarmCommandError
+    }
+
+    private func uncancelledCommit(
+        sessionID: UUID,
+        allowsPreparedRetry: Bool
+    ) async throws -> CloudRebuildResult {
+        // The rebuild is launched from a scene-scoped task. That caller may be
+        // cancelled while the synchronous staging replay is still finishing.
+        // Use a fresh unstructured task for the short, atomic finalization so
+        // an old cancellation bit cannot immediately cancel CKRecord fetch.
+        let task = Task {
+            try await self.commit(
+                sessionID: sessionID,
+                allowsPreparedRetry: allowsPreparedRetry
+            )
+        }
+        return try await task.value
+    }
+
+    private func retryablePreparedSessionID(
+        farmID: UUID,
+        scope: CloudDatabaseScope
+    ) throws -> UUID? {
+        guard !committingFarmIDs.contains(farmID) else { return nil }
+        let context = ModelContext(modelContainer)
+        guard let latest = try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>())
+            .filter({ $0.farmID == farmID })
+            .max(by: {
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }),
+              latest.databaseScope == scope,
+              activeTasks[latest.id] == nil else {
+            return nil
+        }
+        switch latest.status {
+        case .readyToCommit, .committing:
+            return latest.id
+        case .failed where latest.lastErrorCode == "commitFailed":
+            return latest.id
+        default:
+            return nil
         }
     }
 
     private func startBuild(sessionID: UUID, binding: CloudFarmBindingSnapshot) {
         activeTasks[sessionID]?.cancel()
+        let taskToken = UUID()
+        activeTaskTokens[sessionID] = taskToken
         activeTasks[sessionID] = Task { [weak self] in
             guard let self else { return }
             do {
                 try await self.build(sessionID: sessionID, binding: binding)
             } catch is CancellationError {
-                try? await self.markCancelled(sessionID: sessionID)
+                try? await self.markCancelled(sessionID: sessionID, taskToken: taskToken)
             } catch {
-                try? await self.markFailed(sessionID: sessionID, error: error)
+                try? await self.markFailed(sessionID: sessionID, taskToken: taskToken, error: error)
             }
-            await self.clearTask(sessionID: sessionID)
+            await self.clearTask(sessionID: sessionID, taskToken: taskToken)
         }
     }
 
@@ -212,7 +675,7 @@ actor CloudRebuildActor {
         let workspace = try workspaceURL(sessionID: sessionID)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: workspace.appending(path: "Assets", directoryHint: .isDirectory), withIntermediateDirectories: true)
-        try updateSession(sessionID) { value in
+        try updateBuildSession(sessionID) { value in
             value.statusRawValue = CloudRebuildStatus.fetching.rawValue
             value.progress = 0.05
         }
@@ -228,13 +691,14 @@ actor CloudRebuildActor {
             records.append(contentsOf: page.records)
             deletions.append(contentsOf: page.deletions)
             pageCount = page.index
-            try updateSession(sessionID) { value in
+            try updateBuildSession(sessionID) { value in
                 value.pageCount = page.index
                 value.fetchedRecordCount = records.count
                 value.progress = min(0.45, 0.08 + Double(page.index) * 0.04)
             }
         }
 
+        try requireCurrentBuildSession(sessionID)
         let parsed = try await parseAndValidate(
             sessionID: sessionID,
             binding: binding,
@@ -243,11 +707,13 @@ actor CloudRebuildActor {
             pageCount: pageCount,
             workspace: workspace
         )
+        try requireCurrentBuildSession(sessionID)
         try saveBundle(parsed, sessionID: sessionID)
         _ = try CloudRebuildStagingBuilder.build(bundle: parsed, workspace: workspace)
+        try requireCurrentBuildSession(sessionID)
         let blocking = try issues(sessionID: sessionID).filter { $0.severity == .blocking }.count
         guard blocking == 0 else { throw CloudRebuildError.blockingIssues(blocking) }
-        try updateSession(sessionID) { value in
+        try updateBuildSession(sessionID) { value in
             value.statusRawValue = CloudRebuildStatus.readyToCommit.rawValue
             value.progress = 0.9
             value.fetchedOperationCount = parsed.operations.count
@@ -266,7 +732,7 @@ actor CloudRebuildActor {
         pageCount: Int,
         workspace: URL
     ) async throws -> CloudRebuildBundle {
-        try updateSession(sessionID) { value in
+        try updateBuildSession(sessionID) { value in
             value.statusRawValue = CloudRebuildStatus.downloadingAssets.rawValue
             value.progress = 0.5
         }
@@ -274,37 +740,141 @@ actor CloudRebuildActor {
             try addIssue(sessionID: sessionID, farmID: binding.farmID, code: "farmRootMissing", detail: "Zone 中缺少 FarmRoot。")
             throw CloudContractError.malformedRecord
         }
-        if let bootstrapState = rootRecord[CloudRecordField.bootstrapState] as? String, bootstrapState != "ready" {
+        let bootstrapState = rootRecord[CloudRecordField.bootstrapState] as? String
+        if let bootstrapState, bootstrapState != "ready" {
             throw CloudRebuildError.stagingValidation("迁移牧场云端基线尚未完成。")
         }
         let expectedBootstrapDigest = rootRecord[CloudRecordField.bootstrapDigest] as? String
-        let expectedBootstrapEntityCount = expectedBootstrapDigest == nil ? nil : Self.integer(rootRecord[CloudRecordField.bootstrapEntityCount])
-        let expectedBootstrapPhotoCount = expectedBootstrapDigest == nil ? nil : Self.integer(rootRecord[CloudRecordField.bootstrapPhotoCount])
+        let storedBootstrapVersion = Self.integer(rootRecord[CloudRecordField.bootstrapVersion])
+        let expectedBootstrapVersion = storedBootstrapVersion > 0 ? storedBootstrapVersion : 1
+        let expectedBootstrapCutoffAt = rootRecord[CloudRecordField.bootstrapCutoffAt] as? Date
+        let bootstrapEntityCount = Self.integer(rootRecord[CloudRecordField.bootstrapEntityCount])
+        let bootstrapPhotoCount = Self.integer(rootRecord[CloudRecordField.bootstrapPhotoCount])
+        if bootstrapState == "ready" || expectedBootstrapVersion >= 2 {
+            guard bootstrapState == "ready",
+                  let expectedBootstrapDigest,
+                  !expectedBootstrapDigest.isEmpty,
+                  bootstrapEntityCount > 0,
+                  bootstrapPhotoCount >= 0,
+                  expectedBootstrapVersion < 2 || expectedBootstrapCutoffAt != nil else {
+                throw CloudRebuildError.stagingValidation("迁移牧场云端基线证据不完整。")
+            }
+        }
+        let expectedBootstrapEntityCount = expectedBootstrapDigest == nil ? nil : bootstrapEntityCount
+        let expectedBootstrapPhotoCount = expectedBootstrapDigest == nil ? nil : bootstrapPhotoCount
         let rootValue = try mapper.farmRootValue(from: rootRecord)
         guard rootValue.farmID == binding.farmID else { throw CloudRebuildError.farmMismatch }
         let root = CloudRebuildRootSnapshot(farmID: rootValue.farmID, name: rootValue.name, ownerAccountID: rootValue.ownerAccountID, modifiedAt: rootValue.modifiedAt)
 
+        // A newly installed device may only have its own local public key.
+        // Refresh the farm trust set from the authenticated identity service
+        // before validating records signed by the other phone. The rebuild
+        // lock remains held while this snapshot is persisted.
+        let workerSecurityGeneration: Int?
+        if IdentityWorkerConfiguration.baseURL != nil {
+            let workerSnapshot = try await worker.farmSecuritySnapshot(farmID: binding.farmID)
+            guard workerSnapshot.farmID == binding.farmID else {
+                throw CloudContractError.malformedRecord
+            }
+            try await persistence.saveSecuritySnapshot(workerSnapshot)
+            workerSecurityGeneration = workerSnapshot.generation
+        } else {
+            workerSecurityGeneration = nil
+        }
         let trust = try await persistence.cloudTrustSnapshot(farmID: binding.farmID)
-        var byOperationID: [UUID: CloudOperationEnvelope] = [:]
-        for record in records where record.recordType == CloudRecordType.farmOperation.rawValue || record.recordType == CloudRecordType.farmEntity.rawValue {
+        var immutableOperations: [CloudOperationEnvelope] = []
+        var operationSourceProofs: [CloudRebuildOperationSourceProof] = []
+        for record in records where record.recordType == CloudRecordType.farmOperation.rawValue {
+            do {
+                let envelope = try mapper.operationEnvelope(from: record)
+                guard envelope.farmID == binding.farmID,
+                      record.recordID.recordName == mapper.recordName(for: envelope.operationID) else {
+                    throw CloudRebuildError.farmMismatch
+                }
+                let validatedEnvelope = try Self.validatedOperationForRebuild(
+                    envelope: envelope,
+                    authorizationDate: record.modificationDate ?? record.creationDate,
+                    trust: trust,
+                    expectedBootstrapVersion: expectedBootstrapVersion,
+                    cutoffAt: expectedBootstrapCutoffAt
+                )
+                operationSourceProofs.append(try CloudRebuildOperationSourceProof(
+                    record: record,
+                    envelope: envelope
+                ))
+                guard let validatedEnvelope else {
+                    // A v2 baseline already contains this trusted pre-cutoff
+                    // operation's final state. It is intentionally absent from
+                    // the bundle and does not create an authorization warning.
+                    continue
+                }
+                immutableOperations.append(validatedEnvelope)
+            } catch {
+                let rejectedEnvelope = try? mapper.operationEnvelope(from: record)
+                try addIssue(
+                    sessionID: sessionID,
+                    farmID: binding.farmID,
+                    code: "invalidOperation",
+                    recordName: rejectedEnvelope.map { mapper.recordName(for: $0.operationID) } ?? record.recordID.recordName,
+                    detail: "不可变云端操作未通过授权校验：\(error.localizedDescription)"
+                )
+                throw error
+            }
+        }
+
+        var projections: [CloudOperationEnvelope] = []
+        var rejectedProjectionIDs = Set<UUID>()
+        for record in records where record.recordType == CloudRecordType.farmEntity.rawValue {
             do {
                 let envelope = try mapper.operationEnvelope(from: record)
                 guard envelope.farmID == binding.farmID else { throw CloudRebuildError.farmMismatch }
-                try Self.validate(
+                guard let validatedEnvelope = try Self.validatedOperationForRebuild(
                     envelope: envelope,
                     authorizationDate: record.modificationDate ?? record.creationDate,
-                    trust: trust
-                )
-                if let old = byOperationID[envelope.operationID] {
-                    if envelope.revision > old.revision { byOperationID[envelope.operationID] = envelope }
-                } else {
-                    byOperationID[envelope.operationID] = envelope
-                }
+                    trust: trust,
+                    expectedBootstrapVersion: expectedBootstrapVersion,
+                    cutoffAt: expectedBootstrapCutoffAt
+                ) else { continue }
+                projections.append(validatedEnvelope)
             } catch {
-                try addIssue(sessionID: sessionID, farmID: binding.farmID, code: "invalidOperation", recordName: record.recordID.recordName, detail: error.localizedDescription)
+                let rejectedEnvelope = try? mapper.operationEnvelope(from: record)
+                if let operationID = rejectedEnvelope?.operationID,
+                   !rejectedProjectionIDs.insert(operationID).inserted {
+                    continue
+                }
+                try addIssue(
+                    sessionID: sessionID,
+                    farmID: binding.farmID,
+                    severity: .warning,
+                    code: "invalidEntityProjection",
+                    recordName: record.recordID.recordName,
+                    detail: "可变实体投影未通过校验，已忽略且不会作为重建权威：\(error.localizedDescription)"
+                )
             }
         }
-        let operations = Self.sortedOperations(Array(byOperationID.values))
+        let reconciledOperations: [CloudOperationEnvelope]
+        do {
+            reconciledOperations = try Self.reconcileAuthoritativeOperationSources(
+                immutableOperations: immutableOperations,
+                projections: projections,
+                expectedBaselineVersion: expectedBootstrapVersion,
+                cutoffAt: expectedBootstrapCutoffAt
+            )
+        } catch {
+            try addIssue(
+                sessionID: sessionID,
+                farmID: binding.farmID,
+                code: "operationProjectionMismatch",
+                detail: error.localizedDescription
+            )
+            throw error
+        }
+        let canonicalOperations = try Self.canonicalizeBaselineOperations(
+            reconciledOperations,
+            expectedVersion: expectedBootstrapVersion,
+            cutoffAt: expectedBootstrapCutoffAt
+        )
+        let operations = Self.sortedOperations(canonicalOperations)
         guard !operations.isEmpty else { throw CloudRebuildError.noAuthoritativeOperations }
 
         var assets: [CloudRebuildAssetSnapshot] = []
@@ -313,8 +883,9 @@ actor CloudRebuildActor {
                 let value = try Self.assetEnvelope(record: record, mapper: mapper)
                 try Self.validate(
                     asset: value,
-                    authorizationDate: record.modificationDate ?? record.creationDate,
-                    trust: trust
+                    authorizationDate: try mapper.assetAuthorizationDate(from: record),
+                    trust: trust,
+                    signatureVersion: try mapper.assetSignatureVersion(from: record)
                 )
                 guard let ckAsset = record[CloudRecordField.asset] as? CKAsset, let sourceURL = ckAsset.fileURL else {
                     throw CloudContractError.malformedRecord
@@ -332,13 +903,14 @@ actor CloudRebuildActor {
             }
         }
 
-        try updateSession(sessionID) { value in
+        try updateBuildSession(sessionID) { value in
             value.statusRawValue = CloudRebuildStatus.validating.rawValue
             value.progress = 0.72
             value.fetchedOperationCount = operations.count
             value.fetchedAssetCount = records.filter { $0.recordType == CloudRecordType.farmAsset.rawValue }.count
             value.downloadedAssetCount = assets.count
         }
+        var bootstrap: CloudRebuildBootstrapSnapshot?
         if let expectedBootstrapDigest, let expectedBootstrapEntityCount, let expectedBootstrapPhotoCount {
             let snapshots = try operations.compactMap { operation -> BootstrapEntityEnvelopeV1? in
                 let payload = try JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: operation.payload)
@@ -348,20 +920,36 @@ actor CloudRebuildActor {
                 try snapshot.validate(for: operation)
                 return snapshot
             }
-            let digestLines = snapshots.map { "\($0.entityType):\($0.entityID.uuidString.lowercased()):\($0.sourcePayloadDigest)" }.sorted()
-            let actualDigest = CloudPayloadDigest.hex(for: Data(digestLines.joined(separator: "\n").utf8))
-            guard snapshots.count == expectedBootstrapEntityCount,
-                  assets.count == expectedBootstrapPhotoCount,
-                  actualDigest == expectedBootstrapDigest else {
-                throw CloudRebuildError.stagingValidation("迁移云端基线数量或摘要不一致。")
-            }
+            try Self.validateBootstrapEvidence(
+                snapshots: snapshots,
+                verifiedAssetCount: assets.count,
+                expectedDigest: expectedBootstrapDigest,
+                expectedEntityCount: expectedBootstrapEntityCount,
+                expectedPhotoCount: expectedBootstrapPhotoCount
+            )
+            bootstrap = CloudRebuildBootstrapSnapshot(
+                digest: expectedBootstrapDigest,
+                entityCount: expectedBootstrapEntityCount,
+                photoCount: expectedBootstrapPhotoCount,
+                version: expectedBootstrapVersion,
+                cutoffAt: expectedBootstrapCutoffAt
+            )
         }
-        let membership = try await validateMembership(records: records, binding: binding, trust: trust)
+        let membership = try validateMembership(
+            records: records,
+            binding: binding,
+            trust: trust,
+            workerSecurityGeneration: workerSecurityGeneration
+        )
+        try requireCurrentBuildSession(sessionID)
         let bundle = CloudRebuildBundle(
             sessionID: sessionID,
             farmID: binding.farmID,
             scope: binding.databaseScope,
             root: root,
+            authorityProofVersion: Self.currentAuthorityProofVersion,
+            operationSourceProofs: operationSourceProofs,
+            bootstrap: bootstrap,
             operations: operations,
             assets: assets,
             membershipSnapshot: membership,
@@ -374,17 +962,28 @@ actor CloudRebuildActor {
         return bundle
     }
 
-    private func validateMembership(records: [CKRecord], binding: CloudFarmBindingSnapshot, trust: CloudTrustSnapshot) async throws -> CloudRebuildMembershipSnapshot? {
+    static func hasCurrentAuthorityProof(_ bundle: CloudRebuildBundle) -> Bool {
+        bundle.authorityProofVersion == currentAuthorityProofVersion &&
+            bundle.operationSourceProofs != nil
+    }
+
+    private func validateMembership(
+        records: [CKRecord],
+        binding: CloudFarmBindingSnapshot,
+        trust: CloudTrustSnapshot,
+        workerSecurityGeneration: Int?
+    ) throws -> CloudRebuildMembershipSnapshot? {
         let candidates = records.filter { $0.recordType == CloudRecordType.farmMembershipSnapshot.rawValue }
         guard let record = candidates.max(by: { Self.integer($0[CloudRecordField.generation]) < Self.integer($1[CloudRecordField.generation]) }) else {
             return binding.databaseScope == .privateDatabase ? nil : try missingMembership()
         }
         let snapshot = try Self.membershipSnapshot(record: record, trust: trust)
-        if IdentityWorkerConfiguration.baseURL != nil {
-            let workerSnapshot = try await worker.farmSecuritySnapshot(farmID: binding.farmID)
-            guard snapshot.generation >= workerSnapshot.generation else {
-                throw CloudRebuildError.lowerMembershipGeneration(cloud: snapshot.generation, worker: workerSnapshot.generation)
-            }
+        if let workerSecurityGeneration,
+           snapshot.generation < workerSecurityGeneration {
+            throw CloudRebuildError.lowerMembershipGeneration(
+                cloud: snapshot.generation,
+                worker: workerSecurityGeneration
+            )
         }
         return snapshot
     }
@@ -393,28 +992,85 @@ actor CloudRebuildActor {
         throw CloudContractError.malformedRecord
     }
 
-    private static func validate(
+    private static func validatedOperationForRebuild(
         envelope: CloudOperationEnvelope,
         authorizationDate: Date?,
-        trust: CloudTrustSnapshot
-    ) throws {
+        trust: CloudTrustSnapshot,
+        expectedBootstrapVersion: Int,
+        cutoffAt: Date?
+    ) throws -> CloudOperationEnvelope? {
         guard let publicKey = trust.capabilityPublicKeyPEM, !publicKey.isEmpty else { throw CloudContractError.invalidCertificate }
         let claims = try CapabilityCertificateVerifier.verify(envelope.capabilityCertificate, publicKeyPEM: publicKey)
         guard !trust.revokedCertificateIDs.contains(claims.certificateID), let deviceKey = trust.devicePublicKeys[claims.deviceID] else {
             throw CloudContractError.capabilityDenied
         }
-        try CloudOperationSecurity.validate(
+        return try validatedOperationForRebuild(
             envelope: envelope,
             claims: claims,
             devicePublicKeyX963: deviceKey,
+            authorizationDate: authorizationDate,
+            expectedBootstrapVersion: expectedBootstrapVersion,
+            cutoffAt: cutoffAt
+        )
+    }
+
+    /// Returns nil only for a cryptographically trusted ordinary operation
+    /// whose final state is already represented by a version-2 baseline. A
+    /// thrown error remains a quarantined warning at the record ingestion
+    /// boundary; callers therefore cannot use the cutoff to bypass signature,
+    /// scope, certificate-time, tombstone, restore, or post-cutoff checks.
+    static func validatedOperationForRebuild(
+        envelope: CloudOperationEnvelope,
+        claims: CapabilityCertificateClaims,
+        devicePublicKeyX963: Data,
+        authorizationDate: Date? = nil,
+        expectedBootstrapVersion: Int,
+        cutoffAt: Date?
+    ) throws -> CloudOperationEnvelope? {
+        try CloudOperationSecurity.validateAuthenticityAndIntegrity(
+            envelope: envelope,
+            claims: claims,
+            devicePublicKeyX963: devicePublicKeyX963,
             authorizationDate: authorizationDate
         )
+        if isCoveredOrdinaryOperation(
+            envelope,
+            authorizationDate: authorizationDate,
+            expectedBootstrapVersion: expectedBootstrapVersion,
+            cutoffAt: cutoffAt
+        ) {
+            return nil
+        }
+        try CloudOperationSecurity.validateRequiredCapability(envelope: envelope, claims: claims)
+        return envelope
+    }
+
+    private static func isCoveredOrdinaryOperation(
+        _ envelope: CloudOperationEnvelope,
+        authorizationDate: Date?,
+        expectedBootstrapVersion: Int,
+        cutoffAt: Date?
+    ) -> Bool {
+        guard expectedBootstrapVersion >= 2,
+              let cutoffAt,
+              let authorizationDate,
+              authorizationDate <= cutoffAt,
+              envelope.modifiedAt <= cutoffAt,
+              envelope.deletedAt == nil,
+              envelope.entityType == CloudEntityType.farm.rawValue,
+              envelope.entityID == envelope.farmID,
+              let payload = try? JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: envelope.payload),
+              payload.kind == .updateFarmLocation else {
+            return false
+        }
+        return true
     }
 
     private static func validate(
         asset: FarmAssetEnvelope,
-        authorizationDate: Date?,
-        trust: CloudTrustSnapshot
+        authorizationDate: Date,
+        trust: CloudTrustSnapshot,
+        signatureVersion: Int?
     ) throws {
         guard let publicKey = trust.capabilityPublicKeyPEM, !publicKey.isEmpty else { throw CloudContractError.invalidCertificate }
         let claims = try CapabilityCertificateVerifier.verify(asset.capabilityCertificate, publicKeyPEM: publicKey)
@@ -422,10 +1078,14 @@ actor CloudRebuildActor {
               claims.accountID == asset.modifiedByAccountID,
               claims.deviceID == asset.modifiedByDeviceID,
               claims.capabilities.contains(.recordProduction),
-              claims.isValid(at: authorizationDate ?? asset.createdAt),
+              claims.isValid(at: authorizationDate),
               !trust.revokedCertificateIDs.contains(claims.certificateID),
               let key = trust.devicePublicKeys[claims.deviceID] else { throw CloudContractError.capabilityDenied }
-        try DeviceSignatureVerifier.verify(signature: asset.signature, data: asset.canonicalSigningData, publicKeyX963: key)
+        _ = try FarmAssetSignatureVerifier.verify(
+            envelope: asset,
+            declaredVersion: signatureVersion,
+            publicKeyX963: key
+        )
     }
 
     private static func assetEnvelope(record: CKRecord, mapper: CloudRecordMapper) throws -> FarmAssetEnvelope {
@@ -486,12 +1146,191 @@ actor CloudRebuildActor {
 
     static func sortedOperations(_ operations: [CloudOperationEnvelope]) -> [CloudOperationEnvelope] {
         operations.sorted {
+            let leftIsBootstrap = isBootstrapOperation($0)
+            let rightIsBootstrap = isBootstrapOperation($1)
+            if leftIsBootstrap != rightIsBootstrap { return leftIsBootstrap }
             let left = operationRank($0)
             let right = operationRank($1)
-            if left != right { return left < right }
+            if leftIsBootstrap {
+                if left != right { return left < right }
+                if $0.revision != $1.revision { return $0.revision < $1.revision }
+            } else {
+                // Ordinary operations carry per-entity revision chains. A
+                // later command can legitimately have a lower dependency rank
+                // (for example unlinking a semen donor), so revision must be
+                // the global primary key for this whole group.
+                if $0.revision != $1.revision { return $0.revision < $1.revision }
+                if left != right { return left < right }
+            }
             if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt < $1.modifiedAt }
-            if $0.revision != $1.revision { return $0.revision < $1.revision }
+            if $0.entityID != $1.entityID {
+                return $0.entityID.uuidString < $1.entityID.uuidString
+            }
             return $0.operationID.uuidString < $1.operationID.uuidString
+        }
+    }
+
+    /// FarmOperation is append-only authority; FarmEntity is only a mutable
+    /// projection used for efficient live reads. Rebuilds must never promote
+    /// a projection when its immutable source is absent or differs. A stale
+    /// projection that points at an existing immutable operation is therefore
+    /// ignored instead of making the authoritative rebuild fail.
+    static func reconcileAuthoritativeOperationSources(
+        immutableOperations: [CloudOperationEnvelope],
+        projections: [CloudOperationEnvelope],
+        expectedBaselineVersion: Int,
+        cutoffAt: Date?
+    ) throws -> [CloudOperationEnvelope] {
+        var byID: [UUID: CloudOperationEnvelope] = [:]
+        for operation in immutableOperations {
+            if let existing = byID[operation.operationID], existing != operation {
+                throw CloudRebuildError.stagingValidation(
+                    "同一 operationID 存在内容不一致的不可变操作。"
+                )
+            }
+            byID[operation.operationID] = operation
+        }
+        for projection in projections {
+            guard let immutable = byID[projection.operationID] else {
+                // A version-2 root intentionally supersedes older ordinary
+                // projections and interrupted baseline generations. The same
+                // canonicalizer used for the final bundle must prove that a
+                // projection is discarded before its missing immutable source
+                // may be ignored. This narrowly permits the previously
+                // authorized 521-baseline cleanup without promoting it again.
+                if try canonicalizeBaselineOperations(
+                    [projection],
+                    expectedVersion: expectedBaselineVersion,
+                    cutoffAt: cutoffAt
+                ).isEmpty {
+                    continue
+                }
+                throw CloudRebuildError.stagingValidation(
+                    "实体投影缺少对应的不可变 FarmOperation。"
+                )
+            }
+            // The projection record is mutable and older clients can leave
+            // non-authoritative fields (notably modifiedAt) different from the
+            // append-only source. The independently validated FarmOperation
+            // remains the sole rebuild input.
+            _ = immutable
+        }
+        return Array(byID.values)
+    }
+
+    private static func isBootstrapOperation(_ envelope: CloudOperationEnvelope) -> Bool {
+        (try? JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: envelope.payload).kind) == .bootstrapEntity
+    }
+
+    /// A refreshed baseline reuses unchanged version-1 snapshots and replaces
+    /// only changed logical slots with version-2 snapshots. Operations already
+    /// represented by the refreshed snapshot are omitted; tombstones remain so
+    /// deleted records and assets stay deleted.
+    static func canonicalizeBaselineOperations(
+        _ operations: [CloudOperationEnvelope],
+        expectedVersion: Int,
+        cutoffAt: Date?
+    ) throws -> [CloudOperationEnvelope] {
+        guard expectedVersion >= 2, let cutoffAt else { return operations }
+
+        struct LogicalEntity: Hashable {
+            let entityType: String
+            let entityID: UUID
+        }
+        struct LogicalSlot: Hashable {
+            let entity: LogicalEntity
+            let slot: String
+        }
+        struct Candidate {
+            let envelope: CloudOperationEnvelope
+            let version: Int
+        }
+
+        var candidates: [LogicalSlot: [Candidate]] = [:]
+        var passthrough: [CloudOperationEnvelope] = []
+        var deletedBeforeCutoff = Set<LogicalEntity>()
+
+        for operation in operations {
+            let payload = try JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: operation.payload)
+            if payload.kind == .bootstrapEntity {
+                guard let snapshotData = payload.dataValues["snapshot"] else {
+                    throw RemoteDomainApplyError.invalidPayload("snapshot")
+                }
+                let snapshot = try JSONDecoder.cloudRebuild.decode(BootstrapEntityEnvelopeV1.self, from: snapshotData)
+                try snapshot.validate(for: operation)
+                let version = payload.integers["baselineVersion"] ?? 1
+                if version >= 2 {
+                    guard let candidateCutoff = payload.dates["baselineCutoffAt"] else {
+                        throw RemoteDomainApplyError.invalidPayload("baselineCutoffAt")
+                    }
+                    // Only the baseline generation named by the ready root is
+                    // authoritative. A signed but interrupted later refresh
+                    // must not be mixed into the root's entity count/digest.
+                    guard CloudRebuildBootstrapSnapshot.milliseconds(candidateCutoff) ==
+                            CloudRebuildBootstrapSnapshot.milliseconds(cutoffAt) else {
+                        continue
+                    }
+                }
+                let slot = payload.strings["baselineSlot"] ?? legacyBaselineSlot(snapshot)
+                let key = LogicalSlot(
+                    entity: LogicalEntity(entityType: snapshot.entityType, entityID: snapshot.entityID),
+                    slot: slot
+                )
+                candidates[key, default: []].append(Candidate(
+                    envelope: operation,
+                    version: version
+                ))
+                continue
+            }
+
+            if operation.modifiedAt <= cutoffAt {
+                if payload.kind == .tombstoneEntity,
+                   let entityType = payload.strings["entityType"],
+                   let entityID = payload.identifiers["entityID"] {
+                    deletedBeforeCutoff.insert(LogicalEntity(entityType: entityType, entityID: entityID))
+                    passthrough.append(operation)
+                } else if payload.kind == .restoreTombstonedEntity {
+                    // Retain recovery commands because their target is the
+                    // tombstone identity rather than the restored entity ID.
+                    passthrough.append(operation)
+                }
+                continue
+            }
+            passthrough.append(operation)
+        }
+
+        for (slot, values) in candidates {
+            let usable = values.filter { $0.version <= expectedVersion }
+            guard let selectedVersion = usable.map(\.version).max() else { continue }
+            if deletedBeforeCutoff.contains(slot.entity), selectedVersion < expectedVersion {
+                continue
+            }
+            passthrough.append(contentsOf: usable.filter { $0.version == selectedVersion }.map(\.envelope))
+        }
+        return passthrough
+    }
+
+    private static func legacyBaselineSlot(_ snapshot: BootstrapEntityEnvelopeV1) -> String {
+        switch CloudEntityType(rawValue: snapshot.entityType) {
+        case .farm:
+            let payload = try? JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: snapshot.sourcePayload)
+            return payload?.kind == .updateFarmLocation ? "1" : "0"
+        case .semenDonor:
+            let payload = try? JSONDecoder.cloudRebuild.decode(FarmCommandCloudPayload.self, from: snapshot.sourcePayload)
+            if case .upsertSemenDonor(let draft) = payload?.careCommand {
+                return draft.linkedRamID == nil ? "5" : "25"
+            }
+            return "5"
+        case .pen, .breedingProgram, .productionBatch, .feedIngredient, .feedRecipe, .inventoryLot, .semen:
+            return "10"
+        case .sheep, .feedRecipeComponent:
+            return "20"
+        case .weight, .weaning, .transfer, .removal, .batchMembership, .feed, .health, .reproduction, .note:
+            return "30"
+        case .pedigreeChange:
+            return "35"
+        default:
+            return "revision-\(snapshot.sourceRevision)"
         }
     }
 
@@ -533,7 +1372,7 @@ actor CloudRebuildActor {
         }
     }
 
-    private static func entityDigest(_ operations: [CloudOperationEnvelope]) -> String {
+    static func entityDigest(_ operations: [CloudOperationEnvelope]) -> String {
         let text = operations.sorted { $0.operationID.uuidString < $1.operationID.uuidString }.map {
             "\($0.operationID.uuidString.lowercased()):\($0.revision):\($0.payloadDigest)"
         }.joined(separator: "\n")
@@ -545,15 +1384,160 @@ actor CloudRebuildActor {
         return (value as? NSNumber)?.intValue ?? -1
     }
 
-    private func createSession(id: UUID, farmID: UUID, scope: CloudDatabaseScope, reason: CloudRebuildReason, relativePath: String) throws {
-        let context = ModelContext(modelContainer)
-        for old in try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>()) where old.farmID == farmID && old.status.isRunning {
-            old.statusRawValue = CloudRebuildStatus.cancelled.rawValue
-            old.lastErrorCode = "superseded"
-            old.lastErrorMessage = "已由新的重建会话替代。"
-            old.updatedAt = .now
+    /// Final fail-closed comparison used immediately before replacing the
+    /// local cache. A nil expected snapshot is only valid while the cloud root
+    /// also has no migration-baseline fields.
+    static func validateCurrentBootstrapRoot(
+        _ rootRecord: CKRecord,
+        expected: CloudRebuildBootstrapSnapshot?
+    ) throws {
+        let state = rootRecord[CloudRecordField.bootstrapState] as? String
+        let digest = rootRecord[CloudRecordField.bootstrapDigest] as? String
+        let storedVersion = Self.integer(rootRecord[CloudRecordField.bootstrapVersion])
+        let cutoffMilliseconds = CloudRebuildBootstrapSnapshot.milliseconds(
+            rootRecord[CloudRecordField.bootstrapCutoffAt] as? Date
+        )
+        let entityCount = Self.integer(rootRecord[CloudRecordField.bootstrapEntityCount])
+        let photoCount = Self.integer(rootRecord[CloudRecordField.bootstrapPhotoCount])
+
+        guard let expected else {
+            let hasBaselineIdentity = state != nil ||
+                digest != nil ||
+                storedVersion > 0 ||
+                cutoffMilliseconds != nil ||
+                rootRecord[CloudRecordField.bootstrapEntityCount] != nil ||
+                rootRecord[CloudRecordField.bootstrapPhotoCount] != nil
+            guard !hasBaselineIdentity else {
+                throw CloudRebuildError.authoritativeBaselineChanged
+            }
+            return
         }
-        context.insert(CloudRebuildSessionRecord(id: id, farmID: farmID, databaseScope: scope, reason: reason, stagingRelativePath: relativePath))
+
+        let currentVersion = storedVersion > 0 ? storedVersion : 1
+        guard state == "ready",
+              digest == expected.digest,
+              currentVersion == expected.normalizedVersion,
+              cutoffMilliseconds == expected.cutoffAtMilliseconds,
+              entityCount == expected.entityCount,
+              photoCount == expected.photoCount else {
+            throw CloudRebuildError.authoritativeBaselineChanged
+        }
+    }
+
+    /// Compares the mutable FarmRoot identity captured by staging with the
+    /// record fetched immediately before commit. Legacy bundles have no exact
+    /// millisecond identity and therefore fail closed, requiring a new rebuild.
+    static func validateCurrentRootIdentity(
+        _ current: CloudRebuildRootSnapshot,
+        expected: CloudRebuildRootSnapshot
+    ) throws {
+        guard current.farmID == expected.farmID,
+              current.ownerAccountID == expected.ownerAccountID else {
+            throw CloudRebuildError.farmMismatch
+        }
+        guard let expectedMilliseconds = expected.modifiedAtMilliseconds,
+              let currentMilliseconds = current.modifiedAtMilliseconds,
+              current.name == expected.name,
+              currentMilliseconds == expectedMilliseconds else {
+            throw CloudRebuildError.authoritativeRootChanged
+        }
+    }
+
+    static func canAdvanceBuildSession(status: CloudRebuildStatus, isLatest: Bool) -> Bool {
+        guard isLatest else { return false }
+        return switch status {
+        case .preparing, .fetching, .downloadingAssets, .validating: true
+        case .readyToCommit, .committing, .completed, .failed, .cancelled: false
+        }
+    }
+
+    static func validateBootstrapEvidence(
+        snapshots: [BootstrapEntityEnvelopeV1],
+        verifiedAssetCount: Int,
+        expectedDigest: String,
+        expectedEntityCount: Int,
+        expectedPhotoCount: Int
+    ) throws {
+        guard snapshots.count == expectedEntityCount else {
+            throw CloudRebuildError.stagingValidation(
+                "迁移云端基线实体数量不一致：期望 \(expectedEntityCount)，实际 \(snapshots.count)。"
+            )
+        }
+        let digestLines = snapshots.map {
+            "\($0.entityType):\($0.entityID.uuidString.lowercased()):\($0.sourcePayloadDigest)"
+        }.sorted()
+        let actualDigest = CloudPayloadDigest.hex(for: Data(digestLines.joined(separator: "\n").utf8))
+        guard actualDigest == expectedDigest else {
+            throw CloudRebuildError.stagingValidation("迁移云端基线摘要不一致。")
+        }
+        // The root stores the migration-time photo count. Valid photos added
+        // after bootstrap are legitimate current records, so equality would
+        // make every later reinstall fail as soon as a user adds a photo.
+        guard verifiedAssetCount >= expectedPhotoCount else {
+            throw CloudRebuildError.stagingValidation(
+                "迁移云端基线照片不完整：至少需要 \(expectedPhotoCount) 张，实际通过校验 \(verifiedAssetCount) 张。"
+            )
+        }
+    }
+
+    private func validateAuthoritativeRootStillMatches(bundle: CloudRebuildBundle) async throws {
+        guard let binding = try await persistence.bindingSnapshot(farmID: bundle.farmID),
+              binding.databaseScope == bundle.scope else {
+            throw CloudRebuildError.bindingMissing
+        }
+        let database = bundle.scope == .privateDatabase
+            ? cloudContainer.privateCloudDatabase
+            : cloudContainer.sharedCloudDatabase
+        let zoneID = CKRecordZone.ID(zoneName: binding.zoneName, ownerName: binding.zoneOwnerName)
+        let recordID = CKRecord.ID(
+            recordName: "root_\(bundle.farmID.uuidString.lowercased())",
+            zoneID: zoneID
+        )
+        let currentRoot = try await database.record(for: recordID)
+        let currentValue = try mapper.farmRootValue(from: currentRoot)
+        let currentSnapshot = CloudRebuildRootSnapshot(
+            farmID: currentValue.farmID,
+            name: currentValue.name,
+            ownerAccountID: currentValue.ownerAccountID,
+            modifiedAt: currentValue.modifiedAt
+        )
+        try Self.validateCurrentRootIdentity(currentSnapshot, expected: bundle.root)
+        try Self.validateCurrentBootstrapRoot(currentRoot, expected: bundle.bootstrap)
+    }
+
+    func createSession(id: UUID, farmID: UUID, scope: CloudDatabaseScope, reason: CloudRebuildReason, relativePath: String) throws {
+        guard !committingFarmIDs.contains(farmID) else {
+            throw CloudRebuildError.commitInProgress
+        }
+        let context = ModelContext(modelContainer)
+        let sameFarmSessions = try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>()).filter {
+            $0.farmID == farmID
+        }
+        for old in sameFarmSessions {
+            // Cancel every retained in-memory task for this farm, even if an
+            // earlier bug already changed its persisted status.
+            activeTasks[old.id]?.cancel()
+            activeTasks[old.id] = nil
+            activeTaskTokens[old.id] = nil
+            if old.status.isRunning || old.status == .readyToCommit {
+                old.statusRawValue = CloudRebuildStatus.cancelled.rawValue
+                old.lastErrorCode = "superseded"
+                old.lastErrorMessage = "已由新的重建会话替代。"
+                old.updatedAt = .now
+            }
+        }
+        let replacement = CloudRebuildSessionRecord(
+            id: id,
+            farmID: farmID,
+            databaseScope: scope,
+            reason: reason,
+            stagingRelativePath: relativePath
+        )
+        if let newestCreatedAt = sameFarmSessions.map(\.createdAt).max(), replacement.createdAt <= newestCreatedAt {
+            replacement.createdAt = newestCreatedAt.addingTimeInterval(0.001)
+            replacement.updatedAt = replacement.createdAt
+        }
+        context.insert(replacement)
         try context.save()
     }
 
@@ -573,9 +1557,67 @@ actor CloudRebuildActor {
         try context.save()
     }
 
-    private func addIssue(sessionID: UUID, farmID: UUID, code: String, recordName: String? = nil, detail: String) throws {
+    private func updateBuildSession(_ id: UUID, mutate: (CloudRebuildSessionRecord) -> Void) throws {
         let context = ModelContext(modelContainer)
-        context.insert(CloudRebuildIssueRecord(sessionID: sessionID, farmID: farmID, severity: .blocking, code: code, recordName: recordName, detail: detail))
+        guard let value = try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>()).first(where: { $0.id == id }) else {
+            throw CloudRebuildError.sessionMissing
+        }
+        let isLatest = try isLatestSession(id, farmID: value.farmID, context: context)
+        guard Self.canAdvanceBuildSession(status: value.status, isLatest: isLatest) else {
+            throw CancellationError()
+        }
+        mutate(value)
+        value.updatedAt = .now
+        try context.save()
+    }
+
+    private func requireCurrentBuildSession(_ id: UUID) throws {
+        let context = ModelContext(modelContainer)
+        guard let value = try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>()).first(where: { $0.id == id }) else {
+            throw CloudRebuildError.sessionMissing
+        }
+        let isLatest = try isLatestSession(id, farmID: value.farmID, context: context)
+        guard Self.canAdvanceBuildSession(status: value.status, isLatest: isLatest) else {
+            throw CancellationError()
+        }
+    }
+
+    private func requireCommitSession(_ id: UUID, farmID: UUID) throws {
+        let context = ModelContext(modelContainer)
+        guard let value = try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>()).first(where: { $0.id == id }),
+              value.farmID == farmID,
+              value.status == .committing,
+              try isLatestSession(id, farmID: farmID, context: context) else {
+            throw CloudRebuildError.sessionNotReady
+        }
+    }
+
+    private func isLatestSession(_ id: UUID, farmID: UUID) throws -> Bool {
+        let context = ModelContext(modelContainer)
+        return try isLatestSession(id, farmID: farmID, context: context)
+    }
+
+    private func isLatestSession(_ id: UUID, farmID: UUID, context: ModelContext) throws -> Bool {
+        let latest = try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>())
+            .filter { $0.farmID == farmID }
+            .max {
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+        return latest?.id == id
+    }
+
+    private func addIssue(
+        sessionID: UUID,
+        farmID: UUID,
+        severity: CloudRebuildIssueSeverity = .blocking,
+        code: String,
+        recordName: String? = nil,
+        detail: String
+    ) throws {
+        try requireCurrentBuildSession(sessionID)
+        let context = ModelContext(modelContainer)
+        context.insert(CloudRebuildIssueRecord(sessionID: sessionID, farmID: farmID, severity: severity, code: code, recordName: recordName, detail: detail))
         try context.save()
     }
 
@@ -602,29 +1644,53 @@ actor CloudRebuildActor {
         try? FileManager.default.removeItem(at: url)
     }
 
-    private func markCancelled(sessionID: UUID) async throws {
+    private func markCancelled(sessionID: UUID, taskToken: UUID) async throws {
+        guard activeTaskTokens[sessionID] == taskToken else { return }
         guard let value = try session(id: sessionID) else { return }
+        let isLatest = try isLatestSession(sessionID, farmID: value.farmID)
+        guard Self.canAdvanceBuildSession(status: value.status, isLatest: isLatest) else {
+            return
+        }
         try updateSession(sessionID) { session in
             session.statusRawValue = CloudRebuildStatus.cancelled.rawValue
             session.lastErrorCode = "cancelled"
             session.lastErrorMessage = CloudRebuildError.cancelled.localizedDescription
         }
-        try await persistence.setRebuildLock(farmID: value.farmID, enabled: false, errorCode: "rebuildCancelled")
+        _ = try await persistence.transitionRecoveryBindingIfUnchanged(
+            farmID: value.farmID,
+            expectedState: .rebuildingCache,
+            expectedLastErrorCode: nil,
+            newState: .active,
+            newLastErrorCode: "rebuildCancelled"
+        )
     }
 
-    private func markFailed(sessionID: UUID, error: Error) async throws {
+    private func markFailed(sessionID: UUID, taskToken: UUID, error: Error) async throws {
+        guard activeTaskTokens[sessionID] == taskToken else { return }
         guard let value = try session(id: sessionID) else { return }
+        let isLatest = try isLatestSession(sessionID, farmID: value.farmID)
+        guard Self.canAdvanceBuildSession(status: value.status, isLatest: isLatest) else {
+            return
+        }
         try updateSession(sessionID) { session in
             session.statusRawValue = CloudRebuildStatus.failed.rawValue
             session.lastErrorCode = String(describing: type(of: error))
             session.lastErrorMessage = error.localizedDescription
             session.retryAt = .now.addingTimeInterval(60)
         }
-        try await persistence.setRebuildLock(farmID: value.farmID, enabled: true, errorCode: "rebuildValidationFailed")
+        _ = try await persistence.transitionRecoveryBindingIfUnchanged(
+            farmID: value.farmID,
+            expectedState: .rebuildingCache,
+            expectedLastErrorCode: nil,
+            newState: .rebuildingCache,
+            newLastErrorCode: "rebuildValidationFailed"
+        )
     }
 
-    private func clearTask(sessionID: UUID) {
+    private func clearTask(sessionID: UUID, taskToken: UUID) {
+        guard activeTaskTokens[sessionID] == taskToken else { return }
         activeTasks[sessionID] = nil
+        activeTaskTokens[sessionID] = nil
     }
 }
 

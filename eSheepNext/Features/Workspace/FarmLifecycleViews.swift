@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 struct RemovalEntryView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
+    @Query private var sheep: [SheepRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -17,15 +17,36 @@ struct RemovalEntryView: View {
     @State private var amount = ""
     @State private var occurredAt = Date.now
     @State private var note = ""
+    @State private var isSaving = false
     @State private var errorMessage: String?
 
-    private var activeSheep: [SheepRecord] {
-        sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active }
+    init(account: AccountProfile, farm: FarmRecord) {
+        self.account = account
+        self.farm = farm
+        let farmID = farm.id
+        let activeStatus = SheepStatus.active.rawValue
+        _sheep = Query(
+            filter: #Predicate<SheepRecord> {
+                $0.farmID == farmID &&
+                    $0.deletedAt == nil &&
+                    $0.statusRawValue == activeStatus &&
+                    $0.isHistoricalArchive == false
+            },
+            sort: \SheepRecord.earTag
+        )
     }
+
+    private var sheepCandidates: [SheepEarTagSearchCandidate] { sheep.map { .init(sheep: $0) } }
 
     var body: some View {
         Form {
-            SheepPicker(sheep: activeSheep, selection: $sheepID)
+            Section("离场羊只") {
+                SheepEarTagSingleSearchField(
+                    candidates: sheepCandidates,
+                    selection: $sheepID,
+                    emptySelectionText: "尚未确认离场羊只"
+                )
+            }
             Picker("类型", selection: $kind) {
                 ForEach(RemovalKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
             }
@@ -37,17 +58,28 @@ struct RemovalEntryView: View {
             TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
         }
         .navigationTitle("离场记录")
-        .toolbar { EntrySaveToolbar(action: save) }
+        .toolbar { EntrySaveToolbar(action: save, isSaving: isSaving) }
+        .disabled(isSaving)
+        .overlay { if isSaving { ProgressView("正在保存离场记录") } }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["离场"])
     }
 
+    @MainActor
     private func save() {
-        guard let sheepID else { errorMessage = "请选择羊只。"; return }
-        do {
-            try commandService.execute(.removeSheep(sheepID: sheepID, kind: kind, reason: reason, amountText: amount, occurredAt: occurredAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
-            dismiss()
-        } catch { errorMessage = error.localizedDescription }
+        guard !isSaving else { return }
+        guard let sheepID else { errorMessage = "请先搜索并确认离场羊只。"; return }
+        isSaving = true
+        Task { @MainActor in
+            await Task.yield()
+            do {
+                try commandService.execute(.removeSheep(sheepID: sheepID, kind: kind, reason: reason, amountText: amount, occurredAt: occurredAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+                dismiss()
+            } catch {
+                isSaving = false
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 }
 
@@ -96,13 +128,6 @@ struct ProductionBatchListView: View {
     }
 }
 
-private struct ProductionBatchCandidate: Identifiable, Equatable {
-    let id: UUID
-    let earTag: String
-    let sexName: String
-    let breed: String
-}
-
 private struct CreateProductionBatchView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -117,8 +142,7 @@ private struct CreateProductionBatchView: View {
     @State private var startedAt = Date.now
     @State private var note = ""
     @State private var selectedIDs = Set<UUID>()
-    @State private var query = ""
-    @State private var visibleCandidates: [ProductionBatchCandidate] = []
+    @State private var batchCandidates: [SheepEarTagSearchCandidate] = []
     @State private var errorMessage: String?
 
     init(account: AccountProfile, farm: FarmRecord) {
@@ -151,31 +175,15 @@ private struct CreateProductionBatchView: View {
                 TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
             }
             Section {
-                if visibleCandidates.isEmpty {
-                    Text(query.isEmpty ? "没有可加入批次的在群羊只" : "没有匹配的羊只")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(visibleCandidates, id: \.id) { item in
-                        Button {
-                            if !selectedIDs.insert(item.id).inserted { selectedIDs.remove(item.id) }
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: selectedIDs.contains(item.id) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(selectedIDs.contains(item.id) ? AppTheme.brand : .secondary)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.earTag).foregroundStyle(.primary)
-                                    Text("\(item.sexName) · \(item.breed)")
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+                SheepEarTagMultiSearchField(
+                    candidates: batchCandidates,
+                    selection: $selectedIDs,
+                    prompt: "输入耳号搜索并加入批次",
+                    emptySelectionText: batchCandidates.isEmpty ? "没有可加入批次的在群羊只" : "尚未添加羊只"
+                )
             } header: {
                 HStack {
-                    Text("人工选择羊只")
+                    Text("搜索并添加羊只")
                     Spacer()
                     Text("已选 \(selectedIDs.count) 只")
                 }
@@ -184,19 +192,10 @@ private struct CreateProductionBatchView: View {
             }
         }
         .navigationTitle("新建生产批次")
-        .searchable(text: $query, prompt: "搜索耳号")
         .onAppear(perform: rebuildCandidates)
-        .onChange(of: query) { _, _ in rebuildCandidates() }
         .onChange(of: sheep.count) { _, _ in rebuildCandidates() }
         .onChange(of: memberships.count) { _, _ in rebuildCandidates() }
-        .onChange(of: startedAt) { _, value in
-            let unavailableIDs = Set(memberships.map(\.sheepID))
-            let eligibleIDs = Set(sheep.filter {
-                $0.enteredAt <= value && !unavailableIDs.contains($0.id)
-            }.map(\.id))
-            selectedIDs.formIntersection(eligibleIDs)
-            rebuildCandidates()
-        }
+        .onChange(of: startedAt) { _, _ in rebuildCandidates() }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
@@ -208,16 +207,16 @@ private struct CreateProductionBatchView: View {
     }
 
     private func rebuildCandidates() {
-        // This derived state belongs to the sheet lifecycle. It changes only
-        // when the source query, date, or search text changes—not on every tap.
+        // Eligibility changes with source data and batch date. The search field
+        // filters these lightweight snapshots without rendering the whole herd.
         let unavailableIDs = Set(memberships.map(\.sheepID))
-        visibleCandidates = Array(sheep.lazy.filter {
+        batchCandidates = Array(sheep.lazy.filter {
             $0.enteredAt <= startedAt &&
-                !unavailableIDs.contains($0.id) &&
-                (query.isEmpty || $0.earTag.localizedCaseInsensitiveContains(query))
+                !unavailableIDs.contains($0.id)
         }.map {
-            ProductionBatchCandidate(id: $0.id, earTag: $0.earTag, sexName: $0.sex.displayName, breed: $0.breed)
+            SheepEarTagSearchCandidate(sheep: $0)
         })
+        selectedIDs.formIntersection(Set(batchCandidates.map(\.id)))
     }
 
     private func save() {

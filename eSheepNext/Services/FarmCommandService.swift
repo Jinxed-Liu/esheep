@@ -11,6 +11,7 @@ enum FarmCommandError: LocalizedError {
     case feedIngredientBatchNotFound
     case batchNotFound
     case removalNotFound
+    case invalidRemovalBatch(String)
     case duplicateBatchMembership
     case batchMembershipNotFound
     case inventoryLotNotFound
@@ -51,6 +52,7 @@ enum FarmCommandError: LocalizedError {
         case .feedIngredientBatchNotFound: "投喂原料批次不存在、已停用，或不属于所选原料。"
         case .batchNotFound: "未找到当前牧场中的生产批次。"
         case .removalNotFound: "未找到可恢复的离场记录。"
+        case .invalidRemovalBatch(let detail): "离场批次无效：\(detail)"
         case .duplicateBatchMembership: "该羊已在此批次中。"
         case .batchMembershipNotFound: "未找到可结束的批次成员关系。"
         case .inventoryLotNotFound: "未找到当前牧场中的库存批次。"
@@ -145,7 +147,17 @@ enum FarmCommand: Sendable {
     case createBreedingProgram(name: String, createdAt: Date, steps: [BreedingProgramStepDraft])
     case transferSheep(sheepID: UUID, toPenID: UUID?, occurredAt: Date, note: String)
     case correctTransfer(originalID: UUID, toPenID: UUID?, occurredAt: Date, note: String, reason: String)
-    case removeSheep(sheepID: UUID, kind: RemovalKind, reason: String, amountText: String?, occurredAt: Date, note: String)
+    case removeSheep(
+        sheepID: UUID,
+        kind: RemovalKind,
+        reason: String,
+        amountText: String?,
+        occurredAt: Date,
+        note: String,
+        recordID: UUID? = nil,
+        removalBatchID: UUID? = nil,
+        batchTotalAmountText: String? = nil
+    )
     case correctRemoval(originalID: UUID, kind: RemovalKind, reason: String, amountText: String?, occurredAt: Date, note: String, correctionReason: String)
     case restoreSheep(removalID: UUID)
     case createBatch(name: String, purpose: String, startedAt: Date, sheepIDs: [UUID], note: String)
@@ -168,8 +180,10 @@ enum FarmCommand: Sendable {
         switch self {
         case .updateFarmLocation:
             .editFarmLocation
-        case .restoreSheep, .tombstoneEntity, .restoreTombstonedEntity, .correctWeight, .correctTransfer, .correctRemoval:
+        case .restoreSheep, .tombstoneEntity, .restoreTombstonedEntity:
             .deleteProtectedFacts
+        case .correctWeight, .correctTransfer, .correctRemoval:
+            .editHistoricalFacts
         case .addIngredient, .createRecipe, .addRecipeComponent, .createBreedingProgram:
             .manageCatalogs
         case .care(let command):
@@ -228,7 +242,7 @@ enum FarmCommand: Sendable {
         case .createBreedingProgram(let name, _, _): "新建配种方案：\(name)"
         case .transferSheep: "记录转群"
         case .correctTransfer: "修正转群记录"
-        case .removeSheep(_, let kind, _, _, _, _): "记录\(kind.displayName)"
+        case .removeSheep(_, let kind, _, _, _, _, _, _, _): "记录\(kind.displayName)"
         case .correctRemoval(_, let kind, _, _, _, _, _): "修正\(kind.displayName)记录"
         case .restoreSheep: "恢复离场羊只"
         case .createBatch(let name, _, _, _, _): "新建生产批次：\(name)"
@@ -252,10 +266,20 @@ enum FarmCommand: Sendable {
 
 @MainActor
 final class FarmCommandService {
-    private let historyRebuilder: FarmHistoryRebuilder
+    private struct HistoryImpact {
+        let sheepID: UUID
+        let changedAt: Date
+    }
 
-    init(historyRebuilder: FarmHistoryRebuilder = FarmHistoryRebuilder()) {
+    private let historyRebuilder: FarmHistoryRebuilder
+    private let historyRebuildObserver: ((Set<UUID>, Date) -> Void)?
+
+    init(
+        historyRebuilder: FarmHistoryRebuilder = FarmHistoryRebuilder(),
+        historyRebuildObserver: ((Set<UUID>, Date) -> Void)? = nil
+    ) {
         self.historyRebuilder = historyRebuilder
+        self.historyRebuildObserver = historyRebuildObserver
     }
     func createFarm(
         named name: String,
@@ -297,6 +321,7 @@ final class FarmCommandService {
             payloadDigest: operation.payloadDigest
         ))
         try context.save()
+        CloudRuntimeNotification.postSyncWake(farmID: farm.id)
         return farm
     }
 
@@ -305,40 +330,63 @@ final class FarmCommandService {
         defer {
             if !committed { context.rollback() }
         }
-        try executeWithoutSaving(command, in: farm, context: context)
+        try validateCloudIdentity(in: farm, context: context)
+        if let impact = try executeWithoutSaving(command, in: farm, context: context) {
+            try rebuildHistoryIfNeeded(for: [impact], farmID: farm.farmID, context: context)
+        }
         try context.save()
         committed = true
+        CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
     }
 
     /// Excel 等批量入口使用同一个权威写入管道，但整批只保存一次。
     /// 任一命令失败都会回滚本批已插入的事实、审计记录和 Outbox，避免半导入。
     func executeBatch(_ commands: [FarmCommand], in farm: FarmContext, context: ModelContext) throws {
         guard !commands.isEmpty else { return }
-        var committed = false
-        defer {
-            if !committed { context.rollback() }
+        var index = 0
+        try performBatch(in: farm, context: context) {
+            guard commands.indices.contains(index) else { return nil }
+            defer { index += 1 }
+            return commands[index]
         }
-        for command in commands {
-            try executeWithoutSaving(command, in: farm, context: context)
-        }
-        try context.save()
-        committed = true
     }
 
     /// 允许批量导入在上一条主数据命令生效后解析下一条引用，同时仍保持一次保存、整批回滚。
     func executeBatch(in farm: FarmContext, context: ModelContext, nextCommand: () throws -> FarmCommand?) throws {
+        try performBatch(in: farm, context: context, nextCommand: nextCommand)
+    }
+
+    private func performBatch(in farm: FarmContext, context: ModelContext, nextCommand: () throws -> FarmCommand?) throws {
         var committed = false
         defer {
             if !committed { context.rollback() }
         }
-        while let command = try nextCommand() {
-            try executeWithoutSaving(command, in: farm, context: context)
+        try validateCloudIdentity(in: farm, context: context)
+        var pendingHistory: [HistoryImpact] = []
+
+        func flushHistory() throws {
+            guard !pendingHistory.isEmpty else { return }
+            try rebuildHistoryIfNeeded(for: pendingHistory, farmID: farm.farmID, context: context)
+            pendingHistory.removeAll(keepingCapacity: true)
         }
+
+        while let command = try nextCommand() {
+            // 连续的羊只时间线命令共享一次投影重建。遇到其他业务命令时先刷新，
+            // 保证后续校验仍能看到与逐条执行一致的在场状态和圈舍投影。
+            if !affectsHistoryProjection(command) {
+                try flushHistory()
+            }
+            if let impact = try executeWithoutSaving(command, in: farm, context: context) {
+                pendingHistory.append(impact)
+            }
+        }
+        try flushHistory()
         try context.save()
         committed = true
+        CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
     }
 
-    private func executeWithoutSaving(_ command: FarmCommand, in farm: FarmContext, context: ModelContext) throws {
+    private func validateCloudIdentity(in farm: FarmContext, context: ModelContext) throws {
         let farmID = farm.farmID
         let accountID = farm.accountID
         let cloudBinding = try context.fetch(FetchDescriptor<CloudFarmBinding>(predicate: #Predicate {
@@ -350,15 +398,17 @@ final class FarmCommandService {
             })).contains(where: \.isUsable)
             guard cloudBinding.state == .active, hasUsableCertificate else { throw FarmCommandError.cloudIdentityLocked }
         }
+    }
+
+    private func executeWithoutSaving(_ command: FarmCommand, in farm: FarmContext, context: ModelContext) throws -> HistoryImpact? {
+        let farmID = farm.farmID
         guard farm.capabilities.allows(command.requiredCapability) else {
             throw FarmPermissionError.denied(command.requiredCapability)
         }
 
         try validate(command, farmID: farm.farmID, context: context)
         let result = try apply(command, farm: farm, context: context)
-        if command.requiresHistoryRebuild {
-            try historyRebuilder.rebuild(farmID: farm.farmID, context: context, from: command.historyChangedAt)
-        }
+        let projectedHistoryImpact = try historyImpact(for: command, result: result, farmID: farm.farmID, context: context)
         let operation = DomainOperation(
             farmID: farm.farmID,
             accountID: farm.accountID,
@@ -373,21 +423,27 @@ final class FarmCommandService {
         context.insert(operation)
         switch command {
         case .tombstoneEntity(_, let entityID, _):
-            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>())
-            if let tombstone = tombstones.first(where: { $0.farmID == farm.farmID && $0.entityID == entityID && $0.operationID == nil }) {
+            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.entityID == entityID && $0.operationID == nil
+            }))
+            if let tombstone = tombstones.first {
                 tombstone.operationID = operation.id
             }
         case .restoreTombstonedEntity(let tombstoneID):
-            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>())
-            if let tombstone = tombstones.first(where: { $0.id == tombstoneID }) {
+            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                $0.id == tombstoneID
+            }))
+            if let tombstone = tombstones.first {
                 tombstone.restoredByOperationID = operation.id
                 tombstone.restoredAt = Date.now
             }
         case .correctWeight(let originalID, _, _, _, _),
              .correctTransfer(let originalID, _, _, _, _),
              .correctRemoval(let originalID, _, _, _, _, _, _):
-            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>())
-            if let tombstone = tombstones.first(where: { $0.farmID == farm.farmID && $0.entityID == originalID && $0.operationID == nil }) {
+            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.entityID == originalID && $0.operationID == nil
+            }))
+            if let tombstone = tombstones.first {
                 tombstone.operationID = operation.id
             }
         case .care(let careCommand):
@@ -397,8 +453,10 @@ final class FarmCommandService {
             default: originalID = nil
             }
             if let originalID {
-                let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>())
-                if let tombstone = tombstones.first(where: { $0.farmID == farm.farmID && $0.entityID == originalID && $0.operationID == nil }) { tombstone.operationID = operation.id }
+                let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                    $0.farmID == farmID && $0.entityID == originalID && $0.operationID == nil
+                }))
+                if let tombstone = tombstones.first { tombstone.operationID = operation.id }
             }
         default:
             break
@@ -412,6 +470,111 @@ final class FarmCommandService {
             baseRevision: operation.baseRevision,
             payloadDigest: operation.payloadDigest
         ))
+        return projectedHistoryImpact
+    }
+
+    private func affectsHistoryProjection(_ command: FarmCommand) -> Bool {
+        switch command {
+        case .addSheep, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep:
+            true
+        case .tombstoneEntity(let entityType, _, _):
+            entityType == .sheep || entityType == .transfer || entityType == .removal
+        case .restoreTombstonedEntity:
+            true
+        default:
+            false
+        }
+    }
+
+    private func historyImpact(
+        for command: FarmCommand,
+        result: AppliedCommandResult,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> HistoryImpact? {
+        let impact: HistoryImpact?
+        switch command {
+        case .addSheep(_, _, _, _, let occurredAt, _, _):
+            impact = HistoryImpact(sheepID: result.entityID, changedAt: occurredAt)
+        case .transferSheep(let sheepID, _, let occurredAt, _):
+            impact = HistoryImpact(sheepID: sheepID, changedAt: occurredAt)
+        case .correctTransfer(let originalID, _, let occurredAt, _, _):
+            guard let original = try transferRecord(id: originalID, farmID: farmID, context: context) else { return nil }
+            impact = HistoryImpact(sheepID: original.sheepID, changedAt: min(original.occurredAt, occurredAt))
+        case .removeSheep(let sheepID, _, _, _, let occurredAt, _, _, _, _):
+            impact = HistoryImpact(sheepID: sheepID, changedAt: occurredAt)
+        case .correctRemoval(let originalID, _, _, _, let occurredAt, _, _):
+            guard let original = try removalRecord(id: originalID, farmID: farmID, context: context) else { return nil }
+            impact = HistoryImpact(sheepID: original.sheepID, changedAt: min(original.occurredAt, occurredAt))
+        case .restoreSheep(let removalID):
+            impact = try historyImpact(entityType: .removal, entityID: removalID, farmID: farmID, context: context)
+                .map { HistoryImpact(sheepID: $0.sheepID, changedAt: $0.changedAt) }
+        case .tombstoneEntity(let entityType, let entityID, _):
+            impact = try historyImpact(entityType: entityType, entityID: entityID, farmID: farmID, context: context)
+                .map { HistoryImpact(sheepID: $0.sheepID, changedAt: $0.changedAt) }
+        case .restoreTombstonedEntity(let tombstoneID):
+            guard let tombstone = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                $0.id == tombstoneID && $0.farmID == farmID
+            })).first,
+                  let entityType = CloudEntityType(rawValue: tombstone.entityType) else { return nil }
+            impact = try historyImpact(entityType: entityType, entityID: tombstone.entityID, farmID: farmID, context: context)
+                .map { HistoryImpact(sheepID: $0.sheepID, changedAt: $0.changedAt) }
+        default:
+            impact = nil
+        }
+
+        return impact
+    }
+
+    private func rebuildHistoryIfNeeded(
+        for impacts: [HistoryImpact],
+        farmID: UUID,
+        context: ModelContext
+    ) throws {
+        guard !impacts.isEmpty, let changedAt = impacts.map(\.changedAt).min() else { return }
+        let sheepIDs = Set(impacts.map(\.sheepID))
+        historyRebuildObserver?(sheepIDs, changedAt)
+        try historyRebuilder.rebuildAffectedSheep(
+            farmID: farmID,
+            sheepIDs: sheepIDs,
+            context: context,
+            from: changedAt
+        )
+    }
+
+    private func historyImpact(
+        entityType: CloudEntityType,
+        entityID: UUID,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> (sheepID: UUID, changedAt: Date)? {
+        switch entityType {
+        case .sheep:
+            let records = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                $0.id == entityID && $0.farmID == farmID
+            }))
+            return records.first.map { ($0.id, $0.enteredAt) }
+        case .transfer:
+            return try transferRecord(id: entityID, farmID: farmID, context: context)
+                .map { ($0.sheepID, $0.occurredAt) }
+        case .removal:
+            return try removalRecord(id: entityID, farmID: farmID, context: context)
+                .map { ($0.sheepID, $0.occurredAt) }
+        default:
+            return nil
+        }
+    }
+
+    private func transferRecord(id: UUID, farmID: UUID, context: ModelContext) throws -> TransferRecord? {
+        try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+            $0.id == id && $0.farmID == farmID
+        })).first
+    }
+
+    private func removalRecord(id: UUID, farmID: UUID, context: ModelContext) throws -> RemovalRecord? {
+        try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+            $0.id == id && $0.farmID == farmID
+        })).first
     }
 
     @discardableResult
@@ -452,13 +615,14 @@ final class FarmCommandService {
         conflict.resolvedAt = .now
         conflict.resolutionFailureReason = nil
         try context.save()
+        CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
         return operation.id
     }
 
     private func validate(_ command: FarmCommand, farmID: UUID, context: ModelContext) throws {
         switch command {
-        case .care(let careCommand):
-            try FarmCareCommandHandler.validate(careCommand, farmID: farmID, context: context)
+        case .care:
+            break
         case .updateFarmLocation(let displayName, let latitude, let longitude, _, let timeZoneIdentifier, _, let accuracy):
             _ = try required(displayName, label: "牧场地点名称")
             guard (-90...90).contains(latitude), (-180...180).contains(longitude) else { throw FarmCommandError.invalidFarmCoordinate }
@@ -533,17 +697,50 @@ final class FarmCommandService {
             }
             if let toPenID { try assertPen(toPenID, farmID: farmID, context: context) }
             _ = try required(reason, label: "修正原因")
-        case .removeSheep(let sheepID, _, let reason, let amountText, _, _):
+        case .removeSheep(let sheepID, let kind, let reason, let amountText, let occurredAt, let note, _, let removalBatchID, let batchTotalAmountText):
             try assertSheep(sheepID, farmID: farmID, context: context)
-            _ = try required(reason, label: "离场原因")
+            let normalizedReason = try required(reason, label: "离场原因")
             if let amountText, !amountText.isEmpty { try positiveDecimal(amountText, label: "金额") }
+            if let removalBatchID {
+                guard amountText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false else {
+                    throw FarmCommandError.invalidRemovalBatch("同批离场只能记录批次总额，不能填写单羊金额。")
+                }
+                let normalizedTotal = batchTotalAmountText?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if kind == .sold {
+                    guard let normalizedTotal, !normalizedTotal.isEmpty else {
+                        throw FarmCommandError.missingRequiredValue("总售卖金额")
+                    }
+                    try positiveDecimal(normalizedTotal, label: "总售卖金额")
+                } else if normalizedTotal?.isEmpty == false {
+                    throw FarmCommandError.invalidRemovalBatch("只有出售批次可以填写总售卖金额。")
+                }
+                let existingBatch = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+                    $0.farmID == farmID && $0.removalBatchID == removalBatchID && $0.deletedAt == nil
+                }))
+                let normalizedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+                let stableTotal = normalizedTotal.flatMap { $0.isEmpty ? nil : Decimal.stable($0)?.stableText }
+                guard existingBatch.allSatisfy({
+                    $0.kind == kind &&
+                        $0.reason == normalizedReason &&
+                        $0.occurredAt == occurredAt &&
+                        $0.note == normalizedNote &&
+                        $0.batchTotalAmountText == stableTotal
+                }) else {
+                    throw FarmCommandError.invalidRemovalBatch("同一批次的类型、原因、日期、备注和总额必须一致。")
+                }
+            } else if batchTotalAmountText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                throw FarmCommandError.invalidRemovalBatch("总售卖金额必须关联离场批次。")
+            }
         case .correctRemoval(let originalID, _, let reason, let amountText, _, _, let correctionReason):
-            guard try context.fetch(FetchDescriptor<RemovalRecord>()).contains(where: { $0.id == originalID && $0.farmID == farmID && $0.deletedAt == nil }) else {
+            guard let original = try context.fetch(FetchDescriptor<RemovalRecord>()).first(where: { $0.id == originalID && $0.farmID == farmID && $0.deletedAt == nil }) else {
                 throw FarmCommandError.sourceRecordNotFound
             }
             _ = try required(reason, label: "离场原因")
             _ = try required(correctionReason, label: "修正原因")
             if let amountText, !amountText.isEmpty { try positiveDecimal(amountText, label: "金额") }
+            if original.removalBatchID != nil, amountText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                throw FarmCommandError.invalidRemovalBatch("同批出栏总价不能在单羊修正中改写。")
+            }
         case .restoreSheep(let removalID):
             let removals = try context.fetch(FetchDescriptor<RemovalRecord>())
             guard removals.contains(where: { $0.id == removalID && $0.farmID == farmID && $0.deletedAt == nil }) else {
@@ -729,7 +926,12 @@ final class FarmCommandService {
 
         switch command {
         case .care(let careCommand):
-            let result = try FarmCareCommandHandler.apply(careCommand, farmID: farm.farmID, accountID: farm.accountID, context: context)
+            let result = try FarmCareCommandHandler.validateAndApply(
+                careCommand,
+                farmID: farm.farmID,
+                accountID: farm.accountID,
+                context: context
+            )
             return AppliedCommandResult(entityType: result.entityType.rawValue, entityID: result.entityID, baseRevision: result.baseRevision, resultingRevision: result.resultingRevision, payload: defaultPayload)
         case .updateFarmLocation(let displayName, let latitude, let longitude, let addressSnapshot, let timeZoneIdentifier, let source, let accuracy):
             let farms = try context.fetch(FetchDescriptor<FarmRecord>())
@@ -836,8 +1038,10 @@ final class FarmCommandService {
             let sheep = try sheepRecord(sheepID, farmID: farm.farmID, context: context)
             sheep.legacyStatusSnapshotIsAuthoritative = false
             sheep.legacyPenSnapshotIsAuthoritative = false
-            let transfers = try context.fetch(FetchDescriptor<TransferRecord>())
-                .filter { $0.farmID == farm.farmID && $0.sheepID == sheepID && $0.deletedAt == nil }
+            let farmID = farm.farmID
+            let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil
+            }))
             let origin = FarmHistoryTimeline.pen(for: sheep, at: occurredAt, transfers: transfers)
             let record = TransferRecord(farmID: farm.farmID, sheepID: sheepID, fromPenID: origin, toPenID: toPenID, occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
             context.insert(record)
@@ -857,11 +1061,22 @@ final class FarmCommandService {
             let replacement = TransferRecord(farmID: farm.farmID, sheepID: original.sheepID, fromPenID: fromPenID, toPenID: toPenID, occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
             context.insert(replacement)
             return appliedResult(.transfer, replacement.id)
-        case .removeSheep(let sheepID, let kind, let reason, let amountText, let occurredAt, let note):
+        case .removeSheep(let sheepID, let kind, let reason, let amountText, let occurredAt, let note, let recordID, let removalBatchID, let batchTotalAmountText):
             let sheep = try sheepRecord(sheepID, farmID: farm.farmID, context: context)
             sheep.legacyStatusSnapshotIsAuthoritative = false
             sheep.legacyPenSnapshotIsAuthoritative = false
-            let record = RemovalRecord(farmID: farm.farmID, sheepID: sheepID, kind: kind, reason: reason.trimmingCharacters(in: .whitespacesAndNewlines), amountText: amountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }, occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
+            let record = RemovalRecord(
+                id: recordID ?? UUID(),
+                farmID: farm.farmID,
+                sheepID: sheepID,
+                kind: kind,
+                reason: reason.trimmingCharacters(in: .whitespacesAndNewlines),
+                amountText: amountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) },
+                removalBatchID: removalBatchID,
+                batchTotalAmountText: batchTotalAmountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) },
+                occurredAt: occurredAt,
+                note: note.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
             context.insert(record)
             return appliedResult(.removal, record.id)
         case .correctRemoval(let originalID, let kind, let reason, let amountText, let occurredAt, let note, let correctionReason):
@@ -875,12 +1090,26 @@ final class FarmCommandService {
                 sheep.legacyStatusSnapshotIsAuthoritative = false
                 sheep.legacyPenSnapshotIsAuthoritative = false
             }
-            let replacement = RemovalRecord(farmID: farm.farmID, sheepID: original.sheepID, kind: kind, reason: reason.trimmingCharacters(in: .whitespacesAndNewlines), amountText: amountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }, occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
+            let retainsBatch = original.removalBatchID != nil && kind == original.kind
+            let replacement = RemovalRecord(
+                farmID: farm.farmID,
+                sheepID: original.sheepID,
+                kind: kind,
+                reason: reason.trimmingCharacters(in: .whitespacesAndNewlines),
+                amountText: retainsBatch ? nil : amountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) },
+                removalBatchID: retainsBatch ? original.removalBatchID : nil,
+                batchTotalAmountText: retainsBatch ? original.batchTotalAmountText : nil,
+                occurredAt: occurredAt,
+                note: note.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
             context.insert(replacement)
             return appliedResult(.removal, replacement.id)
         case .restoreSheep(let removalID):
-            let removals = try context.fetch(FetchDescriptor<RemovalRecord>())
-            guard let removal = removals.first(where: { $0.id == removalID && $0.farmID == farm.farmID && $0.deletedAt == nil }) else {
+            let farmID = farm.farmID
+            let removals = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+                $0.id == removalID && $0.farmID == farmID && $0.deletedAt == nil
+            }))
+            guard let removal = removals.first else {
                 throw FarmCommandError.removalNotFound
             }
             let baseRevision = removal.revision
@@ -1041,8 +1270,9 @@ final class FarmCommandService {
     }
 
     private func latestRevision(entityID: UUID, farmID: UUID, context: ModelContext) throws -> Int {
-        try context.fetch(FetchDescriptor<DomainOperation>())
-            .filter { $0.farmID == farmID && $0.entityID == entityID }
+        try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID && $0.entityID == entityID
+        }))
             .map(\.resultingRevision)
             .max() ?? 1
     }
@@ -1210,28 +1440,5 @@ enum EarTag {
         value.precomposedStringWithCanonicalMapping
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .uppercased()
-    }
-}
-
-private extension FarmCommand {
-    var requiresHistoryRebuild: Bool {
-        switch self {
-        case .addSheep, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep, .tombstoneEntity, .restoreTombstonedEntity: true
-        default: false
-        }
-    }
-
-    var historyChangedAt: Date? {
-        switch self {
-        case .addSheep(_, _, _, _, let occurredAt, _, _): occurredAt
-        case .transferSheep(_, _, let occurredAt, _): occurredAt
-        case .correctTransfer(_, _, let occurredAt, _, _): occurredAt
-        case .removeSheep(_, _, _, _, let occurredAt, _): occurredAt
-        case .correctRemoval(_, _, _, _, let occurredAt, _, _): occurredAt
-        case .restoreSheep: nil
-        case .tombstoneEntity, .restoreTombstonedEntity: nil
-        case .care: nil
-        default: nil
-        }
     }
 }

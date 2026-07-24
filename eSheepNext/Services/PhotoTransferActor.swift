@@ -46,6 +46,7 @@ actor PhotoTransferActor {
     private let mapper = CloudRecordMapper()
     private let recoveryKeys: FarmRecoveryKeyActor
     private let deviceIdentity: DeviceIdentityActor
+    private var didRecoverInterruptedTransfers = false
 
     init(modelContainer: ModelContainer, containerIdentifier: String? = Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String, recoveryKeys: FarmRecoveryKeyActor = .shared, deviceIdentity: DeviceIdentityActor = .shared) {
         self.modelContainer = modelContainer
@@ -107,16 +108,16 @@ actor PhotoTransferActor {
               let transfer = try context.fetch(FetchDescriptor<CloudAssetTransfer>()).first(where: { $0.assetID == assetID && $0.direction == .upload }) else {
             throw PhotoTransferError.assetMissing
         }
-        guard let binding = try context.fetch(FetchDescriptor<CloudFarmBinding>()).first(where: { $0.farmID == asset.farmID && $0.state == .active }) else {
-            throw PhotoTransferError.bindingMissing
-        }
-        let fileURL = Self.absoluteURL(for: asset.relativePath)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { throw PhotoTransferError.sourceUnreadable }
         transfer.statusRawValue = CloudAssetTransferStatus.uploading.rawValue
         transfer.attemptCount += 1
         transfer.updatedAt = .now
         try context.save()
         do {
+            guard let binding = try context.fetch(FetchDescriptor<CloudFarmBinding>()).first(where: { $0.farmID == asset.farmID && $0.state == .active }) else {
+                throw PhotoTransferError.bindingMissing
+            }
+            let fileURL = Self.absoluteURL(for: asset.relativePath)
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { throw PhotoTransferError.sourceUnreadable }
             guard let accountID = try context.fetch(FetchDescriptor<AccountProfile>()).first?.effectiveAccountID,
                   let certificate = try context.fetch(FetchDescriptor<CapabilityCertificateRecord>()).filter({
                       $0.farmID == asset.farmID && $0.accountID == accountID && $0.isUsable
@@ -157,7 +158,7 @@ actor PhotoTransferActor {
                 modifiedByAccountID: unsigned.modifiedByAccountID,
                 modifiedByDeviceID: unsigned.modifiedByDeviceID,
                 capabilityCertificate: unsigned.capabilityCertificate,
-                signature: try await deviceIdentity.sign(unsigned.canonicalSigningData)
+                signature: try await deviceIdentity.sign(unsigned.canonicalSigningDataV2)
             )
             let record = mapper.assetRecord(envelope: envelope, fileURL: fileURL, zoneID: zoneID)
             let database = binding.databaseScope == .sharedDatabase ? cloudContainer.sharedCloudDatabase : cloudContainer.privateCloudDatabase
@@ -226,6 +227,19 @@ actor PhotoTransferActor {
 
     func processPendingTransfers() async {
         let context = ModelContext(modelContainer)
+        if !didRecoverInterruptedTransfers {
+            didRecoverInterruptedTransfers = true
+            let interrupted = (try? context.fetch(FetchDescriptor<CloudAssetTransfer>()))?.filter {
+                PhotoTransferInterruptionPolicy.shouldRequeue(status: $0.status)
+            } ?? []
+            for transfer in interrupted {
+                transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+                transfer.lastErrorCode = "上次传输在进程结束时中断，已自动恢复。"
+                transfer.nextRetryAt = nil
+                transfer.updatedAt = .now
+            }
+            if !interrupted.isEmpty { try? context.save() }
+        }
         let pending = (try? context.fetch(FetchDescriptor<CloudAssetTransfer>()))?.filter {
             ($0.status == .pending || $0.status == .failed) && ($0.nextRetryAt == nil || $0.nextRetryAt! <= .now)
         } ?? []
@@ -404,7 +418,19 @@ actor PhotoTransferActor {
 
     private static func absoluteURL(for path: String) -> URL {
         if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
-        return (try? baseDirectory().appending(path: path)) ?? URL(fileURLWithPath: path)
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return localAssetURL(for: path, applicationSupportDirectory: support)
+    }
+
+    /// Formal migration assets predate the eSheepNext subdirectory used by
+    /// newly captured photos. Keep that persisted relative-path contract so
+    /// upgraded farms can upload their original files without moving them.
+    static func localAssetURL(for path: String, applicationSupportDirectory: URL) -> URL {
+        if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
+        if path.hasPrefix("MigrationAssets/") {
+            return applicationSupportDirectory.appending(path: path)
+        }
+        return applicationSupportDirectory.appending(path: "eSheepNext/\(path)")
     }
 
     private static func relativePath(for url: URL) -> String {
@@ -420,5 +446,11 @@ actor PhotoTransferActor {
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
         try FileManager.default.copyItem(at: source, to: destination)
+    }
+}
+
+enum PhotoTransferInterruptionPolicy {
+    static func shouldRequeue(status: CloudAssetTransferStatus) -> Bool {
+        status == .uploading || status == .downloading
     }
 }

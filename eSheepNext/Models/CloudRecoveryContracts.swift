@@ -32,6 +32,78 @@ struct FarmAssetEnvelope: Codable, Sendable, Equatable {
             modifiedByDeviceID.uuidString.lowercased(),
         ].joined(separator: "\n").utf8)
     }
+
+    /// Version 2 additionally authenticates user-visible photo metadata. The
+    /// legacy representation remains available only for existing records that
+    /// do not carry `assetSignatureVersion`.
+    var canonicalSigningDataV2: Data {
+        Data([
+            "eSheepNext.FarmAsset.v2",
+            farmID.uuidString.lowercased(),
+            assetID.uuidString.lowercased(),
+            entityID?.uuidString.lowercased() ?? "",
+            sourceDigest,
+            payloadDigest,
+            mimeType,
+            String(pixelWidth),
+            String(pixelHeight),
+            capturedAt.map(Self.millisecondsText) ?? "",
+            String(byteCount),
+            Self.millisecondsText(createdAt),
+            modifiedByAccountID.uuidString.lowercased(),
+            modifiedByDeviceID.uuidString.lowercased(),
+        ].joined(separator: "\n").utf8)
+    }
+
+    private static func millisecondsText(_ date: Date) -> String {
+        String(Int64((date.timeIntervalSince1970 * 1_000).rounded()))
+    }
+}
+
+enum FarmAssetSignatureFormat: Int, Sendable, Equatable {
+    case legacyV1 = 1
+    case v2 = 2
+}
+
+/// One verifier for both live change ingestion and full cloud rebuilds. A
+/// declared v2 record may contain a legacy signature when an older installed
+/// client updated it with CloudKit's `changedKeys` policy, which leaves the v2
+/// marker on the server. Accept that narrow case only after v2 verification
+/// fails and the complete legacy payload independently verifies.
+enum FarmAssetSignatureVerifier {
+    static func verify(
+        envelope: FarmAssetEnvelope,
+        declaredVersion: Int?,
+        publicKeyX963: Data
+    ) throws -> FarmAssetSignatureFormat {
+        switch declaredVersion {
+        case nil, FarmAssetSignatureFormat.legacyV1.rawValue:
+            try DeviceSignatureVerifier.verify(
+                signature: envelope.signature,
+                data: envelope.canonicalSigningData,
+                publicKeyX963: publicKeyX963
+            )
+            return .legacyV1
+        case FarmAssetSignatureFormat.v2.rawValue:
+            do {
+                try DeviceSignatureVerifier.verify(
+                    signature: envelope.signature,
+                    data: envelope.canonicalSigningDataV2,
+                    publicKeyX963: publicKeyX963
+                )
+                return .v2
+            } catch {
+                try DeviceSignatureVerifier.verify(
+                    signature: envelope.signature,
+                    data: envelope.canonicalSigningData,
+                    publicKeyX963: publicKeyX963
+                )
+                return .legacyV1
+            }
+        default:
+            throw CloudContractError.invalidDeviceSignature
+        }
+    }
 }
 
 struct FarmRecoveryAssetEnvelope: Codable, Sendable, Equatable {
