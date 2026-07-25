@@ -163,6 +163,50 @@ async function route({ request, pathname, fetchImpl, env, service }) {
   if (request.method === "POST" && pathname === "/v1/devices/register") return [200, await service.registerDevice(auth.accountID, await readJSON(request))];
   const device = pathname.match(/^\/v1\/devices\/([^/]+)$/);
   if (request.method === "DELETE" && device) { await service.revokeDevice(auth.accountID, device[1]); return [204]; }
+  if (request.method === "POST" && pathname === "/v1/insights/devices/request") {
+    return [201, await service.requestInsightDevice(auth.accountID, await readJSON(request))];
+  }
+  if (request.method === "GET" && pathname === "/v1/insights/devices") {
+    return [200, await service.insightDeviceRequests(auth.accountID)];
+  }
+  const approveInsightDevice = pathname.match(/^\/v1\/insights\/devices\/([^/]+)\/approve$/);
+  if (request.method === "POST" && approveInsightDevice) {
+    return [200, await service.approveInsightDevice(auth.accountID, approveInsightDevice[1], await readJSON(request))];
+  }
+  const recoverInsightDevice = pathname.match(/^\/v1\/insights\/devices\/([^/]+)\/recover$/);
+  if (request.method === "POST" && recoverInsightDevice) {
+    await service.consumeRateLimit("insight_recovery", auth.accountID, 10, 15 * 60);
+    return [200, await service.recoverInsightDevice(
+      auth.accountID,
+      recoverInsightDevice[1],
+      await readJSON(request)
+    )];
+  }
+  const insightDevice = pathname.match(/^\/v1\/insights\/devices\/([^/]+)$/);
+  if (request.method === "DELETE" && insightDevice) {
+    return [200, await service.revokeInsightDevice(
+      auth.accountID,
+      insightDevice[1],
+      await readJSON(request)
+    )];
+  }
+  const insightEnvelopes = pathname.match(/^\/v1\/insights\/key-envelopes\/([^/]+)$/);
+  if (request.method === "GET" && insightEnvelopes) {
+    return [200, await service.insightKeyEnvelopes(auth.accountID, insightEnvelopes[1])];
+  }
+  if (request.method === "POST" && pathname === "/v1/insights/sync") {
+    return [200, await service.syncInsightRecords(auth.accountID, await readJSON(request))];
+  }
+  if (request.method === "GET" && pathname === "/v1/insights/recovery") {
+    return [200, await service.insightRecovery(auth.accountID)];
+  }
+  if (request.method === "PUT" && pathname === "/v1/insights/recovery") {
+    return [200, await service.updateInsightRecovery(auth.accountID, await readJSON(request))];
+  }
+  if (request.method === "DELETE" && pathname === "/v1/insights/recovery") {
+    await service.removeInsightRecovery(auth.accountID);
+    return [204];
+  }
   if (request.method === "POST" && pathname === "/v1/farms/register") return [201, await service.registerFarm(auth.accountID, await readJSON(request))];
   const activateFarm = pathname.match(/^\/v1\/farms\/([^/]+)\/activate$/);
   if (request.method === "POST" && activateFarm) return [200, await service.activateFarm(auth.accountID, activateFarm[1])];

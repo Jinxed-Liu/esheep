@@ -12,6 +12,7 @@ struct FarmWeatherHero: View {
     @State private var prefetchedDetail: FarmWeatherDetailSnapshot?
     @State private var isLoading = false
     @State private var weatherError: String?
+    @State private var isWeatherRendererReady = false
     @Namespace private var weatherTransition
 
     @ViewBuilder
@@ -49,15 +50,19 @@ struct FarmWeatherHero: View {
 
     private var weatherCard: some View {
         ZStack {
-            MetalWeatherBackground(
-                kind: weather?.visualKind ?? .clear,
-                intensity: weather?.visualIntensity.rawValue ?? 0,
-                cloudCover: weather?.visualCloudCover ?? 0,
-                wind: weather?.visualWind ?? 0,
-                isDaylight: weather?.isDaylight ?? true,
-                isPaused: isDetailPresented,
-                renderScale: 0.75
-            )
+            if isWeatherRendererReady {
+                MetalWeatherBackground(
+                    kind: weather?.visualKind ?? .clear,
+                    intensity: weather?.visualIntensity.rawValue ?? 0,
+                    cloudCover: weather?.visualCloudCover ?? 0,
+                    wind: weather?.visualWind ?? 0,
+                    isDaylight: weather?.isDaylight ?? true,
+                    isPaused: isDetailPresented,
+                    renderScale: 0.75
+                )
+            } else {
+                launchFallback
+            }
 
             readabilityGradient
 
@@ -90,6 +95,17 @@ struct FarmWeatherHero: View {
         .task(id: farm.locationUpdatedAt) {
             await prefetchDetail()
         }
+        .task(id: farm.id) {
+            isWeatherRendererReady = false
+            do {
+                // Let navigation, tab layout, and the first home frame settle
+                // before the first Metal shader pipeline is created.
+                try await Task.sleep(for: .milliseconds(700))
+                isWeatherRendererReady = true
+            } catch {
+                return
+            }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(farm.locationSnapshot == nil ? [] : .isButton)
         .accessibilityHint(farm.locationSnapshot == nil ? "" : "打开完整天气")
@@ -120,6 +136,22 @@ struct FarmWeatherHero: View {
             )
         }
         .allowsHitTesting(false)
+    }
+
+    private var launchFallback: some View {
+        LinearGradient(
+            colors: (weather?.isDaylight ?? true)
+                ? [
+                    Color(red: 0.19, green: 0.35, blue: 0.50),
+                    Color(red: 0.08, green: 0.19, blue: 0.28),
+                ]
+                : [
+                    Color(red: 0.035, green: 0.075, blue: 0.14),
+                    Color(red: 0.015, green: 0.03, blue: 0.065),
+                ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     private var header: some View {
@@ -241,6 +273,7 @@ struct FarmWeatherHero: View {
         prefetchedDetail = nil
         guard let location = farm.locationSnapshot else { return }
         do {
+            try await Task.sleep(for: .seconds(2))
             let snapshot = try await FarmWeatherRepository.shared.detailedWeather(
                 for: farm.id,
                 location: location

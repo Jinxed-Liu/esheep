@@ -15,6 +15,7 @@ final class SettingsVisibilityPolicyTests: XCTestCase {
                 .appearance,
                 .powerSaving,
                 .language,
+                .insightAssistant,
                 .privacyAndTerms,
             ]
         )

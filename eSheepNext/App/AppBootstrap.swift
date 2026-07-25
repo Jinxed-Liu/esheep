@@ -122,40 +122,85 @@ final class AppBootstrapController {
     private(set) var failure: LocalStoreLaunchFailure?
     private(set) var quarantinedStoreURL: URL?
     private(set) var isRetrying = false
+    @ObservationIgnored private var openTask: Task<Void, Never>?
 
-    init() {
-        openStore()
+    init() {}
+
+    func start() {
+        guard modelContainer == nil, failure == nil else { return }
+        beginOpeningStore()
     }
 
     func retry() {
-        openStore()
+        beginOpeningStore()
     }
 
     func quarantineAndStartFresh() {
+        guard !isRetrying else { return }
         isRetrying = true
-        defer { isRetrying = false }
-        do {
-            quarantinedStoreURL = try LocalStoreRecoveryService.quarantineCurrentStore()
-            openStore()
-        } catch {
-            failure = LocalStoreLaunchFailure(error: error)
+        openTask?.cancel()
+        openTask = Task { [weak self] in
+            guard let self else { return }
+            defer { isRetrying = false }
+            do {
+                let quarantinedURL = try await Task.detached(priority: .userInitiated) {
+                    try LocalStoreRecoveryService.quarantineCurrentStore()
+                }.value
+                try Task.checkCancellation()
+                quarantinedStoreURL = quarantinedURL
+                try await prepareStore()
+            } catch is CancellationError {
+                return
+            } catch {
+                failure = LocalStoreLaunchFailure(error: error)
+            }
         }
     }
 
-    private func openStore() {
+    private func beginOpeningStore() {
+        guard !isRetrying else { return }
         isRetrying = true
-        defer { isRetrying = false }
-        do {
-            let container = try AppSchema.makeContainer()
-            let collaboration = CloudCollaborationStore(container: container)
-            modelContainer = container
-            self.collaboration = collaboration
-            failure = nil
-            FarmBackgroundRefresh.register(collaboration: collaboration)
-        } catch {
-            modelContainer = nil
-            collaboration = nil
-            failure = LocalStoreLaunchFailure(error: error)
+        openTask?.cancel()
+        openTask = Task { [weak self] in
+            guard let self else { return }
+            defer { isRetrying = false }
+            do {
+                try await prepareStore()
+            } catch is CancellationError {
+                return
+            } catch {
+                modelContainer = nil
+                collaboration = nil
+                failure = LocalStoreLaunchFailure(error: error)
+            }
         }
     }
+
+    private func prepareStore() async throws {
+        let prepared = try await Task.detached(priority: .userInitiated) {
+            let container = try AppSchema.makeContainer()
+            let cloudPreparation = CloudCollaborationStore.prepareStartup(
+                container: container
+            )
+            return AppPreparedStore(
+                container: container,
+                cloudPreparation: cloudPreparation
+            )
+        }.value
+        try Task.checkCancellation()
+
+        let collaboration = CloudCollaborationStore(
+            container: prepared.container,
+            startupPreparation: prepared.cloudPreparation
+        )
+        modelContainer = prepared.container
+        self.collaboration = collaboration
+        failure = nil
+        FarmBackgroundRefresh.register(collaboration: collaboration)
+    }
+}
+
+private struct AppPreparedStore: Sendable {
+    let container: ModelContainer
+    let cloudPreparation: CloudCollaborationStartupPreparation
 }

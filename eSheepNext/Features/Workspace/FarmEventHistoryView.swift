@@ -107,12 +107,7 @@ extension FarmEventSnapshot {
 
 enum FarmEventSearch {
     static func normalized(_ value: String) -> String {
-        value.precomposedStringWithCanonicalMapping
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(
-                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-                locale: Locale(identifier: "zh_Hans_CN")
-            )
+        SearchText.normalized(value)
     }
 
     static func filter(
@@ -438,6 +433,9 @@ struct FarmEventHistoryView: View {
     let farm: FarmRecord
 
     @State private var events = [FarmEventSnapshot]()
+    @State private var visibleEvents = [FarmEventSnapshot]()
+    @State private var listSnapshotRevision = 0
+    @State private var eventSourceRevision = 0
     @State private var category: FarmEventCategory?
     @State private var recordScope = FarmEventExportScope.all
     @State private var query = ""
@@ -445,6 +443,7 @@ struct FarmEventHistoryView: View {
     @State private var pendingDeletion: FarmEventSnapshot?
     @State private var isPresentingExport = false
     @State private var isLoading = true
+    @State private var isFiltering = false
     @State private var errorMessage: String?
 
     private var canDelete: Bool {
@@ -460,17 +459,13 @@ struct FarmEventHistoryView: View {
         return CapabilitySet(role: farm.role).allows(capability)
     }
 
-    private var visibleEvents: [FarmEventSnapshot] {
-        FarmEventSearch.filter(events, query: query, category: category, scope: recordScope)
-    }
-
     private var hasActiveSearchOrFilter: Bool {
         !FarmEventSearch.normalized(query).isEmpty || category != nil || recordScope != .all
     }
 
     var body: some View {
         List {
-            if isLoading && events.isEmpty {
+            if (isLoading || isFiltering) && visibleEvents.isEmpty {
                 ProgressView("正在整理事件记录")
                     .frame(maxWidth: .infinity, minHeight: 360)
                     .listRowSeparator(.hidden)
@@ -512,6 +507,7 @@ struct FarmEventHistoryView: View {
                 }
             }
         }
+        .id(listSnapshotRevision)
         .navigationTitle("事件记录")
         .searchable(
             text: $query,
@@ -567,17 +563,24 @@ struct FarmEventHistoryView: View {
             }
         }
         .task(id: farm.id) { await reload() }
+        .task(id: FarmEventFilterRequest(
+            query: FarmEventSearch.normalized(query),
+            category: category,
+            scope: recordScope,
+            sourceRevision: eventSourceRevision
+        )) {
+            await updateVisibleEvents()
+        }
         .refreshable { await reload() }
         .sheet(item: $pendingEditor, onDismiss: {
-            Task { await reload(showsProgress: false) }
+            Task { await reloadAfterMutation() }
         }) { destination in
             FarmEventEditSheet(account: account, farm: farm, destination: destination)
         }
-        .sheet(item: $pendingDeletion) { event in
-            FarmEventDeletionSheet(account: account, farm: farm, event: event) {
-                events.removeAll { $0.id == event.id && $0.entityType == event.entityType }
-                Task { await reload(showsProgress: false) }
-            }
+        .sheet(item: $pendingDeletion, onDismiss: {
+            Task { await reloadAfterMutation() }
+        }) { event in
+            FarmEventDeletionSheet(account: account, farm: farm, event: event)
                 .presentationDetents([.medium])
         }
         .sheet(isPresented: $isPresentingExport) {
@@ -587,15 +590,69 @@ struct FarmEventHistoryView: View {
     }
 
     @MainActor
-    private func reload(showsProgress: Bool = true) async {
+    private func reloadAfterMutation() async {
+        await Task.yield()
+        await reload(showsProgress: false, replacesListSnapshot: true)
+    }
+
+    @MainActor
+    private func reload(
+        showsProgress: Bool = true,
+        replacesListSnapshot: Bool = false
+    ) async {
         if showsProgress { isLoading = true }
         defer { isLoading = false }
         do {
-            events = try await FarmEventHistoryActor(container: modelContext.container).load(farmID: farm.id)
+            let updatedEvents = try await FarmEventHistoryActor(container: modelContext.container).load(farmID: farm.id)
+            if replacesListSnapshot {
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    // Recreate the List instead of coalescing sheet dismissal with a row-level diff.
+                    events = updatedEvents
+                    listSnapshotRevision &+= 1
+                    eventSourceRevision &+= 1
+                }
+            } else {
+                events = updatedEvents
+                eventSourceRevision &+= 1
+            }
         } catch is CancellationError {
             return
         } catch {
             errorMessage = "读取事件记录失败：\(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func updateVisibleEvents() async {
+        let request = FarmEventFilterRequest(
+            query: FarmEventSearch.normalized(query),
+            category: category,
+            scope: recordScope,
+            sourceRevision: eventSourceRevision
+        )
+        isFiltering = true
+        do {
+            if !request.query.isEmpty {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            let eventSnapshot = events
+            let updatedEvents = await Task.detached(priority: .userInitiated) {
+                FarmEventSearch.filter(
+                    eventSnapshot,
+                    query: request.query,
+                    category: request.category,
+                    scope: request.scope
+                )
+            }.value
+            try Task.checkCancellation()
+            visibleEvents = updatedEvents
+            isFiltering = false
+        } catch is CancellationError {
+            return
+        } catch {
+            isFiltering = false
         }
     }
 
@@ -642,6 +699,13 @@ struct FarmEventHistoryView: View {
             errorMessage = error.localizedDescription
         }
     }
+}
+
+private struct FarmEventFilterRequest: Equatable, Sendable {
+    let query: String
+    let category: FarmEventCategory?
+    let scope: FarmEventExportScope
+    let sourceRevision: Int
 }
 
 private struct FarmEventHistoryRowLink: View {
@@ -861,7 +925,6 @@ private struct FarmEventDeletionSheet: View {
     let account: AccountProfile
     let farm: FarmRecord
     let event: FarmEventSnapshot
-    let onDeleted: () -> Void
 
     @State private var reason = "录入错误"
     @State private var isDeleting = false
@@ -895,6 +958,7 @@ private struct FarmEventDeletionSheet: View {
             }
             .disabled(isDeleting)
             .overlay { if isDeleting { ProgressView("正在同步删除") } }
+            .interactiveDismissDisabled(isDeleting)
             .recordErrorAlert($errorMessage)
         }
     }
@@ -908,21 +972,55 @@ private struct FarmEventDeletionSheet: View {
             // authoritative synchronous write pipeline.
             await Task.yield()
             do {
+                let command = try FarmEventDeletionCommandResolver.command(
+                    for: event,
+                    reason: reason,
+                    farmID: farm.id,
+                    context: modelContext
+                )
                 try FarmCommandService().execute(
-                    .tombstoneEntity(
-                        entityType: event.entityType,
-                        entityID: event.id,
-                        reason: "事件记录删除：" + reason.trimmingCharacters(in: .whitespacesAndNewlines)
-                    ),
+                    command,
                     in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
                     context: modelContext
                 )
-                onDeleted()
                 dismiss()
             } catch {
                 isDeleting = false
                 errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+enum FarmEventDeletionCommandResolver {
+    @MainActor
+    static func command(
+        for event: FarmEventSnapshot,
+        reason: String,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> FarmCommand {
+        let normalizedReason = "事件记录删除：" + reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard event.entityType == .reproduction else {
+            return .tombstoneEntity(
+                entityType: event.entityType,
+                entityID: event.id,
+                reason: normalizedReason
+            )
+        }
+
+        let entityID = event.id
+        let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
+            $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
+        })).first
+        guard reproduction?.kind == .lambing else {
+            return .tombstoneEntity(
+                entityType: event.entityType,
+                entityID: event.id,
+                reason: normalizedReason
+            )
+        }
+
+        return .care(.revokeLambing(recordID: event.id, reason: normalizedReason))
     }
 }

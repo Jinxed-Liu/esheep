@@ -97,6 +97,51 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == first.id })?.pendingOperationCount, 1)
     }
 
+    func testDeferredSystemSnapshotFetchesOnlyRequestedFarm() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "deferred-system-snapshot-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let ownerID = UUID()
+        let first = FarmRecord(ownerAccountID: ownerID, name: "当前牧场")
+        let second = FarmRecord(ownerAccountID: ownerID, name: "其他牧场")
+        let firstPen = PenRecord(farmID: first.id, name: "当前圈舍")
+        let secondPen = PenRecord(farmID: second.id, name: "其他圈舍")
+        context.insert(first)
+        context.insert(second)
+        context.insert(firstPen)
+        context.insert(secondPen)
+        context.insert(SheepRecord(
+            farmID: first.id,
+            earTag: "A001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: firstPen.id,
+            enteredAt: .now
+        ))
+        context.insert(SheepRecord(
+            farmID: second.id,
+            earTag: "B001",
+            breed: "杜泊",
+            sex: .ram,
+            penID: secondPen.id,
+            enteredAt: .now
+        ))
+        try context.save()
+
+        let snapshot = try await FarmSystemSnapshotActor(
+            container: container
+        ).makeSnapshot(
+            farmIDs: [first.id],
+            selectedFarmID: first.id
+        )
+
+        XCTAssertEqual(snapshot.farms.map(\.farmID), [first.id])
+        XCTAssertEqual(snapshot.farms.first?.sheep.map(\.earTag), ["A001"])
+        XCTAssertEqual(snapshot.farms.first?.pens.map(\.name), ["当前圈舍"])
+    }
+
     func testPenHerdInsightUsesOnlyLatestWeightForCurrentMembers() {
         let firstID = UUID()
         let secondID = UUID()

@@ -5,6 +5,7 @@ struct FarmWorkspaceView: View {
     @State private var searchQuery = ""
     @State private var isWeatherDetailPresented = false
     @State private var isMetricDetailPresented = false
+    @State private var isAssistantPresented = false
 
     let account: AccountProfile
     let farms: [FarmRecord]
@@ -42,12 +43,20 @@ struct FarmWorkspaceView: View {
                 }
                 Tab("洞察", systemImage: "sparkles", value: .assistant) {
                     NavigationStack {
-                        FarmInsightsView(farm: activeFarm)
+                        FarmInsightsView(
+                            account: account,
+                            farm: activeFarm,
+                            isAssistantPresented: $isAssistantPresented
+                        )
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbar {
                                 FarmNavigationToolbar(account: account, farms: farms, activeFarm: activeFarm)
                             }
                     }
+                    .toolbarVisibility(
+                        isAssistantPresented ? .hidden : .visible,
+                        for: .tabBar
+                    )
                 }
                 Tab("录入", systemImage: "square.and.pencil", value: .records) {
                     NavigationStack {
@@ -73,7 +82,8 @@ struct FarmWorkspaceView: View {
             }
             .tabViewSearchActivation(.searchTabSelection)
             .tabBarMinimizeBehavior(.onScrollDown)
-            .scrollEdgeEffectHidden(true, for: [.top, .bottom])
+            .scrollEdgeEffectHidden(!isAssistantPresented, for: .top)
+            .scrollEdgeEffectHidden(true, for: .bottom)
             .safeAreaInset(edge: .top, spacing: 0) {
                 AccountAccessWorkspaceBanner(
                     authenticationMethod: account.authenticationMethod

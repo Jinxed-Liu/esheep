@@ -61,6 +61,7 @@ final class AppSession {
     var accountAccessStatus: AccountAccessStatus = .checking
     var authenticationRevision = 0
     var authenticationNotice: String?
+    private(set) var persistedLocalSessionAccountID: UUID?
     var pendingRecordEntry: PendingRecordEntry?
     var pendingSearchQuery: String?
     var pendingSheepID: UUID?
@@ -68,11 +69,13 @@ final class AppSession {
 
     init(
         activeAccountProfileID: UUID? = SecureAccountStore.activeAccountProfileID(),
+        persistedLocalSessionAccountID: UUID? = SecureAccountStore.persistedSessionAccountID(),
         persistActiveAccountProfileID: @escaping (UUID) -> Void = { identifier in
             _ = try? SecureAccountStore.saveActiveAccountProfileID(identifier)
         }
     ) {
         self.activeAccountProfileID = activeAccountProfileID
+        self.persistedLocalSessionAccountID = persistedLocalSessionAccountID
         self.persistActiveAccountProfileID = persistActiveAccountProfileID
     }
 
@@ -159,6 +162,7 @@ final class AppSession {
             activeAccountProfileID = accountProfileID
             persistActiveAccountProfileID(accountProfileID)
         }
+        persistedLocalSessionAccountID = SecureAccountStore.persistedSessionAccountID()
         accountAccessStatus = .checking
         isReauthenticationPresented = false
         authenticationNotice = nil
@@ -168,6 +172,7 @@ final class AppSession {
     func authenticationDidSignOut(warning: String? = nil) {
         selectedFarmID = nil
         selectedTab = .home
+        persistedLocalSessionAccountID = nil
         let notice = warning ?? "已退出登录。本机牧场缓存仍保留并与其他账号隔离；重新登录同一账号后可继续使用。"
         accountAccessStatus = .requiresSignIn(notice)
         isReauthenticationPresented = false

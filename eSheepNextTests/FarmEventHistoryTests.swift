@@ -323,6 +323,173 @@ final class FarmEventHistoryTests: XCTestCase {
     }
 
     @MainActor
+    func testDeletingHistoricalRemovalAdjustsOnlyAffectedDailyCounts() throws {
+        let container = try AppSchema.makeContainer(name: "event-removal-delete-incremental-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        let entryDay = try XCTUnwrap(calendar.date(byAdding: .day, value: -3, to: today))
+        let removalDay = try XCTUnwrap(calendar.date(byAdding: .day, value: -2, to: today))
+        let farmID = UUID()
+        let pen = PenRecord(farmID: farmID, name: "一号圈")
+        let removedSheep = SheepRecord(
+            farmID: farmID,
+            earTag: "R001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: entryDay
+        )
+        let unaffectedSheep = SheepRecord(
+            farmID: farmID,
+            earTag: "R002",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: entryDay
+        )
+        let removal = RemovalRecord(
+            farmID: farmID,
+            sheepID: removedSheep.id,
+            kind: .sold,
+            reason: "误录离场",
+            occurredAt: removalDay
+        )
+        context.insert(pen)
+        context.insert(removedSheep)
+        context.insert(unaffectedSheep)
+        context.insert(removal)
+        try FarmHistoryRebuilder(calendar: calendar).rebuild(
+            farmID: farmID,
+            context: context,
+            from: entryDay,
+            through: today
+        )
+        try context.save()
+
+        var replayedDays = [Date]()
+        let service = FarmCommandService(historyRebuilder: FarmHistoryRebuilder(
+            calendar: calendar,
+            dailyReplayObserver: { replayedDays.append($0) }
+        ))
+        try service.execute(
+            .tombstoneEntity(entityType: .removal, entityID: removal.id, reason: "误录离场"),
+            in: FarmContext(accountID: UUID(), farmID: farmID, role: .owner),
+            context: context
+        )
+
+        let daily = try context.fetch(FetchDescriptor<DailyPenCountRecord>()).filter { $0.farmID == farmID }
+        XCTAssertTrue(replayedDays.isEmpty)
+        XCTAssertEqual(
+            DailyPenCountTimeline.count(
+                for: pen.id,
+                purpose: removedSheep.purpose,
+                at: removalDay,
+                records: daily,
+                calendar: calendar
+            ),
+            2
+        )
+        XCTAssertEqual(
+            DailyPenCountTimeline.count(
+                for: pen.id,
+                purpose: removedSheep.purpose,
+                at: today,
+                records: daily,
+                calendar: calendar
+            ),
+            2
+        )
+        XCTAssertEqual(removedSheep.status, .active)
+        XCTAssertEqual(removedSheep.currentPenID, pen.id)
+        XCTAssertNil(unaffectedSheep.deletedAt)
+    }
+
+    @MainActor
+    func testDeletingHistoricalTransferPreservesLaterTimelineWithoutFullReplay() throws {
+        let container = try AppSchema.makeContainer(name: "event-transfer-delete-incremental-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        let entryDay = try XCTUnwrap(calendar.date(byAdding: .day, value: -4, to: today))
+        let firstTransferDay = try XCTUnwrap(calendar.date(byAdding: .day, value: -3, to: today))
+        let secondTransferDay = try XCTUnwrap(calendar.date(byAdding: .day, value: -2, to: today))
+        let farmID = UUID()
+        let firstPen = PenRecord(farmID: farmID, name: "一号圈")
+        let secondPen = PenRecord(farmID: farmID, name: "二号圈")
+        let sheep = SheepRecord(
+            farmID: farmID,
+            earTag: "T001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: firstPen.id,
+            enteredAt: entryDay
+        )
+        let deletedTransfer = TransferRecord(
+            farmID: farmID,
+            sheepID: sheep.id,
+            fromPenID: firstPen.id,
+            toPenID: secondPen.id,
+            occurredAt: firstTransferDay
+        )
+        let laterTransfer = TransferRecord(
+            farmID: farmID,
+            sheepID: sheep.id,
+            fromPenID: secondPen.id,
+            toPenID: firstPen.id,
+            occurredAt: secondTransferDay
+        )
+        context.insert(firstPen)
+        context.insert(secondPen)
+        context.insert(sheep)
+        context.insert(deletedTransfer)
+        context.insert(laterTransfer)
+        try FarmHistoryRebuilder(calendar: calendar).rebuild(
+            farmID: farmID,
+            context: context,
+            from: entryDay,
+            through: today
+        )
+        try context.save()
+
+        var replayedDays = [Date]()
+        let service = FarmCommandService(historyRebuilder: FarmHistoryRebuilder(
+            calendar: calendar,
+            dailyReplayObserver: { replayedDays.append($0) }
+        ))
+        try service.execute(
+            .tombstoneEntity(entityType: .transfer, entityID: deletedTransfer.id, reason: "误录调栏"),
+            in: FarmContext(accountID: UUID(), farmID: farmID, role: .owner),
+            context: context
+        )
+
+        let daily = try context.fetch(FetchDescriptor<DailyPenCountRecord>()).filter { $0.farmID == farmID }
+        XCTAssertTrue(replayedDays.isEmpty)
+        XCTAssertEqual(
+            DailyPenCountTimeline.count(
+                for: firstPen.id,
+                purpose: sheep.purpose,
+                at: firstTransferDay,
+                records: daily,
+                calendar: calendar
+            ),
+            1
+        )
+        XCTAssertEqual(
+            DailyPenCountTimeline.count(
+                for: secondPen.id,
+                purpose: sheep.purpose,
+                at: firstTransferDay,
+                records: daily,
+                calendar: calendar
+            ),
+            0
+        )
+        XCTAssertEqual(sheep.currentPenID, firstPen.id)
+        XCTAssertNil(laterTransfer.deletedAt)
+    }
+
+    @MainActor
     func testDeletingInventoryReceiptCannotCreateNegativeBalance() throws {
         let container = try AppSchema.makeContainer(name: "event-inventory-delete-\(UUID().uuidString)", isStoredInMemoryOnly: true)
         let context = ModelContext(container)
@@ -371,5 +538,82 @@ final class FarmEventHistoryTests: XCTestCase {
         }
         XCTAssertNil(sheep.deletedAt)
         XCTAssertNil(weight.deletedAt)
+    }
+
+    @MainActor
+    func testHistoryDeletionRoutesLambingThroughSafeRevokeCommand() throws {
+        let container = try AppSchema.makeContainer(name: "event-lambing-delete-route-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let record = ReproductionRecord(
+            farmID: farmID,
+            eweID: UUID(),
+            kind: .lambing,
+            occurredAt: .now,
+            lambCount: 1,
+            parity: 1,
+            birthDeadCount: 0
+        )
+        context.insert(record)
+        try context.save()
+        let event = FarmEventSnapshot(
+            id: record.id,
+            entityType: .reproduction,
+            category: .reproduction,
+            occurredAt: record.occurredAt,
+            recordedAt: record.createdAt,
+            title: record.kind.displayName,
+            subject: "E001",
+            detail: "产羔 1 只",
+            note: "",
+            fields: []
+        )
+
+        let command = try FarmEventDeletionCommandResolver.command(
+            for: event,
+            reason: "重复录入",
+            farmID: farmID,
+            context: context
+        )
+
+        guard case .care(.revokeLambing(let recordID, let reason)) = command else {
+            return XCTFail("产羔事件必须走安全撤销命令")
+        }
+        XCTAssertEqual(recordID, record.id)
+        XCTAssertEqual(reason, "事件记录删除：重复录入")
+    }
+
+    @MainActor
+    func testHistoryDeletionKeepsOrdinaryFactsOnTombstoneCommand() throws {
+        let container = try AppSchema.makeContainer(name: "event-weight-delete-route-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let eventID = UUID()
+        let event = FarmEventSnapshot(
+            id: eventID,
+            entityType: .weight,
+            category: .herd,
+            occurredAt: .now,
+            recordedAt: .now,
+            title: "称重",
+            subject: "E001",
+            detail: "42 kg",
+            note: "",
+            fields: []
+        )
+
+        let command = try FarmEventDeletionCommandResolver.command(
+            for: event,
+            reason: "录入错误",
+            farmID: farmID,
+            context: context
+        )
+
+        guard case .tombstoneEntity(let entityType, let entityID, let reason) = command else {
+            return XCTFail("普通历史事实必须继续走 tombstone 命令")
+        }
+        XCTAssertEqual(entityType, .weight)
+        XCTAssertEqual(entityID, eventID)
+        XCTAssertEqual(reason, "事件记录删除：录入错误")
     }
 }

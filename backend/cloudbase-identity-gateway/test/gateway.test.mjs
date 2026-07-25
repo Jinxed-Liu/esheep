@@ -42,6 +42,12 @@ function response() {
   return target;
 }
 
+function insightCiphertext(version, text) {
+  const prefix = Buffer.alloc(4);
+  prefix.writeUInt32BE(version);
+  return Buffer.concat([prefix, Buffer.from(text)]).toString("base64");
+}
+
 async function invoke(handler, path, body, method, token) {
   const res = response();
   const done = new Promise((resolve, reject) => { res.once("done", resolve); res.once("error", reject); });
@@ -519,4 +525,282 @@ test("capability certificate is an ES256 JWS with a 64-byte P1363 signature", ()
   const [header, , signature] = certificate.split(".");
   assert.equal(JSON.parse(Buffer.from(header, "base64url")).alg, "ES256");
   assert.equal(Buffer.from(signature, "base64url").length, 64);
+});
+
+test("insight device approval stores only account-scoped public keys and encrypted envelopes", async () => {
+  const service = new CollaborationService({ store: new MemoryStore(), env: {} });
+  const accountID = randomUUID();
+  const firstDeviceID = randomUUID();
+  const secondDeviceID = randomUUID();
+  await service.ensureAccount(accountID, "洞察账号");
+
+  const first = await service.requestInsightDevice(accountID, {
+    deviceID: firstDeviceID,
+    publicKeyJWK: { kty: "EC", crv: "P-256", x: "first-x", y: "first-y" },
+    displayName: "已授权 iPhone",
+  });
+  const second = await service.requestInsightDevice(accountID, {
+    deviceID: secondDeviceID,
+    publicKeyJWK: { kty: "EC", crv: "P-256", x: "second-x", y: "second-y" },
+    displayName: "新 iPad",
+  });
+  assert.equal(first.status, "active");
+  assert.equal(second.status, "pending");
+
+  const envelope = Buffer.from("opaque-key-envelope").toString("base64");
+  const approved = await service.approveInsightDevice(accountID, secondDeviceID, {
+    approverDeviceID: firstDeviceID,
+    keyVersion: 1,
+    sealedEnvelopeBase64: envelope,
+  });
+  assert.equal(approved.status, "active");
+  assert.deepEqual(
+    (await service.insightKeyEnvelopes(accountID, secondDeviceID)).envelopes,
+    [{
+      targetDeviceID: secondDeviceID,
+      keyVersion: 1,
+      sealedEnvelopeBase64: envelope,
+      createdAt: approved.approvedAt,
+    }],
+  );
+  const recoverySecret = randomBytes(32);
+  await service.updateInsightRecovery(accountID, {
+    deviceID: firstDeviceID,
+    keyVersion: 1,
+    ciphertextBase64: Buffer.from("old-recovery").toString("base64"),
+    proofDigest: createHash("sha256").update(recoverySecret).digest("hex"),
+  });
+  const rotatedEnvelope = Buffer.from("rotated-key-envelope").toString("base64");
+  const revoked = await service.revokeInsightDevice(accountID, secondDeviceID, {
+    requesterDeviceID: firstDeviceID,
+    keyVersion: 2,
+    envelopes: [{
+      targetDeviceID: firstDeviceID,
+      sealedEnvelopeBase64: rotatedEnvelope,
+    }],
+  });
+  assert.equal(revoked.requiresKeyRotation, false);
+  assert.equal(revoked.keyVersion, 2);
+  assert.equal((await service.insightRecovery(accountID)).recovery, null);
+  assert.equal(
+    (await service.insightKeyEnvelopes(accountID, firstDeviceID)).envelopes.at(-1).sealedEnvelopeBase64,
+    rotatedEnvelope,
+  );
+  await assert.rejects(
+    service.syncInsightRecords(accountID, {
+      deviceID: secondDeviceID,
+      cursor: 0,
+      records: [],
+    }),
+    (error) => error.status === 403 && error.code === "active_insight_device_required",
+  );
+  await assert.rejects(
+    service.syncInsightRecords(accountID, {
+      deviceID: firstDeviceID,
+      cursor: 0,
+      records: [{
+        recordID: randomUUID(),
+        recordKind: "message",
+        revision: 1,
+        ciphertextBase64: insightCiphertext(1, "stale"),
+      }],
+    }),
+    (error) => error.status === 409 && error.code === "stale_insight_key_version",
+  );
+});
+
+test("one-time recovery proof activates only the requesting pending insight device", async () => {
+  const store = new MemoryStore();
+  const service = new CollaborationService({ store, env: {} });
+  const accountID = randomUUID();
+  const trustedDeviceID = randomUUID();
+  const recoveryDeviceID = randomUUID();
+  const secret = randomBytes(32);
+  const recoveryCiphertext = Buffer.from("opaque-encrypted-recovery-package").toString("base64");
+  const recoveryEnvelope = Buffer.from("sealed-envelope-for-recovery-device").toString("base64");
+  await service.ensureAccount(accountID, "恢复测试账号");
+  await service.requestInsightDevice(accountID, {
+    deviceID: trustedDeviceID,
+    publicKeyJWK: { kty: "EC", crv: "P-256", x: "trusted-x", y: "trusted-y" },
+    displayName: "已授权设备",
+  });
+  const pending = await service.requestInsightDevice(accountID, {
+    deviceID: recoveryDeviceID,
+    publicKeyJWK: { kty: "EC", crv: "P-256", x: "recovery-x", y: "recovery-y" },
+    displayName: "待恢复设备",
+  });
+  assert.equal(pending.status, "pending");
+  await service.updateInsightRecovery(accountID, {
+    deviceID: trustedDeviceID,
+    keyVersion: 1,
+    ciphertextBase64: recoveryCiphertext,
+    proofDigest: createHash("sha256").update(secret).digest("hex"),
+  });
+
+  await assert.rejects(
+    service.recoverInsightDevice(accountID, recoveryDeviceID, {
+      keyVersion: 1,
+      recoveryProofBase64: randomBytes(32).toString("base64"),
+      sealedEnvelopeBase64: recoveryEnvelope,
+    }),
+    (error) => error.status === 403 && error.code === "invalid_insight_recovery_proof",
+  );
+  assert.equal((await service.insightRecovery(accountID)).recovery.ciphertextBase64, recoveryCiphertext);
+
+  const recovered = await service.recoverInsightDevice(accountID, recoveryDeviceID, {
+    keyVersion: 1,
+    recoveryProofBase64: secret.toString("base64"),
+    sealedEnvelopeBase64: recoveryEnvelope,
+  });
+  assert.equal(recovered.status, "active");
+  assert.equal(recovered.recoveryConsumed, true);
+  assert.equal((await service.insightRecovery(accountID)).recovery, null);
+  assert.equal(
+    (await service.insightKeyEnvelopes(accountID, recoveryDeviceID)).envelopes[0].sealedEnvelopeBase64,
+    recoveryEnvelope,
+  );
+  await assert.rejects(
+    service.recoverInsightDevice(accountID, recoveryDeviceID, {
+      keyVersion: 1,
+      recoveryProofBase64: secret.toString("base64"),
+      sealedEnvelopeBase64: recoveryEnvelope,
+    }),
+    (error) => error.status === 404 && error.code === "pending_insight_device_not_found",
+  );
+});
+
+test("insight ciphertext sync is isolated by authenticated account and uses incremental cursors", async () => {
+  const service = new CollaborationService({ store: new MemoryStore(), env: {} });
+  const firstAccountID = randomUUID();
+  const secondAccountID = randomUUID();
+  const firstDeviceID = randomUUID();
+  const secondDeviceID = randomUUID();
+  const recordID = randomUUID();
+  const firstCiphertext = insightCiphertext(1, "first-account-ciphertext");
+  const secondCiphertext = insightCiphertext(1, "second-account-ciphertext");
+  await service.requestInsightDevice(firstAccountID, {
+    deviceID: firstDeviceID,
+    publicKeyJWK: { kty: "EC", crv: "P-256", x: "first-x", y: "first-y" },
+  });
+  await service.requestInsightDevice(secondAccountID, {
+    deviceID: secondDeviceID,
+    publicKeyJWK: { kty: "EC", crv: "P-256", x: "second-x", y: "second-y" },
+  });
+
+  const first = await service.syncInsightRecords(firstAccountID, {
+    deviceID: firstDeviceID,
+    cursor: 0,
+    records: [{ recordID, recordKind: "message", revision: 1, ciphertextBase64: firstCiphertext }],
+  });
+  await service.syncInsightRecords(secondAccountID, {
+    deviceID: secondDeviceID,
+    cursor: 0,
+    records: [{ recordID, recordKind: "message", revision: 1, ciphertextBase64: secondCiphertext }],
+  });
+  assert.equal(first.records.length, 1);
+  assert.equal(first.records[0].ciphertextBase64, firstCiphertext);
+
+  const firstAgain = await service.syncInsightRecords(firstAccountID, {
+    deviceID: firstDeviceID,
+    cursor: 0,
+    records: [],
+  });
+  const secondAgain = await service.syncInsightRecords(secondAccountID, {
+    deviceID: secondDeviceID,
+    cursor: 0,
+    records: [],
+  });
+  assert.equal(firstAgain.records[0].ciphertextBase64, firstCiphertext);
+  assert.equal(secondAgain.records[0].ciphertextBase64, secondCiphertext);
+  assert.deepEqual(
+    await service.syncInsightRecords(firstAccountID, {
+      deviceID: firstDeviceID,
+      cursor: firstAgain.cursor,
+      records: [],
+    }),
+    { cursor: firstAgain.cursor, keyVersion: 1, hasMore: false, records: [] },
+  );
+});
+
+test("expired insight conversation tombstones cascade encrypted child records after 30 days", async () => {
+  const store = new MemoryStore();
+  const service = new CollaborationService({ store, env: {} });
+  const accountID = randomUUID();
+  const deviceID = randomUUID();
+  const conversationID = randomUUID();
+  await service.requestInsightDevice(accountID, {
+    deviceID,
+    publicKeyJWK: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+  });
+  const response = await service.syncInsightRecords(accountID, {
+    deviceID,
+    cursor: 0,
+    records: [{
+      recordID: conversationID,
+      recordKind: "conversation",
+      conversationID,
+      revision: 2,
+      ciphertextBase64: insightCiphertext(1, "conversation-tombstone"),
+      deletedAt: Date.now() - 31 * 24 * 60 * 60 * 1000,
+    }, {
+      recordID: randomUUID(),
+      recordKind: "message",
+      conversationID,
+      revision: 1,
+      ciphertextBase64: insightCiphertext(1, "child-message"),
+    }],
+  });
+  assert.deepEqual(response.records, []);
+  assert.equal((await store.find({ type: "insight_record", accountID })).length, 0);
+});
+
+test("account deletion removes insight ciphertext envelopes devices and recovery package", async () => {
+  const store = new MemoryStore();
+  const service = new CollaborationService({ store, env: {} });
+  const accountID = randomUUID();
+  const deviceID = randomUUID();
+  await service.ensureAccount(accountID, "待删除洞察账号");
+  await service.requestInsightDevice(accountID, {
+    deviceID,
+    publicKeyJWK: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+  });
+  await service.syncInsightRecords(accountID, {
+    deviceID,
+    records: [{
+      recordID: randomUUID(),
+      recordKind: "vault",
+      revision: 1,
+      ciphertextBase64: insightCiphertext(1, "vault"),
+    }],
+  });
+  const recoverySecret = randomBytes(32);
+  await service.updateInsightRecovery(accountID, {
+    deviceID,
+    keyVersion: 1,
+    ciphertextBase64: Buffer.from("recovery").toString("base64"),
+    proofDigest: createHash("sha256").update(recoverySecret).digest("hex"),
+  });
+
+  await service.deleteAccount(accountID);
+  assert.equal((await store.find({ type: "insight_device", accountID })).length, 0);
+  assert.equal((await store.find({ type: "insight_record", accountID })).length, 0);
+  assert.equal((await store.find({ type: "insight_recovery", accountID })).length, 0);
+  assert.equal((await store.find({ type: "insight_key_state", accountID })).length, 0);
+});
+
+test("MiMo insights remains off by default and only enables allowlisted accounts", async () => {
+  const enabledAccountID = randomUUID();
+  const otherAccountID = randomUUID();
+  const defaultService = new CollaborationService({ store: new MemoryStore(), env: {} });
+  const enabledService = new CollaborationService({
+    store: new MemoryStore(),
+    env: {
+      MIMO_INSIGHTS_ENABLED: "true",
+      MIMO_INSIGHTS_ACCOUNT_ALLOWLIST: enabledAccountID.toUpperCase(),
+    },
+  });
+
+  assert.equal((await defaultService.accountStatus(enabledAccountID)).features.mimoInsights, false);
+  assert.equal((await enabledService.accountStatus(enabledAccountID)).features.mimoInsights, true);
+  assert.equal((await enabledService.accountStatus(otherAccountID)).features.mimoInsights, false);
 });

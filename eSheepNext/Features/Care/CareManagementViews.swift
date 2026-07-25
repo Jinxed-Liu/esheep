@@ -550,11 +550,94 @@ struct CareRulesView: View {
 }
 
 struct HealthHistoryView: View {
-    @Query(sort: \HealthRecord.occurredAt, order: .reverse) private var health: [HealthRecord]; @Query private var links: [HealthSubjectLink]; @Query private var sheep: [SheepRecord]
-    let account: AccountProfile; let farm: FarmRecord; @State private var kind: HealthRecordKind?; @State private var query = ""
-    private var filtered: [HealthRecord] { health.filter { $0.farmID == farm.id && (kind == nil || $0.kind == kind) && (query.isEmpty || $0.itemNameSnapshot.localizedCaseInsensitiveContains(query)) } }
-    var body: some View { List { Section { Picker("类型", selection: $kind) { Text("全部").tag(HealthRecordKind?.none); ForEach(HealthRecordKind.allCases, id: \.self) { Text($0.displayName).tag(HealthRecordKind?.some($0)) } } }; ForEach(filtered, id: \.id) { record in NavigationLink { HealthRecordDetailView(account: account, farm: farm, record: record) } label: { VStack(alignment: .leading) { Text(record.itemNameSnapshot); Text("\(subjectCount(record)) 只 · \(record.occurredAt.formatted(date: .abbreviated, time: .shortened))").font(.footnote).foregroundStyle(.secondary); if record.deletedAt != nil { Text("已撤销").font(.caption).foregroundStyle(.red) } } } } }.navigationTitle("健康历史").searchable(text: $query, prompt: "药品、疫苗或项目") }
-    private func subjectCount(_ record: HealthRecord) -> Int { max(record.sheepID == nil ? 0 : 1, links.count { $0.farmID == farm.id && $0.healthRecordID == record.id }) }
+    @Query private var health: [HealthRecord]
+    @Query private var links: [HealthSubjectLink]
+
+    let account: AccountProfile
+    let farm: FarmRecord
+
+    @State private var kind: HealthRecordKind?
+    @State private var query = ""
+    @State private var normalizedNames = [UUID: String]()
+
+    init(account: AccountProfile, farm: FarmRecord) {
+        self.account = account
+        self.farm = farm
+        let farmID = farm.id
+        _health = Query(
+            filter: #Predicate<HealthRecord> { $0.farmID == farmID },
+            sort: \HealthRecord.occurredAt,
+            order: .reverse
+        )
+        _links = Query(filter: #Predicate<HealthSubjectLink> { $0.farmID == farmID })
+    }
+
+    private var sourceRevision: [HealthHistorySourceRevision] {
+        health.map {
+            HealthHistorySourceRevision(
+                id: $0.id,
+                itemName: $0.itemNameSnapshot,
+                kindRawValue: $0.kindRawValue,
+                deletedAt: $0.deletedAt
+            )
+        }
+    }
+
+    var body: some View {
+        let normalizedQuery = SearchText.normalized(query)
+        let filteredRecords = health.filter {
+            (kind == nil || $0.kind == kind) &&
+                (normalizedQuery.isEmpty || normalizedNames[$0.id, default: ""].contains(normalizedQuery))
+        }
+        let linkedSubjectCounts = Dictionary(grouping: links, by: \.healthRecordID)
+            .mapValues { $0.count }
+
+        List {
+            Section {
+                Picker("类型", selection: $kind) {
+                    Text("全部").tag(HealthRecordKind?.none)
+                    ForEach(HealthRecordKind.allCases, id: \.self) {
+                        Text($0.displayName).tag(HealthRecordKind?.some($0))
+                    }
+                }
+            }
+            ForEach(filteredRecords, id: \.id) { record in
+                NavigationLink {
+                    HealthRecordDetailView(account: account, farm: farm, record: record)
+                } label: {
+                    VStack(alignment: .leading) {
+                        Text(record.itemNameSnapshot)
+                        Text(
+                            "\(max(record.sheepID == nil ? 0 : 1, linkedSubjectCounts[record.id, default: 0])) 只 · \(record.occurredAt.formatted(date: .abbreviated, time: .shortened))"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        if record.deletedAt != nil {
+                            Text("已撤销")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("健康历史")
+        .searchable(text: $query, prompt: "药品、疫苗或项目")
+        .onChange(of: sourceRevision, initial: true) { _, _ in
+            normalizedNames = Dictionary(
+                uniqueKeysWithValues: health.map {
+                    ($0.id, SearchText.normalized($0.itemNameSnapshot))
+                }
+            )
+        }
+    }
+}
+
+private struct HealthHistorySourceRevision: Equatable {
+    let id: UUID
+    let itemName: String
+    let kindRawValue: String
+    let deletedAt: Date?
 }
 
 private struct HealthRecordDetailView: View {

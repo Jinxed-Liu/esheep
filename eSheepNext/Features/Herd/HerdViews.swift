@@ -30,35 +30,22 @@ struct HerdManagementView: View {
     @State private var presentSheepCount = 0
     @State private var removedSheepCount = 0
     @State private var hasBuiltSheepSnapshot = false
-
-    private func makeFilteredSheep() -> [HerdSheepRow] {
-        let filtered = sourceSheep.filter {
-            (query.isEmpty || $0.earTag.localizedCaseInsensitiveContains(query) || $0.breed.localizedCaseInsensitiveContains(query)) &&
-                (sexFilter == nil || $0.sex == sexFilter) &&
-                (statusFilter == nil || (statusFilter == .active ? $0.isCurrentlyPresent : $0.status == statusFilter)) &&
-                (penFilter == nil || $0.currentPenID == penFilter)
-        }
-        return filtered.sorted {
-            if $0.isCurrentlyPresent != $1.isCurrentlyPresent {
-                return $0.isCurrentlyPresent
-            }
-            switch sortOrder {
-            case .earTag: return $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending
-            case .newestEntry: return $0.enteredAt == $1.enteredAt ? $0.earTag < $1.earTag : $0.enteredAt > $1.enteredAt
-            case .breed: return $0.breed == $1.breed ? $0.earTag < $1.earTag : $0.breed.localizedStandardCompare($1.breed) == .orderedAscending
-            }
-        }
-    }
+    @State private var sheepSourceRevision = 0
 
     private var penNames: [UUID: String] {
         Dictionary(uniqueKeysWithValues: penOptions.map { ($0.id, $0.name) })
     }
 
     var body: some View {
-        let displayedSheep = hasBuiltSheepSnapshot ? filteredSheep : makeFilteredSheep()
+        let displayedSheep = filteredSheep
         let visibleSheep = displayedSheep.prefix(visibleLimit)
         List(selection: $selection) {
-            if displayedSheep.isEmpty {
+            if !hasBuiltSheepSnapshot {
+                ProgressView("正在整理羊只")
+                    .frame(maxWidth: .infinity, minHeight: 320)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            } else if displayedSheep.isEmpty {
                 ContentUnavailableView.search(text: query)
             } else {
                 ForEach(visibleSheep, id: \.id) { sheep in
@@ -87,11 +74,21 @@ struct HerdManagementView: View {
         .navigationTitle("羊只")
         .searchable(text: $query, prompt: "耳号或品种")
         .onAppear(perform: reloadSheepSource)
-        .onChange(of: query) { _, _ in visibleLimit = 100; rebuildSheepSnapshot() }
-        .onChange(of: sexFilter) { _, _ in visibleLimit = 100; selection.removeAll(); rebuildSheepSnapshot() }
-        .onChange(of: statusFilter) { _, _ in visibleLimit = 100; selection.removeAll(); rebuildSheepSnapshot() }
-        .onChange(of: penFilter) { _, _ in visibleLimit = 100; selection.removeAll(); rebuildSheepSnapshot() }
-        .onChange(of: sortOrder) { _, _ in visibleLimit = 100; rebuildSheepSnapshot() }
+        .task(id: HerdSearchRequest(
+            query: SearchText.normalized(query),
+            sexFilter: sexFilter,
+            statusFilter: statusFilter,
+            penFilter: penFilter,
+            sortOrder: sortOrder,
+            sourceRevision: sheepSourceRevision
+        )) {
+            await rebuildSheepSnapshot()
+        }
+        .onChange(of: query) { _, _ in visibleLimit = 100 }
+        .onChange(of: sexFilter) { _, _ in visibleLimit = 100; selection.removeAll() }
+        .onChange(of: statusFilter) { _, _ in visibleLimit = 100; selection.removeAll() }
+        .onChange(of: penFilter) { _, _ in visibleLimit = 100; selection.removeAll() }
+        .onChange(of: sortOrder) { _, _ in visibleLimit = 100 }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { EditButton() }
             ToolbarItem(placement: .topBarTrailing) {
@@ -218,7 +215,8 @@ struct HerdManagementView: View {
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             presentSheepCount = sourceSheep.lazy.filter(\.isCurrentlyPresent).count
             removedSheepCount = sheep.lazy.filter { !$0.isCurrentlyPresent && !$0.isHistoricalArchive }.count
-            rebuildSheepSnapshot()
+            hasBuiltSheepSnapshot = false
+            sheepSourceRevision &+= 1
         } catch {
             sourceSheep = []
             filteredSheep = []
@@ -230,9 +228,32 @@ struct HerdManagementView: View {
         }
     }
 
-    private func rebuildSheepSnapshot() {
-        filteredSheep = makeFilteredSheep()
-        hasBuiltSheepSnapshot = true
+    @MainActor
+    private func rebuildSheepSnapshot() async {
+        let request = HerdSearchRequest(
+            query: SearchText.normalized(query),
+            sexFilter: sexFilter,
+            statusFilter: statusFilter,
+            penFilter: penFilter,
+            sortOrder: sortOrder,
+            sourceRevision: sheepSourceRevision
+        )
+        do {
+            if !request.query.isEmpty {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            let source = sourceSheep
+            let updatedRows = await Task.detached(priority: .userInitiated) {
+                HerdSearch.filter(source, request: request)
+            }.value
+            try Task.checkCancellation()
+            filteredSheep = updatedRows
+            hasBuiltSheepSnapshot = true
+        } catch is CancellationError {
+            return
+        } catch {
+            return
+        }
     }
 }
 
@@ -255,7 +276,7 @@ private enum HerdExportKind {
     }
 }
 
-private struct HerdSheepRow: Identifiable {
+private struct HerdSheepRow: Identifiable, Sendable {
     let id: UUID
     let earTag: String
     let breed: String
@@ -264,6 +285,7 @@ private struct HerdSheepRow: Identifiable {
     let currentPenID: UUID?
     let enteredAt: Date
     let isCurrentlyPresent: Bool
+    let searchableText: String
 
     init(_ sheep: SheepRecord) {
         id = sheep.id
@@ -274,6 +296,7 @@ private struct HerdSheepRow: Identifiable {
         currentPenID = sheep.currentPenID
         enteredAt = sheep.enteredAt
         isCurrentlyPresent = sheep.isCurrentlyPresent
+        searchableText = SearchText.normalized(sheep.earTag + "\u{0}" + sheep.breed)
     }
 
     func currentPenDisplayName(_ penName: String?) -> String {
@@ -286,11 +309,55 @@ private struct HerdPenOption: Identifiable {
     let name: String
 }
 
-private enum HerdSortOrder: String, CaseIterable, Identifiable {
+private enum HerdSortOrder: String, CaseIterable, Identifiable, Sendable {
     case earTag, newestEntry, breed
     var id: String { rawValue }
     var title: String {
         switch self { case .earTag: "耳号"; case .newestEntry: "最近入场"; case .breed: "品种" }
+    }
+}
+
+private struct HerdSearchRequest: Equatable, Sendable {
+    let query: String
+    let sexFilter: SheepSex?
+    let statusFilter: SheepStatus?
+    let penFilter: UUID?
+    let sortOrder: HerdSortOrder
+    let sourceRevision: Int
+}
+
+private enum HerdSearch {
+    static func filter(
+        _ source: [HerdSheepRow],
+        request: HerdSearchRequest
+    ) -> [HerdSheepRow] {
+        source.filter {
+            (request.query.isEmpty || $0.searchableText.contains(request.query)) &&
+                (request.sexFilter == nil || $0.sex == request.sexFilter) &&
+                (request.statusFilter == nil || (
+                    request.statusFilter == .active
+                        ? $0.isCurrentlyPresent
+                        : $0.status == request.statusFilter
+                )) &&
+                (request.penFilter == nil || $0.currentPenID == request.penFilter)
+        }
+        .sorted {
+            if $0.isCurrentlyPresent != $1.isCurrentlyPresent {
+                return $0.isCurrentlyPresent
+            }
+            switch request.sortOrder {
+            case .earTag:
+                return $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending
+            case .newestEntry:
+                return $0.enteredAt == $1.enteredAt
+                    ? $0.earTag < $1.earTag
+                    : $0.enteredAt > $1.enteredAt
+            case .breed:
+                return $0.breed == $1.breed
+                    ? $0.earTag < $1.earTag
+                    : $0.breed.localizedStandardCompare($1.breed) == .orderedAscending
+            }
+        }
     }
 }
 

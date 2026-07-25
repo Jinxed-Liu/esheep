@@ -1,5 +1,6 @@
 import CoreSpotlight
 import Foundation
+import SwiftData
 import UniformTypeIdentifiers
 
 enum FarmSystemNavigationKind: String, Codable, Sendable {
@@ -73,10 +74,22 @@ enum FarmSystemIntegrationService {
         )
     }
 
-    static func publish(_ snapshot: FarmWidgetSnapshot) async {
+    @discardableResult
+    static func publish(
+        _ snapshot: FarmWidgetSnapshot,
+        refreshSearchIndex shouldRefreshSearchIndex: Bool = true
+    ) async -> [String] {
         let previousDomains = FarmWidgetSnapshotStore.load().farms.map { spotlightDomain(farmID: $0.farmID) }
         try? FarmWidgetSnapshotStore.save(snapshot)
+        guard shouldRefreshSearchIndex else { return previousDomains }
+        await refreshSearchIndex(snapshot, replacingDomains: previousDomains)
+        return previousDomains
+    }
 
+    static func refreshSearchIndex(
+        _ snapshot: FarmWidgetSnapshot,
+        replacingDomains previousDomains: [String]
+    ) async {
         let currentDomains = snapshot.farms.map { spotlightDomain(farmID: $0.farmID) }
         try? await CSSearchableIndex.default().deleteSearchableItems(
             withDomainIdentifiers: Array(Set(previousDomains + currentDomains))
@@ -142,5 +155,68 @@ enum FarmSystemIntegrationService {
         components.path = "/\(farmID.uuidString.lowercased())/\(kind)/\(entityID.uuidString.lowercased())"
         components.queryItems = [URLQueryItem(name: "q", value: query)]
         return components.url
+    }
+}
+
+actor FarmSystemSnapshotActor {
+    private let container: ModelContainer
+
+    init(container: ModelContainer) {
+        self.container = container
+    }
+
+    func makeSnapshot(
+        farmIDs: [UUID],
+        selectedFarmID: UUID?
+    ) throws -> FarmWidgetSnapshot {
+        let context = ModelContext(container)
+        var farmSnapshots: [FarmWidgetSnapshot.Farm] = []
+
+        for farmID in farmIDs {
+            guard let farm = try context.fetch(FetchDescriptor<FarmRecord>(
+                predicate: #Predicate {
+                    $0.id == farmID && $0.deletedAt == nil
+                }
+            )).first else { continue }
+            let sheep = try context.fetch(FetchDescriptor<SheepRecord>(
+                predicate: #Predicate {
+                    $0.farmID == farmID && $0.deletedAt == nil
+                }
+            ))
+            let pens = try context.fetch(FetchDescriptor<PenRecord>(
+                predicate: #Predicate {
+                    $0.farmID == farmID && $0.deletedAt == nil
+                }
+            ))
+            let feeds = try context.fetch(FetchDescriptor<FeedRecord>(
+                predicate: #Predicate {
+                    $0.farmID == farmID && $0.deletedAt == nil
+                }
+            ))
+            let pending = OutboxStatus.pending.rawValue
+            let retryable = OutboxStatus.retryableFailure.rawValue
+            let pendingOperationCount = try context.fetchCount(FetchDescriptor<OutboxItem>(
+                predicate: #Predicate {
+                    $0.farmID == farmID &&
+                        ($0.statusRawValue == pending || $0.statusRawValue == retryable)
+                }
+            ))
+            let partial = FarmSystemIntegrationService.makeSnapshot(
+                farms: [farm],
+                sheep: sheep,
+                pens: pens,
+                feeds: feeds,
+                pendingOperationCounts: [farmID: pendingOperationCount],
+                selectedFarmID: selectedFarmID
+            )
+            farmSnapshots.append(contentsOf: partial.farms)
+        }
+
+        return FarmWidgetSnapshot(
+            version: FarmWidgetSnapshot.currentVersion,
+            generatedAt: .now,
+            selectedFarmID: selectedFarmID,
+            farms: farmSnapshots
+        )
     }
 }

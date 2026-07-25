@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 
-enum DomainOperationKind: String, Codable, Sendable {
+enum DomainOperationKind: String, Codable, Sendable, Hashable {
     case createFarm
     case updateFarmLocation
     case createPen
@@ -56,6 +56,14 @@ struct AppliedCommandResult: Sendable {
     let payload: Data
 }
 
+struct FarmCommandExecutionReceipt: Sendable, Equatable {
+    let sourceRequestID: UUID
+    let operationID: UUID
+    let entityType: String
+    let entityID: UUID?
+    let createdAt: Date
+}
+
 @Model
 final class DomainOperation {
     var id: UUID
@@ -75,6 +83,7 @@ final class DomainOperation {
     var modifiedByDeviceID: UUID?
     var capabilityCertificate: String = ""
     var operationSignature: Data?
+    var sourceRequestID: UUID?
 
     init(
         id: UUID = UUID(),
@@ -87,7 +96,8 @@ final class DomainOperation {
         entityID: UUID? = nil,
         baseRevision: Int = 0,
         resultingRevision: Int = 1,
-        payload: Data = Data("{}".utf8)
+        payload: Data = Data("{}".utf8),
+        sourceRequestID: UUID? = nil
     ) {
         self.id = id
         self.farmID = farmID
@@ -104,6 +114,7 @@ final class DomainOperation {
         self.payload = payload
         self.payloadDigest = CloudPayloadDigest.hex(for: payload)
         self.capabilityCertificate = ""
+        self.sourceRequestID = sourceRequestID
     }
 }
 

@@ -6,16 +6,16 @@ import XCTest
 @MainActor
 final class AppSchemaMigrationTests: XCTestCase {
     func testVersionedSchemaContainsEveryCurrentModel() {
-        let versioned = Schema(versionedSchema: AppSchemaV1.self)
+        let versioned = Schema(versionedSchema: AppSchemaV2.self)
         let current = AppSchema.makeSchema()
 
-        XCTAssertEqual(AppSchema.currentVersion, "1.0.0")
+        XCTAssertEqual(AppSchema.currentVersion, "2.0.0")
         XCTAssertEqual(versioned.entities.map(\.name).sorted(), current.entities.map(\.name).sorted())
         XCTAssertEqual(
             AppSchemaMigrationPlan.schemas.map { Schema(versionedSchema: $0).version },
-            [Schema.Version(1, 0, 0)]
+            [Schema.Version(1, 0, 0), Schema.Version(2, 0, 0)]
         )
-        XCTAssertTrue(AppSchemaMigrationPlan.stages.isEmpty)
+        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 1)
     }
 
     func testOpeningPersistentStoreDoesNotCreateBusinessOperationsOrOutbox() throws {
@@ -28,7 +28,7 @@ final class AppSchemaMigrationTests: XCTestCase {
         let farmID = UUID()
 
         do {
-            let legacySchema = Schema(AppSchema.modelTypes)
+            let legacySchema = Schema(versionedSchema: AppSchemaV1.self)
             let configuration = ModelConfiguration(
                 "Legacy",
                 schema: legacySchema,
@@ -50,6 +50,63 @@ final class AppSchemaMigrationTests: XCTestCase {
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<FarmRecord>()), 1)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<OutboxItem>()), 0)
+    }
+
+    func testV1DomainOperationMigratesWithNilSourceRequestID() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "AppSchemaOperationMigration-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "Legacy.store")
+        let operationID = UUID()
+        let accountID = UUID()
+        let farmID = UUID()
+        let entityID = UUID()
+        let occurredAt = Date(timeIntervalSince1970: 1_750_000_000)
+        let payload = Data(#"{"kind":"recordWeight"}"#.utf8)
+
+        do {
+            let legacySchema = Schema(versionedSchema: AppSchemaV1.self)
+            let configuration = ModelConfiguration(
+                "Legacy",
+                schema: legacySchema,
+                url: storeURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            let legacyContainer = try ModelContainer(for: legacySchema, configurations: [configuration])
+            let context = ModelContext(legacyContainer)
+            let operation = AppSchemaV1.DomainOperation(
+                id: operationID,
+                farmID: farmID,
+                accountID: accountID,
+                kindRawValue: DomainOperationKind.recordWeight.rawValue,
+                occurredAt: occurredAt,
+                summary: "记录称重"
+            )
+            operation.entityType = CloudEntityType.weight.rawValue
+            operation.entityID = entityID
+            operation.baseRevision = 0
+            operation.resultingRevision = 1
+            operation.payload = payload
+            operation.payloadDigest = CloudPayloadDigest.hex(for: payload)
+            context.insert(operation)
+            try context.save()
+        }
+
+        let reopened = try AppSchema.makeContainer(name: "Legacy", url: storeURL)
+        let context = ModelContext(reopened)
+        let migrated = try XCTUnwrap(
+            try context.fetch(FetchDescriptor<DomainOperation>()).first(where: { $0.id == operationID })
+        )
+
+        XCTAssertEqual(migrated.farmID, farmID)
+        XCTAssertEqual(migrated.accountID, accountID)
+        XCTAssertEqual(migrated.kindRawValue, DomainOperationKind.recordWeight.rawValue)
+        XCTAssertEqual(migrated.occurredAt, occurredAt)
+        XCTAssertEqual(migrated.entityID, entityID)
+        XCTAssertEqual(migrated.payload, payload)
+        XCTAssertNil(migrated.sourceRequestID)
     }
 
     func testQuarantineMovesStoreAndSidecarsWithoutDeletingBytes() throws {

@@ -15,48 +15,51 @@ struct eSheepNextApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if let modelContainer = bootstrap.modelContainer,
-               let collaboration = bootstrap.collaboration {
-                MotionHost(engine: motionEngine) {
-                    RootView()
-                        .environment(session)
-                        .environment(collaboration)
-                        .environment(subscription)
-                        .environment(notifications)
-                        .environment(preferences)
-                        .environment(\.locale, preferences.language.locale)
-                        .preferredColorScheme(preferences.appearance.preferredColorScheme)
-                        .transaction {
-                            if preferences.shouldReduceMotion {
-                                $0.animation = nil
+            Group {
+                if let modelContainer = bootstrap.modelContainer,
+                   let collaboration = bootstrap.collaboration {
+                    MotionHost(engine: motionEngine) {
+                        RootView()
+                            .environment(session)
+                            .environment(collaboration)
+                            .environment(subscription)
+                            .environment(notifications)
+                            .environment(preferences)
+                            .environment(\.locale, preferences.language.locale)
+                            .preferredColorScheme(preferences.appearance.preferredColorScheme)
+                            .transaction {
+                                if preferences.shouldReduceMotion {
+                                    $0.animation = nil
+                                }
                             }
-                        }
-                        .tint(AppTheme.brand)
-                        .modelContainer(modelContainer)
+                            .tint(AppTheme.brand)
+                            .modelContainer(modelContainer)
+                    }
+                    .onChange(
+                        of: preferences.reduceMotionEnabled,
+                        initial: true
+                    ) { _, reduceMotion in
+                        motionEngine.updatePreferences(
+                            reduceMotion: reduceMotion,
+                            powerSaving: preferences.powerSavingEnabled
+                        )
+                    }
+                    .onChange(
+                        of: preferences.powerSavingEnabled,
+                        initial: true
+                    ) { _, powerSaving in
+                        motionEngine.updatePreferences(
+                            reduceMotion: preferences.reduceMotionEnabled,
+                            powerSaving: powerSaving
+                        )
+                    }
+                } else if let failure = bootstrap.failure {
+                    LocalStoreRecoveryView(bootstrap: bootstrap, failure: failure)
+                } else {
+                    ProgressView("正在检查本地数据")
                 }
-                .onChange(
-                    of: preferences.reduceMotionEnabled,
-                    initial: true
-                ) { _, reduceMotion in
-                    motionEngine.updatePreferences(
-                        reduceMotion: reduceMotion,
-                        powerSaving: preferences.powerSavingEnabled
-                    )
-                }
-                .onChange(
-                    of: preferences.powerSavingEnabled,
-                    initial: true
-                ) { _, powerSaving in
-                    motionEngine.updatePreferences(
-                        reduceMotion: preferences.reduceMotionEnabled,
-                        powerSaving: powerSaving
-                    )
-                }
-            } else if let failure = bootstrap.failure {
-                LocalStoreRecoveryView(bootstrap: bootstrap, failure: failure)
-            } else {
-                ProgressView("正在检查本地数据")
             }
+            .task { bootstrap.start() }
         }
     }
 }

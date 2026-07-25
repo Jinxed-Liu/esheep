@@ -12,10 +12,8 @@ struct RootView: View {
     @Query(sort: \FarmRecord.updatedAt, order: .reverse) private var farms: [FarmRecord]
     @Query private var cloudBindings: [CloudFarmBinding]
     @Query private var membershipBindings: [FarmMembershipBinding]
-    @Query private var sheep: [SheepRecord]
-    @Query private var pens: [PenRecord]
-    @Query private var feeds: [FeedRecord]
     @Query private var migrationCommits: [MigrationCommitRecord]
+    @State private var systemSnapshotRevision = 0
 
     var body: some View {
         @Bindable var session = session
@@ -61,31 +59,23 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
             preferences.refreshSystemPowerState()
         }
+        .onReceive(NotificationCenter.default.publisher(for: CloudRuntimeNotification.syncWake)) { notification in
+            guard let farmID = CloudRuntimeNotification.farmID(from: notification),
+                  visibleFarms.contains(where: { $0.id == farmID }) else { return }
+            systemSnapshotRevision &+= 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: CloudRuntimeNotification.recoveryRequired)) { notification in
+            guard let farmID = CloudRuntimeNotification.farmID(from: notification),
+                  visibleFarms.contains(where: { $0.id == farmID }) else { return }
+            systemSnapshotRevision &+= 1
+        }
         .onOpenURL { url in
             guard let target = FarmSystemIntegrationService.target(from: url) else { return }
             FarmSystemNavigationStore.enqueue(target)
             session.consumeSystemNavigationTarget()
         }
-        .task(id: systemSnapshotRevision) {
-            var pendingOperationCounts: [UUID: Int] = [:]
-            for farm in visibleFarms {
-                let farmID = farm.id
-                let pending = OutboxStatus.pending.rawValue
-                let retryable = OutboxStatus.retryableFailure.rawValue
-                let descriptor = FetchDescriptor<OutboxItem>(predicate: #Predicate {
-                    $0.farmID == farmID && ($0.statusRawValue == pending || $0.statusRawValue == retryable)
-                })
-                pendingOperationCounts[farmID] = (try? modelContext.fetchCount(descriptor)) ?? 0
-            }
-            let snapshot = FarmSystemIntegrationService.makeSnapshot(
-                farms: visibleFarms,
-                sheep: sheep,
-                pens: pens,
-                feeds: feeds,
-                pendingOperationCounts: pendingOperationCounts,
-                selectedFarmID: session.selectedFarmID
-            )
-            await FarmSystemIntegrationService.publish(snapshot)
+        .task(id: systemSnapshotTaskID) {
+            await refreshSystemSnapshotAfterLaunch()
         }
         .task(id: authenticationTaskID) {
             await verifyActiveAccount()
@@ -102,6 +92,7 @@ struct RootView: View {
                       $0.cloudState != .synced
                   }),
                   !activeFarmIDs.isEmpty else { return }
+            guard await waitForSecondaryLaunchWindow(.milliseconds(700)) else { return }
             await collaboration.synchronizeNow()
         }
         .task(id: accountAvatarCloudTaskID) {
@@ -110,6 +101,7 @@ struct RootView: View {
                   let account = activeAccount,
                   account.serverBindingState == .verified,
                   IdentityWorkerConfiguration.baseURL != nil else { return }
+            guard await waitForSecondaryLaunchWindow(.seconds(2)) else { return }
             while !Task.isCancelled {
                 do {
                     try await AccountAvatarCloudSyncService.shared.synchronize(
@@ -132,11 +124,31 @@ struct RootView: View {
                 }
             }
         }
+        .task(id: insightPersonalSyncTaskID) {
+            guard scenePhase == .active,
+                  session.accountAccessStatus.allowsCloudOperations,
+                  let account = activeAccount,
+                  account.serverBindingState == .verified,
+                  IdentityWorkerConfiguration.baseURL != nil else { return }
+            guard await waitForSecondaryLaunchWindow(.seconds(3)) else { return }
+            while !Task.isCancelled {
+                await InsightPersonalSyncActor.shared.synchronize(
+                    accountID: account.effectiveAccountID,
+                    context: modelContext
+                )
+                do {
+                    try await Task.sleep(for: .seconds(300))
+                } catch {
+                    return
+                }
+            }
+        }
         .task(id: migrationCloudTaskID) {
             guard scenePhase == .active,
                   session.accountAccessStatus.allowsCloudOperations,
                   let account = activeAccount,
                   account.serverBindingState == .verified else { return }
+            guard await waitForSecondaryLaunchWindow(.milliseconds(1_200)) else { return }
             let accountID = account.effectiveAccountID
             guard session.beginAutomaticCloudRecovery(accountID: accountID) else { return }
             defer { session.finishAutomaticCloudRecovery(accountID: accountID) }
@@ -165,6 +177,7 @@ struct RootView: View {
             guard session.accountAccessStatus.allowsCloudOperations,
                   let account = activeAccount,
                   account.serverBindingState == .verified else { return }
+            guard await waitForSecondaryLaunchWindow(.seconds(5)) else { return }
             while !Task.isCancelled {
                 let farmIDs = activeCloudBindings.filter { $0.state == .active }.map(\.farmID)
                 await collaboration.performIdentityMaintenance(accountID: account.effectiveAccountID, farmIDs: farmIDs)
@@ -192,7 +205,8 @@ struct RootView: View {
     }
 
     private func hasPersistedLocalAccount(for account: AccountProfile) -> Bool {
-        SecureAccountStore.hasPersistedSession(for: account.effectiveAccountID)
+        session.activeAccountProfileID == account.id
+            && session.persistedLocalSessionAccountID == account.effectiveAccountID
     }
 
     private func verifyActiveAccount() async {
@@ -284,12 +298,56 @@ struct RootView: View {
         return "\(scenePhase)|\(accountPart)|\(preferences.effectivePowerSavingEnabled)|\(session.accountAccessStatus.taskKey)"
     }
 
-    private var systemSnapshotRevision: String {
-        let farmPart = visibleFarms.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
-        let sheepPart = sheep.filter { visibleFarmIDs.contains($0.farmID) }.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
-        let penPart = pens.filter { visibleFarmIDs.contains($0.farmID) }.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
-        return "\(farmPart)|\(sheepPart)|\(penPart)|\(feeds.count)|\(session.selectedFarmID?.uuidString ?? "none")"
+    private var insightPersonalSyncTaskID: String {
+        let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
+        return "\(scenePhase)|\(accountPart)|\(session.accountAccessStatus.taskKey)"
     }
 
-    private var visibleFarmIDs: Set<UUID> { Set(visibleFarms.map(\.id)) }
+    private var systemSnapshotTaskID: String {
+        let farmPart = visibleFarms.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
+        return "\(scenePhase)|\(farmPart)|\(session.selectedFarmID?.uuidString ?? "none")|\(systemSnapshotRevision)"
+    }
+
+    @MainActor
+    private func refreshSystemSnapshotAfterLaunch() async {
+        guard scenePhase == .active, !visibleFarms.isEmpty else { return }
+        do {
+            // Widget data is useful but must not compete with the first frame.
+            try await Task.sleep(for: .milliseconds(1_500))
+            let snapshot = try await FarmSystemSnapshotActor(
+                container: modelContext.container
+            ).makeSnapshot(
+                farmIDs: visibleFarms.map(\.id),
+                selectedFarmID: session.selectedFarmID
+            )
+            try Task.checkCancellation()
+            let previousDomains = await FarmSystemIntegrationService.publish(
+                snapshot,
+                refreshSearchIndex: false
+            )
+
+            // Spotlight indexing is the heaviest secondary launch job. Run it
+            // only after the workspace has had time to become interactive.
+            try await Task.sleep(for: .seconds(8))
+            await FarmSystemIntegrationService.refreshSearchIndex(
+                snapshot,
+                replacingDomains: previousDomains
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            #if DEBUG
+            print("[FarmSystemSnapshot] \(error)")
+            #endif
+        }
+    }
+
+    private func waitForSecondaryLaunchWindow(_ duration: Duration) async -> Bool {
+        do {
+            try await Task.sleep(for: duration)
+            return !Task.isCancelled
+        } catch {
+            return false
+        }
+    }
 }

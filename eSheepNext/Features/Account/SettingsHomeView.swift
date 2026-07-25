@@ -168,7 +168,16 @@ struct SettingsHomeView: View {
                     }
                 }
 
-                SettingsCard(title: "关于") {
+                SettingsCard(title: "AI 与隐私") {
+                    SettingsNavigationRow(
+                        title: "AI 助手",
+                        subtitle: "API Key、数据使用与加密同步",
+                        systemImage: "sparkles",
+                        iconColor: .blue
+                    ) {
+                        InsightAssistantSettingsView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
                     SettingsNavigationRow(
                         title: "隐私与条款",
                         subtitle: "条款、隐私与数据使用说明",

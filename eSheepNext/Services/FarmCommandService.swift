@@ -269,6 +269,17 @@ final class FarmCommandService {
     private struct HistoryImpact {
         let sheepID: UUID
         let changedAt: Date
+        let deletion: FarmHistoryDeletion?
+
+        init(
+            sheepID: UUID,
+            changedAt: Date,
+            deletion: FarmHistoryDeletion? = nil
+        ) {
+            self.sheepID = sheepID
+            self.changedAt = changedAt
+            self.deletion = deletion
+        }
     }
 
     private let historyRebuilder: FarmHistoryRebuilder
@@ -339,6 +350,67 @@ final class FarmCommandService {
         CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
     }
 
+    func execute(
+        _ command: FarmCommand,
+        in farm: FarmContext,
+        context: ModelContext,
+        sourceRequestID: UUID
+    ) throws -> FarmCommandExecutionReceipt {
+        if let existing = try context.fetch(FetchDescriptor<InsightExecutionReceiptRecord>()).first(where: {
+            $0.sourceRequestID == sourceRequestID &&
+                $0.accountID == farm.accountID &&
+                $0.farmID == farm.farmID
+        }) {
+            return FarmCommandExecutionReceipt(
+                sourceRequestID: existing.sourceRequestID,
+                operationID: existing.operationID,
+                entityType: existing.entityType,
+                entityID: existing.entityID,
+                createdAt: existing.createdAt
+            )
+        }
+
+        var committed = false
+        defer {
+            if !committed { context.rollback() }
+        }
+        try validateCloudIdentity(in: farm, context: context)
+        if let impact = try executeWithoutSaving(
+            command,
+            in: farm,
+            context: context,
+            sourceRequestID: sourceRequestID
+        ) {
+            try rebuildHistoryIfNeeded(for: [impact], farmID: farm.farmID, context: context)
+        }
+        guard let operation = try context.fetch(FetchDescriptor<DomainOperation>()).first(where: {
+            $0.sourceRequestID == sourceRequestID &&
+                $0.accountID == farm.accountID &&
+                $0.farmID == farm.farmID
+        }) else {
+            throw FarmCommandError.sourceRecordNotFound
+        }
+        let receiptRecord = InsightExecutionReceiptRecord(
+            sourceRequestID: sourceRequestID,
+            accountID: farm.accountID,
+            farmID: farm.farmID,
+            operationID: operation.id,
+            entityType: operation.entityType,
+            entityID: operation.entityID
+        )
+        context.insert(receiptRecord)
+        try context.save()
+        committed = true
+        CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        return FarmCommandExecutionReceipt(
+            sourceRequestID: sourceRequestID,
+            operationID: operation.id,
+            entityType: operation.entityType,
+            entityID: operation.entityID,
+            createdAt: receiptRecord.createdAt
+        )
+    }
+
     /// Excel 等批量入口使用同一个权威写入管道，但整批只保存一次。
     /// 任一命令失败都会回滚本批已插入的事实、审计记录和 Outbox，避免半导入。
     func executeBatch(_ commands: [FarmCommand], in farm: FarmContext, context: ModelContext) throws {
@@ -348,6 +420,105 @@ final class FarmCommandService {
             guard commands.indices.contains(index) else { return nil }
             defer { index += 1 }
             return commands[index]
+        }
+    }
+
+    /// AI 操作草案批量执行入口。所有命令、幂等回执和 Outbox 在同一次保存中提交；
+    /// 任一命令失败都会回滚整批，避免一批草案只执行一部分。
+    func executeBatch(
+        _ requests: [(command: FarmCommand, sourceRequestID: UUID)],
+        in farm: FarmContext,
+        context: ModelContext
+    ) throws -> [FarmCommandExecutionReceipt] {
+        guard !requests.isEmpty else { return [] }
+        guard Set(requests.map(\.sourceRequestID)).count == requests.count else {
+            throw FarmCommandError.invalidRemovalBatch("操作草案标识重复")
+        }
+
+        var committed = false
+        defer {
+            if !committed { context.rollback() }
+        }
+        try validateCloudIdentity(in: farm, context: context)
+
+        var pendingHistory: [HistoryImpact] = []
+        var receiptBySourceRequestID: [UUID: FarmCommandExecutionReceipt] = [:]
+
+        func flushHistory() throws {
+            guard !pendingHistory.isEmpty else { return }
+            try rebuildHistoryIfNeeded(
+                for: pendingHistory,
+                farmID: farm.farmID,
+                context: context
+            )
+            pendingHistory.removeAll(keepingCapacity: true)
+        }
+
+        for request in requests {
+            if let existing = try context.fetch(FetchDescriptor<InsightExecutionReceiptRecord>())
+                .first(where: {
+                    $0.sourceRequestID == request.sourceRequestID &&
+                        $0.accountID == farm.accountID &&
+                        $0.farmID == farm.farmID
+                }) {
+                receiptBySourceRequestID[request.sourceRequestID] = FarmCommandExecutionReceipt(
+                    sourceRequestID: existing.sourceRequestID,
+                    operationID: existing.operationID,
+                    entityType: existing.entityType,
+                    entityID: existing.entityID,
+                    createdAt: existing.createdAt
+                )
+                continue
+            }
+            if !affectsHistoryProjection(request.command) {
+                try flushHistory()
+            }
+            if let impact = try executeWithoutSaving(
+                request.command,
+                in: farm,
+                context: context,
+                sourceRequestID: request.sourceRequestID
+            ) {
+                pendingHistory.append(impact)
+            }
+        }
+        try flushHistory()
+
+        for request in requests where receiptBySourceRequestID[request.sourceRequestID] == nil {
+            guard let operation = try context.fetch(FetchDescriptor<DomainOperation>())
+                .first(where: {
+                    $0.sourceRequestID == request.sourceRequestID &&
+                        $0.accountID == farm.accountID &&
+                        $0.farmID == farm.farmID
+                }) else {
+                throw FarmCommandError.sourceRecordNotFound
+            }
+            let record = InsightExecutionReceiptRecord(
+                sourceRequestID: request.sourceRequestID,
+                accountID: farm.accountID,
+                farmID: farm.farmID,
+                operationID: operation.id,
+                entityType: operation.entityType,
+                entityID: operation.entityID
+            )
+            context.insert(record)
+            receiptBySourceRequestID[request.sourceRequestID] = FarmCommandExecutionReceipt(
+                sourceRequestID: request.sourceRequestID,
+                operationID: operation.id,
+                entityType: operation.entityType,
+                entityID: operation.entityID,
+                createdAt: record.createdAt
+            )
+        }
+
+        try context.save()
+        committed = true
+        CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        return try requests.map { request in
+            guard let receipt = receiptBySourceRequestID[request.sourceRequestID] else {
+                throw FarmCommandError.sourceRecordNotFound
+            }
+            return receipt
         }
     }
 
@@ -400,7 +571,12 @@ final class FarmCommandService {
         }
     }
 
-    private func executeWithoutSaving(_ command: FarmCommand, in farm: FarmContext, context: ModelContext) throws -> HistoryImpact? {
+    private func executeWithoutSaving(
+        _ command: FarmCommand,
+        in farm: FarmContext,
+        context: ModelContext,
+        sourceRequestID: UUID? = nil
+    ) throws -> HistoryImpact? {
         let farmID = farm.farmID
         guard farm.capabilities.allows(command.requiredCapability) else {
             throw FarmPermissionError.denied(command.requiredCapability)
@@ -418,7 +594,8 @@ final class FarmCommandService {
             entityID: result.entityID,
             baseRevision: result.baseRevision,
             resultingRevision: result.resultingRevision,
-            payload: result.payload
+            payload: result.payload,
+            sourceRequestID: sourceRequestID
         )
         context.insert(operation)
         switch command {
@@ -511,7 +688,13 @@ final class FarmCommandService {
                 .map { HistoryImpact(sheepID: $0.sheepID, changedAt: $0.changedAt) }
         case .tombstoneEntity(let entityType, let entityID, _):
             impact = try historyImpact(entityType: entityType, entityID: entityID, farmID: farmID, context: context)
-                .map { HistoryImpact(sheepID: $0.sheepID, changedAt: $0.changedAt) }
+                .map {
+                    HistoryImpact(
+                        sheepID: $0.sheepID,
+                        changedAt: $0.changedAt,
+                        deletion: FarmHistoryDeletion(entityType: entityType, entityID: entityID)
+                    )
+                }
         case .restoreTombstonedEntity(let tombstoneID):
             guard let tombstone = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
                 $0.id == tombstoneID && $0.farmID == farmID
@@ -533,12 +716,14 @@ final class FarmCommandService {
     ) throws {
         guard !impacts.isEmpty, let changedAt = impacts.map(\.changedAt).min() else { return }
         let sheepIDs = Set(impacts.map(\.sheepID))
+        let deletion = impacts.count == 1 ? impacts[0].deletion : nil
         historyRebuildObserver?(sheepIDs, changedAt)
         try historyRebuilder.rebuildAffectedSheep(
             farmID: farmID,
             sheepIDs: sheepIDs,
             context: context,
-            from: changedAt
+            from: changedAt,
+            deletion: deletion
         )
     }
 

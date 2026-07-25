@@ -111,6 +111,10 @@ struct WorkerCapabilityResponse: Codable, Sendable {
 }
 
 struct WorkerAccountStatus: Codable, Sendable {
+    struct Features: Codable, Sendable {
+        let mimoInsights: Bool?
+    }
+
     struct Membership: Codable, Sendable {
         let farm_id: UUID
         let ownerAccountID: UUID?
@@ -124,6 +128,21 @@ struct WorkerAccountStatus: Codable, Sendable {
     let displayName: String?
     let status: String
     let memberships: [Membership]
+    let features: Features?
+
+    init(
+        accountID: UUID,
+        displayName: String?,
+        status: String,
+        memberships: [Membership],
+        features: Features? = nil
+    ) {
+        self.accountID = accountID
+        self.displayName = displayName
+        self.status = status
+        self.memberships = memberships
+        self.features = features
+    }
 }
 
 struct WorkerAccountProfileResponse: Codable, Sendable, Equatable {
@@ -137,6 +156,73 @@ struct WorkerAccountAvatarResponse: Codable, Sendable, Equatable {
     let digest: String?
     let hasAvatar: Bool
     let dataBase64: String?
+}
+
+struct WorkerInsightDeviceResponse: Codable, Sendable, Equatable {
+    let deviceID: UUID
+    let status: String
+    let requestedAt: Int?
+    let approvedAt: Int?
+    let keyVersion: Int?
+}
+
+struct WorkerInsightDeviceList: Codable, Sendable {
+    struct Device: Codable, Sendable, Identifiable {
+        let deviceID: UUID
+        let displayName: String
+        let publicKeyJWK: [String: String]
+        let status: String
+        let requestedAt: Int
+        let approvedAt: Int?
+        let revokedAt: Int?
+
+        var id: UUID { deviceID }
+    }
+
+    let devices: [Device]
+}
+
+struct WorkerInsightEnvelopeList: Codable, Sendable {
+    struct Envelope: Codable, Sendable {
+        let targetDeviceID: UUID
+        let keyVersion: Int
+        let sealedEnvelopeBase64: String
+        let createdAt: Int
+    }
+
+    let envelopes: [Envelope]
+}
+
+struct WorkerInsightSyncRecord: Codable, Sendable {
+    let recordID: UUID
+    let recordKind: String
+    let conversationID: UUID?
+    let revision: Int64
+    let ciphertextBase64: String
+    let deletedAt: Int64?
+    let updatedAt: Int64?
+}
+
+struct WorkerInsightSyncResponse: Codable, Sendable {
+    let cursor: Int64
+    let keyVersion: Int
+    let hasMore: Bool
+    let records: [WorkerInsightSyncRecord]
+}
+
+struct WorkerInsightRotationEnvelope: Codable, Sendable, Equatable {
+    let targetDeviceID: UUID
+    let sealedEnvelopeBase64: String
+}
+
+struct WorkerInsightRecoveryResponse: Codable, Sendable {
+    struct Recovery: Codable, Sendable {
+        let keyVersion: Int
+        let ciphertextBase64: String
+        let updatedAt: Int
+    }
+
+    let recovery: Recovery?
 }
 
 struct WorkerFarmSecuritySnapshot: Codable, Sendable {
@@ -294,6 +380,136 @@ actor IdentityWorkerClient {
 
     func revokeDevice(deviceID: UUID) async throws {
         let _: EmptyWorkerResponse = try await request(path: "/v1/devices/\(deviceID.uuidString.lowercased())", method: "DELETE", body: Optional<String>.none)
+    }
+
+    func requestInsightDevice(
+        deviceID: UUID,
+        publicKeyJWK: [String: String],
+        displayName: String
+    ) async throws -> WorkerInsightDeviceResponse {
+        try await request(
+            path: "/v1/insights/devices/request",
+            method: "POST",
+            body: DeviceRegistrationBody(
+                deviceID: deviceID,
+                publicKeyJWK: publicKeyJWK,
+                displayName: displayName
+            )
+        )
+    }
+
+    func insightDevices() async throws -> WorkerInsightDeviceList {
+        try await request(
+            path: "/v1/insights/devices",
+            method: "GET",
+            body: Optional<String>.none
+        )
+    }
+
+    func approveInsightDevice(
+        deviceID: UUID,
+        approverDeviceID: UUID,
+        keyVersion: Int,
+        sealedEnvelope: Data
+    ) async throws -> WorkerInsightDeviceResponse {
+        try await request(
+            path: "/v1/insights/devices/\(deviceID.uuidString.lowercased())/approve",
+            method: "POST",
+            body: InsightDeviceApprovalBody(
+                approverDeviceID: approverDeviceID,
+                keyVersion: keyVersion,
+                sealedEnvelopeBase64: sealedEnvelope.base64EncodedString()
+            )
+        )
+    }
+
+    func recoverInsightDevice(
+        deviceID: UUID,
+        keyVersion: Int,
+        recoveryProof: Data,
+        sealedEnvelope: Data
+    ) async throws -> WorkerInsightDeviceResponse {
+        try await request(
+            path: "/v1/insights/devices/\(deviceID.uuidString.lowercased())/recover",
+            method: "POST",
+            body: InsightDeviceRecoveryBody(
+                keyVersion: keyVersion,
+                recoveryProofBase64: recoveryProof.base64EncodedString(),
+                sealedEnvelopeBase64: sealedEnvelope.base64EncodedString()
+            )
+        )
+    }
+
+    func insightKeyEnvelopes(deviceID: UUID) async throws -> WorkerInsightEnvelopeList {
+        try await request(
+            path: "/v1/insights/key-envelopes/\(deviceID.uuidString.lowercased())",
+            method: "GET",
+            body: Optional<String>.none
+        )
+    }
+
+    func revokeInsightDevice(
+        deviceID: UUID,
+        requesterDeviceID: UUID,
+        keyVersion: Int,
+        envelopes: [WorkerInsightRotationEnvelope]
+    ) async throws -> WorkerInsightDeviceResponse {
+        try await request(
+            path: "/v1/insights/devices/\(deviceID.uuidString.lowercased())",
+            method: "DELETE",
+            body: InsightDeviceRevocationBody(
+                requesterDeviceID: requesterDeviceID,
+                keyVersion: keyVersion,
+                envelopes: envelopes
+            )
+        )
+    }
+
+    func syncInsightRecords(
+        deviceID: UUID,
+        cursor: Int64,
+        records: [WorkerInsightSyncRecord]
+    ) async throws -> WorkerInsightSyncResponse {
+        try await request(
+            path: "/v1/insights/sync",
+            method: "POST",
+            body: InsightSyncBody(deviceID: deviceID, cursor: cursor, records: records),
+            timeout: 60
+        )
+    }
+
+    func insightRecovery() async throws -> WorkerInsightRecoveryResponse {
+        try await request(
+            path: "/v1/insights/recovery",
+            method: "GET",
+            body: Optional<String>.none
+        )
+    }
+
+    func updateInsightRecovery(
+        deviceID: UUID,
+        keyVersion: Int,
+        ciphertext: Data,
+        proofDigest: String
+    ) async throws {
+        let _: InsightRecoveryUpdateResponse = try await request(
+            path: "/v1/insights/recovery",
+            method: "PUT",
+            body: InsightRecoveryUpdateBody(
+                deviceID: deviceID,
+                keyVersion: keyVersion,
+                ciphertextBase64: ciphertext.base64EncodedString(),
+                proofDigest: proofDigest
+            )
+        )
+    }
+
+    func removeInsightRecovery() async throws {
+        let _: EmptyWorkerResponse = try await request(
+            path: "/v1/insights/recovery",
+            method: "DELETE",
+            body: Optional<String>.none
+        )
     }
 
     func registerFarm(farmID: UUID, zoneName: String, shareRecordName: String?, status: String = "active") async throws {
@@ -472,6 +688,36 @@ actor IdentityWorkerClient {
 }
 
 private struct DeviceRegistrationBody: Codable { let deviceID: UUID; let publicKeyJWK: [String: String]; let displayName: String }
+private struct InsightDeviceApprovalBody: Codable {
+    let approverDeviceID: UUID
+    let keyVersion: Int
+    let sealedEnvelopeBase64: String
+}
+private struct InsightDeviceRecoveryBody: Codable {
+    let keyVersion: Int
+    let recoveryProofBase64: String
+    let sealedEnvelopeBase64: String
+}
+private struct InsightDeviceRevocationBody: Codable {
+    let requesterDeviceID: UUID
+    let keyVersion: Int
+    let envelopes: [WorkerInsightRotationEnvelope]
+}
+private struct InsightSyncBody: Codable {
+    let deviceID: UUID
+    let cursor: Int64
+    let records: [WorkerInsightSyncRecord]
+}
+private struct InsightRecoveryUpdateBody: Codable {
+    let deviceID: UUID
+    let keyVersion: Int
+    let ciphertextBase64: String
+    let proofDigest: String
+}
+private struct InsightRecoveryUpdateResponse: Codable {
+    let keyVersion: Int
+    let updatedAt: Int
+}
 private struct EmailVerificationBody: Codable { let email: String }
 private struct PasswordRegistrationBody: Codable {
     let email: String

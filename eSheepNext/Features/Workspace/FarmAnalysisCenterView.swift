@@ -1,4 +1,5 @@
 import Charts
+import ESMotion
 import SwiftData
 import SwiftUI
 
@@ -10,10 +11,22 @@ struct FarmAnalysisCenterView: View {
     @Query(sort: \FeedRecord.occurredAt, order: .reverse) private var feeds: [FeedRecord]
 
     let farm: FarmRecord
+    let assistantTransition: Namespace.ID
+    let assistantTransitionID: MotionTransitionID
+    let assistantTransitionSpec: MotionTransitionSpec
     let onAskAssistant: () -> Void
 
-    init(farm: FarmRecord, onAskAssistant: @escaping () -> Void) {
+    init(
+        farm: FarmRecord,
+        assistantTransition: Namespace.ID,
+        assistantTransitionID: MotionTransitionID,
+        assistantTransitionSpec: MotionTransitionSpec,
+        onAskAssistant: @escaping () -> Void
+    ) {
         self.farm = farm
+        self.assistantTransition = assistantTransition
+        self.assistantTransitionID = assistantTransitionID
+        self.assistantTransitionSpec = assistantTransitionSpec
         self.onAskAssistant = onAskAssistant
     }
 
@@ -121,10 +134,10 @@ struct FarmAnalysisCenterView: View {
                     .frame(width: 44, height: 44)
                     .background(AppTheme.brand.opacity(0.10), in: .rect(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("看不懂这些指标？")
+                    Text("与 AI 助手聊天")
                         .font(.headline)
                         .foregroundStyle(.primary)
-                    Text("让本地助手结合当前牧场记录回答")
+                    Text("让 AI 助手结合当前牧场记录分析、回答或生成操作草案")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -136,8 +149,16 @@ struct FarmAnalysisCenterView: View {
             .padding(16)
             .background(.background, in: .rect(cornerRadius: 22))
             .overlay { RoundedRectangle(cornerRadius: 22).stroke(AppTheme.brand.opacity(0.16), lineWidth: 1) }
+            .contentShape(.rect(cornerRadius: 22))
+            .motionTransitionSource(
+                id: assistantTransitionID,
+                in: assistantTransition,
+                spec: assistantTransitionSpec,
+                background: AppTheme.pageBackground
+            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionSurfaceButtonStyle())
+        .accessibilityHint("打开全屏 AI 助手")
     }
 }
 

@@ -1,6 +1,11 @@
 import Foundation
 import SwiftData
 
+struct FarmHistoryDeletion: Sendable {
+    let entityType: CloudEntityType
+    let entityID: UUID
+}
+
 enum FarmHistoryTimeline {
     private static func transferOccursBefore(_ lhs: TransferRecord, _ rhs: TransferRecord) -> Bool {
         if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt < rhs.occurredAt }
@@ -135,21 +140,38 @@ final class FarmHistoryRebuilder {
         )
     }
 
-    /// The common entry path changes one sheep and normally occurs today. Replaying
-    /// the entire farm timeline on the main actor made a single removal feel like a
-    /// stalled save. Rebuild only the affected projection and today's aggregate;
-    /// historical corrections still use the full replay above.
+    /// The common entry path changes one sheep. Replaying the entire farm timeline
+    /// on the main actor made a single historical deletion look like a frozen app.
+    /// Rebuild the affected projection and adjust only that sheep's contribution to
+    /// historical aggregates when the exact deleted fact is known.
     func rebuildAffectedSheep(
         farmID: UUID,
         sheepIDs: Set<UUID>,
         context: ModelContext,
         from changedAt: Date?,
-        through endDate: Date = .now
+        through endDate: Date = .now,
+        deletion: FarmHistoryDeletion? = nil
     ) throws {
         guard !sheepIDs.isEmpty else { return }
-        guard let changedAt,
-              calendar.startOfDay(for: changedAt) >= calendar.startOfDay(for: endDate) else {
+        guard let changedAt else {
             try rebuild(farmID: farmID, context: context, from: changedAt, through: endDate)
+            return
+        }
+        let changedDay = calendar.startOfDay(for: changedAt)
+        let endDay = calendar.startOfDay(for: endDate)
+        if changedDay < endDay {
+            guard let deletion,
+                  try rebuildHistoricalDeletion(
+                    farmID: farmID,
+                    sheepIDs: sheepIDs,
+                    deletion: deletion,
+                    context: context,
+                    from: changedAt,
+                    through: endDate
+                  ) else {
+                try rebuild(farmID: farmID, context: context, from: changedAt, through: endDate)
+                return
+            }
             return
         }
 
@@ -187,6 +209,227 @@ final class FarmHistoryRebuilder {
             knownPenPurposeKeys: knownKeys,
             context: context
         )
+    }
+
+    /// A tombstoned transfer/removal changes one sheep's historical contribution,
+    /// while every other sheep and every other aggregate row stays authoritative.
+    /// Keeping the deleted record in SwiftData lets us reconstruct the pre-delete
+    /// timeline and apply its exact delta without deleting and recreating the
+    /// farm's complete daily history inside the UI transaction.
+    private func rebuildHistoricalDeletion(
+        farmID: UUID,
+        sheepIDs: Set<UUID>,
+        deletion: FarmHistoryDeletion,
+        context: ModelContext,
+        from changedAt: Date,
+        through endDate: Date
+    ) throws -> Bool {
+        guard sheepIDs.count == 1,
+              deletion.entityType == .sheep
+                || deletion.entityType == .transfer
+                || deletion.entityType == .removal else {
+            return false
+        }
+
+        let allFarmSheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        guard let sheepID = sheepIDs.first,
+              let historicalSheep = allFarmSheep.first(where: { $0.id == sheepID }) else {
+            return false
+        }
+        let activeFarmSheep = allFarmSheep.filter { $0.deletedAt == nil }
+
+        let allTransfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.sheepID == sheepID
+        }))
+        let allRemovals = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.sheepID == sheepID
+        }))
+        let currentTransfers = allTransfers.filter { $0.deletedAt == nil }
+        let currentRemovals = allRemovals.filter { $0.deletedAt == nil }
+
+        var previousTransfers = currentTransfers
+        var previousRemovals = currentRemovals
+        let previousSheep: SheepRecord?
+        switch deletion.entityType {
+        case .sheep:
+            guard historicalSheep.id == deletion.entityID,
+                  historicalSheep.deletedAt != nil else { return false }
+            previousSheep = historicalSheep
+        case .transfer:
+            guard let deletedTransfer = allTransfers.first(where: {
+                $0.id == deletion.entityID && $0.deletedAt != nil
+            }) else { return false }
+            previousTransfers.append(deletedTransfer)
+            previousSheep = historicalSheep
+        case .removal:
+            guard let deletedRemoval = allRemovals.first(where: {
+                $0.id == deletion.entityID && $0.deletedAt != nil
+            }) else { return false }
+            previousRemovals.append(deletedRemoval)
+            previousSheep = historicalSheep
+        default:
+            return false
+        }
+
+        if historicalSheep.deletedAt == nil {
+            rebuildProjection(
+                for: historicalSheep,
+                at: endDate,
+                transfers: currentTransfers,
+                removals: currentRemovals
+            )
+        }
+
+        let currentSheep = historicalSheep.deletedAt == nil ? historicalSheep : nil
+        try adjustDailyPenCounts(
+            farmID: farmID,
+            previousSheep: previousSheep,
+            currentSheep: currentSheep,
+            previousTransfers: previousTransfers,
+            currentTransfers: currentTransfers,
+            previousRemovals: previousRemovals,
+            currentRemovals: currentRemovals,
+            from: changedAt,
+            through: endDate,
+            context: context
+        )
+
+        let currentDay = calendar.startOfDay(for: endDate)
+        let existingCurrentDay = try context.fetch(FetchDescriptor<DailyPenCountRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.date == currentDay
+        }))
+        let knownKeys = Set(existingCurrentDay.map {
+            DailyPenCountKey(penID: $0.penID, purpose: $0.purpose)
+        })
+        try rebuildCurrentDaySnapshot(
+            farmID: farmID,
+            sheep: activeFarmSheep,
+            at: endDate,
+            knownPenPurposeKeys: knownKeys,
+            context: context
+        )
+        return true
+    }
+
+    private func adjustDailyPenCounts(
+        farmID: UUID,
+        previousSheep: SheepRecord?,
+        currentSheep: SheepRecord?,
+        previousTransfers: [TransferRecord],
+        currentTransfers: [TransferRecord],
+        previousRemovals: [RemovalRecord],
+        currentRemovals: [RemovalRecord],
+        from changedAt: Date,
+        through endDate: Date,
+        context: ModelContext
+    ) throws {
+        let startDay = calendar.startOfDay(for: changedAt)
+        let endDay = calendar.startOfDay(for: endDate)
+        guard startDay <= endDay else { return }
+
+        var relevantDays = Set([startDay, endDay])
+        let eventDates = previousTransfers.map(\.occurredAt)
+            + currentTransfers.map(\.occurredAt)
+            + previousRemovals.map(\.occurredAt)
+            + currentRemovals.map(\.occurredAt)
+            + [previousSheep?.enteredAt, currentSheep?.enteredAt].compactMap { $0 }
+        for date in eventDates {
+            let day = calendar.startOfDay(for: date)
+            if day >= startDay && day <= endDay {
+                relevantDays.insert(day)
+            }
+        }
+
+        var deltaChanges: [DailyPenCountKey: [Date: Int]] = [:]
+        var priorDelta = [DailyPenCountKey: Int]()
+        for day in relevantDays.sorted() {
+            let nextDay = calendar.date(byAdding: .day, value: 1, to: day) ?? day
+            let instant = nextDay.addingTimeInterval(-0.001)
+            let previousKey = dailyKey(
+                for: previousSheep,
+                at: instant,
+                transfers: previousTransfers,
+                removals: previousRemovals
+            )
+            let currentKey = dailyKey(
+                for: currentSheep,
+                at: instant,
+                transfers: currentTransfers,
+                removals: currentRemovals
+            )
+            var currentDelta = [DailyPenCountKey: Int]()
+            if let previousKey { currentDelta[previousKey, default: 0] -= 1 }
+            if let currentKey { currentDelta[currentKey, default: 0] += 1 }
+            let keys = Set(priorDelta.keys).union(currentDelta.keys)
+            for key in keys where priorDelta[key, default: 0] != currentDelta[key, default: 0] {
+                deltaChanges[key, default: [:]][day] = currentDelta[key, default: 0]
+            }
+            priorDelta = currentDelta
+        }
+
+        for (key, changes) in deltaChanges {
+            let penID = key.penID
+            let purpose = key.purpose
+            let records = try context.fetch(FetchDescriptor<DailyPenCountRecord>(predicate: #Predicate {
+                $0.farmID == farmID
+                    && $0.penID == penID
+                    && $0.purpose == purpose
+                    && $0.date <= endDay
+            }))
+            let orderedOriginal = records.sorted { $0.date < $1.date }
+            let originalCount: (Date) -> Int = { date in
+                orderedOriginal.last(where: { $0.date <= date })?.count ?? 0
+            }
+            let orderedChanges = changes.sorted { $0.key < $1.key }
+            let delta: (Date) -> Int = { date in
+                orderedChanges.last(where: { $0.key <= date })?.value ?? 0
+            }
+
+            for record in records where record.date >= startDay {
+                record.count = max(0, record.count + delta(record.date))
+                record.rebuiltAt = .now
+            }
+            let existingDates = Set(records.map(\.date))
+            for (date, value) in orderedChanges where !existingDates.contains(date) {
+                context.insert(DailyPenCountRecord(
+                    farmID: farmID,
+                    penID: key.penID,
+                    purpose: key.purpose,
+                    date: date,
+                    count: max(0, originalCount(date) + value)
+                ))
+            }
+        }
+    }
+
+    private func dailyKey(
+        for sheep: SheepRecord?,
+        at instant: Date,
+        transfers: [TransferRecord],
+        removals: [RemovalRecord]
+    ) -> DailyPenCountKey? {
+        guard let sheep, sheep.enteredAt <= instant else {
+            return nil
+        }
+        let removal = removals
+            .filter { $0.sheepID == sheep.id && $0.occurredAt <= instant }
+            .min { lhs, rhs in
+                if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt < rhs.occurredAt }
+                if lhs.recordedAt != rhs.recordedAt { return lhs.recordedAt < rhs.recordedAt }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+        guard removal == nil else { return nil }
+        let latestTransfer = transfers
+            .filter { $0.sheepID == sheep.id && $0.occurredAt <= instant }
+            .max { lhs, rhs in
+                if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt < rhs.occurredAt }
+                if lhs.recordedAt != rhs.recordedAt { return lhs.recordedAt < rhs.recordedAt }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+        guard let penID = latestTransfer?.toPenID ?? sheep.initialPenID else { return nil }
+        return DailyPenCountKey(penID: penID, purpose: sheep.purpose)
     }
 
     private func rebuildProjection(

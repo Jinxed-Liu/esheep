@@ -1250,6 +1250,11 @@ actor CloudSyncActor {
     }
 }
 
+struct CloudCollaborationStartupPreparation: Sendable {
+    let recoveredBaselineRepair: RecoveredBaselineStartupRepairResult
+    let errorMessages: [String]
+}
+
 @MainActor
 @Observable
 final class CloudCollaborationStore {
@@ -1281,10 +1286,9 @@ final class CloudCollaborationStore {
     private var isSyncWakeDrainRunning = false
     private var isRecoveryDrainRunning = false
 
-    init(container: ModelContainer) {
-        self.modelContainer = container
-        let persistence = FarmPersistenceActor(container: container)
-        self.persistence = persistence
+    nonisolated static func prepareStartup(
+        container: ModelContainer
+    ) -> CloudCollaborationStartupPreparation {
         let startupRepair = RecoveredBaselineReuploadRepairService.quarantineBeforeCloudEngineStarts(
             container: container
         )
@@ -1294,6 +1298,22 @@ final class CloudCollaborationStore {
         } catch {
             startupErrorMessages.append("增量历史投影修复失败：\(error.localizedDescription)")
         }
+        return CloudCollaborationStartupPreparation(
+            recoveredBaselineRepair: startupRepair,
+            errorMessages: startupErrorMessages
+        )
+    }
+
+    init(
+        container: ModelContainer,
+        startupPreparation: CloudCollaborationStartupPreparation? = nil
+    ) {
+        self.modelContainer = container
+        let persistence = FarmPersistenceActor(container: container)
+        self.persistence = persistence
+        let preparation = startupPreparation ?? Self.prepareStartup(container: container)
+        let startupRepair = preparation.recoveredBaselineRepair
+        let startupErrorMessages = preparation.errorMessages
         let configuredIdentifier = Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String
         let identifier = configuredIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines)
         precondition(!CloudFeatureConfiguration.isEnabled || identifier?.isEmpty == false, "启用 CloudKit 时必须配置 CLOUDKIT_CONTAINER_IDENTIFIER。")

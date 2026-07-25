@@ -9,6 +9,7 @@ enum SettingsDestination: String, CaseIterable, Hashable {
     case appearance
     case powerSaving
     case language
+    case insightAssistant
     case privacyAndTerms
     case subscription
     case farmLocation
@@ -54,6 +55,7 @@ struct SettingsVisibilityPolicy: Equatable {
             .appearance,
             .powerSaving,
             .language,
+            .insightAssistant,
             .privacyAndTerms,
         ]
     }

@@ -21,12 +21,53 @@ struct FarmHomeView: View {
     @State private var isEventExportPresented = false
     @Namespace private var metricTransition
 
-    private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent } }
+    init(
+        account: AccountProfile,
+        farm: FarmRecord,
+        isWeatherDetailPresented: Binding<Bool>,
+        isMetricDetailPresented: Binding<Bool>
+    ) {
+        self.account = account
+        self.farm = farm
+        _isWeatherDetailPresented = isWeatherDetailPresented
+        _isMetricDetailPresented = isMetricDetailPresented
+        let farmID = farm.id
+        _sheep = Query(
+            filter: #Predicate<SheepRecord> {
+                $0.farmID == farmID && $0.deletedAt == nil
+            },
+            sort: \.earTag
+        )
+        _pens = Query(
+            filter: #Predicate<PenRecord> {
+                $0.farmID == farmID && $0.deletedAt == nil
+            },
+            sort: \.name
+        )
+        _feedRecords = Query(
+            filter: #Predicate<FeedRecord> {
+                $0.farmID == farmID && $0.deletedAt == nil
+            },
+            sort: \.occurredAt,
+            order: .reverse
+        )
+        _healthRecords = Query(
+            filter: #Predicate<HealthRecord> { $0.farmID == farmID },
+            sort: \.occurredAt,
+            order: .reverse
+        )
+        _careReminders = Query(
+            filter: #Predicate<CareReminderRecord> { $0.farmID == farmID },
+            sort: \.dueAt
+        )
+    }
+
+    private var farmSheep: [SheepRecord] { sheep.filter(\.isCurrentlyPresent) }
     private var farmPens: [PenRecord] { CurrentFarmOccupancy.occupiedPens(farmID: farm.id, sheep: sheep, pens: pens) }
     private var canExport: Bool { CapabilitySet(role: farm.role).allows(.exportFarm) }
     private var todayFeedCount: Int {
         let start = Calendar.current.startOfDay(for: .now)
-        return feedRecords.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.occurredAt >= start }.count
+        return feedRecords.count { $0.occurredAt >= start }
     }
     var body: some View {
         ScrollView {
@@ -162,12 +203,9 @@ struct FarmHomeView: View {
             NavigationLink { PenManagementView(account: account, farm: farm) } label: {
                 StatusRow(title: "圈舍管理", detail: "当前 \(farmPens.count) 个圈舍有在场羊", symbol: "building.2")
             }
-            Button { session.selectedTab = .assistant } label: {
-                StatusRow(title: "牧场分析", detail: "增重、羔羊、繁殖与采食", symbol: "chart.bar.xaxis")
-            }
-            .buttonStyle(.plain)
-            if healthRecords.contains(where: { $0.farmID == farm.id && $0.deletedAt == nil }) {
-                StatusRow(title: "健康记录", detail: "已有 \(healthRecords.filter { $0.farmID == farm.id && $0.deletedAt == nil }.count) 条记录", symbol: "cross.case")
+            let activeHealthRecordCount = healthRecords.count { $0.deletedAt == nil }
+            if activeHealthRecordCount > 0 {
+                StatusRow(title: "健康记录", detail: "已有 \(activeHealthRecordCount) 条记录", symbol: "cross.case")
             }
         }
     }
@@ -176,7 +214,7 @@ struct FarmHomeView: View {
         let start = Calendar.current.startOfDay(for: .now)
         let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: start) ?? .distantFuture
         let end = Calendar.current.date(byAdding: .day, value: 8, to: start) ?? .distantFuture
-        let pending = careReminders.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .pending && $0.dueAt < end }
+        let pending = careReminders.filter { $0.deletedAt == nil && $0.status == .pending && $0.dueAt < end }
         let overdue = pending.count { $0.dueAt < start }
         let today = pending.count { $0.dueAt >= start && $0.dueAt < tomorrow }
         return VStack(alignment: .leading, spacing: 10) {

@@ -3,31 +3,81 @@ import SwiftData
 
 enum AppSchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
+
+    /// Keep the exact pre-insights operation shape here. Referencing the live
+    /// `DomainOperation` type would silently change the V1 schema whenever V2
+    /// gains another property and existing V1 stores could no longer be
+    /// recognized for migration.
+    @Model
+    final class DomainOperation {
+        var id: UUID
+        var farmID: UUID
+        var accountID: UUID
+        var kindRawValue: String
+        var occurredAt: Date
+        var createdAt: Date
+        var summary: String
+        var schemaVersion: Int = 1
+        var entityType: String = "FarmRoot"
+        var entityID: UUID?
+        var baseRevision: Int = 0
+        var resultingRevision: Int = 1
+        var payload: Data = Data("{}".utf8)
+        var payloadDigest: String = ""
+        var modifiedByDeviceID: UUID?
+        var capabilityCertificate: String = ""
+        var operationSignature: Data?
+
+        init(
+            id: UUID = UUID(),
+            farmID: UUID,
+            accountID: UUID,
+            kindRawValue: String,
+            occurredAt: Date = .now,
+            summary: String
+        ) {
+            self.id = id
+            self.farmID = farmID
+            self.accountID = accountID
+            self.kindRawValue = kindRawValue
+            self.occurredAt = occurredAt
+            self.createdAt = .now
+            self.summary = summary
+        }
+    }
+
+    static var models: [any PersistentModel.Type] {
+        AppSchema.businessModelTypesWithoutDomainOperation + [DomainOperation.self]
+    }
+}
+
+enum AppSchemaV2: VersionedSchema {
+    static let versionIdentifier = Schema.Version(2, 0, 0)
     static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
 }
 
 enum AppSchemaMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [AppSchemaV1.self]
+        [AppSchemaV1.self, AppSchemaV2.self]
     }
 
     // V1 freezes the schema that shipped before formal versioning was
     // introduced. Future schema versions must add an explicit lightweight or
     // custom stage here; opening a store must never trigger business commands.
     static var stages: [MigrationStage] {
-        []
+        [.lightweight(fromVersion: AppSchemaV1.self, toVersion: AppSchemaV2.self)]
     }
 }
 
 enum AppSchema {
-    static let currentVersion = "1.0.0"
+    static let currentVersion = "2.0.0"
 
     static func defaultStoreURL(name: String = "eSheepNext") -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "\(name).store")
     }
 
-    static var modelTypes: [any PersistentModel.Type] {
+    static var businessModelTypes: [any PersistentModel.Type] {
         [
             AccountProfile.self,
             FarmRecord.self,
@@ -89,8 +139,25 @@ enum AppSchema {
         ]
     }
 
+    fileprivate static var businessModelTypesWithoutDomainOperation: [any PersistentModel.Type] {
+        businessModelTypes.filter {
+            ObjectIdentifier($0) != ObjectIdentifier(DomainOperation.self)
+        }
+    }
+
+    static var modelTypes: [any PersistentModel.Type] {
+        businessModelTypes + [
+            InsightConversationRecord.self,
+            InsightMessageRecord.self,
+            InsightAttachmentRecord.self,
+            InsightActionDraftRecord.self,
+            InsightExecutionReceiptRecord.self,
+            InsightSyncStateRecord.self,
+        ]
+    }
+
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV1.self)
+        Schema(versionedSchema: AppSchemaV2.self)
     }
 
     static func makeConfiguration(

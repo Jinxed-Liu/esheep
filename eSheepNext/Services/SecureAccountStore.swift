@@ -128,9 +128,13 @@ enum SecureAccountStore {
     }
 
     static func hasPersistedSession(for accountID: UUID) -> Bool {
+        persistedSessionAccountID() == accountID
+    }
+
+    static func persistedSessionAccountID() -> UUID? {
         guard let session = workerSession(),
-              session.accountID == accountID else { return false }
-        return (try? data(account: "worker-refresh-token")) != nil
+              (try? data(account: "worker-refresh-token")) != nil else { return nil }
+        return session.accountID
     }
 
     static func hasWorkerSession(for accountID: UUID, now: Date = .now) -> Bool {

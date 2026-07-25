@@ -1,259 +1,157 @@
+import ESMotion
 import SwiftData
 import SwiftUI
-import UIKit
-
-private enum FarmInsightsSection: String, CaseIterable, Identifiable {
-    case overview
-    case assistant
-
-    var id: String { rawValue }
-    var title: String { self == .overview ? "分析" : "问助手" }
-}
 
 struct FarmInsightsView: View {
+    let account: AccountProfile
     let farm: FarmRecord
-    @State private var section = FarmInsightsSection.overview
+    @Binding var isAssistantPresented: Bool
+    @Namespace private var assistantTransition
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("洞察内容", selection: $section) {
-                ForEach(FarmInsightsSection.allCases) { item in
-                    Text(item.title).tag(item)
+        Group {
+            if farmContext.capabilities.allows(.viewAnalytics) {
+                FarmAnalysisCenterView(
+                    farm: farm,
+                    assistantTransition: assistantTransition,
+                    assistantTransitionID: assistantTransitionID,
+                    assistantTransitionSpec: assistantTransitionSpec
+                ) {
+                    presentAssistant()
+                }
+            } else {
+                ContentUnavailableView {
+                    Label("无法查看牧场分析", systemImage: "chart.xyaxis.line")
+                } description: {
+                    Text("当前牧场角色没有分析权限，但仍可使用 AI 助手查询获准读取的数据。")
+                } actions: {
+                    Button("与 AI 助手聊天", action: presentAssistant)
+                        .buttonStyle(.borderedProminent)
+                        .motionTransitionSource(
+                            id: assistantTransitionID,
+                            in: assistantTransition,
+                            spec: assistantTransitionSpec,
+                            background: AppTheme.pageBackground
+                        )
                 }
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.bar)
-
-            switch section {
-            case .overview:
-                FarmAnalysisCenterView(farm: farm) {
-                    withAnimation(.snappy) { section = .assistant }
-                }
-            case .assistant:
-                AssistantStartView(farm: farm)
-            }
         }
-        .background(AppTheme.pageBackground)
-        .navigationTitle("牧场洞察")
-    }
-}
-
-struct AssistantStartView: View {
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
-    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
-    @Query(sort: \FeedRecord.occurredAt, order: .reverse) private var feedRecords: [FeedRecord]
-    @Query(sort: \HealthRecord.occurredAt, order: .reverse) private var healthRecords: [HealthRecord]
-    @Query private var weights: [WeightRecord]
-    @Query private var weanings: [WeaningRecord]
-    @Query private var reproduction: [ReproductionRecord]
-    @Query private var offspring: [LambingOffspringRecord]
-    @Query private var removals: [RemovalRecord]
-    @Query private var transfers: [TransferRecord]
-    @Query private var memberships: [BatchMembershipRecord]
-    @Query private var feedLines: [FeedRecordLine]
-    let farm: FarmRecord
-    @State private var question = ""
-    @State private var answer: LocalFarmAnswer?
-    @State private var analyticsSnapshot: FarmAnalyticsSnapshot?
-
-    private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
-    private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
-    private var farmFeeds: [FeedRecord] { feedRecords.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
-    private var farmHealth: [HealthRecord] { healthRecords.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
-    private var sourceRevision: [Int] { [sheep.count, pens.count, feedRecords.count, healthRecords.count, weights.count, weanings.count, reproduction.count, offspring.count, removals.count, transfers.count, memberships.count, feedLines.count] }
-
-    private func makeAnalyticsSnapshot() -> FarmAnalyticsSnapshot {
-        FarmAnalyticsSnapshot.make(farmID: farm.id, sheep: sheep, pens: pens, weights: weights, weanings: weanings, reproduction: reproduction, offspring: offspring, removals: removals, transfers: transfers, memberships: memberships, feeds: feedRecords, feedLines: feedLines)
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                assistantHeader
-
-                if let answer {
-                    answerCard(answer)
-                } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("直接问数据")
-                            .font(.title2.bold())
-                        Text("我会从当前牧场的真实记录里找答案，并标出计算来源。")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("可以这样问")
-                        .font(.headline)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], alignment: .leading, spacing: 8) {
-                        ForEach(suggestedQuestions, id: \.self) { prompt in
-                            Button(prompt) { ask(prompt) }
-                                .buttonStyle(.bordered)
-                                .tint(.secondary)
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 18)
-            .padding(.top, 18)
-            .safeAreaPadding(.bottom, 100)
-        }
-        .background(AppTheme.pageBackground)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            assistantComposer
-        }
-        .onAppear { analyticsSnapshot = makeAnalyticsSnapshot() }
-        .onChange(of: sourceRevision) { _, _ in analyticsSnapshot = makeAnalyticsSnapshot() }
-    }
-
-    private var suggestedQuestions: [String] {
-        ["当前有多少只羊", "今天投喂了几次", "哪个圈舍羊最多", "查看一只羊的完整档案"]
-    }
-
-    private var assistantHeader: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: "sparkles")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(width: 48, height: 48)
-                .background(AppTheme.brand.gradient, in: .rect(cornerRadius: 15))
-            VStack(alignment: .leading, spacing: 5) {
-                Text("牧场本地助手")
-                    .font(.headline)
-                Label("只读 · 当前牧场 · 不上传", systemImage: "lock.fill")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
+        .navigationTitle("洞察")
+        .navigationDestination(isPresented: $isAssistantPresented) {
+            FarmInsightConversationView(account: account, farm: farm)
+                .motionTransitionDestination(
+                    id: assistantTransitionID,
+                    in: assistantTransition,
+                    spec: assistantTransitionSpec
+                )
         }
     }
 
-    private func answerCard(_ answer: LocalFarmAnswer) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 7) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                Text("基于牧场记录")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-            Text(answer.text)
-                .font(.body)
-                .textSelection(.enabled)
-            if !answer.sources.isEmpty {
-                Divider()
-                Text(answer.sources.joined(separator: " · "))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(18)
-        .background(.background, in: .rect(cornerRadius: 22))
-        .overlay { RoundedRectangle(cornerRadius: 22).stroke(.separator.opacity(0.45), lineWidth: 0.5) }
+    private var assistantTransitionID: MotionTransitionID {
+        MotionTransitionID("farm-assistant-\(farm.id.uuidString)")
     }
 
-    private var assistantComposer: some View {
-        HStack(spacing: 10) {
-            TextField("询问当前牧场", text: $question)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 11)
-                .background(.fill.quaternary, in: .capsule)
-                .submitLabel(.send)
-                .onSubmit { ask(question) }
-            Button { ask(question) } label: {
-                Image(systemName: "arrow.up")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(AppTheme.brand, in: .circle)
-            }
-            .buttonStyle(.plain)
-                .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("发送问题")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
+    private var assistantTransitionSpec: MotionTransitionSpec {
+        MotionTransitionSpec(
+            preset: .card,
+            cornerRadius: 22
+        )
     }
 
-    private func ask(_ text: String) {
-        let submitted = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !submitted.isEmpty else { return }
-        answer = LocalFarmAssistant.answer(question: submitted, activeSheep: farmSheep, pens: farmPens, feedRecords: farmFeeds, healthRecords: farmHealth, analyticsSnapshot: analyticsSnapshot)
-        question = ""
-        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+    private func presentAssistant() {
+        guard !isAssistantPresented else { return }
+        isAssistantPresented = true
+    }
+
+    private var farmContext: FarmContext {
+        FarmContext(
+            accountID: account.effectiveAccountID,
+            farmID: farm.id,
+            role: farm.role
+        )
     }
 }
 
 struct FarmSearchView: View {
+    @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
-    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
+
     let account: AccountProfile
     let farm: FarmRecord
     @Binding var query: String
 
-    private var resultsSheep: [SheepRecord] {
-        sheep.filter { item in
-            item.farmID == farm.id && item.deletedAt == nil &&
-                (query.isEmpty || item.earTag.localizedCaseInsensitiveContains(query) || item.breed.localizedCaseInsensitiveContains(query))
-        }
-    }
-
-    private var resultsPens: [PenRecord] {
-        pens.filter { item in item.farmID == farm.id && item.deletedAt == nil && (query.isEmpty || item.name.localizedCaseInsensitiveContains(query)) }
-    }
-
-    private var penNames: [UUID: String] {
-        Dictionary(uniqueKeysWithValues: pens.filter { $0.farmID == farm.id && $0.deletedAt == nil }.map { ($0.id, $0.name) })
-    }
+    @State private var source = FarmSearchSource.empty
+    @State private var results = FarmSearchResultSet.empty
+    @State private var sourceRevision = 0
+    @State private var isLoadingSource = false
+    @State private var isSearching = false
+    @State private var errorMessage: String?
 
     var body: some View {
         List {
-            if !resultsSheep.isEmpty {
+            if SearchText.normalized(query).isEmpty {
+                ContentUnavailableView {
+                    Label("搜索牧场", systemImage: "magnifyingglass")
+                } description: {
+                    Text(isLoadingSource ? "正在准备当前牧场的搜索索引…" : "输入耳号、品种或圈舍名称开始搜索。")
+                }
+                .frame(maxWidth: .infinity, minHeight: 360)
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            } else if isSearching && results.isEmpty {
+                ProgressView("正在搜索")
+                    .frame(maxWidth: .infinity, minHeight: 360)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            } else if results.isEmpty {
+                ContentUnavailableView.search(text: query)
+                    .frame(maxWidth: .infinity, minHeight: 360)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+
+            if !results.sheep.isEmpty {
                 Section("羊只") {
-                    ForEach(resultsSheep, id: \.id) { item in
+                    ForEach(results.sheep) { item in
                         NavigationLink {
-                            SheepDetailView(
+                            FarmSearchSheepDestination(
                                 account: account,
                                 farm: farm,
-                                sheep: item,
-                                penName: item.currentPenID.flatMap { penNames[$0] }
+                                sheepID: item.id,
+                                penName: item.penName
                             )
                         } label: {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(item.earTag).font(.headline)
-                                Text("\(item.breed) · \(item.status.displayName)").font(.footnote).foregroundStyle(.secondary)
+                                Text("\(item.breed) · \(item.statusName)")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
+                    if results.hasMoreSheep {
+                        searchLimitHint(visible: results.sheep.count, total: results.totalSheepCount)
+                    }
                 }
             }
-            if !resultsPens.isEmpty {
+            if !results.pens.isEmpty {
                 Section("圈舍") {
-                    ForEach(resultsPens, id: \.id) { pen in
+                    ForEach(results.pens) { pen in
                         NavigationLink {
-                            PenDetailView(
+                            FarmSearchPenDestination(
                                 account: account,
                                 farm: farm,
-                                pen: pen,
-                                sheep: sheep.filter {
-                                    $0.farmID == farm.id &&
-                                        $0.currentPenID == pen.id &&
-                                        $0.status == .active &&
-                                        $0.deletedAt == nil
-                                }
+                                penID: pen.id
                             )
                         } label: {
                             Text(pen.name)
                         }
                     }
+                    if results.hasMorePens {
+                        searchLimitHint(visible: results.pens.count, total: results.totalPenCount)
+                    }
                 }
             }
-            if !query.isEmpty && resultsSheep.isEmpty && resultsPens.isEmpty { ContentUnavailableView.search(text: query) }
         }
         .navigationTitle("搜索")
         .searchable(
@@ -261,23 +159,159 @@ struct FarmSearchView: View {
             placement: .navigationBarDrawer(displayMode: .always),
             prompt: "耳号、品种或圈舍"
         )
+        .task(id: farm.id) {
+            await reloadSource()
+        }
+        .task(id: FarmSearchRequest(query: query, sourceRevision: sourceRevision)) {
+            await updateResults()
+        }
+        .refreshable {
+            await reloadSource()
+        }
         .navigationDestination(isPresented: Binding(
             get: { session.pendingSheepID != nil },
             set: { if !$0 { session.pendingSheepID = nil } }
         )) {
-            if let sheepID = session.pendingSheepID,
-               let item = sheep.first(where: { $0.id == sheepID && $0.farmID == farm.id && $0.deletedAt == nil }) {
-                SheepDetailView(
+            if let sheepID = session.pendingSheepID {
+                FarmSearchSheepDestination(
                     account: account,
                     farm: farm,
-                    sheep: item,
-                    penName: item.currentPenID.flatMap { penNames[$0] }
+                    sheepID: sheepID,
+                    penName: source.sheep.first(where: { $0.id == sheepID })?.penName
                 )
             } else {
                 ContentUnavailableView("羊只不存在", systemImage: "questionmark.folder", description: Text("该羊只可能已删除或不属于当前牧场。"))
             }
         }
+        .recordErrorAlert($errorMessage)
     }
+
+    @MainActor
+    private func reloadSource() async {
+        isLoadingSource = source == .empty
+        do {
+            let updatedSource = try await FarmSearchIndexActor(
+                container: modelContext.container
+            ).load(farmID: farm.id)
+            try Task.checkCancellation()
+            source = updatedSource
+            sourceRevision &+= 1
+            isLoadingSource = false
+        } catch is CancellationError {
+            return
+        } catch {
+            isLoadingSource = false
+            errorMessage = "准备搜索数据失败：\(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func updateResults() async {
+        let submittedQuery = query
+        guard !SearchText.normalized(submittedQuery).isEmpty else {
+            results = .empty
+            isSearching = false
+            return
+        }
+
+        isSearching = true
+        do {
+            try await Task.sleep(for: .milliseconds(120))
+            let sourceSnapshot = source
+            let updatedResults = await Task.detached(priority: .userInitiated) {
+                FarmSearchEngine.search(query: submittedQuery, source: sourceSnapshot)
+            }.value
+            try Task.checkCancellation()
+            results = updatedResults
+            isSearching = false
+        } catch is CancellationError {
+            return
+        } catch {
+            isSearching = false
+            errorMessage = "搜索失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+private struct FarmSearchRequest: Equatable {
+    let query: String
+    let sourceRevision: Int
+}
+
+private struct FarmSearchSheepDestination: View {
+    @Query private var sheep: [SheepRecord]
+
+    let account: AccountProfile
+    let farm: FarmRecord
+    let penName: String?
+
+    init(account: AccountProfile, farm: FarmRecord, sheepID: UUID, penName: String?) {
+        self.account = account
+        self.farm = farm
+        self.penName = penName
+        let farmID = farm.id
+        _sheep = Query(filter: #Predicate<SheepRecord> {
+            $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
+        })
+    }
+
+    var body: some View {
+        if let sheep = sheep.first {
+            SheepDetailView(account: account, farm: farm, sheep: sheep, penName: penName)
+        } else {
+            ContentUnavailableView(
+                "羊只不存在",
+                systemImage: "questionmark.folder",
+                description: Text("该羊只可能已删除或不属于当前牧场。")
+            )
+        }
+    }
+}
+
+private struct FarmSearchPenDestination: View {
+    @Query private var pens: [PenRecord]
+    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
+
+    let account: AccountProfile
+    let farm: FarmRecord
+
+    init(account: AccountProfile, farm: FarmRecord, penID: UUID) {
+        self.account = account
+        self.farm = farm
+        let farmID = farm.id
+        _pens = Query(filter: #Predicate<PenRecord> {
+            $0.id == penID && $0.farmID == farmID && $0.deletedAt == nil
+        })
+        _sheep = Query(
+            filter: #Predicate<SheepRecord> {
+                $0.farmID == farmID && $0.currentPenID == penID && $0.deletedAt == nil
+            },
+            sort: \.earTag
+        )
+    }
+
+    var body: some View {
+        if let pen = pens.first {
+            PenDetailView(
+                account: account,
+                farm: farm,
+                pen: pen,
+                sheep: sheep.filter { $0.status == .active }
+            )
+        } else {
+            ContentUnavailableView(
+                "圈舍不存在",
+                systemImage: "questionmark.folder",
+                description: Text("该圈舍可能已删除或不属于当前牧场。")
+            )
+        }
+    }
+}
+
+private func searchLimitHint(visible: Int, total: Int) -> some View {
+    Text("显示前 \(visible) 条，共 \(total) 条匹配；继续输入可缩小范围。")
+        .font(.footnote)
+        .foregroundStyle(.secondary)
 }
 
 struct FarmSettingsView: View {

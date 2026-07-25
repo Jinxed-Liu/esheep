@@ -1,4 +1,4 @@
-const { createHash, createSign, randomBytes, randomUUID } = require("node:crypto");
+const { createHash, createSign, randomBytes, randomUUID, timingSafeEqual } = require("node:crypto");
 
 class APIError extends Error {
   constructor(status, code, message) {
@@ -14,6 +14,52 @@ const key = (type, id) => `${type}_${hash(String(id)).slice(0, 40)}`;
 const canonicalFarmID = (value) => String(value || "").trim().toLowerCase();
 const inviteAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const maximumAvatarBytes = 60 * 1024;
+const maximumInsightCiphertextBytes = 3 * 1024 * 1024;
+const insightTombstoneRetentionMilliseconds = 30 * 24 * 60 * 60 * 1000;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function requiredUUID(value, field) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!uuidPattern.test(normalized)) throw new APIError(400, "invalid_insight_identifier", `${field} 无效。`);
+  return normalized;
+}
+
+function validatedCiphertext(value, field = "ciphertextBase64") {
+  const encoded = String(value || "").trim();
+  if (!encoded || encoded.length > Math.ceil(maximumInsightCiphertextBytes / 3) * 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    throw new APIError(400, "invalid_insight_ciphertext", `${field} 无效或超过 3 MB。`);
+  }
+  const data = Buffer.from(encoded, "base64");
+  if (!data.length || data.length > maximumInsightCiphertextBytes || data.toString("base64") !== encoded) {
+    throw new APIError(400, "invalid_insight_ciphertext", `${field} 无效或超过 3 MB。`);
+  }
+  return encoded;
+}
+
+function validatedRecoveryProof(value) {
+  const encoded = String(value || "").trim();
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    throw new APIError(400, "invalid_insight_recovery_proof", "洞察恢复凭证无效。");
+  }
+  const data = Buffer.from(encoded, "base64");
+  if (data.length !== 32 || data.toString("base64") !== encoded) {
+    throw new APIError(400, "invalid_insight_recovery_proof", "洞察恢复凭证无效。");
+  }
+  return data;
+}
+
+function ciphertextKeyVersion(value, field = "ciphertextBase64") {
+  const encoded = validatedCiphertext(value, field);
+  const data = Buffer.from(encoded, "base64");
+  if (data.length < 5) {
+    throw new APIError(400, "invalid_insight_ciphertext", `${field} 缺少密钥版本。`);
+  }
+  const version = data.readUInt32BE(0);
+  if (!Number.isSafeInteger(version) || version < 1) {
+    throw new APIError(400, "invalid_insight_key_version", `${field} 的密钥版本无效。`);
+  }
+  return version;
+}
 
 function validatedAvatar(input) {
   const dataBase64 = String(input?.dataBase64 || "").trim();
@@ -299,6 +345,439 @@ class CollaborationService {
     await Promise.all(memberships.map((item) => this.bumpGeneration(item.farmID, timestamp)));
   }
 
+  async requestInsightDevice(accountID, input) {
+    const deviceID = requiredUUID(input?.deviceID, "deviceID");
+    if (!input.publicKeyJWK || typeof input.publicKeyJWK !== "object") {
+      throw new APIError(400, "invalid_insight_device_key", "洞察设备公钥无效。");
+    }
+    const documentID = key("insight_device", `${accountID}:${deviceID}`);
+    const current = await this.store.get(documentID);
+    const publicKeyJWK = canonicalJSONString(input.publicKeyJWK);
+    if (current?.publicKeyJWK && current.publicKeyJWK !== publicKeyJWK) {
+      throw new APIError(409, "insight_device_key_mismatch", "该洞察设备已有不同公钥。");
+    }
+    const timestamp = now();
+    const activeDevices = await this.store.find({ type: "insight_device", accountID, status: "active" });
+    const status = activeDevices.length === 0 ? "active" : current?.status === "active" ? "active" : "pending";
+    await this.store.set(documentID, {
+      type: "insight_device",
+      accountID,
+      deviceID,
+      publicKeyJWK,
+      displayName: String(input.displayName || "设备").slice(0, 80),
+      status,
+      requestedAt: current?.requestedAt || timestamp,
+      approvedAt: status === "active" ? current?.approvedAt || timestamp : null,
+      revokedAt: null,
+      updatedAt: timestamp,
+    });
+    const keyState = await this.store.get(key("insight_key_state", accountID));
+    return {
+      deviceID,
+      status,
+      requestedAt: current?.requestedAt || timestamp,
+      keyVersion: Number(keyState?.keyVersion || 1),
+    };
+  }
+
+  async insightDeviceRequests(accountID) {
+    const values = await this.store.find({ type: "insight_device", accountID });
+    return {
+      devices: values.map((item) => ({
+        deviceID: item.deviceID,
+        displayName: item.displayName,
+        publicKeyJWK: JSON.parse(item.publicKeyJWK),
+        status: item.status,
+        requestedAt: item.requestedAt,
+        approvedAt: item.approvedAt || null,
+        revokedAt: item.revokedAt || null,
+      })),
+    };
+  }
+
+  async approveInsightDevice(accountID, deviceID, input) {
+    deviceID = requiredUUID(deviceID, "deviceID");
+    const approverDeviceID = requiredUUID(input?.approverDeviceID, "approverDeviceID");
+    const approver = await this.store.get(key("insight_device", `${accountID}:${approverDeviceID}`));
+    if (approver?.status !== "active") {
+      throw new APIError(403, "trusted_insight_device_required", "必须由已授权洞察设备批准。");
+    }
+    const documentID = key("insight_device", `${accountID}:${deviceID}`);
+    const target = await this.store.get(documentID);
+    if (!target || target.status !== "pending") {
+      throw new APIError(404, "pending_insight_device_not_found", "未找到待批准的洞察设备。");
+    }
+    const sealedEnvelopeBase64 = validatedCiphertext(input?.sealedEnvelopeBase64, "sealedEnvelopeBase64");
+    const keyVersion = Number(input?.keyVersion);
+    if (!Number.isSafeInteger(keyVersion) || keyVersion < 1) {
+      throw new APIError(400, "invalid_insight_key_version", "洞察密钥版本无效。");
+    }
+    const keyStateDocumentID = key("insight_key_state", accountID);
+    const keyState = await this.store.get(keyStateDocumentID);
+    if (keyState && Number(keyState.keyVersion) !== keyVersion) {
+      throw new APIError(409, "stale_insight_key_version", "洞察密钥版本已变化，请刷新设备状态后重试。");
+    }
+    const timestamp = now();
+    await this.store.set(key("insight_envelope", `${accountID}:${deviceID}:${keyVersion}`), {
+      type: "insight_envelope",
+      accountID,
+      targetDeviceID: deviceID,
+      keyVersion,
+      sealedEnvelopeBase64,
+      approvedByDeviceID: approverDeviceID,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    if (!keyState) {
+      await this.store.set(keyStateDocumentID, {
+        type: "insight_key_state",
+        accountID,
+        keyVersion,
+        rotatedByDeviceID: approverDeviceID,
+        updatedAt: timestamp,
+      });
+    }
+    await this.store.update(documentID, { status: "active", approvedAt: timestamp, updatedAt: timestamp });
+    return { deviceID, status: "active", keyVersion, approvedAt: timestamp };
+  }
+
+  async recoverInsightDevice(accountID, deviceID, input) {
+    deviceID = requiredUUID(deviceID, "deviceID");
+    const keyVersion = Number(input?.keyVersion);
+    if (!Number.isSafeInteger(keyVersion) || keyVersion < 1) {
+      throw new APIError(400, "invalid_insight_key_version", "洞察密钥版本无效。");
+    }
+    const recoveryProof = validatedRecoveryProof(input?.recoveryProofBase64);
+    const sealedEnvelopeBase64 = validatedCiphertext(
+      input?.sealedEnvelopeBase64,
+      "sealedEnvelopeBase64"
+    );
+    const operation = async (store) => {
+      const deviceDocumentID = key("insight_device", `${accountID}:${deviceID}`);
+      const target = await store.get(deviceDocumentID);
+      if (!target || target.status !== "pending") {
+        throw new APIError(404, "pending_insight_device_not_found", "未找到待恢复的洞察设备。");
+      }
+      const recoveryDocumentID = key("insight_recovery", accountID);
+      const recovery = await store.get(recoveryDocumentID);
+      if (!recovery) {
+        throw new APIError(404, "insight_recovery_not_found", "洞察恢复包不存在或已使用。");
+      }
+      const keyState = await store.get(key("insight_key_state", accountID));
+      const currentKeyVersion = Number(keyState?.keyVersion || 1);
+      if (keyVersion !== currentKeyVersion || Number(recovery.keyVersion) !== keyVersion) {
+        throw new APIError(409, "stale_insight_recovery", "洞察恢复包已经失效，请在已授权设备上重新生成。");
+      }
+      const expectedDigest = String(recovery.proofDigest || "").trim().toLowerCase();
+      const actualDigest = createHash("sha256").update(recoveryProof).digest();
+      const expectedDigestBytes = /^[a-f0-9]{64}$/.test(expectedDigest)
+        ? Buffer.from(expectedDigest, "hex")
+        : Buffer.alloc(0);
+      if (
+        expectedDigestBytes.length !== actualDigest.length ||
+        !timingSafeEqual(expectedDigestBytes, actualDigest)
+      ) {
+        throw new APIError(403, "invalid_insight_recovery_proof", "洞察恢复凭证无效。");
+      }
+      const timestamp = now();
+      await store.set(
+        key("insight_envelope", `${accountID}:${deviceID}:${keyVersion}`),
+        {
+          type: "insight_envelope",
+          accountID,
+          targetDeviceID: deviceID,
+          keyVersion,
+          sealedEnvelopeBase64,
+          approvedByDeviceID: "recovery",
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        }
+      );
+      await store.update(deviceDocumentID, {
+        status: "active",
+        approvedAt: timestamp,
+        updatedAt: timestamp,
+      });
+      await store.remove(recoveryDocumentID);
+      return {
+        deviceID,
+        status: "active",
+        keyVersion,
+        approvedAt: timestamp,
+        recoveryConsumed: true,
+      };
+    };
+    return this.store.transaction ? this.store.transaction(operation) : operation(this.store);
+  }
+
+  async insightKeyEnvelopes(accountID, deviceID) {
+    deviceID = requiredUUID(deviceID, "deviceID");
+    const device = await this.store.get(key("insight_device", `${accountID}:${deviceID}`));
+    if (!device || device.status === "revoked") {
+      throw new APIError(404, "insight_device_not_found", "洞察设备不存在或已撤销。");
+    }
+    const values = await this.store.find({ type: "insight_envelope", accountID, targetDeviceID: deviceID });
+    return {
+      envelopes: values
+        .sort((a, b) => Number(a.keyVersion) - Number(b.keyVersion))
+        .map((item) => ({
+          targetDeviceID: item.targetDeviceID,
+          keyVersion: item.keyVersion,
+          sealedEnvelopeBase64: item.sealedEnvelopeBase64,
+          createdAt: item.createdAt,
+        })),
+    };
+  }
+
+  async revokeInsightDevice(accountID, deviceID, input) {
+    deviceID = requiredUUID(deviceID, "deviceID");
+    const requesterDeviceID = requiredUUID(input?.requesterDeviceID, "requesterDeviceID");
+    if (requesterDeviceID === deviceID) {
+      throw new APIError(400, "cannot_revoke_current_insight_device", "不能在当前设备上撤销自身。");
+    }
+    const requestedKeyVersion = Number(input?.keyVersion);
+    const envelopes = Array.isArray(input?.envelopes) ? input.envelopes : [];
+    const operation = async (store) => {
+      const documentID = key("insight_device", `${accountID}:${deviceID}`);
+      const requester = await store.get(key("insight_device", `${accountID}:${requesterDeviceID}`));
+      const device = await store.get(documentID);
+      if (requester?.status !== "active") {
+        throw new APIError(403, "trusted_insight_device_required", "必须由已授权洞察设备发起撤销。");
+      }
+      if (!device || device.status !== "active") {
+        throw new APIError(404, "active_insight_device_not_found", "未找到可撤销的洞察设备。");
+      }
+      const activeDevices = await store.find({ type: "insight_device", accountID, status: "active" });
+      const remainingDevices = activeDevices.filter((item) => item.deviceID !== deviceID);
+      if (!remainingDevices.length) {
+        throw new APIError(409, "last_insight_device", "至少需要保留一台已授权洞察设备。");
+      }
+      const keyStateDocumentID = key("insight_key_state", accountID);
+      const keyState = await store.get(keyStateDocumentID);
+      const currentKeyVersion = Number(keyState?.keyVersion || 1);
+      if (!Number.isSafeInteger(requestedKeyVersion) || requestedKeyVersion !== currentKeyVersion + 1) {
+        throw new APIError(409, "invalid_insight_key_rotation", "撤销设备必须将个人主密钥版本递增一次。");
+      }
+      if (envelopes.length !== remainingDevices.length || envelopes.length > 20) {
+        throw new APIError(400, "incomplete_insight_key_envelopes", "必须为每台保留设备提供新密钥信封。");
+      }
+      const remainingIDs = new Set(remainingDevices.map((item) => item.deviceID));
+      const seenIDs = new Set();
+      const validatedEnvelopes = envelopes.map((value) => {
+        const targetDeviceID = requiredUUID(value?.targetDeviceID, "targetDeviceID");
+        if (!remainingIDs.has(targetDeviceID) || seenIDs.has(targetDeviceID)) {
+          throw new APIError(400, "invalid_insight_key_envelope_target", "新密钥信封的目标设备无效。");
+        }
+        seenIDs.add(targetDeviceID);
+        return {
+          targetDeviceID,
+          sealedEnvelopeBase64: validatedCiphertext(value?.sealedEnvelopeBase64, "sealedEnvelopeBase64"),
+        };
+      });
+      const timestamp = now();
+      await store.update(documentID, {
+        status: "revoked",
+        revokedAt: timestamp,
+        updatedAt: timestamp,
+      });
+      for (const envelope of validatedEnvelopes) {
+        await store.set(
+          key("insight_envelope", `${accountID}:${envelope.targetDeviceID}:${requestedKeyVersion}`),
+          {
+            type: "insight_envelope",
+            accountID,
+            targetDeviceID: envelope.targetDeviceID,
+            keyVersion: requestedKeyVersion,
+            sealedEnvelopeBase64: envelope.sealedEnvelopeBase64,
+            approvedByDeviceID: requesterDeviceID,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          }
+        );
+      }
+      await store.set(keyStateDocumentID, {
+        type: "insight_key_state",
+        accountID,
+        keyVersion: requestedKeyVersion,
+        rotatedByDeviceID: requesterDeviceID,
+        updatedAt: timestamp,
+      });
+      await store.remove(key("insight_recovery", accountID)).catch(() => undefined);
+      return {
+        deviceID,
+        status: "revoked",
+        requiresKeyRotation: false,
+        recoveryReset: true,
+        keyVersion: requestedKeyVersion,
+        revokedAt: timestamp,
+      };
+    };
+    return this.store.transaction ? this.store.transaction(operation) : operation(this.store);
+  }
+
+  async syncInsightRecords(accountID, input) {
+    const deviceID = requiredUUID(input?.deviceID, "deviceID");
+    const device = await this.store.get(key("insight_device", `${accountID}:${deviceID}`));
+    if (device?.status !== "active") {
+      throw new APIError(403, "active_insight_device_required", "当前设备未获准同步洞察密文。");
+    }
+    const cursor = Math.max(0, Number(input?.cursor || 0));
+    const outgoing = Array.isArray(input?.records) ? input.records : [];
+    if (outgoing.length > 200) throw new APIError(400, "too_many_insight_records", "单次最多同步 200 条洞察密文。");
+    const keyStateDocumentID = key("insight_key_state", accountID);
+    let keyState = await this.store.get(keyStateDocumentID);
+    let currentKeyVersion = Number(keyState?.keyVersion || 1);
+    let clock = await this.store.get(key("insight_clock", accountID));
+    let nextClock = Math.max(Date.now() * 1000, Number(clock?.cursor || 0) + 1);
+    for (const value of outgoing) {
+      const recordID = requiredUUID(value.recordID, "recordID");
+      const recordKind = String(value.recordKind || "");
+      if (!["conversation", "message", "attachment", "action_draft", "receipt", "vault"].includes(recordKind)) {
+        throw new APIError(400, "invalid_insight_record_kind", "洞察记录类型无效。");
+      }
+      const revision = Number(value.revision);
+      if (!Number.isSafeInteger(revision) || revision < 1) {
+        throw new APIError(400, "invalid_insight_revision", "洞察记录版本无效。");
+      }
+      const ciphertextBase64 = validatedCiphertext(value.ciphertextBase64);
+      const conversationID = value.conversationID == null
+        ? null
+        : requiredUUID(value.conversationID, "conversationID");
+      const recordKeyVersion = ciphertextKeyVersion(ciphertextBase64);
+      if (!keyState && currentKeyVersion === 1 && recordKeyVersion !== 1) {
+        currentKeyVersion = recordKeyVersion;
+      }
+      if (recordKeyVersion !== currentKeyVersion) {
+        throw new APIError(409, "stale_insight_key_version", "洞察密文使用了已过期的个人主密钥。");
+      }
+      const documentID = key("insight_record", `${accountID}:${recordID}`);
+      const current = await this.store.get(documentID);
+      if (current && Number(current.revision) > revision) continue;
+      const timestamp = nextClock++;
+      await this.store.set(documentID, {
+        type: "insight_record",
+        accountID,
+        recordID,
+        recordKind,
+        conversationID,
+        revision,
+        ciphertextBase64,
+        deletedAt: value.deletedAt == null ? null : Number(value.deletedAt),
+        createdAt: current?.createdAt || timestamp,
+        updatedAt: timestamp,
+      });
+    }
+    if (!keyState && outgoing.length) {
+      keyState = {
+        type: "insight_key_state",
+        accountID,
+        keyVersion: currentKeyVersion,
+        rotatedByDeviceID: deviceID,
+        updatedAt: now(),
+      };
+      await this.store.set(keyStateDocumentID, keyState);
+    }
+    if (outgoing.length) {
+      await this.store.set(key("insight_clock", accountID), {
+        type: "insight_clock",
+        accountID,
+        cursor: nextClock - 1,
+        updatedAt: now(),
+      });
+    }
+    await this.purgeExpiredInsightTombstones(accountID);
+    const all = await this.store.find({ type: "insight_record", accountID }, 1000);
+    const changes = all
+      .filter((item) => Number(item.updatedAt || 0) > cursor)
+      .sort((a, b) => Number(a.updatedAt) - Number(b.updatedAt))
+      .slice(0, 200);
+    const nextCursor = changes.reduce((value, item) => Math.max(value, Number(item.updatedAt || 0)), cursor);
+    return {
+      cursor: nextCursor,
+      keyVersion: currentKeyVersion,
+      hasMore: all.some((item) => Number(item.updatedAt || 0) > nextCursor),
+      records: changes.map((item) => ({
+        recordID: item.recordID,
+        recordKind: item.recordKind,
+        conversationID: item.conversationID || null,
+        revision: item.revision,
+        ciphertextBase64: item.ciphertextBase64,
+        deletedAt: item.deletedAt,
+        updatedAt: item.updatedAt,
+      })),
+    };
+  }
+
+  async purgeExpiredInsightTombstones(accountID) {
+    const all = await this.store.find({ type: "insight_record", accountID }, 1000);
+    const cutoff = Date.now() - insightTombstoneRetentionMilliseconds;
+    const expiredConversations = all.filter((item) =>
+      item.recordKind === "conversation" &&
+      item.deletedAt != null &&
+      Number(item.deletedAt) <= cutoff
+    );
+    const expiredConversationIDs = new Set(expiredConversations.map((item) => item.recordID));
+    const expired = all.filter((item) =>
+      expiredConversationIDs.has(item.recordID) ||
+      expiredConversationIDs.has(item.conversationID) ||
+      item.deletedAt != null && Number(item.deletedAt) <= cutoff
+    );
+    await Promise.all(expired.map((item) =>
+      this.store.remove(item._documentID).catch(() => undefined)
+    ));
+  }
+
+  async updateInsightRecovery(accountID, input) {
+    const deviceID = requiredUUID(input?.deviceID, "deviceID");
+    const ciphertextBase64 = validatedCiphertext(input?.ciphertextBase64);
+    const keyVersion = Number(input?.keyVersion);
+    if (!Number.isSafeInteger(keyVersion) || keyVersion < 1) {
+      throw new APIError(400, "invalid_insight_key_version", "洞察恢复包密钥版本无效。");
+    }
+    const proofDigest = String(input?.proofDigest || "").trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(proofDigest)) {
+      throw new APIError(400, "invalid_insight_recovery_digest", "洞察恢复凭证摘要无效。");
+    }
+    const operation = async (store) => {
+      const device = await store.get(key("insight_device", `${accountID}:${deviceID}`));
+      if (device?.status !== "active") {
+        throw new APIError(403, "trusted_insight_device_required", "必须由已授权洞察设备生成恢复包。");
+      }
+      const keyState = await store.get(key("insight_key_state", accountID));
+      if (Number(keyState?.keyVersion || 1) !== keyVersion) {
+        throw new APIError(409, "stale_insight_key_version", "洞察密钥版本已变化，请重新生成恢复码。");
+      }
+      const timestamp = now();
+      await store.set(key("insight_recovery", accountID), {
+        type: "insight_recovery",
+        accountID,
+        keyVersion,
+        ciphertextBase64,
+        proofDigest,
+        createdByDeviceID: deviceID,
+        updatedAt: timestamp,
+      });
+      return { keyVersion, updatedAt: timestamp };
+    };
+    return this.store.transaction ? this.store.transaction(operation) : operation(this.store);
+  }
+
+  async insightRecovery(accountID) {
+    const value = await this.store.get(key("insight_recovery", accountID));
+    if (!value) return { recovery: null };
+    return {
+      recovery: {
+        keyVersion: value.keyVersion,
+        ciphertextBase64: value.ciphertextBase64,
+        updatedAt: value.updatedAt,
+      },
+    };
+  }
+
+  async removeInsightRecovery(accountID) {
+    await this.store.remove(key("insight_recovery", accountID)).catch(() => undefined);
+  }
+
   async registerFarm(accountID, input) {
     const farmID = canonicalFarmID(input.farmID);
     if (!farmID || String(input.zoneName || "").toLowerCase() !== `farm_${farmID}`) throw new APIError(400, "invalid_farm_zone", "牧场 Zone 名称无效。");
@@ -450,7 +929,22 @@ class CollaborationService {
       const farm = await this.store.get(key("farm", item.farmID));
       if (farm?.status === "active") visible.push({ ...item, farm });
     }
-    return { accountID, displayName: account?.displayName, status: account?.status || "active", memberships: visible.map((item) => ({ farm_id: item.farmID, ownerAccountID: item.farm.ownerAccountID, role: item.role, status: item.status, cloudZoneName: item.farm.cloudZoneName, shareRecordName: item.farm.shareRecordName || null })) };
+    const insightAllowlist = new Set(
+      String(this.env.MIMO_INSIGHTS_ACCOUNT_ALLOWLIST || "")
+        .split(",")
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const insightEnabled = ["1", "true", "yes"].includes(
+      String(this.env.MIMO_INSIGHTS_ENABLED || "").toLowerCase()
+    ) && insightAllowlist.has(String(accountID).toLowerCase());
+    return {
+      accountID,
+      displayName: account?.displayName,
+      status: account?.status || "active",
+      features: { mimoInsights: insightEnabled },
+      memberships: visible.map((item) => ({ farm_id: item.farmID, ownerAccountID: item.farm.ownerAccountID, role: item.role, status: item.status, cloudZoneName: item.farm.cloudZoneName, shareRecordName: item.farm.shareRecordName || null })),
+    };
   }
 
   async securitySnapshot(accountID, farmID) {
@@ -486,6 +980,11 @@ class CollaborationService {
     const invites = await this.store.find({ type: "invite" });
     await Promise.all(invites.filter((item) => item.createdByAccountID === accountID || item.redeemedByAccountID === accountID).map((item) => this.store.remove(item._documentID)));
     await this.store.remove(key("apple_credential", accountID)).catch(() => undefined);
+    const insightTypes = ["insight_device", "insight_envelope", "insight_record", "insight_recovery", "insight_clock", "insight_key_state"];
+    const insightRecords = (await Promise.all(
+      insightTypes.map((type) => this.store.find({ type, accountID }, 1000))
+    )).flat();
+    await Promise.all(insightRecords.map((item) => this.store.remove(item._documentID)));
     await this.store.update(key("account", accountID), {
       status: "deleted",
       displayName: "已删除账户",

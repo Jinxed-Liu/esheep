@@ -373,11 +373,13 @@
 				INFOPLIST_KEY_CLOUD_COLLABORATION_ENABLED = "$(CLOUD_COLLABORATION_ENABLED)";
 				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_MIMO_INSIGHTS_ENABLED = "$(MIMO_INSIGHTS_ENABLED)";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
 				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号与文档。";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于您主动发起的语音录入，将现场描述转换为文字。";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用于把您主动提交的语音转换为文字，便于快速录入和查询羊场数据。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录制您主动发起的语音，并在发送前明确交给 MiMo 多模态模型理解。";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "用于在您确认 AI 草案后创建系统提醒事项。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
@@ -391,6 +393,7 @@
 					"@loader_path/Frameworks",
 				);
 				MARKETING_VERSION = 3.0.0;
+				MIMO_INSIGHTS_ENABLED = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.dev;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -429,11 +432,13 @@
 				INFOPLIST_KEY_CLOUD_COLLABORATION_ENABLED = "$(CLOUD_COLLABORATION_ENABLED)";
 				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_MIMO_INSIGHTS_ENABLED = "$(MIMO_INSIGHTS_ENABLED)";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
 				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号与文档。";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于您主动发起的语音录入，将现场描述转换为文字。";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用于把您主动提交的语音转换为文字，便于快速录入和查询羊场数据。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录制您主动发起的语音，并在发送前明确交给 MiMo 多模态模型理解。";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "用于在您确认 AI 草案后创建系统提醒事项。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
@@ -447,6 +452,7 @@
 					"@loader_path/Frameworks",
 				);
 				MARKETING_VERSION = 3.0.0;
+				MIMO_INSIGHTS_ENABLED = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -533,11 +539,13 @@
 				INFOPLIST_KEY_CLOUD_COLLABORATION_ENABLED = "$(CLOUD_COLLABORATION_ENABLED)";
 				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_MIMO_INSIGHTS_ENABLED = "$(MIMO_INSIGHTS_ENABLED)";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
 				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号与文档。";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于您主动发起的语音录入，将现场描述转换为文字。";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用于把您主动提交的语音转换为文字，便于快速录入和查询羊场数据。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录制您主动发起的语音，并在发送前明确交给 MiMo 多模态模型理解。";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "用于在您确认 AI 草案后创建系统提醒事项。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
@@ -551,6 +559,7 @@
 					"@loader_path/Frameworks",
 				);
 				MARKETING_VERSION = 3.0.0;
+				MIMO_INSIGHTS_ENABLED = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;

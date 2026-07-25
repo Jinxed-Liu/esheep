@@ -5,11 +5,13 @@ struct SheepEarTagSearchCandidate: Identifiable, Hashable, Sendable {
     let id: UUID
     let earTag: String
     let detail: String
+    let normalizedEarTag: String
 
     init(id: UUID, earTag: String, detail: String = "") {
         self.id = id
         self.earTag = earTag
         self.detail = detail
+        self.normalizedEarTag = EarTag.normalized(earTag)
     }
 
     init(sheep: SheepRecord, detail: String? = nil) {
@@ -18,6 +20,7 @@ struct SheepEarTagSearchCandidate: Identifiable, Hashable, Sendable {
         self.detail = detail ?? [sheep.sex.displayName, sheep.breed]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
+        self.normalizedEarTag = EarTag.normalized(sheep.earTag)
     }
 }
 
@@ -42,31 +45,51 @@ enum SheepEarTagSearchMatcher {
             return SheepEarTagSearchResultSet(matches: [], totalCount: 0)
         }
 
-        let ranked = candidates.compactMap { candidate -> (candidate: SheepEarTagSearchCandidate, rank: Int)? in
+        let boundedLimit = max(0, limit)
+        var totalCount = 0
+        var topMatches: [(candidate: SheepEarTagSearchCandidate, rank: Int)] = []
+        topMatches.reserveCapacity(boundedLimit)
+
+        for candidate in candidates {
             guard !excludedIDs.contains(candidate.id),
-                  let rank = matchRank(earTag: candidate.earTag, query: normalizedQuery)
-            else { return nil }
-            return (candidate, rank)
-        }
-        .sorted { lhs, rhs in
-            if lhs.rank != rhs.rank { return lhs.rank < rhs.rank }
-            let tagOrder = lhs.candidate.earTag.localizedStandardCompare(rhs.candidate.earTag)
-            if tagOrder != .orderedSame { return tagOrder == .orderedAscending }
-            return lhs.candidate.id.uuidString < rhs.candidate.id.uuidString
+                  let rank = matchRank(normalizedEarTag: candidate.normalizedEarTag, query: normalizedQuery)
+            else { continue }
+            totalCount += 1
+
+            guard boundedLimit > 0 else { continue }
+            let match = (candidate: candidate, rank: rank)
+            let insertionIndex = topMatches.firstIndex { isOrderedBefore(match, $0) } ?? topMatches.endIndex
+            if insertionIndex < boundedLimit {
+                topMatches.insert(match, at: insertionIndex)
+                if topMatches.count > boundedLimit {
+                    topMatches.removeLast()
+                }
+            } else if topMatches.count < boundedLimit {
+                topMatches.append(match)
+            }
         }
 
         return SheepEarTagSearchResultSet(
-            matches: Array(ranked.prefix(max(0, limit)).map(\.candidate)),
-            totalCount: ranked.count
+            matches: topMatches.map(\.candidate),
+            totalCount: totalCount
         )
     }
 
-    private static func matchRank(earTag: String, query: String) -> Int? {
-        let normalizedTag = EarTag.normalized(earTag)
-        if normalizedTag == query { return 0 }
-        if normalizedTag.hasPrefix(query) { return 1 }
-        if normalizedTag.contains(query) { return 2 }
+    private static func matchRank(normalizedEarTag: String, query: String) -> Int? {
+        if normalizedEarTag == query { return 0 }
+        if normalizedEarTag.hasPrefix(query) { return 1 }
+        if normalizedEarTag.contains(query) { return 2 }
         return nil
+    }
+
+    private static func isOrderedBefore(
+        _ lhs: (candidate: SheepEarTagSearchCandidate, rank: Int),
+        _ rhs: (candidate: SheepEarTagSearchCandidate, rank: Int)
+    ) -> Bool {
+        if lhs.rank != rhs.rank { return lhs.rank < rhs.rank }
+        let tagOrder = lhs.candidate.earTag.localizedStandardCompare(rhs.candidate.earTag)
+        if tagOrder != .orderedSame { return tagOrder == .orderedAscending }
+        return lhs.candidate.id.uuidString < rhs.candidate.id.uuidString
     }
 }
 
@@ -83,17 +106,16 @@ struct SheepEarTagSingleSearchField: View {
         selection.flatMap { selectedID in candidates.first { $0.id == selectedID } }
     }
 
-    private var resultSet: SheepEarTagSearchResultSet {
-        SheepEarTagSearchMatcher.search(
-            query: query,
-            candidates: candidates,
-            excluding: selection.map { Set([$0]) } ?? []
-        )
-    }
-
-    private var hasQuery: Bool { !EarTag.normalized(query).isEmpty }
-
     var body: some View {
+        let hasQuery = !EarTag.normalized(query).isEmpty
+        let resultSet = hasQuery
+            ? SheepEarTagSearchMatcher.search(
+                query: query,
+                candidates: candidates,
+                excluding: selection.map { Set([$0]) } ?? []
+            )
+            : SheepEarTagSearchResultSet(matches: [], totalCount: 0)
+
         Group {
             if let selectedCandidate {
                 selectedRow(selectedCandidate)
@@ -108,7 +130,7 @@ struct SheepEarTagSingleSearchField: View {
             searchField
 
             if hasQuery {
-                searchResults
+                searchResults(resultSet)
             }
         }
     }
@@ -136,7 +158,7 @@ struct SheepEarTagSingleSearchField: View {
     }
 
     @ViewBuilder
-    private var searchResults: some View {
+    private func searchResults(_ resultSet: SheepEarTagSearchResultSet) -> some View {
         if resultSet.matches.isEmpty {
             Text("没有匹配的耳号")
                 .font(.footnote)
@@ -206,17 +228,17 @@ struct SheepEarTagMultiSearchField: View {
             }
     }
 
-    private var resultSet: SheepEarTagSearchResultSet {
-        SheepEarTagSearchMatcher.search(
-            query: query,
-            candidates: candidates,
-            excluding: selection
-        )
-    }
-
-    private var hasQuery: Bool { !EarTag.normalized(query).isEmpty }
-
     var body: some View {
+        let hasQuery = !EarTag.normalized(query).isEmpty
+        let selectedCandidates = selectedCandidates
+        let resultSet = hasQuery
+            ? SheepEarTagSearchMatcher.search(
+                query: query,
+                candidates: candidates,
+                excluding: selection
+            )
+            : SheepEarTagSearchResultSet(matches: [], totalCount: 0)
+
         Group {
             if showsSelectedCandidates {
                 if selectedCandidates.isEmpty, !hasQuery {
@@ -233,7 +255,7 @@ struct SheepEarTagMultiSearchField: View {
             searchField
 
             if hasQuery {
-                searchResults
+                searchResults(resultSet)
             }
         }
     }
@@ -261,7 +283,7 @@ struct SheepEarTagMultiSearchField: View {
     }
 
     @ViewBuilder
-    private var searchResults: some View {
+    private func searchResults(_ resultSet: SheepEarTagSearchResultSet) -> some View {
         if resultSet.matches.isEmpty {
             Text("没有匹配的耳号")
                 .font(.footnote)

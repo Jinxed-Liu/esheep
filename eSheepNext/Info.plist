@@ -14,6 +14,8 @@
 	<string>$(CLOUD_COLLABORATION_ENABLED)</string>
 	<key>IDENTITY_WORKER_URL</key>
 	<string>$(IDENTITY_WORKER_URL)</string>
+	<key>MIMO_INSIGHTS_ENABLED</key>
+	<string>$(MIMO_INSIGHTS_ENABLED)</string>
 	<key>SUBSCRIPTIONS_ENABLED</key>
 	<string>$(SUBSCRIPTIONS_ENABLED)</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
