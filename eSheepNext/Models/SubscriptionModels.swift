@@ -63,19 +63,27 @@ struct FarmPlanStatus: Codable, Equatable, Sendable {
 
 enum SubscriptionCapabilityPolicy {
     static func canCreateFarm(
-        existingOwnedFarmCount: Int,
-        entitlement: AccountEntitlement,
+        existingOwnedFarmCount _: Int,
+        entitlement _: AccountEntitlement,
         subscriptionsEnabled: Bool = SubscriptionFeatureConfiguration.isEnabled
     ) -> Bool {
-        !subscriptionsEnabled || existingOwnedFarmCount == 0 || entitlement.allowsOwnerProFeatures
+        true
     }
 
     static func canCreateAdditionalFarm(
         role: FarmRole,
+        entitlement _: AccountEntitlement,
+        subscriptionsEnabled: Bool = SubscriptionFeatureConfiguration.isEnabled
+    ) -> Bool {
+        role == .owner
+    }
+
+    static func canEnableSupabaseCloud(
+        role: FarmRole,
         entitlement: AccountEntitlement,
         subscriptionsEnabled: Bool = SubscriptionFeatureConfiguration.isEnabled
     ) -> Bool {
-        role == .owner && (!subscriptionsEnabled || entitlement.allowsOwnerProFeatures)
+        role == .owner && subscriptionsEnabled && entitlement.allowsOwnerProFeatures
     }
 
     static func canRecordProduction(role: FarmRole, entitlement: AccountEntitlement) -> Bool {

@@ -16,6 +16,7 @@ struct FarmHomeView: View {
     let farm: FarmRecord
     @Binding var isWeatherDetailPresented: Bool
     @Binding var isMetricDetailPresented: Bool
+    let sharedFarmAdmissionStatus: SharedFarmAdmissionStatus?
     @State private var pendingOutboxCount = 0
     @State private var selectedMetric: HomeMetricDestination?
     @State private var isEventExportPresented = false
@@ -25,12 +26,14 @@ struct FarmHomeView: View {
         account: AccountProfile,
         farm: FarmRecord,
         isWeatherDetailPresented: Binding<Bool>,
-        isMetricDetailPresented: Binding<Bool>
+        isMetricDetailPresented: Binding<Bool>,
+        sharedFarmAdmissionStatus: SharedFarmAdmissionStatus?
     ) {
         self.account = account
         self.farm = farm
         _isWeatherDetailPresented = isWeatherDetailPresented
         _isMetricDetailPresented = isMetricDetailPresented
+        self.sharedFarmAdmissionStatus = sharedFarmAdmissionStatus
         let farmID = farm.id
         _sheep = Query(
             filter: #Predicate<SheepRecord> {
@@ -119,10 +122,16 @@ struct FarmHomeView: View {
     private var hero: some View {
         FarmWeatherHero(
             farm: farm,
-            syncSymbol: pendingOutboxCount == 0 ? "checkmark.icloud" : "arrow.triangle.2.circlepath.icloud",
-            syncText: CloudFeatureConfiguration.isEnabled
-                ? (pendingOutboxCount == 0 ? "本地记录已排队处理" : "有 \(pendingOutboxCount) 条本地记录等待同步")
-                : "业务数据已保存在本机",
+            syncSymbol: sharedFarmAdmissionStatus == nil
+                ? (pendingOutboxCount == 0 ? "checkmark.icloud" : "arrow.triangle.2.circlepath.icloud")
+                : "person.2.badge.gearshape",
+            syncText: sharedFarmAdmissionStatus.map {
+                "正在加入共享牧场 · \($0.detailText)"
+            } ?? (
+                CloudFeatureConfiguration.isEnabled
+                    ? (pendingOutboxCount == 0 ? "本地记录已排队处理" : "有 \(pendingOutboxCount) 条本地记录等待同步")
+                    : "业务数据已保存在本机"
+            ),
             isDetailPresented: $isWeatherDetailPresented
         )
     }

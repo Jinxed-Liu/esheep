@@ -7,6 +7,7 @@ struct SettingsHomeView: View {
     @Environment(FarmNotificationService.self) private var notifications
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Query(sort: \SyncConflictRecord.detectedAt, order: .reverse) private var conflicts: [SyncConflictRecord]
+    @Query private var storageProfiles: [FarmStorageProfile]
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -26,7 +27,8 @@ struct SettingsHomeView: View {
     private var policy: SettingsVisibilityPolicy {
         SettingsVisibilityPolicy(
             role: farm.role,
-            cloudEnabled: CloudFeatureConfiguration.isEnabled,
+            cloudEnabled: CloudFeatureConfiguration.isEnabled ||
+                SupabaseAccountConfiguration.isConfigured,
             subscriptionEnabled: SubscriptionFeatureConfiguration.isEnabled,
             unresolvedConflictCount: unresolvedConflictCount
         )
@@ -92,6 +94,21 @@ struct SettingsHomeView: View {
                 }
 
                 SettingsCard(title: "当前牧场") {
+                    if farm.role == .owner {
+                        SettingsNavigationRow(
+                            title: "云存储",
+                            subtitle: cloudStorageSubtitle,
+                            systemImage: "externaldrive.connected.to.line.below",
+                            iconColor: .teal
+                        ) {
+                            FarmCloudStorageSettingsView(account: account, farm: farm)
+                        }
+                    }
+
+                    if farm.role == .owner, policy.shows(.farmLocation) {
+                        SettingsCardDivider()
+                    }
+
                     if policy.shows(.farmLocation) {
                         SettingsNavigationRow(
                             title: "牧场位置",
@@ -114,7 +131,7 @@ struct SettingsHomeView: View {
                             systemImage: "person.2.fill",
                             iconColor: .indigo
                         ) {
-                            CloudCollaborationCenterView(account: account, farm: farm)
+                            FarmMembersAndSharingView(account: account, farm: farm)
                         }
                     }
                 }
@@ -192,9 +209,11 @@ struct SettingsHomeView: View {
                     SettingsActionContainer {
                         AccountSignOutButton()
                     }
-                    SettingsCardDivider(leading: 16)
-                    SettingsActionContainer {
-                        AccountDeletionButton(account: account)
+                    if AccountIdentityClients.activeProvider != .supabase {
+                        SettingsCardDivider(leading: 16)
+                        SettingsActionContainer {
+                            AccountDeletionButton(account: account)
+                        }
                     }
                 }
             }
@@ -253,6 +272,14 @@ struct SettingsHomeView: View {
         }
         .task {
             await notifications.refreshAuthorizationStatus()
+        }
+    }
+
+    private var cloudStorageSubtitle: String {
+        switch storageProfiles.first(where: { $0.farmID == farm.id })?.mode ?? .localOnly {
+        case .localOnly: "仅本机，可选择 iCloud 或 Supabase"
+        case .iCloud: "当前使用 iCloud"
+        case .supabase: "当前使用 Supabase 云"
         }
     }
 

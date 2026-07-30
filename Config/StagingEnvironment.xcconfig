@@ -1,5 +1,9 @@
 // Staging 公开配置。私钥、Session 密钥和 Apple p8 内容不得进入仓库。
 IDENTITY_WORKER_URL =
 CAPABILITY_SIGNING_PUBLIC_KEY_PEM =
+INVITATION_URL_SCHEME = esheep-staging
+SUPABASE_URL =
+SUPABASE_PUBLISHABLE_KEY =
+SUPABASE_ENABLED = NO
 
 #include? "StagingEnvironment.local.xcconfig"

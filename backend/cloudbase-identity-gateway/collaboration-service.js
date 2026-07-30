@@ -108,6 +108,47 @@ function requireInviteRole(role, code = "invalid_invite_role") {
   }
 }
 
+function normalizedShareParticipantID(value, required = false) {
+  const participantID = String(value || "").trim();
+  if (!participantID && !required) return null;
+  if (!participantID || participantID.length > 512 || /[\u0000-\u001f\u007f]/.test(participantID)) {
+    throw new APIError(400, "invalid_share_participant", "CloudKit 一次性参与者标识无效。");
+  }
+  return participantID;
+}
+
+function normalizedCloudKitUserRecordName(value) {
+  const recordName = String(value || "").trim();
+  if (!recordName) return null;
+  if (recordName.length > 512 || /[\u0000-\u001f\u007f]/.test(recordName)) {
+    throw new APIError(400, "invalid_cloudkit_user", "CloudKit 用户标识无效。");
+  }
+  return recordName;
+}
+
+function normalizedCloudShareURL(value) {
+  const rawURL = String(value || "").trim();
+  if (!rawURL) return null;
+  if (rawURL.length > 2048) {
+    throw new APIError(400, "invalid_cloud_share_url", "CloudKit 共享链接无效。");
+  }
+  let parsed;
+  try {
+    parsed = new URL(rawURL);
+  } catch {
+    throw new APIError(400, "invalid_cloud_share_url", "CloudKit 共享链接无效。");
+  }
+  if (parsed.protocol !== "https:" ||
+      parsed.hostname.toLowerCase() !== "www.icloud.com" ||
+      !parsed.pathname.startsWith("/share/") ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port) {
+    throw new APIError(400, "invalid_cloud_share_url", "CloudKit 共享链接无效。");
+  }
+  return parsed.toString();
+}
+
 function base64url(value) {
   return Buffer.from(value).toString("base64url");
 }
@@ -181,7 +222,7 @@ class CollaborationService {
 
   async health() {
     await this.store.find({ type: "service_probe" }, 1);
-    return { status: "ok", environment: this.env.APP_ENVIRONMENT || "cloudbase-development", version: "0.4.0", database: "cloudbase-document" };
+    return { status: "ok", environment: this.env.APP_ENVIRONMENT || "cloudbase-development", version: "0.4.6", database: "cloudbase-document" };
   }
 
   async consumeRateLimit(scope, identity, limit, windowSeconds) {
@@ -823,10 +864,25 @@ class CollaborationService {
     const farmID = canonicalFarmID(input.farmID);
     await this.requireOwner(farmID, accountID);
     const code = inviteCode();
+    const shareParticipantID = normalizedShareParticipantID(input.shareParticipantID);
+    const shareURL = normalizedCloudShareURL(input.shareURL);
     const inviteID = randomUUID();
     const timestamp = now();
-    await this.store.set(key("invite", inviteID), { type: "invite", inviteID, farmID, createdByAccountID: accountID, role: input.role, codeHash: hash(code), expiresAt: timestamp + 86400, usedAt: null, createdAt: timestamp });
-    return { inviteID, code, role: input.role, expiresAt: timestamp + 86400 };
+    await this.store.set(key("invite", inviteID), {
+      type: "invite",
+      inviteID,
+      farmID,
+      createdByAccountID: accountID,
+      role: input.role,
+      codeHash: hash(code),
+      shareParticipantID,
+      shareParticipantIDHash: shareParticipantID ? hash(shareParticipantID) : null,
+      shareURL,
+      expiresAt: timestamp + 86400,
+      usedAt: null,
+      createdAt: timestamp,
+    });
+    return { inviteID, code, role: input.role, expiresAt: timestamp + 86400, shareParticipantID };
   }
 
   async recordInviteFailure(accountID) {
@@ -839,23 +895,110 @@ class CollaborationService {
     const failures = await this.store.find({ type: "audit", accountID, eventType: "invite_redeem_failed" });
     if (failures.filter((item) => item.createdAt > now() - 900).length >= 5) throw new APIError(429, "invite_attempt_locked", "邀请码连续错误次数过多，请 15 分钟后重试。");
     const normalized = String(input.code || "").trim().toUpperCase();
-    const operation = async (store) => {
-      const invite = (await store.find({ type: "invite", codeHash: hash(normalized) }, 2))[0];
-      if (!invite || invite.usedAt || invite.expiresAt <= now()) throw new APIError(400, "invalid_invite", "邀请码无效、已使用或已过期。");
+    const shareParticipantID = normalizedShareParticipantID(input.shareParticipantID);
+    const cloudKitUserRecordName = normalizedCloudKitUserRecordName(input.cloudKitUserRecordName);
+    let committedResponse;
+    const lookup = shareParticipantID
+      ? { type: "invite", shareParticipantIDHash: hash(shareParticipantID) }
+      : { type: "invite", codeHash: hash(normalized) };
+    try {
+      const matchedInvite = (await this.store.find(lookup, 2))[0];
+      const inviteID = String(matchedInvite?.inviteID || "").trim();
+      const farmID = String(matchedInvite?.farmID || "").trim();
+      const role = matchedInvite?.role;
+      if (!matchedInvite) {
+        throw new APIError(400, "invalid_invite", "邀请码无效、已使用或已过期。");
+      }
+      if (!inviteID || !farmID || !role) {
+        throw new APIError(500, "invite_record_incomplete", "邀请记录不完整，请让场主重新生成邀请。");
+      }
+      const inviteDocumentID = key("invite", inviteID);
+      const operation = async (store) => {
+        const transactionInvite = await store.get(inviteDocumentID);
+        if (!transactionInvite || transactionInvite.expiresAt <= now()) {
+          throw new APIError(400, "invalid_invite", "邀请码无效、已使用或已过期。");
+        }
+        const invite = {
+          ...matchedInvite,
+          ...transactionInvite,
+          inviteID,
+          farmID,
+          role,
+        };
+      if (invite.usedAt) {
+        if (invite.redeemedByAccountID !== accountID) {
+          throw new APIError(400, "invalid_invite", "邀请码无效、已使用或已过期。");
+        }
+        committedResponse = {
+          inviteID,
+          farmID,
+          role,
+          membershipStatus: "pendingShareConfirmation",
+        };
+        if (invite.shareURL) committedResponse.shareURL = invite.shareURL;
+        return committedResponse;
+      }
+      if (!invite.shareParticipantID && !cloudKitUserRecordName) {
+        throw new APIError(400, "missing_cloudkit_user", "请先登录 iCloud，再提交加入申请。");
+      }
       const timestamp = now();
-      const memberKey = key("membership", `${invite.farmID}:${accountID}`);
+      const memberKey = key("membership", `${farmID}:${accountID}`);
       const existing = await store.get(memberKey);
       if (existing?.status === "active") throw new APIError(409, "membership_already_active", "当前账号已经是该牧场成员。");
-      await store.update(invite._documentID, { redeemedByAccountID: accountID, redeemedAt: timestamp, usedAt: timestamp });
-      await store.set(memberKey, { type: "membership", membershipID: existing?.membershipID || randomUUID(), farmID: invite.farmID, accountID, role: invite.role, status: "pending", shareParticipantRecordName: null, createdAt: existing?.createdAt || timestamp, updatedAt: timestamp });
-      return { inviteID: invite.inviteID, farmID: invite.farmID, role: invite.role, membershipStatus: "pendingShareConfirmation" };
-    };
-    try {
-      return this.store.transaction ? await this.store.transaction(operation) : await operation(this.store);
+      await store.update(inviteDocumentID, {
+        redeemedByAccountID: accountID,
+        redeemedCloudKitUserRecordName: cloudKitUserRecordName,
+        redeemedAt: timestamp,
+        usedAt: timestamp,
+      });
+      await store.set(memberKey, { type: "membership", membershipID: existing?.membershipID || randomUUID(), farmID, accountID, role, status: "pending", shareParticipantRecordName: null, createdAt: existing?.createdAt || timestamp, updatedAt: timestamp });
+      committedResponse = {
+        inviteID,
+        farmID,
+        role,
+        membershipStatus: "pendingShareConfirmation",
+      };
+      if (invite.shareURL) committedResponse.shareURL = invite.shareURL;
+      return committedResponse;
+      };
+      const transactionResponse = this.store.transaction
+        ? await this.store.transaction(operation)
+        : await operation(this.store);
+      if (committedResponse) return committedResponse;
+      if (
+        transactionResponse &&
+        typeof transactionResponse === "object" &&
+        typeof transactionResponse.inviteID === "string"
+      ) {
+        return transactionResponse;
+      }
+      throw new APIError(500, "invite_redeem_response_missing", "邀请码已处理，但服务未返回加入结果，请重试。");
     } catch (error) {
       if (error.code === "invalid_invite") await this.recordInviteFailure(accountID);
       throw error;
     }
+  }
+
+  async pendingInvites(accountID, farmID) {
+    farmID = canonicalFarmID(farmID);
+    await this.requireOwner(farmID, accountID);
+    const timestamp = now();
+    const invites = await this.store.find({ type: "invite", farmID });
+    return invites
+      .filter((invite) =>
+        invite.redeemedByAccountID &&
+        !invite.confirmedAt &&
+        invite.expiresAt > timestamp &&
+        (invite.shareParticipantID || invite.redeemedCloudKitUserRecordName)
+      )
+      .map((invite) => ({
+        inviteID: invite.inviteID,
+        farmID: invite.farmID,
+        role: invite.role,
+        shareParticipantID: invite.shareParticipantID || null,
+        cloudKitUserRecordName: invite.redeemedCloudKitUserRecordName || null,
+        expiresAt: invite.expiresAt,
+      }));
   }
 
   async confirmInvite(accountID, inviteID, input) {
@@ -868,7 +1011,7 @@ class CollaborationService {
     if (membership?.status !== "pending") throw new APIError(409, "membership_not_pending", "该邀请已确认或成员状态已变化。");
     const timestamp = now();
     await this.store.update(memberKey, { status: "active", shareParticipantRecordName: input.shareParticipantRecordName, updatedAt: timestamp });
-    await this.store.update(invite._documentID, { confirmedAt: timestamp });
+    await this.store.update(key("invite", invite.inviteID), { confirmedAt: timestamp });
     await this.bumpGeneration(invite.farmID, timestamp);
     return { inviteID, membershipStatus: "active" };
   }

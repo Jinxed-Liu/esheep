@@ -12,10 +12,13 @@ private enum WelcomeCredentialMode: String, CaseIterable, Identifiable {
 
 private enum WelcomeAuthError: LocalizedError {
     case passwordMismatch
+    case legacyAccountClaimRequired
 
     var errorDescription: String? {
         switch self {
         case .passwordMismatch: "两次输入的密码不一致。"
+        case .legacyAccountClaimRequired:
+            "Apple 身份已通过 Supabase 验证，但云端账号尚未认领原 appAccountID。原本地牧场未被改写，请完成旧账号认领后重试。"
         }
     }
 }
@@ -93,17 +96,28 @@ struct WelcomeView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    credentialFieldLabel("账号名")
-                    TextField("例如 sheepowner01", text: $username)
-                        .textContentType(.username)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .focused($focusedField, equals: .username)
-                        .textFieldStyle(.roundedBorder)
+                    if credentialMode == .signIn || AccountIdentityClients.activeProvider == .cloudBaseLegacy {
+                        credentialFieldLabel(AccountIdentityClients.activeProvider == .supabase ? "邮箱" : "账号名")
+                        TextField(
+                            AccountIdentityClients.activeProvider == .supabase ? "name@example.com" : "例如 sheepowner01",
+                            text: $username
+                        )
+                            .textContentType(AccountIdentityClients.activeProvider == .supabase ? .emailAddress : .username)
+                            .keyboardType(AccountIdentityClients.activeProvider == .supabase ? .emailAddress : .default)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .focused($focusedField, equals: .username)
+                            .textFieldStyle(.roundedBorder)
+                    }
 
                     if credentialMode == .register {
                         credentialFieldLabel("邮箱")
-                        TextField("用于接收 6 位注册验证码", text: $email)
+                        TextField(
+                            AccountIdentityClients.activeProvider == .supabase
+                                ? "用于接收验证邮件"
+                                : "用于接收 6 位注册验证码",
+                            text: $email
+                        )
                             .textContentType(.emailAddress)
                             .keyboardType(.emailAddress)
                             .textInputAutocapitalization(.never)
@@ -112,16 +126,18 @@ struct WelcomeView: View {
                             .textFieldStyle(.roundedBorder)
                             .onChange(of: email) { _, _ in emailVerificationID = nil }
 
-                        credentialFieldLabel("邮箱验证码")
-                        HStack(spacing: 10) {
-                            TextField("6 位数字", text: $emailVerificationCode)
-                                .textContentType(.oneTimeCode)
-                                .keyboardType(.numberPad)
-                                .focused($focusedField, equals: .verificationCode)
-                                .textFieldStyle(.roundedBorder)
-                            Button(verificationCooldown > 0 ? "\(verificationCooldown) 秒" : "发送验证码", action: sendEmailVerification)
-                                .buttonStyle(.bordered)
-                                .disabled(isSendingVerification || verificationCooldown > 0 || !emailLooksValid || IdentityWorkerConfiguration.baseURL == nil)
+                        if AccountIdentityClients.activeProvider == .cloudBaseLegacy {
+                            credentialFieldLabel("邮箱验证码")
+                            HStack(spacing: 10) {
+                                TextField("6 位数字", text: $emailVerificationCode)
+                                    .textContentType(.oneTimeCode)
+                                    .keyboardType(.numberPad)
+                                    .focused($focusedField, equals: .verificationCode)
+                                    .textFieldStyle(.roundedBorder)
+                                Button(verificationCooldown > 0 ? "\(verificationCooldown) 秒" : "发送验证码", action: sendEmailVerification)
+                                    .buttonStyle(.bordered)
+                                    .disabled(isSendingVerification || verificationCooldown > 0 || !emailLooksValid || !identityIsConfigured)
+                            }
                         }
 
                         credentialFieldLabel("显示名称")
@@ -143,19 +159,26 @@ struct WelcomeView: View {
                             .textContentType(.newPassword)
                             .focused($focusedField, equals: .confirmation)
                             .textFieldStyle(.roundedBorder)
-                        Text("账号名为 5 至 24 位，以字母或数字开头，可使用字母、数字和 -_.:+@；密码至少 10 位并包含文字和数字。验证码 10 分钟内有效。")
+                        Text(AccountIdentityClients.activeProvider == .supabase
+                             ? "密码至少 10 位并包含文字和数字。注册后请按验证邮件完成邮箱验证。"
+                             : "账号名为 5 至 24 位，以字母或数字开头，可使用字母、数字和 -_.:+@；密码至少 10 位并包含文字和数字。验证码 10 分钟内有效。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
-                    Button(credentialMode == .signIn ? "登录" : "注册并登录", action: submitPasswordAuthentication)
+                    Button(
+                        credentialMode == .signIn
+                            ? "登录"
+                            : (AccountIdentityClients.activeProvider == .supabase ? "注册并发送验证邮件" : "注册并登录"),
+                        action: submitPasswordAuthentication
+                    )
                         .buttonStyle(.glassProminent)
                         .frame(maxWidth: .infinity)
-                        .disabled(isBindingAccount || !passwordFormIsReady || IdentityWorkerConfiguration.baseURL == nil)
+                        .disabled(isBindingAccount || !passwordFormIsReady || !identityIsConfigured)
 
-                    if IdentityWorkerConfiguration.baseURL == nil {
-                        Text("账号注册、密码登录和 Apple 登录都需要可用的 CloudBase 身份服务。")
+                    if !identityIsConfigured {
+                        Text("账号注册、密码登录和 Apple 登录需要配置 Supabase，或在旧账号迁移期配置 CloudBase 身份服务。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -171,7 +194,10 @@ struct WelcomeView: View {
                 }
 
                 SignInWithAppleButton(.continue) { request in
-                    request.requestedScopes = [.fullName]
+                    // A returning account only needs the stable Apple subject
+                    // and ID token. The name is optional and can be updated
+                    // separately when Apple happens to return it.
+                    request.requestedScopes = []
                     request.nonce = AppleIdentityActor.hashedNonce(rawNonce)
                 } onCompletion: { result in
                     handleAppleAuthorization(result)
@@ -179,9 +205,9 @@ struct WelcomeView: View {
                 .signInWithAppleButtonStyle(.black)
                 .frame(height: 52)
                 .clipShape(.rect(cornerRadius: 14))
-                .disabled(isBindingAccount || IdentityWorkerConfiguration.baseURL == nil)
+                .disabled(isBindingAccount || !identityIsConfigured)
 
-                Text("Apple 登录使用系统当前提供的 Apple 账户。App 无法读取账号列表，也不能伪造账号选择器；双账号协作测试应让两台设备分别登录不同的系统 Apple 账户。")
+                Text("Apple 登录使用系统当前提供的 Apple 账户。两台设备登录同一 Apple 账户时会映射到同一 eSheepNext 账号；跨账号共享仍应使用不同的 Apple 或邮箱账号。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)
@@ -233,12 +259,22 @@ struct WelcomeView: View {
     private var passwordFormIsReady: Bool {
         let hasCredential = !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !password.isEmpty
         if credentialMode == .signIn { return hasCredential }
+        if AccountIdentityClients.activeProvider == .supabase {
+            return emailLooksValid
+                && !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !password.isEmpty
+                && !passwordConfirmation.isEmpty
+        }
         return hasCredential
             && emailLooksValid
             && emailVerificationID != nil
             && emailVerificationCode.count == 6
             && !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !passwordConfirmation.isEmpty
+    }
+
+    private var identityIsConfigured: Bool {
+        SupabaseAccountConfiguration.isConfigured || IdentityWorkerConfiguration.baseURL != nil
     }
 
     private var emailLooksValid: Bool {
@@ -281,7 +317,34 @@ struct WelcomeView: View {
             defer { isBindingAccount = false }
             do {
                 let response: WorkerSessionResponse
-                if mode == .register {
+                if AccountIdentityClients.activeProvider == .supabase {
+                    let identityClient = try AccountIdentityClients.active()
+                    if mode == .register {
+                        guard submittedPassword == submittedConfirmation else { throw WelcomeAuthError.passwordMismatch }
+                        let registration = try await identityClient.register(
+                            email: submittedEmail,
+                            password: submittedPassword,
+                            displayName: submittedDisplayName
+                        )
+                        switch registration {
+                        case .authenticated(let authenticatedResponse):
+                            response = authenticatedResponse
+                        case .verificationRequired(let verificationEmail):
+                            credentialMode = .signIn
+                            username = verificationEmail
+                            password = ""
+                            passwordConfirmation = ""
+                            session.authenticationNotice =
+                                "验证邮件已发送至 \(verificationEmail)。完成邮箱验证后，请返回此处手动登录。"
+                            return
+                        }
+                    } else {
+                        response = try await identityClient.authenticate(
+                            email: submittedUsername,
+                            password: submittedPassword
+                        )
+                    }
+                } else if mode == .register {
                     guard submittedPassword == submittedConfirmation else { throw WelcomeAuthError.passwordMismatch }
                     guard let submittedVerificationID else { return }
                     response = try await IdentityWorkerClient.shared.register(
@@ -296,6 +359,9 @@ struct WelcomeView: View {
                     response = try await IdentityWorkerClient.shared.authenticate(username: submittedUsername, password: submittedPassword)
                 }
                 let accountProfileID = try upsertPasswordAccount(from: response)
+                if AccountIdentityClients.activeProvider == .supabase {
+                    _ = try await DeviceIdentityActor.shared.registerWithActiveAccountProvider()
+                }
                 session.authenticationDidSucceed(accountProfileID: accountProfileID)
                 try? SecureAccountStore.removeAppleUserIdentifier()
                 password = ""
@@ -331,9 +397,11 @@ struct WelcomeView: View {
                 }
                 do {
                     let payload = try AppleIdentityActor.payload(from: credential, rawNonce: nonce)
-                    guard IdentityWorkerConfiguration.baseURL != nil else { throw IdentityWorkerError.notConfigured }
                     let workerSession = try await AppleIdentityActor.shared.bind(payload)
                     let accountProfileID = try upsertAppleAccount(from: credential, workerSession: workerSession)
+                    if AccountIdentityClients.activeProvider == .supabase {
+                        _ = try await DeviceIdentityActor.shared.registerWithActiveAccountProvider()
+                    }
                     session.authenticationDidSucceed(accountProfileID: accountProfileID)
                 } catch {
                     errorMessage = error.localizedDescription
@@ -374,6 +442,14 @@ struct WelcomeView: View {
         let appleID = credential.user
         let appleSubjectHash = AppleIdentityHash.value(for: appleID)
         if let existing = accounts.first(where: { $0.appleSubjectHash == appleSubjectHash }) {
+            if let legacyAppAccountID = existing.serverAccountID,
+               legacyAppAccountID != workerSession.accountID,
+               farms.contains(where: {
+                   $0.ownerAccountID == legacyAppAccountID &&
+                       $0.deletedAt == nil
+               }) {
+                throw WelcomeAuthError.legacyAccountClaimRequired
+            }
             try prepareForDifferentAccount(activating: existing.id)
             try SecureAccountStore.saveAppleUserIdentifier(appleID)
             existing.serverAccountID = workerSession.accountID

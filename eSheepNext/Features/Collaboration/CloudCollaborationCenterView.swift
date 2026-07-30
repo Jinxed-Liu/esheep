@@ -62,9 +62,10 @@ struct CloudCollaborationCenterView: View {
     @State private var successMessage: String?
     @State private var inviteRole: FarmRole = .worker
     @State private var generatedInvite: WorkerInviteResponse?
+    @State private var invitationPackage: FarmInvitationPackage?
+    @State private var presentedSheet: CloudCollaborationSheet?
     @State private var redeemCode = ""
     @State private var redeemedInvite: WorkerRedeemResponse?
-    @State private var sharePresentation: CloudSharePresentation?
     @State private var deletionConfirmation = false
     @State private var pendingOutboxCount = 0
     @State private var uploadingOutboxCount = 0
@@ -153,8 +154,35 @@ struct CloudCollaborationCenterView: View {
         .task {
             await refreshStatus()
         }
-        .sheet(item: $sharePresentation) { presentation in
-            CloudSharingControllerView(share: presentation.share, container: presentation.container)
+        .task(id: generatedInvite?.inviteID) {
+            guard generatedInvite != nil, farm.role == .owner else { return }
+            for _ in 0..<60 {
+                if await collaboration.reconcileInvitationAcceptance(
+                    farmID: farm.id,
+                    accountID: account.effectiveAccountID
+                ) {
+                    successMessage = "成员已接受邀请并自动加入牧场。"
+                    generatedInvite = nil
+                    await refreshStatus()
+                    return
+                }
+                do {
+                    try await Task.sleep(for: .seconds(5))
+                } catch {
+                    return
+                }
+            }
+        }
+        .sheet(item: $presentedSheet) { destination in
+            switch destination {
+            case .systemShare(let presentation):
+                CloudSharingControllerView(
+                    share: presentation.share,
+                    container: presentation.container
+                )
+            case .invitation(let package):
+                FarmInvitationPanel(package: package)
+            }
         }
         .alert("操作未完成", isPresented: Binding(
             get: { errorMessage != nil },
@@ -363,10 +391,18 @@ struct CloudCollaborationCenterView: View {
                         Text("员工").tag(FarmRole.worker)
                     }
 
-                    Button("发送共享邀请") {
+                    Button {
                         createInvite()
+                    } label: {
+                        Label(
+                            isWorking ? "正在创建邀请…" : "邀请成员",
+                            systemImage: "person.badge.plus"
+                        )
                     }
                     .disabled(isWorking)
+                    Text("创建后可选择靠近发送、iMessage、微信、链接或二维码。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 } else {
                     Label("正在准备成员共享，完成后即可发送邀请", systemImage: "clock")
                         .foregroundStyle(.secondary)
@@ -382,13 +418,21 @@ struct CloudCollaborationCenterView: View {
                     value: Date(timeIntervalSince1970: TimeInterval(generatedInvite.expiresAt))
                         .formatted(date: .abbreviated, time: .shortened)
                 )
-                Text("将共享邀请和邀请码发给同一位成员。成员完成申请后，回到这里确认加入。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Button("重新打开共享邀请") { presentShare() }
+                Button {
+                    openInvitationPanel()
+                } label: {
+                    Label("打开邀请方式", systemImage: "paperplane.fill")
+                }
+                .disabled(isWorking)
+                if generatedInvite.shareParticipantID == nil {
+                    Text("对方输入邀请码后，你批准其 iCloud 身份；对方随后打开邀请接受私有共享。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("检查并处理加入申请") {
+                        confirmLatestInvite()
+                    }
                     .disabled(isWorking)
-                Button("确认成员已加入") { confirmLatestInvite() }
-                    .disabled(isWorking)
+                }
             }
         }
     }
@@ -405,7 +449,7 @@ struct CloudCollaborationCenterView: View {
                 LabeledContent("角色", value: redeemedInvite.role.displayName)
                 LabeledContent("状态", value: "等待场主确认 CKShare 参与者")
             }
-            Text("先在系统中接受场主发来的 CKShare 链接，再输入邀请码。两个条件缺一不可。")
+            Text("先输入邀请码提交本机 iCloud 身份；场主批准后，再打开 CKShare 链接接受共享。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -440,6 +484,17 @@ struct CloudCollaborationCenterView: View {
             }
             Button("刷新成员列表") { refreshMembershipAndCapability() }
                 .disabled(isWorking)
+            if farm.role == .owner, binding?.state == .active {
+                Button {
+                    presentShare()
+                } label: {
+                    Label("管理苹果共享成员", systemImage: "person.2")
+                }
+                .disabled(isWorking)
+                Text("这里用于查看或移除已共享成员，不是发送邀请。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -586,7 +641,6 @@ struct CloudCollaborationCenterView: View {
             _ = try await collaboration.membershipSnapshots.publish(farmID: farm.id, accountID: accountID)
             _ = try await collaboration.checkpoints.createCheckpoint(farmID: farm.id, reason: .initialCloudSetup)
             await MainActor.run {
-                sharePresentation = CloudSharePresentation(share: share)
                 successMessage = "成员共享已开启，可以发送邀请了。"
             }
         }
@@ -594,27 +648,121 @@ struct CloudCollaborationCenterView: View {
 
     private func presentShare() {
         runTask {
-            let share = try await collaboration.sync.ownerShare(farmID: farm.id)
-            await MainActor.run { sharePresentation = CloudSharePresentation(share: share) }
+            let resolution = try await resolveOwnerShare()
+            await MainActor.run {
+                presentedSheet = .systemShare(
+                    CloudSharePresentation(share: resolution.share)
+                )
+            }
         }
     }
 
     private func createInvite() {
+        if CloudOneTimeInvitationRuntimePolicy.requiresSystemSharingFallback {
+            createSystemShareInvite()
+            return
+        }
         runTask {
+            let cloudInvitation = try await collaboration.sync
+                .createOneTimeFarmInvitation(farmID: farm.id)
             let service = InviteServiceActor(persistence: collaboration.persistence)
-            let invite = try await service.create(farmID: farm.id, role: inviteRole)
-            let share = try await collaboration.sync.ownerShare(farmID: farm.id)
-            await MainActor.run {
-                generatedInvite = invite
-                sharePresentation = CloudSharePresentation(share: share)
+            do {
+                let invite = try await service.create(
+                    farmID: farm.id,
+                    role: inviteRole,
+                    shareParticipantID: cloudInvitation.participantID,
+                    shareURL: cloudInvitation.url
+                )
+                let package = FarmInvitationPackage(
+                    inviteID: invite.inviteID,
+                    farmID: farm.id,
+                    farmName: farm.name,
+                    role: invite.role,
+                    url: cloudInvitation.url,
+                    inviteCode: invite.code,
+                    shareParticipantID: invite.shareParticipantID,
+                    expiresAt: Date(
+                        timeIntervalSince1970: TimeInterval(invite.expiresAt)
+                    )
+                )
+                await MainActor.run {
+                    generatedInvite = invite
+                    invitationPackage = package
+                    presentedSheet = .invitation(package)
+                }
+            } catch {
+                try? await collaboration.sync.removeInvitationParticipant(
+                    farmID: farm.id,
+                    participantID: cloudInvitation.participantID
+                )
+                throw error
             }
         }
+    }
+
+    private func createSystemShareInvite() {
+        runTask {
+            let resolution = try await resolveOwnerShare()
+            guard let url = resolution.share.url else {
+                throw CloudSyncError.inviteURLUnavailable
+            }
+            let service = InviteServiceActor(persistence: collaboration.persistence)
+            let invite = try await service.create(
+                farmID: farm.id,
+                role: inviteRole,
+                shareURL: url
+            )
+            let package = FarmInvitationPackage(
+                inviteID: invite.inviteID,
+                farmID: farm.id,
+                farmName: farm.name,
+                role: invite.role,
+                url: url,
+                inviteCode: invite.code,
+                shareParticipantID: invite.shareParticipantID,
+                expiresAt: Date(
+                    timeIntervalSince1970: TimeInterval(invite.expiresAt)
+                )
+            )
+            await MainActor.run {
+                generatedInvite = invite
+                invitationPackage = package
+                presentedSheet = .invitation(package)
+            }
+        }
+    }
+
+    private func openInvitationPanel() {
+        guard let invitationPackage else {
+            createInvite()
+            return
+        }
+        presentedSheet = .invitation(invitationPackage)
+    }
+
+    private func resolveOwnerShare() async throws -> CloudOwnerShareResolution {
+        let resolution = try await collaboration.sync.ownerShareRecoveringIfMissing(
+            farmID: farm.id,
+            farmName: farm.name
+        )
+        if resolution.didRecreate {
+            try await IdentityWorkerClient.shared.registerFarm(
+                farmID: farm.id,
+                zoneName: CloudZoneName.forFarm(farm.id),
+                shareRecordName: resolution.share.recordID.recordName
+            )
+        }
+        return resolution
     }
 
     private func redeemInvite() {
         runTask {
             let service = InviteServiceActor(persistence: collaboration.persistence)
-            let result = try await service.redeem(code: redeemCode)
+            let userRecordName = try await collaboration.sync.currentCloudUserRecordName()
+            let result = try await service.redeem(
+                code: redeemCode,
+                cloudKitUserRecordName: userRecordName
+            )
             await MainActor.run {
                 redeemedInvite = result
                 redeemCode = ""
@@ -626,18 +774,46 @@ struct CloudCollaborationCenterView: View {
     private func confirmLatestInvite() {
         guard let generatedInvite else { return }
         runTask {
-            let participantNames = try await collaboration.sync.acceptedParticipantRecordNames(farmID: farm.id)
-            let knownNames = Set(farmMemberships.compactMap(\.shareParticipantRecordName))
-            guard let participantName = participantNames.first(where: { !knownNames.contains($0) }) else {
+            let service = InviteServiceActor(persistence: collaboration.persistence)
+            let pendingInvites = try await service.pending(farmID: farm.id)
+            guard let pending = pendingInvites.first(where: {
+                $0.inviteID == generatedInvite.inviteID
+            }) else {
                 throw CloudSyncError.participantMissing
             }
-            let service = InviteServiceActor(persistence: collaboration.persistence)
-            try await service.confirm(inviteID: generatedInvite.inviteID, participantRecordName: participantName)
-            _ = try await MembershipActor(persistence: collaboration.persistence).refresh(farmID: farm.id)
-            _ = try await collaboration.membershipSnapshots.publish(farmID: farm.id, accountID: account.effectiveAccountID)
+
+            let accepted = try await collaboration.sync
+                .acceptedShareParticipants(farmID: farm.id)
+            let acceptedParticipant = accepted.first { participant in
+                if let expectedID = pending.shareParticipantID {
+                    return participant.participantID == expectedID
+                }
+                return participant.recordName == pending.cloudKitUserRecordName
+            }
+            if let acceptedParticipant {
+                try await service.confirm(
+                    inviteID: generatedInvite.inviteID,
+                    participantRecordName: acceptedParticipant.recordName
+                )
+                _ = try await MembershipActor(persistence: collaboration.persistence).refresh(farmID: farm.id)
+                _ = try await collaboration.membershipSnapshots.publish(farmID: farm.id, accountID: account.effectiveAccountID)
+                await MainActor.run {
+                    self.generatedInvite = nil
+                    successMessage = "成员已确认加入牧场。"
+                }
+                return
+            }
+
+            guard generatedInvite.shareParticipantID == nil,
+                  let userRecordName = pending.cloudKitUserRecordName else {
+                throw CloudSyncError.participantMissing
+            }
+            _ = try await collaboration.sync.prepareShareParticipant(
+                farmID: farm.id,
+                userRecordName: userRecordName
+            )
             await MainActor.run {
-                self.generatedInvite = nil
-                successMessage = "成员已确认加入牧场。"
+                successMessage = "已把对方加入私有共享。请让对方再次打开邀请并接受共享；接受后会自动确认成员。"
             }
         }
     }
@@ -694,7 +870,7 @@ struct CloudCollaborationCenterView: View {
 
     private func deleteAccount() {
         runTask {
-            let deletion = try await IdentityWorkerClient.shared.deleteAccount()
+            let deletion = try await AccountIdentityClients.active().deleteAccount()
             await MainActor.run {
                 modelContext.delete(account)
                 try? modelContext.save()
@@ -1304,6 +1480,21 @@ private final class CloudSharePresentation: Identifiable {
         self.share = share
         let identifier = Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String
         self.container = identifier.flatMap { $0.isEmpty ? nil : CKContainer(identifier: $0) } ?? .default()
+    }
+}
+
+@MainActor
+private enum CloudCollaborationSheet: Identifiable {
+    case systemShare(CloudSharePresentation)
+    case invitation(FarmInvitationPackage)
+
+    var id: String {
+        switch self {
+        case .systemShare(let presentation):
+            "system-share-\(presentation.id.uuidString)"
+        case .invitation(let package):
+            "invitation-\(package.id)"
+        }
     }
 }
 

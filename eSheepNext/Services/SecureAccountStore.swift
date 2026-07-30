@@ -22,12 +22,23 @@ struct StoredWorkerSession: Codable, Equatable {
     }
 }
 
+struct StoredSupabaseSession: Codable, Equatable {
+    let accountID: UUID
+    let authUserID: UUID
+    let lastVerifiedAt: Date
+
+    func canResumeOffline(now: Date = .now) -> Bool {
+        now.timeIntervalSince(lastVerifiedAt) <= 60 * 60 * 24 * 180
+    }
+}
+
 enum SecureAccountStore {
     private static let service = "com.sheepfarm.esheepnext.identity"
     private static let recoveryService = "com.sheepfarm.esheepnext.recovery"
     private static let appleUserKey = "apple-user-identifier"
     private static let activeAccountProfileKey = "active-account-profile-id"
     private static let workerSessionMetadataKey = "worker-session-metadata"
+    private static let supabaseSessionMetadataKey = "supabase-session-metadata"
 
     static func saveAppleUserIdentifier(_ identifier: String) throws {
         try save(Data(identifier.utf8), account: appleUserKey)
@@ -49,6 +60,10 @@ enum SecureAccountStore {
             return nil
         }
         return UUID(uuidString: text)
+    }
+
+    static func clearActiveAccountProfileID() throws {
+        try remove(account: activeAccountProfileKey)
     }
 
     static func save(_ data: Data, account: String) throws {
@@ -113,7 +128,13 @@ enum SecureAccountStore {
     }
 
     static func removeLoginSecrets() throws {
-        for account in ["worker-access-token", "worker-refresh-token", workerSessionMetadataKey, appleUserKey] {
+        for account in [
+            "worker-access-token",
+            "worker-refresh-token",
+            workerSessionMetadataKey,
+            supabaseSessionMetadataKey,
+            appleUserKey,
+        ] {
             try remove(account: account)
         }
     }
@@ -127,11 +148,27 @@ enum SecureAccountStore {
         return try? JSONDecoder().decode(StoredWorkerSession.self, from: stored)
     }
 
+    static func saveSupabaseSession(_ session: StoredSupabaseSession) throws {
+        try save(JSONEncoder().encode(session), account: supabaseSessionMetadataKey)
+    }
+
+    static func supabaseSession() -> StoredSupabaseSession? {
+        guard let stored = try? data(account: supabaseSessionMetadataKey) else { return nil }
+        return try? JSONDecoder().decode(StoredSupabaseSession.self, from: stored)
+    }
+
+    static func removeSupabaseSession() throws {
+        try remove(account: supabaseSessionMetadataKey)
+    }
+
     static func hasPersistedSession(for accountID: UUID) -> Bool {
         persistedSessionAccountID() == accountID
     }
 
     static func persistedSessionAccountID() -> UUID? {
+        if let session = supabaseSession(), session.canResumeOffline() {
+            return session.accountID
+        }
         guard let session = workerSession(),
               (try? data(account: "worker-refresh-token")) != nil else { return nil }
         return session.accountID

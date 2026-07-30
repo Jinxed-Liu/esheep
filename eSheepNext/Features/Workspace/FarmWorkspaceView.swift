@@ -1,14 +1,19 @@
 import SwiftUI
 
+struct SharedFarmAdmissionStatus: Equatable {
+    let detailText: String
+}
+
 struct FarmWorkspaceView: View {
     @Environment(AppSession.self) private var session
     @State private var searchQuery = ""
     @State private var isWeatherDetailPresented = false
     @State private var isMetricDetailPresented = false
-    @State private var isAssistantPresented = false
+    @State private var assistantFarmID: UUID?
 
     let account: AccountProfile
     let farms: [FarmRecord]
+    let sharedFarmAdmissionStatus: SharedFarmAdmissionStatus?
 
     private var activeFarm: FarmRecord? {
         farms.first(where: { $0.id == session.selectedFarmID }) ?? farms.first
@@ -25,11 +30,17 @@ struct FarmWorkspaceView: View {
                             account: account,
                             farm: activeFarm,
                             isWeatherDetailPresented: $isWeatherDetailPresented,
-                            isMetricDetailPresented: $isMetricDetailPresented
+                            isMetricDetailPresented: $isMetricDetailPresented,
+                            sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
                         )
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbar {
-                                FarmNavigationToolbar(account: account, farms: farms, activeFarm: activeFarm)
+                                FarmNavigationToolbar(
+                                    account: account,
+                                    farms: farms,
+                                    activeFarm: activeFarm,
+                                    sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
+                                )
                             }
                     }
                     .toolbarVisibility(
@@ -46,15 +57,20 @@ struct FarmWorkspaceView: View {
                         FarmInsightsView(
                             account: account,
                             farm: activeFarm,
-                            isAssistantPresented: $isAssistantPresented
+                            assistantFarmID: $assistantFarmID
                         )
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbar {
-                                FarmNavigationToolbar(account: account, farms: farms, activeFarm: activeFarm)
+                                FarmNavigationToolbar(
+                                    account: account,
+                                    farms: farms,
+                                    activeFarm: activeFarm,
+                                    sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
+                                )
                             }
                     }
                     .toolbarVisibility(
-                        isAssistantPresented ? .hidden : .visible,
+                        assistantFarmID == activeFarm.id ? .hidden : .visible,
                         for: .tabBar
                     )
                 }
@@ -63,7 +79,12 @@ struct FarmWorkspaceView: View {
                         FarmRecordsView(account: account, farm: activeFarm)
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbar {
-                                FarmNavigationToolbar(account: account, farms: farms, activeFarm: activeFarm)
+                                FarmNavigationToolbar(
+                                    account: account,
+                                    farms: farms,
+                                    activeFarm: activeFarm,
+                                    sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
+                                )
                             }
                     }
                 }
@@ -72,7 +93,12 @@ struct FarmWorkspaceView: View {
                         FeedingStartView(account: account, farm: activeFarm)
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbar {
-                                FarmNavigationToolbar(account: account, farms: farms, activeFarm: activeFarm)
+                                FarmNavigationToolbar(
+                                    account: account,
+                                    farms: farms,
+                                    activeFarm: activeFarm,
+                                    sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
+                                )
                             }
                     }
                 }
@@ -82,12 +108,16 @@ struct FarmWorkspaceView: View {
             }
             .tabViewSearchActivation(.searchTabSelection)
             .tabBarMinimizeBehavior(.onScrollDown)
-            .scrollEdgeEffectHidden(!isAssistantPresented, for: .top)
+            .scrollEdgeEffectHidden(assistantFarmID != activeFarm.id, for: .top)
             .scrollEdgeEffectHidden(true, for: .bottom)
             .safeAreaInset(edge: .top, spacing: 0) {
                 AccountAccessWorkspaceBanner(
                     authenticationMethod: account.authenticationMethod
                 )
+            }
+            .onChange(of: activeFarm.id) { previousFarmID, currentFarmID in
+                guard previousFarmID != currentFarmID else { return }
+                assistantFarmID = nil
             }
             .onChange(of: session.pendingSearchQuery, initial: true) { _, pendingQuery in
                 guard let pendingQuery else { return }
@@ -108,10 +138,15 @@ private struct FarmNavigationToolbar: ToolbarContent {
     let account: AccountProfile
     let farms: [FarmRecord]
     let activeFarm: FarmRecord
+    let sharedFarmAdmissionStatus: SharedFarmAdmissionStatus?
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            FarmSwitcher(farms: farms, activeFarm: activeFarm)
+            FarmSwitcher(
+                farms: farms,
+                activeFarm: activeFarm,
+                sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
+            )
         }
         ToolbarItem(placement: .topBarTrailing) {
             NavigationLink {
@@ -130,9 +165,19 @@ private struct FarmSwitcher: View {
 
     let farms: [FarmRecord]
     let activeFarm: FarmRecord
+    let sharedFarmAdmissionStatus: SharedFarmAdmissionStatus?
 
     var body: some View {
         Menu {
+            if let sharedFarmAdmissionStatus {
+                Section("共享牧场") {
+                    Label(
+                        "正在加入 · \(sharedFarmAdmissionStatus.detailText)",
+                        systemImage: "person.2.badge.gearshape"
+                    )
+                }
+            }
+
             ForEach(farms, id: \.id) { farm in
                 Button {
                     try? session.switchFarm(to: farm.id, availableFarms: farms)
@@ -160,8 +205,16 @@ private struct FarmSwitcher: View {
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
                     .font(.caption.weight(.semibold))
+                if sharedFarmAdmissionStatus != nil {
+                    ProgressView()
+                        .controlSize(.mini)
+                }
             }
         }
-        .accessibilityLabel("切换牧场，当前为\(activeFarm.name)")
+        .accessibilityLabel(
+            sharedFarmAdmissionStatus == nil
+                ? "切换牧场，当前为\(activeFarm.name)"
+                : "切换牧场，当前为\(activeFarm.name)，正在加入共享牧场"
+        )
     }
 }

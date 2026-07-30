@@ -223,6 +223,15 @@ struct CloudRebuildBundle: Codable, Sendable, Equatable {
     }
 }
 
+enum LegacyBootstrapProjectionRepair {
+    static let incidentType = "legacyBootstrapProjectionRepairV2"
+}
+
+struct CloudRebuildLocalProjectionRepair: Sendable {
+    let bundle: CloudRebuildBundle
+    let workspace: URL
+}
+
 actor CloudRebuildActor {
     static let currentAuthorityProofVersion = 2
     private let modelContainer: ModelContainer
@@ -290,6 +299,7 @@ actor CloudRebuildActor {
              "baselineIdentityMismatch",
              "deviceTrustRefreshRequired",
              "immutableOperationHardDelete",
+             "liveOperationGap",
              "engineResetPending",
              "engineResetFailed",
              "recoveryValidationFailed",
@@ -300,6 +310,21 @@ actor CloudRebuildActor {
             return true
         default:
             return false
+        }
+    }
+
+    /// Admission polling may resume transient work, but a deterministic
+    /// validation failure must not create an endless full-download loop.
+    static func canAutomaticallyResumeSharedAdmission(
+        from binding: CloudFarmBindingSnapshot
+    ) -> Bool {
+        guard canBeginRebuild(from: binding) else { return false }
+        switch binding.lastErrorCode {
+        case "rebuildValidationFailed",
+             "rebuildCommitRequiresFreshRebuild":
+            return false
+        default:
+            return true
         }
     }
 
@@ -323,7 +348,20 @@ actor CloudRebuildActor {
            let sessionID = try retryablePreparedSessionID(farmID: farmID, scope: scope) {
             return try await uncancelledCommit(sessionID: sessionID, allowsPreparedRetry: true)
         }
+        if let result = try await replayReusableDownloadedBundle(
+            farmID: farmID,
+            scope: scope
+        ) {
+            return result
+        }
         return try await rebuildAndCommit(farmID: farmID, scope: scope, reason: reason)
+    }
+
+    func hasReusableDownloadedReplay(
+        farmID: UUID,
+        scope: CloudDatabaseScope
+    ) throws -> Bool {
+        try reusableDownloadedSessionID(farmID: farmID, scope: scope) != nil
     }
 
     static func canRetryPreparedCommit(from binding: CloudFarmBindingSnapshot) -> Bool {
@@ -388,6 +426,69 @@ actor CloudRebuildActor {
             highestRevision: latest.highestRevision,
             entityDigest: latest.entityDigest,
             completedAt: latest.completedAt!
+        )
+    }
+
+    /// Builds a corrected staging projection from the newest completed local
+    /// bundle. The caller still has to suspend the live CKSyncEngine and prove
+    /// that no post-bundle operations or assets exist before switching it.
+    func preparedLegacyBootstrapProjectionRepair(
+        farmID: UUID,
+        scope: CloudDatabaseScope
+    ) async throws -> CloudRebuildLocalProjectionRepair? {
+        guard scope == .sharedDatabase,
+              !committingFarmIDs.contains(farmID),
+              let binding = try await persistence.bindingSnapshot(farmID: farmID),
+              binding.state == .active,
+              binding.databaseScope == scope else {
+            return nil
+        }
+        let context = ModelContext(modelContainer)
+        if try context.fetch(FetchDescriptor<SecurityIncidentRecord>())
+            .contains(where: {
+                $0.farmID == farmID &&
+                    $0.incidentType == LegacyBootstrapProjectionRepair.incidentType
+            }) {
+            return nil
+        }
+        guard let latest = try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>())
+            .filter({ $0.farmID == farmID })
+            .max(by: {
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.id.uuidString < $1.id.uuidString
+            }),
+              latest.databaseScope == scope,
+              latest.status == .completed,
+              latest.completedAt != nil,
+              activeTasks[latest.id] == nil else {
+            return nil
+        }
+        let bundle = try loadBundle(sessionID: latest.id)
+        guard bundle.sessionID == latest.id,
+              bundle.farmID == farmID,
+              bundle.scope == scope,
+              bundle.bootstrap?.normalizedVersion == 2,
+              Self.hasCurrentAuthorityProof(bundle),
+              bundle.recordCount == latest.fetchedRecordCount,
+              bundle.pageCount == latest.pageCount,
+              bundle.operations.count == latest.fetchedOperationCount,
+              bundle.assets.count == latest.downloadedAssetCount,
+              latest.entityDigest == Self.entityDigest(bundle.operations) else {
+            return nil
+        }
+        try CloudRebuildBundleValidator.validate(bundle)
+        let workspace = try workspaceURL(sessionID: latest.id)
+        _ = try CloudRebuildStagingBuilder.build(
+            bundle: bundle,
+            workspace: workspace
+        )
+        try CloudRebuildStagingBuilder.verify(
+            bundle: bundle,
+            workspace: workspace
+        )
+        return CloudRebuildLocalProjectionRepair(
+            bundle: bundle,
+            workspace: workspace
         )
     }
 
@@ -652,6 +753,169 @@ actor CloudRebuildActor {
         default:
             return nil
         }
+    }
+
+    private func reusableDownloadedSessionID(
+        farmID: UUID,
+        scope: CloudDatabaseScope
+    ) throws -> UUID? {
+        guard !committingFarmIDs.contains(farmID) else { return nil }
+        let context = ModelContext(modelContainer)
+        let candidates = try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>())
+            .filter {
+                $0.farmID == farmID &&
+                    $0.databaseScope == scope &&
+                    $0.status == .failed &&
+                    $0.lastErrorCode == "RemoteDomainApplyError" &&
+                    activeTasks[$0.id] == nil
+            }
+            .sorted {
+                if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+                return $0.id.uuidString > $1.id.uuidString
+            }
+        for candidate in candidates {
+            let bundleURL = try workspaceURL(sessionID: candidate.id).appending(path: "bundle.json")
+            guard FileManager.default.fileExists(atPath: bundleURL.path) else { continue }
+            let bundle: CloudRebuildBundle
+            do {
+                bundle = try loadBundle(sessionID: candidate.id)
+            } catch {
+                continue
+            }
+            guard bundle.sessionID == candidate.id,
+                  bundle.farmID == farmID,
+                  bundle.scope == scope,
+                  Self.hasCurrentAuthorityProof(bundle),
+                  bundle.recordCount == candidate.fetchedRecordCount,
+                  bundle.pageCount == candidate.pageCount,
+                  bundle.operations.count == candidate.fetchedOperationCount,
+                  bundle.assets.count == candidate.downloadedAssetCount else {
+                continue
+            }
+            do {
+                try CloudRebuildBundleValidator.validate(bundle)
+                for asset in bundle.assets {
+                    let file = try workspaceURL(sessionID: candidate.id)
+                        .appending(path: asset.relativePath)
+                    guard FileManager.default.fileExists(atPath: file.path) else {
+                        throw CloudRebuildError.stagingValidation("已下载照片不存在。")
+                    }
+                }
+            } catch {
+                continue
+            }
+            return candidate.id
+        }
+        return nil
+    }
+
+    private func replayReusableDownloadedBundle(
+        farmID: UUID,
+        scope: CloudDatabaseScope
+    ) async throws -> CloudRebuildResult? {
+        guard let sessionID = try reusableDownloadedSessionID(
+            farmID: farmID,
+            scope: scope
+        ) else {
+            return nil
+        }
+        guard let binding = try await persistence.bindingSnapshot(farmID: farmID),
+              binding.state == .rebuildingCache,
+              binding.databaseScope == scope,
+              [nil, "rebuildValidationFailed"].contains(binding.lastErrorCode) else {
+            return nil
+        }
+        let relocked = try await persistence.transitionRecoveryBindingIfUnchanged(
+            farmID: farmID,
+            expectedState: .rebuildingCache,
+            expectedLastErrorCode: binding.lastErrorCode,
+            newState: .rebuildingCache,
+            newLastErrorCode: nil
+        )
+        guard relocked else { return nil }
+
+        do {
+            try promoteDownloadedSessionForLocalReplay(sessionID, farmID: farmID)
+            let bundle = try loadBundle(sessionID: sessionID)
+            let workspace = try workspaceURL(sessionID: sessionID)
+            _ = try CloudRebuildStagingBuilder.build(bundle: bundle, workspace: workspace)
+            let blocking = try issues(sessionID: sessionID)
+                .filter { $0.severity == .blocking }
+                .count
+            guard blocking == 0 else {
+                throw CloudRebuildError.blockingIssues(blocking)
+            }
+            try updateSession(sessionID) { value in
+                value.statusRawValue = CloudRebuildStatus.readyToCommit.rawValue
+                value.progress = 0.9
+                value.fetchedOperationCount = bundle.operations.count
+                value.fetchedAssetCount = bundle.assets.count
+                value.downloadedAssetCount = bundle.assets.count
+                value.highestRevision = bundle.operations.map(\.revision).max() ?? 0
+                value.entityDigest = Self.entityDigest(bundle.operations)
+                value.lastErrorCode = nil
+                value.lastErrorMessage = nil
+                value.retryAt = nil
+            }
+            return try await uncancelledCommit(
+                sessionID: sessionID,
+                allowsPreparedRetry: false
+            )
+        } catch {
+            try? updateSession(sessionID) { value in
+                value.statusRawValue = CloudRebuildStatus.failed.rawValue
+                value.lastErrorCode = "localReplayFailed"
+                value.lastErrorMessage = error.localizedDescription
+                value.retryAt = nil
+            }
+            _ = try? await persistence.recordRecoveryEngineFailureIfUnchanged(
+                farmID: farmID,
+                expectedLastErrorCode: nil,
+                failureCode: "rebuildValidationFailed"
+            )
+            throw error
+        }
+    }
+
+    private func promoteDownloadedSessionForLocalReplay(
+        _ sessionID: UUID,
+        farmID: UUID
+    ) throws {
+        let context = ModelContext(modelContainer)
+        let sessions = try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>())
+            .filter { $0.farmID == farmID }
+        guard let candidate = sessions.first(where: { $0.id == sessionID }) else {
+            throw CloudRebuildError.sessionMissing
+        }
+        guard !committingFarmIDs.contains(farmID) else {
+            throw CloudRebuildError.commitInProgress
+        }
+        for session in sessions where session.id != sessionID {
+            activeTasks[session.id]?.cancel()
+            activeTasks[session.id] = nil
+            activeTaskTokens[session.id] = nil
+            if session.status.isRunning || session.status == .readyToCommit {
+                session.statusRawValue = CloudRebuildStatus.cancelled.rawValue
+                session.lastErrorCode = "supersededByDownloadedReplay"
+                session.lastErrorMessage = "已改用完整下载包进行本地重放。"
+                session.updatedAt = .now
+            }
+        }
+        if let newest = sessions
+            .filter({ $0.id != sessionID })
+            .map(\.createdAt)
+            .max(),
+           candidate.createdAt <= newest {
+            candidate.createdAt = newest.addingTimeInterval(0.001)
+        }
+        candidate.statusRawValue = CloudRebuildStatus.validating.rawValue
+        candidate.progress = 0.72
+        candidate.lastErrorCode = nil
+        candidate.lastErrorMessage = nil
+        candidate.retryAt = nil
+        candidate.completedAt = nil
+        candidate.updatedAt = .now
+        try context.save()
     }
 
     private func startBuild(sessionID: UUID, binding: CloudFarmBindingSnapshot) {
@@ -1367,7 +1631,7 @@ actor CloudRebuildActor {
             case .restorePedigreeAudit: 35
             default: 30
             }
-        case .recordWeight, .correctWeight, .recordWeaning, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep, .recordFeed, .recordHealth, .recordReproduction, .addNote, .assignBatchMembership, .leaveBatchMembership: 30
+        case .recordWeight, .correctWeight, .recordWeaning, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep, .recordFeed, .recordHealth, .recordReproduction, .addNote, .addPhoto, .assignBatchMembership, .leaveBatchMembership: 30
         case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: 40
         }
     }

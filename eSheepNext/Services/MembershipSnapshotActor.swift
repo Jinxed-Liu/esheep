@@ -87,6 +87,27 @@ actor MembershipSnapshotActor {
         return value
     }
 
+    func refreshSharedSnapshot(farmID: UUID) async throws -> MembershipSnapshotRecordValue {
+        guard let binding = try await persistence.bindingSnapshot(farmID: farmID),
+              binding.databaseScope == .sharedDatabase else {
+            throw CloudSyncError.farmBindingMissing
+        }
+        let zoneID = CKRecordZone.ID(
+            zoneName: binding.zoneName,
+            ownerName: binding.zoneOwnerName
+        )
+        let recordID = CKRecord.ID(
+            recordName: "membership_snapshot",
+            zoneID: zoneID
+        )
+        let record = try await cloudContainer.sharedCloudDatabase.record(for: recordID)
+        let value = try await validate(record)
+        guard value.farmID == farmID else {
+            throw CloudContractError.malformedRecord
+        }
+        return value
+    }
+
     func validate(_ record: CKRecord) async throws -> MembershipSnapshotRecordValue {
         guard record.recordType == CloudRecordType.farmMembershipSnapshot.rawValue,
               let farmText = record[CloudRecordField.farmID] as? String,

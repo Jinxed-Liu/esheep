@@ -1,4 +1,5 @@
 import Foundation
+import Supabase
 
 enum AccountAccessStatus: Equatable {
     case checking
@@ -43,7 +44,16 @@ enum AccountAccessResolver {
                 await AppleCredentialVerifier.currentStatus()
             },
             remoteSessionProvider: {
-                try await IdentityWorkerClient.shared.restoreSession()
+                if AccountIdentityClients.activeProvider == .supabase {
+                    let session = try await AccountIdentityClients.active().refreshSession()
+                    return WorkerAccountStatus(
+                        accountID: session.accountID,
+                        displayName: session.displayName,
+                        status: "active",
+                        memberships: []
+                    )
+                }
+                return try await IdentityWorkerClient.shared.restoreSession()
             }
         )
     }
@@ -89,10 +99,45 @@ enum AccountAccessResolver {
                 return .requiresSignIn(error.localizedDescription)
             }
             return .localOnly(error.localizedDescription)
+        } catch let error as AuthError {
+            if error.requiresFreshAuthentication {
+                return .requiresSignIn("Supabase 登录会话不存在或已失效，请重新登录。")
+            }
+            return .localOnly(error.localizedDescription)
         } catch let error as URLError {
             return .localOnly(error.localizedDescription)
         } catch {
             return .localOnly("身份服务暂时不可用，稍后会自动重试。")
+        }
+    }
+}
+
+extension AuthError {
+    var requiresFreshAuthentication: Bool {
+        switch self {
+        case .sessionMissing:
+            true
+        case .api(_, let errorCode, _, _):
+            [
+                ErrorCode.noAuthorization,
+                ErrorCode.userNotFound,
+                ErrorCode.sessionNotFound,
+                ErrorCode.sessionExpired,
+                ErrorCode.refreshTokenNotFound,
+                ErrorCode.refreshTokenAlreadyUsed,
+                ErrorCode.userBanned,
+                ErrorCode.invalidJWT,
+            ].contains(errorCode)
+        case .jwtVerificationFailed:
+            true
+        case .missingExpClaim, .malformedJWT:
+            true
+        case .weakPassword,
+             .pkceGrantCodeExchange,
+             .implicitGrantRedirect,
+             .invalidRedirectScheme,
+             .missingURL:
+            false
         }
     }
 }

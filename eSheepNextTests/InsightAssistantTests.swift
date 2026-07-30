@@ -343,11 +343,328 @@ final class InsightAssistantTests: XCTestCase {
         XCTAssertTrue(instructions.contains("公历年份是 2026"))
         XCTAssertTrue(instructions.contains("默认使用当前公历年份 2026"))
         XCTAssertTrue(instructions.contains("UTC+08:00"))
+        XCTAssertTrue(instructions.contains("批量核对必须一次调用 match_sheep_ear_tags"))
+        XCTAssertTrue(instructions.contains("本地批量匹配最多 200 个耳号"))
         XCTAssertTrue(instructions.contains("多个称重必须一次调用 draft_record_weights"))
-        XCTAssertTrue(instructions.contains("必须一次调用 draft_sell_sheep_batch"))
+        XCTAssertTrue(instructions.contains("直接一次调用 draft_sell_sheep_batch"))
         XCTAssertTrue(instructions.contains("绝不表示已经提交、保存或执行"))
         XCTAssertTrue(instructions.contains("AI 智能牧场助手"))
         XCTAssertFalse(instructions.contains("MiMo 智能牧场助手"))
+    }
+
+    func testConversationControllerRestoresOnlyTheBoundAccountAndFarm() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-conversation-farm-scope-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let account = AccountProfile(
+            appleUserIdentifier: "scope-\(UUID().uuidString)",
+            displayName: "测试账号"
+        )
+        let accountID = account.effectiveAccountID
+        let otherAccountID = UUID()
+        let stardewFarm = FarmRecord(
+            ownerAccountID: accountID,
+            name: "星露谷"
+        )
+        let jihaoFarm = FarmRecord(
+            ownerAccountID: accountID,
+            name: "吉昊羊场"
+        )
+        let stardewConversation = InsightConversationRecord(
+            accountID: accountID,
+            farmID: stardewFarm.id,
+            title: "星露谷会话"
+        )
+        let jihaoConversation = InsightConversationRecord(
+            accountID: accountID,
+            farmID: jihaoFarm.id,
+            title: "吉昊羊场会话"
+        )
+        let stardewMessage = InsightMessageRecord(
+            conversationID: stardewConversation.id,
+            accountID: accountID,
+            farmID: stardewFarm.id,
+            role: .assistant,
+            text: "星露谷数据"
+        )
+        let foreignFarmMessage = InsightMessageRecord(
+            conversationID: stardewConversation.id,
+            accountID: accountID,
+            farmID: jihaoFarm.id,
+            role: .assistant,
+            text: "不应载入的吉昊羊场数据"
+        )
+        let foreignAccountMessage = InsightMessageRecord(
+            conversationID: stardewConversation.id,
+            accountID: otherAccountID,
+            farmID: stardewFarm.id,
+            role: .assistant,
+            text: "不应载入的其他账号数据"
+        )
+        let stardewDraft = InsightActionDraftRecord(
+            conversationID: stardewConversation.id,
+            messageID: stardewMessage.id,
+            accountID: accountID,
+            farmID: stardewFarm.id,
+            originDeviceID: UUID(),
+            toolName: "draft_farm_command",
+            title: "星露谷草案",
+            summary: "仅属于星露谷",
+            argumentsJSON: Data("{}".utf8),
+            risk: .normal,
+            requiredCapability: .recordProduction
+        )
+        let foreignFarmDraft = InsightActionDraftRecord(
+            conversationID: stardewConversation.id,
+            messageID: stardewMessage.id,
+            accountID: accountID,
+            farmID: jihaoFarm.id,
+            originDeviceID: UUID(),
+            toolName: "draft_farm_command",
+            title: "吉昊羊场草案",
+            summary: "不应载入",
+            argumentsJSON: Data("{}".utf8),
+            risk: .normal,
+            requiredCapability: .recordProduction
+        )
+        let stardewAttachment = InsightAttachmentRecord(
+            conversationID: stardewConversation.id,
+            messageID: stardewMessage.id,
+            accountID: accountID,
+            farmID: stardewFarm.id,
+            imageData: Data([0x01]),
+            pixelWidth: 1,
+            pixelHeight: 1,
+            digest: "stardew"
+        )
+        let foreignFarmAttachment = InsightAttachmentRecord(
+            conversationID: stardewConversation.id,
+            messageID: stardewMessage.id,
+            accountID: accountID,
+            farmID: jihaoFarm.id,
+            imageData: Data([0x02]),
+            pixelWidth: 1,
+            pixelHeight: 1,
+            digest: "jihao"
+        )
+
+        context.insert(account)
+        context.insert(stardewFarm)
+        context.insert(jihaoFarm)
+        context.insert(stardewConversation)
+        context.insert(jihaoConversation)
+        context.insert(stardewMessage)
+        context.insert(foreignFarmMessage)
+        context.insert(foreignAccountMessage)
+        context.insert(stardewDraft)
+        context.insert(foreignFarmDraft)
+        context.insert(stardewAttachment)
+        context.insert(foreignFarmAttachment)
+        try context.save()
+
+        let controller = InsightConversationController(
+            account: account,
+            farm: stardewFarm
+        )
+        controller.connectLocalState(to: context)
+
+        XCTAssertEqual(controller.conversations.map(\.id), [stardewConversation.id])
+        controller.selectConversation(stardewConversation.id)
+        XCTAssertEqual(controller.messages.map(\.id), [stardewMessage.id])
+        XCTAssertEqual(controller.drafts.map(\.id), [stardewDraft.id])
+        XCTAssertTrue(controller.conversationScope.contains(stardewAttachment))
+        XCTAssertFalse(controller.conversationScope.contains(foreignFarmAttachment))
+
+        controller.selectConversation(jihaoConversation.id)
+        XCTAssertNil(controller.currentConversationID)
+        XCTAssertTrue(controller.messages.isEmpty)
+        XCTAssertTrue(controller.drafts.isEmpty)
+        XCTAssertEqual(controller.errorMessage, "该会话不属于当前牧场，已停止打开。")
+    }
+
+    func testBatchEarTagMatcherResolvesOneHundredTwentyOneNumericReferencesInOneCall() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-batch-ear-tag-match-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let farmID = UUID()
+        let otherFarmID = UUID()
+        let canonicalEarTags = (1...121).map { String(format: "FARM%04d", $0) }
+        let numericReferences = (1...121).map { String(format: "%04d", $0) }
+
+        for earTag in canonicalEarTags {
+            context.insert(SheepRecord(
+                farmID: farmID,
+                earTag: earTag,
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                enteredAt: .now
+            ))
+        }
+        context.insert(SheepRecord(
+            farmID: otherFarmID,
+            earTag: "OTHER0001",
+            breed: "杜泊",
+            sex: .ram,
+            penID: nil,
+            enteredAt: .now
+        ))
+        try context.save()
+
+        let registry = InsightToolRegistry()
+        let farm = FarmContext(accountID: accountID, farmID: farmID, role: .owner)
+        XCTAssertTrue(
+            registry.definitions(for: farm).contains(where: {
+                $0.name == "match_sheep_ear_tags"
+            })
+        )
+        let argumentsData = try JSONSerialization.data(
+            withJSONObject: ["ear_tags": numericReferences]
+        )
+        let agent = InsightAgentContext(
+            accountID: accountID,
+            farmID: farmID,
+            role: .owner,
+            originDeviceID: UUID(),
+            conversationID: UUID()
+        )
+        let result = try registry.execute(
+            .init(
+                callID: "batch-match",
+                name: "match_sheep_ear_tags",
+                argumentsJSON: String(decoding: argumentsData, as: UTF8.self)
+            ),
+            agent: agent,
+            context: context
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any]
+        )
+
+        XCTAssertEqual(object["status"] as? String, "all_matched")
+        XCTAssertEqual(object["input_count"] as? Int, 121)
+        XCTAssertEqual(object["matched_count"] as? Int, 121)
+        XCTAssertEqual(object["unmatched_count"] as? Int, 0)
+        XCTAssertEqual(object["ambiguous_count"] as? Int, 0)
+        XCTAssertEqual(object["duplicate_input_count"] as? Int, 0)
+        XCTAssertEqual(object["canonical_ear_tags"] as? [String], canonicalEarTags)
+        XCTAssertTrue(result.actionDrafts.isEmpty)
+    }
+
+    func testBatchEarTagMatcherReportsAmbiguousMissingAndDuplicateReferencesTogether() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-batch-ear-tag-review-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let farmID = UUID()
+        for earTag in ["A7090", "B7090", "A7003"] {
+            context.insert(SheepRecord(
+                farmID: farmID,
+                earTag: earTag,
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                enteredAt: .now
+            ))
+        }
+        try context.save()
+
+        let argumentsData = try JSONSerialization.data(withJSONObject: [
+            "ear_tags": ["7090", "7003", "A7003", "9999"],
+        ])
+        let registry = InsightToolRegistry()
+        let agent = InsightAgentContext(
+            accountID: accountID,
+            farmID: farmID,
+            role: .owner,
+            originDeviceID: UUID(),
+            conversationID: UUID()
+        )
+        let result = try registry.execute(
+            .init(
+                callID: "batch-review",
+                name: "match_sheep_ear_tags",
+                argumentsJSON: String(decoding: argumentsData, as: UTF8.self)
+            ),
+            agent: agent,
+            context: context
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any]
+        )
+
+        XCTAssertEqual(object["status"] as? String, "needs_review")
+        XCTAssertEqual(object["matched_count"] as? Int, 1)
+        XCTAssertEqual(object["ambiguous_count"] as? Int, 1)
+        XCTAssertEqual(object["unmatched_count"] as? Int, 1)
+        XCTAssertEqual(object["duplicate_input_count"] as? Int, 1)
+        XCTAssertEqual(object["canonical_ear_tags"] as? [String], ["A7003"])
+        XCTAssertEqual(object["unmatched_ear_tags"] as? [String], ["9999"])
+        XCTAssertEqual(object["duplicate_input_ear_tags"] as? [String], ["A7003"])
+    }
+
+    func testBatchSaleToolAcceptsUniqueNumericReferencesForPrefixedEarTags() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-batch-sale-numeric-match-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let farmID = UUID()
+        for earTag in ["A7090", "A7003"] {
+            context.insert(SheepRecord(
+                farmID: farmID,
+                earTag: earTag,
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                enteredAt: .now.addingTimeInterval(-86_400)
+            ))
+        }
+        try context.save()
+
+        let registry = InsightToolRegistry()
+        let agent = InsightAgentContext(
+            accountID: accountID,
+            farmID: farmID,
+            role: .owner,
+            originDeviceID: UUID(),
+            conversationID: UUID()
+        )
+        let result = try registry.execute(
+            .init(
+                callID: "batch-sale-numeric",
+                name: "draft_sell_sheep_batch",
+                argumentsJSON: """
+                {
+                  "occurred_at": "2026-07-13T08:00:00+08:00",
+                  "total_amount": "150780",
+                  "note": "",
+                  "ear_tags": ["7090", "7003"]
+                }
+                """
+            ),
+            agent: agent,
+            context: context
+        )
+
+        XCTAssertEqual(result.actionDrafts.count, 2)
+        XCTAssertEqual(
+            Set(result.actionDrafts.map(\.summary)),
+            Set([
+                "A7090 · 批量出售，总价 ¥150780",
+                "A7003 · 批量出售，总价 ¥150780",
+            ])
+        )
+        XCTAssertTrue(result.output.contains(#""proposal_count":2"#))
+        XCTAssertTrue(try context.fetch(FetchDescriptor<RemovalRecord>()).isEmpty)
     }
 
     func testConversationRequestKeepsMessagesBeyondLegacySixteenMessageLimit() {

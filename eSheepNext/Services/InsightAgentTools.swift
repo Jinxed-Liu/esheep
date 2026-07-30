@@ -157,7 +157,19 @@ struct InsightCalendarEventDraft: Codable, Sendable, Equatable {
 @MainActor
 final class InsightToolRegistry {
     static let maximumRows = 50
+    static let maximumBatchEarTags = 200
     static let maximumOutputBytes = 100 * 1_024
+
+    private struct SheepEarTagIndex {
+        let exactMatches: [String: [SheepRecord]]
+        let numericBodyMatches: [String: [SheepRecord]]
+    }
+
+    private enum SheepEarTagResolution {
+        case matched(SheepRecord, matchKind: String)
+        case ambiguous([SheepRecord])
+        case notFound
+    }
 
     func definitions(for farm: FarmContext) -> [InsightToolDefinition] {
         guard farm.capabilities.allows(.readFarm) else { return [] }
@@ -175,6 +187,20 @@ final class InsightToolRegistry {
                     "query": Self.string("耳号或品种关键词"),
                 ],
                 required: ["query"]
+            ),
+            Self.tool(
+                "match_sheep_ear_tags",
+                "一次批量核对当前牧场的 1 到 200 个耳号。多个耳号或图片识别出的耳号必须一次调用本工具，不能逐个调用 find_sheep。精确耳号优先；输入为纯数字时，只在去掉现有耳号的非数字前缀后能够唯一对应时匹配。歧义项不会猜测。",
+                properties: [
+                    "ear_tags": .object([
+                        "type": .string("array"),
+                        "description": .string("要核对的 1 到 200 个耳号，保持用户或图片中的原始顺序"),
+                        "minItems": .number(1),
+                        "maxItems": .number(Double(Self.maximumBatchEarTags)),
+                        "items": Self.string("一个原始耳号"),
+                    ]),
+                ],
+                required: ["ear_tags"]
             ),
             Self.tool(
                 "get_farm_entities",
@@ -341,19 +367,19 @@ final class InsightToolRegistry {
                     ],
                     required: ["occurred_at", "note", "items"]
                 ),
-            Self.tool(
-                "draft_sell_sheep_batch",
-                    "一次为多只羊生成同一批次的出售草案。用户说明多只羊在同一天全部出售并给出一个总售卖金额时必须使用本工具，只调用一次；不要逐只调用 draft_farm_command。App 会为每只羊生成待确认卡片，共享同一个出售批次和总金额；用户在任一卡片选择执行同批操作并通过一次生物认证后，整批才会写入。",
+                Self.tool(
+                    "draft_sell_sheep_batch",
+                    "一次为 1 到 200 只羊生成同一批次的出售草案。用户说明多只羊在同一天全部出售并给出一个总售卖金额时必须使用本工具，只调用一次；无需先逐只查羊，也不要逐只调用 draft_farm_command。精确耳号优先；纯数字只在去掉现有耳号的非数字前缀后唯一对应时匹配。App 会为每只羊生成待确认卡片，共享同一个出售批次和总金额；用户在任一卡片选择执行同批操作并通过一次生物认证后，整批才会写入。",
                     properties: [
                         "occurred_at": Self.string("全部羊只共同使用的 ISO 8601 出售时间"),
                         "total_amount": Self.string("本批全部羊只合计的大于零售卖金额"),
                         "note": Self.string("本批出售备注，可为空"),
                         "ear_tags": .object([
                             "type": .string("array"),
-                            "description": .string("1 到 50 个当前在场羊只的精确耳号"),
+                            "description": .string("1 到 200 个当前在场羊只耳号，可使用能够唯一对应现有字母前缀耳号的纯数字"),
                             "minItems": .number(1),
-                            "maxItems": .number(Double(Self.maximumRows)),
-                            "items": Self.string("当前牧场已存在且在场的精确耳号"),
+                            "maxItems": .number(Double(Self.maximumBatchEarTags)),
+                            "items": Self.string("当前牧场已存在且在场的耳号"),
                         ]),
                     ],
                     required: ["occurred_at", "total_amount", "note", "ear_tags"]
@@ -402,6 +428,19 @@ final class InsightToolRegistry {
             return .init(
                 output: try findSheep(
                     query: try Self.string(arguments, "query"),
+                    farmID: agent.farmID,
+                    context: context
+                ),
+                actionDraft: nil
+            )
+        case "match_sheep_ear_tags":
+            guard let earTags = arguments["ear_tags"] as? [String],
+                  (1...Self.maximumBatchEarTags).contains(earTags.count) else {
+                throw InsightToolError.invalidArguments("ear_tags")
+            }
+            return .init(
+                output: try matchSheepEarTags(
+                    earTags,
                     farmID: agent.farmID,
                     context: context
                 ),
@@ -1230,6 +1269,70 @@ final class InsightToolRegistry {
         ])
     }
 
+    private func matchSheepEarTags(
+        _ earTags: [String],
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> String {
+        let index = try sheepEarTagIndex(farmID: farmID, context: context)
+        var matchedRows: [[String: Any]] = []
+        var canonicalEarTags: [String] = []
+        var unmatchedEarTags: [String] = []
+        var ambiguousRows: [[String: Any]] = []
+        var duplicateInputEarTags: [String] = []
+        var seenSheepIDs = Set<UUID>()
+
+        for earTag in earTags {
+            switch resolveSheepEarTag(earTag, index: index) {
+            case .matched(let sheep, let matchKind):
+                guard seenSheepIDs.insert(sheep.id).inserted else {
+                    duplicateInputEarTags.append(earTag)
+                    continue
+                }
+                canonicalEarTags.append(sheep.earTag)
+                matchedRows.append([
+                    "input_ear_tag": earTag,
+                    "canonical_ear_tag": sheep.earTag,
+                    "id": sheep.id.uuidString.lowercased(),
+                    "match_kind": matchKind,
+                    "status": sheep.status.rawValue,
+                    "currently_present": sheep.isCurrentlyPresent,
+                ])
+            case .ambiguous(let matches):
+                ambiguousRows.append([
+                    "input_ear_tag": earTag,
+                    "candidates": matches.prefix(5).map {
+                        [
+                            "canonical_ear_tag": $0.earTag,
+                            "status": $0.status.rawValue,
+                            "currently_present": $0.isCurrentlyPresent,
+                        ] as [String: Any]
+                    },
+                ])
+            case .notFound:
+                unmatchedEarTags.append(earTag)
+            }
+        }
+
+        let needsReview = !unmatchedEarTags.isEmpty ||
+            !ambiguousRows.isEmpty ||
+            !duplicateInputEarTags.isEmpty
+        return try boundedJSON([
+            "status": needsReview ? "needs_review" : "all_matched",
+            "input_count": earTags.count,
+            "matched_count": canonicalEarTags.count,
+            "unmatched_count": unmatchedEarTags.count,
+            "ambiguous_count": ambiguousRows.count,
+            "duplicate_input_count": duplicateInputEarTags.count,
+            "canonical_ear_tags": canonicalEarTags,
+            "matches": matchedRows,
+            "unmatched_ear_tags": unmatchedEarTags,
+            "ambiguous_matches": ambiguousRows,
+            "duplicate_input_ear_tags": duplicateInputEarTags,
+            "scope": "current_farm_only",
+        ])
+    }
+
     private func extendedFarmRecords(
         _ arguments: [String: Any],
         farmID: UUID,
@@ -1582,7 +1685,7 @@ final class InsightToolRegistry {
         context: ModelContext
     ) throws -> InsightToolExecution {
         guard let earTags = arguments["ear_tags"] as? [String],
-              (1...Self.maximumRows).contains(earTags.count) else {
+              (1...Self.maximumBatchEarTags).contains(earTags.count) else {
             throw InsightToolError.invalidArguments("ear_tags")
         }
         let occurredAt = try Self.date(arguments, "occurred_at")
@@ -1595,15 +1698,25 @@ final class InsightToolRegistry {
         var seenSheepIDs = Set<UUID>()
         var sheep: [SheepRecord] = []
         sheep.reserveCapacity(earTags.count)
+        let earTagIndex = try sheepEarTagIndex(farmID: agent.farmID, context: context)
 
         // Resolve the full batch before creating any proposal. One invalid,
         // duplicated or already-removed ear tag rejects the whole call.
         for (index, earTag) in earTags.enumerated() {
-            let item = try exactSheep(
-                earTag: earTag,
-                farmID: agent.farmID,
-                context: context
-            )
+            let item: SheepRecord
+            switch resolveSheepEarTag(earTag, index: earTagIndex) {
+            case .matched(let value, _):
+                item = value
+            case .ambiguous(let matches):
+                let candidates = matches.prefix(5).map(\.earTag).joined(separator: "、")
+                throw InsightToolError.invalidArguments(
+                    "ear_tags[\(index)] \(earTag) 匹配到多个羊号：\(candidates)"
+                )
+            case .notFound:
+                throw InsightToolError.invalidArguments(
+                    "ear_tags[\(index)] 找不到 \(earTag)"
+                )
+            }
             guard item.isCurrentlyPresent else {
                 throw InsightToolError.invalidArguments("ear_tags[\(index)] 已离场")
             }
@@ -1826,6 +1939,69 @@ final class InsightToolRegistry {
             throw InsightToolError.invalidArguments("ear_tag")
         }
         return value
+    }
+
+    private func sheepEarTagIndex(
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> SheepEarTagIndex {
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+            .filter { $0.farmID == farmID && $0.deletedAt == nil }
+            .sorted {
+                $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending
+            }
+        var exactMatches: [String: [SheepRecord]] = [:]
+        var numericBodyMatches: [String: [SheepRecord]] = [:]
+
+        for item in sheep {
+            exactMatches[EarTag.normalized(item.earTag), default: []].append(item)
+            if let numericBody = Self.numericEarTagBody(item.earTag) {
+                numericBodyMatches[numericBody, default: []].append(item)
+            }
+        }
+        return SheepEarTagIndex(
+            exactMatches: exactMatches,
+            numericBodyMatches: numericBodyMatches
+        )
+    }
+
+    private func resolveSheepEarTag(
+        _ earTag: String,
+        index: SheepEarTagIndex
+    ) -> SheepEarTagResolution {
+        let exactMatches = index.exactMatches[EarTag.normalized(earTag)] ?? []
+        if exactMatches.count == 1, let sheep = exactMatches.first {
+            return .matched(sheep, matchKind: "exact")
+        }
+        if exactMatches.count > 1 {
+            return .ambiguous(exactMatches)
+        }
+
+        guard let numericReference = Self.numericEarTagReference(earTag) else {
+            return .notFound
+        }
+        let numericMatches = index.numericBodyMatches[numericReference] ?? []
+        if numericMatches.count == 1, let sheep = numericMatches.first {
+            return .matched(sheep, matchKind: "unique_numeric_body")
+        }
+        if numericMatches.count > 1 {
+            return .ambiguous(numericMatches)
+        }
+        return .notFound
+    }
+
+    private static func numericEarTagReference(_ value: String) -> String? {
+        let normalized = SearchText.normalized(value)
+        guard !normalized.isEmpty,
+              normalized.allSatisfy({ $0.isNumber }) else {
+            return nil
+        }
+        return normalized
+    }
+
+    private static func numericEarTagBody(_ value: String) -> String? {
+        let digits = String(SearchText.normalized(value).filter { $0.isNumber })
+        return digits.isEmpty ? nil : digits
     }
 
     private func exactPen(name: String, farmID: UUID, context: ModelContext) throws -> PenRecord {

@@ -848,6 +848,324 @@ final class CloudRebuildTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: workspace.appending(path: "SwiftData/staging.store").path))
     }
 
+    func testDiskStagingPreCutoffTombstoneDoesNotReleaseVersion2SheepSnapshotAuthority() throws {
+        let farmID = UUID()
+        let ownerID = UUID()
+        let cutoff = Date(timeIntervalSince1970: 1_784_733_565)
+        let initialPenID = UUID()
+        let historicalPenID = UUID()
+        let sheepID = UUID()
+        let transferID = UUID()
+
+        func bootstrap(
+            _ source: CloudOperationEnvelope,
+            slot: String
+        ) throws -> CloudOperationEnvelope {
+            let snapshot = BootstrapEntityEnvelopeV1(
+                entityType: source.entityType,
+                entityID: source.entityID,
+                sourceRevision: source.revision,
+                sourcePayload: source.payload
+            )
+            var wrapper = FarmCommandCloudPayload(kind: .bootstrapEntity)
+            wrapper.dataValues["snapshot"] = try JSONEncoder.cloud.encode(snapshot)
+            wrapper.integers["baselineVersion"] = 2
+            wrapper.strings["baselineSlot"] = slot
+            wrapper.dates["baselineCutoffAt"] = cutoff
+            let payload = try JSONEncoder.cloud.encode(wrapper)
+            return CloudOperationEnvelope(
+                farmID: farmID,
+                entityID: source.entityID,
+                entityType: source.entityType,
+                schemaVersion: source.schemaVersion,
+                revision: source.revision,
+                baseRevision: source.baseRevision,
+                operationID: UUID(),
+                modifiedAt: cutoff.addingTimeInterval(-600),
+                modifiedByAccountID: source.modifiedByAccountID,
+                modifiedByDeviceID: source.modifiedByDeviceID,
+                payload: payload,
+                payloadDigest: CloudPayloadDigest.hex(for: payload),
+                capabilityCertificate: source.capabilityCertificate,
+                operationSignature: source.operationSignature,
+                deletedAt: source.deletedAt
+            )
+        }
+
+        let initialPen = try bootstrap(
+            makeOperation(
+                farmID: farmID,
+                command: .createPen(name: "初始圈", note: ""),
+                entityType: .pen,
+                entityID: initialPenID
+            ),
+            slot: "10"
+        )
+        let historicalPen = try bootstrap(
+            makeOperation(
+                farmID: farmID,
+                command: .createPen(name: "历史圈", note: ""),
+                entityType: .pen,
+                entityID: historicalPenID
+            ),
+            slot: "10"
+        )
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var sheepPayload = try decoder.decode(
+            FarmCommandCloudPayload.self,
+            from: FarmCommandCloudPayloadEncoder.encode(.addSheep(
+                earTag: "LEGACY-REMOVED",
+                breed: "湖羊",
+                sex: .ewe,
+                penID: initialPenID,
+                occurredAt: cutoff.addingTimeInterval(-86_400 * 30),
+                birthAt: nil,
+                note: ""
+            ))
+        )
+        sheepPayload.strings["legacyStatusRawValue"] = SheepStatus.removed.rawValue
+        sheepPayload.integers["legacyStatusSnapshotIsAuthoritative"] = 1
+        sheepPayload.integers["legacyPenSnapshotIsAuthoritative"] = 1
+        sheepPayload.optionalIdentifiers["legacyCurrentPenID"] = nil
+        sheepPayload.optionalDates["legacyRemovedAt"] = cutoff.addingTimeInterval(-86_400)
+        let encodedSheepPayload = try JSONEncoder.cloud.encode(sheepPayload)
+        let sheepSource = CloudOperationEnvelope(
+            farmID: farmID,
+            entityID: sheepID,
+            entityType: CloudEntityType.sheep.rawValue,
+            schemaVersion: 2,
+            revision: 1,
+            baseRevision: 0,
+            operationID: UUID(),
+            modifiedAt: cutoff.addingTimeInterval(-600),
+            modifiedByAccountID: ownerID,
+            modifiedByDeviceID: UUID(),
+            payload: encodedSheepPayload,
+            payloadDigest: CloudPayloadDigest.hex(for: encodedSheepPayload),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+        let sheep = try bootstrap(sheepSource, slot: "20")
+        let transfer = try bootstrap(
+            makeOperation(
+                farmID: farmID,
+                command: .transferSheep(
+                    sheepID: sheepID,
+                    toPenID: historicalPenID,
+                    occurredAt: cutoff.addingTimeInterval(-86_400 * 10),
+                    note: "迁移前历史转群"
+                ),
+                entityType: .transfer,
+                entityID: transferID
+            ),
+            slot: "30"
+        )
+        let tombstone = replacingTiming(
+            in: try makeOperation(
+                farmID: farmID,
+                command: .tombstoneEntity(
+                    entityType: .transfer,
+                    entityID: transferID,
+                    reason: "迁移前已删除"
+                ),
+                entityType: .transfer,
+                entityID: transferID
+            ),
+            modifiedAt: cutoff.addingTimeInterval(-60),
+            deletedAt: cutoff.addingTimeInterval(-60)
+        )
+        let operations = CloudRebuildActor.sortedOperations([
+            initialPen,
+            historicalPen,
+            sheep,
+            transfer,
+            tombstone,
+        ])
+        let bundle = makeBundle(
+            farmID: farmID,
+            ownerID: ownerID,
+            operations: operations,
+            bootstrap: CloudRebuildBootstrapSnapshot(
+                digest: "test-v2",
+                entityCount: 4,
+                photoCount: 0,
+                version: 2,
+                cutoffAt: cutoff
+            ),
+            scope: .sharedDatabase
+        )
+        let workspace = FileManager.default.temporaryDirectory
+            .appending(path: "CloudRebuildTests/\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        _ = try CloudRebuildStagingBuilder.build(bundle: bundle, workspace: workspace)
+
+        let staging = try AppSchema.makeContainer(
+            name: "pre-cutoff-tombstone-snapshot-authority",
+            url: workspace.appending(path: "SwiftData/staging.store")
+        )
+        let recovered = try XCTUnwrap(
+            try ModelContext(staging).fetch(FetchDescriptor<SheepRecord>())
+                .first { $0.id == sheepID }
+        )
+        XCTAssertEqual(recovered.status, .removed)
+        XCTAssertNil(recovered.currentPenID)
+        XCTAssertEqual(recovered.legacyStatusSnapshotIsAuthoritative, true)
+        XCTAssertEqual(recovered.legacyPenSnapshotIsAuthoritative, true)
+    }
+
+    func testDiskStagingAcknowledgesCorrectionOnlyWhenSourceAndResultAreAuthoritativelyDeleted() throws {
+        let farmID = UUID()
+        let ownerID = UUID()
+        let originalID = UUID()
+        let replacementID = UUID()
+        let correctionAt = Date(timeIntervalSince1970: 1_753_347_340)
+        let originalTombstoneAt = correctionAt.addingTimeInterval(-60)
+        let replacementTombstoneAt = correctionAt.addingTimeInterval(120)
+        let correction = replacingTiming(
+            in: try makeOperation(
+                farmID: farmID,
+                command: .correctRemoval(
+                    originalID: originalID,
+                    kind: .sold,
+                    reason: "测试",
+                    amountText: "100",
+                    occurredAt: correctionAt,
+                    note: "",
+                    correctionReason: "更正"
+                ),
+                entityType: .removal,
+                entityID: replacementID
+            ),
+            modifiedAt: correctionAt
+        )
+        let originalTombstone = replacingTiming(
+            in: try makeOperation(
+                farmID: farmID,
+                command: .tombstoneEntity(
+                    entityType: .removal,
+                    entityID: originalID,
+                    reason: "删除原记录"
+                ),
+                entityType: .removal,
+                entityID: originalID
+            ),
+            modifiedAt: originalTombstoneAt,
+            deletedAt: originalTombstoneAt
+        )
+        let replacementTombstone = replacingTiming(
+            in: try makeOperation(
+                farmID: farmID,
+                command: .tombstoneEntity(
+                    entityType: .removal,
+                    entityID: replacementID,
+                    reason: "删除修正记录"
+                ),
+                entityType: .removal,
+                entityID: replacementID
+            ),
+            modifiedAt: replacementTombstoneAt,
+            deletedAt: replacementTombstoneAt
+        )
+        let bundle = makeBundle(
+            farmID: farmID,
+            ownerID: ownerID,
+            operations: [correction, originalTombstone, replacementTombstone]
+        )
+        let workspace = FileManager.default.temporaryDirectory
+            .appending(path: "CloudRebuildTests/\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        _ = try CloudRebuildStagingBuilder.build(bundle: bundle, workspace: workspace)
+        try CloudRebuildStagingBuilder.verify(bundle: bundle, workspace: workspace)
+
+        let staging = try AppSchema.makeContainer(
+            name: "superseded-correction-verify",
+            url: workspace.appending(path: "SwiftData/staging.store")
+        )
+        let context = ModelContext(staging)
+        XCTAssertEqual(
+            try context.fetch(FetchDescriptor<CloudOperationReceipt>())
+                .filter { $0.farmID == farmID }
+                .count,
+            3
+        )
+        XCTAssertTrue(
+            try context.fetch(FetchDescriptor<RemovalRecord>())
+                .filter { $0.farmID == farmID && $0.deletedAt == nil }
+                .isEmpty
+        )
+        XCTAssertTrue(
+            try context.fetch(FetchDescriptor<SecurityIncidentRecord>())
+                .contains {
+                    $0.farmID == farmID &&
+                        $0.incidentType == "supersededMissingReplayDependency"
+                }
+        )
+    }
+
+    func testDiskStagingRejectsMissingCorrectionWithoutLaterResultTombstone() throws {
+        let farmID = UUID()
+        let ownerID = UUID()
+        let originalID = UUID()
+        let replacementID = UUID()
+        let correctionAt = Date(timeIntervalSince1970: 1_753_347_340)
+        let correction = replacingTiming(
+            in: try makeOperation(
+                farmID: farmID,
+                command: .correctRemoval(
+                    originalID: originalID,
+                    kind: .sold,
+                    reason: "测试",
+                    amountText: nil,
+                    occurredAt: correctionAt,
+                    note: "",
+                    correctionReason: "更正"
+                ),
+                entityType: .removal,
+                entityID: replacementID
+            ),
+            modifiedAt: correctionAt
+        )
+        let originalTombstone = replacingTiming(
+            in: try makeOperation(
+                farmID: farmID,
+                command: .tombstoneEntity(
+                    entityType: .removal,
+                    entityID: originalID,
+                    reason: "删除原记录"
+                ),
+                entityType: .removal,
+                entityID: originalID
+            ),
+            modifiedAt: correctionAt.addingTimeInterval(-60),
+            deletedAt: correctionAt.addingTimeInterval(-60)
+        )
+        let bundle = makeBundle(
+            farmID: farmID,
+            ownerID: ownerID,
+            operations: [correction, originalTombstone]
+        )
+        let workspace = FileManager.default.temporaryDirectory
+            .appending(path: "CloudRebuildTests/\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        XCTAssertThrowsError(
+            try CloudRebuildStagingBuilder.build(bundle: bundle, workspace: workspace)
+        ) { error in
+            guard case CloudRebuildError.stagingValidation(let detail) = error else {
+                return XCTFail("预期 fail-closed stagingValidation，实际为 \(error)")
+            }
+            XCTAssertTrue(detail.contains(correction.operationID.uuidString.lowercased()))
+        }
+    }
+
     func testCompletedCacheSwitchRetryRequiresNewestVerifiedBundle() async throws {
         let container = try AppSchema.makeContainer(
             name: "completed-cache-switch-gate-\(UUID().uuidString)",
@@ -1658,6 +1976,30 @@ final class CloudRebuildTests: XCTestCase {
             capabilityCertificate: envelope.capabilityCertificate,
             operationSignature: signature,
             deletedAt: envelope.deletedAt
+        )
+    }
+
+    private func replacingTiming(
+        in envelope: CloudOperationEnvelope,
+        modifiedAt: Date,
+        deletedAt: Date? = nil
+    ) -> CloudOperationEnvelope {
+        CloudOperationEnvelope(
+            farmID: envelope.farmID,
+            entityID: envelope.entityID,
+            entityType: envelope.entityType,
+            schemaVersion: envelope.schemaVersion,
+            revision: envelope.revision,
+            baseRevision: envelope.baseRevision,
+            operationID: envelope.operationID,
+            modifiedAt: modifiedAt,
+            modifiedByAccountID: envelope.modifiedByAccountID,
+            modifiedByDeviceID: envelope.modifiedByDeviceID,
+            payload: envelope.payload,
+            payloadDigest: envelope.payloadDigest,
+            capabilityCertificate: envelope.capabilityCertificate,
+            operationSignature: envelope.operationSignature,
+            deletedAt: deletedAt
         )
     }
 

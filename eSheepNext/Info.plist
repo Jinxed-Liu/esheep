@@ -18,9 +18,32 @@
 	<string>$(MIMO_INSIGHTS_ENABLED)</string>
 	<key>SUBSCRIPTIONS_ENABLED</key>
 	<string>$(SUBSCRIPTIONS_ENABLED)</string>
+	<key>SUPABASE_PUBLISHABLE_KEY</key>
+	<string>$(SUPABASE_PUBLISHABLE_KEY)</string>
+	<key>SUPABASE_URL</key>
+	<string>$(SUPABASE_URL)</string>
+	<key>SUPABASE_ENABLED</key>
+	<string>$(SUPABASE_ENABLED)</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.sheepfarm.esheepnext.refresh</string>
+	</array>
+	<key>CKSharingSupported</key>
+	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.sheepfarm.esheep.deep-link</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>$(INVITATION_URL_SCHEME)</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_esheep-invite._tcp</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>

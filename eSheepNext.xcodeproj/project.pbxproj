@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		E5A100302FC6000100A00001 /* eSheepNextWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E5A100312FC6000100A00001 /* eSheepNextWidget.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		E5A200012FC7000100A00001 /* ESMotion in Frameworks */ = {isa = PBXBuildFile; productRef = E5A200042FC7000100A00001 /* ESMotion */; };
+		E5A300012FC8000100A00001 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = E5A300042FC8000100A00001 /* Supabase */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -98,6 +99,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E5A200012FC7000100A00001 /* ESMotion in Frameworks */,
+				E5A300012FC8000100A00001 /* Supabase in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -164,6 +166,7 @@
 			name = eSheepNext;
 			packageProductDependencies = (
 				E5A200042FC7000100A00001 /* ESMotion */,
+				E5A300042FC8000100A00001 /* Supabase */,
 			);
 			productName = eSheepNext;
 			productReference = E5A100062FC6000100A00001 /* eSheepNext.app */;
@@ -248,6 +251,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				E5A200032FC7000100A00001 /* XCRemoteSwiftPackageReference "ESMotion" */,
+				E5A300032FC8000100A00001 /* XCRemoteSwiftPackageReference "supabase-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E5A100072FC6000100A00001 /* Products */;
@@ -375,10 +379,12 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_MIMO_INSIGHTS_ENABLED = "$(MIMO_INSIGHTS_ENABLED)";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
-				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号与文档。";
+				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号、文档与牧场邀请二维码。";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于在你主动打开靠近邀请时，发现附近另一台运行 eSheepNext 的手机并安全传送一次性牧场邀请。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录制您主动发起的语音，并在发送前明确交给 MiMo 多模态模型理解。";
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "用于在靠近邀请期间确认两台手机确实已靠近，避免把牧场邀请发送给远处或错误的设备。";
 				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "用于在您确认 AI 草案后创建系统提醒事项。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -434,10 +440,12 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_MIMO_INSIGHTS_ENABLED = "$(MIMO_INSIGHTS_ENABLED)";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
-				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号与文档。";
+				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号、文档与牧场邀请二维码。";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于在你主动打开靠近邀请时，发现附近另一台运行 eSheepNext 的手机并安全传送一次性牧场邀请。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录制您主动发起的语音，并在发送前明确交给 MiMo 多模态模型理解。";
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "用于在靠近邀请期间确认两台手机确实已靠近，避免把牧场邀请发送给远处或错误的设备。";
 				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "用于在您确认 AI 草案后创建系统提醒事项。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -541,10 +549,12 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_MIMO_INSIGHTS_ENABLED = "$(MIMO_INSIGHTS_ENABLED)";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
-				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号与文档。";
+				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号、文档与牧场邀请二维码。";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于在你主动打开靠近邀请时，发现附近另一台运行 eSheepNext 的手机并安全传送一次性牧场邀请。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录制您主动发起的语音，并在发送前明确交给 MiMo 多模态模型理解。";
+				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "用于在靠近邀请期间确认两台手机确实已靠近，避免把牧场邀请发送给远处或错误的设备。";
 				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "用于在您确认 AI 草案后创建系统提醒事项。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -741,6 +751,14 @@
 				minimumVersion = 0.1.0;
 			};
 		};
+		E5A300032FC8000100A00001 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift.git";
+			requirement = {
+				kind = exactVersion;
+				version = 2.54.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -748,6 +766,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = E5A200032FC7000100A00001 /* XCRemoteSwiftPackageReference "ESMotion" */;
 			productName = ESMotion;
+		};
+		E5A300042FC8000100A00001 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E5A300032FC8000100A00001 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

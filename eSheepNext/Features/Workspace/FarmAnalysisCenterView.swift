@@ -872,26 +872,93 @@ private struct DetailFact: View {
     }
 }
 
+private enum ReproductionAnalysisSection: String, CaseIterable, Identifiable {
+    case interval = "胎间距"
+    case postpartum = "产后天数"
+    case breed = "品种分析"
+
+    var id: Self { self }
+}
+
+private enum ReproductionAnalysisSheet: Identifiable {
+    case filters
+
+    var id: String { "reproduction-filters" }
+}
+
 private struct ReproductionAnalysisView: View {
     @Query private var sheep: [SheepRecord]
     @Query private var pens: [PenRecord]
-    @Query private var weights: [WeightRecord]
-    @Query private var weanings: [WeaningRecord]
     @Query(sort: \ReproductionRecord.occurredAt) private var reproduction: [ReproductionRecord]
     @Query private var offspring: [LambingOffspringRecord]
     @Query private var removals: [RemovalRecord]
     @Query private var transfers: [TransferRecord]
-    @Query private var memberships: [BatchMembershipRecord]
-    @Query private var feeds: [FeedRecord]
-    @Query private var feedLines: [FeedRecordLine]
 
     let farm: FarmRecord
-    @State private var selectedYear = "全部"
+    @State private var filter: ReproductionAnalyticsFilter
+    @State private var selectedSection = ReproductionAnalysisSection.interval
+    @State private var presentedSheet: ReproductionAnalysisSheet?
     @State private var analytics = FarmAnalyticsViewModel()
 
-    private func makeSnapshot() -> FarmAnalyticsSnapshot { FarmAnalyticsSnapshot.make(farmID: farm.id, sheep: sheep, pens: pens, weights: weights, weanings: weanings, reproduction: reproduction, offspring: offspring, removals: removals, transfers: transfers, memberships: memberships, feeds: feeds, feedLines: feedLines) }
-    private var years: [String] { guard let snapshot = analytics.snapshot else { return [] }; return Array(Set(snapshot.lambings.map { FarmAnalyticsDate.year($0.occurredAt) })).sorted(by: >) }
-    private var sourceRevision: [Int] { [sheep.count, pens.count, weights.count, weanings.count, reproduction.count, offspring.count, removals.count, transfers.count, memberships.count, feeds.count, feedLines.count] }
+    init(farm: FarmRecord) {
+        self.farm = farm
+        let farmID = farm.id
+        _sheep = Query(filter: #Predicate<SheepRecord> { $0.farmID == farmID && $0.deletedAt == nil })
+        _pens = Query(
+            filter: #Predicate<PenRecord> { $0.farmID == farmID },
+            sort: \PenRecord.name
+        )
+        _reproduction = Query(
+            filter: #Predicate<ReproductionRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \ReproductionRecord.occurredAt
+        )
+        _offspring = Query(filter: #Predicate<LambingOffspringRecord> { $0.farmID == farmID })
+        _removals = Query(filter: #Predicate<RemovalRecord> { $0.farmID == farmID && $0.deletedAt == nil })
+        _transfers = Query(filter: #Predicate<TransferRecord> { $0.farmID == farmID && $0.deletedAt == nil })
+        _filter = State(initialValue: .recentYear())
+    }
+
+    private func makeSnapshot() -> FarmAnalyticsSnapshot {
+        FarmAnalyticsSnapshot.make(
+            farmID: farm.id,
+            sheep: sheep,
+            pens: pens,
+            weights: [],
+            weanings: [],
+            reproduction: reproduction,
+            offspring: offspring,
+            removals: removals,
+            transfers: transfers,
+            memberships: [],
+            feeds: [],
+            feedLines: []
+        )
+    }
+
+    private var filterSheetSnapshot: FarmAnalyticsSnapshot {
+        analytics.snapshot ?? makeSnapshot()
+    }
+
+    private var penNames: [UUID: String] {
+        Dictionary(uniqueKeysWithValues: pens.map { ($0.id, $0.name) })
+    }
+
+    private var earliestLambingDate: Date {
+        analytics.snapshot?.lambings.map(\.occurredAt).min().map(FarmAnalyticsDate.day)
+            ?? FarmAnalyticsDate.calendar.date(byAdding: .year, value: -1, to: FarmAnalyticsDate.day(.now))
+            ?? FarmAnalyticsDate.day(.now)
+    }
+
+    private var sourceRevision: [Int] {
+        [
+            sheep.count, sheep.reduce(0) { $0 &+ $1.revision },
+            pens.count, pens.reduce(0) { $0 &+ $1.revision },
+            reproduction.count, reproduction.reduce(0) { $0 &+ $1.revision },
+            offspring.count, offspring.reduce(0) { $0 &+ $1.revision },
+            removals.count, removals.reduce(0) { $0 &+ $1.revision },
+            transfers.count, transfers.reduce(0) { $0 &+ $1.revision }
+        ]
+    }
 
     var body: some View {
         ScrollView {
@@ -899,36 +966,38 @@ private struct ReproductionAnalysisView: View {
                 Text("从胎均、繁殖间隔到品种维度查看繁殖效率")
                     .analysisPageSubtitle()
                 AnalysisFilterBar {
-                    Picker("年份", selection: $selectedYear) { Text("全部").tag("全部"); ForEach(years, id: \.self) { Text($0).tag($0) } }
-                        .pickerStyle(.menu)
-                        .analysisFilterChip()
+                    ReproductionFilterChip(symbol: "calendar", title: dateRangeText) {
+                        presentedSheet = .filters
+                    }
+                    ReproductionFilterChip(symbol: "house", title: selectedPenText) {
+                        presentedSheet = .filters
+                    }
+                    ReproductionFilterChip(symbol: "pawprint", title: filter.breed ?? "全部品种") {
+                        presentedSheet = .filters
+                    }
                 }
                 if let result = analytics.reproductionResult {
-                    if result.incompleteLambingCount > 0 { AnalysisNotice(text: "有 \(result.incompleteLambingCount) 胎缺少完整原始字段，未纳入繁殖性能计算。") }
+                    Text("截止 \(filter.endDate.formatted(date: .abbreviated, time: .omitted)) 固定查询母羊群 · \(result.cohortCount) 只")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    if result.incompleteLambingCount > 0 {
+                        AnalysisNotice(text: "有 \(result.incompleteLambingCount) 胎缺少胎次、死胎数或逐只羔羊明细，仅不纳入需要这些字段的指标；胎间距和产后天数仍按产羔日期计算。")
+                    }
                     MetricGrid {
                         AnalysisMetric(title: "平均每胎", value: number(result.overview.averageTotal), unit: "羔", tint: .pink)
                         AnalysisMetric(title: "死亡率", value: percent(result.overview.mortalityRate), unit: nil, tint: .red)
                         AnalysisMetric(title: "平均初生重", value: number(result.overview.averageBirthWeight), unit: "千克", tint: .orange)
                     }
+                    Picker("分析维度", selection: $selectedSection) {
+                        ForEach(ReproductionAnalysisSection.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    selectedSectionContent(result)
                     AnalysisCard(title: "月度产羔") {
                         if result.monthly.isEmpty { AnalysisEmpty(text: "当前筛选范围没有完整的繁殖记录") }
                         ForEach(result.monthly) { item in
                             AnalysisRow(title: item.month, detail: "\(item.lambings) 胎 · \(item.total) 羔", trailing: "公/母 \(item.male)/\(item.female)")
                             if item.id != result.monthly.last?.id { Divider() }
-                        }
-                    }
-                    AnalysisCard(title: "繁殖节律", caption: "合格区间按 Plus 口径计算") {
-                        if result.qualifiedRates.isEmpty { AnalysisEmpty(text: "繁殖间隔数据不足") }
-                        ForEach(result.qualifiedRates) { item in
-                            AnalysisRow(title: item.month, detail: "合格 \(percent(item.qualified / 100))", trailing: "不合格 \(percent(item.unqualified / 100))")
-                            if item.id != result.qualifiedRates.last?.id { Divider() }
-                        }
-                    }
-                    AnalysisCard(title: "品种表现") {
-                        if result.breedRows.isEmpty { AnalysisEmpty(text: "品种样本不足") }
-                        ForEach(result.breedRows) { row in
-                            AnalysisRow(title: row.breed, detail: "\(row.sheepCount) 只 · \(row.lambingCount) 胎", trailing: "胎均 \(number(row.averageLambs))")
-                            if row.id != result.breedRows.last?.id { Divider() }
                         }
                     }
                 } else {
@@ -944,11 +1013,294 @@ private struct ReproductionAnalysisView: View {
         .navigationTitle("繁殖表现")
         .onAppear(perform: reloadAnalytics)
         .onChange(of: sourceRevision) { _, _ in reloadAnalytics() }
-        .onChange(of: selectedYear) { _, _ in calculateReproduction() }
+        .onChange(of: filter) { _, _ in calculateReproduction() }
+        .sheet(item: $presentedSheet) { _ in
+            ReproductionFilterSheet(
+                snapshot: filterSheetSnapshot,
+                penNames: penNames,
+                earliestDate: earliestLambingDate,
+                initialFilter: filter
+            ) { appliedFilter in
+                filter = appliedFilter
+            }
+        }
     }
 
     private func reloadAnalytics() { analytics.replaceSnapshot(makeSnapshot()); calculateReproduction() }
-    private func calculateReproduction() { analytics.calculateReproduction(selectedYear: selectedYear == "全部" ? nil : selectedYear) }
+    private func calculateReproduction() { analytics.calculateReproduction(filter: filter) }
+
+    @ViewBuilder
+    private func selectedSectionContent(_ result: FarmReproductionAnalyticsResult) -> some View {
+        switch selectedSection {
+        case .interval:
+            AnalysisCard(title: "胎间距趋势", caption: "固定截止日羊舍母羊群；绿色区域为 150–240 天目标区间") {
+                ReproductionHistoryChart(
+                    points: result.intervalPoints,
+                    tint: .blue,
+                    targetRange: 150...240,
+                    yAxisMinimum: 150,
+                    emptyText: "当前切片没有母羊具备两次有效产羔日期"
+                )
+            }
+            AnalysisCard(title: "胎间距合格率", caption: "每月取接近月中的群体截面，150–240 天为合格") {
+                if result.qualifiedRates.isEmpty { AnalysisEmpty(text: "当前切片的胎间距数据不足") }
+                ForEach(result.qualifiedRates) { item in
+                    AnalysisRow(title: item.month, detail: "合格 \(percent(item.qualified / 100))", trailing: "不合格 \(percent(item.unqualified / 100))")
+                    if item.id != result.qualifiedRates.last?.id { Divider() }
+                }
+            }
+        case .postpartum:
+            AnalysisCard(title: "产后天数趋势", caption: "固定截止日羊舍母羊群；按各日距最近一次产羔计算") {
+                ReproductionHistoryChart(
+                    points: result.postpartumPoints,
+                    tint: .orange,
+                    targetRange: nil,
+                    yAxisMinimum: 0,
+                    emptyText: "当前切片没有具备产羔日期的母羊"
+                )
+            }
+        case .breed:
+            AnalysisCard(title: "品种分析", caption: "按当前品种主档，对比所选日期与羊舍切片内的繁殖表现") {
+                if result.breedRows.isEmpty { AnalysisEmpty(text: "当前切片的品种样本不足") }
+                ForEach(result.breedRows) { row in
+                    AnalysisRow(title: row.breed, detail: "\(row.sheepCount) 只 · \(row.lambingCount) 胎", trailing: "胎均 \(number(row.averageLambs))")
+                    if row.id != result.breedRows.last?.id { Divider() }
+                }
+            }
+        }
+    }
+
+    private var dateRangeText: String {
+        let start = filter.startDate.formatted(.dateTime.year().month().day())
+        let end = filter.endDate.formatted(.dateTime.year().month().day())
+        return "\(start)–\(end)"
+    }
+
+    private var selectedPenText: String {
+        switch filter.penScope {
+        case .all:
+            return "全部羊舍"
+        case .pen(let penID):
+            return penNames[penID] ?? "历史羊舍"
+        case .unassigned:
+            return "未分圈"
+        }
+    }
+}
+
+private struct ReproductionFilterChip: View {
+    let symbol: String
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.footnote.weight(.medium))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.fill.quaternary, in: .capsule)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ReproductionHistoryChart: View {
+    let points: [ReproductionHistoryPoint]
+    let tint: Color
+    let targetRange: ClosedRange<Double>?
+    let yAxisMinimum: Double
+    let emptyText: String
+
+    var body: some View {
+        if points.isEmpty {
+            AnalysisEmpty(text: emptyText)
+        } else {
+            Chart {
+                if let targetRange, let first = points.first, let last = points.last {
+                    RectangleMark(
+                        xStart: .value("开始", first.date),
+                        xEnd: .value("结束", last.date),
+                        yStart: .value("下限", targetRange.lowerBound),
+                        yEnd: .value("上限", targetRange.upperBound)
+                    )
+                    .foregroundStyle(.green.opacity(0.09))
+                }
+                ForEach(points) { point in
+                    AreaMark(
+                        x: .value("日期", point.date),
+                        yStart: .value("纵轴下限", yAxisMinimum),
+                        yEnd: .value("天数", point.average)
+                    )
+                    .foregroundStyle(tint.opacity(0.10))
+                    LineMark(
+                        x: .value("日期", point.date),
+                        y: .value("天数", point.average)
+                    )
+                    .foregroundStyle(tint)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5))
+                }
+            }
+            .chartYScale(domain: yAxisMinimum...yAxisMaximum)
+            .chartPlotStyle { plotArea in
+                plotArea.clipped()
+            }
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 4)) {
+                    AxisGridLine()
+                    AxisTick()
+                    AxisValueLabel(format: .dateTime.month().day())
+                }
+            }
+            .chartYAxisLabel("天")
+            .frame(height: 164)
+            .accessibilityLabel("繁殖节律趋势")
+            .accessibilityValue(latestSummary)
+            if let latest = points.last {
+                HStack(spacing: 8) {
+                    Label("最新 \(dayNumber(latest.average)) 天", systemImage: "waveform.path.ecg")
+                        .foregroundStyle(tint)
+                    Spacer(minLength: 8)
+                    Text("\(latest.count) 只母羊")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.footnote.weight(.medium))
+            }
+        }
+    }
+
+    private var latestSummary: String {
+        guard let latest = points.last else { return emptyText }
+        return "最新平均 \(dayNumber(latest.average)) 天，\(latest.count) 只母羊参与"
+    }
+
+    private var yAxisMaximum: Double {
+        let highestValue = max(points.map(\.average).max() ?? yAxisMinimum, targetRange?.upperBound ?? yAxisMinimum)
+        let paddedValue = max(highestValue * 1.05, yAxisMinimum + 50)
+        return ceil(paddedValue / 50) * 50
+    }
+}
+
+private struct ReproductionFilterSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let snapshot: FarmAnalyticsSnapshot
+    let penNames: [UUID: String]
+    let earliestDate: Date
+    let onApply: (ReproductionAnalyticsFilter) -> Void
+
+    @State private var draft: ReproductionAnalyticsFilter
+    @State private var options: ReproductionFilterOptions
+
+    init(
+        snapshot: FarmAnalyticsSnapshot,
+        penNames: [UUID: String],
+        earliestDate: Date,
+        initialFilter: ReproductionAnalyticsFilter,
+        onApply: @escaping (ReproductionAnalyticsFilter) -> Void
+    ) {
+        self.snapshot = snapshot
+        self.penNames = penNames
+        self.earliestDate = FarmAnalyticsDate.day(earliestDate)
+        self.onApply = onApply
+        _draft = State(initialValue: initialFilter)
+        _options = State(initialValue: ReproductionAnalyticsEngine.filterOptions(snapshot: snapshot, asOf: initialFilter.endDate))
+    }
+
+    private var today: Date { FarmAnalyticsDate.day(.now) }
+    private var lowerBound: Date { min(earliestDate, today) }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    DatePicker(
+                        "开始日期",
+                        selection: $draft.startDate,
+                        in: lowerBound...min(draft.endDate, today),
+                        displayedComponents: .date
+                    )
+                    DatePicker(
+                        "结束日期",
+                        selection: $draft.endDate,
+                        in: max(lowerBound, draft.startDate)...today,
+                        displayedComponents: .date
+                    )
+                } header: {
+                    Text("日期范围")
+                } footer: {
+                    Text("开始日和结束日均包含整天；区间之前的产羔日期仍会用于建立胎间距和产后天数的前序依据。")
+                }
+
+                Section {
+                    Picker("羊舍", selection: $draft.penScope) {
+                        Text("全部羊舍").tag(ReproductionPenScope.all)
+                        ForEach(options.penIDs, id: \.self) { penID in
+                            Text(penNames[penID] ?? "历史羊舍").tag(ReproductionPenScope.pen(penID))
+                        }
+                        if options.includesUnassigned {
+                            Text("未分圈").tag(ReproductionPenScope.unassigned)
+                        }
+                    }
+                    Picker("品种", selection: $draft.breed) {
+                        Text("全部品种").tag(String?.none)
+                        ForEach(options.breeds, id: \.self) { breed in
+                            Text(breed).tag(String?.some(breed))
+                        }
+                    }
+                } header: {
+                    Text("母羊切片")
+                } footer: {
+                    Text("羊舍按查询结束日结束时的位置固定母羊群，不随图表历史日期切换；品种按当前羊只主档筛选。")
+                }
+
+                Section {
+                    Button("恢复近一年与全部切片", systemImage: "arrow.counterclockwise") {
+                        draft = .recentYear()
+                        refreshOptions()
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("繁殖筛选")
+            .navigationBarTitleDisplayMode(.inline)
+            .onChange(of: draft.endDate) { _, _ in refreshOptions() }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("应用") { apply() }
+                }
+            }
+        }
+    }
+
+    private func refreshOptions() {
+        options = ReproductionAnalyticsEngine.filterOptions(snapshot: snapshot, asOf: draft.endDate)
+        switch draft.penScope {
+        case .all:
+            break
+        case .pen(let penID):
+            if !options.penIDs.contains(penID) { draft.penScope = .all }
+        case .unassigned:
+            if !options.includesUnassigned { draft.penScope = .all }
+        }
+        if let breed = draft.breed, !options.breeds.contains(breed) {
+            draft.breed = nil
+        }
+    }
+
+    private func apply() {
+        let start = FarmAnalyticsDate.day(min(draft.startDate, draft.endDate))
+        let end = FarmAnalyticsDate.day(min(today, max(draft.startDate, draft.endDate)))
+        draft.startDate = start
+        draft.endDate = end
+        refreshOptions()
+        onApply(draft)
+        dismiss()
+    }
 }
 
 private struct AnalysisDestination<Destination: View>: View {
@@ -1112,6 +1464,7 @@ private extension View {
 
 private func scopeName(_ scope: WeightSampleScope) -> String { switch scope { case .all: "全部样本"; case .inHerdOnly: "仅在群"; case .removedOnly: "仅离场" } }
 private func number(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(2))) }
+private func dayNumber(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(0...1))) }
 private func sampleNumber(_ value: Double, count: Int) -> String { count > 0 ? "\(number(value))（\(count)）" : "—" }
 private func sampleValue(_ value: Double, count: Int, unit: String) -> String { count > 0 ? "\(number(value))\(unit)" : "—" }
 private func percent(_ value: Double) -> String { "\(number(value * 100))%" }

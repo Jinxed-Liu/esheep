@@ -66,29 +66,16 @@ enum CloudRebuildStagingBuilder {
         // safely avoid thousands of unindexed existence/reference table scans.
         let service = RemoteDomainApplyService(replayAssumesEmptyBusinessStore: true)
         let mapper = CloudRecordMapper()
-        var earliestHistoryChange: Date?
-        for (index, envelope) in bundle.operations.enumerated() {
-            if index.isMultiple(of: 500) {
-                try Task.checkCancellation()
-            }
-            switch try service.apply(envelope, context: context) {
-            case .applied(let changedAt):
-                if let changedAt {
-                    earliestHistoryChange = min(earliestHistoryChange ?? changedAt, changedAt)
-                }
-            case .duplicate:
-                break
-            case .conflict:
-                throw CloudRebuildError.stagingValidation("操作 \(envelope.operationID.uuidString) 产生业务冲突。")
-            }
-            context.insert(CloudOperationReceipt(
-                farmID: bundle.farmID,
-                operationID: envelope.operationID,
-                recordName: mapper.recordName(for: envelope.operationID),
-                serverChangeTag: nil,
-                databaseScope: bundle.scope
-            ))
-        }
+        let replay = try RemoteDomainReplayExecutor.replay(
+            bundle.operations,
+            farmID: bundle.farmID,
+            scope: bundle.scope,
+            context: context,
+            service: service,
+            mapper: mapper,
+            conflictStage: "staging 权威操作",
+            baselineCutoffAt: bundle.bootstrap?.cutoffAt
+        )
 
         if let snapshot = bundle.membershipSnapshot {
             context.insert(FarmMembershipSnapshotRecord(
@@ -106,7 +93,7 @@ enum CloudRebuildStagingBuilder {
         try FarmHistoryRebuilder().rebuild(
             farmID: bundle.farmID,
             context: context,
-            from: earliestHistoryChange ?? .distantPast
+            from: replay.earliestHistoryChange ?? .distantPast
         )
         try validateBusinessState(farmID: bundle.farmID, context: context)
         try context.save()

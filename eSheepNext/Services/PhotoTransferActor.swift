@@ -98,7 +98,58 @@ actor PhotoTransferActor {
             direction: .upload,
             sourceDigest: optimized.sourceDigest
         ))
+        let route = try FarmStorageRouter.route(farmID: farmID, context: context)
+        if route.deliveryProvider == .supabase,
+           let accountID = try context.fetch(FetchDescriptor<AccountProfile>())
+               .first?.effectiveAccountID {
+            var payload = FarmCommandCloudPayload(kind: .addPhoto)
+            payload.strings = [
+                "sha256": asset.sha256,
+                "sourceSHA256": asset.sourceSHA256,
+                "mimeType": asset.mimeType,
+            ]
+            payload.optionalIdentifiers = ["sheepID": entityID]
+            payload.optionalDates = ["capturedAt": asset.capturedAt]
+            payload.integers = [
+                "sourcePixelWidth": asset.sourcePixelWidth,
+                "sourcePixelHeight": asset.sourcePixelHeight,
+                "cloudPixelWidth": asset.cloudPixelWidth,
+                "cloudPixelHeight": asset.cloudPixelHeight,
+                "byteCount": Int(optimized.byteCount),
+            ]
+            let operationID = UUID()
+            _ = try FarmStorageRouter.takeNextOperationSequence(
+                farmID: farmID,
+                operationID: operationID,
+                context: context
+            )
+            let operation = DomainOperation(
+                id: operationID,
+                farmID: farmID,
+                accountID: accountID,
+                kind: .addPhoto,
+                summary: "添加照片",
+                entityType: CloudEntityType.photoAsset.rawValue,
+                entityID: assetID,
+                payload: try JSONEncoder.cloud.encode(payload)
+            )
+            context.insert(operation)
+            context.insert(OutboxItem(
+                farmID: farmID,
+                accountID: accountID,
+                operationID: operation.id,
+                entityType: operation.entityType,
+                entityID: operation.entityID,
+                baseRevision: operation.baseRevision,
+                payloadDigest: operation.payloadDigest,
+                deliveryProvider: .supabase,
+                authorityGeneration: route.deliveryAuthorityGeneration
+            ))
+        }
         try context.save()
+        if route.deliveryProvider == .supabase {
+            CloudRuntimeNotification.postSyncWake(farmID: farmID)
+        }
         return assetID
     }
 
@@ -404,7 +455,7 @@ actor PhotoTransferActor {
         return root
     }
 
-    private static func assetURL(farmID: UUID, assetID: UUID, fileExtension: String) throws -> URL {
+    static func assetURL(farmID: UUID, assetID: UUID, fileExtension: String) throws -> URL {
         let directory = try baseDirectory().appending(path: "CloudAssets/\(farmID.uuidString.lowercased())", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appending(path: "\(assetID.uuidString.lowercased()).\(fileExtension)")
@@ -416,7 +467,7 @@ actor PhotoTransferActor {
         return directory.appending(path: "\(assetID.uuidString.lowercased()).sealed")
     }
 
-    private static func absoluteURL(for path: String) -> URL {
+    static func absoluteURL(for path: String) -> URL {
         if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return localAssetURL(for: path, applicationSupportDirectory: support)
@@ -433,7 +484,7 @@ actor PhotoTransferActor {
         return applicationSupportDirectory.appending(path: "eSheepNext/\(path)")
     }
 
-    private static func relativePath(for url: URL) -> String {
+    static func relativePath(for url: URL) -> String {
         guard let root = try? baseDirectory().standardizedFileURL.path, url.standardizedFileURL.path.hasPrefix(root + "/") else { return url.path }
         return String(url.standardizedFileURL.path.dropFirst(root.count + 1))
     }

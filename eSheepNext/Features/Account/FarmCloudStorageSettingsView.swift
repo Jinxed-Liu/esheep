@@ -1,0 +1,434 @@
+import SwiftData
+import SwiftUI
+
+struct FarmCloudStorageSettingsView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(CloudCollaborationStore.self) private var collaboration
+    @Query private var remoteBindings: [FarmRemoteBinding]
+    @Query private var outboxItems: [OutboxItem]
+    @Query private var baselineMigrations: [FarmBaselineMigrationRecord]
+
+    let account: AccountProfile
+    let farm: FarmRecord
+
+    @State private var entitlement: SupabaseCloudEntitlement?
+    @State private var eligibilityReason: String?
+    @State private var isLoading = true
+    @State private var isActivating = false
+    @State private var isConfirmingActivation = false
+    @State private var statusMessage: String?
+    @State private var errorMessage: String?
+    @State private var compactRebuildProgress:
+        FarmCompactBaselineRebuildProgress?
+    @State private var remoteStorageMetrics: SupabaseFarmStorageMetrics?
+    @AppStorage(DevelopmentSupabaseActivationGate.pausePointKey)
+    private var developmentPausePointRawValue = ""
+    @AppStorage(DevelopmentSupabaseActivationGate.lastPausedPointKey)
+    private var developmentLastPausedPointRawValue = ""
+
+    private var profile: FarmStorageProfile? {
+        let profiles = (try? modelContext.fetch(FetchDescriptor<FarmStorageProfile>())) ?? []
+        return profiles.first { $0.farmID == farm.id }
+    }
+
+    private var modeTitle: String {
+        switch profile?.mode ?? .localOnly {
+        case .localOnly: "仅本机"
+        case .iCloud: "iCloud"
+        case .supabase: "Supabase 云"
+        }
+    }
+
+    private var remoteBinding: FarmRemoteBinding? {
+        remoteBindings.first { $0.farmID == farm.id && $0.provider == .supabase }
+    }
+
+    private var pendingOutboxCount: Int {
+        outboxItems.count {
+            $0.farmID == farm.id
+                && $0.deliveryProvider == .supabase
+                && $0.status != .confirmed
+                && $0.status != .notRequiredLocalOnly
+        }
+    }
+
+    private var baselineProgress: FarmBaselineMigrationRecord? {
+        guard let migrationID = profile?.migrationID else { return nil }
+        return baselineMigrations
+            .filter {
+                $0.farmID == farm.id &&
+                    $0.migrationID == migrationID
+            }
+            .max { $0.updatedAt < $1.updatedAt }
+    }
+
+    private var canManuallyActivate: Bool {
+        guard let state = profile?.transitionState else { return true }
+        return state == .idle || state == .failed
+    }
+
+    private var activationButtonTitle: String {
+        if isActivating {
+            return "正在启用 Supabase 云…"
+        }
+        if profile?.transitionState == .failed {
+            return "继续启用 Supabase 云"
+        }
+        if profile?.transitionState != .idle {
+            return "正在自动恢复启云…"
+        }
+        return "启用 Supabase 云"
+    }
+
+    var body: some View {
+        Form {
+            Section("当前模式") {
+                LabeledContent("存储权威", value: modeTitle)
+                if let profile, profile.transitionState != .idle {
+                    LabeledContent("迁移状态", value: profile.transitionState.rawValue)
+                }
+                Text("三种模式只会有一个写入权威；本机 SwiftData 始终保留完整离线缓存。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            if profile?.mode == .localOnly {
+                Section("选择云端") {
+                    Label {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("iCloud")
+                            Text("免费；现有 iCloud 行为保持不变")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "icloud.fill")
+                            .foregroundStyle(.blue)
+                    }
+
+                    Text("本阶段不改变现有 iCloud 启用流程。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    Button {
+                        isConfirmingActivation = true
+                    } label: {
+                        Label(
+                            activationButtonTitle,
+                            systemImage: "externaldrive.connected.to.line.below.fill"
+                        )
+                    }
+                    .disabled(
+                        isLoading ||
+                        isActivating ||
+                        !canManuallyActivate ||
+                        eligibilityReason != nil ||
+                        entitlement?.allowsOwnerWrites != true ||
+                        AccountIdentityClients.supabaseClient == nil
+                    )
+
+                    if let eligibilityReason {
+                        Text(eligibilityReason)
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    } else if entitlement?.allowsOwnerWrites != true {
+                        Text("需要服务端 Development 测试授权；客户端购买状态不能替代该授权。")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+
+            Section("启用说明") {
+                Label("开始前自动生成本地完整备份", systemImage: "externaldrive.badge.checkmark")
+                Label("星露谷的完整实体、历史、删除记录和照片会先在本机重建校验", systemImage: "checkmark.shield")
+                Label("权威提交后只续跑 Supabase，不自动回滚", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                Label("受邀成员无需购买或测试授权", systemImage: "person.2.badge.plus")
+            }
+
+            if let statusMessage {
+                Section {
+                    Text(statusMessage)
+                        .foregroundStyle(.green)
+                }
+            }
+
+            #if DEBUG
+            if Bundle.main.bundleIdentifier == "com.sheepfarm.next.dev" {
+                Section("Development 验收") {
+                    LabeledContent("Mode", value: profile?.mode.rawValue ?? "localOnly")
+                    LabeledContent(
+                        "Generation",
+                        value: (profile?.authorityGeneration ?? 0).formatted()
+                    )
+                    LabeledContent(
+                        "Migration",
+                        value: profile?.transitionState.rawValue ?? "idle"
+                    )
+                    LabeledContent(
+                        "Cursor",
+                        value: (remoteBinding?.lastPulledRevision ?? 0).formatted()
+                    )
+                    LabeledContent("Outbox", value: pendingOutboxCount.formatted())
+                    if let remoteStorageMetrics {
+                        LabeledContent(
+                            "云端实体",
+                            value: remoteStorageMetrics.entityCount.formatted()
+                        )
+                        LabeledContent(
+                            "增量操作",
+                            value: remoteStorageMetrics.operationCount.formatted()
+                        )
+                        LabeledContent(
+                            "逻辑载荷",
+                            value: ByteCountFormatter.string(
+                                fromByteCount:
+                                    remoteStorageMetrics.logicalPayloadBytes,
+                                countStyle: .file
+                            )
+                        )
+                        LabeledContent(
+                            "Storage 对象",
+                            value:
+                                remoteStorageMetrics.storageObjectCount
+                                .formatted()
+                        )
+                        LabeledContent(
+                            "Storage 用量",
+                            value: ByteCountFormatter.string(
+                                fromByteCount:
+                                    remoteStorageMetrics.storageObjectBytes,
+                                countStyle: .file
+                            )
+                        )
+                        LabeledContent(
+                            "重复 SHA",
+                            value:
+                                remoteStorageMetrics.duplicateAssetSHACount
+                                .formatted()
+                        )
+                        LabeledContent(
+                            "检查点",
+                            value:
+                                remoteStorageMetrics.checkpointCount.formatted()
+                        )
+                    }
+                    if let baselineProgress {
+                        let operationTotal = max(1, baselineProgress.operationCount)
+                        let operationFraction = min(
+                            1,
+                            Double(baselineProgress.confirmedOperationCount) /
+                                Double(operationTotal)
+                        )
+                        VStack(alignment: .leading, spacing: 7) {
+                            HStack {
+                                Text("实体投影上传")
+                                Spacer()
+                                Text(operationFraction, format: .percent.precision(.fractionLength(1)))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                            ProgressView(value: operationFraction)
+                                .progressViewStyle(.linear)
+                            Text(
+                                "\(baselineProgress.confirmedOperationCount.formatted()) / " +
+                                    "\(baselineProgress.operationCount.formatted()) 个投影"
+                            )
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        }
+                        LabeledContent(
+                            "基线批次",
+                            value: baselineProgress.confirmedBatchCount.formatted()
+                        )
+                        VStack(alignment: .leading, spacing: 7) {
+                            HStack {
+                                Text("照片上传")
+                                Spacer()
+                                Text(
+                                    "\(baselineProgress.uploadedAssetCount) / " +
+                                        "\(baselineProgress.assetCount)"
+                                )
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                            }
+                            ProgressView(
+                                value: Double(baselineProgress.uploadedAssetCount),
+                                total: Double(max(1, baselineProgress.assetCount))
+                            )
+                            .progressViewStyle(.linear)
+                        }
+                        LabeledContent(
+                            "服务端 Revision",
+                            value: baselineProgress.serverRevision.formatted()
+                        )
+                        if let compactRebuildProgress {
+                            let total = max(
+                                1,
+                                compactRebuildProgress.totalProjectionCount
+                            )
+                            let fraction = min(
+                                1,
+                                Double(
+                                    compactRebuildProgress
+                                        .processedProjectionCount
+                                ) / Double(total)
+                            )
+                            VStack(alignment: .leading, spacing: 7) {
+                                HStack {
+                                    Text(
+                                        compactRebuildProgress.phase.displayName
+                                    )
+                                    Spacer()
+                                    Text(
+                                        fraction,
+                                        format: .percent.precision(
+                                            .fractionLength(1)
+                                        )
+                                    )
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                }
+                                ProgressView(value: fraction)
+                                    .progressViewStyle(.linear)
+                                Text(
+                                    "\(compactRebuildProgress.processedProjectionCount.formatted()) / " +
+                                        "\(compactRebuildProgress.totalProjectionCount.formatted()) 个投影"
+                                )
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    LabeledContent(
+                        "最后错误",
+                        value: remoteBinding?.lastErrorCode ?? "无"
+                    )
+                    let realtimeHealth = collaboration.supabaseRealtimeHealth(farmID: farm.id)
+                    LabeledContent("Realtime", value: realtimeHealth.displayTitle)
+                    if let realtimeErrorCode = realtimeHealth.errorCode {
+                        LabeledContent("Realtime 错误", value: realtimeErrorCode)
+                        Text("实时提醒暂不可用；数据仍由权威 cursor 每30秒补拉。")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+
+                    Picker("下次启云暂停于", selection: $developmentPausePointRawValue) {
+                        Text("不暂停").tag("")
+                        ForEach(
+                            DevelopmentSupabaseActivationGate.pausePoints,
+                            id: \.rawValue
+                        ) { point in
+                            Text(point.rawValue).tag(point.rawValue)
+                        }
+                    }
+                    if !developmentLastPausedPointRawValue.isEmpty {
+                        LabeledContent(
+                            "上次暂停",
+                            value: developmentLastPausedPointRawValue
+                        )
+                    }
+                    Text("暂停点为一次性设置。到达后任务会保持挂起，强杀并重启 App 即会从该状态续跑。选择 uploadingBaseline 时，续传完成后还会在 committingAuthority 自动暂停一次。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("这里只显示本机验收状态，不上传本地牧场名称、存在性或业务内容。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            #endif
+        }
+        .navigationTitle("云存储")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await refresh()
+            while !Task.isCancelled {
+                refreshCompactRebuildProgress()
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                } catch {
+                    return
+                }
+            }
+        }
+        .confirmationDialog(
+            "启用 Supabase 云？",
+            isPresented: $isConfirmingActivation,
+            titleVisibility: .visible
+        ) {
+            Button("备份并启用") {
+                activate()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("系统会先生成本地备份并验证远端暂存基线。权威提交后发生中断时，只会继续完成 Supabase 切换。")
+        }
+        .alert("无法完成启云", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    private func refresh() async {
+        isLoading = true
+        defer { isLoading = false }
+        guard let client = AccountIdentityClients.supabaseClient else {
+            eligibilityReason = SupabaseAccountConfiguration.isEnabled
+                ? "Development Supabase secrets 尚未配置。"
+                : "Development Supabase 发布门禁尚未开启。"
+            return
+        }
+        do {
+            let service = SupabaseFarmActivationService(client: client)
+            eligibilityReason = try service.eligibilityReason(
+                farmID: farm.id,
+                context: modelContext
+            )
+            entitlement = try await SupabaseEntitlementClient(client: client).current()
+            if profile?.mode == .supabase {
+                remoteStorageMetrics = try await
+                    SupabaseFarmStorageMetricsClient(client: client)
+                    .metrics(farmID: farm.id)
+            } else {
+                remoteStorageMetrics = nil
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func activate() {
+        guard !isActivating,
+              let client = AccountIdentityClients.supabaseClient else {
+            return
+        }
+        isActivating = true
+        Task { @MainActor in
+            defer { isActivating = false }
+            do {
+                let backupURL = try await SupabaseFarmActivationService(
+                    client: client
+                ).activate(farm: farm, context: modelContext)
+                statusMessage = "Supabase 已成为唯一云端权威。本地备份：\(backupURL.lastPathComponent)"
+                await refresh()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func refreshCompactRebuildProgress() {
+        guard let migration = baselineProgress else {
+            compactRebuildProgress = nil
+            return
+        }
+        compactRebuildProgress = FarmCompactBaselineRebuildProgressStore.load(
+            farmID: farm.id,
+            migrationID: migration.migrationID
+        )
+    }
+}

@@ -263,6 +263,10 @@ final class SameAccountSyncSafetyTests: XCTestCase {
         XCTAssertTrue(CloudRebuildActor.canBeginRebuild(from: strongLock))
         XCTAssertFalse(CloudRebuildActor.canRetryPreparedCommit(from: strongLock))
 
+        let liveOperationGap = binding("liveOperationGap")
+        XCTAssertTrue(CloudRebuildActor.canBeginRebuild(from: liveOperationGap))
+        XCTAssertFalse(CloudRebuildActor.canRetryPreparedCommit(from: liveOperationGap))
+
         let claimedReset = binding("engineResetInProgress")
         XCTAssertFalse(CloudRebuildActor.canBeginRebuild(from: claimedReset))
         XCTAssertFalse(CloudRebuildActor.canRetryPreparedCommit(from: claimedReset))
@@ -276,6 +280,14 @@ final class SameAccountSyncSafetyTests: XCTestCase {
         let requiresFresh = binding("rebuildCommitRequiresFreshRebuild")
         XCTAssertTrue(CloudRebuildActor.canBeginRebuild(from: requiresFresh))
         XCTAssertFalse(CloudRebuildActor.canRetryPreparedCommit(from: requiresFresh))
+        XCTAssertFalse(CloudRebuildActor.canAutomaticallyResumeSharedAdmission(from: requiresFresh))
+
+        let deterministicValidationFailure = binding("rebuildValidationFailed")
+        XCTAssertTrue(CloudRebuildActor.canBeginRebuild(from: deterministicValidationFailure))
+        XCTAssertFalse(CloudRebuildActor.canAutomaticallyResumeSharedAdmission(
+            from: deterministicValidationFailure
+        ))
+        XCTAssertTrue(CloudRebuildActor.canAutomaticallyResumeSharedAdmission(from: liveOperationGap))
     }
 
     func testCrashLeftUnverifiedEngineResetClaimTransitionsToFreshRebuild() async throws {

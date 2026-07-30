@@ -11,6 +11,16 @@ final class FarmSessionTests: XCTestCase {
         XCTAssertEqual(container, "iCloud.com.sheepfarm.next.dev")
     }
 
+    func testDevelopmentSupabaseFeatureGateMatchesEmbeddedConfiguration() {
+        if SupabaseAccountConfiguration.isEnabled {
+            XCTAssertTrue(SupabaseAccountConfiguration.isConfigured)
+            XCTAssertEqual(AccountIdentityClients.activeProvider, .supabase)
+        } else {
+            XCTAssertFalse(SupabaseAccountConfiguration.isConfigured)
+            XCTAssertEqual(AccountIdentityClients.activeProvider, .cloudBaseLegacy)
+        }
+    }
+
     func testIdentityEndpointPreservesGatewayBasePath() throws {
         let baseURL = try XCTUnwrap(URL(string: "https://example.com/identity"))
 
@@ -43,6 +53,31 @@ final class FarmSessionTests: XCTestCase {
 
         XCTAssertTrue(active.canResumeOffline(now: now))
         XCTAssertFalse(expired.canResumeOffline(now: now))
+    }
+
+    func testSupabaseRegistrationCanCompleteWithEmailVerificationPending() {
+        let result = AccountRegistrationResult.verificationRequired(
+            email: "member@example.com"
+        )
+
+        guard case .verificationRequired(let email) = result else {
+            return XCTFail("Email confirmation must be represented as a successful pending state.")
+        }
+        XCTAssertEqual(email, "member@example.com")
+    }
+
+    func testSupabaseDisplayNameNormalizationRemovesControlsAndCapsLength() {
+        let value = "  测试\u{0000}用户" + String(repeating: "羊", count: 140)
+        let normalized = SupabaseAccountIdentityClient.normalizedDisplayName(value)
+
+        XCTAssertNotNil(normalized)
+        XCTAssertFalse(normalized?.contains("\u{0000}") == true)
+        XCTAssertEqual(normalized?.count, 120)
+        XCTAssertNil(SupabaseAccountIdentityClient.normalizedDisplayName(" \n\t "))
+    }
+
+    func testSupabaseSignOutIsScopedToTheCurrentDevice() {
+        XCTAssertEqual(SupabaseAccountIdentityClient.signOutScope.rawValue, "local")
     }
 
     func testAccountAvatarPersistsWithTheLocalProfile() throws {
@@ -96,6 +131,33 @@ final class FarmSessionTests: XCTestCase {
         XCTAssertEqual(session.selectedFarmID, farm.id)
         XCTAssertEqual(farm.ownerAccountID, account.id)
         XCTAssertEqual(farm.role, .owner)
+        let profile = try XCTUnwrap(
+            context.fetch(FetchDescriptor<FarmStorageProfile>()).first(where: { $0.farmID == farm.id })
+        )
+        XCTAssertEqual(profile.mode, .localOnly)
+        XCTAssertEqual(
+            try context.fetch(FetchDescriptor<FarmOperationSequenceCounter>())
+                .first(where: { $0.farmID == farm.id })?.nextSequence,
+            2
+        )
+        XCTAssertTrue(try context.fetch(FetchDescriptor<OutboxItem>()).isEmpty)
+        let createOperation = try XCTUnwrap(
+            context.fetch(FetchDescriptor<DomainOperation>())
+                .first(where: { $0.farmID == farm.id })
+        )
+        XCTAssertEqual(
+            try context.fetch(FetchDescriptor<FarmOperationSequenceRecord>())
+                .first(where: { $0.operationID == createOperation.id })?.clientSequence,
+            1
+        )
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let payload = try decoder.decode(
+            FarmCommandCloudPayload.self,
+            from: createOperation.payload
+        )
+        XCTAssertEqual(payload.kind, DomainOperationKind.createFarm)
+        XCTAssertEqual(payload.strings["name"], "北场")
     }
 
     func testSwitchingFarmResetsToHome() throws {
@@ -112,7 +174,11 @@ final class FarmSessionTests: XCTestCase {
     }
 
     func testSigningOutResetsNavigationAndRequestsAuthenticationRefresh() {
-        let session = AppSession()
+        var clearedProfile = false
+        let session = AppSession(
+            activeAccountProfileID: UUID(),
+            clearActiveAccountProfileID: { clearedProfile = true }
+        )
         session.selectedFarmID = UUID()
         session.selectedTab = .feeding
         session.isReauthenticationPresented = true
@@ -120,6 +186,8 @@ final class FarmSessionTests: XCTestCase {
 
         session.authenticationDidSignOut()
 
+        XCTAssertNil(session.activeAccountProfileID)
+        XCTAssertTrue(clearedProfile)
         XCTAssertNil(session.selectedFarmID)
         XCTAssertEqual(session.selectedTab, .home)
         XCTAssertEqual(session.authenticationRevision, revision + 1)
@@ -188,7 +256,16 @@ final class FarmSessionTests: XCTestCase {
     }
 
     private func makeContainer() throws -> ModelContainer {
-        let schema = Schema([AccountProfile.self, FarmRecord.self, FarmActivity.self])
+        let schema = Schema([
+            AccountProfile.self,
+            FarmRecord.self,
+            FarmActivity.self,
+            DomainOperation.self,
+            OutboxItem.self,
+            FarmStorageProfile.self,
+            FarmOperationSequenceCounter.self,
+            FarmOperationSequenceRecord.self,
+        ])
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         return try ModelContainer(for: schema, configurations: [configuration])
     }

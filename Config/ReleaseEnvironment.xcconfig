@@ -1,5 +1,9 @@
 // Production 公开配置。不得引用 Development 或 Staging 服务。
 IDENTITY_WORKER_URL =
 CAPABILITY_SIGNING_PUBLIC_KEY_PEM =
+INVITATION_URL_SCHEME = esheep
+SUPABASE_URL =
+SUPABASE_PUBLISHABLE_KEY =
+SUPABASE_ENABLED = NO
 
 #include? "ReleaseEnvironment.local.xcconfig"

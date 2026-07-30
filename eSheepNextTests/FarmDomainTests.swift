@@ -19,7 +19,7 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertTrue(SubscriptionCapabilityPolicy.canRecordProduction(role: .worker, entitlement: basic))
     }
 
-    func testAdditionalFarmRequiresMatchingOwnerProEntitlement() {
+    func testOnlyOwnerCanCreateAdditionalLocalOrICloudFarm() {
         let accountID = UUID()
         let active = AccountEntitlement(accountID: accountID, tier: .farmPro, state: .active, productID: SubscriptionProductID.yearly, validUntil: .now.addingTimeInterval(86_400))
         let grace = AccountEntitlement(accountID: accountID, tier: .farmPro, state: .gracePeriod, productID: SubscriptionProductID.monthly, validUntil: .now)
@@ -27,11 +27,11 @@ final class FarmDomainTests: XCTestCase {
 
         XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: active, subscriptionsEnabled: true))
         XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: grace, subscriptionsEnabled: true))
-        XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: expired, subscriptionsEnabled: true))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .owner, entitlement: expired, subscriptionsEnabled: true))
         XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .worker, entitlement: active, subscriptionsEnabled: true))
     }
 
-    func testFirstFarmIsFreeButAdditionalFarmRequiresPro() {
+    func testCreatingLocalOrICloudFarmNeverRequiresPro() {
         let basic = AccountEntitlement.basic(accountID: UUID())
         let pro = AccountEntitlement(
             accountID: UUID(),
@@ -42,8 +42,109 @@ final class FarmDomainTests: XCTestCase {
         )
 
         XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 0, entitlement: basic, subscriptionsEnabled: true))
-        XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 1, entitlement: basic, subscriptionsEnabled: true))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 1, entitlement: basic, subscriptionsEnabled: true))
         XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 1, entitlement: pro, subscriptionsEnabled: true))
+    }
+
+    func testSupabaseCloudRequiresOwnerAndServerEligibleSubscriptionState() {
+        let accountID = UUID()
+        let active = AccountEntitlement(
+            accountID: accountID,
+            tier: .farmPro,
+            state: .active,
+            productID: SubscriptionProductID.yearly,
+            validUntil: .now.addingTimeInterval(86_400)
+        )
+        let grace = AccountEntitlement(
+            accountID: accountID,
+            tier: .farmPro,
+            state: .gracePeriod,
+            productID: SubscriptionProductID.monthly,
+            validUntil: .now
+        )
+        let expired = AccountEntitlement.basic(accountID: accountID, state: .expired)
+
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canEnableSupabaseCloud(role: .owner, entitlement: active, subscriptionsEnabled: true))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canEnableSupabaseCloud(role: .owner, entitlement: grace, subscriptionsEnabled: true))
+        XCTAssertFalse(SubscriptionCapabilityPolicy.canEnableSupabaseCloud(role: .owner, entitlement: expired, subscriptionsEnabled: true))
+        XCTAssertFalse(SubscriptionCapabilityPolicy.canEnableSupabaseCloud(role: .worker, entitlement: active, subscriptionsEnabled: true))
+        XCTAssertFalse(SubscriptionCapabilityPolicy.canEnableSupabaseCloud(role: .owner, entitlement: active, subscriptionsEnabled: false))
+    }
+
+    func testNonEmptySupabaseBaselineCannotBypassVerifiedStaging() {
+        let emptyInitial = FarmRemoteBaseline(
+            farmID: UUID(),
+            authorityGeneration: 0,
+            throughRevision: 0,
+            manifestDigest: String(repeating: "0", count: 64),
+            cloudLocator: nil
+        )
+        let migrated = FarmRemoteBaseline(
+            farmID: UUID(),
+            authorityGeneration: 1,
+            throughRevision: 42,
+            manifestDigest: String(repeating: "a", count: 64),
+            cloudLocator: nil
+        )
+
+        XCTAssertTrue(emptyInitial.canActivateWithoutStaging)
+        XCTAssertFalse(migrated.canActivateWithoutStaging)
+    }
+
+    func testSupabaseOutboxRetryScheduleCapsAtFiveMinutes() {
+        XCTAssertEqual(
+            (1...8).map { FarmRemoteSyncCoordinator.retryDelay(attemptCount: $0) },
+            [5, 15, 30, 60, 120, 300, 300, 300]
+        )
+    }
+
+    func testSupabaseRealtimeHealthSeparatesRealtimeFromCursorFallback() {
+        XCTAssertEqual(
+            SupabaseRealtimeHealth.realtimeHealthy.displayTitle,
+            "Realtime 正常"
+        )
+        let fallback = SupabaseRealtimeHealth.cursorFallback(
+            errorCode: "RealtimeError:401"
+        )
+        XCTAssertEqual(fallback.displayTitle, "Cursor 补拉")
+        XCTAssertEqual(fallback.errorCode, "RealtimeError:401")
+        XCTAssertNil(SupabaseRealtimeHealth.connecting.errorCode)
+    }
+
+    func testDevelopmentActivationPausePointIsOneShot() throws {
+        let suiteName = "DevelopmentSupabaseActivationGateTests.\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(
+            FarmStorageTransitionState.verifying.rawValue,
+            forKey: DevelopmentSupabaseActivationGate.pausePointKey
+        )
+
+        XCTAssertTrue(
+            DevelopmentSupabaseActivationGate.consumePausePointIfArmed(
+                at: .verifying,
+                defaults: defaults,
+                bundleIdentifier: "com.sheepfarm.next.dev"
+            )
+        )
+        XCTAssertNil(
+            defaults.string(
+                forKey: DevelopmentSupabaseActivationGate.pausePointKey
+            )
+        )
+        XCTAssertEqual(
+            defaults.string(
+                forKey: DevelopmentSupabaseActivationGate.lastPausedPointKey
+            ),
+            FarmStorageTransitionState.verifying.rawValue
+        )
+        XCTAssertFalse(
+            DevelopmentSupabaseActivationGate.consumePausePointIfArmed(
+                at: .verifying,
+                defaults: defaults,
+                bundleIdentifier: "com.sheepfarm.next.dev"
+            )
+        )
     }
 
     func testFreeReleaseAllowsMultipleOwnerFarmsWithoutStoreKitEntitlement() {
@@ -369,6 +470,206 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(pens.filter { $0.farmID == farm.id }.count, 1)
         XCTAssertEqual(operations.filter { $0.farmID == farm.id && $0.kindRawValue == DomainOperationKind.createPen.rawValue }.count, 1)
         XCTAssertEqual(outbox.filter { $0.farmID == farm.id && $0.accountID == account.id }.count, 1)
+    }
+
+    func testLocalOnlyCommandWritesHistoryWithoutOutbox() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let account = AccountProfile(appleUserIdentifier: "local-owner", displayName: "本地场主")
+        let farm = FarmRecord(ownerAccountID: account.id, name: "离线牧场")
+        context.insert(account)
+        context.insert(farm)
+        context.insert(FarmStorageProfile(farmID: farm.id, mode: .localOnly))
+        try context.save()
+
+        try FarmCommandService().execute(
+            .createPen(name: "离线圈舍", note: ""),
+            in: FarmContext(accountID: account.id, farmID: farm.id, role: .owner),
+            context: context
+        )
+
+        XCTAssertEqual(
+            try context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.farmID == farm.id }.count,
+            1
+        )
+        XCTAssertTrue(
+            try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.farmID == farm.id }.isEmpty
+        )
+    }
+
+    func testMigrationRoutesNewOperationsOnlyToTargetProviderAndGeneration() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let profile = FarmStorageProfile(
+            farmID: farmID,
+            mode: .iCloud,
+            transitionState: .uploadingBaseline,
+            authorityGeneration: 4,
+            migrationID: UUID()
+        )
+        profile.sourceModeRawValue = FarmStorageMode.iCloud.rawValue
+        profile.targetModeRawValue = FarmStorageMode.supabase.rawValue
+        context.insert(profile)
+        try context.save()
+
+        let route = try FarmStorageRouter.route(farmID: farmID, context: context)
+
+        XCTAssertEqual(route.mode, .iCloud)
+        XCTAssertEqual(route.deliveryProvider, .supabase)
+        XCTAssertEqual(route.authorityGeneration, 4)
+        XCTAssertEqual(route.deliveryAuthorityGeneration, 5)
+        XCTAssertTrue(route.requiresOutbox)
+    }
+
+    func testStorageTransitionCommitsExactlyOneNewAuthorityGeneration() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let profile = FarmStorageProfile(
+            farmID: farmID,
+            mode: .iCloud,
+            authorityGeneration: 7
+        )
+        context.insert(profile)
+        try context.save()
+
+        let migrationID = try FarmStorageTransitionCoordinator.begin(
+            farmID: farmID,
+            targetMode: .supabase,
+            context: context
+        )
+        try FarmStorageTransitionCoordinator.markBaselineUploading(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+        try FarmStorageTransitionCoordinator.markStagingRebuild(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+        try FarmStorageTransitionCoordinator.markVerifying(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+        try FarmStorageTransitionCoordinator.markReadyToCommit(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+        try FarmStorageTransitionCoordinator.commitAuthority(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+
+        XCTAssertEqual(profile.mode, .supabase)
+        XCTAssertEqual(profile.authorityGeneration, 8)
+        XCTAssertEqual(profile.transitionState, .drainingOperations)
+
+        try FarmStorageTransitionCoordinator.markSourceArchiving(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+        try FarmStorageTransitionCoordinator.finish(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+
+        XCTAssertEqual(profile.mode, .supabase)
+        XCTAssertEqual(profile.authorityGeneration, 8)
+        XCTAssertEqual(profile.transitionState, .idle)
+        XCTAssertNil(profile.migrationID)
+        XCTAssertNil(profile.sourceMode)
+        XCTAssertNil(profile.targetMode)
+    }
+
+    func testStorageTransitionFailureNeverRollsBackCommittedAuthority() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let profile = FarmStorageProfile(farmID: farmID, mode: .iCloud)
+        context.insert(profile)
+        try context.save()
+
+        let migrationID = try FarmStorageTransitionCoordinator.begin(
+            farmID: farmID,
+            targetMode: .supabase,
+            context: context
+        )
+        try FarmStorageTransitionCoordinator.markBaselineUploading(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+        try FarmStorageTransitionCoordinator.markStagingRebuild(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+        try FarmStorageTransitionCoordinator.markVerifying(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+        try FarmStorageTransitionCoordinator.markReadyToCommit(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+        try FarmStorageTransitionCoordinator.commitAuthority(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+        try FarmStorageTransitionCoordinator.recordFailure(
+            farmID: farmID,
+            migrationID: migrationID,
+            context: context
+        )
+
+        XCTAssertEqual(profile.mode, .supabase)
+        XCTAssertEqual(profile.authorityGeneration, 1)
+        XCTAssertEqual(profile.transitionState, .failed)
+    }
+
+    func testSharedCloudFarmMustRemoveOtherMembersBeforeBecomingLocal() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let farmID = UUID()
+        context.insert(FarmStorageProfile(farmID: farmID, mode: .supabase))
+        context.insert(FarmMembershipBinding(
+            serverMembershipID: "owner",
+            farmID: farmID,
+            accountID: UUID(),
+            role: .owner,
+            status: .active
+        ))
+        context.insert(FarmMembershipBinding(
+            serverMembershipID: "worker",
+            farmID: farmID,
+            accountID: UUID(),
+            role: .worker,
+            status: .active
+        ))
+        try context.save()
+
+        XCTAssertThrowsError(
+            try FarmStorageTransitionCoordinator.begin(
+                farmID: farmID,
+                targetMode: .localOnly,
+                context: context
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? FarmStorageTransitionError,
+                .sharedFarmCannotBecomeLocal
+            )
+        }
     }
 
     func testWorkerCannotChangeFeedCatalog() throws {
@@ -1495,7 +1796,8 @@ final class FarmDomainTests: XCTestCase {
             FeedRecipeComponentRecord.self, FeedRecord.self, FeedRecordLine.self, InventoryLotRecord.self,
             InventoryTransactionRecord.self, HealthRecord.self, ReproductionRecord.self, SemenRecord.self,
             NoteRecord.self, DomainOperation.self, OutboxItem.self,
-            TombstoneRecord.self, MigrationCommitRecord.self, MigrationAuditRecord.self, PhotoAssetRecord.self, HealthSubjectLink.self, LambingOffspringRecord.self, FeedIngredientBatchRecord.self, HealthCatalogItemRecord.self
+            TombstoneRecord.self, MigrationCommitRecord.self, MigrationAuditRecord.self, PhotoAssetRecord.self, HealthSubjectLink.self, LambingOffspringRecord.self, FeedIngredientBatchRecord.self, HealthCatalogItemRecord.self,
+            FarmStorageProfile.self, FarmRemoteBinding.self, FarmMembershipBinding.self,
         ])
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         return try ModelContainer(for: schema, configurations: configuration)

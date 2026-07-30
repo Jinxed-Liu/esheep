@@ -25,6 +25,31 @@ enum InsightInputOrigin: Sendable {
     }
 }
 
+struct InsightConversationScope: Equatable, Sendable {
+    let accountID: UUID
+    let farmID: UUID
+
+    func contains(_ conversation: InsightConversationRecord) -> Bool {
+        conversation.accountID == accountID &&
+            conversation.farmID == farmID &&
+            conversation.deletedAt == nil
+    }
+
+    func contains(_ message: InsightMessageRecord) -> Bool {
+        message.accountID == accountID && message.farmID == farmID
+    }
+
+    func contains(_ attachment: InsightAttachmentRecord) -> Bool {
+        attachment.accountID == accountID &&
+            attachment.farmID == farmID &&
+            attachment.deletedAt == nil
+    }
+
+    func contains(_ draft: InsightActionDraftRecord) -> Bool {
+        draft.accountID == accountID && draft.farmID == farmID
+    }
+}
+
 @MainActor
 @Observable
 final class InsightConversationController {
@@ -71,6 +96,17 @@ final class InsightConversationController {
         )
     }
 
+    var conversationScope: InsightConversationScope {
+        InsightConversationScope(
+            accountID: account.effectiveAccountID,
+            farmID: farm.id
+        )
+    }
+
+    var boundFarmName: String {
+        farm.name
+    }
+
     var canUseAssistant: Bool {
         farmContext.capabilities.allows(.readFarm)
     }
@@ -102,10 +138,11 @@ final class InsightConversationController {
 
         if let modelContext,
            let latestUserMessage = activeMessages.last(where: { $0.role == .user }) {
+            let scope = conversationScope
             let imageCount = ((try? modelContext.fetch(
                 FetchDescriptor<InsightAttachmentRecord>()
             )) ?? []).filter {
-                $0.messageID == latestUserMessage.id && $0.deletedAt == nil
+                scope.contains($0) && $0.messageID == latestUserMessage.id
             }.prefix(4).count
             estimatedTokens += imageCount * 2_048
         }
@@ -120,9 +157,8 @@ final class InsightConversationController {
     }
 
     func connect(to context: ModelContext) async {
-        modelContext = context
+        connectLocalState(to: context)
         currentDeviceID = try? await InsightDeviceKeyAgreementActor.shared.identity().deviceID
-        refresh()
         let remotelyEnabled: Bool
         if IdentityWorkerConfiguration.baseURL != nil,
            let status = try? await IdentityWorkerClient.shared.accountStatus() {
@@ -140,12 +176,19 @@ final class InsightConversationController {
         }
     }
 
+    /// Loads the durable local conversation state before any credential or
+    /// remote feature checks. Keeping this boundary explicit also makes the
+    /// account-and-farm isolation rule independently testable.
+    func connectLocalState(to context: ModelContext) {
+        modelContext = context
+        refresh()
+    }
+
     func refresh() {
         guard let modelContext else { return }
-        let accountID = account.effectiveAccountID
-        let farmID = farm.id
+        let scope = conversationScope
         conversations = ((try? modelContext.fetch(FetchDescriptor<InsightConversationRecord>())) ?? [])
-            .filter { $0.accountID == accountID && $0.farmID == farmID && $0.deletedAt == nil }
+            .filter(scope.contains)
             .sorted { $0.updatedAt > $1.updatedAt }
         if let currentConversationID,
            !conversations.contains(where: { $0.id == currentConversationID }) {
@@ -155,6 +198,13 @@ final class InsightConversationController {
     }
 
     func selectConversation(_ id: UUID?) {
+        if let id,
+           !conversations.contains(where: { $0.id == id && conversationScope.contains($0) }) {
+            currentConversationID = nil
+            reloadCurrentConversation()
+            errorMessage = "该会话不属于当前牧场，已停止打开。"
+            return
+        }
         currentConversationID = id
         reloadCurrentConversation()
         errorMessage = nil
@@ -170,7 +220,10 @@ final class InsightConversationController {
     }
 
     func deleteConversation(_ conversation: InsightConversationRecord) {
-        guard let modelContext else { return }
+        guard let modelContext, conversationScope.contains(conversation) else {
+            errorMessage = "该会话不属于当前牧场，无法删除。"
+            return
+        }
         let deletedAt = Date.now
         conversation.deletedAt = deletedAt
         conversation.updatedAt = deletedAt
@@ -178,9 +231,9 @@ final class InsightConversationController {
         do {
             let attachments = try modelContext.fetch(FetchDescriptor<InsightAttachmentRecord>())
                 .filter {
-                    $0.accountID == conversation.accountID &&
+                    conversationScope.contains($0) &&
                         $0.conversationID == conversation.id &&
-                        $0.deletedAt == nil
+                        $0.accountID == conversation.accountID
                 }
             attachments.forEach { $0.deletedAt = deletedAt }
             try modelContext.save()
@@ -305,7 +358,14 @@ final class InsightConversationController {
         messageID: UUID,
         conversationID: UUID
     ) async throws -> StoredInsightAudio? {
-        try await InsightLocalAudioStore.shared.load(
+        guard let modelContext,
+              try modelContext.fetch(FetchDescriptor<InsightConversationRecord>())
+                .contains(where: {
+                    $0.id == conversationID && conversationScope.contains($0)
+                }) else {
+            throw InsightToolError.crossFarmReference
+        }
+        return try await InsightLocalAudioStore.shared.load(
             messageID: messageID,
             conversationID: conversationID,
             accountID: account.effectiveAccountID
@@ -393,6 +453,10 @@ final class InsightConversationController {
 
     func execute(_ draft: InsightActionDraftRecord) async {
         guard let modelContext, draft.status == .proposed else { return }
+        guard conversationScope.contains(draft) else {
+            errorMessage = "该草案不属于当前牧场，无法执行。"
+            return
+        }
         let executionDrafts = draftsForSingleConfirmation(of: draft)
         guard executionDrafts.allSatisfy({
             !executingDraftIDs.contains($0.id)
@@ -521,6 +585,10 @@ final class InsightConversationController {
     }
 
     func reject(_ draft: InsightActionDraftRecord) {
+        guard conversationScope.contains(draft) else {
+            errorMessage = "该草案不属于当前牧场，无法拒绝。"
+            return
+        }
         draft.status = .rejected
         try? modelContext?.save()
         reloadCurrentConversation()
@@ -535,7 +603,8 @@ final class InsightConversationController {
     }
 
     func canExecute(_ draft: InsightActionDraftRecord) -> Bool {
-        currentDeviceID == draft.originDeviceID &&
+        conversationScope.contains(draft) &&
+            currentDeviceID == draft.originDeviceID &&
             !executingDraftIDs.contains(draft.id)
     }
 
@@ -688,7 +757,7 @@ final class InsightConversationController {
                         instructions: modelInstructions,
                         messages: inputMessages,
                         functionExchanges: exchanges,
-                        tools: toolDefinitions,
+                        tools: round < Self.maximumToolRoundTrips ? toolDefinitions : [],
                         maximumOutputTokens: maximumOutputTokens
                     )
                     do {
@@ -846,16 +915,18 @@ final class InsightConversationController {
         excluding excludedMessageID: UUID
     ) -> [MiMoInputMessage] {
         guard let modelContext else { return [] }
+        let scope = conversationScope
         let allMessages = ((try? modelContext.fetch(FetchDescriptor<InsightMessageRecord>())) ?? [])
             .filter {
-                $0.conversationID == conversationID &&
+                scope.contains($0) &&
+                    $0.conversationID == conversationID &&
                     $0.id != excludedMessageID &&
                     $0.status != .failed &&
                     $0.status != .cancelled
             }
             .sorted { $0.createdAt < $1.createdAt }
         let attachments = ((try? modelContext.fetch(FetchDescriptor<InsightAttachmentRecord>())) ?? [])
-            .filter { $0.conversationID == conversationID && $0.deletedAt == nil }
+            .filter { scope.contains($0) && $0.conversationID == conversationID }
         let history: [InsightMessageRecord]
         if let lastCompressionIndex = allMessages.lastIndex(where: {
             $0.toolName == InsightContextCompressor.compressionToolName
@@ -887,11 +958,27 @@ final class InsightConversationController {
             drafts = []
             return
         }
+        let scope = conversationScope
+        let isCurrentConversationInScope =
+            ((try? modelContext.fetch(FetchDescriptor<InsightConversationRecord>())) ?? [])
+            .contains {
+                $0.id == currentConversationID && scope.contains($0)
+            }
+        guard isCurrentConversationInScope else {
+            self.currentConversationID = nil
+            messages = []
+            drafts = []
+            return
+        }
         messages = ((try? modelContext.fetch(FetchDescriptor<InsightMessageRecord>())) ?? [])
-            .filter { $0.conversationID == currentConversationID }
+            .filter {
+                scope.contains($0) && $0.conversationID == currentConversationID
+            }
             .sorted { $0.createdAt < $1.createdAt }
         drafts = ((try? modelContext.fetch(FetchDescriptor<InsightActionDraftRecord>())) ?? [])
-            .filter { $0.conversationID == currentConversationID }
+            .filter {
+                scope.contains($0) && $0.conversationID == currentConversationID
+            }
             .sorted { $0.createdAt < $1.createdAt }
     }
 
@@ -965,7 +1052,8 @@ final class InsightConversationController {
         导入文件由 App 在本机解析并生成高风险确认卡片，文件内容不会发送给模型；只有卡片状态为“已执行”才表示导入完成。
         任何数据写入、提醒事项或日历事件都只能生成草案，必须由用户在 App 中确认后执行。
         工具返回 proposal_created 或 proposals_created 只表示待确认卡片已生成，绝不表示已经提交、保存或执行。只有 App 的卡片状态变成“已执行”才能说操作已经执行。
-        用户已经提供执行所需的明确耳号、数值和日期时，不要重复追问，直接生成操作草案。多个称重必须一次调用 draft_record_weights，不能逐条调用 draft_record_weight，不能先拿一条试提交。多只羊同一天出售且只有一个总售卖金额时，必须一次调用 draft_sell_sheep_batch，不能逐只调用 draft_farm_command。
+        用户已经提供执行所需的明确耳号、数值和日期时，不要重复追问，直接生成操作草案。一次出现多个耳号（包括从图片识别出的耳号）时，批量核对必须一次调用 match_sheep_ear_tags，绝不能逐个调用 find_sheep。多只羊同一天出售且只有一个总售卖金额时，直接一次调用 draft_sell_sheep_batch；该工具会在 App 本地批量匹配最多 200 个耳号，无需预先逐只查羊，也不能逐只调用 draft_farm_command。多个称重必须一次调用 draft_record_weights，不能逐条调用 draft_record_weight，不能先拿一条试提交。
+        match_sheep_ear_tags 返回 needs_review 时，必须一次列出全部未匹配、歧义或重复项并请用户核对；不得对失败项逐个重试。返回 all_matched 时必须使用 canonical_ear_tags，不得自行改写耳号。
         不要要求用户另外填写操作确认原因；高风险草案由 App 在用户选择执行时通过 Face ID 或 Touch ID 确认。
         如果必要字段确实缺失，只集中询问一次；工具拒绝后不要用相同参数反复重试。
         不提供兽医诊断；涉及健康问题时给出观察建议并提示联系兽医。

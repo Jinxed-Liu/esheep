@@ -8,6 +8,14 @@ struct MigrationCloudBootstrapResult: Sendable, Equatable {
     let wasAlreadyPrepared: Bool
 }
 
+struct FarmBootstrapEntitySnapshot: Sendable, Equatable {
+    let entityType: CloudEntityType
+    let entityID: UUID
+    let sourceRevision: Int
+    let sourcePayload: Data
+    let replayOrder: Int
+}
+
 enum MigrationCloudBootstrapError: LocalizedError {
     case farmMissing
     case ownerMismatch
@@ -394,6 +402,50 @@ struct MigrationCloudBootstrapService {
     private static let summaryPrefix = MigrationBaselineV2EvidenceContract.summaryPrefix
     private static let currentBaselineVersion = MigrationBaselineV2EvidenceContract.currentVersion
 
+    /// Builds the provider-neutral entity snapshots used by both CloudKit
+    /// migration recovery and Supabase non-empty authority activation. This
+    /// method does not insert DomainOperation, Outbox or cloud binding rows.
+    func makeProviderNeutralSnapshots(
+        farm: FarmRecord,
+        context: ModelContext
+    ) throws -> [FarmBootstrapEntitySnapshot] {
+        guard farm.deletedAt == nil else {
+            throw MigrationCloudBootstrapError.farmMissing
+        }
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter {
+            $0.farmID == farm.id
+        }
+        let normalizedTags = sheep.map { EarTag.normalized($0.earTag) }
+        guard Set(normalizedTags).count == normalizedTags.count else {
+            throw MigrationCloudBootstrapError.duplicateEarTag
+        }
+
+        var prepared: [(
+            entityType: CloudEntityType,
+            entityID: UUID,
+            revision: Int,
+            sourcePayload: Data,
+            order: Int
+        )] = []
+        try appendFarm(farm, to: &prepared)
+        try appendRecords(farmID: farm.id, context: context, to: &prepared)
+        return prepared.sorted {
+            if $0.order != $1.order { return $0.order < $1.order }
+            if $0.entityType.rawValue != $1.entityType.rawValue {
+                return $0.entityType.rawValue < $1.entityType.rawValue
+            }
+            return $0.entityID.uuidString < $1.entityID.uuidString
+        }.map {
+            FarmBootstrapEntitySnapshot(
+                entityType: $0.entityType,
+                entityID: $0.entityID,
+                sourceRevision: max(1, $0.revision),
+                sourcePayload: $0.sourcePayload,
+                replayOrder: $0.order
+            )
+        }
+    }
+
     func prepare(
         commit: MigrationCommitRecord,
         farm: FarmRecord,
@@ -454,13 +506,15 @@ struct MigrationCloudBootstrapService {
             }
         }
 
-        var prepared: [(entityType: CloudEntityType, entityID: UUID, revision: Int, sourcePayload: Data, order: Int)] = []
-        try appendFarm(farm, to: &prepared)
-        try appendRecords(farmID: farm.id, context: context, to: &prepared)
-        prepared.sort {
-            if $0.order != $1.order { return $0.order < $1.order }
-            if $0.entityType.rawValue != $1.entityType.rawValue { return $0.entityType.rawValue < $1.entityType.rawValue }
-            return $0.entityID.uuidString < $1.entityID.uuidString
+        let snapshots = try makeProviderNeutralSnapshots(farm: farm, context: context)
+        let prepared = snapshots.map {
+            (
+                entityType: $0.entityType,
+                entityID: $0.entityID,
+                revision: $0.sourceRevision,
+                sourcePayload: $0.sourcePayload,
+                order: $0.replayOrder
+            )
         }
 
         let existing = try context.fetch(FetchDescriptor<DomainOperation>()).filter {

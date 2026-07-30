@@ -26,6 +26,7 @@ struct FarmInsightConversationView: View {
     @State private var pendingAudio: PendingInsightAudio?
     @State private var storedAudioByMessageID: [UUID: StoredInsightAudio] = [:]
     @State private var audioPlaybackSource: InsightAudioPlaybackSource?
+    @State private var isPhotoLibraryPresented = false
     @State private var isCameraPresented = false
     @State private var isImportFilePresented = false
     @State private var isHistoryPresented = false
@@ -69,7 +70,6 @@ struct FarmInsightConversationView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 InsightComposerBar(
                     text: $input,
-                    photoItems: $photoItems,
                     isFocused: $isComposerFocused,
                     audioRecorder: audioRecorder,
                     isKeyboardPresented: isComposerFocused,
@@ -78,6 +78,14 @@ struct FarmInsightConversationView: View {
                     hasPendingImages: !pendingImages.isEmpty,
                     pendingAudio: pendingAudio,
                     isPlayingAudio: audioPlayer.isPlaying && audioPlaybackSource == .pending,
+                    onPhotoLibrary: {
+                        guard pendingImages.count < 4 else {
+                            controller.errorMessage = "每条消息最多选择 4 张图片。"
+                            return
+                        }
+                        isComposerFocused = false
+                        isPhotoLibraryPresented = true
+                    },
                     onCamera: { isCameraPresented = true },
                     onImportData: { isImportFilePresented = true },
                     onMicrophonePressChanged: microphonePressChanged,
@@ -91,7 +99,11 @@ struct FarmInsightConversationView: View {
                     onStop: controller.stopGenerating
                 )
             }
-            .task {
+            .task(id: farm.id) {
+                guard isControllerBoundToFarm else {
+                    controller.errorMessage = "牧场已切换，请重新进入 AI 助手。"
+                    return
+                }
                 await controller.connect(to: modelContext)
             }
             .task(id: storedAudioRevision) {
@@ -104,9 +116,16 @@ struct FarmInsightConversationView: View {
                 if let error { controller.errorMessage = error }
             }
             .onDisappear {
+                controller.stopGenerating()
                 audioRecorder.discard()
                 audioPlayer.stop()
             }
+            .photosPicker(
+                isPresented: $isPhotoLibraryPresented,
+                selection: $photoItems,
+                maxSelectionCount: max(1, 4 - pendingImages.count),
+                matching: .images
+            )
             .sheet(isPresented: $isHistoryPresented) {
                 InsightConversationHistoryView(controller: controller)
             }
@@ -122,6 +141,7 @@ struct FarmInsightConversationView: View {
             .sheet(item: $selectedDraft) { draft in
                 InsightDraftConfirmationView(
                     draft: draft,
+                    farmName: farm.name,
                     onConfirm: {
                         selectedDraft = nil
                         Task { await controller.execute(draft) }
@@ -208,6 +228,7 @@ struct FarmInsightConversationView: View {
                             }
                             InsightConversationMessageRow(
                                 message: message,
+                                farmName: farm.name,
                                 attachments: messageAttachments(for: message.id),
                                 storedAudio: storedAudioByMessageID[message.id],
                                 isPlayingAudio: audioPlayer.isPlaying
@@ -275,9 +296,15 @@ struct FarmInsightConversationView: View {
                 }
                 .shadow(color: AppTheme.brand.opacity(0.12), radius: 4, y: 2)
 
-            Text("AI 助手")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("AI 助手")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(farm.name)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
 
             Button {
                 isContextUsagePresented.toggle()
@@ -312,9 +339,12 @@ struct FarmInsightConversationView: View {
     }
 
     private var conversationMetadata: some View {
-        VStack(spacing: 4) {
-            Text("AI 助手信息")
-                .font(.subheadline)
+        VStack(spacing: 5) {
+            Label("当前牧场：\(farm.name)", systemImage: "building.2")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+            Text("本对话只读取和操作该牧场的数据")
+                .font(.caption)
                 .foregroundStyle(.secondary)
             Label("个人空间已加密", systemImage: "lock.fill")
                 .font(.caption)
@@ -327,29 +357,37 @@ struct FarmInsightConversationView: View {
 
     @ViewBuilder
     private var availabilityBanner: some View {
-        switch controller.availability {
-        case .loading:
-            HStack(spacing: 7) {
-                ProgressView()
-                Text("正在检查 AI 助手配置")
+        if !isControllerBoundToFarm {
+            InsightAvailabilityNotice(
+                title: "牧场已切换",
+                detail: "旧牧场会话已停止，请返回后重新进入当前牧场的 AI 助手。",
+                action: nil
+            )
+        } else {
+            switch controller.availability {
+            case .loading:
+                HStack(spacing: 7) {
+                    ProgressView()
+                    Text("正在检查 AI 助手配置")
+                }
+                .frame(maxWidth: .infinity)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            case .ready:
+                EmptyView()
+            case .missingCredential:
+                InsightAvailabilityNotice(
+                    title: "配置 MiMo API Key",
+                    detail: "请前往账户头像中的“AI 助手”设置。eSheep 不内置公共 Key。",
+                    action: nil
+                )
+            case .unavailable(let message):
+                InsightAvailabilityNotice(
+                    title: "AI 助手暂不可用",
+                    detail: message,
+                    action: nil
+                )
             }
-            .frame(maxWidth: .infinity)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        case .ready:
-            EmptyView()
-        case .missingCredential:
-            InsightAvailabilityNotice(
-                title: "配置 MiMo API Key",
-                detail: "请前往账户头像中的“AI 助手”设置。eSheep 不内置公共 Key。",
-                action: nil
-            )
-        case .unavailable(let message):
-            InsightAvailabilityNotice(
-                title: "AI 助手暂不可用",
-                detail: message,
-                action: nil
-            )
         }
     }
 
@@ -363,8 +401,17 @@ struct FarmInsightConversationView: View {
     }
 
     private var isReady: Bool {
-        if case .ready = controller.availability { return controller.canUseAssistant }
+        if case .ready = controller.availability {
+            return isControllerBoundToFarm && controller.canUseAssistant
+        }
         return false
+    }
+
+    private var isControllerBoundToFarm: Bool {
+        controller.conversationScope == InsightConversationScope(
+            accountID: account.effectiveAccountID,
+            farmID: farm.id
+        )
     }
 
     private func send() {
@@ -478,10 +525,16 @@ struct FarmInsightConversationView: View {
 
     private func loadPhotos(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
-        Task {
+        Task { @MainActor in
+            defer { photoItems = [] }
             for item in items.prefix(max(0, 4 - pendingImages.count)) {
-                if let data = try? await item.loadTransferable(type: Data.self) {
+                do {
+                    guard let data = try await item.loadTransferable(type: Data.self) else {
+                        throw InsightMediaError.invalidImage
+                    }
                     optimizeAndAppend(data)
+                } catch {
+                    controller.errorMessage = error.localizedDescription
                 }
             }
         }
@@ -489,6 +542,10 @@ struct FarmInsightConversationView: View {
 
     private func optimizeAndAppend(_ data: Data) {
         do {
+            guard pendingImages.count < 4 else {
+                controller.errorMessage = "每条消息最多选择 4 张图片。"
+                return
+            }
             let image = try InsightImageOptimizer.optimize(data)
             guard !pendingImages.contains(where: { $0.digest == image.digest }) else { return }
             pendingImages.append(image)
@@ -499,8 +556,9 @@ struct FarmInsightConversationView: View {
     }
 
     private func messageAttachments(for messageID: UUID) -> [InsightAttachmentRecord] {
-        attachments
-            .filter { $0.messageID == messageID && $0.deletedAt == nil }
+        let scope = controller.conversationScope
+        return attachments
+            .filter { scope.contains($0) && $0.messageID == messageID }
             .sorted { $0.createdAt < $1.createdAt }
     }
 
@@ -1037,6 +1095,7 @@ private struct InsightMessageBubble: View {
 
 private struct InsightConversationMessageRow: View {
     let message: InsightMessageRecord
+    let farmName: String
     let attachments: [InsightAttachmentRecord]
     let storedAudio: StoredInsightAudio?
     let isPlayingAudio: Bool
@@ -1064,6 +1123,7 @@ private struct InsightConversationMessageRow: View {
             ForEach(drafts, id: \.id) { draft in
                 InsightActionDraftCard(
                     draft: draft,
+                    farmName: farmName,
                     isOriginDevice: canExecute(draft),
                     executionCount: executionCount(for: draft),
                     onReview: { onReview(draft) },
@@ -1140,6 +1200,7 @@ private struct InsightAssistantTypingIndicator: View {
 
 private struct InsightActionDraftCard: View {
     let draft: InsightActionDraftRecord
+    let farmName: String
     let isOriginDevice: Bool
     let executionCount: Int
     let onReview: () -> Void
@@ -1160,6 +1221,9 @@ private struct InsightActionDraftCard: View {
                 .font(.headline)
             Text(draft.summary)
                 .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Label(farmName, systemImage: "building.2")
+                .font(.caption)
                 .foregroundStyle(.secondary)
             if let importPayload = try? InsightImportCoordinator.payload(for: draft) {
                 VStack(alignment: .leading, spacing: 5) {
@@ -1289,7 +1353,6 @@ private struct InsightPendingInputPreview: View {
 
 private struct InsightComposerBar: View {
     @Binding var text: String
-    @Binding var photoItems: [PhotosPickerItem]
     var isFocused: FocusState<Bool>.Binding
     let audioRecorder: InsightAudioRecorder
     let isKeyboardPresented: Bool
@@ -1298,6 +1361,7 @@ private struct InsightComposerBar: View {
     let hasPendingImages: Bool
     let pendingAudio: PendingInsightAudio?
     let isPlayingAudio: Bool
+    let onPhotoLibrary: () -> Void
     let onCamera: () -> Void
     let onImportData: () -> Void
     let onMicrophonePressChanged: (Bool) -> Void
@@ -1370,11 +1434,9 @@ private struct InsightComposerBar: View {
             .accessibilityIdentifier("insight.audio.discard")
         } else {
             Menu {
-                PhotosPicker(
-                    selection: $photoItems,
-                    maxSelectionCount: 4,
-                    matching: .images
-                ) {
+                Button {
+                    onPhotoLibrary()
+                } label: {
                     Label("从相册选择", systemImage: "photo.on.rectangle")
                 }
                 Button("拍照", systemImage: "camera", action: onCamera)
@@ -1651,26 +1713,28 @@ private struct InsightConversationHistoryView: View {
     var body: some View {
         NavigationStack {
             List {
-                if controller.conversations.isEmpty {
-                    ContentUnavailableView("暂无历史会话", systemImage: "bubble.left.and.bubble.right")
-                } else {
-                    ForEach(controller.conversations, id: \.id) { conversation in
-                        Button {
-                            controller.selectConversation(conversation.id)
-                            dismiss()
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(conversation.title)
-                                    .foregroundStyle(.primary)
-                                Text(conversation.updatedAt, format: .dateTime.month().day().hour().minute())
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                Section("当前牧场：\(controller.boundFarmName)") {
+                    if controller.conversations.isEmpty {
+                        ContentUnavailableView("暂无历史会话", systemImage: "bubble.left.and.bubble.right")
+                    } else {
+                        ForEach(controller.conversations, id: \.id) { conversation in
+                            Button {
+                                controller.selectConversation(conversation.id)
+                                dismiss()
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(conversation.title)
+                                        .foregroundStyle(.primary)
+                                    Text(conversation.updatedAt, format: .dateTime.month().day().hour().minute())
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
-                    }
-                    .onDelete { offsets in
-                        for index in offsets {
-                            controller.deleteConversation(controller.conversations[index])
+                        .onDelete { offsets in
+                            for index in offsets {
+                                controller.deleteConversation(controller.conversations[index])
+                            }
                         }
                     }
                 }
@@ -1688,6 +1752,7 @@ private struct InsightConversationHistoryView: View {
 private struct InsightDraftConfirmationView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var draft: InsightActionDraftRecord
+    let farmName: String
     let onConfirm: () -> Void
     @State private var payloadText = ""
     @State private var payloadError: String?
@@ -1696,6 +1761,7 @@ private struct InsightDraftConfirmationView: View {
         NavigationStack {
             Form {
                 Section("将要执行") {
+                    LabeledContent("牧场", value: farmName)
                     LabeledContent("操作", value: draft.title)
                     Text(draft.summary)
                     LabeledContent("所需权限", value: draft.requiredCapabilityRawValue)

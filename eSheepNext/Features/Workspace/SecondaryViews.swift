@@ -5,7 +5,7 @@ import SwiftUI
 struct FarmInsightsView: View {
     let account: AccountProfile
     let farm: FarmRecord
-    @Binding var isAssistantPresented: Bool
+    @Binding var assistantFarmID: UUID?
     @Namespace private var assistantTransition
 
     var body: some View {
@@ -37,8 +37,9 @@ struct FarmInsightsView: View {
             }
         }
         .navigationTitle("洞察")
-        .navigationDestination(isPresented: $isAssistantPresented) {
+        .navigationDestination(isPresented: assistantPresentation) {
             FarmInsightConversationView(account: account, farm: farm)
+                .id(farm.id)
                 .motionTransitionDestination(
                     id: assistantTransitionID,
                     in: assistantTransition,
@@ -59,8 +60,23 @@ struct FarmInsightsView: View {
     }
 
     private func presentAssistant() {
-        guard !isAssistantPresented else { return }
-        isAssistantPresented = true
+        guard assistantFarmID != farm.id else { return }
+        assistantFarmID = farm.id
+    }
+
+    private var assistantPresentation: Binding<Bool> {
+        Binding(
+            get: {
+                assistantFarmID == farm.id
+            },
+            set: { isPresented in
+                if isPresented {
+                    assistantFarmID = farm.id
+                } else if assistantFarmID == farm.id {
+                    assistantFarmID = nil
+                }
+            }
+        )
     }
 
     private var farmContext: FarmContext {

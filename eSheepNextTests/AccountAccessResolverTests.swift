@@ -1,4 +1,5 @@
 import XCTest
+import Supabase
 @testable import eSheepNext
 
 @MainActor
@@ -89,6 +90,51 @@ final class AccountAccessResolverTests: XCTestCase {
             ).requiresFreshAuthentication
         )
         XCTAssertFalse(IdentityWorkerError.invalidResponse.requiresFreshAuthentication)
+    }
+
+    func testMissingSupabaseSessionRequiresReauthenticationInsteadOfOfflineMode() async {
+        let account = makeAccount()
+
+        let status = await AccountAccessResolver.resolve(
+            for: account,
+            appleStatusProvider: { .authorized },
+            remoteSessionProvider: {
+                throw AuthError.sessionMissing
+            }
+        )
+
+        XCTAssertTrue(status.requiresSignIn)
+        XCTAssertFalse(status.allowsCloudOperations)
+    }
+
+    func testOnlyDefinitiveSupabaseSessionErrorsRequireFreshAuthentication() {
+        XCTAssertTrue(AuthError.sessionMissing.requiresFreshAuthentication)
+        XCTAssertTrue(
+            AuthError.api(
+                message: "expired",
+                errorCode: .refreshTokenNotFound,
+                underlyingData: Data(),
+                underlyingResponse: HTTPURLResponse(
+                    url: URL(string: "https://example.com")!,
+                    statusCode: 400,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+            ).requiresFreshAuthentication
+        )
+        XCTAssertFalse(
+            AuthError.api(
+                message: "temporarily unavailable",
+                errorCode: .unexpectedFailure,
+                underlyingData: Data(),
+                underlyingResponse: HTTPURLResponse(
+                    url: URL(string: "https://example.com")!,
+                    statusCode: 503,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!
+            ).requiresFreshAuthentication
+        )
     }
 
     private func makeAccount() -> AccountProfile {

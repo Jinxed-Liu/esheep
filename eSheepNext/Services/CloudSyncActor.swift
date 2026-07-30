@@ -31,7 +31,9 @@ enum CloudSyncError: LocalizedError {
     case farmBindingMissing
     case rootSaveFailed
     case shareSaveFailed
+    case inviteURLUnavailable
     case participantMissing
+    case shareAccessResultMissing
     case localBaselineUnsupported
     case verifiedMigrationRequired
     case localOnlyMigration
@@ -46,7 +48,9 @@ enum CloudSyncError: LocalizedError {
         case .farmBindingMissing: "当前牧场尚未建立 CloudKit 绑定。"
         case .rootSaveFailed: "无法保存牧场云端根记录。"
         case .shareSaveFailed: "无法创建牧场共享记录。"
-        case .participantMissing: "尚未发现已接受系统共享的新参与者。"
+        case .inviteURLUnavailable: "CloudKit 未能生成可用的共享邀请链接，请稍后重试。"
+        case .participantMissing: "对方尚未提交加入申请，或还没有接受系统共享。"
+        case .shareAccessResultMissing: "CloudKit 未返回可用的共享参与者，请稍后重试。"
         case .localBaselineUnsupported: "该牧场包含旧格式本地操作，必须先完成正式迁移校验并生成云端基线。"
         case .verifiedMigrationRequired: "当前牧场尚未完成可验证的正式迁移提交和云端基线，不能建立云端牧场。"
         case .localOnlyMigration: "该旧迁移牧场尚未通过完整性校验，暂时只能保留在本机。"
@@ -63,6 +67,92 @@ struct MigrationCloudBaselineSnapshot: Sendable, Equatable {
     let photoCount: Int
     let version: Int
     let cutoffAt: Date?
+}
+
+struct CloudOneTimeFarmInvitation: Sendable, Equatable {
+    let participantID: String
+    let url: URL
+}
+
+struct CloudAcceptedShareParticipant: Sendable, Equatable {
+    let participantID: String
+    let recordName: String
+}
+
+struct CloudOwnerShareResolution {
+    let share: CKShare
+    let didRecreate: Bool
+}
+
+struct CloudPreparedShareParticipant: Sendable, Equatable {
+    let participantID: String
+    let participantRecordName: String
+}
+
+enum CloudShareInvitationPolicy {
+    static func configureNewShare(_ share: CKShare, farmName: String) {
+        share.publicPermission = .none
+        share[CKShare.SystemFieldKey.title] = farmName as CKRecordValue
+    }
+}
+
+enum CloudShareRecoveryPolicy {
+    static func shouldRecreate(after error: Error) -> Bool {
+        let error = error as NSError
+        return error.domain == CKErrorDomain &&
+            error.code == CKError.Code.unknownItem.rawValue
+    }
+}
+
+enum CloudOneTimeInvitationRuntimePolicy {
+    static var requiresSystemSharingFallback: Bool {
+        requiresSystemSharingFallback(
+            for: ProcessInfo.processInfo.operatingSystemVersion
+        )
+    }
+
+    static func requiresSystemSharingFallback(
+        for version: OperatingSystemVersion
+    ) -> Bool {
+        // iOS 27.0 beta build 24A5390f traps inside CloudKit instead of
+        // returning an error when a one-time participant is persisted.
+        // Keep this isolated so the workaround can be removed after Apple
+        // ships a fixed runtime and the physical-device path is revalidated.
+        version.majorVersion == 27
+    }
+}
+
+@MainActor
+enum CloudOneTimeInvitationBuilder {
+    static func prepareParticipant(on share: CKShare) -> CKShare.Participant {
+        let participant = CKShare.Participant.oneTimeURLParticipant()
+        participant.permission = .readWrite
+        share.addParticipant(participant)
+        return participant
+    }
+
+    static func create(
+        share: CKShare,
+        database: CKDatabase
+    ) async throws -> CloudOneTimeFarmInvitation {
+        let participant = prepareParticipant(on: share)
+        let result = try await database.modifyRecords(
+            saving: [share],
+            deleting: [],
+            savePolicy: .ifServerRecordUnchanged,
+            atomically: true
+        )
+        guard let savedShare = try result.saveResults[share.recordID]?.get() as? CKShare else {
+            throw CloudSyncError.shareSaveFailed
+        }
+        guard let url = savedShare.oneTimeURL(for: participant.participantID) else {
+            throw CloudSyncError.inviteURLUnavailable
+        }
+        return CloudOneTimeFarmInvitation(
+            participantID: participant.participantID,
+            url: url
+        )
+    }
 }
 
 struct MigrationUploadProgressWatchdog: Sendable {
@@ -351,8 +441,7 @@ actor CloudSyncActor {
             }
         }
         let share = CKShare(recordZoneID: zoneID)
-        share.publicPermission = .none
-        share[CKShare.SystemFieldKey.title] = farmName as CKRecordValue
+        CloudShareInvitationPolicy.configureNewShare(share, farmName: farmName)
         let result = try await container.privateCloudDatabase.modifyRecords(saving: [root, share], deleting: [], savePolicy: .ifServerRecordUnchanged, atomically: true)
         guard (try result.saveResults[root.recordID]?.get()) != nil else { throw CloudSyncError.rootSaveFailed }
         guard let savedShare = try result.saveResults[share.recordID]?.get() as? CKShare else { throw CloudSyncError.shareSaveFailed }
@@ -560,6 +649,63 @@ actor CloudSyncActor {
         return share
     }
 
+    func ownerShareRecoveringIfMissing(
+        farmID: UUID,
+        farmName: String
+    ) async throws -> CloudOwnerShareResolution {
+        do {
+            let share = try await ownerShare(farmID: farmID)
+            return CloudOwnerShareResolution(share: share, didRecreate: false)
+        } catch {
+            guard CloudShareRecoveryPolicy.shouldRecreate(after: error) else {
+                throw error
+            }
+        }
+
+        guard CloudFeatureConfiguration.isEnabled else {
+            throw CloudSyncError.featureDisabled
+        }
+        try await persistence.requireCloudAdmission(
+            farmID: farmID,
+            environment: .current
+        )
+        guard await accountAvailability() == .available else {
+            throw CloudSyncError.accountUnavailable
+        }
+        guard let binding = try await persistence.bindingSnapshot(farmID: farmID),
+              binding.databaseScope == .privateDatabase,
+              binding.state == .active else {
+            throw CloudSyncError.farmBindingMissing
+        }
+
+        let zoneID = CKRecordZone.ID(
+            zoneName: binding.zoneName,
+            ownerName: binding.zoneOwnerName
+        )
+        let replacement = CKShare(recordZoneID: zoneID)
+        CloudShareInvitationPolicy.configureNewShare(replacement, farmName: farmName)
+        let result = try await container.privateCloudDatabase.modifyRecords(
+            saving: [replacement],
+            deleting: [],
+            savePolicy: .ifServerRecordUnchanged,
+            atomically: true
+        )
+        guard let savedShare = try result.saveResults[replacement.recordID]?.get() as? CKShare else {
+            throw CloudSyncError.shareSaveFailed
+        }
+        try await persistence.upsertBinding(
+            farmID: farmID,
+            ownerAccountID: binding.ownerAccountID,
+            scope: .privateDatabase,
+            shareRecordName: savedShare.recordID.recordName,
+            state: .active
+        )
+        return CloudOwnerShareResolution(
+            share: savedShare,
+            didRecreate: true
+        )
+    }
+
     func acceptedParticipantRecordNames(farmID: UUID) async throws -> [String] {
         let share = try await ownerShare(farmID: farmID)
         return share.participants.compactMap { participant in
@@ -567,6 +713,175 @@ actor CloudSyncActor {
                   participant.acceptanceStatus == .accepted else { return nil }
             return participant.userIdentity.userRecordID?.recordName
         }
+    }
+
+    func currentCloudUserRecordName() async throws -> String {
+        guard await accountAvailability() == .available else {
+            throw CloudSyncError.accountUnavailable
+        }
+        return try await container.userRecordID().recordName
+    }
+
+    func prepareShareParticipant(
+        farmID: UUID,
+        userRecordName: String
+    ) async throws -> CloudPreparedShareParticipant {
+        let share = try await ownerShare(farmID: farmID)
+        if let existing = share.participants.first(where: {
+            $0.role != .owner &&
+                $0.userIdentity.userRecordID?.recordName == userRecordName
+        }) {
+            return CloudPreparedShareParticipant(
+                participantID: existing.participantID,
+                participantRecordName: userRecordName
+            )
+        }
+
+        let lookup = CKUserIdentity.LookupInfo(
+            userRecordID: CKRecord.ID(recordName: userRecordName)
+        )
+        let results = try await container.shareParticipants(for: [lookup])
+        guard let participantResult = results[lookup] else {
+            throw CloudSyncError.shareAccessResultMissing
+        }
+        let participant = try participantResult.get()
+        participant.permission = .readWrite
+        share.addParticipant(participant)
+        let result = try await container.privateCloudDatabase.modifyRecords(
+            saving: [share],
+            deleting: [],
+            savePolicy: .ifServerRecordUnchanged,
+            atomically: true
+        )
+        guard let savedShare = try result.saveResults[share.recordID]?.get() as? CKShare,
+              let savedParticipant = savedShare.participants.first(where: {
+                  $0.participantID == participant.participantID
+              }),
+              let recordName = savedParticipant.userIdentity.userRecordID?.recordName else {
+            throw CloudSyncError.shareSaveFailed
+        }
+        return CloudPreparedShareParticipant(
+            participantID: savedParticipant.participantID,
+            participantRecordName: recordName
+        )
+    }
+
+    func acceptInvitedShare(
+        url: URL,
+        accountID: UUID
+    ) async throws {
+        let metadata = try await container.shareMetadata(for: url)
+        let share = try await container.accept(metadata)
+        guard let farmID = CloudZoneName.farmID(from: share.recordID.zoneID.zoneName) else {
+            throw CloudSyncError.farmBindingMissing
+        }
+        try await attachAcceptedShare(
+            farmID: farmID,
+            ownerAccountID: accountID,
+            zoneID: share.recordID.zoneID,
+            shareRecordName: share.recordID.recordName
+        )
+    }
+
+    func bootstrapAcceptedSharedFarm(farmID: UUID) async throws {
+        guard CloudFeatureConfiguration.isEnabled else {
+            throw CloudSyncError.featureDisabled
+        }
+        guard let binding = try await persistence.bindingSnapshot(farmID: farmID),
+              binding.databaseScope == .sharedDatabase,
+              binding.state == .active else {
+            throw CloudSyncError.farmBindingMissing
+        }
+
+        let zoneID = CKRecordZone.ID(
+            zoneName: binding.zoneName,
+            ownerName: binding.zoneOwnerName
+        )
+        let fetcher = CloudZoneChangeFetcher(
+            database: container.sharedCloudDatabase
+        )
+        var records: [CKRecord] = []
+        var containsExpectedRoot = false
+        for try await page in await fetcher.fetchAll(zoneID: zoneID) {
+            records.append(contentsOf: page.records)
+            if !containsExpectedRoot {
+                containsExpectedRoot = page.records.contains { record in
+                    guard record.recordType == CloudRecordType.farmRoot.rawValue,
+                          let root = try? mapper.farmRootValue(from: record) else {
+                        return false
+                    }
+                    return root.farmID == farmID
+                }
+            }
+            guard records.count <= 200_000 else {
+                throw CloudSyncError.recoveryCatchUpFailed(
+                    "共享区记录数量异常，已停止初次接纳。"
+                )
+            }
+        }
+        guard containsExpectedRoot else {
+            throw CloudSyncError.recoveryCatchUpFailed(
+                "共享区缺少牧场根记录。"
+            )
+        }
+
+        try await refreshMissingDeviceTrust(
+            for: records,
+            scope: .sharedDatabase,
+            recoveryFarmID: nil
+        )
+        let farmsRequiringRecovery = try await persistence.ingest(
+            records,
+            scope: .sharedDatabase
+        )
+        guard !farmsRequiringRecovery.contains(farmID) else {
+            throw CloudSyncError.recoveryCatchUpFailed(
+                "共享区操作链不完整，已停止展示不完整牧场。"
+            )
+        }
+    }
+
+    func createOneTimeFarmInvitation(farmID: UUID) async throws -> CloudOneTimeFarmInvitation {
+        guard !CloudOneTimeInvitationRuntimePolicy.requiresSystemSharingFallback else {
+            throw CloudSyncError.inviteURLUnavailable
+        }
+        let share = try await ownerShare(farmID: farmID)
+        return try await CloudOneTimeInvitationBuilder.create(
+            share: share,
+            database: container.privateCloudDatabase
+        )
+    }
+
+    func acceptedShareParticipants(farmID: UUID) async throws -> [CloudAcceptedShareParticipant] {
+        let share = try await ownerShare(farmID: farmID)
+        return share.participants.compactMap { participant in
+            guard participant.role != .owner,
+                  participant.acceptanceStatus == .accepted,
+                  let recordName = participant.userIdentity.userRecordID?.recordName else {
+                return nil
+            }
+            return CloudAcceptedShareParticipant(
+                participantID: participant.participantID,
+                recordName: recordName
+            )
+        }
+    }
+
+    func removeInvitationParticipant(farmID: UUID, participantID: String) async throws {
+        let share = try await ownerShare(farmID: farmID)
+        guard let participant = share.participants.first(where: {
+            $0.participantID == participantID && $0.role != .owner
+        }) else {
+            return
+        }
+        share.removeParticipant(participant)
+        let result = try await container.privateCloudDatabase.modifyRecords(
+            saving: [share],
+            deleting: [],
+            savePolicy: .ifServerRecordUnchanged,
+            atomically: true
+        )
+        _ = try result.saveResults[share.recordID]?.get()
     }
 
     func removeParticipant(farmID: UUID, participantRecordName: String) async throws {
@@ -715,6 +1030,86 @@ actor CloudSyncActor {
         } else {
             engineOperationGateWaiters.removeFirst().resume()
         }
+    }
+
+    /// Rebuilds only a locally corrupted v2-bootstrap projection while
+    /// preserving the already-current CKSyncEngine serialization. The old
+    /// engine is retired before the local projection save, then a fresh engine is
+    /// created from the same token and performs a bounded delta fetch.
+    func repairLegacyBootstrapProjectionIfNeeded(
+        _ repair: CloudRebuildLocalProjectionRepair
+    ) async throws -> Bool {
+        let scope = repair.bundle.scope
+        guard scope == .sharedDatabase,
+              activeRecoveryResets[scope.rawValue] == nil else {
+            return false
+        }
+        await acquireEngineOperationGate()
+        defer { releaseEngineOperationGate() }
+        try await finishActiveManualBatchIfNeeded()
+        guard let serialization = CloudEngineStateDiskStore.load(scope: scope) else {
+            return false
+        }
+
+        let retiredEngine = sharedEngine
+        let retiredEngineID = ObjectIdentifier(retiredEngine)
+        engineScopes.removeValue(forKey: retiredEngineID)
+        expectedResetSignInEngineIDs.remove(retiredEngineID)
+        recoveryFetchContexts[retiredEngineID] = nil
+        recoveryFetchFailures[retiredEngineID] = nil
+        await retiredEngine.cancelOperations()
+
+        let repaired: Bool
+        do {
+            repaired = try await persistence.repairLegacyBootstrapProjectionIfUnchanged(
+                using: repair.bundle,
+                stagingWorkspace: repair.workspace
+            )
+        } catch {
+            _ = installEnginePreservingState(
+                scope: scope,
+                serialization: serialization
+            )
+            throw error
+        }
+
+        let replacement = installEnginePreservingState(
+            scope: scope,
+            serialization: serialization
+        )
+        if repaired {
+            // The serialized token was already caught up before the local
+            // projection repair. Fetch only changes that arrived during the
+            // short repair window; do not restart from a nil engine state.
+            try await replacement.fetchChanges()
+        }
+        return repaired
+    }
+
+    private func installEnginePreservingState(
+        scope: CloudDatabaseScope,
+        serialization: CKSyncEngine.State.Serialization
+    ) -> CKSyncEngine {
+        let database = scope == .privateDatabase
+            ? container.privateCloudDatabase
+            : container.sharedCloudDatabase
+        var configuration = CKSyncEngine.Configuration(
+            database: database,
+            stateSerialization: serialization,
+            delegate: delegateProxy
+        )
+        configuration.automaticallySync = true
+        configuration.subscriptionID = scope == .privateDatabase
+            ? "esheep-next-private"
+            : "esheep-next-shared"
+        let engine = CKSyncEngine(configuration)
+        if scope == .privateDatabase {
+            privateEngine = engine
+        } else {
+            sharedEngine = engine
+        }
+        engineScopes[ObjectIdentifier(engine)] = scope
+        return engine
     }
 
     func resetEngineForLockedFarmAndActivate(scope: CloudDatabaseScope, farmID: UUID) async throws {
@@ -1255,6 +1650,31 @@ struct CloudCollaborationStartupPreparation: Sendable {
     let errorMessages: [String]
 }
 
+enum SupabaseRealtimeHealth: Sendable, Equatable {
+    case notActive
+    case connecting
+    case realtimeHealthy
+    case cursorFallback(errorCode: String)
+
+    var displayTitle: String {
+        switch self {
+        case .notActive:
+            "未启用"
+        case .connecting:
+            "正在连接"
+        case .realtimeHealthy:
+            "Realtime 正常"
+        case .cursorFallback:
+            "Cursor 补拉"
+        }
+    }
+
+    var errorCode: String? {
+        guard case .cursorFallback(let value) = self else { return nil }
+        return value
+    }
+}
+
 @MainActor
 @Observable
 final class CloudCollaborationStore {
@@ -1267,6 +1687,7 @@ final class CloudCollaborationStore {
     var lastErrorMessage: String?
     var isIdentityWriteLocked = false
     var workerHealth: WorkerHealthResponse?
+    private(set) var supabaseRealtimeHealthByFarmID: [UUID: SupabaseRealtimeHealth] = [:]
 
     let persistence: FarmPersistenceActor
     let sync: CloudSyncActor
@@ -1275,6 +1696,9 @@ final class CloudCollaborationStore {
     let membershipSnapshots: MembershipSnapshotActor
     let conflicts: ConflictResolutionActor
     let rebuilds: CloudRebuildActor
+    let remoteSync: FarmRemoteSyncCoordinator?
+    let supabaseTransport: SupabaseFarmTransport?
+    let supabasePhotoTransfers: SupabasePhotoTransferCoordinator?
     private let modelContainer: ModelContainer
     private var isMigrationMaintenanceRunning = false
     private var syncWakeObserver: NSObjectProtocol?
@@ -1285,6 +1709,9 @@ final class CloudCollaborationStore {
     private var recoveryDebounceTask: Task<Void, Never>?
     private var isSyncWakeDrainRunning = false
     private var isRecoveryDrainRunning = false
+    private var sharedAdmissionFarmIDs = Set<UUID>()
+    private var supabaseCursorPollTask: Task<Void, Never>?
+    private var supabaseRealtimeTasks: [UUID: Task<Void, Never>] = [:]
 
     nonisolated static func prepareStartup(
         container: ModelContainer
@@ -1327,10 +1754,42 @@ final class CloudCollaborationStore {
         self.membershipSnapshots = MembershipSnapshotActor(modelContainer: container, persistence: persistence, containerIdentifier: identifier)
         self.conflicts = ConflictResolutionActor(container: container)
         self.rebuilds = CloudRebuildActor(modelContainer: container, persistence: persistence, containerIdentifier: identifier)
+        if let client = AccountIdentityClients.supabaseClient {
+            let transport = SupabaseFarmTransport(client: client)
+            self.supabaseTransport = transport
+            self.remoteSync = FarmRemoteSyncCoordinator(
+                container: container,
+                transport: transport
+            )
+            self.supabasePhotoTransfers = SupabasePhotoTransferCoordinator(
+                container: container,
+                client: client,
+                localPhotos: self.photoTransfers
+            )
+        } else {
+            self.supabaseTransport = nil
+            self.remoteSync = nil
+            self.supabasePhotoTransfers = nil
+        }
         if !startupErrorMessages.isEmpty {
             self.lastErrorMessage = startupErrorMessages.joined(separator: "\n")
         }
         installRuntimeObservers()
+        startSupabaseCursorPollingIfNeeded()
+        if AccountIdentityClients.supabaseClient != nil {
+            Task { @MainActor [weak self] in
+                await self?.resumeSupabaseAuthorityTransitions()
+            }
+        }
+    }
+
+    isolated deinit {
+        supabaseCursorPollTask?.cancel()
+        supabaseRealtimeTasks.values.forEach { $0.cancel() }
+    }
+
+    func supabaseRealtimeHealth(farmID: UUID) -> SupabaseRealtimeHealth {
+        supabaseRealtimeHealthByFarmID[farmID] ?? .notActive
     }
 
     private func installRuntimeObservers() {
@@ -1385,7 +1844,26 @@ final class CloudCollaborationStore {
             pendingSyncWakeFarmIDs.removeAll()
             for farmID in farmIDs {
                 do {
-                    while try await sync.synchronizeBatch(maxOutboxItems: 25, farmID: farmID) > 0 {}
+                    let routeContext = ModelContext(modelContainer)
+                    let route = try FarmStorageRouter.route(
+                        farmID: farmID,
+                        context: routeContext
+                    )
+                    if route.deliveryProvider == .supabase {
+                        guard let remoteSync else {
+                            throw AccountIdentityClientError.notConfigured
+                        }
+                        var result: FarmRemoteSyncResult
+                        repeat {
+                            result = try await remoteSync.synchronize(
+                                farmID: farmID,
+                                maxOutboxItems: 25
+                            )
+                        } while result.uploadedOperationCount == 25
+                        await supabasePhotoTransfers?.processPendingTransfers()
+                    } else {
+                        while try await sync.synchronizeBatch(maxOutboxItems: 25, farmID: farmID) > 0 {}
+                    }
                     lastSuccessfulSyncAt = .now
                 } catch is CancellationError {
                     pendingSyncWakeFarmIDs.insert(farmID)
@@ -1395,6 +1873,168 @@ final class CloudCollaborationStore {
                 }
             }
         }
+    }
+
+    private func startSupabaseCursorPollingIfNeeded() {
+        guard remoteSync != nil, supabaseCursorPollTask == nil else { return }
+        refreshSupabaseRealtimeSubscriptions()
+        supabaseCursorPollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch {
+                    return
+                }
+                self?.refreshSupabaseRealtimeSubscriptions()
+                await self?.synchronizeSupabaseFarms()
+            }
+        }
+    }
+
+    private func refreshSupabaseRealtimeSubscriptions() {
+        guard let supabaseTransport else { return }
+        let context = ModelContext(modelContainer)
+        let activeFarmIDs = Set(
+            ((try? context.fetch(FetchDescriptor<FarmRemoteBinding>())) ?? [])
+                .filter { $0.provider == .supabase && $0.state == .active }
+                .map(\.farmID)
+        )
+        let staleFarmIDs = supabaseRealtimeTasks.keys.filter {
+            !activeFarmIDs.contains($0)
+        }
+        for farmID in staleFarmIDs {
+            supabaseRealtimeTasks[farmID]?.cancel()
+            supabaseRealtimeTasks.removeValue(forKey: farmID)
+            supabaseRealtimeHealthByFarmID.removeValue(forKey: farmID)
+        }
+        for farmID in activeFarmIDs where supabaseRealtimeTasks[farmID] == nil {
+            supabaseRealtimeHealthByFarmID[farmID] = .connecting
+            supabaseRealtimeTasks[farmID] = Task { @MainActor [weak self] in
+                do {
+                    for try await notification in await supabaseTransport.revisionNotifications(
+                        farmID: farmID
+                    ) {
+                        guard !Task.isCancelled else { return }
+                        switch notification {
+                        case .subscribed:
+                            self?.supabaseRealtimeHealthByFarmID[farmID] = .realtimeHealthy
+                        case .revision:
+                            self?.supabaseRealtimeHealthByFarmID[farmID] = .realtimeHealthy
+                            self?.scheduleSyncWake(farmID: farmID)
+                        }
+                    }
+                    guard !Task.isCancelled else { return }
+                    self?.supabaseRealtimeHealthByFarmID[farmID] = .cursorFallback(
+                        errorCode: "streamEnded"
+                    )
+                } catch is CancellationError {
+                    return
+                } catch {
+                    // Realtime is advisory. The 30-second durable cursor poll
+                    // remains responsible for recovery and will resubscribe.
+                    self?.supabaseRealtimeHealthByFarmID[farmID] = .cursorFallback(
+                        errorCode: Self.supabaseRealtimeErrorCode(error)
+                    )
+                }
+                self?.supabaseRealtimeTasks.removeValue(forKey: farmID)
+            }
+        }
+    }
+
+    private static func supabaseRealtimeErrorCode(_ error: Error) -> String {
+        let value = error as NSError
+        return "\(String(describing: type(of: error))):\(value.code)"
+    }
+
+    private func synchronizeSupabaseFarms() async {
+        guard let remoteSync, !isMigrationMaintenanceRunning else { return }
+        let context = ModelContext(modelContainer)
+        let farmIDs = (try? context.fetch(FetchDescriptor<FarmRemoteBinding>()))?
+            .filter { $0.provider == .supabase && $0.state == .active }
+            .map(\.farmID) ?? []
+        for farmID in farmIDs {
+            do {
+                _ = try await remoteSync.synchronize(
+                    farmID: farmID,
+                    maxOutboxItems: 25
+                )
+                lastSuccessfulSyncAt = .now
+            } catch is CancellationError {
+                return
+            } catch {
+                lastErrorMessage = error.localizedDescription
+            }
+        }
+        await supabasePhotoTransfers?.processPendingTransfers()
+        await optimizeVerifiedSupabaseCachesIfPossible()
+    }
+
+    private func optimizeVerifiedSupabaseCachesIfPossible() async {
+        let context = ModelContext(modelContainer)
+        let profiles = (try? context.fetch(
+            FetchDescriptor<FarmStorageProfile>()
+        )) ?? []
+        let activeFarmIDs = Set(profiles.compactMap { profile -> UUID? in
+            guard profile.mode == .supabase,
+                  profile.transitionState == .idle else {
+                return nil
+            }
+            return profile.farmID
+        })
+        let migrations = (try? context.fetch(
+            FetchDescriptor<FarmBaselineMigrationRecord>()
+        )) ?? []
+        for migration in migrations where
+            activeFarmIDs.contains(migration.farmID) &&
+            migration.checkpointID != nil {
+            _ = try? await LocalStorageOptimizationService()
+                .optimizeAfterVerifiedSupabaseActivation(
+                    farmID: migration.farmID,
+                    migrationID: migration.migrationID,
+                    context: context
+                )
+        }
+    }
+
+    private func resumeSupabaseAuthorityTransitions() async {
+        guard let client = AccountIdentityClients.supabaseClient else { return }
+        let context = ModelContext(modelContainer)
+        if let accountID = try? context.fetch(FetchDescriptor<AccountProfile>())
+            .first?.effectiveAccountID {
+            do {
+                _ = try await SupabaseOwnedFarmDiscoveryService(client: client)
+                    .discoverAndRestoreOwnedFarms(
+                        accountID: accountID,
+                        context: context
+                    )
+            } catch {
+                lastErrorMessage = "Supabase 牧场发现失败：\(error.localizedDescription)"
+            }
+        }
+        let profiles = (try? context.fetch(FetchDescriptor<FarmStorageProfile>())) ?? []
+        let pendingFarmIDs = Set(profiles.compactMap { profile -> UUID? in
+            let targetsSupabase =
+                profile.targetMode == .supabase ||
+                (
+                    profile.mode == .supabase &&
+                    [.drainingOperations, .archivingSource].contains(profile.transitionState)
+                )
+            guard targetsSupabase,
+                  profile.transitionState != .idle else {
+                return nil
+            }
+            return profile.farmID
+        })
+        let farms = (try? context.fetch(FetchDescriptor<FarmRecord>())) ?? []
+        let service = SupabaseFarmActivationService(client: client)
+        for farm in farms where pendingFarmIDs.contains(farm.id) {
+            do {
+                _ = try await service.activate(farm: farm, context: context)
+            } catch {
+                lastErrorMessage = "Supabase 启云恢复失败：\(error.localizedDescription)"
+            }
+        }
+        refreshSupabaseRealtimeSubscriptions()
     }
 
     private func scheduleAuthoritativeRecovery(farmID: UUID) {
@@ -1460,9 +2100,23 @@ final class CloudCollaborationStore {
                 // mutable projections before the ordinary send pass.
                 try? await sync.discardRefreshedBootstrapProjectionChanges(farmID: farmID)
             }
-            await photoTransfers.processPendingTransfers()
-            try await sync.synchronizeNow()
-            await photoTransfers.processPendingTransfers()
+            let sharedFarmIDs = (try? maintenanceContext.fetch(
+                FetchDescriptor<CloudFarmBinding>()
+            ))?
+                .filter {
+                    $0.state == .active &&
+                        $0.databaseScope == .sharedDatabase
+                }
+                .map(\.farmID) ?? []
+            for farmID in sharedFarmIDs {
+                _ = try await repairLegacySharedFarmProjectionIfNeeded(farmID: farmID)
+            }
+            if CloudFeatureConfiguration.isEnabled {
+                await photoTransfers.processPendingTransfers()
+                try await sync.synchronizeNow()
+                await photoTransfers.processPendingTransfers()
+            }
+            await synchronizeSupabaseFarms()
             lastSuccessfulSyncAt = .now
         } catch {
             lastErrorMessage = error.localizedDescription
@@ -2027,9 +2681,156 @@ final class CloudCollaborationStore {
                 zoneID: zoneID,
                 shareRecordName: shareRecordName
             )
+            if let participantID = userInfo["shareParticipantID"] as? String,
+               !participantID.isEmpty {
+                do {
+                    let redemption = try await InviteServiceActor(persistence: persistence)
+                        .redeem(shareParticipantID: participantID)
+                    guard redemption.farmID == farmID else {
+                        throw IdentityWorkerError.invalidResponse
+                    }
+                } catch let IdentityWorkerError.server(code, _) where code == "invalid_invite" {
+                    // Legacy system shares still use the manually-entered code.
+                    // Accepting that CKShare must remain usable during rollout.
+                }
+            }
+            _ = await completeAcceptedSharedFarmAdmission(
+                farmID: farmID,
+                accountID: accountID
+            )
         } catch {
             lastErrorMessage = error.localizedDescription
         }
+    }
+
+    func completeAcceptedSharedFarmAdmission(
+        farmID: UUID,
+        accountID: UUID
+    ) async -> Bool {
+        if (try? await persistence.sharedFarmBootstrapIsComplete(
+            farmID: farmID,
+            accountID: accountID
+        )) == true {
+            guard !sharedAdmissionFarmIDs.contains(farmID) else {
+                return true
+            }
+            sharedAdmissionFarmIDs.insert(farmID)
+            defer { sharedAdmissionFarmIDs.remove(farmID) }
+            do {
+                if try await repairLegacySharedFarmProjectionIfNeeded(farmID: farmID) {
+                    lastSuccessfulSyncAt = .now
+                    lastErrorMessage = nil
+                }
+            } catch {
+                lastErrorMessage = error.localizedDescription
+            }
+            return true
+        }
+        guard !sharedAdmissionFarmIDs.contains(farmID) else {
+            return false
+        }
+        sharedAdmissionFarmIDs.insert(farmID)
+        defer { sharedAdmissionFarmIDs.remove(farmID) }
+
+        do {
+            guard let binding = try await persistence.bindingSnapshot(farmID: farmID),
+                  binding.databaseScope == .sharedDatabase,
+                  binding.state != .accessRevoked else {
+                return false
+            }
+
+            _ = try await MembershipActor(persistence: persistence)
+                .refresh(farmID: farmID)
+            let identity = try await DeviceIdentityActor.shared.identity()
+            let hasUsableCapability = try await persistence.hasUsableCapability(
+                accountID: accountID,
+                farmID: farmID,
+                deviceID: identity.deviceID
+            )
+            if !hasUsableCapability {
+                _ = try await InviteServiceActor(persistence: persistence)
+                    .refreshCapability(accountID: accountID, farmID: farmID)
+            }
+
+            _ = try await membershipSnapshots.refreshSharedSnapshot(
+                farmID: farmID
+            )
+            guard let refreshedBinding = try await persistence.bindingSnapshot(farmID: farmID) else {
+                return false
+            }
+            if refreshedBinding.state == .active {
+                try await sync.bootstrapAcceptedSharedFarm(farmID: farmID)
+            } else {
+                let hasVerifiedCompletedCacheSwitch = (try? await rebuilds.verifiedCompletedCacheSwitch(
+                    farmID: farmID,
+                    scope: .sharedDatabase
+                )) != nil
+                if Self.shouldRetryCompletedRebuildEngineReset(
+                    refreshedBinding,
+                    hasVerifiedCompletedCacheSwitch: hasVerifiedCompletedCacheSwitch
+                ) {
+                    try await sync.resetEngineForLockedFarmAndActivate(
+                        scope: .sharedDatabase,
+                        farmID: farmID
+                    )
+                } else {
+                    let canAutomaticallyResume =
+                        CloudRebuildActor.canAutomaticallyResumeSharedAdmission(
+                            from: refreshedBinding
+                        )
+                    let hasReusableDownloadedReplay = canAutomaticallyResume
+                        ? false
+                        : ((try? await rebuilds.hasReusableDownloadedReplay(
+                            farmID: farmID,
+                            scope: .sharedDatabase
+                        )) == true)
+                    guard canAutomaticallyResume || hasReusableDownloadedReplay else {
+                        return false
+                    }
+                    _ = try await rebuilds.rebuildOrRetryPreparedCommit(
+                        farmID: farmID,
+                        scope: .sharedDatabase,
+                        reason: .manualVerification
+                    )
+                    try await sync.resetEngineForLockedFarmAndActivate(
+                        scope: .sharedDatabase,
+                        farmID: farmID
+                    )
+                }
+            }
+            let completed = try await persistence.sharedFarmBootstrapIsComplete(
+                farmID: farmID,
+                accountID: accountID
+            )
+            if completed {
+                lastSuccessfulSyncAt = .now
+                lastErrorMessage = nil
+            }
+            return completed
+        } catch let IdentityWorkerError.server(code, _)
+            where code == "inactive_membership" {
+            return false
+        } catch let error as CKError
+            where error.code == .unknownItem || error.code == .zoneNotFound {
+            return false
+        } catch is CancellationError {
+            return false
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func repairLegacySharedFarmProjectionIfNeeded(
+        farmID: UUID
+    ) async throws -> Bool {
+        guard let repair = try await rebuilds.preparedLegacyBootstrapProjectionRepair(
+            farmID: farmID,
+            scope: .sharedDatabase
+        ) else {
+            return false
+        }
+        return try await sync.repairLegacyBootstrapProjectionIfNeeded(repair)
     }
 
     func performIdentityMaintenance(accountID: UUID, farmIDs: [UUID]) async {
@@ -2065,6 +2866,12 @@ final class CloudCollaborationStore {
                     _ = try await invite.refreshCapability(accountID: accountID, farmID: farmID)
                 }
                 if ownedFarmIDs.contains(farmID) {
+                    _ = try await reconcileAcceptedInvites(
+                        farmID: farmID,
+                        accountID: accountID,
+                        membership: membership,
+                        invite: invite
+                    )
                     // Publish after registration/capability issuance. Other
                     // devices then receive an owner-signed additive trust
                     // snapshot before or alongside the first business delta.
@@ -2077,6 +2884,73 @@ final class CloudCollaborationStore {
         } catch {
             lastErrorMessage = error.localizedDescription
         }
+    }
+
+    func reconcileInvitationAcceptance(
+        farmID: UUID,
+        accountID: UUID
+    ) async -> Bool {
+        guard IdentityWorkerConfiguration.baseURL != nil else { return false }
+        do {
+            return try await reconcileAcceptedInvites(
+                farmID: farmID,
+                accountID: accountID,
+                membership: MembershipActor(persistence: persistence),
+                invite: InviteServiceActor(persistence: persistence)
+            )
+        } catch {
+            lastErrorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func reconcileAcceptedInvites(
+        farmID: UUID,
+        accountID: UUID,
+        membership: MembershipActor,
+        invite: InviteServiceActor
+    ) async throws -> Bool {
+        let pendingInvites: [WorkerPendingInviteResponse]
+        do {
+            pendingInvites = try await invite.pending(farmID: farmID)
+        } catch let IdentityWorkerError.server(code, _) where code == "route_not_found" {
+            // The app and CloudBase gateway can roll out independently.
+            return false
+        }
+        guard !pendingInvites.isEmpty else { return false }
+        let accepted = try await sync.acceptedShareParticipants(farmID: farmID)
+        let acceptedByParticipantID = Dictionary(
+            uniqueKeysWithValues: accepted.map { ($0.participantID, $0.recordName) }
+        )
+        let acceptedRecordNames = Set(accepted.map(\.recordName))
+        var confirmedAny = false
+        for pending in pendingInvites {
+            let recordName: String?
+            if let participantID = pending.shareParticipantID {
+                recordName = acceptedByParticipantID[participantID]
+            } else if let expectedRecordName = pending.cloudKitUserRecordName,
+                      acceptedRecordNames.contains(expectedRecordName) {
+                recordName = expectedRecordName
+            } else {
+                recordName = nil
+            }
+            guard let recordName else {
+                continue
+            }
+            try await invite.confirm(
+                inviteID: pending.inviteID,
+                participantRecordName: recordName
+            )
+            confirmedAny = true
+        }
+        if confirmedAny {
+            _ = try await membership.refresh(farmID: farmID)
+            _ = try await membershipSnapshots.publish(
+                farmID: farmID,
+                accountID: accountID
+            )
+        }
+        return confirmedAny
     }
 }
 
@@ -2136,14 +3010,19 @@ final class CloudShareAppDelegate: NSObject, UIApplicationDelegate, UNUserNotifi
                 let share = try await container.accept(cloudKitShareMetadata)
                 let zoneID = share.recordID.zoneID
                 await MainActor.run {
+                    var userInfo: [String: String] = [
+                        "zoneName": zoneID.zoneName,
+                        "zoneOwnerName": zoneID.ownerName,
+                        "shareRecordName": share.recordID.recordName,
+                    ]
+                    if let participant = share.currentUserParticipant {
+                        userInfo["shareParticipantID"] = participant.participantID
+                        userInfo["shareParticipantRecordName"] = participant.userIdentity.userRecordID?.recordName
+                    }
                     NotificationCenter.default.post(
                         name: .didAcceptFarmCloudShare,
                         object: nil,
-                        userInfo: [
-                            "zoneName": zoneID.zoneName,
-                            "zoneOwnerName": zoneID.ownerName,
-                            "shareRecordName": share.recordID.recordName,
-                        ]
+                        userInfo: userInfo
                     )
                 }
             } catch {

@@ -46,31 +46,211 @@ enum AppSchemaV1: VersionedSchema {
         }
     }
 
+    @Model
+    final class OutboxItem {
+        var id: UUID
+        var farmID: UUID
+        var accountID: UUID
+        var operationID: UUID
+        var createdAt: Date
+        var lastAttemptAt: Date?
+        var attemptCount: Int
+        var statusRawValue: String
+        var errorMessage: String?
+        var entityType: String = "FarmRoot"
+        var entityID: UUID?
+        var baseRevision: Int = 0
+        var payloadDigest: String = ""
+        var operationSignature: Data?
+        var capabilityCertificate: String = ""
+        var nextRetryAt: Date?
+        var cloudRecordName: String?
+
+        init(
+            id: UUID = UUID(),
+            farmID: UUID,
+            accountID: UUID,
+            operationID: UUID
+        ) {
+            self.id = id
+            self.farmID = farmID
+            self.accountID = accountID
+            self.operationID = operationID
+            self.createdAt = .now
+            self.attemptCount = 0
+            self.statusRawValue = OutboxStatus.pending.rawValue
+        }
+    }
+
     static var models: [any PersistentModel.Type] {
-        AppSchema.businessModelTypesWithoutDomainOperation + [DomainOperation.self]
+        AppSchema.preV3BusinessModelTypesWithoutDomainOperation + [DomainOperation.self, OutboxItem.self]
     }
 }
 
 enum AppSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
+
+    /// Freeze the V2 Outbox shape before V3 adds provider routing metadata.
+    @Model
+    final class OutboxItem {
+        var id: UUID
+        var farmID: UUID
+        var accountID: UUID
+        var operationID: UUID
+        var createdAt: Date
+        var lastAttemptAt: Date?
+        var attemptCount: Int
+        var statusRawValue: String
+        var errorMessage: String?
+        var entityType: String = "FarmRoot"
+        var entityID: UUID?
+        var baseRevision: Int = 0
+        var payloadDigest: String = ""
+        var operationSignature: Data?
+        var capabilityCertificate: String = ""
+        var nextRetryAt: Date?
+        var cloudRecordName: String?
+
+        init(
+            id: UUID = UUID(),
+            farmID: UUID,
+            accountID: UUID,
+            operationID: UUID
+        ) {
+            self.id = id
+            self.farmID = farmID
+            self.accountID = accountID
+            self.operationID = operationID
+            self.createdAt = .now
+            self.attemptCount = 0
+            self.statusRawValue = OutboxStatus.pending.rawValue
+        }
+    }
+
+    static var models: [any PersistentModel.Type] {
+        AppSchema.preV3BusinessModelTypes + [OutboxItem.self] + AppSchema.insightModelTypes
+    }
+}
+
+enum AppSchemaV3: VersionedSchema {
+    static let versionIdentifier = Schema.Version(3, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.preV4ModelTypes }
+}
+
+enum AppSchemaV4: VersionedSchema {
+    static let versionIdentifier = Schema.Version(4, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.preV5ModelTypes }
+}
+
+enum AppSchemaV5: VersionedSchema {
+    static let versionIdentifier = Schema.Version(5, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.preV6ModelTypes }
+}
+
+enum AppSchemaV6: VersionedSchema {
+    static let versionIdentifier = Schema.Version(6, 0, 0)
     static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
 }
 
 enum AppSchemaMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [AppSchemaV1.self, AppSchemaV2.self]
+        [
+            AppSchemaV1.self,
+            AppSchemaV2.self,
+            AppSchemaV3.self,
+            AppSchemaV4.self,
+            AppSchemaV5.self,
+            AppSchemaV6.self,
+        ]
     }
 
     // V1 freezes the schema that shipped before formal versioning was
     // introduced. Future schema versions must add an explicit lightweight or
     // custom stage here; opening a store must never trigger business commands.
     static var stages: [MigrationStage] {
-        [.lightweight(fromVersion: AppSchemaV1.self, toVersion: AppSchemaV2.self)]
+        [
+            .lightweight(fromVersion: AppSchemaV1.self, toVersion: AppSchemaV2.self),
+            .custom(
+                fromVersion: AppSchemaV2.self,
+                toVersion: AppSchemaV3.self,
+                willMigrate: nil,
+                didMigrate: { context in
+                    let farms = try context.fetch(FetchDescriptor<FarmRecord>())
+                    let cloudKitBindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
+                    let existingProfiles = try context.fetch(FetchDescriptor<FarmStorageProfile>())
+                    let profiledFarmIDs = Set(existingProfiles.map(\.farmID))
+                    let iCloudFarmIDs = Set(cloudKitBindings.map(\.farmID))
+
+                    for farm in farms where !profiledFarmIDs.contains(farm.id) {
+                        context.insert(FarmStorageProfile(
+                            farmID: farm.id,
+                            mode: iCloudFarmIDs.contains(farm.id) ? .iCloud : .localOnly
+                        ))
+                    }
+
+                    for item in try context.fetch(FetchDescriptor<OutboxItem>()) {
+                        if iCloudFarmIDs.contains(item.farmID) {
+                            item.deliveryProviderRawValue = FarmRemoteProvider.iCloud.rawValue
+                        } else {
+                            item.deliveryProviderRawValue = nil
+                            item.statusRawValue = OutboxStatus.notRequiredLocalOnly.rawValue
+                        }
+                        item.authorityGeneration = 0
+                        item.remoteReceiptData = nil
+                    }
+                    try context.save()
+                }
+            ),
+            .custom(
+                fromVersion: AppSchemaV3.self,
+                toVersion: AppSchemaV4.self,
+                willMigrate: nil,
+                didMigrate: { context in
+                    let farms = try context.fetch(FetchDescriptor<FarmRecord>())
+
+                    let operations = try context.fetch(FetchDescriptor<DomainOperation>())
+                    let operationsByFarm = Dictionary(grouping: operations, by: \.farmID)
+                    let existingRecords = try context.fetch(
+                        FetchDescriptor<FarmOperationSequenceRecord>()
+                    )
+                    let recordedOperationIDs = Set(existingRecords.map(\.operationID))
+                    let existingCounters = try context.fetch(
+                        FetchDescriptor<FarmOperationSequenceCounter>()
+                    )
+                    for farm in farms {
+                        let ordered = (operationsByFarm[farm.id] ?? []).sorted {
+                            if $0.createdAt != $1.createdAt {
+                                return $0.createdAt < $1.createdAt
+                            }
+                            return $0.id.uuidString < $1.id.uuidString
+                        }
+                        for (offset, operation) in ordered.enumerated() {
+                            if !recordedOperationIDs.contains(operation.id) {
+                                context.insert(FarmOperationSequenceRecord(
+                                    farmID: farm.id,
+                                    operationID: operation.id,
+                                    clientSequence: Int64(offset + 1)
+                                ))
+                            }
+                        }
+                        if !existingCounters.contains(where: { $0.farmID == farm.id }) {
+                            context.insert(FarmOperationSequenceCounter(
+                                farmID: farm.id,
+                                nextSequence: Int64(ordered.count + 1)
+                            ))
+                        }
+                    }
+                    try context.save()
+                }
+            ),
+            .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self),
+            .lightweight(fromVersion: AppSchemaV5.self, toVersion: AppSchemaV6.self),
+        ]
     }
 }
 
 enum AppSchema {
-    static let currentVersion = "2.0.0"
+    static let currentVersion = "6.0.0"
 
     static func defaultStoreURL(name: String = "eSheepNext") -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -136,17 +316,52 @@ enum AppSchema {
             CloudRebuildSessionRecord.self,
             CloudRebuildIssueRecord.self,
             CloudSyncDiagnosticSnapshotRecord.self,
+            FarmStorageProfile.self,
+            FarmRemoteBinding.self,
+            FarmOperationSequenceCounter.self,
+            FarmOperationSequenceRecord.self,
+            FarmBaselineMigrationRecord.self,
+            FarmRemoteRestoreRecord.self,
         ]
     }
 
-    fileprivate static var businessModelTypesWithoutDomainOperation: [any PersistentModel.Type] {
+    fileprivate static var preV3BusinessModelTypes: [any PersistentModel.Type] {
         businessModelTypes.filter {
+            ObjectIdentifier($0) != ObjectIdentifier(OutboxItem.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FarmStorageProfile.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FarmRemoteBinding.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FarmOperationSequenceCounter.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FarmOperationSequenceRecord.self)
+        }
+    }
+
+    fileprivate static var preV3BusinessModelTypesWithoutDomainOperation: [any PersistentModel.Type] {
+        preV3BusinessModelTypes.filter {
             ObjectIdentifier($0) != ObjectIdentifier(DomainOperation.self)
         }
     }
 
-    static var modelTypes: [any PersistentModel.Type] {
-        businessModelTypes + [
+    fileprivate static var preV4BusinessModelTypes: [any PersistentModel.Type] {
+        businessModelTypes.filter {
+            ObjectIdentifier($0) != ObjectIdentifier(FarmOperationSequenceCounter.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FarmOperationSequenceRecord.self)
+        }
+    }
+
+    fileprivate static var preV5BusinessModelTypes: [any PersistentModel.Type] {
+        businessModelTypes.filter {
+            ObjectIdentifier($0) != ObjectIdentifier(FarmBaselineMigrationRecord.self)
+        }
+    }
+
+    fileprivate static var preV6BusinessModelTypes: [any PersistentModel.Type] {
+        businessModelTypes.filter {
+            ObjectIdentifier($0) != ObjectIdentifier(FarmRemoteRestoreRecord.self)
+        }
+    }
+
+    fileprivate static var insightModelTypes: [any PersistentModel.Type] {
+        [
             InsightConversationRecord.self,
             InsightMessageRecord.self,
             InsightAttachmentRecord.self,
@@ -156,8 +371,24 @@ enum AppSchema {
         ]
     }
 
+    static var modelTypes: [any PersistentModel.Type] {
+        businessModelTypes + insightModelTypes
+    }
+
+    fileprivate static var preV4ModelTypes: [any PersistentModel.Type] {
+        preV4BusinessModelTypes + insightModelTypes
+    }
+
+    fileprivate static var preV5ModelTypes: [any PersistentModel.Type] {
+        preV5BusinessModelTypes + insightModelTypes
+    }
+
+    fileprivate static var preV6ModelTypes: [any PersistentModel.Type] {
+        preV6BusinessModelTypes + insightModelTypes
+    }
+
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV2.self)
+        Schema(versionedSchema: AppSchemaV6.self)
     }
 
     static func makeConfiguration(

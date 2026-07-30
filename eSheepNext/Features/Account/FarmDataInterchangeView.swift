@@ -17,6 +17,7 @@ private enum FarmDataTask: Equatable {
 }
 
 struct FarmDataInterchangeView: View {
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \SyncConflictRecord.detectedAt, order: .reverse) private var conflicts: [SyncConflictRecord]
 
     let account: AccountProfile
@@ -24,6 +25,9 @@ struct FarmDataInterchangeView: View {
 
     @State private var storageSnapshot: AppStorageSnapshot?
     @State private var isClearingTemporaryData = false
+    @State private var isCleaningRebuilds = false
+    @State private var isReviewingRebuildCleanup = false
+    @State private var localInventory: LocalStorageInventory?
     @State private var storageMessage: String?
 
     private var unresolvedConflictCount: Int {
@@ -64,6 +68,33 @@ struct FarmDataInterchangeView: View {
                 Text("清理只会移除可重新生成的临时文件，不会删除牧场记录、照片、备份或未同步操作。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+
+            if let localInventory,
+               !localInventory.cleanupCandidates.isEmpty {
+                Section("可重建旧副本") {
+                    LabeledContent(
+                        "旧重建与迁移工作区",
+                        value: formatted(localInventory.candidateBytes)
+                    )
+                    LabeledContent(
+                        "候选目录",
+                        value: localInventory.cleanupCandidates.count.formatted()
+                    )
+                    Button(
+                        isCleaningRebuilds
+                            ? "正在生成诊断归档并清理…"
+                            : "检查旧副本并清理",
+                        role: .destructive
+                    ) {
+                        isReviewingRebuildCleanup = true
+                    }
+                    .disabled(isCleaningRebuilds)
+
+                    Text("先保留状态、牧场、错误、文件清单和 SHA-256 诊断归档，再移除可重建目录。SwiftData、WAL/SHM、照片、备份、Outbox 与云端回执不在候选范围。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("牧场数据") {
@@ -131,7 +162,20 @@ struct FarmDataInterchangeView: View {
         .navigationTitle("数据与存储")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            storageSnapshot = await AppStorageUsageService.shared.snapshot()
+            await refreshStorage()
+        }
+        .sheet(isPresented: $isReviewingRebuildCleanup) {
+            if let localInventory {
+                LocalStorageCleanupReviewView(
+                    candidates: localInventory.cleanupCandidates,
+                    totalBytes: localInventory.candidateBytes
+                ) {
+                    isReviewingRebuildCleanup = false
+                    cleanRebuildableCopies(
+                        localInventory.cleanupCandidates
+                    )
+                }
+            }
         }
         .alert("数据与存储", isPresented: Binding(
             get: { storageMessage != nil },
@@ -159,6 +203,116 @@ struct FarmDataInterchangeView: View {
             storageMessage = released > 0
                 ? "已释放 \(formatted(released)) 临时空间。"
                 : "当前没有需要清理的临时文件。"
+        }
+    }
+
+    private func refreshStorage() async {
+        storageSnapshot = await AppStorageUsageService.shared.snapshot()
+        do {
+            localInventory = try LocalStorageInventoryService().inventory(
+                context: modelContext
+            )
+        } catch {
+            storageMessage = "存储盘点失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func cleanRebuildableCopies(
+        _ candidates: [StorageCleanupCandidate]
+    ) {
+        guard !isCleaningRebuilds else { return }
+        isCleaningRebuilds = true
+        Task { @MainActor in
+            defer { isCleaningRebuilds = false }
+            do {
+                let receipt = try LocalStorageInventoryService().clean(
+                    candidates: candidates,
+                    externalBackupConfirmed: true,
+                    context: modelContext
+                )
+                await refreshStorage()
+                storageMessage =
+                    "已释放 \(formatted(receipt.reclaimedByteCount))。小型诊断归档：" +
+                    receipt.diagnosticRelativePath
+            } catch {
+                storageMessage = "未清理：\(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+private struct LocalStorageCleanupReviewView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let candidates: [StorageCleanupCandidate]
+    let totalBytes: Int64
+    let confirm: () -> Void
+
+    @State private var isConfirming = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    LabeledContent(
+                        "预计释放",
+                        value: ByteCountFormatter.string(
+                            fromByteCount: totalBytes,
+                            countStyle: .file
+                        )
+                    )
+                    Text("只有在 Mac 上的完整 App 容器备份已经验证可读时才继续。删除后，原目录只能从该外部备份恢复。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                ForEach(candidates) { candidate in
+                    Section(candidate.kind.displayName) {
+                        LabeledContent("状态", value: candidate.status)
+                        LabeledContent(
+                            "大小",
+                            value: ByteCountFormatter.string(
+                                fromByteCount: candidate.byteCount,
+                                countStyle: .file
+                            )
+                        )
+                        Text(candidate.relativePath)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        if let error = candidate.errorMessage,
+                           !error.isEmpty {
+                            Text(error)
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+
+                Section {
+                    Button("外部备份已验证，继续", role: .destructive) {
+                        isConfirming = true
+                    }
+                }
+            }
+            .navigationTitle("检查清理范围")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+            }
+            .confirmationDialog(
+                "确认清理这些旧副本？",
+                isPresented: $isConfirming,
+                titleVisibility: .visible
+            ) {
+                Button("生成诊断归档并清理", role: .destructive) {
+                    confirm()
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("不会删除业务库、WAL/SHM、照片、CloudAssets、Supabase 迁移备份、Outbox、Tombstone、回执或 Keychain。")
+            }
         }
     }
 }

@@ -10,6 +10,28 @@ enum AppTab: Hashable {
     case search
 }
 
+struct PendingFarmInvitation: Sendable, Equatable {
+    let code: String
+    let shareURL: URL
+
+    init?(url: URL) {
+        guard url.host == "invite",
+              url.scheme == "esheep" || url.scheme == "esheep-staging",
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let code = components.queryItems?.first(where: { $0.name == "code" })?.value?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .uppercased(),
+              code.count == 8,
+              let shareValue = components.queryItems?.first(where: { $0.name == "share" })?.value,
+              let shareURL = URL(string: shareValue),
+              shareURL.scheme == "https" else {
+            return nil
+        }
+        self.code = code
+        self.shareURL = shareURL
+    }
+}
+
 enum AppNavigationRequest: Codable, Sendable, Equatable {
     case home
     case addSheep
@@ -49,6 +71,7 @@ enum FarmSessionError: LocalizedError {
 @Observable
 final class AppSession {
     @ObservationIgnored private let persistActiveAccountProfileID: (UUID) -> Void
+    @ObservationIgnored private let clearActiveAccountProfileID: () -> Void
     @ObservationIgnored private var automaticCloudRecoveryAccountIDs = Set<UUID>()
 
     var activeAccountProfileID: UUID?
@@ -66,17 +89,22 @@ final class AppSession {
     var pendingSearchQuery: String?
     var pendingSheepID: UUID?
     var pendingCareReminderID: UUID?
+    var pendingFarmInvitation: PendingFarmInvitation?
 
     init(
         activeAccountProfileID: UUID? = SecureAccountStore.activeAccountProfileID(),
         persistedLocalSessionAccountID: UUID? = SecureAccountStore.persistedSessionAccountID(),
         persistActiveAccountProfileID: @escaping (UUID) -> Void = { identifier in
             _ = try? SecureAccountStore.saveActiveAccountProfileID(identifier)
+        },
+        clearActiveAccountProfileID: @escaping () -> Void = {
+            _ = try? SecureAccountStore.clearActiveAccountProfileID()
         }
     ) {
         self.activeAccountProfileID = activeAccountProfileID
         self.persistedLocalSessionAccountID = persistedLocalSessionAccountID
         self.persistActiveAccountProfileID = persistActiveAccountProfileID
+        self.clearActiveAccountProfileID = clearActiveAccountProfileID
     }
 
     func reconcileActiveFarm(with farms: [FarmRecord]) {
@@ -170,6 +198,8 @@ final class AppSession {
     }
 
     func authenticationDidSignOut(warning: String? = nil) {
+        activeAccountProfileID = nil
+        clearActiveAccountProfileID()
         selectedFarmID = nil
         selectedTab = .home
         persistedLocalSessionAccountID = nil

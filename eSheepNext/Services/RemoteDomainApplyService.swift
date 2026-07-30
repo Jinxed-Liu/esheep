@@ -22,6 +22,269 @@ enum RemoteDomainApplyError: LocalizedError {
     }
 }
 
+struct RemoteDomainReplayResult: Sendable, Equatable {
+    let appliedOperationCount: Int
+    let acknowledgedSupersededOperationCount: Int
+    let earliestHistoryChange: Date?
+}
+
+/// Replays an already dependency-sorted authoritative operation set.
+/// Missing references fail closed before another operation is attempted.
+///
+/// A correction whose source and result are both authoritatively tombstoned is
+/// the one narrow exception to fail-closed replay: its active business result
+/// is provably absent from the final state, so retaining its receipt is safer
+/// than repeatedly downloading an unchanged bundle that can never recreate the
+/// deleted source row.
+enum RemoteDomainReplayExecutor {
+    private struct TombstoneFact {
+        let index: Int
+        let farmID: UUID
+        let entityType: String
+        let entityID: UUID
+        let deletedAt: Date
+    }
+
+    private struct ReplayFacts {
+        let effectivePayloads: [UUID: FarmCommandCloudPayload]
+        let bootstrapOperationIDs: Set<UUID>
+        let tombstones: [TombstoneFact]
+        let containsRestore: Bool
+    }
+
+    static func replay(
+        _ operations: [CloudOperationEnvelope],
+        farmID: UUID,
+        scope: CloudDatabaseScope,
+        context: ModelContext,
+        service: RemoteDomainApplyService,
+        mapper: CloudRecordMapper,
+        conflictStage: String,
+        baselineCutoffAt: Date?
+    ) throws -> RemoteDomainReplayResult {
+        guard operations.allSatisfy({ $0.farmID == farmID }) else {
+            throw CloudRebuildError.farmMismatch
+        }
+        let facts = try replayFacts(for: operations)
+        var appliedCount = 0
+        var acknowledgedSupersededCount = 0
+        var earliestHistoryChange: Date?
+
+        for (index, envelope) in operations.enumerated() {
+            if index.isMultiple(of: 500) {
+                try Task.checkCancellation()
+            }
+            do {
+                let isBaselineAuthority =
+                    facts.bootstrapOperationIDs.contains(envelope.operationID) ||
+                    baselineCutoffAt.map {
+                        CloudRebuildRootSnapshot.milliseconds(envelope.modifiedAt) <=
+                            CloudRebuildRootSnapshot.milliseconds($0)
+                    } == true
+                switch try service.applyForAuthoritativeReplay(
+                    envelope,
+                    context: context,
+                    preservesLegacySnapshotAuthority: isBaselineAuthority
+                ) {
+                case .applied(let changedAt):
+                    appliedCount += 1
+                    if let changedAt {
+                        earliestHistoryChange = min(
+                            earliestHistoryChange ?? changedAt,
+                            changedAt
+                        )
+                    }
+                case .duplicate:
+                    break
+                case .conflict(let localRevision):
+                    throw CloudRebuildError.operationReplayConflict(
+                        stage: conflictStage,
+                        operationID: envelope.operationID,
+                        baseRevision: envelope.baseRevision,
+                        localRevision: localRevision
+                    )
+                }
+            } catch let error as RemoteDomainApplyError {
+                guard case .missingReference = error else {
+                    throw error
+                }
+                guard isSafelySuperseded(
+                    index: index,
+                    envelope: envelope,
+                    facts: facts
+                ) else {
+                    throw CloudRebuildError.stagingValidation(
+                        "操作 \(envelope.operationID.uuidString.lowercased()) 无法解析依赖：\(error.localizedDescription)"
+                    )
+                }
+                let payload = facts.effectivePayloads[envelope.operationID]
+                let originalID = payload?.identifiers["originalID"]
+                context.insert(SecurityIncidentRecord(
+                    farmID: farmID,
+                    incidentType: "supersededMissingReplayDependency",
+                    recordName: mapper.recordName(for: envelope.operationID),
+                    accountID: envelope.modifiedByAccountID,
+                    deviceID: envelope.modifiedByDeviceID,
+                    detail: "权威 \(payload?.kind.rawValue ?? "correction") 引用的原记录 \(originalID?.uuidString.lowercased() ?? "unknown") 已删除，且修正结果 \(envelope.entityID.uuidString.lowercased()) 随后也被权威删除；已按最终权威状态确认为废弃空操作。",
+                    rawPayload: envelope.payload
+                ))
+                insertReceipt(
+                    for: envelope,
+                    farmID: farmID,
+                    scope: scope,
+                    context: context,
+                    mapper: mapper
+                )
+                acknowledgedSupersededCount += 1
+                continue
+            }
+            insertReceipt(
+                for: envelope,
+                farmID: farmID,
+                scope: scope,
+                context: context,
+                mapper: mapper
+            )
+        }
+
+        return RemoteDomainReplayResult(
+            appliedOperationCount: appliedCount,
+            acknowledgedSupersededOperationCount: acknowledgedSupersededCount,
+            earliestHistoryChange: earliestHistoryChange
+        )
+    }
+
+    private static func insertReceipt(
+        for envelope: CloudOperationEnvelope,
+        farmID: UUID,
+        scope: CloudDatabaseScope,
+        context: ModelContext,
+        mapper: CloudRecordMapper
+    ) {
+        context.insert(CloudOperationReceipt(
+            farmID: farmID,
+            operationID: envelope.operationID,
+            recordName: mapper.recordName(for: envelope.operationID),
+            serverChangeTag: nil,
+            databaseScope: scope
+        ))
+    }
+
+    private static func isSafelySuperseded(
+        index: Int,
+        envelope: CloudOperationEnvelope,
+        facts: ReplayFacts
+    ) -> Bool {
+        guard !facts.containsRestore,
+              let payload = facts.effectivePayloads[envelope.operationID],
+              let originalID = payload.identifiers["originalID"] else {
+            return false
+        }
+        let expectedType: CloudEntityType
+        switch payload.kind {
+        case .correctWeight:
+            expectedType = .weight
+        case .correctTransfer:
+            expectedType = .transfer
+        case .correctRemoval:
+            expectedType = .removal
+        default:
+            return false
+        }
+        guard envelope.entityType == expectedType.rawValue else { return false }
+        let originalWasDeleted = facts.tombstones.contains {
+            $0.farmID == envelope.farmID &&
+                $0.entityType == expectedType.rawValue &&
+                $0.entityID == originalID
+        }
+        let replacementWasDeletedLater = facts.tombstones.contains {
+            $0.farmID == envelope.farmID &&
+                $0.entityType == expectedType.rawValue &&
+                $0.entityID == envelope.entityID &&
+                ($0.deletedAt > envelope.modifiedAt ||
+                    ($0.deletedAt == envelope.modifiedAt && $0.index > index))
+        }
+        return originalWasDeleted && replacementWasDeletedLater
+    }
+
+    private static func replayFacts(
+        for operations: [CloudOperationEnvelope]
+    ) throws -> ReplayFacts {
+        var payloads: [UUID: FarmCommandCloudPayload] = [:]
+        var bootstrapOperationIDs = Set<UUID>()
+        var tombstones: [TombstoneFact] = []
+        var containsRestore = false
+
+        for (index, envelope) in operations.enumerated() {
+            let resolved = try effectivePayload(for: envelope)
+            let payload = resolved.payload
+            payloads[envelope.operationID] = payload
+            if resolved.isBootstrap {
+                bootstrapOperationIDs.insert(envelope.operationID)
+            }
+            switch payload.kind {
+            case .restoreTombstonedEntity:
+                containsRestore = true
+            case .tombstoneEntity:
+                guard let entityType = payload.strings["entityType"],
+                      entityType == envelope.entityType,
+                      let entityID = payload.identifiers["entityID"],
+                      entityID == envelope.entityID else {
+                    throw RemoteDomainApplyError.invalidPayload("tombstoneEntity")
+                }
+                tombstones.append(TombstoneFact(
+                    index: index,
+                    farmID: envelope.farmID,
+                    entityType: entityType,
+                    entityID: entityID,
+                    deletedAt: envelope.deletedAt ?? envelope.modifiedAt
+                ))
+            default:
+                break
+            }
+        }
+        return ReplayFacts(
+            effectivePayloads: payloads,
+            bootstrapOperationIDs: bootstrapOperationIDs,
+            tombstones: tombstones,
+            containsRestore: containsRestore
+        )
+    }
+
+    private static func effectivePayload(
+        for envelope: CloudOperationEnvelope
+    ) throws -> (payload: FarmCommandCloudPayload, isBootstrap: Bool) {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var encoded = envelope.payload
+        var isBootstrap = false
+        for _ in 0..<16 {
+            let payload = try decoder.decode(FarmCommandCloudPayload.self, from: encoded)
+            switch payload.kind {
+            case .bootstrapEntity:
+                isBootstrap = true
+                guard let snapshotData = payload.dataValues["snapshot"] else {
+                    throw RemoteDomainApplyError.invalidPayload("snapshot")
+                }
+                let snapshot = try decoder.decode(BootstrapEntityEnvelopeV1.self, from: snapshotData)
+                try snapshot.validate(for: envelope)
+                encoded = snapshot.sourcePayload
+            case .recoverEntity:
+                guard let source = payload.dataValues["resolvedPayload"],
+                      payload.strings["entityType"] == envelope.entityType,
+                      let expectedDigest = payload.strings["sourcePayloadDigest"],
+                      CloudPayloadDigest.hex(for: source) == expectedDigest else {
+                    throw RemoteDomainApplyError.invalidPayload("resolvedPayload")
+                }
+                encoded = source
+            default:
+                return (payload, isBootstrap)
+            }
+        }
+        throw RemoteDomainApplyError.invalidPayload("nestedRecoveryDepth")
+    }
+}
+
 /// A replay-only index for a business store that has just been created or purged.
 /// Live sync deliberately does not use it because other writers may mutate that store.
 private final class RemoteDomainReplayIndex {
@@ -44,6 +307,100 @@ private final class RemoteDomainReplayIndex {
         for model in context.insertedModelsArray {
             register(model)
         }
+    }
+
+    func rebuildFromPersistentStore(
+        farmID: UUID,
+        in context: ModelContext
+    ) throws {
+        entities.removeAll(keepingCapacity: true)
+        transfersBySheep.removeAll(keepingCapacity: true)
+        normalizedEarTagOwners.removeAll(keepingCapacity: true)
+        farmRevisions.removeAll(keepingCapacity: true)
+
+        for value in try context.fetch(FetchDescriptor<PenRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<SheepRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<WeightRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<WeaningRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<BreedingProgramRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TransferRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<RemovalRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<ProductionBatchRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<BatchMembershipRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<FeedIngredientRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<FeedRecipeRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(
+            FetchDescriptor<FeedRecipeComponentRecord>()
+        ) where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<FeedRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<InventoryLotRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<HealthRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<ReproductionRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<SemenRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<NoteRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+
+        let farmOperations = try context.fetch(FetchDescriptor<DomainOperation>())
+            .filter {
+                $0.farmID == farmID &&
+                    $0.entityType == CloudEntityType.farm.rawValue
+            }
+        setFarmRevision(
+            max(1, farmOperations.map(\.resultingRevision).max() ?? 1),
+            for: farmID
+        )
     }
 
     func fetch<T: PersistentModel>(_ type: T.Type, id: UUID) -> T? where T: AnyObject {
@@ -124,11 +481,52 @@ struct RemoteDomainApplyService {
         replayIndex = replayAssumesEmptyBusinessStore ? RemoteDomainReplayIndex() : nil
     }
 
-    func apply(_ envelope: CloudOperationEnvelope, context: ModelContext) throws -> RemoteApplyOutcome {
-        try applyDecoded(envelope, context: context)
+    func prepareResumableReplay(
+        farmID: UUID,
+        context: ModelContext
+    ) throws {
+        try replayIndex?.rebuildFromPersistentStore(
+            farmID: farmID,
+            in: context
+        )
     }
 
-    private func applyDecoded(_ envelope: CloudOperationEnvelope, context: ModelContext) throws -> RemoteApplyOutcome {
+    func apply(_ envelope: CloudOperationEnvelope, context: ModelContext) throws -> RemoteApplyOutcome {
+        try applyDecoded(
+            envelope,
+            context: context,
+            preservesLegacySnapshotAuthority: false
+        )
+    }
+
+    fileprivate func applyForAuthoritativeReplay(
+        _ envelope: CloudOperationEnvelope,
+        context: ModelContext,
+        preservesLegacySnapshotAuthority: Bool
+    ) throws -> RemoteApplyOutcome {
+        try applyDecoded(
+            envelope,
+            context: context,
+            preservesLegacySnapshotAuthority: preservesLegacySnapshotAuthority
+        )
+    }
+
+    func applyBaselineProjection(
+        _ envelope: CloudOperationEnvelope,
+        context: ModelContext
+    ) throws -> RemoteApplyOutcome {
+        try applyDecoded(
+            envelope,
+            context: context,
+            preservesLegacySnapshotAuthority: true
+        )
+    }
+
+    private func applyDecoded(
+        _ envelope: CloudOperationEnvelope,
+        context: ModelContext,
+        preservesLegacySnapshotAuthority: Bool
+    ) throws -> RemoteApplyOutcome {
         let payload = try decoder.decode(FarmCommandCloudPayload.self, from: envelope.payload)
         if let expected = expectedEntityType(for: payload.kind), expected.rawValue != envelope.entityType {
             throw RemoteDomainApplyError.invalidPayload("kind")
@@ -348,7 +746,9 @@ struct RemoteDomainApplyService {
             if try exists(TransferRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let sheepID = try identifier("sheepID", payload)
             guard let sheep = try fetch(SheepRecord.self, id: sheepID, context: context) else { throw RemoteDomainApplyError.missingReference("sheepID") }
-            releaseLegacyHistoryProjectionAuthority(for: sheep)
+            if !preservesLegacySnapshotAuthority {
+                releaseLegacyHistoryProjectionAuthority(for: sheep)
+            }
             let occurredAt = try date("occurredAt", payload)
             let transfers: [TransferRecord]
             if let replayIndex {
@@ -369,7 +769,9 @@ struct RemoteDomainApplyService {
             let originalID = try identifier("originalID", payload)
             guard let original = try fetch(TransferRecord.self, id: originalID, context: context), original.deletedAt == nil,
                   let sheep = try fetch(SheepRecord.self, id: original.sheepID, context: context) else { throw RemoteDomainApplyError.missingReference("originalID") }
-            releaseLegacyHistoryProjectionAuthority(for: sheep)
+            if !preservesLegacySnapshotAuthority {
+                releaseLegacyHistoryProjectionAuthority(for: sheep)
+            }
             original.deletedAt = envelope.modifiedAt
             original.revision += 1
             context.insert(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.transfer.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["reason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID))
@@ -395,7 +797,9 @@ struct RemoteDomainApplyService {
             guard let sheep = try fetch(SheepRecord.self, id: sheepID, context: context) else {
                 throw RemoteDomainApplyError.missingReference("sheepID")
             }
-            releaseLegacyHistoryProjectionAuthority(for: sheep)
+            if !preservesLegacySnapshotAuthority {
+                releaseLegacyHistoryProjectionAuthority(for: sheep)
+            }
             let occurredAt = try date("occurredAt", payload)
             insertIndexed(RemovalRecord(
                 id: envelope.entityID,
@@ -417,7 +821,9 @@ struct RemoteDomainApplyService {
             guard let sheep = try fetch(SheepRecord.self, id: original.sheepID, context: context) else {
                 throw RemoteDomainApplyError.missingReference("sheepID")
             }
-            releaseLegacyHistoryProjectionAuthority(for: sheep)
+            if !preservesLegacySnapshotAuthority {
+                releaseLegacyHistoryProjectionAuthority(for: sheep)
+            }
             original.deletedAt = envelope.modifiedAt
             original.revision += 1
             context.insert(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.removal.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["correctionReason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID))
@@ -443,7 +849,9 @@ struct RemoteDomainApplyService {
             guard let sheep = try fetch(SheepRecord.self, id: record.sheepID, context: context) else {
                 throw RemoteDomainApplyError.missingReference("sheepID")
             }
-            releaseLegacyHistoryProjectionAuthority(for: sheep)
+            if !preservesLegacySnapshotAuthority {
+                releaseLegacyHistoryProjectionAuthority(for: sheep)
+            }
             record.deletedAt = envelope.modifiedAt
             record.revision = envelope.revision
             return .applied(rebuildHistoryFrom: .distantPast)
@@ -571,6 +979,42 @@ struct RemoteDomainApplyService {
             if try exists(NoteRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             insertIndexed(NoteRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: optionalID("sheepID", payload), penID: optionalID("penID", payload), text: try string("text", payload), occurredAt: try date("occurredAt", payload)), context: context)
             return .applied(rebuildHistoryFrom: nil)
+        case .addPhoto:
+            if try exists(PhotoAssetRecord.self, id: envelope.entityID, context: context) {
+                return .duplicate
+            }
+            let sha256 = try string("sha256", payload)
+            let mimeType = try string("mimeType", payload)
+            guard sha256.count == 64 else {
+                throw RemoteDomainApplyError.invalidPayload("sha256")
+            }
+            let asset = PhotoAssetRecord(
+                id: envelope.entityID,
+                farmID: envelope.farmID,
+                sheepID: optionalID("sheepID", payload),
+                legacySourceKey: "supabase:\(envelope.entityID.uuidString.lowercased())",
+                originalEarTag: "",
+                relativePath: "",
+                sha256: sha256,
+                mimeType: mimeType
+            )
+            asset.sourceSHA256 = payload.strings["sourceSHA256"] ?? sha256
+            asset.sourcePixelWidth = payload.integers["sourcePixelWidth"] ?? 0
+            asset.sourcePixelHeight = payload.integers["sourcePixelHeight"] ?? 0
+            asset.cloudPixelWidth = payload.integers["cloudPixelWidth"] ?? 0
+            asset.cloudPixelHeight = payload.integers["cloudPixelHeight"] ?? 0
+            asset.capturedAt = payload.optionalDates["capturedAt"] ?? nil
+            context.insert(asset)
+            context.insert(CloudAssetTransfer(
+                farmID: envelope.farmID,
+                assetID: asset.id,
+                localRelativePath: "",
+                payloadDigest: sha256,
+                byteCount: Int64(payload.integers["byteCount"] ?? 0),
+                direction: .download,
+                sourceDigest: asset.sourceSHA256
+            ))
+            return .applied(rebuildHistoryFrom: nil)
         case .tombstoneEntity:
             guard let entityTypeText = payload.strings["entityType"], let entityType = CloudEntityType(rawValue: entityTypeText), entityTypeText == envelope.entityType else {
                 throw RemoteDomainApplyError.invalidPayload("entityType")
@@ -583,13 +1027,15 @@ struct RemoteDomainApplyService {
             )
             tombstoneDescriptor.fetchLimit = 1
             if try context.fetch(tombstoneDescriptor).first != nil { return .duplicate }
-            try releaseLegacyHistoryProjectionAuthority(
-                affectedBy: entityType,
-                entityID: entityID,
-                context: context
-            )
+            if !preservesLegacySnapshotAuthority {
+                try releaseLegacyHistoryProjectionAuthority(
+                    affectedBy: entityType,
+                    entityID: entityID,
+                    context: context
+                )
+            }
             try DomainEntityDeletionService.setDeletedAt(envelope.deletedAt ?? envelope.modifiedAt, type: entityType, id: entityID, farmID: envelope.farmID, context: context)
-            context.insert(TombstoneRecord(
+            let tombstone = TombstoneRecord(
                 farmID: envelope.farmID,
                 entityType: entityType.rawValue,
                 entityID: entityID,
@@ -597,7 +1043,9 @@ struct RemoteDomainApplyService {
                 reason: payload.strings["reason"] ?? "远端删除",
                 revision: envelope.revision,
                 operationID: envelope.operationID
-            ))
+            )
+            tombstone.deletedAt = envelope.deletedAt ?? envelope.modifiedAt
+            context.insert(tombstone)
             return .applied(rebuildHistoryFrom: .distantPast)
         case .restoreTombstonedEntity:
             let tombstoneID = try identifier("tombstoneID", payload)
@@ -611,11 +1059,13 @@ struct RemoteDomainApplyService {
                 throw RemoteDomainApplyError.missingReference("tombstoneID")
             }
             if tombstone.restoredByOperationID == envelope.operationID { return .duplicate }
-            try releaseLegacyHistoryProjectionAuthority(
-                affectedBy: entityType,
-                entityID: tombstone.entityID,
-                context: context
-            )
+            if !preservesLegacySnapshotAuthority {
+                try releaseLegacyHistoryProjectionAuthority(
+                    affectedBy: entityType,
+                    entityID: tombstone.entityID,
+                    context: context
+                )
+            }
             try DomainEntityDeletionService.setDeletedAt(nil, type: entityType, id: tombstone.entityID, farmID: envelope.farmID, context: context)
             tombstone.restoredAt = envelope.modifiedAt
             tombstone.restoredByOperationID = envelope.operationID
@@ -652,7 +1102,11 @@ struct RemoteDomainApplyService {
                 operationSignature: envelope.operationSignature,
                 deletedAt: nil
             )
-            return try apply(sourceEnvelope, context: context)
+            return try applyDecoded(
+                sourceEnvelope,
+                context: context,
+                preservesLegacySnapshotAuthority: preservesLegacySnapshotAuthority
+            )
         case .bootstrapEntity:
             guard let snapshotData = payload.dataValues["snapshot"] else {
                 throw RemoteDomainApplyError.invalidPayload("snapshot")
@@ -676,7 +1130,11 @@ struct RemoteDomainApplyService {
                 operationSignature: envelope.operationSignature,
                 deletedAt: envelope.deletedAt
             )
-            return try apply(sourceEnvelope, context: context)
+            return try applyDecoded(
+                sourceEnvelope,
+                context: context,
+                preservesLegacySnapshotAuthority: true
+            )
         }
     }
 
@@ -702,6 +1160,7 @@ struct RemoteDomainApplyService {
         case .addSemen: .semen
         case .recordReproduction: .reproduction
         case .addNote: .note
+        case .addPhoto: .photoAsset
         case .care, .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: nil
         }
     }

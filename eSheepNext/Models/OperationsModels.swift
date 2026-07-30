@@ -31,6 +31,7 @@ enum DomainOperationKind: String, Codable, Sendable, Hashable {
     case recordReproduction
     case care
     case addNote
+    case addPhoto
     case tombstoneEntity
     case restoreTombstonedEntity
     case resolveConflict
@@ -43,6 +44,7 @@ enum OutboxStatus: String, Codable, Sendable {
     case uploading
     case awaitingConfirmation
     case confirmed
+    case notRequiredLocalOnly
     case retryableFailure
     case blockedConflict
     case rejectedPermission
@@ -137,6 +139,9 @@ final class OutboxItem {
     var capabilityCertificate: String = ""
     var nextRetryAt: Date?
     var cloudRecordName: String?
+    var deliveryProviderRawValue: String?
+    var authorityGeneration: Int = 0
+    var remoteReceiptData: Data?
 
     init(
         id: UUID = UUID(),
@@ -146,7 +151,9 @@ final class OutboxItem {
         entityType: String = "FarmRoot",
         entityID: UUID? = nil,
         baseRevision: Int = 0,
-        payloadDigest: String = ""
+        payloadDigest: String = "",
+        deliveryProvider: FarmRemoteProvider = .iCloud,
+        authorityGeneration: Int = 0
     ) {
         self.id = id
         self.farmID = farmID
@@ -162,10 +169,16 @@ final class OutboxItem {
         self.baseRevision = baseRevision
         self.payloadDigest = payloadDigest
         self.capabilityCertificate = ""
+        self.deliveryProviderRawValue = deliveryProvider.rawValue
+        self.authorityGeneration = max(0, authorityGeneration)
     }
 
     var status: OutboxStatus {
         OutboxStatus(rawValue: statusRawValue) ?? .retryableFailure
+    }
+
+    var deliveryProvider: FarmRemoteProvider? {
+        deliveryProviderRawValue.flatMap(FarmRemoteProvider.init(rawValue:))
     }
 }
 

@@ -334,7 +334,7 @@ enum FarmCommandCloudPayloadDecoder {
             return .restoreTombstonedEntity(
                 tombstoneID: try identifier("tombstoneID", in: payload)
             )
-        case .createFarm, .resolveConflict, .recoverEntity, .bootstrapEntity:
+        case .createFarm, .addPhoto, .resolveConflict, .recoverEntity, .bootstrapEntity:
             throw FarmCommandCloudPayloadDecodingError.unsupportedKind(payload.kind)
         }
     }

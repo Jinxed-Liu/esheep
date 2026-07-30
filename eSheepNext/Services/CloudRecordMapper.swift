@@ -1,4 +1,5 @@
 import CloudKit
+import CoreFoundation
 import Foundation
 
 enum CloudRecordField {
@@ -187,8 +188,11 @@ struct CloudRecordMapper: Sendable {
         guard let rawValue = record[CloudRecordField.assetSignatureVersion] else {
             return nil
         }
-        guard !(rawValue is Bool),
-              let version = rawValue as? Int,
+        guard let number = rawValue as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite,
+              number.doubleValue.rounded(.towardZero) == number.doubleValue,
+              let version = Int(exactly: number.doubleValue),
               version == FarmAssetSignatureFormat.legacyV1.rawValue ||
                 version == FarmAssetSignatureFormat.v2.rawValue else {
             throw CloudContractError.invalidDeviceSignature

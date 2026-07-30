@@ -1,4 +1,5 @@
 import CloudKit
+import CoreImage
 import CryptoKit
 import SwiftData
 import UIKit
@@ -245,18 +246,24 @@ final class CloudCollaborationTests: XCTestCase {
 
     func testPhotoAssetSignatureVersionParserRejectsExplicitInvalidValues() throws {
         let mapper = CloudRecordMapper()
-        let record = CKRecord(recordType: CloudRecordType.farmAsset.rawValue)
-        XCTAssertNil(try mapper.assetSignatureVersion(from: record))
+        XCTAssertNil(
+            try mapper.assetSignatureVersion(
+                from: CKRecord(recordType: CloudRecordType.farmAsset.rawValue)
+            )
+        )
 
         for invalidValue: any CKRecordValue in [3 as CKRecordValue, 1.5 as CKRecordValue, "2" as CKRecordValue, true as CKRecordValue] {
+            let record = CKRecord(recordType: CloudRecordType.farmAsset.rawValue)
             record[CloudRecordField.assetSignatureVersion] = invalidValue
             XCTAssertThrowsError(try mapper.assetSignatureVersion(from: record))
         }
 
+        let record = CKRecord(recordType: CloudRecordType.farmAsset.rawValue)
         record[CloudRecordField.assetSignatureVersion] = 1 as CKRecordValue
         XCTAssertEqual(try mapper.assetSignatureVersion(from: record), 1)
-        record[CloudRecordField.assetSignatureVersion] = 2 as CKRecordValue
-        XCTAssertEqual(try mapper.assetSignatureVersion(from: record), 2)
+        let v2Record = CKRecord(recordType: CloudRecordType.farmAsset.rawValue)
+        v2Record[CloudRecordField.assetSignatureVersion] = 2 as CKRecordValue
+        XCTAssertEqual(try mapper.assetSignatureVersion(from: v2Record), 2)
     }
 
     func testPhotoAssetAuthorizationUsesOnlyServerTimestamps() throws {
@@ -334,12 +341,34 @@ final class CloudCollaborationTests: XCTestCase {
         ))
     }
 
-    func testZoneWideShareUsesSystemRecordName() {
+    func testZoneWideShareUsesSystemRecordNameWithoutPublicAccessRequests() {
         let zoneID = CKRecordZone.ID(zoneName: CloudZoneName.forFarm(UUID()), ownerName: CKCurrentUserDefaultName)
         let share = CKShare(recordZoneID: zoneID)
+        CloudShareInvitationPolicy.configureNewShare(share, farmName: "河湾牧场")
         XCTAssertEqual(share.recordID.zoneID, zoneID)
         XCTAssertEqual(share.recordID.recordName, CKRecordNameZoneWideShare)
         XCTAssertEqual(share.publicPermission, .none)
+        XCTAssertFalse(share.allowsAccessRequests)
+        XCTAssertEqual(share[CKShare.SystemFieldKey.title] as? String, "河湾牧场")
+    }
+
+    func testShareRecoveryOnlyRecreatesARecordCloudKitReportsMissing() {
+        let missingRecord = NSError(
+            domain: CKErrorDomain,
+            code: CKError.Code.unknownItem.rawValue
+        )
+        let networkFailure = NSError(
+            domain: CKErrorDomain,
+            code: CKError.Code.networkFailure.rawValue
+        )
+        let unrelatedError = NSError(
+            domain: NSCocoaErrorDomain,
+            code: CocoaError.fileReadNoSuchFile.rawValue
+        )
+
+        XCTAssertTrue(CloudShareRecoveryPolicy.shouldRecreate(after: missingRecord))
+        XCTAssertFalse(CloudShareRecoveryPolicy.shouldRecreate(after: networkFailure))
+        XCTAssertFalse(CloudShareRecoveryPolicy.shouldRecreate(after: unrelatedError))
     }
 
     func testTombstoneRecordUsesStableEntityRecordName() throws {
@@ -787,6 +816,49 @@ final class CloudCollaborationTests: XCTestCase {
 
         XCTAssertEqual(records.map { $0.0.recordName }, [mapper.recordName(for: migration.operationID)])
         XCTAssertFalse(records.contains { $0.0.recordName == mapper.recordName(for: unrelated.operationID) })
+    }
+
+    func testCloudKitPendingRecordIDsNeverConsumeSupabaseOutbox() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "provider-isolated-outbox-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let farmID = UUID()
+        context.insert(CloudFarmBinding(
+            farmID: farmID,
+            ownerAccountID: accountID,
+            databaseScope: .privateDatabase,
+            state: .active
+        ))
+        let iCloud = OutboxItem(
+            farmID: farmID,
+            accountID: accountID,
+            operationID: UUID(),
+            deliveryProvider: .iCloud
+        )
+        let supabase = OutboxItem(
+            farmID: farmID,
+            accountID: accountID,
+            operationID: UUID(),
+            deliveryProvider: .supabase,
+            authorityGeneration: 1
+        )
+        context.insert(iCloud)
+        context.insert(supabase)
+        try context.save()
+
+        let records = try await FarmPersistenceActor(container: container).pendingRecordIDs(
+            maxOutboxItems: 2,
+            farmID: farmID
+        )
+        let mapper = CloudRecordMapper()
+
+        XCTAssertEqual(records.map { $0.0.recordName }, [mapper.recordName(for: iCloud.operationID)])
+        XCTAssertFalse(records.contains {
+            $0.0.recordName == mapper.recordName(for: supabase.operationID)
+        })
     }
 
     func testBatchErrorDeferralDoesNotMutateAnotherFarm() async throws {
@@ -1411,6 +1483,194 @@ final class CloudCollaborationTests: XCTestCase {
         )
         XCTAssertTrue(claims.isValid(at: issued.addingTimeInterval(60)))
         XCTAssertFalse(claims.isValid(at: issued.addingTimeInterval(604_801)))
+    }
+
+    func testProximityInvitationPayloadRoundTripsWithoutLosingJoinURL() throws {
+        let payload = ProximityFarmInvitationPayload(
+            farmName: "河湾牧场",
+            role: .worker,
+            url: try XCTUnwrap(URL(string: "https://www.icloud.com/share/example")),
+            inviteCode: "AB12CD34",
+            expiresAt: Date(timeIntervalSince1970: 1_700_086_400)
+        )
+
+        let encoded = try JSONEncoder().encode(payload)
+        let decoded = try JSONDecoder().decode(
+            ProximityFarmInvitationPayload.self,
+            from: encoded
+        )
+
+        XCTAssertEqual(decoded, payload)
+    }
+
+    func testRedeemedCodeCanReturnItsCloudShareURL() throws {
+        let data = Data("""
+        {
+          "inviteID": "invite-1",
+          "farmID": "33333333-3333-5333-8333-333333333333",
+          "role": "worker",
+          "membershipStatus": "pendingShareConfirmation",
+          "shareURL": "https://www.icloud.com/share/example"
+        }
+        """.utf8)
+
+        let response = try JSONDecoder().decode(
+            WorkerRedeemResponse.self,
+            from: data
+        )
+
+        XCTAssertEqual(
+            response.shareURL?.absoluteString,
+            "https://www.icloud.com/share/example"
+        )
+    }
+
+    func testSharedFarmStaysHiddenUntilBindingMembershipAndRootAreReady() {
+        let accountID = UUID()
+        XCTAssertFalse(SharedFarmAdmissionPolicy.isLocallyOwnedForDisplay(
+            farmOwnerAccountID: accountID,
+            activeAccountID: accountID,
+            bindingScope: .sharedDatabase
+        ), "共享绑定必须优先于接纳阶段误写的临时 owner 字段")
+        XCTAssertFalse(SharedFarmAdmissionPolicy.isReadyForDisplay(
+            bindingScope: .sharedDatabase,
+            bindingState: .active,
+            farmName: SharedFarmAdmissionPolicy.pendingFarmName,
+            membershipStatus: .active
+        ))
+        XCTAssertFalse(SharedFarmAdmissionPolicy.isReadyForDisplay(
+            bindingScope: .sharedDatabase,
+            bindingState: .requiresAccountReview,
+            farmName: "吉昊羊场",
+            membershipStatus: .active
+        ))
+        XCTAssertTrue(SharedFarmAdmissionPolicy.isPendingAdmission(
+            bindingScope: .sharedDatabase,
+            bindingState: .rebuildingCache,
+            farmName: SharedFarmAdmissionPolicy.pendingFarmName,
+            membershipStatus: .active
+        ))
+        XCTAssertTrue(SharedFarmAdmissionPolicy.isReadyForDisplay(
+            bindingScope: .sharedDatabase,
+            bindingState: .active,
+            farmName: "吉昊羊场",
+            membershipStatus: .active
+        ))
+    }
+
+    func testSystemShareInvitationMessageContainsLinkAndInviteCode() throws {
+        let package = FarmInvitationPackage(
+            inviteID: "invite-1",
+            farmID: UUID(),
+            farmName: "河湾牧场",
+            role: .worker,
+            url: try XCTUnwrap(URL(string: "https://www.icloud.com/share/example")),
+            inviteCode: "AB12CD34",
+            shareParticipantID: nil,
+            expiresAt: Date(timeIntervalSince1970: 1_700_086_400)
+        )
+
+        XCTAssertFalse(package.usesOneTimeURL)
+        XCTAssertTrue(package.message.contains(package.url.absoluteString))
+        XCTAssertTrue(package.message.contains(package.inviteCode))
+        XCTAssertTrue(package.message.contains("输入邀请码"))
+        XCTAssertTrue(package.message.contains("批准加入"))
+    }
+
+    func testSystemShareInvitationDeepLinkRoundTripsCodeAndPrivateShareURL() throws {
+        let shareURL = try XCTUnwrap(URL(string: "https://www.icloud.com/share/example"))
+        let package = FarmInvitationPackage(
+            inviteID: "invite-1",
+            farmID: UUID(),
+            farmName: "河湾牧场",
+            role: .worker,
+            url: shareURL,
+            inviteCode: "AB12CD34",
+            shareParticipantID: nil,
+            expiresAt: Date(timeIntervalSince1970: 1_700_086_400)
+        )
+
+        let pending = try XCTUnwrap(PendingFarmInvitation(url: package.joinURL))
+
+        XCTAssertEqual(pending.code, package.inviteCode)
+        XCTAssertEqual(pending.shareURL, shareURL)
+    }
+
+    func testInvitationQRCodeGeneratorCreatesAReadableSizedImage() throws {
+        let invitationURL = "esheep://invite?code=AB12CD34&share=https%3A%2F%2Fwww.icloud.com%2Fshare%2Fexample"
+        let image = try XCTUnwrap(
+            FarmInvitationQRCodeGenerator.image(
+                for: invitationURL,
+                dimension: 900
+            )
+        )
+
+        XCTAssertGreaterThanOrEqual(image.size.width, 800)
+        XCTAssertEqual(image.size.width, image.size.height)
+        let detector = try XCTUnwrap(CIDetector(
+            ofType: CIDetectorTypeQRCode,
+            context: nil,
+            options: [CIDetectorAccuracy: CIDetectorAccuracyHigh]
+        ))
+        let input = CIImage(cgImage: try XCTUnwrap(image.cgImage))
+        let feature = try XCTUnwrap(
+            detector.features(in: input).compactMap { $0 as? CIQRCodeFeature }.first
+        )
+        XCTAssertEqual(feature.messageString, invitationURL)
+    }
+
+    func testOneTimeInvitationParticipantIsPreparedOnMainActor() throws {
+        try XCTSkipIf(
+            CloudOneTimeInvitationRuntimePolicy.requiresSystemSharingFallback,
+            "iOS 27 Beta traps inside CloudKit; the system-sharing fallback is covered separately"
+        )
+        XCTAssertTrue(Thread.isMainThread)
+        let share = CKShare(
+            recordZoneID: CKRecordZone.ID(
+                zoneName: "test-one-time-invitation",
+                ownerName: CKCurrentUserDefaultName
+            )
+        )
+
+        let participant = CloudOneTimeInvitationBuilder.prepareParticipant(on: share)
+
+        XCTAssertFalse(participant.participantID.isEmpty)
+        XCTAssertEqual(participant.permission, .readWrite)
+        XCTAssertTrue(
+            share.participants.contains(where: {
+                $0.participantID == participant.participantID
+            })
+        )
+    }
+
+    func testIOS27UsesSystemSharingFallbackForCloudKitTrap() {
+        XCTAssertFalse(
+            CloudOneTimeInvitationRuntimePolicy.requiresSystemSharingFallback(
+                for: OperatingSystemVersion(
+                    majorVersion: 26,
+                    minorVersion: 1,
+                    patchVersion: 0
+                )
+            )
+        )
+        XCTAssertTrue(
+            CloudOneTimeInvitationRuntimePolicy.requiresSystemSharingFallback(
+                for: OperatingSystemVersion(
+                    majorVersion: 27,
+                    minorVersion: 0,
+                    patchVersion: 0
+                )
+            )
+        )
+        XCTAssertFalse(
+            CloudOneTimeInvitationRuntimePolicy.requiresSystemSharingFallback(
+                for: OperatingSystemVersion(
+                    majorVersion: 28,
+                    minorVersion: 0,
+                    patchVersion: 0
+                )
+            )
+        )
     }
 
     private func makeEnvelope(

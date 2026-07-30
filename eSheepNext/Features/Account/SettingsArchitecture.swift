@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import VisionKit
 
 enum SettingsDestination: String, CaseIterable, Hashable {
     case accountAvatar
@@ -185,7 +186,7 @@ struct AccountDeletionButton: View {
         Task {
             defer { isWorking = false }
             do {
-                _ = try await IdentityWorkerClient.shared.deleteAccount()
+                _ = try await AccountIdentityClients.active().deleteAccount()
                 modelContext.delete(account)
                 try modelContext.save()
                 session.authenticationDidSignOut(warning: "账户已删除。")
@@ -198,6 +199,8 @@ struct AccountDeletionButton: View {
 
 struct JoinFarmView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @Environment(AppSession.self) private var session
     @Environment(CloudCollaborationStore.self) private var collaboration
 
     let account: AccountProfile
@@ -206,6 +209,10 @@ struct JoinFarmView: View {
     @State private var result: WorkerRedeemResponse?
     @State private var isWorking = false
     @State private var errorMessage: String?
+    @State private var isProximityReceiverPresented = false
+    @State private var isQRCodeScannerPresented = false
+    @State private var shareURL: URL?
+    @State private var isSupabaseJoinPresented = false
 
     private var normalizedCode: String {
         code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -214,9 +221,46 @@ struct JoinFarmView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if SupabaseAccountConfiguration.isConfigured {
+                    Section {
+                        Button {
+                            isSupabaseJoinPresented = true
+                        } label: {
+                            Label(
+                                "使用 Supabase 一次性邀请码",
+                                systemImage: "externaldrive.connected.to.line.below"
+                            )
+                        }
+                    } footer: {
+                        Text("Supabase 邀请为 256 位随机码，24 小时内只能兑换一次。")
+                    }
+                }
+
                 Section {
-                    Label("先打开牧场主发来的共享邀请，再输入邀请码。", systemImage: "1.circle")
-                    Label("邀请码验证通过后，等待牧场主确认加入。", systemImage: "2.circle")
+                    Button {
+                        guard DataScannerViewController.isSupported,
+                              DataScannerViewController.isAvailable else {
+                            errorMessage = "当前设备暂时不能使用相机扫描，请检查相机权限，或手动输入邀请码。"
+                            return
+                        }
+                        isQRCodeScannerPresented = true
+                    } label: {
+                        Label("扫描邀请二维码", systemImage: "qrcode.viewfinder")
+                    }
+
+                    Button {
+                        isProximityReceiverPresented = true
+                    } label: {
+                        Label("靠近接收邀请", systemImage: "wave.3.left.circle.fill")
+                    }
+                } footer: {
+                    Text("与场主面对面时，双方打开靠近邀请页面，将手机并排放置并逐渐靠近；不要让顶部相碰，以免触发系统 NameDrop。")
+                }
+
+                Section {
+                    Label("输入邀请消息中的 8 位邀请码。", systemImage: "1.circle")
+                    Label("等待场主批准你的 iCloud 身份。", systemImage: "2.circle")
+                    Label("场主批准后，打开邀请链接接受共享。", systemImage: "3.circle")
                 } header: {
                     Text("加入步骤")
                 }
@@ -239,6 +283,11 @@ struct JoinFarmView: View {
                         Text("牧场主确认后，牧场会自动出现在切换菜单中。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                        if let shareURL {
+                            Button("场主批准后接受共享") {
+                                openURL(shareURL)
+                            }
+                        }
                     }
                 }
             }
@@ -259,6 +308,24 @@ struct JoinFarmView: View {
             } message: {
                 Text(errorMessage ?? "")
             }
+            .sheet(isPresented: $isProximityReceiverPresented) {
+                ProximityInvitationReceiverView(accountID: account.effectiveAccountID)
+            }
+            .sheet(isPresented: $isQRCodeScannerPresented) {
+                FarmInvitationQRCodeScannerView { invitation in
+                    code = invitation.code
+                    shareURL = invitation.shareURL
+                }
+            }
+            .task {
+                guard let invitation = session.pendingFarmInvitation else { return }
+                code = invitation.code
+                shareURL = invitation.shareURL
+                session.pendingFarmInvitation = nil
+            }
+        }
+        .sheet(isPresented: $isSupabaseJoinPresented) {
+            SupabaseJoinFarmView(account: account)
         }
     }
 
@@ -269,7 +336,13 @@ struct JoinFarmView: View {
             defer { isWorking = false }
             do {
                 let service = InviteServiceActor(persistence: collaboration.persistence)
-                result = try await service.redeem(code: normalizedCode)
+                let userRecordName = try await collaboration.sync.currentCloudUserRecordName()
+                let redemption = try await service.redeem(
+                    code: normalizedCode,
+                    cloudKitUserRecordName: userRecordName
+                )
+                result = redemption
+                shareURL = redemption.shareURL ?? shareURL
                 code = ""
             } catch {
                 errorMessage = error.localizedDescription

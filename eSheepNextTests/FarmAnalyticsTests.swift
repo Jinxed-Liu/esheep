@@ -145,6 +145,142 @@ final class FarmAnalyticsTests: XCTestCase {
         XCTAssertEqual(weanMonth.femaleAverageADG, 800, accuracy: 0.001)
     }
 
+    func testReproductionSlicesUseFixedEndDatePenCohortAndPriorLambings() throws {
+        let farmID = UUID()
+        let penA = UUID()
+        let penB = UUID()
+        let movedEweID = UUID()
+        let stayedEweID = UUID()
+        let enteredAt = makeDate(year: 2024, month: 1, day: 1)
+        let firstLambing = makeDate(year: 2025, month: 1, day: 1)
+        let movedSecondLambing = makeDate(year: 2025, month: 7, day: 1)
+        let stayedSecondLambing = makeDate(year: 2025, month: 8, day: 1)
+        let movedAt = makeDate(year: 2025, month: 12, day: 20)
+        let rangeEnd = makeDate(year: 2026, month: 1, day: 10)
+        let snapshot = FarmAnalyticsSnapshot(
+            farmID: farmID,
+            sheep: [
+                .init(id: movedEweID, earTag: "E-MOVED", breed: "湖羊", purpose: "繁殖母羊", sex: .ewe, status: .active, initialPenID: penA, currentPenID: penB, birthAt: makeDate(year: 2023, month: 1, day: 1), enteredAt: enteredAt, removedAt: nil),
+                .init(id: stayedEweID, earTag: "E-STAYED", breed: "杜泊", purpose: "繁殖母羊", sex: .ewe, status: .active, initialPenID: penA, currentPenID: penA, birthAt: makeDate(year: 2023, month: 1, day: 1), enteredAt: enteredAt, removedAt: nil)
+            ],
+            pens: [
+                .init(id: penA, name: "一号舍"),
+                .init(id: penB, name: "二号舍")
+            ],
+            weights: [],
+            weanings: [],
+            lambings: [
+                .init(id: UUID(), eweID: movedEweID, occurredAt: firstLambing, total: 1, parity: nil, birthDeadCount: nil, offspring: []),
+                .init(id: UUID(), eweID: movedEweID, occurredAt: movedSecondLambing, total: 1, parity: nil, birthDeadCount: nil, offspring: []),
+                .init(id: UUID(), eweID: stayedEweID, occurredAt: firstLambing, total: 1, parity: nil, birthDeadCount: nil, offspring: []),
+                .init(id: UUID(), eweID: stayedEweID, occurredAt: stayedSecondLambing, total: 1, parity: nil, birthDeadCount: nil, offspring: [])
+            ],
+            removals: [],
+            transfers: [
+                .init(id: UUID(), sheepID: movedEweID, toPenID: penB, occurredAt: movedAt, recordedAt: movedAt)
+            ],
+            batchMemberships: [],
+            feeds: []
+        )
+        let filter = ReproductionAnalyticsFilter(
+            startDate: movedSecondLambing,
+            endDate: rangeEnd,
+            penScope: .pen(penB),
+            breed: "湖羊"
+        )
+
+        let result = ReproductionAnalyticsEngine.calculate(snapshot: snapshot, filter: filter)
+
+        XCTAssertEqual(result.cohortCount, 1)
+        XCTAssertEqual(result.intervalPoints.first?.date, movedSecondLambing)
+        XCTAssertEqual(result.intervalPoints.first?.average, Double(FarmAnalyticsDate.days(from: firstLambing, to: movedSecondLambing)))
+        XCTAssertEqual(result.intervalPoints.last?.count, 1)
+        XCTAssertEqual(result.postpartumPoints.last?.average, Double(FarmAnalyticsDate.days(from: movedSecondLambing, to: rangeEnd)))
+        XCTAssertEqual(result.incompleteLambingCount, 1, "节律图应使用产羔日期，但缺字段记录仍须在依赖完整字段的指标中提示")
+
+        let beforeTransfer = ReproductionAnalyticsEngine.calculate(
+            snapshot: snapshot,
+            filter: .init(
+                startDate: movedSecondLambing,
+                endDate: makeDate(year: 2025, month: 12, day: 1),
+                penScope: .pen(penB),
+                breed: "湖羊"
+            )
+        )
+        XCTAssertEqual(beforeTransfer.cohortCount, 0, "羊舍切片必须按查询结束日，而不是当前圈舍字段")
+
+        let wrongBreed = ReproductionAnalyticsEngine.calculate(
+            snapshot: snapshot,
+            filter: .init(startDate: movedSecondLambing, endDate: rangeEnd, penScope: .pen(penB), breed: "杜泊")
+        )
+        XCTAssertEqual(wrongBreed.cohortCount, 0)
+    }
+
+    func testReproductionFilterOptionsRespectRemovalAndUnassignedAtCutoff() {
+        let farmID = UUID()
+        let assignedPenID = UUID()
+        let activeAssignedID = UUID()
+        let activeUnassignedID = UUID()
+        let removedID = UUID()
+        let cutoff = makeDate(year: 2026, month: 3, day: 1)
+        let snapshot = FarmAnalyticsSnapshot(
+            farmID: farmID,
+            sheep: [
+                .init(id: activeAssignedID, earTag: "E-A", breed: "湖羊", purpose: "繁殖母羊", sex: .ewe, status: .active, initialPenID: assignedPenID, currentPenID: assignedPenID, birthAt: nil, enteredAt: makeDate(year: 2025, month: 1, day: 1), removedAt: nil),
+                .init(id: activeUnassignedID, earTag: "E-U", breed: "杜泊", purpose: "后备母羊", sex: .ewe, status: .active, initialPenID: nil, currentPenID: nil, birthAt: nil, enteredAt: makeDate(year: 2025, month: 1, day: 1), removedAt: nil),
+                .init(id: removedID, earTag: "E-R", breed: "萨福克", purpose: "繁殖母羊", sex: .ewe, status: .removed, initialPenID: UUID(), currentPenID: nil, birthAt: nil, enteredAt: makeDate(year: 2025, month: 1, day: 1), removedAt: makeDate(year: 2026, month: 2, day: 1))
+            ],
+            pens: [.init(id: assignedPenID, name: "繁殖舍")],
+            weights: [], weanings: [], lambings: [],
+            removals: [.init(sheepID: removedID, kind: .sold, occurredAt: makeDate(year: 2026, month: 2, day: 1))],
+            transfers: [], batchMemberships: [], feeds: []
+        )
+
+        let options = ReproductionAnalyticsEngine.filterOptions(snapshot: snapshot, asOf: cutoff)
+
+        XCTAssertEqual(options.penIDs, [assignedPenID])
+        XCTAssertTrue(options.includesUnassigned)
+        XCTAssertEqual(options.breeds, ["杜泊", "湖羊"])
+    }
+
+    func testReproductionCohortIncludesEveryInHerdEweAndExcludesUndatedLegacyRemoval() throws {
+        let farmID = UUID()
+        let activeEweID = UUID()
+        let undatedRemovedEweID = UUID()
+        let firstLambing = makeDate(year: 2025, month: 1, day: 1)
+        let secondLambing = makeDate(year: 2025, month: 8, day: 1)
+        let cutoff = makeDate(year: 2026, month: 1, day: 1)
+        let snapshot = FarmAnalyticsSnapshot(
+            farmID: farmID,
+            sheep: [
+                .init(id: activeEweID, earTag: "E-ACTIVE", breed: "湖羊", purpose: "育肥羊", sex: .ewe, status: .active, initialPenID: nil, currentPenID: nil, birthAt: nil, enteredAt: makeDate(year: 2024, month: 1, day: 1), removedAt: nil),
+                .init(id: undatedRemovedEweID, earTag: "E-REMOVED", breed: "湖羊", purpose: "繁殖母羊", sex: .ewe, status: .removed, initialPenID: nil, currentPenID: nil, birthAt: nil, enteredAt: makeDate(year: 2024, month: 1, day: 1), removedAt: nil)
+            ],
+            pens: [],
+            weights: [],
+            weanings: [],
+            lambings: [
+                .init(id: UUID(), eweID: activeEweID, occurredAt: firstLambing, total: 1, parity: nil, birthDeadCount: nil, offspring: []),
+                .init(id: UUID(), eweID: activeEweID, occurredAt: secondLambing, total: 1, parity: nil, birthDeadCount: nil, offspring: []),
+                .init(id: UUID(), eweID: undatedRemovedEweID, occurredAt: firstLambing, total: 1, parity: nil, birthDeadCount: nil, offspring: []),
+                .init(id: UUID(), eweID: undatedRemovedEweID, occurredAt: secondLambing, total: 1, parity: nil, birthDeadCount: nil, offspring: [])
+            ],
+            removals: [],
+            transfers: [],
+            batchMemberships: [],
+            feeds: []
+        )
+
+        let result = ReproductionAnalyticsEngine.calculate(
+            snapshot: snapshot,
+            filter: .init(startDate: firstLambing, endDate: cutoff)
+        )
+
+        XCTAssertEqual(result.cohortCount, 1, "当前母羊群应包含所有用途的在群母羊，并排除缺少离场日期的旧离场状态")
+        XCTAssertEqual(result.intervalPoints.last?.count, 1)
+        XCTAssertEqual(result.intervalPoints.last?.average, Double(FarmAnalyticsDate.days(from: firstLambing, to: secondLambing)))
+    }
+
     func testPlusCompatibleLinearRegression() {
         let sheepID = UUID()
         let points = [

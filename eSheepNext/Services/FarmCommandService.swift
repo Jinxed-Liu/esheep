@@ -295,24 +295,19 @@ final class FarmCommandService {
     func createFarm(
         named name: String,
         account: AccountProfile,
-        entitlement: AccountEntitlement,
+        entitlement _: AccountEntitlement,
         context: ModelContext
     ) throws -> FarmRecord {
         let trimmedName = try required(name, label: "牧场名称")
-        let existingOwnedFarmCount = try context.fetch(FetchDescriptor<FarmRecord>()).count {
-            $0.ownerAccountID == account.effectiveAccountID &&
-            $0.deletedAt == nil
-        }
-        guard SubscriptionCapabilityPolicy.canCreateFarm(
-            existingOwnedFarmCount: existingOwnedFarmCount,
-            entitlement: entitlement
-        ) else {
-            throw FarmCreationEntitlementError.additionalFarmRequiresFarmPro
-        }
         let farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: trimmedName)
         context.insert(farm)
-        let payload = try JSONEncoder.cloud.encode(["name": trimmedName])
+        context.insert(FarmStorageProfile(farmID: farm.id, mode: .localOnly))
+        var cloudPayload = FarmCommandCloudPayload(kind: .createFarm)
+        cloudPayload.strings["name"] = trimmedName
+        let payload = try JSONEncoder.cloud.encode(cloudPayload)
+        let operationID = UUID()
         let operation = DomainOperation(
+            id: operationID,
             farmID: farm.id,
             accountID: account.effectiveAccountID,
             kind: .createFarm,
@@ -322,17 +317,13 @@ final class FarmCommandService {
             payload: payload
         )
         context.insert(operation)
-        context.insert(OutboxItem(
+        context.insert(FarmOperationSequenceCounter(farmID: farm.id, nextSequence: 2))
+        context.insert(FarmOperationSequenceRecord(
             farmID: farm.id,
-            accountID: account.effectiveAccountID,
-            operationID: operation.id,
-            entityType: operation.entityType,
-            entityID: operation.entityID,
-            baseRevision: operation.baseRevision,
-            payloadDigest: operation.payloadDigest
+            operationID: operationID,
+            clientSequence: 1
         ))
         try context.save()
-        CloudRuntimeNotification.postSyncWake(farmID: farm.id)
         return farm
     }
 
@@ -347,7 +338,9 @@ final class FarmCommandService {
         }
         try context.save()
         committed = true
-        CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
+            CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        }
     }
 
     func execute(
@@ -401,7 +394,9 @@ final class FarmCommandService {
         context.insert(receiptRecord)
         try context.save()
         committed = true
-        CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
+            CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        }
         return FarmCommandExecutionReceipt(
             sourceRequestID: sourceRequestID,
             operationID: operation.id,
@@ -513,7 +508,9 @@ final class FarmCommandService {
 
         try context.save()
         committed = true
-        CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
+            CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        }
         return try requests.map { request in
             guard let receipt = receiptBySourceRequestID[request.sourceRequestID] else {
                 throw FarmCommandError.sourceRecordNotFound
@@ -554,12 +551,28 @@ final class FarmCommandService {
         try flushHistory()
         try context.save()
         committed = true
-        CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
+            CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        }
     }
 
     private func validateCloudIdentity(in farm: FarmContext, context: ModelContext) throws {
         let farmID = farm.farmID
         let accountID = farm.accountID
+        let route = try FarmStorageRouter.route(farmID: farmID, context: context)
+        guard route.mode != .localOnly else { return }
+
+        if route.mode == .supabase {
+            let remoteBinding = try context.fetch(FetchDescriptor<FarmRemoteBinding>()).first {
+                $0.farmID == farmID &&
+                $0.provider == .supabase
+            }
+            guard remoteBinding?.state == .active else {
+                throw FarmCommandError.cloudIdentityLocked
+            }
+            return
+        }
+
         let cloudBinding = try context.fetch(FetchDescriptor<CloudFarmBinding>(predicate: #Predicate {
             $0.farmID == farmID
         })).first
@@ -585,7 +598,14 @@ final class FarmCommandService {
         try validate(command, farmID: farm.farmID, context: context)
         let result = try apply(command, farm: farm, context: context)
         let projectedHistoryImpact = try historyImpact(for: command, result: result, farmID: farm.farmID, context: context)
+        let operationID = UUID()
+        _ = try FarmStorageRouter.takeNextOperationSequence(
+            farmID: farm.farmID,
+            operationID: operationID,
+            context: context
+        )
         let operation = DomainOperation(
+            id: operationID,
             farmID: farm.farmID,
             accountID: farm.accountID,
             kind: command.operationKind,
@@ -638,15 +658,20 @@ final class FarmCommandService {
         default:
             break
         }
-        context.insert(OutboxItem(
-            farmID: farm.farmID,
-            accountID: farm.accountID,
-            operationID: operation.id,
-            entityType: operation.entityType,
-            entityID: operation.entityID,
-            baseRevision: operation.baseRevision,
-            payloadDigest: operation.payloadDigest
-        ))
+        let route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
+        if let deliveryProvider = route.deliveryProvider {
+            context.insert(OutboxItem(
+                farmID: farm.farmID,
+                accountID: farm.accountID,
+                operationID: operation.id,
+                entityType: operation.entityType,
+                entityID: operation.entityID,
+                baseRevision: operation.baseRevision,
+                payloadDigest: operation.payloadDigest,
+                deliveryProvider: deliveryProvider,
+                authorityGeneration: route.deliveryAuthorityGeneration
+            ))
+        }
         return projectedHistoryImpact
     }
 
@@ -790,9 +815,39 @@ final class FarmCommandService {
         operationPayload.integers = ["localRevision": conflict.localRevision, "remoteRevision": conflict.remoteRevision, "resolvedRevision": revision]
         operationPayload.dataValues = ["resolvedPayload": resolvedPayload]
         let payload = try JSONEncoder.cloud.encode(operationPayload)
-        let operation = DomainOperation(farmID: farm.farmID, accountID: farm.accountID, kind: .resolveConflict, summary: "解决同步冲突", entityType: conflict.entityType, entityID: conflict.entityID, baseRevision: max(conflict.localRevision, conflict.remoteRevision), resultingRevision: revision, payload: payload)
+        let operationID = UUID()
+        _ = try FarmStorageRouter.takeNextOperationSequence(
+            farmID: farm.farmID,
+            operationID: operationID,
+            context: context
+        )
+        let operation = DomainOperation(
+            id: operationID,
+            farmID: farm.farmID,
+            accountID: farm.accountID,
+            kind: .resolveConflict,
+            summary: "解决同步冲突",
+            entityType: conflict.entityType,
+            entityID: conflict.entityID,
+            baseRevision: max(conflict.localRevision, conflict.remoteRevision),
+            resultingRevision: revision,
+            payload: payload
+        )
         context.insert(operation)
-        context.insert(OutboxItem(farmID: farm.farmID, accountID: farm.accountID, operationID: operation.id, entityType: operation.entityType, entityID: operation.entityID, baseRevision: operation.baseRevision, payloadDigest: operation.payloadDigest))
+        let route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
+        if let deliveryProvider = route.deliveryProvider {
+            context.insert(OutboxItem(
+                farmID: farm.farmID,
+                accountID: farm.accountID,
+                operationID: operation.id,
+                entityType: operation.entityType,
+                entityID: operation.entityID,
+                baseRevision: operation.baseRevision,
+                payloadDigest: operation.payloadDigest,
+                deliveryProvider: deliveryProvider,
+                authorityGeneration: route.deliveryAuthorityGeneration
+            ))
+        }
         conflict.statusRawValue = status.rawValue
         conflict.resolutionNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
         conflict.resolutionOperationID = operation.id
@@ -800,7 +855,9 @@ final class FarmCommandService {
         conflict.resolvedAt = .now
         conflict.resolutionFailureReason = nil
         try context.save()
-        CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        if route.requiresOutbox {
+            CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        }
         return operation.id
     }
 

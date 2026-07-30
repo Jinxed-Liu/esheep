@@ -7,6 +7,50 @@ struct PendingCloudOperation: Sendable {
     let databaseScope: CloudDatabaseScope
 }
 
+enum SharedFarmAdmissionPolicy {
+    static let pendingFarmName = "待加入的共享牧场"
+
+    static func isLocallyOwnedForDisplay(
+        farmOwnerAccountID: UUID,
+        activeAccountID: UUID,
+        bindingScope: CloudDatabaseScope?
+    ) -> Bool {
+        farmOwnerAccountID == activeAccountID &&
+            bindingScope != .sharedDatabase
+    }
+
+    static func isReadyForDisplay(
+        bindingScope: CloudDatabaseScope,
+        bindingState: CloudFarmBindingState,
+        farmName: String,
+        membershipStatus: FarmMembershipStatus
+    ) -> Bool {
+        bindingScope == .sharedDatabase &&
+            bindingState == .active &&
+            farmName != pendingFarmName &&
+            membershipStatus == .active
+    }
+
+    static func isPendingAdmission(
+        bindingScope: CloudDatabaseScope,
+        bindingState: CloudFarmBindingState,
+        farmName: String,
+        membershipStatus: FarmMembershipStatus?
+    ) -> Bool {
+        guard bindingScope == .sharedDatabase,
+              bindingState != .accessRevoked else {
+            return false
+        }
+        guard let membershipStatus else { return true }
+        return !isReadyForDisplay(
+            bindingScope: bindingScope,
+            bindingState: bindingState,
+            farmName: farmName,
+            membershipStatus: membershipStatus
+        )
+    }
+}
+
 struct CloudFarmBindingSnapshot: Sendable {
     let farmID: UUID
     let ownerAccountID: UUID
@@ -365,35 +409,20 @@ actor FarmPersistenceActor {
                 context.insert(photo)
             }
 
-            var applied = 0
-            var earliestHistoryChange: Date?
             // purgeConfirmedBusinessCache has made this farm's business cache
             // empty; keep replay lookups in memory without changing live sync.
             let service = RemoteDomainApplyService(replayAssumesEmptyBusinessStore: true)
-            for envelope in bundle.operations {
-                guard envelope.farmID == bundle.farmID else { throw CloudRebuildError.farmMismatch }
-                switch try service.apply(envelope, context: context) {
-                case .applied(let changedAt):
-                    applied += 1
-                    if let changedAt { earliestHistoryChange = min(earliestHistoryChange ?? changedAt, changedAt) }
-                case .duplicate:
-                    break
-                case .conflict(let localRevision):
-                    throw CloudRebuildError.operationReplayConflict(
-                        stage: "云端权威操作",
-                        operationID: envelope.operationID,
-                        baseRevision: envelope.baseRevision,
-                        localRevision: localRevision
-                    )
-                }
-                context.insert(CloudOperationReceipt(
-                    farmID: bundle.farmID,
-                    operationID: envelope.operationID,
-                    recordName: mapper.recordName(for: envelope.operationID),
-                    serverChangeTag: nil,
-                    databaseScope: bundle.scope
-                ))
-            }
+            let authoritativeReplay = try RemoteDomainReplayExecutor.replay(
+                bundle.operations,
+                farmID: bundle.farmID,
+                scope: bundle.scope,
+                context: context,
+                service: service,
+                mapper: mapper,
+                conflictStage: "云端权威操作",
+                baselineCutoffAt: bundle.bootstrap?.cutoffAt
+            )
+            var earliestHistoryChange = authoritativeReplay.earliestHistoryChange
 
             for pending in orderedPendingOperations {
                 let operation = pending.operation
@@ -535,7 +564,7 @@ actor FarmPersistenceActor {
             try FarmHistoryRebuilder().rebuild(farmID: bundle.farmID, context: context, from: earliestHistoryChange ?? .distantPast)
             try context.save()
             return FarmCacheReplacementResult(
-                appliedOperationCount: applied,
+                appliedOperationCount: authoritativeReplay.appliedOperationCount,
                 preservedOutboxCount: pendingOutbox.filter { $0.status != .confirmed }.count,
                 highestRevision: bundle.operations.map(\.revision).max() ?? 0,
                 entityDigest: Self.entityDigest(bundle.operations)
@@ -547,6 +576,216 @@ actor FarmPersistenceActor {
             }
             throw error
         }
+    }
+
+    /// Repairs projections created by the legacy v2-bootstrap replay bug
+    /// without discarding a CKSyncEngine token that has already completed its
+    /// authoritative catch-up. This path is deliberately narrower than a
+    /// normal cache rebuild and refuses to run if any post-bundle operation,
+    /// changed cloud asset, pending command, or membership change exists.
+    func repairLegacyBootstrapProjectionIfUnchanged(
+        using bundle: CloudRebuildBundle,
+        stagingWorkspace: URL
+    ) throws -> Bool {
+        try CloudRebuildBundleValidator.validate(bundle)
+        guard bundle.scope == .sharedDatabase,
+              bundle.bootstrap?.normalizedVersion == 2,
+              CloudEngineStateDiskStore.load(scope: bundle.scope) != nil else {
+            return false
+        }
+        let expectedWorkspace = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(
+                path: "CloudRebuild/\(bundle.sessionID.uuidString.lowercased())",
+                directoryHint: .isDirectory
+            )
+            .standardizedFileURL
+        guard stagingWorkspace.standardizedFileURL == expectedWorkspace else {
+            throw CloudRebuildError.stagingValidation("本地投影修复的 staging 路径不匹配。")
+        }
+
+        let context = ModelContext(container)
+        guard let binding = try context.fetch(FetchDescriptor<CloudFarmBinding>())
+            .first(where: {
+                $0.farmID == bundle.farmID &&
+                    $0.databaseScope == bundle.scope &&
+                    $0.state == .active
+            }),
+              binding.lastErrorCode == nil,
+              let farm = try context.fetch(FetchDescriptor<FarmRecord>())
+                .first(where: { $0.id == bundle.farmID && $0.deletedAt == nil }),
+              farm.ownerAccountID == bundle.root.ownerAccountID,
+              farm.name == bundle.root.name else {
+            return false
+        }
+        if try context.fetch(FetchDescriptor<SecurityIncidentRecord>())
+            .contains(where: {
+                $0.farmID == bundle.farmID &&
+                    $0.incidentType == LegacyBootstrapProjectionRepair.incidentType
+            }) {
+            return false
+        }
+
+        let receipts = try context.fetch(FetchDescriptor<CloudOperationReceipt>())
+            .filter {
+                $0.farmID == bundle.farmID &&
+                    $0.databaseScopeRawValue == bundle.scope.rawValue
+            }
+        let authoritativeOperationIDs = Set(bundle.operations.map(\.operationID))
+        guard receipts.count == bundle.operations.count,
+              Set(receipts.map(\.operationID)) == authoritativeOperationIDs else {
+            return false
+        }
+        let pendingOutbox = try context.fetch(FetchDescriptor<OutboxItem>())
+            .filter { $0.farmID == bundle.farmID && $0.status != .confirmed }
+        guard pendingOutbox.isEmpty else { return false }
+
+        let currentAssetIdentity = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+            .filter {
+                $0.farmID == bundle.farmID &&
+                    $0.isCloudAuthoritative
+            }
+            .map {
+                [
+                    $0.id.uuidString.lowercased(),
+                    $0.sha256,
+                    $0.sourceSHA256,
+                    $0.cloudRecordName ?? "",
+                ].joined(separator: ":")
+            }
+            .sorted()
+        let bundleAssetIdentity = bundle.assets.map {
+            [
+                $0.envelope.assetID.uuidString.lowercased(),
+                $0.envelope.payloadDigest,
+                $0.envelope.sourceDigest,
+                $0.cloudRecordName,
+            ].joined(separator: ":")
+        }.sorted()
+        guard currentAssetIdentity == bundleAssetIdentity else { return false }
+
+        let membershipRecords = try context.fetch(
+            FetchDescriptor<FarmMembershipSnapshotRecord>()
+        ).filter { $0.farmID == bundle.farmID }
+        switch bundle.membershipSnapshot {
+        case .none:
+            guard membershipRecords.isEmpty else { return false }
+        case .some(let expected):
+            guard membershipRecords.count == 1,
+                  let current = membershipRecords.first,
+                  current.generation == expected.generation,
+                  current.payloadDigest == CloudPayloadDigest.hex(for: expected.payload),
+                  current.signedByAccountID == expected.signedByAccountID,
+                  current.signedByDeviceID == expected.signedByDeviceID else {
+                return false
+            }
+        }
+
+        let stagingStoreURL = stagingWorkspace
+            .appending(path: "SwiftData", directoryHint: .isDirectory)
+            .appending(path: "staging.store")
+        let stagingContainer = try AppSchema.makeContainer(
+            name: "LegacyBootstrapProjectionRepair",
+            url: stagingStoreURL
+        )
+        let stagingContext = ModelContext(stagingContainer)
+        let expectedProjectionDigest = try Self.sheepProjectionDigest(
+            farmID: bundle.farmID,
+            context: stagingContext
+        )
+        let currentProjectionDigest = try Self.sheepProjectionDigest(
+            farmID: bundle.farmID,
+            context: context
+        )
+        if currentProjectionDigest == expectedProjectionDigest {
+            context.insert(SecurityIncidentRecord(
+                farmID: bundle.farmID,
+                incidentType: LegacyBootstrapProjectionRepair.incidentType,
+                recordName: bundle.sessionID.uuidString.lowercased(),
+                detail: "已核对 v2 基线历史重放投影，无需修改。"
+            ))
+            try context.save()
+            return false
+        }
+
+        let expectedSheep = try stagingContext.fetch(FetchDescriptor<SheepRecord>())
+            .filter { $0.farmID == bundle.farmID }
+        let currentSheep = try context.fetch(FetchDescriptor<SheepRecord>())
+            .filter { $0.farmID == bundle.farmID }
+        let expectedGroups = Dictionary(grouping: expectedSheep, by: \.id)
+        guard expectedGroups.values.allSatisfy({ $0.count == 1 }) else {
+            throw CloudRebuildError.stagingValidation(
+                "已校验 staging 中存在重复羊只标识，拒绝执行投影修复。"
+            )
+        }
+        let expectedByID = expectedGroups.compactMapValues(\.first)
+        guard currentSheep.count == expectedSheep.count,
+              Set(currentSheep.map(\.id)) == Set(expectedByID.keys) else {
+            throw CloudRebuildError.stagingValidation(
+                "本地羊只集合与已校验 staging 不一致，拒绝执行投影修复。"
+            )
+        }
+        for sheep in currentSheep {
+            guard let expected = expectedByID[sheep.id] else {
+                throw CloudRebuildError.stagingValidation(
+                    "本地羊只 \(sheep.id.uuidString.lowercased()) 缺少 staging 投影。"
+                )
+            }
+            // These are cache projections, not new domain mutations. Keep
+            // revision/updatedAt unchanged so the local repair cannot create
+            // an Outbox write or masquerade as a farm command.
+            sheep.statusRawValue = expected.statusRawValue
+            sheep.initialPenID = expected.initialPenID
+            sheep.currentPenID = expected.currentPenID
+            sheep.removedAt = expected.removedAt
+            sheep.legacyStatusSnapshotIsAuthoritative =
+                expected.legacyStatusSnapshotIsAuthoritative
+            sheep.legacyPenSnapshotIsAuthoritative =
+                expected.legacyPenSnapshotIsAuthoritative
+        }
+        try FarmHistoryRebuilder().rebuild(
+            farmID: bundle.farmID,
+            context: context,
+            from: .distantPast
+        )
+        let repairedProjectionDigest = try Self.sheepProjectionDigest(
+            farmID: bundle.farmID,
+            context: context
+        )
+        guard repairedProjectionDigest == expectedProjectionDigest else {
+            throw CloudRebuildError.stagingValidation("本地投影修复后仍与已校验 staging 不一致。")
+        }
+        context.insert(SecurityIncidentRecord(
+            farmID: bundle.farmID,
+            incidentType: LegacyBootstrapProjectionRepair.incidentType,
+            recordName: bundle.sessionID.uuidString.lowercased(),
+            detail: "已从同一已验证 staging 原子修复迁移基线羊只投影；未重放云端操作，未重置已完成追赶的 CKSyncEngine 状态。"
+        ))
+        try context.save()
+        return true
+    }
+
+    private static func sheepProjectionDigest(
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> String {
+        let lines = try context.fetch(FetchDescriptor<SheepRecord>())
+            .filter { $0.farmID == farmID }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+            .map { sheep in
+                [
+                    sheep.id.uuidString.lowercased(),
+                    sheep.statusRawValue,
+                    sheep.initialPenID?.uuidString.lowercased() ?? "",
+                    sheep.currentPenID?.uuidString.lowercased() ?? "",
+                    sheep.removedAt.map {
+                        String(CloudRebuildRootSnapshot.milliseconds($0))
+                    } ?? "",
+                    sheep.legacyStatusSnapshotIsAuthoritative == true ? "1" : "0",
+                    sheep.legacyPenSnapshotIsAuthoritative == true ? "1" : "0",
+                ].joined(separator: ":")
+            }
+        return CloudPayloadDigest.hex(for: Data(lines.joined(separator: "\n").utf8))
     }
 
     private static func restoreLocalPhotoAssets(
@@ -745,7 +984,7 @@ actor FarmPersistenceActor {
         switch item.status {
         case .pending, .uploading, .awaitingConfirmation, .retryableFailure:
             return true
-        case .confirmed, .rejectedPermission, .blockedConflict:
+        case .confirmed, .rejectedPermission, .blockedConflict, .notRequiredLocalOnly:
             return false
         }
     }
@@ -814,6 +1053,7 @@ actor FarmPersistenceActor {
         let pending = OutboxStatus.pending.rawValue
         let uploading = OutboxStatus.uploading.rawValue
         let awaiting = OutboxStatus.awaitingConfirmation.rawValue
+        let iCloudProvider = FarmRemoteProvider.iCloud.rawValue
         var primaryDescriptor: FetchDescriptor<OutboxItem>
         if let restrictedFarmID {
             primaryDescriptor = FetchDescriptor<OutboxItem>(
@@ -831,15 +1071,17 @@ actor FarmPersistenceActor {
                 sortBy: [SortDescriptor(\.createdAt)]
             )
         }
-        primaryDescriptor.fetchLimit = max(1, maxOutboxItems)
-        var outbox = try context.fetch(primaryDescriptor)
+        var outbox = Array(try context.fetch(primaryDescriptor).lazy.filter {
+            $0.deliveryProviderRawValue == nil || $0.deliveryProviderRawValue == iCloudProvider
+        }.prefix(max(1, maxOutboxItems)))
         if outbox.count < maxOutboxItems {
             let retryable = OutboxStatus.retryableFailure.rawValue
             let retryDescriptor: FetchDescriptor<OutboxItem>
             if let restrictedFarmID {
                 retryDescriptor = FetchDescriptor<OutboxItem>(
                     predicate: #Predicate {
-                        $0.farmID == restrictedFarmID && $0.statusRawValue == retryable
+                        $0.farmID == restrictedFarmID &&
+                            $0.statusRawValue == retryable
                     },
                     sortBy: [SortDescriptor(\.createdAt)]
                 )
@@ -854,7 +1096,8 @@ actor FarmPersistenceActor {
             // retry time has already arrived and make the migration tail look
             // empty even though immediately schedulable work exists.
             let eligibleRetryable = try context.fetch(retryDescriptor).filter {
-                $0.nextRetryAt == nil || $0.nextRetryAt! <= .now
+                ($0.deliveryProviderRawValue == nil || $0.deliveryProviderRawValue == iCloudProvider) &&
+                    ($0.nextRetryAt == nil || $0.nextRetryAt! <= .now)
             }
             outbox.append(contentsOf: eligibleRetryable.prefix(maxOutboxItems - outbox.count))
         }
@@ -1301,12 +1544,36 @@ actor FarmPersistenceActor {
         let farm = FarmRecord(
             id: farmID,
             ownerAccountID: temporaryOwnerAccountID,
-            name: "待加入的共享牧场",
+            name: SharedFarmAdmissionPolicy.pendingFarmName,
             role: .worker
         )
         farm.membershipStatusRawValue = FarmMembershipStatus.pendingOwnerConfirmation.rawValue
         context.insert(farm)
         try context.save()
+    }
+
+    func sharedFarmBootstrapIsComplete(
+        farmID: UUID,
+        accountID: UUID
+    ) throws -> Bool {
+        let context = ModelContext(container)
+        guard let binding = try context.fetch(FetchDescriptor<CloudFarmBinding>()).first(where: {
+            $0.farmID == farmID
+        }),
+              let farm = try context.fetch(FetchDescriptor<FarmRecord>()).first(where: {
+                  $0.id == farmID && $0.deletedAt == nil
+              }),
+              let membership = try context.fetch(FetchDescriptor<FarmMembershipBinding>()).first(where: {
+                  $0.farmID == farmID && $0.accountID == accountID
+              }) else {
+            return false
+        }
+        return SharedFarmAdmissionPolicy.isReadyForDisplay(
+            bindingScope: binding.databaseScope,
+            bindingState: binding.state,
+            farmName: farm.name,
+            membershipStatus: membership.status
+        )
     }
 
     func stageDiscoveredOwnerFarm(farmID: UUID, ownerAccountID: UUID, shareRecordName: String?) throws {
@@ -2764,7 +3031,7 @@ actor FarmPersistenceActor {
             do {
                 let root = try mapper.farmRootValue(from: record)
                 if let farm = farms.first(where: { $0.id == root.farmID }) {
-                    if farm.name == "待加入的共享牧场" {
+                    if farm.name == SharedFarmAdmissionPolicy.pendingFarmName {
                         farm.name = root.name
                         farm.ownerAccountID = root.ownerAccountID
                         farm.updatedAt = root.modifiedAt

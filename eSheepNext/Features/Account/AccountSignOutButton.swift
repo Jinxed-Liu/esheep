@@ -35,7 +35,7 @@ struct AccountSignOutButton: View {
         Task { @MainActor in
             defer { isSigningOut = false }
             do {
-                let result = try await IdentityWorkerClient.shared.signOut()
+                let result = try await AccountIdentityClients.active().signOut()
                 session.authenticationDidSignOut(warning: result.warningMessage)
             } catch {
                 errorMessage = error.localizedDescription

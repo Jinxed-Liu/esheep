@@ -59,7 +59,7 @@ async function invoke(handler, path, body, method, token) {
 
 function fakeService(overrides = {}) {
   return {
-    health: async () => ({ status: "ok", environment: "cloudbase-development", version: "0.4.0", database: "cloudbase-document" }),
+    health: async () => ({ status: "ok", environment: "cloudbase-development", version: "0.4.5", database: "cloudbase-document" }),
     ensureAccount: async (accountID, displayName) => ({ accountID, displayName: displayName || "eSheep+ 用户" }),
     consumeRateLimit: async () => ({ remaining: 1 }),
     recordAppleBinding: async () => undefined,
@@ -332,6 +332,35 @@ class MemoryStore {
   async transaction(operation) { return operation(this); }
 }
 
+class CloudBaseQueryStore extends MemoryStore {
+  async find(where, limit = 1000) {
+    return (await super.find(where, limit)).map(({ _documentID, ...value }) => value);
+  }
+}
+
+class CloudBaseCommitOnlyStore extends CloudBaseQueryStore {
+  async transaction(operation) {
+    await operation(this);
+  }
+}
+
+class CloudBaseTransactionMetadataStore extends CloudBaseQueryStore {
+  async transaction(operation) {
+    await operation(this);
+    return { requestId: "cloudbase-transaction-request" };
+  }
+}
+
+class CloudBaseTransactionMissingBusinessFieldsStore extends CloudBaseQueryStore {
+  async transaction(operation) {
+    const transactionStore = Object.create(this);
+    transactionStore.find = async (where, limit = 1000) => (
+      await this.find(where, limit)
+    ).map(({ inviteID, farmID, role, ...value }) => value);
+    return operation(transactionStore);
+  }
+}
+
 test("identity rate limits fail closed after the configured request count", async () => {
   const service = new CollaborationService({ store: new MemoryStore(), env: {} });
   await service.consumeRateLimit("password_login", "client-1", 2, 900);
@@ -427,13 +456,206 @@ test("invite remains pending until owner confirmation and generation changes onl
   await service.ensureAccount(worker, "员工");
   await service.registerFarm(owner, { farmID, zoneName: `farm_${farmID}` });
   const invite = await service.createInvite(owner, { farmID, role: "worker" });
-  const redeemed = await service.redeemInvite(worker, { code: invite.code });
+  const redeemed = await service.redeemInvite(worker, {
+    code: invite.code,
+    cloudKitUserRecordName: "receiver-cloudkit-record",
+  });
   assert.equal(redeemed.membershipStatus, "pendingShareConfirmation");
   assert.equal((await service.securitySnapshot(owner, farmID)).generation, 1);
   await service.confirmInvite(owner, invite.inviteID, { shareParticipantRecordName: "participant-1" });
   const snapshot = await service.securitySnapshot(owner, farmID);
   assert.equal(snapshot.generation, 2);
   assert.equal(snapshot.members.find((item) => item.accountID === worker).status, "active");
+});
+
+test("one-time CloudKit participant redeems the same invite and remains exactly matchable", async () => {
+  const store = new MemoryStore();
+  const service = new CollaborationService({ store, env: {} });
+  const owner = "11111111-1111-5111-8111-111111111111";
+  const worker = "22222222-2222-5222-8222-222222222222";
+  const farmID = "33333333-3333-5333-8333-333333333333";
+  const shareParticipantID = "cloudkit-one-time-participant";
+  await service.ensureAccount(owner, "场主");
+  await service.ensureAccount(worker, "员工");
+  await service.registerFarm(owner, { farmID, zoneName: `farm_${farmID}` });
+
+  const invite = await service.createInvite(owner, {
+    farmID,
+    role: "worker",
+    shareParticipantID,
+  });
+  assert.equal(invite.shareParticipantID, shareParticipantID);
+
+  const redeemed = await service.redeemInvite(worker, { shareParticipantID });
+  assert.equal(redeemed.inviteID, invite.inviteID);
+  const pending = await service.pendingInvites(owner, farmID);
+  assert.deepEqual(pending, [{
+    inviteID: invite.inviteID,
+    farmID,
+    role: "worker",
+    shareParticipantID,
+    cloudKitUserRecordName: null,
+    expiresAt: invite.expiresAt,
+  }]);
+
+  await service.confirmInvite(owner, invite.inviteID, {
+    shareParticipantRecordName: "participant-record-name",
+  });
+  assert.deepEqual(await service.pendingInvites(owner, farmID), []);
+});
+
+test("code invite carries the receiver CloudKit identity for private-share approval", async () => {
+  const store = new MemoryStore();
+  const service = new CollaborationService({ store, env: {} });
+  const owner = "11111111-1111-5111-8111-111111111111";
+  const worker = "22222222-2222-5222-8222-222222222222";
+  const farmID = "33333333-3333-5333-8333-333333333333";
+  await service.ensureAccount(owner, "场主");
+  await service.ensureAccount(worker, "员工");
+  await service.registerFarm(owner, { farmID, zoneName: `farm_${farmID}` });
+
+  const invite = await service.createInvite(owner, { farmID, role: "worker" });
+  await service.redeemInvite(worker, {
+    code: invite.code,
+    cloudKitUserRecordName: "_receiver-cloudkit-user",
+  });
+
+  assert.deepEqual(await service.pendingInvites(owner, farmID), [{
+    inviteID: invite.inviteID,
+    farmID,
+    role: "worker",
+    shareParticipantID: null,
+    cloudKitUserRecordName: "_receiver-cloudkit-user",
+    expiresAt: invite.expiresAt,
+  }]);
+});
+
+test("code redemption returns the validated iCloud share URL", async () => {
+  const store = new MemoryStore();
+  const service = new CollaborationService({ store, env: {} });
+  const owner = "11111111-1111-5111-8111-111111111111";
+  const worker = "22222222-2222-5222-8222-222222222222";
+  const farmID = "33333333-3333-5333-8333-333333333333";
+  const shareURL = "https://www.icloud.com/share/example";
+  await service.ensureAccount(owner, "场主");
+  await service.ensureAccount(worker, "员工");
+  await service.registerFarm(owner, { farmID, zoneName: `farm_${farmID}` });
+
+  const invite = await service.createInvite(owner, {
+    farmID,
+    role: "worker",
+    shareURL,
+  });
+  const redeemed = await service.redeemInvite(worker, {
+    code: invite.code,
+    cloudKitUserRecordName: "_receiver-cloudkit-user",
+  });
+
+  assert.equal(redeemed.shareURL, shareURL);
+  await assert.rejects(
+    service.createInvite(owner, {
+      farmID,
+      role: "worker",
+      shareURL: "https://example.com/not-an-icloud-share",
+    }),
+    (error) => error.code === "invalid_cloud_share_url",
+  );
+});
+
+test("code redemption derives the invite document id when CloudBase query rows omit helper fields", async () => {
+  const store = new CloudBaseQueryStore();
+  const service = new CollaborationService({ store, env: {} });
+  const owner = "11111111-1111-5111-8111-111111111111";
+  const worker = "22222222-2222-5222-8222-222222222222";
+  const farmID = "33333333-3333-5333-8333-333333333333";
+  await service.ensureAccount(owner, "场主");
+  await service.ensureAccount(worker, "员工");
+  await service.registerFarm(owner, { farmID, zoneName: `farm_${farmID}` });
+
+  const invite = await service.createInvite(owner, { farmID, role: "worker" });
+  const redeemed = await service.redeemInvite(worker, {
+    code: invite.code,
+    cloudKitUserRecordName: "_receiver-cloudkit-user",
+  });
+
+  assert.equal(redeemed.inviteID, invite.inviteID);
+  assert.equal((await service.pendingInvites(owner, farmID))[0].inviteID, invite.inviteID);
+});
+
+test("code redemption returns its response when CloudBase commits without returning the callback value", async () => {
+  const store = new CloudBaseCommitOnlyStore();
+  const service = new CollaborationService({ store, env: {} });
+  const owner = "11111111-1111-5111-8111-111111111111";
+  const worker = "22222222-2222-5222-8222-222222222222";
+  const farmID = "33333333-3333-5333-8333-333333333333";
+  await service.ensureAccount(owner, "场主");
+  await service.ensureAccount(worker, "员工");
+  await service.registerFarm(owner, { farmID, zoneName: `farm_${farmID}` });
+
+  const invite = await service.createInvite(owner, { farmID, role: "worker" });
+  const redeemed = await service.redeemInvite(worker, {
+    code: invite.code,
+    cloudKitUserRecordName: "_receiver-cloudkit-user",
+  });
+
+  assert.deepEqual(redeemed, {
+    inviteID: invite.inviteID,
+    farmID,
+    role: "worker",
+    membershipStatus: "pendingShareConfirmation",
+  });
+  assert.deepEqual(await service.redeemInvite(worker, {
+    code: invite.code,
+    cloudKitUserRecordName: "_receiver-cloudkit-user",
+  }), redeemed);
+});
+
+test("code redemption ignores CloudBase transaction metadata and returns the business response", async () => {
+  const store = new CloudBaseTransactionMetadataStore();
+  const service = new CollaborationService({ store, env: {} });
+  const owner = "11111111-1111-5111-8111-111111111111";
+  const worker = "22222222-2222-5222-8222-222222222222";
+  const farmID = "33333333-3333-5333-8333-333333333333";
+  await service.ensureAccount(owner, "场主");
+  await service.ensureAccount(worker, "员工");
+  await service.registerFarm(owner, { farmID, zoneName: `farm_${farmID}` });
+
+  const invite = await service.createInvite(owner, { farmID, role: "worker" });
+  const redeemed = await service.redeemInvite(worker, {
+    code: invite.code,
+    cloudKitUserRecordName: "_receiver-cloudkit-user",
+  });
+
+  assert.deepEqual(redeemed, {
+    inviteID: invite.inviteID,
+    farmID,
+    role: "worker",
+    membershipStatus: "pendingShareConfirmation",
+  });
+});
+
+test("code redemption resolves the invite before a CloudBase transaction drops query business fields", async () => {
+  const store = new CloudBaseTransactionMissingBusinessFieldsStore();
+  const service = new CollaborationService({ store, env: {} });
+  const owner = "11111111-1111-5111-8111-111111111111";
+  const worker = "22222222-2222-5222-8222-222222222222";
+  const farmID = "33333333-3333-5333-8333-333333333333";
+  await service.ensureAccount(owner, "场主");
+  await service.ensureAccount(worker, "员工");
+  await service.registerFarm(owner, { farmID, zoneName: `farm_${farmID}` });
+
+  const invite = await service.createInvite(owner, { farmID, role: "worker" });
+  const redeemed = await service.redeemInvite(worker, {
+    code: invite.code,
+    cloudKitUserRecordName: "_receiver-cloudkit-user",
+  });
+
+  assert.deepEqual(redeemed, {
+    inviteID: invite.inviteID,
+    farmID,
+    role: "worker",
+    membershipStatus: "pendingShareConfirmation",
+  });
 });
 
 test("provisioning farms issue owner capabilities but stay hidden until activation", async () => {

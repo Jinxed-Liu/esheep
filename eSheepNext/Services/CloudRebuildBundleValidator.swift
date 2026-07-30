@@ -131,6 +131,18 @@ enum CloudRebuildBundleValidator {
             case .addNote:
                 if let sheepID = optionalID("sheepID", payload) { try require(sheepID, in: entitiesByType[.sheep], field: "note.sheepID") }
                 if let penID = optionalID("penID", payload) { try require(penID, in: entitiesByType[.pen], field: "note.penID") }
+            case .addPhoto:
+                guard payload.strings["sha256"]?.count == 64,
+                      payload.strings["mimeType"]?.isEmpty == false else {
+                    throw RemoteDomainApplyError.invalidPayload("photo")
+                }
+                if let sheepID = optionalID("sheepID", payload) {
+                    try require(
+                        sheepID,
+                        in: entitiesByType[.sheep],
+                        field: "photo.sheepID"
+                    )
+                }
             case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity:
                 break
             }

@@ -53,6 +53,16 @@ actor DeviceIdentityActor {
         return identity
     }
 
+    func registerWithActiveAccountProvider() async throws -> DeviceSigningIdentity {
+        let identity = try identity()
+        _ = try await AccountIdentityClients.active().registerDevice(
+            deviceID: identity.deviceID,
+            publicKeyJWK: identity.publicKeyJWK,
+            displayName: UIDevice.current.name
+        )
+        return identity
+    }
+
     private func loadOrCreateDeviceID() throws -> UUID {
         if let data = try SecureAccountStore.data(account: "device-id"),
            let text = String(data: data, encoding: .utf8),

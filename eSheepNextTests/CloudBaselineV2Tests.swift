@@ -103,6 +103,101 @@ final class CloudBaselineV2Tests: XCTestCase {
         XCTAssertEqual(recoveredActive.legacyPenSnapshotIsAuthoritative, true)
     }
 
+    func testVersion2HistoricalTransferBootstrapDoesNotOverrideAuthoritativeSheepSnapshot() throws {
+        let sourceContainer = try AppSchema.makeContainer(
+            name: "baseline-v2-history-source-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let source = ModelContext(sourceContainer)
+        let ownerID = UUID()
+        let farm = FarmRecord(ownerAccountID: ownerID, name: "历史状态牧场")
+        farm.isLocalOnlyMigration = true
+        let initialPen = PenRecord(farmID: farm.id, name: "初始圈")
+        let historicalPen = PenRecord(farmID: farm.id, name: "历史转入圈")
+        let removedAt = Date(timeIntervalSince1970: 1_735_689_600)
+        let sheep = SheepRecord(
+            farmID: farm.id,
+            earTag: "LEGACY-REMOVED-001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: initialPen.id,
+            enteredAt: removedAt.addingTimeInterval(-172_800)
+        )
+        sheep.statusRawValue = SheepStatus.removed.rawValue
+        sheep.currentPenID = nil
+        sheep.removedAt = nil
+        sheep.legacyStatusSnapshotIsAuthoritative = true
+        sheep.legacyPenSnapshotIsAuthoritative = true
+        let historicalTransfer = TransferRecord(
+            farmID: farm.id,
+            sheepID: sheep.id,
+            fromPenID: initialPen.id,
+            toPenID: historicalPen.id,
+            occurredAt: removedAt.addingTimeInterval(-86_400),
+            note: "迁移前历史转群"
+        )
+        let commit = MigrationCommitRecord(
+            sessionID: UUID(),
+            sourceChecksum: "verified-history-source",
+            farmID: farm.id,
+            ownerAccountID: ownerID,
+            recordCountsJSON: "{}",
+            assetsRelativeDirectory: ""
+        )
+        source.insert(farm)
+        source.insert(initialPen)
+        source.insert(historicalPen)
+        source.insert(sheep)
+        source.insert(historicalTransfer)
+        source.insert(commit)
+        try source.save()
+
+        _ = try MigrationCloudBootstrapService().prepare(
+            commit: commit,
+            farm: farm,
+            accountID: ownerID,
+            context: source
+        )
+        try source.save()
+        let operations = CloudRebuildActor.sortedOperations(
+            try source.fetch(FetchDescriptor<DomainOperation>())
+                .filter { $0.farmID == farm.id }
+                .map(makeEnvelope(from:))
+        )
+
+        let recoveryContainer = try AppSchema.makeContainer(
+            name: "baseline-v2-history-recovery-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let recovery = ModelContext(recoveryContainer)
+        let service = RemoteDomainApplyService(replayAssumesEmptyBusinessStore: true)
+        for operation in operations {
+            _ = try service.apply(operation, context: recovery)
+        }
+        try FarmHistoryRebuilder().rebuild(
+            farmID: farm.id,
+            context: recovery,
+            from: .distantPast
+        )
+        try recovery.save()
+
+        let recovered = try XCTUnwrap(
+            try recovery.fetch(FetchDescriptor<SheepRecord>())
+                .first { $0.id == sheep.id }
+        )
+        XCTAssertEqual(recovered.status, .removed)
+        XCTAssertNil(recovered.currentPenID)
+        XCTAssertEqual(recovered.legacyStatusSnapshotIsAuthoritative, true)
+        XCTAssertEqual(recovered.legacyPenSnapshotIsAuthoritative, true)
+        XCTAssertEqual(
+            try recovery.fetch(FetchDescriptor<TransferRecord>())
+                .filter { $0.sheepID == sheep.id }
+                .count,
+            1,
+            "历史实体仍须恢复，但不能推翻同一基线里的最终 Sheep 快照"
+        )
+    }
+
     func testBaselineCanonicalizationReusesUnchangedV1ReplacesChangedSlotWithV2AndHonorsCutoffTombstone() throws {
         let farmID = UUID()
         let cutoff = Date(timeIntervalSince1970: 1_735_689_600)

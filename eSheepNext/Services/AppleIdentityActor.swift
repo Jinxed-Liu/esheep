@@ -27,7 +27,11 @@ enum AppleIdentityError: LocalizedError {
 actor AppleIdentityActor {
     static let shared = AppleIdentityActor()
 
-    func bind(_ payload: AppleAuthorizationPayload, client: IdentityWorkerClient = .shared) async throws -> WorkerSessionResponse {
+    func bind(
+        _ payload: AppleAuthorizationPayload,
+        client: (any AccountIdentityClient)? = nil
+    ) async throws -> WorkerSessionResponse {
+        let client = try client ?? AccountIdentityClients.active()
         let response = try await client.authenticateWithApple(
             identityToken: payload.identityToken,
             authorizationCode: payload.authorizationCode,

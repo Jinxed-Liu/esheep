@@ -423,12 +423,80 @@ struct ReproductionMonth: Identifiable, Sendable { let month: String; let lambin
 struct ReproductionHistoryPoint: Identifiable, Sendable { let date: Date; let average: Double; let count: Int; var id: Date { date } }
 struct ReproductionQualifiedRate: Identifiable, Sendable { let month: String; let qualified: Double; let unqualified: Double; var id: String { month } }
 struct BreedPerformance: Identifiable, Sendable { let breed: String; let sheepCount: Int; let lambingCount: Int; let averageLambs: Double; var id: String { breed } }
-struct FarmReproductionAnalyticsResult: Sendable { let overview: ReproductionOverview; let monthly: [ReproductionMonth]; let maleCount: Int; let femaleCount: Int; let intervalPoints: [ReproductionHistoryPoint]; let postpartumPoints: [ReproductionHistoryPoint]; let qualifiedRates: [ReproductionQualifiedRate]; let breedRows: [BreedPerformance]; let incompleteLambingCount: Int }
+
+enum ReproductionPenScope: Sendable, Hashable {
+    case all
+    case pen(UUID)
+    case unassigned
+}
+
+struct ReproductionAnalyticsFilter: Sendable, Equatable {
+    var startDate: Date
+    var endDate: Date
+    var penScope: ReproductionPenScope
+    var breed: String?
+
+    init(startDate: Date, endDate: Date, penScope: ReproductionPenScope = .all, breed: String? = nil) {
+        self.startDate = startDate
+        self.endDate = endDate
+        self.penScope = penScope
+        self.breed = breed
+    }
+
+    static func recentYear(referenceDate: Date = .now) -> Self {
+        let endDate = FarmAnalyticsDate.day(referenceDate)
+        let startDate = FarmAnalyticsDate.calendar.date(byAdding: .year, value: -1, to: endDate) ?? endDate
+        return Self(startDate: startDate, endDate: endDate)
+    }
+}
+
+struct ReproductionFilterOptions: Sendable {
+    let penIDs: [UUID]
+    let includesUnassigned: Bool
+    let breeds: [String]
+}
+
+struct FarmReproductionAnalyticsResult: Sendable {
+    let overview: ReproductionOverview
+    let monthly: [ReproductionMonth]
+    let maleCount: Int
+    let femaleCount: Int
+    let intervalPoints: [ReproductionHistoryPoint]
+    let postpartumPoints: [ReproductionHistoryPoint]
+    let qualifiedRates: [ReproductionQualifiedRate]
+    let breedRows: [BreedPerformance]
+    let incompleteLambingCount: Int
+    let cohortCount: Int
+}
 
 enum ReproductionAnalyticsEngine {
     static func calculate(snapshot: FarmAnalyticsSnapshot, selectedYear: String?, referenceDate: Date = .now) -> FarmReproductionAnalyticsResult {
-        let allComplete = snapshot.lambings.filter(\.hasCompleteAnalyticsData)
-        let records = allComplete.filter { selectedYear == nil || FarmAnalyticsDate.year($0.occurredAt) == selectedYear }
+        let calendar = FarmAnalyticsDate.calendar
+        let filter: ReproductionAnalyticsFilter
+        if let selectedYear, let year = Int(selectedYear),
+           let yearStart = calendar.date(from: DateComponents(year: year, month: 1, day: 1)),
+           let nextYear = calendar.date(byAdding: .year, value: 1, to: yearStart),
+           let yearEnd = calendar.date(byAdding: .day, value: -1, to: nextYear) {
+            let endDate = min(FarmAnalyticsDate.day(referenceDate), yearEnd)
+            filter = ReproductionAnalyticsFilter(startDate: yearStart, endDate: max(yearStart, endDate))
+        } else {
+            let startDate = snapshot.lambings.map(\.occurredAt).min().map(FarmAnalyticsDate.day) ?? FarmAnalyticsDate.day(referenceDate)
+            filter = ReproductionAnalyticsFilter(startDate: startDate, endDate: FarmAnalyticsDate.day(referenceDate))
+        }
+        return calculate(snapshot: snapshot, filter: filter)
+    }
+
+    static func calculate(snapshot: FarmAnalyticsSnapshot, filter: ReproductionAnalyticsFilter) -> FarmReproductionAnalyticsResult {
+        let normalizedFilter = normalized(filter)
+        let rangeStart = FarmAnalyticsDate.day(normalizedFilter.startDate)
+        let rangeEnd = FarmAnalyticsDate.day(normalizedFilter.endDate)
+        let rangeEndExclusive = dayAfter(rangeEnd)
+        let cohort = cohortEwes(snapshot: snapshot, filter: normalizedFilter)
+        let cohortIDs = Set(cohort.map(\.id))
+        let cohortLambings = snapshot.lambings.filter {
+            cohortIDs.contains($0.eweID) && $0.occurredAt >= rangeStart && $0.occurredAt < rangeEndExclusive
+        }
+        let records = cohortLambings.filter(\.hasCompleteAnalyticsData)
         let sheepByID = Dictionary(uniqueKeysWithValues: snapshot.sheep.map { ($0.id, $0) })
         let totalBorn = records.reduce(0) { $0 + $1.total }
         let totalDead = records.reduce(0) { $0 + ($1.birthDeadCount ?? 0) }
@@ -441,31 +509,33 @@ enum ReproductionAnalyticsEngine {
             let lambs = group.flatMap(\.offspring)
             return ReproductionMonth(month: month, lambings: group.count, total: lambs.count, male: lambs.filter { $0.sex == .male }.count, female: lambs.filter { $0.sex == .female }.count)
         }.sorted { $0.month < $1.month }
-        let byDam = Dictionary(grouping: allComplete, by: \.eweID).mapValues { $0.map(\.occurredAt).sorted() }
+        let byDam = Dictionary(grouping: snapshot.lambings.filter { cohortIDs.contains($0.eweID) }, by: \.eweID)
+            .mapValues { $0.map(\.occurredAt).sorted() }
         let intervals = byDam.mapValues { dates in zip(dates, dates.dropFirst()).compactMap { first, second in let days = FarmAnalyticsDate.days(from: first, to: second); return days > 0 && days < 1000 ? (second, days) : nil } }
-        let breedingEwes = snapshot.sheep.filter { $0.sex == .ewe && ["后备母羊", "繁殖母羊"].contains($0.purpose) }
-        let removalByID = Dictionary(grouping: snapshot.removals, by: \.sheepID).compactMapValues { $0.map(\.occurredAt).min() }
-        let earliest = allComplete.map(\.occurredAt).min()
-        let historyDates = makeHistoryDates(from: earliest, to: referenceDate, selectedYear: selectedYear)
+        let historyDates = makeHistoryDates(from: rangeStart, through: rangeEnd)
         let intervalPoints = historyDates.compactMap { date -> ReproductionHistoryPoint? in
-            let values = breedingEwes.compactMap { ewe -> Int? in
-                guard ewe.birthAt.map({ $0 <= date }) ?? true, removalByID[ewe.id].map({ $0 > date }) ?? true else { return nil }
-                return latestInterval(for: ewe.id, on: date, intervals: intervals)
+            let cutoffExclusive = dayAfter(date)
+            let values = cohort.compactMap { ewe -> Int? in
+                guard ewe.enteredAt < cutoffExclusive, ewe.birthAt.map({ $0 < cutoffExclusive }) ?? true else { return nil }
+                return latestInterval(for: ewe.id, before: cutoffExclusive, intervals: intervals)
             }
             guard !values.isEmpty else { return nil }
             return ReproductionHistoryPoint(date: date, average: Double(values.reduce(0, +)) / Double(values.count), count: values.count)
         }
         let postpartumPoints = historyDates.compactMap { date -> ReproductionHistoryPoint? in
-            let values = breedingEwes.compactMap { ewe -> Int? in
-                guard ewe.birthAt.map({ $0 <= date }) ?? true, removalByID[ewe.id].map({ $0 > date }) ?? true, let birth = byDam[ewe.id]?.last(where: { $0 <= date }) else { return nil }
+            let cutoffExclusive = dayAfter(date)
+            let values = cohort.compactMap { ewe -> Int? in
+                guard ewe.enteredAt < cutoffExclusive,
+                      ewe.birthAt.map({ $0 < cutoffExclusive }) ?? true,
+                      let birth = byDam[ewe.id]?.last(where: { $0 < cutoffExclusive }) else { return nil }
                 let days = FarmAnalyticsDate.days(from: birth, to: date)
                 return (0..<1000).contains(days) ? days : nil
             }
             guard !values.isEmpty else { return nil }
             return ReproductionHistoryPoint(date: date, average: Double(values.reduce(0, +)) / Double(values.count), count: values.count)
         }
-        let qualifiedRates = qualifiedRates(from: intervalPoints, breedingEwes: breedingEwes, removals: removalByID, intervals: intervals)
-        let sheepByBreed = Dictionary(grouping: snapshot.sheep.filter { !$0.breed.isEmpty && $0.breed.lowercased() != "nan" }, by: \.breed)
+        let qualifiedRates = qualifiedRates(from: intervalPoints, breedingEwes: cohort, intervals: intervals)
+        let sheepByBreed = Dictionary(grouping: cohort.filter { isValidBreed($0.breed) }, by: \.breed)
         var breedRows: [BreedPerformance] = []
         for (breed, group) in sheepByBreed {
             var lambingCount = 0
@@ -479,31 +549,154 @@ enum ReproductionAnalyticsEngine {
             breedRows.append(BreedPerformance(breed: breed, sheepCount: group.count, lambingCount: lambingCount, averageLambs: averageLambs))
         }
         breedRows.sort { $0.lambingCount == $1.lambingCount ? $0.sheepCount > $1.sheepCount : $0.lambingCount > $1.lambingCount }
-        return FarmReproductionAnalyticsResult(overview: overview, monthly: monthly, maleCount: male, femaleCount: female, intervalPoints: intervalPoints, postpartumPoints: postpartumPoints, qualifiedRates: qualifiedRates, breedRows: breedRows, incompleteLambingCount: snapshot.lambings.count - allComplete.count)
+        return FarmReproductionAnalyticsResult(
+            overview: overview,
+            monthly: monthly,
+            maleCount: male,
+            femaleCount: female,
+            intervalPoints: intervalPoints,
+            postpartumPoints: postpartumPoints,
+            qualifiedRates: qualifiedRates,
+            breedRows: breedRows,
+            incompleteLambingCount: cohortLambings.count - records.count,
+            cohortCount: cohort.count
+        )
     }
 
-    private static func makeHistoryDates(from start: Date?, to end: Date, selectedYear: String?) -> [Date] {
-        guard let start else { return [] }
-        let days = FarmAnalyticsDate.days(from: start, to: end)
-        let step = days > 500 ? max(1, days / 300) : 1
-        var dates: [Date] = []; var date = FarmAnalyticsDate.day(start)
-        while date <= end { if selectedYear == nil || FarmAnalyticsDate.year(date) == selectedYear { dates.append(date) }; guard let next = FarmAnalyticsDate.calendar.date(byAdding: .day, value: step, to: date) else { break }; date = next }
+    static func filterOptions(snapshot: FarmAnalyticsSnapshot, asOf endDate: Date) -> ReproductionFilterOptions {
+        let cutoffExclusive = dayAfter(endDate)
+        let ewes = baseEligibleEwes(snapshot: snapshot, cutoffExclusive: cutoffExclusive)
+        let penIndex = HistoricalPenIndex(transfers: snapshot.transfers)
+        let penIDs = Set(ewes.compactMap { penIndex.penID(for: $0, before: cutoffExclusive) })
+        let includesUnassigned = ewes.contains { penIndex.penID(for: $0, before: cutoffExclusive) == nil }
+        let breeds = Set(ewes.map(\.breed).filter(isValidBreed)).sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
+        }
+        return ReproductionFilterOptions(
+            penIDs: penIDs.sorted { $0.uuidString < $1.uuidString },
+            includesUnassigned: includesUnassigned,
+            breeds: breeds
+        )
+    }
+
+    private static func normalized(_ filter: ReproductionAnalyticsFilter) -> ReproductionAnalyticsFilter {
+        let start = FarmAnalyticsDate.day(min(filter.startDate, filter.endDate))
+        let end = FarmAnalyticsDate.day(max(filter.startDate, filter.endDate))
+        let breed = filter.breed?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ReproductionAnalyticsFilter(
+            startDate: start,
+            endDate: end,
+            penScope: filter.penScope,
+            breed: breed.flatMap { $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    private static func cohortEwes(snapshot: FarmAnalyticsSnapshot, filter: ReproductionAnalyticsFilter) -> [FarmAnalyticsSnapshot.Sheep] {
+        let cutoffExclusive = dayAfter(filter.endDate)
+        let penIndex = HistoricalPenIndex(transfers: snapshot.transfers)
+        return baseEligibleEwes(snapshot: snapshot, cutoffExclusive: cutoffExclusive).filter { ewe in
+            if let breed = filter.breed, ewe.breed != breed { return false }
+            switch filter.penScope {
+            case .all:
+                return true
+            case .pen(let penID):
+                return penIndex.penID(for: ewe, before: cutoffExclusive) == penID
+            case .unassigned:
+                return penIndex.penID(for: ewe, before: cutoffExclusive) == nil
+            }
+        }
+    }
+
+    private static func baseEligibleEwes(snapshot: FarmAnalyticsSnapshot, cutoffExclusive: Date) -> [FarmAnalyticsSnapshot.Sheep] {
+        let removalByID = Dictionary(grouping: snapshot.removals, by: \.sheepID)
+            .compactMapValues { $0.map(\.occurredAt).min() }
+        return snapshot.sheep.filter { ewe in
+            guard ewe.sex == .ewe,
+                  ewe.enteredAt < cutoffExclusive else { return false }
+            let removalAt = [ewe.removedAt, removalByID[ewe.id]].compactMap { $0 }.min()
+            if let removalAt {
+                return removalAt >= cutoffExclusive
+            }
+            // Some legacy records preserve only the authoritative current status
+            // and have no reconstructable removal date. They must not leak into a
+            // current/end-date cohort merely because the dated event is missing.
+            return ewe.status == .active
+        }
+    }
+
+    private static func makeHistoryDates(from start: Date, through end: Date) -> [Date] {
+        let first = FarmAnalyticsDate.day(start)
+        let last = FarmAnalyticsDate.day(end)
+        guard first <= last else { return [] }
+        let days = max(0, FarmAnalyticsDate.days(from: first, to: last))
+        let step = max(1, Int(ceil(Double(max(1, days)) / 299.0)))
+        var dates: [Date] = []
+        var date = first
+        while date <= last {
+            dates.append(date)
+            guard let next = FarmAnalyticsDate.calendar.date(byAdding: .day, value: step, to: date) else { break }
+            date = next
+        }
+        if dates.last != last { dates.append(last) }
         return dates
     }
 
-    private static func latestInterval(for eweID: UUID, on date: Date, intervals: [UUID: [(Date, Int)]]) -> Int? { intervals[eweID]?.last(where: { $0.0 <= date })?.1 }
+    private static func latestInterval(for eweID: UUID, before cutoffExclusive: Date, intervals: [UUID: [(Date, Int)]]) -> Int? {
+        intervals[eweID]?.last(where: { $0.0 < cutoffExclusive })?.1
+    }
 
-    private static func qualifiedRates(from points: [ReproductionHistoryPoint], breedingEwes: [FarmAnalyticsSnapshot.Sheep], removals: [UUID: Date], intervals: [UUID: [(Date, Int)]]) -> [ReproductionQualifiedRate] {
+    private static func qualifiedRates(from points: [ReproductionHistoryPoint], breedingEwes: [FarmAnalyticsSnapshot.Sheep], intervals: [UUID: [(Date, Int)]]) -> [ReproductionQualifiedRate] {
         let monthlyPoints = Dictionary(grouping: points, by: { FarmAnalyticsDate.month($0.date) }).compactMapValues { $0.min { abs(FarmAnalyticsDate.calendar.component(.day, from: $0.date) - 15) < abs(FarmAnalyticsDate.calendar.component(.day, from: $1.date) - 15) } }
         return monthlyPoints.keys.sorted().compactMap { month in
             guard let point = monthlyPoints[month] else { return nil }
             var qualified = 0; var unqualified = 0
-            for ewe in breedingEwes where ewe.birthAt.map({ $0 <= point.date }) ?? true {
-                guard removals[ewe.id].map({ $0 > point.date }) ?? true, let days = latestInterval(for: ewe.id, on: point.date, intervals: intervals) else { continue }
+            let cutoffExclusive = dayAfter(point.date)
+            for ewe in breedingEwes where ewe.enteredAt < cutoffExclusive && (ewe.birthAt.map({ $0 < cutoffExclusive }) ?? true) {
+                guard let days = latestInterval(for: ewe.id, before: cutoffExclusive, intervals: intervals) else { continue }
                 if (150...240).contains(days) { qualified += 1 } else { unqualified += 1 }
             }
             let total = qualified + unqualified
             return total > 0 ? ReproductionQualifiedRate(month: month, qualified: Double(qualified) * 100 / Double(total), unqualified: Double(unqualified) * 100 / Double(total)) : nil
+        }
+    }
+
+    private static func isValidBreed(_ breed: String) -> Bool {
+        let normalized = breed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !normalized.isEmpty && normalized.lowercased() != "nan"
+    }
+
+    private static func dayAfter(_ date: Date) -> Date {
+        FarmAnalyticsDate.calendar.date(byAdding: .day, value: 1, to: FarmAnalyticsDate.day(date)) ?? date
+    }
+
+    private struct HistoricalPenIndex {
+        private let transfersBySheep: [UUID: [FarmAnalyticsSnapshot.Transfer]]
+
+        init(transfers: [FarmAnalyticsSnapshot.Transfer]) {
+            transfersBySheep = Dictionary(grouping: transfers, by: \.sheepID).mapValues { values in
+                values.sorted {
+                    if $0.occurredAt == $1.occurredAt {
+                        if $0.recordedAt == $1.recordedAt { return $0.id.uuidString < $1.id.uuidString }
+                        return $0.recordedAt < $1.recordedAt
+                    }
+                    return $0.occurredAt < $1.occurredAt
+                }
+            }
+        }
+
+        func penID(for ewe: FarmAnalyticsSnapshot.Sheep, before cutoffExclusive: Date) -> UUID? {
+            guard let transfers = transfersBySheep[ewe.id], !transfers.isEmpty else { return ewe.initialPenID }
+            var lower = 0
+            var upper = transfers.count
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2
+                if transfers[middle].occurredAt < cutoffExclusive {
+                    lower = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            return lower > 0 ? transfers[lower - 1].toPenID : ewe.initialPenID
         }
     }
 }
@@ -812,14 +1005,14 @@ final class FarmAnalyticsViewModel {
         }
     }
 
-    func calculateReproduction(selectedYear: String?) {
+    func calculateReproduction(filter: ReproductionAnalyticsFilter) {
         guard let snapshot else { return }
         let revision = UUID()
         reproductionRevision = revision
         isCalculating = true
         Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
-                ReproductionAnalyticsEngine.calculate(snapshot: snapshot, selectedYear: selectedYear)
+                ReproductionAnalyticsEngine.calculate(snapshot: snapshot, filter: filter)
             }.value
             guard let self, self.reproductionRevision == revision else { return }
             self.reproductionResult = result

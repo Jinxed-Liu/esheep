@@ -38,13 +38,41 @@ actor InviteServiceActor {
         self.persistence = persistence
     }
 
-    func create(farmID: UUID, role: FarmRole) async throws -> WorkerInviteResponse {
+    func create(
+        farmID: UUID,
+        role: FarmRole,
+        shareParticipantID: String? = nil,
+        shareURL: URL? = nil
+    ) async throws -> WorkerInviteResponse {
         guard role == .administrator || role == .worker else { throw FarmPermissionError.denied(.manageMembers) }
-        return try await client.createInvite(farmID: farmID, role: role)
+        return try await client.createInvite(
+            farmID: farmID,
+            role: role,
+            shareParticipantID: shareParticipantID,
+            shareURL: shareURL
+        )
     }
 
-    func redeem(code: String) async throws -> WorkerRedeemResponse {
-        try await client.redeemInvite(code: code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased())
+    func redeem(
+        code: String,
+        cloudKitUserRecordName: String
+    ) async throws -> WorkerRedeemResponse {
+        _ = try await device.register(using: client)
+        return try await client.redeemInvite(
+            code: code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+            cloudKitUserRecordName: cloudKitUserRecordName
+        )
+    }
+
+    func redeem(shareParticipantID: String) async throws -> WorkerRedeemResponse {
+        _ = try await device.register(using: client)
+        return try await client.redeemInvite(
+            shareParticipantID: shareParticipantID
+        )
+    }
+
+    func pending(farmID: UUID) async throws -> [WorkerPendingInviteResponse] {
+        try await client.pendingInvites(farmID: farmID)
     }
 
     func confirm(inviteID: String, participantRecordName: String) async throws {

@@ -210,6 +210,8 @@ async function route({ request, pathname, fetchImpl, env, service }) {
   if (request.method === "POST" && pathname === "/v1/farms/register") return [201, await service.registerFarm(auth.accountID, await readJSON(request))];
   const activateFarm = pathname.match(/^\/v1\/farms\/([^/]+)\/activate$/);
   if (request.method === "POST" && activateFarm) return [200, await service.activateFarm(auth.accountID, activateFarm[1])];
+  const pendingInvites = pathname.match(/^\/v1\/farms\/([^/]+)\/invites\/pending$/);
+  if (request.method === "GET" && pendingInvites) return [200, await service.pendingInvites(auth.accountID, pendingInvites[1])];
   if (request.method === "POST" && pathname === "/v1/invites") return [201, await service.createInvite(auth.accountID, await readJSON(request))];
   if (request.method === "POST" && pathname === "/v1/invites/redeem") return [200, await service.redeemInvite(auth.accountID, await readJSON(request))];
   const invite = pathname.match(/^\/v1\/invites\/([^/]+)\/confirm$/);
