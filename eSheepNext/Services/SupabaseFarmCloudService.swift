@@ -77,6 +77,9 @@ enum SupabaseFarmCloudError: LocalizedError {
     case entitlementRequired
     case activationAlreadyRunning
     case farmNotEligible(String)
+    case migrationDrainPending(Int)
+    case migrationConflict(Int)
+    case migrationCursorBehind(local: Int, remote: Int)
     case malformedResponse
 
     var errorDescription: String? {
@@ -89,9 +92,28 @@ enum SupabaseFarmCloudError: LocalizedError {
             "当前牧场的 Supabase 启云任务已经在运行，请查看现有进度。"
         case .farmNotEligible(let reason):
             reason
+        case .migrationDrainPending(let count):
+            "仍有 \(count) 条迁移后操作等待上传；保持当前迁移状态并在网络恢复后继续。"
+        case .migrationConflict(let count):
+            "迁移后操作存在 \(count) 条冲突；解决冲突前不会归档来源。"
+        case .migrationCursorBehind(let local, let remote):
+            "本机 cursor \(local) 尚未追到服务端 revision \(remote)，稍后会继续补拉。"
         case .malformedResponse:
             "Supabase 返回的数据无法验证。"
         }
+    }
+}
+
+struct SupabaseAuthorityDrainSnapshot: Sendable, Equatable {
+    let pendingCount: Int
+    let conflictCount: Int
+    let cursorRevision: Int
+    let remoteRevision: Int
+
+    var isReadyToArchive: Bool {
+        pendingCount == 0 &&
+            conflictCount == 0 &&
+            cursorRevision >= remoteRevision
     }
 }
 
@@ -470,6 +492,68 @@ final class SupabaseFarmActivationService {
         ) ? compressedBackupURL : backupURL
     }
 
+    /// Repairs a transition that was completed locally by an older build but
+    /// remained `draining` remotely. This only closes the already-committed
+    /// authority transition; it never restages or reuploads the baseline.
+    @discardableResult
+    func reconcileCompletedLocalActivation(
+        farm: FarmRecord,
+        context: ModelContext
+    ) async throws -> Bool {
+        let profile = try storageProfile(farmID: farm.id, context: context)
+        guard profile.mode == .supabase,
+              profile.transitionState == .idle,
+              let binding = try context
+                .fetch(FetchDescriptor<FarmRemoteBinding>())
+                .first(where: {
+                    $0.farmID == farm.id &&
+                        $0.provider == .supabase &&
+                        $0.state == .active
+                }),
+              binding.authorityGeneration == profile.authorityGeneration else {
+            return false
+        }
+        guard let migration = try context
+            .fetch(FetchDescriptor<FarmBaselineMigrationRecord>())
+            .filter({
+                $0.farmID == farm.id &&
+                    $0.checkpointID != nil
+            })
+            .max(by: { $0.updatedAt < $1.updatedAt }) else {
+            return false
+        }
+
+        let status = try await transport.compactAuthorityTransitionStatus(
+            farmID: farm.id,
+            migrationID: migration.migrationID
+        )
+        guard status.authorityGeneration == profile.authorityGeneration else {
+            throw SupabaseFarmCloudError.malformedResponse
+        }
+        guard ["draining", "archiving_source", "completed"].contains(status.status) else {
+            return false
+        }
+        let receipt = try await transport.completeAuthorityTransition(
+            farmID: farm.id,
+            migrationID: migration.migrationID,
+            authorityGeneration: profile.authorityGeneration
+        )
+        migration.serverRevision = max(
+            migration.serverRevision,
+            receipt.currentRevision
+        )
+        migration.updatedAt = .now
+        binding.lastPulledRevision = max(
+            binding.lastPulledRevision,
+            receipt.currentRevision
+        )
+        binding.lastSuccessfulSyncAt = .now
+        binding.lastErrorCode = nil
+        binding.updatedAt = .now
+        try context.save()
+        return true
+    }
+
     private func resume(
         farm: FarmRecord,
         migrationID: UUID,
@@ -655,15 +739,41 @@ final class SupabaseFarmActivationService {
                 upsertBinding(
                     farm: farm,
                     generation: targetGeneration,
-                    cursor: 0,
+                    cursor: progress.serverRevision,
                     context: context
                 )
+                let snapshot = try await drainPostWatermarkOperations(
+                    farmID: farm.id,
+                    migrationID: migrationID,
+                    generation: targetGeneration,
+                    context: context
+                )
+                guard snapshot.isReadyToArchive else {
+                    throw SupabaseFarmCloudError.malformedResponse
+                }
+                progress.serverRevision = max(
+                    progress.serverRevision,
+                    snapshot.remoteRevision
+                )
+                progress.updatedAt = .now
+                try context.save()
                 try FarmStorageTransitionCoordinator.markSourceArchiving(
                     farmID: farm.id,
                     migrationID: migrationID,
                     context: context
                 )
             case .archivingSource:
+                let receipt = try await transport.completeAuthorityTransition(
+                    farmID: farm.id,
+                    migrationID: migrationID,
+                    authorityGeneration: targetGeneration
+                )
+                progress.serverRevision = max(
+                    progress.serverRevision,
+                    receipt.currentRevision
+                )
+                progress.updatedAt = .now
+                try context.save()
                 try FarmStorageTransitionCoordinator.finish(
                     farmID: farm.id,
                     migrationID: migrationID,
@@ -690,6 +800,96 @@ final class SupabaseFarmActivationService {
                 )
             }
         }
+    }
+
+    private func drainPostWatermarkOperations(
+        farmID: UUID,
+        migrationID: UUID,
+        generation: Int,
+        context: ModelContext
+    ) async throws -> SupabaseAuthorityDrainSnapshot {
+        let coordinator = FarmRemoteSyncCoordinator(
+            container: context.container,
+            transport: transport
+        )
+        var priorPendingCount = Int.max
+        while true {
+            let before = try drainOutboxCounts(
+                farmID: farmID,
+                generation: generation,
+                context: context
+            )
+            if before.conflicts > 0 {
+                throw SupabaseFarmCloudError.migrationConflict(
+                    before.conflicts
+                )
+            }
+
+            let result = try await coordinator.synchronize(
+                farmID: farmID,
+                maxOutboxItems: 25
+            )
+            let after = try drainOutboxCounts(
+                farmID: farmID,
+                generation: generation,
+                context: context
+            )
+            if result.conflictCount > 0 || after.conflicts > 0 {
+                throw SupabaseFarmCloudError.migrationConflict(
+                    max(result.conflictCount, after.conflicts)
+                )
+            }
+            if after.pending > 0 {
+                guard result.uploadedOperationCount > 0,
+                      after.pending < priorPendingCount else {
+                    throw SupabaseFarmCloudError.migrationDrainPending(
+                        after.pending
+                    )
+                }
+                priorPendingCount = after.pending
+                continue
+            }
+
+            let remote = try await transport.compactAuthorityTransitionStatus(
+                farmID: farmID,
+                migrationID: migrationID
+            )
+            let snapshot = SupabaseAuthorityDrainSnapshot(
+                pendingCount: 0,
+                conflictCount: 0,
+                cursorRevision: result.cursorRevision,
+                remoteRevision: remote.currentRevision
+            )
+            guard snapshot.cursorRevision >= snapshot.remoteRevision else {
+                throw SupabaseFarmCloudError.migrationCursorBehind(
+                    local: snapshot.cursorRevision,
+                    remote: snapshot.remoteRevision
+                )
+            }
+            return snapshot
+        }
+    }
+
+    private func drainOutboxCounts(
+        farmID: UUID,
+        generation: Int,
+        context: ModelContext
+    ) throws -> (pending: Int, conflicts: Int) {
+        let readContext = ModelContext(context.container)
+        let items = try readContext.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.farmID == farmID &&
+                $0.deliveryProvider == .supabase &&
+                $0.authorityGeneration == generation
+        }
+        return (
+            items.count {
+                [.pending, .uploading, .awaitingConfirmation, .retryableFailure]
+                    .contains($0.status)
+            },
+            items.count {
+                [.blockedConflict, .rejectedPermission].contains($0.status)
+            }
+        )
     }
 
     private func signedBaselineOperations(

@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(44);
+select plan(46);
 
 select set_config('esheep.test.user_a', gen_random_uuid()::text, false);
 select set_config('esheep.test.user_b', gen_random_uuid()::text, false);
@@ -541,6 +541,28 @@ select is(
   'postgres public defaults do not auto-grant client roles'
 );
 
+select todo(
+  'Hosted postgres cannot alter the platform-owned supabase_admin defaults; ' ||
+  'the enabled DDL event trigger enforces the same effective public guard.',
+  1
+);
+select is(
+  (
+    select count(*)::integer
+    from pg_default_acl defaults
+    cross join lateral aclexplode(defaults.defaclacl) privilege
+    where defaults.defaclnamespace = 'public'::regnamespace
+      and defaults.defaclrole = 'supabase_admin'::regrole
+      and privilege.grantee in (
+        0,
+        'anon'::regrole::oid,
+        'authenticated'::regrole::oid
+      )
+  ),
+  0,
+  'supabase_admin public defaults do not auto-grant client roles'
+);
+
 select ok(
   exists (
     select 1
@@ -668,6 +690,15 @@ select ok(
     'public.abort_farm_authority_transition(uuid,uuid)'
   ) is not null,
   'pre-commit abort RPC is deployed'
+);
+
+select ok(
+  not has_function_privilege(
+    'anon',
+    'public.complete_farm_authority_transition(uuid,uuid,integer)',
+    'EXECUTE'
+  ),
+  'anonymous users cannot complete an authority transition'
 );
 
 select is(

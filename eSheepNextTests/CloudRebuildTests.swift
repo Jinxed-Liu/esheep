@@ -1107,6 +1107,67 @@ final class CloudRebuildTests: XCTestCase {
                         $0.incidentType == "supersededMissingReplayDependency"
                 }
         )
+        XCTAssertEqual(
+            try context.fetch(FetchDescriptor<DomainOperation>())
+                .filter { $0.farmID == farmID }
+                .count,
+            3,
+            "已验证的非基线云端操作必须在干净安装上恢复为本地审计历史"
+        )
+        XCTAssertEqual(
+            try context.fetch(FetchDescriptor<TombstoneRecord>())
+                .filter { $0.farmID == farmID }
+                .count,
+            3,
+            "修正来源和结果均被删除时，仍须保留修正操作对应的删除证据"
+        )
+    }
+
+    func testCleanInstallReplacementRestoresRemoteDomainOperationAudit() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "rebuild-audit-history-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let ownerID = UUID()
+        context.insert(FarmRecord(
+            id: farmID,
+            ownerAccountID: ownerID,
+            name: "恢复中"
+        ))
+        try context.save()
+        let operation = try makeOperation(
+            farmID: farmID,
+            command: .createPen(name: "云端圈舍", note: ""),
+            entityType: .pen
+        )
+
+        _ = try await FarmPersistenceActor(container: container)
+            .replaceConfirmedFarmCache(
+                using: makeBundle(
+                    farmID: farmID,
+                    ownerID: ownerID,
+                    operations: [operation]
+                )
+            )
+
+        let verify = ModelContext(container)
+        let audit = try XCTUnwrap(
+            try verify.fetch(FetchDescriptor<DomainOperation>())
+                .first { $0.id == operation.operationID }
+        )
+        XCTAssertEqual(audit.kindRawValue, DomainOperationKind.createPen.rawValue)
+        XCTAssertEqual(audit.summary, "新建圈舍：云端圈舍")
+        XCTAssertEqual(audit.payloadDigest, operation.payloadDigest)
+        XCTAssertEqual(audit.modifiedByDeviceID, operation.modifiedByDeviceID)
+        XCTAssertEqual(audit.operationSignature, operation.operationSignature)
+        XCTAssertTrue(
+            try verify.fetch(FetchDescriptor<OutboxItem>())
+                .filter { $0.farmID == farmID }
+                .isEmpty,
+            "远端审计投影不能制造待上传 Outbox"
+        )
     }
 
     func testDiskStagingRejectsMissingCorrectionWithoutLaterResultTombstone() throws {
@@ -2003,6 +2064,250 @@ final class CloudRebuildTests: XCTestCase {
         )
     }
 
+    func testPrivateOwnerMembershipSnapshotBootstrapsHistoricalDeviceTrust() throws {
+        let farmID = UUID()
+        let ownerID = UUID()
+        let historicalDeviceID = UUID()
+        let issuedAt = Date(timeIntervalSince1970: 1_767_225_600)
+        let authorityKey = P256.Signing.PrivateKey()
+        let historicalKey = P256.Signing.PrivateKey()
+        let envelope = FarmMembershipSnapshotEnvelope(
+            farmID: farmID,
+            generation: 3,
+            issuedAt: issuedAt,
+            members: [
+                .init(
+                    membershipID: "owner-membership",
+                    accountID: ownerID,
+                    role: .owner,
+                    status: "active",
+                    shareParticipantRecordName: nil
+                ),
+            ],
+            devices: [
+                .init(
+                    deviceID: historicalDeviceID,
+                    accountID: ownerID,
+                    publicKeyJWK: try jwkJSON(
+                        for: historicalKey.publicKey
+                    )
+                ),
+            ],
+            revokedCertificates: []
+        )
+        let payload = try JSONEncoder.cloud.encode(envelope)
+        let digest = CloudPayloadDigest.hex(for: payload)
+        let claims = CapabilityCertificateClaims(
+            certificateID: "owner-certificate",
+            accountID: ownerID,
+            farmID: farmID,
+            deviceID: historicalDeviceID,
+            role: .owner,
+            capabilities: [.readFarm, .manageMembers],
+            iat: Int(issuedAt.timeIntervalSince1970) - 60,
+            exp: Int(issuedAt.timeIntervalSince1970) + 3_600,
+            iss: "esheep-next-identity",
+            aud: "esheep-next-cloud-operation"
+        )
+        let certificate = try makeCapabilityCertificate(
+            claims: claims,
+            signingKey: authorityKey
+        )
+        let signingData = MembershipSnapshotActor.signingData(
+            farmID: farmID,
+            generation: envelope.generation,
+            issuedAt: issuedAt,
+            payloadDigest: digest,
+            accountID: ownerID,
+            deviceID: historicalDeviceID
+        )
+        let zoneID = CKRecordZone.ID(
+            zoneName: CloudZoneName.forFarm(farmID),
+            ownerName: CKCurrentUserDefaultName
+        )
+        let record = CKRecord(
+            recordType: CloudRecordType.farmMembershipSnapshot.rawValue,
+            recordID: .init(
+                recordName: "membership_snapshot",
+                zoneID: zoneID
+            )
+        )
+        record[CloudRecordField.farmID] =
+            farmID.uuidString.lowercased() as CKRecordValue
+        record[CloudRecordField.generation] =
+            envelope.generation as CKRecordValue
+        record[CloudRecordField.issuedAt] = issuedAt as CKRecordValue
+        record[CloudRecordField.payload] = payload as CKRecordValue
+        record[CloudRecordField.payloadDigest] = digest as CKRecordValue
+        record[CloudRecordField.modifiedByAccountID] =
+            ownerID.uuidString.lowercased() as CKRecordValue
+        record[CloudRecordField.modifiedByDeviceID] =
+            historicalDeviceID.uuidString.lowercased() as CKRecordValue
+        record[CloudRecordField.capabilityCertificate] =
+            certificate as CKRecordValue
+        record[CloudRecordField.signature] = try historicalKey
+            .signature(for: signingData).rawRepresentation as CKRecordValue
+
+        let binding = CloudFarmBindingSnapshot(
+            farmID: farmID,
+            ownerAccountID: ownerID,
+            zoneName: zoneID.zoneName,
+            zoneOwnerName: zoneID.ownerName,
+            databaseScope: .privateDatabase,
+            shareRecordName: nil,
+            state: .rebuildingCache,
+            lastErrorCode: nil
+        )
+        let root = CloudRebuildRootSnapshot(
+            farmID: farmID,
+            name: "吉昊羊场",
+            ownerAccountID: ownerID,
+            modifiedAt: issuedAt
+        )
+        let localTrust = CloudTrustSnapshot(
+            capabilityPublicKeyPEM:
+                authorityKey.publicKey.pemRepresentation,
+            devicePublicKeys: [:],
+            revokedCertificateIDs: []
+        )
+
+        let restored = try CloudRebuildActor.privateOwnerBootstrapTrust(
+            records: [record],
+            binding: binding,
+            root: root,
+            localTrust: localTrust
+        )
+        XCTAssertEqual(
+            restored.devicePublicKeys[historicalDeviceID],
+            historicalKey.publicKey.x963Representation
+        )
+
+        let sharedBinding = CloudFarmBindingSnapshot(
+            farmID: farmID,
+            ownerAccountID: ownerID,
+            zoneName: zoneID.zoneName,
+            zoneOwnerName: zoneID.ownerName,
+            databaseScope: .sharedDatabase,
+            shareRecordName: nil,
+            state: .rebuildingCache,
+            lastErrorCode: nil
+        )
+        let sharedTrust = try CloudRebuildActor
+            .privateOwnerBootstrapTrust(
+                records: [record],
+                binding: sharedBinding,
+                root: root,
+                localTrust: localTrust
+            )
+        XCTAssertNil(sharedTrust.devicePublicKeys[historicalDeviceID])
+    }
+
+    func testPrivateOwnerTrustRejectsTamperedMembershipSignature() throws {
+        let farmID = UUID()
+        let ownerID = UUID()
+        let deviceID = UUID()
+        let issuedAt = Date(timeIntervalSince1970: 1_767_225_600)
+        let authorityKey = P256.Signing.PrivateKey()
+        let deviceKey = P256.Signing.PrivateKey()
+        let envelope = FarmMembershipSnapshotEnvelope(
+            farmID: farmID,
+            generation: 1,
+            issuedAt: issuedAt,
+            members: [
+                .init(
+                    membershipID: "owner-membership",
+                    accountID: ownerID,
+                    role: .owner,
+                    status: "active",
+                    shareParticipantRecordName: nil
+                ),
+            ],
+            devices: [
+                .init(
+                    deviceID: deviceID,
+                    accountID: ownerID,
+                    publicKeyJWK: try jwkJSON(for: deviceKey.publicKey)
+                ),
+            ],
+            revokedCertificates: []
+        )
+        let payload = try JSONEncoder.cloud.encode(envelope)
+        let claims = CapabilityCertificateClaims(
+            certificateID: "owner-certificate",
+            accountID: ownerID,
+            farmID: farmID,
+            deviceID: deviceID,
+            role: .owner,
+            capabilities: [.manageMembers],
+            iat: Int(issuedAt.timeIntervalSince1970) - 60,
+            exp: Int(issuedAt.timeIntervalSince1970) + 3_600,
+            iss: "esheep-next-identity",
+            aud: "esheep-next-cloud-operation"
+        )
+        let zoneID = CKRecordZone.ID(
+            zoneName: CloudZoneName.forFarm(farmID),
+            ownerName: CKCurrentUserDefaultName
+        )
+        let record = CKRecord(
+            recordType: CloudRecordType.farmMembershipSnapshot.rawValue,
+            recordID: .init(
+                recordName: "membership_snapshot",
+                zoneID: zoneID
+            )
+        )
+        record[CloudRecordField.farmID] =
+            farmID.uuidString.lowercased() as CKRecordValue
+        record[CloudRecordField.generation] = 1 as CKRecordValue
+        record[CloudRecordField.issuedAt] = issuedAt as CKRecordValue
+        record[CloudRecordField.payload] = payload as CKRecordValue
+        record[CloudRecordField.payloadDigest] =
+            CloudPayloadDigest.hex(for: payload) as CKRecordValue
+        record[CloudRecordField.modifiedByAccountID] =
+            ownerID.uuidString.lowercased() as CKRecordValue
+        record[CloudRecordField.modifiedByDeviceID] =
+            deviceID.uuidString.lowercased() as CKRecordValue
+        record[CloudRecordField.capabilityCertificate] =
+            try makeCapabilityCertificate(
+                claims: claims,
+                signingKey: authorityKey
+            ) as CKRecordValue
+        record[CloudRecordField.signature] =
+            Data(repeating: 0, count: 64) as CKRecordValue
+
+        XCTAssertThrowsError(
+            try CloudRebuildActor.privateOwnerBootstrapTrust(
+                records: [record],
+                binding: CloudFarmBindingSnapshot(
+                    farmID: farmID,
+                    ownerAccountID: ownerID,
+                    zoneName: zoneID.zoneName,
+                    zoneOwnerName: zoneID.ownerName,
+                    databaseScope: .privateDatabase,
+                    shareRecordName: nil,
+                    state: .rebuildingCache,
+                    lastErrorCode: nil
+                ),
+                root: CloudRebuildRootSnapshot(
+                    farmID: farmID,
+                    name: "吉昊羊场",
+                    ownerAccountID: ownerID,
+                    modifiedAt: issuedAt
+                ),
+                localTrust: CloudTrustSnapshot(
+                    capabilityPublicKeyPEM:
+                        authorityKey.publicKey.pemRepresentation,
+                    devicePublicKeys: [:],
+                    revokedCertificateIDs: []
+                )
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? CloudContractError,
+                .invalidDeviceSignature
+            )
+        }
+    }
+
     private func makeClaims(
         for envelope: CloudOperationEnvelope,
         capabilities: [FarmCapability],
@@ -2061,5 +2366,51 @@ final class CloudRebuildTests: XCTestCase {
             recordCount: operations.count + assets.count + 1,
             createdAt: .now
         )
+    }
+
+    private func makeCapabilityCertificate(
+        claims: CapabilityCertificateClaims,
+        signingKey: P256.Signing.PrivateKey
+    ) throws -> String {
+        let header = try JSONSerialization.data(withJSONObject: [
+            "alg": "ES256",
+            "kid": "private-owner-bootstrap-test",
+            "typ": "esheep-capability+jwt",
+        ], options: [.sortedKeys])
+        let payload = try JSONEncoder().encode(claims)
+        let encodedHeader = base64URL(header)
+        let encodedPayload = base64URL(payload)
+        let signedText = "\(encodedHeader).\(encodedPayload)"
+        let signature = try signingKey.signature(
+            for: Data(signedText.utf8)
+        ).rawRepresentation
+        return "\(signedText).\(base64URL(signature))"
+    }
+
+    private func jwkJSON(
+        for publicKey: P256.Signing.PublicKey
+    ) throws -> String {
+        let representation = publicKey.x963Representation
+        let coordinates = representation.dropFirst()
+        let object = [
+            "alg": "ES256",
+            "crv": "P-256",
+            "kty": "EC",
+            "use": "sig",
+            "x": base64URL(Data(coordinates.prefix(32))),
+            "y": base64URL(Data(coordinates.dropFirst(32).prefix(32))),
+        ]
+        let data = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys]
+        )
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func base64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 }

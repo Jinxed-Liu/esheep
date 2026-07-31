@@ -89,6 +89,14 @@ struct FarmAuthorityCommitReceipt: Sendable, Equatable {
     let status: String
 }
 
+struct FarmAuthorityCompletionReceipt: Sendable, Equatable {
+    let farmID: UUID
+    let authorityGeneration: Int
+    let currentRevision: Int
+    let status: String
+    let transitionState: String
+}
+
 struct FarmRemoteOperationReceipt: Codable, Sendable, Equatable {
     let operationID: UUID
     let revision: Int
@@ -211,6 +219,11 @@ protocol FarmRemoteTransport: Sendable {
         request: FarmAuthorityTransitionRequest,
         checkpointID: UUID
     ) async throws -> FarmAuthorityCommitReceipt
+    func completeAuthorityTransition(
+        farmID: UUID,
+        migrationID: UUID,
+        authorityGeneration: Int
+    ) async throws -> FarmAuthorityCompletionReceipt
     func downloadLatestCheckpoint(
         farmID: UUID,
         authorityGeneration: Int
@@ -321,6 +334,14 @@ extension FarmRemoteTransport {
         request _: FarmAuthorityTransitionRequest,
         checkpointID _: UUID
     ) async throws -> FarmAuthorityCommitReceipt {
+        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+    }
+
+    func completeAuthorityTransition(
+        farmID _: UUID,
+        migrationID _: UUID,
+        authorityGeneration _: Int
+    ) async throws -> FarmAuthorityCompletionReceipt {
         throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
     }
 
@@ -743,6 +764,12 @@ actor SupabaseFarmTransport: FarmRemoteTransport {
         let p_archive_digest: String
     }
 
+    private struct CompleteAuthorityParameters: Encodable, Sendable {
+        let p_farm_id: UUID
+        let p_migration_id: UUID
+        let p_expected_generation: Int
+    }
+
     private struct VerifyAuthorityRow: Decodable, Sendable {
         let farmID: UUID
         let authorityGeneration: Int
@@ -754,6 +781,22 @@ actor SupabaseFarmTransport: FarmRemoteTransport {
             case authorityGeneration = "authority_generation"
             case currentRevision = "current_revision"
             case status
+        }
+    }
+
+    private struct CompleteAuthorityRow: Decodable, Sendable {
+        let farmID: UUID
+        let authorityGeneration: Int
+        let currentRevision: Int
+        let status: String
+        let transitionState: String
+
+        enum CodingKeys: String, CodingKey {
+            case farmID = "farm_id"
+            case authorityGeneration = "authority_generation"
+            case currentRevision = "current_revision"
+            case status
+            case transitionState = "transition_state"
         }
     }
 
@@ -1169,6 +1212,35 @@ actor SupabaseFarmTransport: FarmRemoteTransport {
             authorityGeneration: row.authorityGeneration,
             currentRevision: row.currentRevision,
             status: row.status
+        )
+    }
+
+    func completeAuthorityTransition(
+        farmID: UUID,
+        migrationID: UUID,
+        authorityGeneration: Int
+    ) async throws -> FarmAuthorityCompletionReceipt {
+        let rows: [CompleteAuthorityRow] = try await client.rpc(
+            "complete_farm_authority_transition",
+            params: CompleteAuthorityParameters(
+                p_farm_id: farmID,
+                p_migration_id: migrationID,
+                p_expected_generation: authorityGeneration
+            )
+        ).execute().value
+        guard let row = rows.first,
+              row.farmID == farmID,
+              row.authorityGeneration == authorityGeneration,
+              row.status == "active",
+              row.transitionState == "completed" else {
+            throw FarmRemoteTransportError.malformedResponse
+        }
+        return FarmAuthorityCompletionReceipt(
+            farmID: row.farmID,
+            authorityGeneration: row.authorityGeneration,
+            currentRevision: row.currentRevision,
+            status: row.status,
+            transitionState: row.transitionState
         )
     }
 

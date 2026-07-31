@@ -14,6 +14,13 @@ enum FarmRemoteSyncError: LocalizedError {
     case operationMissing
     case operationEntityMissing
     case malformedRemoteOperation
+    case remoteOperationApplyFailed(
+        operationID: UUID,
+        entityID: UUID,
+        baseRevision: Int,
+        resultingRevision: Int,
+        detail: String
+    )
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +34,16 @@ enum FarmRemoteSyncError: LocalizedError {
             "Outbox 对应操作缺少实体标识。"
         case .malformedRemoteOperation:
             "Supabase 返回的操作无法写入本地历史。"
+        case .remoteOperationApplyFailed(
+            let operationID,
+            let entityID,
+            let baseRevision,
+            let resultingRevision,
+            let detail
+        ):
+            "Supabase 操作 \(operationID.uuidString.lowercased()) 无法应用到实体 " +
+                "\(entityID.uuidString.lowercased())（\(baseRevision)→" +
+                "\(resultingRevision)）：\(detail)"
         }
     }
 }
@@ -310,27 +327,39 @@ actor FarmRemoteSyncCoordinator {
         var cursor = startingCursor
         var operationCount = 0
         var conflictCount = 0
-        var hasMore = true
+        var pageLimit = 200
 
-        while hasMore {
+        while true {
             try Task.checkCancellation()
             let page = try await transport.pullOperations(
                 farmID: farmID,
                 authorityGeneration: generation,
                 after: cursor,
-                limit: 200
+                limit: pageLimit
             )
-            let applied = try applyPulledPage(
-                page.operations,
-                farmID: farmID,
-                cursorRevision: page.cursorRevision
-            )
+            guard !page.operations.isEmpty else {
+                return (operationCount, conflictCount, cursor)
+            }
+            let applied: Int
+            do {
+                applied = try applyPulledPage(
+                    page.operations,
+                    farmID: farmID,
+                    cursorRevision: page.cursorRevision
+                )
+            } catch {
+                guard pageLimit > 1 else { throw error }
+                pageLimit = max(1, pageLimit / 2)
+                continue
+            }
             operationCount += page.operations.count
             conflictCount += applied
             cursor = page.cursorRevision
-            hasMore = page.hasMore
+            guard page.hasMore else {
+                return (operationCount, conflictCount, cursor)
+            }
+            pageLimit = min(200, pageLimit * 2)
         }
-        return (operationCount, conflictCount, cursor)
     }
 
     private func applyPulledPage(
@@ -352,7 +381,18 @@ actor FarmRemoteSyncCoordinator {
             guard envelope.farmID == farmID else {
                 throw FarmRemoteSyncError.malformedRemoteOperation
             }
-            let outcome = try service.apply(envelope, context: context)
+            let outcome: RemoteApplyOutcome
+            do {
+                outcome = try service.apply(envelope, context: context)
+            } catch {
+                throw FarmRemoteSyncError.remoteOperationApplyFailed(
+                    operationID: envelope.operationID,
+                    entityID: envelope.entityID,
+                    baseRevision: envelope.baseRevision,
+                    resultingRevision: envelope.revision,
+                    detail: error.localizedDescription
+                )
+            }
             switch outcome {
             case .applied(let changedAt):
                 if let changedAt {

@@ -429,6 +429,173 @@ actor CloudRebuildActor {
         )
     }
 
+    /// Installs the device-key set from a completed private-owner rebuild
+    /// before CKSyncEngine starts its nil-token catch-up. The bundle is
+    /// revalidated and its membership signature is checked again through the
+    /// private-owner CloudKit trust anchor; a copied or edited local bundle
+    /// therefore cannot seed device trust.
+    func persistPrivateOwnerTrustFromCompletedSwitch(
+        farmID: UUID,
+        scope: CloudDatabaseScope
+    ) async throws {
+        guard scope == .privateDatabase,
+              try verifiedCompletedCacheSwitch(
+                farmID: farmID,
+                scope: scope
+              ) != nil else {
+            return
+        }
+        let context = ModelContext(modelContainer)
+        guard let latest = try context.fetch(
+            FetchDescriptor<CloudRebuildSessionRecord>()
+        )
+            .filter({ $0.farmID == farmID })
+            .max(by: {
+                if $0.createdAt != $1.createdAt {
+                    return $0.createdAt < $1.createdAt
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }) else {
+            throw CloudRebuildError.sessionMissing
+        }
+        let bundle = try loadBundle(sessionID: latest.id)
+        guard let membership = bundle.membershipSnapshot,
+              membership.farmID == farmID,
+              bundle.scope == .privateDatabase,
+              let binding = try await persistence.bindingSnapshot(
+                farmID: farmID
+              ),
+              binding.databaseScope == .privateDatabase else {
+            return
+        }
+
+        let zoneID = CKRecordZone.ID(
+            zoneName: binding.zoneName,
+            ownerName: binding.zoneOwnerName
+        )
+        let record = CKRecord(
+            recordType:
+                CloudRecordType.farmMembershipSnapshot.rawValue,
+            recordID: .init(
+                recordName: membership.cloudRecordName,
+                zoneID: zoneID
+            )
+        )
+        record[CloudRecordField.farmID] =
+            membership.farmID.uuidString.lowercased() as CKRecordValue
+        record[CloudRecordField.generation] =
+            membership.generation as CKRecordValue
+        record[CloudRecordField.issuedAt] =
+            membership.issuedAt as CKRecordValue
+        record[CloudRecordField.payload] =
+            membership.payload as CKRecordValue
+        record[CloudRecordField.payloadDigest] =
+            CloudPayloadDigest.hex(
+                for: membership.payload
+            ) as CKRecordValue
+        record[CloudRecordField.modifiedByAccountID] =
+            membership.signedByAccountID.uuidString
+                .lowercased() as CKRecordValue
+        record[CloudRecordField.modifiedByDeviceID] =
+            membership.signedByDeviceID.uuidString
+                .lowercased() as CKRecordValue
+        record[CloudRecordField.capabilityCertificate] =
+            membership.capabilityCertificate as CKRecordValue
+        record[CloudRecordField.signature] =
+            membership.signature as CKRecordValue
+
+        let localTrust = try await persistence.cloudTrustSnapshot(
+            farmID: farmID
+        )
+        _ = try Self.privateOwnerBootstrapTrust(
+            records: [record],
+            binding: binding,
+            root: bundle.root,
+            localTrust: localTrust
+        )
+        let envelope = try JSONDecoder.cloudRebuild.decode(
+            FarmMembershipSnapshotEnvelope.self,
+            from: membership.payload
+        )
+        try await persistence.saveValidatedMembershipSnapshotRecord(
+            MembershipSnapshotRecordValue(
+                id: UUID(),
+                farmID: membership.farmID,
+                generation: membership.generation,
+                issuedAt: membership.issuedAt,
+                payload: membership.payload,
+                signedByAccountID: membership.signedByAccountID,
+                signedByDeviceID: membership.signedByDeviceID,
+                capabilityCertificate:
+                    membership.capabilityCertificate,
+                signature: membership.signature,
+                cloudRecordName: membership.cloudRecordName,
+                validatedAt: .now
+            ),
+            envelope: envelope
+        )
+    }
+
+    /// Repairs the local audit projection of a verified completed cache switch
+    /// without replaying or replacing the already active business cache.
+    /// This is safe to run on every owner discovery because operationID and
+    /// correction tombstones are both idempotent.
+    @discardableResult
+    func repairMissingDomainHistoryFromCompletedSwitch(
+        farmID: UUID,
+        scope: CloudDatabaseScope
+    ) async throws -> Int {
+        guard try verifiedCompletedCacheSwitch(
+            farmID: farmID,
+            scope: scope
+        ) != nil else {
+            return 0
+        }
+        let context = ModelContext(modelContainer)
+        guard let latest = try context.fetch(
+            FetchDescriptor<CloudRebuildSessionRecord>()
+        )
+            .filter({ $0.farmID == farmID })
+            .max(by: {
+                if $0.createdAt != $1.createdAt {
+                    return $0.createdAt < $1.createdAt
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }) else {
+            throw CloudRebuildError.sessionMissing
+        }
+        let bundle = try loadBundle(sessionID: latest.id)
+        guard bundle.sessionID == latest.id,
+              bundle.farmID == farmID,
+              bundle.scope == scope else {
+            throw CloudRebuildError.farmMismatch
+        }
+        try CloudRebuildBundleValidator.validate(bundle)
+        let inserted = try RemoteDomainAuditProjection.restore(
+            bundle.operations,
+            context: context
+        )
+        var insertedTombstones = 0
+        for envelope in bundle.operations {
+            let payload = try JSONDecoder.cloudRebuild.decode(
+                FarmCommandCloudPayload.self,
+                from: envelope.payload
+            )
+            if try RemoteDomainAuditProjection
+                .insertSupersededCorrectionTombstoneIfNeeded(
+                    envelope: envelope,
+                    payload: payload,
+                    context: context
+                ) {
+                insertedTombstones += 1
+            }
+        }
+        if inserted > 0 || insertedTombstones > 0 {
+            try context.save()
+        }
+        return inserted
+    }
+
     /// Builds a corrected staging projection from the newest completed local
     /// bundle. The caller still has to suspend the live CKSyncEngine and prove
     /// that no post-bundle operations or assets exist before switching it.
@@ -1045,7 +1212,15 @@ actor CloudRebuildActor {
         } else {
             workerSecurityGeneration = nil
         }
-        let trust = try await persistence.cloudTrustSnapshot(farmID: binding.farmID)
+        let localTrust = try await persistence.cloudTrustSnapshot(
+            farmID: binding.farmID
+        )
+        let trust = try Self.privateOwnerBootstrapTrust(
+            records: records,
+            binding: binding,
+            root: root,
+            localTrust: localTrust
+        )
         var immutableOperations: [CloudOperationEnvelope] = []
         var operationSourceProofs: [CloudRebuildOperationSourceProof] = []
         for record in records where record.recordType == CloudRecordType.farmOperation.rawValue {
@@ -1254,6 +1429,152 @@ actor CloudRebuildActor {
 
     private func missingMembership() throws -> CloudRebuildMembershipSnapshot? {
         throw CloudContractError.malformedRecord
+    }
+
+    /// A clean installation no longer has the historical device keys that
+    /// signed records in the owner's private CloudKit zone. For that one
+    /// scope, the authenticated private zone and matching FarmRoot are the
+    /// trust anchor: the latest owner membership snapshot may bootstrap its
+    /// device-key set only after its authority certificate, payload digest,
+    /// owner membership and signature all verify together.
+    ///
+    /// Shared zones deliberately cannot use this path. They still require an
+    /// already trusted security snapshot from the identity service.
+    static func privateOwnerBootstrapTrust(
+        records: [CKRecord],
+        binding: CloudFarmBindingSnapshot,
+        root: CloudRebuildRootSnapshot,
+        localTrust: CloudTrustSnapshot
+    ) throws -> CloudTrustSnapshot {
+        guard binding.databaseScope == .privateDatabase else {
+            return localTrust
+        }
+        guard binding.zoneOwnerName == CKCurrentUserDefaultName,
+              binding.farmID == root.farmID,
+              binding.ownerAccountID == root.ownerAccountID else {
+            throw CloudRebuildError.farmMismatch
+        }
+        let candidates = records.filter {
+            $0.recordType == CloudRecordType.farmMembershipSnapshot.rawValue
+        }
+        guard let record = candidates.max(by: {
+            integer($0[CloudRecordField.generation]) <
+                integer($1[CloudRecordField.generation])
+        }) else {
+            return localTrust
+        }
+        guard let farmText = record[CloudRecordField.farmID] as? String,
+              let farmID = UUID(uuidString: farmText),
+              farmID == root.farmID,
+              let issuedAt = record[CloudRecordField.issuedAt] as? Date,
+              let payload = record[CloudRecordField.payload] as? Data,
+              let digest = record[CloudRecordField.payloadDigest] as? String,
+              digest == CloudPayloadDigest.hex(for: payload),
+              let accountText = record[
+                CloudRecordField.modifiedByAccountID
+              ] as? String,
+              let accountID = UUID(uuidString: accountText),
+              accountID == root.ownerAccountID,
+              let deviceText = record[
+                CloudRecordField.modifiedByDeviceID
+              ] as? String,
+              let signingDeviceID = UUID(uuidString: deviceText),
+              let certificate = record[
+                CloudRecordField.capabilityCertificate
+              ] as? String,
+              let signature = record[CloudRecordField.signature] as? Data,
+              let capabilityKey = localTrust.capabilityPublicKeyPEM,
+              !capabilityKey.isEmpty else {
+            throw CloudContractError.malformedRecord
+        }
+
+        let envelope = try JSONDecoder.cloudRebuild.decode(
+            FarmMembershipSnapshotEnvelope.self,
+            from: payload
+        )
+        let generation = integer(record[CloudRecordField.generation])
+        guard envelope.farmID == farmID,
+              envelope.generation == generation,
+              abs(envelope.issuedAt.timeIntervalSince(issuedAt)) < 0.001,
+              envelope.members.contains(where: {
+                $0.accountID == root.ownerAccountID &&
+                    $0.role == .owner &&
+                    $0.status == "active"
+              }) else {
+            throw CloudContractError.malformedRecord
+        }
+
+        let claims = try CapabilityCertificateVerifier.verify(
+            certificate,
+            publicKeyPEM: capabilityKey
+        )
+        let revokedInSnapshot = Set(
+            envelope.revokedCertificates.map(\.certificateID)
+        )
+        guard claims.role == .owner,
+              claims.farmID == farmID,
+              claims.accountID == accountID,
+              claims.deviceID == signingDeviceID,
+              claims.capabilities.contains(.manageMembers),
+              claims.isValid(at: issuedAt),
+              !localTrust.revokedCertificateIDs.contains(
+                claims.certificateID
+              ),
+              !revokedInSnapshot.contains(claims.certificateID),
+              let signingDevice = envelope.devices.first(where: {
+                $0.deviceID == signingDeviceID &&
+                    $0.accountID == accountID
+              }),
+              let signingKey =
+                CloudDevicePublicKeyDecoder.x963Representation(
+                    fromJWKJSON: signingDevice.publicKeyJWK
+                ) else {
+            throw CloudContractError.capabilityDenied
+        }
+        try DeviceSignatureVerifier.verify(
+            signature: signature,
+            data: MembershipSnapshotActor.signingData(
+                farmID: farmID,
+                generation: generation,
+                issuedAt: issuedAt,
+                payloadDigest: digest,
+                accountID: accountID,
+                deviceID: signingDeviceID
+            ),
+            publicKeyX963: signingKey
+        )
+
+        let activeAccountIDs = Set(
+            envelope.members
+                .filter { $0.status == "active" }
+                .map(\.accountID)
+        )
+        var devicePublicKeys = localTrust.devicePublicKeys
+        var snapshotDeviceOwners: [UUID: UUID] = [:]
+        for device in envelope.devices {
+            guard activeAccountIDs.contains(device.accountID),
+                  snapshotDeviceOwners.updateValue(
+                    device.accountID,
+                    forKey: device.deviceID
+                  ) == nil,
+                  let key =
+                    CloudDevicePublicKeyDecoder.x963Representation(
+                        fromJWKJSON: device.publicKeyJWK
+                    ) else {
+                throw CloudContractError.invalidDeviceSignature
+            }
+            if let existing = devicePublicKeys[device.deviceID],
+               existing != key {
+                throw CloudContractError.invalidDeviceSignature
+            }
+            devicePublicKeys[device.deviceID] = key
+        }
+        return CloudTrustSnapshot(
+            capabilityPublicKeyPEM: capabilityKey,
+            devicePublicKeys: devicePublicKeys,
+            revokedCertificateIDs:
+                localTrust.revokedCertificateIDs.union(revokedInSnapshot)
+        )
     }
 
     private static func validatedOperationForRebuild(

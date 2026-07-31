@@ -1,6 +1,7 @@
 import CloudKit
 import Foundation
 import Observation
+import Supabase
 import SwiftData
 import UIKit
 import UserNotifications
@@ -23,6 +24,12 @@ enum CloudAccountAvailability: Equatable, Sendable {
         case .temporarilyUnavailable: "iCloud 暂时不可用"
         }
     }
+}
+
+struct DiscoveredICloudOwnerFarm: Equatable, Sendable {
+    let farmID: UUID
+    let ownerAccountID: UUID
+    let shareRecordName: String?
 }
 
 enum CloudSyncError: LocalizedError {
@@ -408,6 +415,61 @@ actor CloudSyncActor {
         } catch {
             return .temporarilyUnavailable(error.localizedDescription)
         }
+    }
+
+    /// Discovers owner farms from the user's private CloudKit database.
+    ///
+    /// The private zone and its signed farm root are the authority for an
+    /// iCloud owner farm. Account-directory services can improve discovery,
+    /// but a clean install must not lose access merely because that separate
+    /// service is disabled while Supabase Auth is being introduced.
+    func discoverPrivateOwnerFarms(
+        accountID: UUID
+    ) async throws -> [DiscoveredICloudOwnerFarm] {
+        guard CloudFeatureConfiguration.isEnabled else {
+            throw CloudSyncError.featureDisabled
+        }
+        guard await accountAvailability() == .available else {
+            throw CloudSyncError.accountUnavailable
+        }
+
+        let database = container.privateCloudDatabase
+        let zones = try await database.allRecordZones()
+        var discovered: [DiscoveredICloudOwnerFarm] = []
+        for zone in zones.sorted(by: {
+            $0.zoneID.zoneName < $1.zoneID.zoneName
+        }) {
+            try Task.checkCancellation()
+            guard zone.zoneID.ownerName == CKCurrentUserDefaultName,
+                  let farmID = CloudZoneName.farmID(
+                      from: zone.zoneID.zoneName
+                  ) else {
+                continue
+            }
+            let rootID = CKRecord.ID(
+                recordName: "root_\(farmID.uuidString.lowercased())",
+                zoneID: zone.zoneID
+            )
+            let rootRecord = try await database.record(for: rootID)
+            let root = try mapper.farmRootValue(from: rootRecord)
+            guard root.farmID == farmID,
+                  root.ownerAccountID == accountID else {
+                continue
+            }
+            let shareID = CKRecord.ID(
+                recordName: CKRecordNameZoneWideShare,
+                zoneID: zone.zoneID
+            )
+            let shareRecordName = (
+                try? await database.record(for: shareID)
+            )?.recordID.recordName
+            discovered.append(DiscoveredICloudOwnerFarm(
+                farmID: farmID,
+                ownerAccountID: root.ownerAccountID,
+                shareRecordName: shareRecordName
+            ))
+        }
+        return discovered
     }
 
     func corruptedStateScopes() -> [CloudDatabaseScope] {
@@ -1675,6 +1737,64 @@ enum SupabaseRealtimeHealth: Sendable, Equatable {
     }
 }
 
+enum DevelopmentSupabaseRealtimeGate {
+    static let disabledKey = "development.supabase.realtimeDisabled"
+
+    static var isDisabled: Bool {
+        #if DEBUG
+        Bundle.main.bundleIdentifier == "com.sheepfarm.next.dev" &&
+            UserDefaults.standard.bool(forKey: disabledKey)
+        #else
+        false
+        #endif
+    }
+}
+
+enum DevelopmentSupabaseNetworkGate {
+    static let forcedOfflineKey = "development.supabase.forcedOffline"
+
+    static var isForcedOffline: Bool {
+        #if DEBUG
+        isForcedOffline(
+            bundleIdentifier: Bundle.main.bundleIdentifier,
+            flag: UserDefaults.standard.bool(forKey: forcedOfflineKey)
+        )
+        #else
+        false
+        #endif
+    }
+
+    static func isForcedOffline(
+        bundleIdentifier: String?,
+        flag: Bool
+    ) -> Bool {
+        bundleIdentifier == "com.sheepfarm.next.dev" && flag
+    }
+}
+
+enum FarmOwnerDiscoveryTarget: Hashable, Sendable {
+    case iCloud
+    case supabase
+}
+
+enum FarmOwnerDiscoveryPolicy {
+    static func targets(
+        environment: AppEnvironment,
+        cloudKitEnabled: Bool,
+        supabaseConfigured: Bool
+    ) -> Set<FarmOwnerDiscoveryTarget> {
+        guard environment == .development else { return [] }
+        var targets = Set<FarmOwnerDiscoveryTarget>()
+        if cloudKitEnabled {
+            targets.insert(.iCloud)
+        }
+        if supabaseConfigured {
+            targets.insert(.supabase)
+        }
+        return targets
+    }
+}
+
 @MainActor
 @Observable
 final class CloudCollaborationStore {
@@ -1712,6 +1832,7 @@ final class CloudCollaborationStore {
     private var sharedAdmissionFarmIDs = Set<UUID>()
     private var supabaseCursorPollTask: Task<Void, Never>?
     private var supabaseRealtimeTasks: [UUID: Task<Void, Never>] = [:]
+    private var supabaseOwnerDiscoveryAccountIDs = Set<UUID>()
 
     nonisolated static func prepareStartup(
         container: ModelContainer
@@ -1792,6 +1913,20 @@ final class CloudCollaborationStore {
         supabaseRealtimeHealthByFarmID[farmID] ?? .notActive
     }
 
+    func refreshSupabaseRealtimeAcceptanceMode() {
+        startSupabaseCursorPollingIfNeeded()
+        refreshSupabaseRealtimeSubscriptions()
+        Task { @MainActor [weak self] in
+            await self?.synchronizeSupabaseFarms()
+        }
+    }
+
+    func resumeSupabaseSynchronization() async {
+        startSupabaseCursorPollingIfNeeded()
+        refreshSupabaseRealtimeSubscriptions()
+        await synchronizeSupabaseFarms()
+    }
+
     private func installRuntimeObservers() {
         syncWakeObserver = NotificationCenter.default.addObserver(
             forName: CloudRuntimeNotification.syncWake,
@@ -1850,6 +1985,9 @@ final class CloudCollaborationStore {
                         context: routeContext
                     )
                     if route.deliveryProvider == .supabase {
+                        guard !DevelopmentSupabaseNetworkGate.isForcedOffline else {
+                            continue
+                        }
                         guard let remoteSync else {
                             throw AccountIdentityClientError.notConfigured
                         }
@@ -1876,7 +2014,11 @@ final class CloudCollaborationStore {
     }
 
     private func startSupabaseCursorPollingIfNeeded() {
-        guard remoteSync != nil, supabaseCursorPollTask == nil else { return }
+        guard remoteSync != nil else { return }
+        if let supabaseCursorPollTask,
+           !supabaseCursorPollTask.isCancelled {
+            return
+        }
         refreshSupabaseRealtimeSubscriptions()
         supabaseCursorPollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -1899,6 +2041,19 @@ final class CloudCollaborationStore {
                 .filter { $0.provider == .supabase && $0.state == .active }
                 .map(\.farmID)
         )
+        if DevelopmentSupabaseNetworkGate.isForcedOffline ||
+            DevelopmentSupabaseRealtimeGate.isDisabled {
+            supabaseRealtimeTasks.values.forEach { $0.cancel() }
+            supabaseRealtimeTasks.removeAll()
+            for farmID in activeFarmIDs {
+                supabaseRealtimeHealthByFarmID[farmID] = .cursorFallback(
+                    errorCode: DevelopmentSupabaseNetworkGate.isForcedOffline
+                        ? "developmentForcedOffline"
+                        : "developmentDisabled"
+                )
+            }
+            return
+        }
         let staleFarmIDs = supabaseRealtimeTasks.keys.filter {
             !activeFarmIDs.contains($0)
         }
@@ -1947,7 +2102,14 @@ final class CloudCollaborationStore {
     }
 
     private func synchronizeSupabaseFarms() async {
-        guard let remoteSync, !isMigrationMaintenanceRunning else { return }
+        // CloudKit migration maintenance can take minutes on a restored farm.
+        // Supabase cursor pull is an independent authority path and must keep
+        // running during that work or another device can remain permanently
+        // behind despite the 30-second fallback timer.
+        guard let remoteSync,
+              !DevelopmentSupabaseNetworkGate.isForcedOffline else {
+            return
+        }
         let context = ModelContext(modelContainer)
         let farmIDs = (try? context.fetch(FetchDescriptor<FarmRemoteBinding>()))?
             .filter { $0.provider == .supabase && $0.state == .active }
@@ -1963,10 +2125,32 @@ final class CloudCollaborationStore {
                 return
             } catch {
                 lastErrorMessage = error.localizedDescription
+                recordSupabaseSyncError(error, farmID: farmID)
             }
         }
         await supabasePhotoTransfers?.processPendingTransfers()
         await optimizeVerifiedSupabaseCachesIfPossible()
+    }
+
+    private func recordSupabaseSyncError(
+        _ error: Error,
+        farmID: UUID
+    ) {
+        let context = ModelContext(modelContainer)
+        guard let binding = try? context
+            .fetch(FetchDescriptor<FarmRemoteBinding>())
+            .first(where: {
+                $0.farmID == farmID &&
+                    $0.provider == .supabase
+            }) else {
+            return
+        }
+        let value = error as NSError
+        binding.lastErrorCode =
+            "\(String(describing: type(of: error))):\(value.code):" +
+            String(error.localizedDescription.prefix(320))
+        binding.updatedAt = .now
+        try? context.save()
     }
 
     private func optimizeVerifiedSupabaseCachesIfPossible() async {
@@ -2001,15 +2185,10 @@ final class CloudCollaborationStore {
         let context = ModelContext(modelContainer)
         if let accountID = try? context.fetch(FetchDescriptor<AccountProfile>())
             .first?.effectiveAccountID {
-            do {
-                _ = try await SupabaseOwnedFarmDiscoveryService(client: client)
-                    .discoverAndRestoreOwnedFarms(
-                        accountID: accountID,
-                        context: context
-                    )
-            } catch {
-                lastErrorMessage = "Supabase 牧场发现失败：\(error.localizedDescription)"
-            }
+            await discoverAndRestoreSupabaseOwnerFarms(
+                accountID: accountID,
+                client: client
+            )
         }
         let profiles = (try? context.fetch(FetchDescriptor<FarmStorageProfile>())) ?? []
         let pendingFarmIDs = Set(profiles.compactMap { profile -> UUID? in
@@ -2027,6 +2206,30 @@ final class CloudCollaborationStore {
         })
         let farms = (try? context.fetch(FetchDescriptor<FarmRecord>())) ?? []
         let service = SupabaseFarmActivationService(client: client)
+        let locallyCompletedFarmIDs = Set(profiles.compactMap {
+            profile -> UUID? in
+            guard profile.mode == .supabase,
+                  profile.transitionState == .idle else {
+                return nil
+            }
+            return profile.farmID
+        })
+        for farm in farms where locallyCompletedFarmIDs.contains(farm.id) {
+            do {
+                if try await service.reconcileCompletedLocalActivation(
+                    farm: farm,
+                    context: context
+                ) {
+                    lastSuccessfulSyncAt = .now
+                }
+            } catch FarmRemoteTransportError.authorityTransitionMissing {
+                // A farm activated by a future provider path may have no
+                // compact transition. That is not a synchronization failure.
+            } catch {
+                lastErrorMessage =
+                    "Supabase 迁移终态对账失败：\(error.localizedDescription)"
+            }
+        }
         for farm in farms where pendingFarmIDs.contains(farm.id) {
             do {
                 _ = try await service.activate(farm: farm, context: context)
@@ -2235,7 +2438,19 @@ final class CloudCollaborationStore {
     }
 
     func discoverAndRestoreOwnerFarms(accountID: UUID) async {
-        guard AppEnvironment.current == .development, CloudFeatureConfiguration.isEnabled else { return }
+        let targets = FarmOwnerDiscoveryPolicy.targets(
+            environment: AppEnvironment.current,
+            cloudKitEnabled: CloudFeatureConfiguration.isEnabled,
+            supabaseConfigured: AccountIdentityClients.supabaseClient != nil
+        )
+        if targets.contains(.supabase),
+           let client = AccountIdentityClients.supabaseClient {
+            await discoverAndRestoreSupabaseOwnerFarms(
+                accountID: accountID,
+                client: client
+            )
+        }
+        guard !Task.isCancelled, targets.contains(.iCloud) else { return }
         do {
             // A farm already locked in rebuildingCache has passed the local
             // account/binding admission checks. Resume that CloudKit rebuild
@@ -2256,40 +2471,112 @@ final class CloudCollaborationStore {
                 try await rebuildOwnerFarmAndUnlock(farmID: farmID)
             }
 
+            let recoveryCoordinator = OwnerFarmRecoveryCoordinator(
+                modelContainer: modelContainer
+            )
+            // A private custom zone plus its farm root is sufficient proof
+            // that the current iCloud account owns the farm. Discover this
+            // first so clean installs can restore iCloud farms even when the
+            // legacy account-directory endpoint is intentionally absent.
+            for farm in try await sync.discoverPrivateOwnerFarms(
+                accountID: accountID
+            ) {
+                try await recoverDiscoveredICloudOwnerFarm(
+                    farmID: farm.farmID,
+                    ownerAccountID: farm.ownerAccountID,
+                    shareRecordName: farm.shareRecordName,
+                    accountID: accountID,
+                    recoveryCoordinator: recoveryCoordinator
+                )
+            }
+
+            guard IdentityWorkerConfiguration.baseURL != nil else { return }
             let status = try await IdentityWorkerClient.shared.accountStatus()
             guard status.accountID == accountID, status.status == "active" else { return }
-            let recoveryCoordinator = OwnerFarmRecoveryCoordinator(modelContainer: modelContainer)
             for membership in status.memberships where membership.role == .owner && membership.status == "active" {
                 guard membership.cloudZoneName == CloudZoneName.forFarm(membership.farm_id) else { continue }
-                let existingBinding = try await persistence.bindingSnapshot(farmID: membership.farm_id)
-                if existingBinding == nil {
-                    try await persistence.stageDiscoveredOwnerFarm(
-                        farmID: membership.farm_id,
-                        ownerAccountID: membership.ownerAccountID ?? accountID,
-                        shareRecordName: membership.shareRecordName
-                    )
-                } else if existingBinding?.state == .active {
-                    continue
-                } else if RecoveredBaselineReuploadRepairService.isBlockingCode(existingBinding?.lastErrorCode) {
-                    continue
-                } else if existingBinding?.state == .requiresAccountReview,
-                          try await recoveryCoordinator.stageReviewedOwnerFarmCatchUpIfUnchanged(
-                              farmID: membership.farm_id,
-                              accountID: accountID
-                          ) {
-                    try await sync.resetEngineForLockedFarmAndActivate(
-                        scope: .privateDatabase,
-                        farmID: membership.farm_id
-                    )
-                    continue
-                } else {
-                    guard existingBinding?.databaseScope == .privateDatabase,
-                          existingBinding?.zoneName == membership.cloudZoneName else { continue }
-                }
-                try await rebuildOwnerFarmAndUnlock(farmID: membership.farm_id)
+                try await recoverDiscoveredICloudOwnerFarm(
+                    farmID: membership.farm_id,
+                    ownerAccountID: membership.ownerAccountID ?? accountID,
+                    shareRecordName: membership.shareRecordName,
+                    accountID: accountID,
+                    recoveryCoordinator: recoveryCoordinator
+                )
             }
         } catch {
             lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func recoverDiscoveredICloudOwnerFarm(
+        farmID: UUID,
+        ownerAccountID: UUID,
+        shareRecordName: String?,
+        accountID: UUID,
+        recoveryCoordinator: OwnerFarmRecoveryCoordinator
+    ) async throws {
+        guard ownerAccountID == accountID else { return }
+        let expectedZoneName = CloudZoneName.forFarm(farmID)
+        let existingBinding = try await persistence.bindingSnapshot(
+            farmID: farmID
+        )
+        if existingBinding == nil {
+            try await persistence.stageDiscoveredOwnerFarm(
+                farmID: farmID,
+                ownerAccountID: ownerAccountID,
+                shareRecordName: shareRecordName
+            )
+        } else if existingBinding?.state == .active {
+            _ = try await rebuilds
+                .repairMissingDomainHistoryFromCompletedSwitch(
+                    farmID: farmID,
+                    scope: .privateDatabase
+                )
+            return
+        } else if RecoveredBaselineReuploadRepairService.isBlockingCode(
+            existingBinding?.lastErrorCode
+        ) {
+            return
+        } else if existingBinding?.state == .requiresAccountReview,
+                  try await recoveryCoordinator
+                    .stageReviewedOwnerFarmCatchUpIfUnchanged(
+                        farmID: farmID,
+                        accountID: accountID
+                    ) {
+            try await sync.resetEngineForLockedFarmAndActivate(
+                scope: .privateDatabase,
+                farmID: farmID
+            )
+            return
+        } else {
+            guard existingBinding?.databaseScope == .privateDatabase,
+                  existingBinding?.zoneName == expectedZoneName else {
+                return
+            }
+        }
+        try await rebuildOwnerFarmAndUnlock(farmID: farmID)
+    }
+
+    private func discoverAndRestoreSupabaseOwnerFarms(
+        accountID: UUID,
+        client: SupabaseClient
+    ) async {
+        guard supabaseOwnerDiscoveryAccountIDs.insert(accountID).inserted else {
+            return
+        }
+        defer { supabaseOwnerDiscoveryAccountIDs.remove(accountID) }
+        do {
+            let context = ModelContext(modelContainer)
+            _ = try await SupabaseOwnedFarmDiscoveryService(client: client)
+                .discoverAndRestoreOwnedFarms(
+                    accountID: accountID,
+                    context: context
+                )
+        } catch is CancellationError {
+            return
+        } catch {
+            lastErrorMessage =
+                "Supabase 牧场发现失败：\(error.localizedDescription)"
         }
     }
 
@@ -2330,6 +2617,14 @@ final class CloudCollaborationStore {
             binding,
             hasVerifiedCompletedCacheSwitch: hasVerifiedCompletedSwitch
         ) || Self.shouldRetryAccountReviewEngineReset(binding) {
+            if binding.databaseScope == .privateDatabase,
+               hasVerifiedCompletedSwitch {
+                try await rebuilds
+                    .persistPrivateOwnerTrustFromCompletedSwitch(
+                        farmID: farmID,
+                        scope: binding.databaseScope
+                    )
+            }
             try await sync.resetEngineForLockedFarmAndActivate(
                 scope: binding.databaseScope,
                 farmID: farmID
@@ -2341,6 +2636,12 @@ final class CloudCollaborationStore {
             scope: binding.databaseScope,
             reason: .reinstallRecovery
         )
+        if binding.databaseScope == .privateDatabase {
+            try await rebuilds.persistPrivateOwnerTrustFromCompletedSwitch(
+                farmID: farmID,
+                scope: binding.databaseScope
+            )
+        }
         let finalizer = Task { [sync] in
             do {
                 try await sync.resetEngineForLockedFarmAndActivate(

@@ -4,6 +4,21 @@ import XCTest
 
 @MainActor
 final class FarmDomainTests: XCTestCase {
+    func testForcedSupabaseOfflineGateIsDevelopmentOnly() {
+        XCTAssertTrue(DevelopmentSupabaseNetworkGate.isForcedOffline(
+            bundleIdentifier: "com.sheepfarm.next.dev",
+            flag: true
+        ))
+        XCTAssertFalse(DevelopmentSupabaseNetworkGate.isForcedOffline(
+            bundleIdentifier: "com.sheepfarm.next",
+            flag: true
+        ))
+        XCTAssertFalse(DevelopmentSupabaseNetworkGate.isForcedOffline(
+            bundleIdentifier: "com.sheepfarm.next.dev",
+            flag: false
+        ))
+    }
+
     func testCapabilitySetIsFarmRoleScoped() {
         XCTAssertTrue(CapabilitySet(role: .owner).allows(.manageMembers))
         XCTAssertTrue(CapabilitySet(role: .administrator).allows(.recordProduction))
@@ -635,6 +650,41 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(profile.mode, .supabase)
         XCTAssertEqual(profile.authorityGeneration, 1)
         XCTAssertEqual(profile.transitionState, .failed)
+    }
+
+    func testSupabaseAuthorityDrainRequiresEmptyOutboxAndCaughtUpCursor() {
+        XCTAssertTrue(
+            SupabaseAuthorityDrainSnapshot(
+                pendingCount: 0,
+                conflictCount: 0,
+                cursorRevision: 12,
+                remoteRevision: 12
+            ).isReadyToArchive
+        )
+        XCTAssertFalse(
+            SupabaseAuthorityDrainSnapshot(
+                pendingCount: 1,
+                conflictCount: 0,
+                cursorRevision: 12,
+                remoteRevision: 12
+            ).isReadyToArchive
+        )
+        XCTAssertFalse(
+            SupabaseAuthorityDrainSnapshot(
+                pendingCount: 0,
+                conflictCount: 1,
+                cursorRevision: 12,
+                remoteRevision: 12
+            ).isReadyToArchive
+        )
+        XCTAssertFalse(
+            SupabaseAuthorityDrainSnapshot(
+                pendingCount: 0,
+                conflictCount: 0,
+                cursorRevision: 11,
+                remoteRevision: 12
+            ).isReadyToArchive
+        )
     }
 
     func testSharedCloudFarmMustRemoveOtherMembersBeforeBecomingLocal() throws {

@@ -28,6 +28,145 @@ struct RemoteDomainReplayResult: Sendable, Equatable {
     let earliestHistoryChange: Date?
 }
 
+/// Reconstructs the local audit projection from an already authenticated
+/// immutable cloud operation. Bootstrap operations are internal migration
+/// machinery and deliberately remain absent from user/business history.
+///
+/// `DomainOperation` is not the remote authority, but omitting it on live
+/// ingest or a clean-install rebuild makes audit history device-local. Keep
+/// this projection idempotent by operationID and never create an Outbox row.
+enum RemoteDomainAuditProjection {
+    @discardableResult
+    static func restore(
+        _ envelopes: [CloudOperationEnvelope],
+        context: ModelContext
+    ) throws -> Int {
+        var inserted = 0
+        for envelope in envelopes {
+            if try insertIfNeeded(envelope, context: context) {
+                inserted += 1
+            }
+        }
+        return inserted
+    }
+
+    @discardableResult
+    static func insertIfNeeded(
+        _ envelope: CloudOperationEnvelope,
+        context: ModelContext
+    ) throws -> Bool {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let payload = try decoder.decode(
+            FarmCommandCloudPayload.self,
+            from: envelope.payload
+        )
+        guard payload.kind != .bootstrapEntity else { return false }
+        var descriptor = FetchDescriptor<DomainOperation>(
+            predicate: #Predicate<DomainOperation> {
+                $0.id == envelope.operationID
+            }
+        )
+        descriptor.fetchLimit = 1
+        guard try context.fetch(descriptor).first == nil else { return false }
+
+        let summary: String
+        if let command = try? FarmCommandCloudPayloadDecoder.decode(payload),
+           command.operationKind == payload.kind {
+            summary = command.summary
+        } else {
+            summary = fallbackSummary(for: payload.kind)
+        }
+        let operation = DomainOperation(
+            id: envelope.operationID,
+            farmID: envelope.farmID,
+            accountID: envelope.modifiedByAccountID,
+            kind: payload.kind,
+            occurredAt: envelope.modifiedAt,
+            summary: summary,
+            entityType: envelope.entityType,
+            entityID: envelope.entityID,
+            baseRevision: envelope.baseRevision,
+            resultingRevision: envelope.revision,
+            payload: envelope.payload
+        )
+        operation.createdAt = envelope.modifiedAt
+        operation.schemaVersion = envelope.schemaVersion
+        operation.payloadDigest = envelope.payloadDigest
+        operation.modifiedByDeviceID = envelope.modifiedByDeviceID
+        operation.capabilityCertificate = envelope.capabilityCertificate
+        operation.operationSignature = envelope.operationSignature
+        context.insert(operation)
+        return true
+    }
+
+    /// A correction can be replay-safe even when both its source and result
+    /// were later authoritatively deleted. The business row is correctly
+    /// absent, but the correction's deletion evidence still belongs in the
+    /// audit projection and must survive a clean install.
+    @discardableResult
+    static func insertSupersededCorrectionTombstoneIfNeeded(
+        envelope: CloudOperationEnvelope,
+        payload: FarmCommandCloudPayload,
+        context: ModelContext
+    ) throws -> Bool {
+        guard [.correctWeight, .correctTransfer, .correctRemoval]
+            .contains(payload.kind),
+              let originalID = payload.identifiers["originalID"] else {
+            return false
+        }
+        let operationID: UUID? = envelope.operationID
+        var operationDescriptor = FetchDescriptor<TombstoneRecord>(
+            predicate: #Predicate<TombstoneRecord> {
+                $0.operationID == operationID
+            }
+        )
+        operationDescriptor.fetchLimit = 1
+        guard try context.fetch(operationDescriptor).first == nil else {
+            return false
+        }
+        let farmID = envelope.farmID
+        let resultID = envelope.entityID
+        let tombstones = try context.fetch(
+            FetchDescriptor<TombstoneRecord>(
+                predicate: #Predicate<TombstoneRecord> {
+                    $0.farmID == farmID &&
+                        ($0.entityID == originalID || $0.entityID == resultID)
+                }
+            )
+        )
+        guard tombstones.contains(where: { $0.entityID == originalID }),
+              tombstones.contains(where: { $0.entityID == resultID }) else {
+            return false
+        }
+        let tombstone = TombstoneRecord(
+            farmID: envelope.farmID,
+            entityType: envelope.entityType,
+            entityID: originalID,
+            deletedByAccountID: envelope.modifiedByAccountID,
+            reason: "远端修正记录已由后续删除覆盖",
+            revision: envelope.revision,
+            operationID: envelope.operationID
+        )
+        tombstone.deletedAt = envelope.deletedAt ?? envelope.modifiedAt
+        context.insert(tombstone)
+        return true
+    }
+
+    private static func fallbackSummary(
+        for kind: DomainOperationKind
+    ) -> String {
+        switch kind {
+        case .createFarm: "新建牧场"
+        case .addPhoto: "添加照片"
+        case .resolveConflict: "解决同步冲突"
+        case .recoverEntity: "恢复权威记录"
+        case .bootstrapEntity: "迁移基线"
+        default: kind.rawValue
+        }
+    }
+}
+
 /// Replays an already dependency-sorted authoritative operation set.
 /// Missing references fail closed before another operation is attempted.
 ///
@@ -135,9 +274,25 @@ enum RemoteDomainReplayExecutor {
                     context: context,
                     mapper: mapper
                 )
+                _ = try RemoteDomainAuditProjection.insertIfNeeded(
+                    envelope,
+                    context: context
+                )
+                if let payload {
+                    _ = try RemoteDomainAuditProjection
+                        .insertSupersededCorrectionTombstoneIfNeeded(
+                            envelope: envelope,
+                            payload: payload,
+                            context: context
+                        )
+                }
                 acknowledgedSupersededCount += 1
                 continue
             }
+            _ = try RemoteDomainAuditProjection.insertIfNeeded(
+                envelope,
+                context: context
+            )
             insertReceipt(
                 for: envelope,
                 farmID: farmID,
@@ -535,6 +690,17 @@ struct RemoteDomainApplyService {
         switch payload.kind {
         case .care:
             guard let command = payload.careCommand else { throw RemoteDomainApplyError.invalidPayload("careCommand") }
+            if try FarmCareCommandHandler
+                .repairRemotePedigreeCheckpointOverlapIfNeeded(
+                    command,
+                    farmID: envelope.farmID,
+                    resultingRevision: envelope.revision,
+                    accountID: envelope.modifiedByAccountID,
+                    modifiedAt: envelope.modifiedAt,
+                    context: context
+                ) {
+                return .applied(rebuildHistoryFrom: command.rebuildHistoryFrom)
+            }
             if try FarmCareCommandHandler.isApplied(command, farmID: envelope.farmID, context: context) { return .duplicate }
             let result = try FarmCareCommandHandler.validateAndApply(
                 command,

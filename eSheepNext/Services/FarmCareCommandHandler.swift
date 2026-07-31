@@ -9,6 +9,111 @@ struct CareApplyResult: Sendable {
 }
 
 enum FarmCareCommandHandler {
+    /// A compact checkpoint can already contain an entity at the operation's
+    /// resulting revision while omitting the operation-specific pedigree
+    /// audit, or (in older checkpoints) one of the resolved parent links.
+    /// Repair only that narrow overlap. A local operation at the same
+    /// resulting revision means this is a real divergence and must continue
+    /// through the normal conflict path.
+    static func repairRemotePedigreeCheckpointOverlapIfNeeded(
+        _ command: CareCommand,
+        farmID: UUID,
+        resultingRevision: Int,
+        accountID: UUID,
+        modifiedAt: Date,
+        context: ModelContext
+    ) throws -> Bool {
+        guard case .updateSheepPedigree(let draft) = command,
+              resultingRevision == draft.expectedRevision + 1,
+              let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+                .first(where: {
+                    $0.id == draft.sheepID &&
+                        $0.farmID == farmID &&
+                        $0.deletedAt == nil
+                }),
+              sheep.revision == resultingRevision else {
+            return false
+        }
+        if try context.fetch(FetchDescriptor<PedigreeChangeRecord>())
+            .contains(where: {
+                $0.id == draft.id &&
+                    $0.farmID == farmID &&
+                    $0.sheepID == draft.sheepID
+            }) {
+            return false
+        }
+        if try context.fetch(FetchDescriptor<DomainOperation>())
+            .contains(where: {
+                $0.farmID == farmID &&
+                    $0.entityID == draft.sheepID &&
+                    $0.resultingRevision == resultingRevision
+            }) {
+            return false
+        }
+
+        let validationDraft = CarePedigreeUpdateDraft(
+            id: draft.id,
+            sheepID: draft.sheepID,
+            damID: draft.damID,
+            sireID: draft.sireID,
+            semenDonorID: draft.semenDonorID,
+            reason: draft.reason,
+            expectedRevision: sheep.revision
+        )
+        try validatePedigree(
+            validationDraft,
+            farmID: farmID,
+            context: context
+        )
+        let donor = try draft.semenDonorID.map {
+            try semenDonor(
+                $0,
+                farmID: farmID,
+                context: context,
+                requiresActive: false
+            )
+        }
+        let resolvedSireID = donor?.linkedRamID ?? draft.sireID
+        context.insert(PedigreeChangeRecord(
+            id: draft.id,
+            farmID: farmID,
+            sheepID: sheep.id,
+            beforeDamID: sheep.damID,
+            afterDamID: draft.damID,
+            beforeSireID: sheep.sireID,
+            afterSireID: resolvedSireID,
+            beforeSemenDonorID: sheep.semenDonorID,
+            afterSemenDonorID: donor?.id,
+            beforeDamSourceRawValue: sheep.damProvenanceRawValue,
+            afterDamSourceRawValue: draft.damID == nil
+                ? nil
+                : PedigreeRelationSource.manual.rawValue,
+            beforeSireSourceRawValue: sheep.sireProvenanceRawValue,
+            afterSireSourceRawValue: (resolvedSireID == nil && donor == nil)
+                ? nil
+                : PedigreeRelationSource.manual.rawValue,
+            reason: draft.reason.trimmed,
+            changedByAccountID: accountID,
+            sheepRevision: resultingRevision,
+            occurredAt: modifiedAt
+        ))
+        sheep.damID = draft.damID
+        sheep.sireID = resolvedSireID
+        sheep.damProvenanceRawValue = draft.damID == nil
+            ? nil
+            : PedigreeRelationSource.manual.rawValue
+        sheep.sireProvenanceRawValue = (resolvedSireID == nil && donor == nil)
+            ? nil
+            : PedigreeRelationSource.manual.rawValue
+        sheep.semenDonorID = donor?.id
+        sheep.semenDonorNameSnapshot = donor?.name
+        sheep.semenDonorRegistrationNumberSnapshot =
+            donor?.registrationNumber.nilIfEmpty
+        sheep.semenDonorBreedSnapshot = donor?.breed
+        sheep.updatedAt = modifiedAt
+        return true
+    }
+
     static func isApplied(_ command: CareCommand, farmID: UUID, context: ModelContext) throws -> Bool {
         switch command {
         case .upsertHealthCatalog(let id, let kind, let name, let category, let unit, let dose, let route, let interval, let note, let active):

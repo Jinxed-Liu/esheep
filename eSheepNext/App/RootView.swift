@@ -150,6 +150,8 @@ struct RootView: View {
                       $0.cloudState != .synced
                   }),
                   !activeFarmIDs.isEmpty else { return }
+            await collaboration.resumeSupabaseSynchronization()
+            guard !Task.isCancelled else { return }
             guard await waitForSecondaryLaunchWindow(.milliseconds(700)) else { return }
             await collaboration.synchronizeNow()
         }
@@ -233,6 +235,12 @@ struct RootView: View {
                 collaboration.lastErrorMessage = error.localizedDescription
             }
             await collaboration.discoverAndRestoreOwnerFarms(accountID: accountID)
+            guard !Task.isCancelled else { return }
+            // Supabase discovery imports the recovered farm through an
+            // independent ModelContext. Force this root query/view boundary
+            // to reconcile immediately after the durable import completes
+            // instead of waiting for another scene transition or relaunch.
+            systemSnapshotRevision &+= 1
         }
         .task(id: maintenanceTaskID) {
             guard session.accountAccessStatus.allowsCloudOperations,

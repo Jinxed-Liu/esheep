@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import SwiftUI
 
@@ -21,10 +22,18 @@ struct FarmCloudStorageSettingsView: View {
     @State private var compactRebuildProgress:
         FarmCompactBaselineRebuildProgress?
     @State private var remoteStorageMetrics: SupabaseFarmStorageMetrics?
+    @State private var remoteTransitionStatus:
+        FarmCompactAuthorityTransitionStatus?
+    @State private var isRunningDevelopmentAcceptanceCommand = false
+    @State private var developmentAcceptanceMessage: String?
     @AppStorage(DevelopmentSupabaseActivationGate.pausePointKey)
     private var developmentPausePointRawValue = ""
     @AppStorage(DevelopmentSupabaseActivationGate.lastPausedPointKey)
     private var developmentLastPausedPointRawValue = ""
+    @AppStorage(DevelopmentSupabaseRealtimeGate.disabledKey)
+    private var developmentRealtimeDisabled = false
+    @AppStorage(DevelopmentSupabaseNetworkGate.forcedOfflineKey)
+    private var developmentSupabaseForcedOffline = false
 
     private var profile: FarmStorageProfile? {
         let profiles = (try? modelContext.fetch(FetchDescriptor<FarmStorageProfile>())) ?? []
@@ -53,13 +62,14 @@ struct FarmCloudStorageSettingsView: View {
     }
 
     private var baselineProgress: FarmBaselineMigrationRecord? {
-        guard let migrationID = profile?.migrationID else { return nil }
-        return baselineMigrations
-            .filter {
-                $0.farmID == farm.id &&
-                    $0.migrationID == migrationID
-            }
-            .max { $0.updatedAt < $1.updatedAt }
+        let farmMigrations = baselineMigrations.filter { $0.farmID == farm.id }
+        if let migrationID = profile?.migrationID {
+            return farmMigrations
+                .filter { $0.migrationID == migrationID }
+                .max { $0.updatedAt < $1.updatedAt }
+        }
+        guard profile?.mode == .supabase else { return nil }
+        return farmMigrations.max { $0.updatedAt < $1.updatedAt }
     }
 
     private var canManuallyActivate: Bool {
@@ -164,6 +174,16 @@ struct FarmCloudStorageSettingsView: View {
                     LabeledContent(
                         "Migration",
                         value: profile?.transitionState.rawValue ?? "idle"
+                    )
+                    LabeledContent(
+                        "远端迁移",
+                        value: remoteTransitionStatus?.status ?? "未知"
+                    )
+                    LabeledContent(
+                        "远端 Revision",
+                        value:
+                            (remoteTransitionStatus?.currentRevision ?? 0)
+                            .formatted()
                     )
                     LabeledContent(
                         "Cursor",
@@ -312,6 +332,54 @@ struct FarmCloudStorageSettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.orange)
                     }
+                    Toggle(
+                        "关闭 Realtime（验收 cursor）",
+                        isOn: $developmentRealtimeDisabled
+                    )
+                    .onChange(of: developmentRealtimeDisabled) {
+                        collaboration.refreshSupabaseRealtimeAcceptanceMode()
+                    }
+                    Toggle(
+                        "强制 Supabase 离线（验收 Outbox）",
+                        isOn: $developmentSupabaseForcedOffline
+                    )
+                    .onChange(of: developmentSupabaseForcedOffline) {
+                        collaboration.refreshSupabaseRealtimeAcceptanceMode()
+                    }
+                    if developmentSupabaseForcedOffline {
+                        Text("仅暂停本机 Supabase 发送、拉取和 Realtime；本地命令仍会写入 Outbox。关闭后立即恢复同步。")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                    Button("生成20条在线验收记录") {
+                        createDevelopmentAcceptanceNotes(
+                            prefix: "DEV-A-ONLINE",
+                            count: 20
+                        )
+                    }
+                    Button("生成1条 Cursor 验收记录") {
+                        createDevelopmentAcceptanceNotes(
+                            prefix: "DEV-A-CURSOR",
+                            count: 1,
+                            appendAfterExisting: true
+                        )
+                    }
+                    Button("生成20条离线验收记录") {
+                        createDevelopmentAcceptanceNotes(
+                            prefix: "DEV-A-OFFLINE",
+                            count: 20,
+                            appendAfterExisting: true
+                        )
+                    }
+                    Button("撤销全部 DEV-A 验收记录", role: .destructive) {
+                        revokeDevelopmentAcceptanceNotes()
+                    }
+                    .disabled(isRunningDevelopmentAcceptanceCommand)
+                    if let developmentAcceptanceMessage {
+                        Text(developmentAcceptanceMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
 
                     Picker("下次启云暂停于", selection: $developmentPausePointRawValue) {
                         Text("不暂停").tag("")
@@ -393,8 +461,19 @@ struct FarmCloudStorageSettingsView: View {
                 remoteStorageMetrics = try await
                     SupabaseFarmStorageMetricsClient(client: client)
                     .metrics(farmID: farm.id)
+                if let migration = baselineProgress {
+                    remoteTransitionStatus = try? await
+                        SupabaseFarmTransport(client: client)
+                        .compactAuthorityTransitionStatus(
+                            farmID: farm.id,
+                            migrationID: migration.migrationID
+                        )
+                } else {
+                    remoteTransitionStatus = nil
+                }
             } else {
                 remoteStorageMetrics = nil
+                remoteTransitionStatus = nil
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -430,5 +509,134 @@ struct FarmCloudStorageSettingsView: View {
             farmID: farm.id,
             migrationID: migration.migrationID
         )
+    }
+
+    private func createDevelopmentAcceptanceNotes(
+        prefix: String,
+        count: Int,
+        appendAfterExisting: Bool = false
+    ) {
+        guard !isRunningDevelopmentAcceptanceCommand,
+              profile?.mode == .supabase,
+              profile?.transitionState == .idle else {
+            return
+        }
+        isRunningDevelopmentAcceptanceCommand = true
+        Task { @MainActor in
+            defer { isRunningDevelopmentAcceptanceCommand = false }
+            do {
+                let existingTexts = Set(
+                    try modelContext.fetch(FetchDescriptor<NoteRecord>())
+                        .filter {
+                            $0.farmID == farm.id &&
+                                $0.text.hasPrefix(prefix + "-")
+                        }
+                        .map(\.text)
+                )
+                let targetSheepID = try modelContext.fetch(FetchDescriptor<SheepRecord>())
+                    .filter {
+                        $0.farmID == farm.id &&
+                            $0.deletedAt == nil &&
+                            $0.status == .active
+                    }
+                    .min {
+                        $0.id.uuidString.lowercased() <
+                            $1.id.uuidString.lowercased()
+                    }?
+                    .id
+                let targetPenID = targetSheepID == nil
+                    ? try modelContext.fetch(FetchDescriptor<PenRecord>())
+                        .filter {
+                            $0.farmID == farm.id &&
+                                $0.deletedAt == nil &&
+                                $0.isActive
+                        }
+                        .min {
+                            $0.id.uuidString.lowercased() <
+                                $1.id.uuidString.lowercased()
+                        }?
+                        .id
+                    : nil
+                guard targetSheepID != nil || targetPenID != nil else {
+                    throw CocoaError(
+                        .validationMissingMandatoryProperty,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "星露谷没有可关联的在场羊只或有效圈舍，无法创建验收备注。"
+                        ]
+                    )
+                }
+                let nextIndex: Int
+                if appendAfterExisting {
+                    nextIndex = existingTexts.compactMap { value in
+                        Int(value.dropFirst(prefix.count + 1))
+                    }.max().map { $0 + 1 } ?? 1
+                } else {
+                    nextIndex = 1
+                }
+                var createdCount = 0
+                for offset in 0..<max(1, count) {
+                    let index = nextIndex + offset
+                    let text = "\(prefix)-\(String(format: "%03d", index))"
+                    guard !existingTexts.contains(text) else { continue }
+                    try FarmCommandService().execute(
+                        .addNote(
+                            sheepID: targetSheepID,
+                            penID: targetPenID,
+                            text: text,
+                            occurredAt: .now
+                        ),
+                        in: FarmContext(
+                            accountID: account.effectiveAccountID,
+                            farmID: farm.id,
+                            role: farm.role
+                        ),
+                        context: modelContext
+                    )
+                    createdCount += 1
+                }
+                developmentAcceptanceMessage =
+                    "已创建 \(createdCount) 条 \(prefix) 记录；重复标识未再次创建。"
+                await refresh()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func revokeDevelopmentAcceptanceNotes() {
+        guard !isRunningDevelopmentAcceptanceCommand else { return }
+        isRunningDevelopmentAcceptanceCommand = true
+        Task { @MainActor in
+            defer { isRunningDevelopmentAcceptanceCommand = false }
+            do {
+                let notes = try modelContext.fetch(FetchDescriptor<NoteRecord>())
+                    .filter {
+                        $0.farmID == farm.id &&
+                            $0.deletedAt == nil &&
+                            $0.text.hasPrefix("DEV-A-")
+                    }
+                for note in notes {
+                    try FarmCommandService().execute(
+                        .tombstoneEntity(
+                            entityType: .note,
+                            entityID: note.id,
+                            reason: "Development 双机同步验收完成"
+                        ),
+                        in: FarmContext(
+                            accountID: account.effectiveAccountID,
+                            farmID: farm.id,
+                            role: farm.role
+                        ),
+                        context: modelContext
+                    )
+                }
+                developmentAcceptanceMessage =
+                    "已通过 FarmCommandService 撤销 \(notes.count) 条验收记录。"
+                await refresh()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 }

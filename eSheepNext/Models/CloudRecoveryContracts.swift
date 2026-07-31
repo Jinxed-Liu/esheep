@@ -196,6 +196,32 @@ struct FarmMembershipSnapshotEnvelope: Codable, Sendable, Equatable {
     let revokedCertificates: [RevokedCertificate]
 }
 
+enum CloudDevicePublicKeyDecoder {
+    static func x963Representation(fromJWKJSON json: String) -> Data? {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+              let xText = object["x"],
+              let yText = object["y"],
+              let x = base64URLData(xText),
+              let y = base64URLData(yText),
+              x.count == 32,
+              y.count == 32 else {
+            return nil
+        }
+        return Data([0x04]) + x + y
+    }
+
+    private static func base64URLData(_ text: String) -> Data? {
+        var normalized = text
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        normalized.append(
+            String(repeating: "=", count: (4 - normalized.count % 4) % 4)
+        )
+        return Data(base64Encoded: normalized)
+    }
+}
+
 struct MembershipSnapshotRecordValue: Sendable, Equatable {
     let id: UUID
     let farmID: UUID

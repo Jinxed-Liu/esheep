@@ -47,6 +47,32 @@ private final class CloudSyncHardDeadlineTestCounter: @unchecked Sendable {
 
 @MainActor
 final class CloudCollaborationTests: XCTestCase {
+    func testSupabaseOwnerDiscoveryDoesNotDependOnCloudKitBeingEnabled() {
+        XCTAssertEqual(
+            FarmOwnerDiscoveryPolicy.targets(
+                environment: .development,
+                cloudKitEnabled: false,
+                supabaseConfigured: true
+            ),
+            [.supabase]
+        )
+        XCTAssertEqual(
+            FarmOwnerDiscoveryPolicy.targets(
+                environment: .development,
+                cloudKitEnabled: true,
+                supabaseConfigured: true
+            ),
+            [.iCloud, .supabase]
+        )
+        XCTAssertTrue(
+            FarmOwnerDiscoveryPolicy.targets(
+                environment: .production,
+                cloudKitEnabled: true,
+                supabaseConfigured: true
+            ).isEmpty
+        )
+    }
+
     func testCloudSyncHardDeadlineReturnsWithoutWaitingForUncooperativeTask() async throws {
         let gate = CloudSyncHardDeadlineTestGate()
         let cancellations = CloudSyncHardDeadlineTestCounter()
@@ -974,6 +1000,103 @@ final class CloudCollaborationTests: XCTestCase {
         XCTAssertEqual(try context.fetch(FetchDescriptor<PenRecord>()).first?.id, targetID)
     }
 
+    func testRemotePedigreeApplyRepairsCheckpointOverlapWithoutAdvancingRevision() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let farm = FarmRecord(ownerAccountID: accountID, name: "系谱重叠测试场")
+        let dam = SheepRecord(
+            farmID: farm.id,
+            earTag: "DAM-001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: .now
+        )
+        let sire = SheepRecord(
+            farmID: farm.id,
+            earTag: "SIRE-001",
+            breed: "湖羊",
+            sex: .ram,
+            penID: nil,
+            enteredAt: .now
+        )
+        sire.isBreedingRam = true
+        let child = SheepRecord(
+            farmID: farm.id,
+            earTag: "CHILD-001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: .now,
+            damID: dam.id
+        )
+        child.revision = 2
+        context.insert(farm)
+        context.insert(dam)
+        context.insert(sire)
+        context.insert(child)
+        try context.save()
+
+        let auditID = UUID()
+        let command = CareCommand.updateSheepPedigree(.init(
+            id: auditID,
+            sheepID: child.id,
+            damID: dam.id,
+            sireID: sire.id,
+            semenDonorID: nil,
+            reason: "已进入检查点的系谱更新",
+            expectedRevision: 1
+        ))
+        let payload = try FarmCommandCloudPayloadEncoder.encode(.care(command))
+        let envelope = CloudOperationEnvelope(
+            farmID: farm.id,
+            entityID: child.id,
+            entityType: CloudEntityType.sheep.rawValue,
+            schemaVersion: 2,
+            revision: 2,
+            baseRevision: 1,
+            operationID: UUID(),
+            modifiedAt: .now,
+            modifiedByAccountID: accountID,
+            modifiedByDeviceID: UUID(),
+            payload: payload,
+            payloadDigest: CloudPayloadDigest.hex(for: payload),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+
+        XCTAssertEqual(
+            try RemoteDomainApplyService().apply(envelope, context: context),
+            .applied(rebuildHistoryFrom: nil)
+        )
+        // The production pull path commits the page before a retry can replay
+        // the same immutable operation. Persist here as well so the duplicate
+        // assertion exercises that real transaction boundary.
+        try context.save()
+        let persistedContext = ModelContext(container)
+        let persistedChild = try persistedContext
+            .fetch(FetchDescriptor<SheepRecord>())
+            .first(where: { $0.id == child.id })
+        XCTAssertEqual(persistedChild?.revision, 2)
+        XCTAssertEqual(persistedChild?.damID, dam.id)
+        XCTAssertEqual(persistedChild?.sireID, sire.id)
+        XCTAssertEqual(
+            try persistedContext.fetch(FetchDescriptor<PedigreeChangeRecord>())
+                .first(where: { $0.id == auditID })?
+                .sheepRevision,
+            2
+        )
+        XCTAssertEqual(
+            try RemoteDomainApplyService().apply(
+                envelope,
+                context: persistedContext
+            ),
+            .duplicate
+        )
+    }
+
     func testRemoteFarmLocationCommandUpdatesTheExistingFarm() throws {
         let container = try makeContainer()
         let context = ModelContext(container)
@@ -1752,6 +1875,7 @@ final class CloudCollaborationTests: XCTestCase {
             HealthRecord.self,
             ReproductionRecord.self,
             SemenRecord.self,
+            PedigreeChangeRecord.self,
             NoteRecord.self,
             DomainOperation.self,
             OutboxItem.self,

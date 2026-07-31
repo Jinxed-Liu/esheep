@@ -2422,6 +2422,10 @@ actor FarmPersistenceActor {
                         }
                         continue
                     }
+                    _ = try RemoteDomainAuditProjection.insertIfNeeded(
+                        envelope,
+                        context: context
+                    )
                     context.insert(CloudOperationReceipt(
                         farmID: envelope.farmID,
                         operationID: envelope.operationID,
