@@ -261,6 +261,33 @@ struct CloudRecordMapper: Sendable {
         return record
     }
 
+    /// Decodes a tombstone only when its indexed fields, embedded immutable
+    /// payload and record identity all describe the exact same deletion fact.
+    /// This prevents a syntactically valid payload from being paired with a
+    /// misleading farm/entity/revision index during conflict reconciliation.
+    func tombstoneEnvelope(from record: CKRecord) throws -> FarmTombstoneEnvelope {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard record.recordType == CloudRecordType.farmTombstone.rawValue,
+              let payload = record[CloudRecordField.payload] as? Data,
+              let envelope = try? decoder.decode(FarmTombstoneEnvelope.self, from: payload),
+              record.recordID.recordName == tombstoneRecordName(for: envelope.entityID),
+              uuid(record[CloudRecordField.farmID]) == envelope.farmID,
+              uuid(record[CloudRecordField.entityID]) == envelope.entityID,
+              record[CloudRecordField.entityType] as? String == envelope.entityType,
+              integer(record[CloudRecordField.revision]) == envelope.revision,
+              uuid(record[CloudRecordField.operationID]) == envelope.operationID,
+              let indexedDeletedAt = record[CloudRecordField.deletedAt] as? Date,
+              abs(indexedDeletedAt.timeIntervalSince(envelope.deletedAt)) < 1,
+              uuid(record["deletedByAccountID"]) == envelope.deletedByAccountID,
+              record["reason"] as? String == envelope.reason,
+              record[CloudRecordField.capabilityCertificate] is String,
+              record[CloudRecordField.signature] is Data else {
+            throw CloudContractError.malformedRecord
+        }
+        return envelope
+    }
+
     func farmRootValue(from record: CKRecord) throws -> FarmRootValue {
         guard record.recordType == CloudRecordType.farmRoot.rawValue,
               let farmID = uuid(record[CloudRecordField.farmID]),

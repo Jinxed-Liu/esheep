@@ -73,6 +73,7 @@ struct CloudCollaborationCenterView: View {
     @State private var blockedOutboxCount = 0
     @State private var confirmedBaselineCount = 0
     @State private var confirmedOutboxCount = 0
+    @State private var supersededOutboxCount = 0
     @State private var activePhotoCount = 0
     @State private var cloudPhotoAssetCount = 0
     @State private var retainedHistoricalPhotoAssetCount = 0
@@ -130,6 +131,14 @@ struct CloudCollaborationCenterView: View {
         List {
             if farm.role == .owner { ownerCollaborationSection }
             memberSection
+            if binding != nil {
+                cloudStatusSection
+                syncSection
+                safetySection
+                if farm.role == .owner {
+                    recoverySection
+                }
+            }
             if let error = collaboration.lastErrorMessage {
                 Section("需要处理") {
                     Text(error)
@@ -346,6 +355,9 @@ struct CloudCollaborationCenterView: View {
             CloudMetricRow(title: "等待确认", value: uploadingOutboxCount, systemImage: "clock")
             CloudMetricRow(title: "上传阻塞", value: blockedOutboxCount, systemImage: "exclamationmark.icloud")
             CloudMetricRow(title: "权限拒绝", value: rejectedOutboxCount, systemImage: "lock.trianglebadge.exclamationmark")
+            if supersededOutboxCount > 0 {
+                CloudMetricRow(title: "云端权威取代", value: supersededOutboxCount, systemImage: "checkmark.shield")
+            }
             CloudMetricRow(title: "冲突", value: farmConflicts.filter { $0.statusRawValue == SyncConflictStatus.unresolved.rawValue || $0.statusRawValue == SyncConflictStatus.quarantined.rawValue }.count, systemImage: "arrow.trianglehead.branch")
             Button {
                 Task {
@@ -583,6 +595,7 @@ struct CloudCollaborationCenterView: View {
         let rejected = OutboxStatus.rejectedPermission.rawValue
         let blocked = OutboxStatus.blockedConflict.rawValue
         let confirmed = OutboxStatus.confirmed.rawValue
+        let superseded = OutboxStatus.supersededRemoteAuthority.rawValue
 
         pendingOutboxCount = (try? modelContext.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
             $0.farmID == farmID && ($0.statusRawValue == pending || $0.statusRawValue == retryable)
@@ -598,6 +611,9 @@ struct CloudCollaborationCenterView: View {
         }))) ?? 0
         confirmedOutboxCount = (try? modelContext.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
             $0.farmID == farmID && $0.statusRawValue == confirmed
+        }))) ?? 0
+        supersededOutboxCount = (try? modelContext.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.statusRawValue == superseded
         }))) ?? 0
         let bootstrapKind = DomainOperationKind.bootstrapEntity.rawValue
         let baselineOperationIDs = Set((try? modelContext.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
@@ -1125,8 +1141,15 @@ private struct CloudMetricRow: View {
 
 struct CloudConflictCenterView: View {
     @Query(sort: \SyncConflictRecord.detectedAt, order: .reverse) private var conflicts: [SyncConflictRecord]
+    @Query private var outboxItems: [OutboxItem]
+    @Query private var operations: [DomainOperation]
+    @Query private var tombstones: [TombstoneRecord]
+    @Environment(CloudCollaborationStore.self) private var collaboration
     let account: AccountProfile
     let farm: FarmRecord
+
+    @State private var isReconcilingTombstones = false
+    @State private var reconciliationMessage: String?
 
     private var unresolvedConflicts: [SyncConflictRecord] {
         conflicts.filter {
@@ -1136,26 +1159,95 @@ struct CloudConflictCenterView: View {
         }
     }
 
+    private var blockedTombstoneCount: Int {
+        let blockedOperationIDs = Set(outboxItems.filter {
+            $0.farmID == farm.id && $0.status == .blockedConflict
+        }.map(\.operationID))
+        return operations.count {
+            $0.farmID == farm.id &&
+                blockedOperationIDs.contains($0.id) &&
+                $0.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue
+        }
+    }
+
+    private var duplicateTombstoneProjectionCount: Int {
+        let active = tombstones.filter { $0.farmID == farm.id && $0.restoredAt == nil }
+        return Dictionary(grouping: active) {
+            "\($0.entityID.uuidString.lowercased())|\($0.revision)"
+        }.values.count { group in
+            group.count > 1 && Set(group.map(\.operationID)).count > 1
+        }
+    }
+
     var body: some View {
-        List(unresolvedConflicts, id: \.id) { conflict in
-            NavigationLink {
-                CloudConflictDetailView(account: account, farm: farm, conflict: conflict)
-            } label: {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(conflict.displayName).font(.headline)
-                    Text(conflict.businessTypeName).foregroundStyle(.secondary)
-                    Text(conflict.detectedAt, format: .dateTime.year().month().day().hour().minute())
-                        .font(.caption).foregroundStyle(.secondary)
+        List {
+            if blockedTombstoneCount > 0 || duplicateTombstoneProjectionCount > 0 {
+                Section("CloudKit 删除证据") {
+                    Button {
+                        reconcileTombstones()
+                    } label: {
+                        Label(
+                            isReconcilingTombstones
+                                ? "正在核对 CloudKit…"
+                                : blockedTombstoneCount > 0
+                                    ? "核对 CloudKit 并修复（\(blockedTombstoneCount)）"
+                                    : "核对 Tombstone 权威（\(duplicateTombstoneProjectionCount)）",
+                            systemImage: "checkmark.shield"
+                        )
+                    }
+                    .disabled(isReconcilingTombstones || farm.role != .owner)
+                    Text("核对当前牧场的 Operation 与 Tombstone；只有签名验证通过才会修正本地投影或云端签名索引，无法证明一致时不会覆盖权威数据。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ForEach(unresolvedConflicts, id: \.id) { conflict in
+                NavigationLink {
+                    CloudConflictDetailView(account: account, farm: farm, conflict: conflict)
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(conflict.displayName).font(.headline)
+                        Text(conflict.businessTypeName).foregroundStyle(.secondary)
+                        Text(conflict.detectedAt, format: .dateTime.year().month().day().hour().minute())
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
         }
         .overlay {
-            if unresolvedConflicts.isEmpty {
+            if unresolvedConflicts.isEmpty && blockedTombstoneCount == 0 && duplicateTombstoneProjectionCount == 0 {
                 ContentUnavailableView("没有需要处理的数据异常", systemImage: "checkmark.circle")
             }
         }
         .navigationTitle("数据异常处理")
         .navigationBarTitleDisplayMode(.inline)
+        .alert("CloudKit 核对结果", isPresented: Binding(
+            get: { reconciliationMessage != nil },
+            set: { if !$0 { reconciliationMessage = nil } }
+        )) {
+            Button("完成", role: .cancel) {}
+        } message: {
+            Text(reconciliationMessage ?? "")
+        }
+    }
+
+    private func reconcileTombstones() {
+        guard !isReconcilingTombstones else { return }
+        isReconcilingTombstones = true
+        Task {
+            defer { isReconcilingTombstones = false }
+            do {
+                let report = try await collaboration.reconcileTombstoneConflicts(farmID: farm.id)
+                let lines = report.items.map {
+                    "\($0.operationID.uuidString.prefix(8))：\($0.outcome.displayName)\n\($0.detail)"
+                }
+                reconciliationMessage = lines.isEmpty
+                    ? "没有找到可安全核对的 Tombstone 阻塞项。"
+                    : lines.joined(separator: "\n")
+            } catch {
+                reconciliationMessage = "核对未完成：\(error.localizedDescription)"
+            }
+        }
     }
 }
 

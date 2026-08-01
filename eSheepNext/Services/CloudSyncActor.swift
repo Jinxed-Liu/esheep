@@ -1543,6 +1543,30 @@ actor CloudSyncActor {
         }
     }
 
+    func discardLegacyTombstoneProjectionChanges(farmID: UUID) async throws {
+        guard let binding = try await persistence.bindingSnapshot(farmID: farmID),
+              binding.state == .active else {
+            throw CloudSyncError.farmBindingMissing
+        }
+        let engine = binding.databaseScope == .privateDatabase ? privateEngine : sharedEngine
+        let candidateChanges = engine.state.pendingRecordZoneChanges.filter { change in
+            guard case .saveRecord(let recordID) = change else { return false }
+            return recordID.zoneID.zoneName == binding.zoneName &&
+                recordID.zoneID.ownerName == binding.zoneOwnerName &&
+                mapper.entityID(from: recordID) != nil
+        }
+        guard !candidateChanges.isEmpty else { return }
+        let eligibleRecordNames = try await persistence.legacyTombstoneEntityRecordNames(farmID: farmID)
+        guard !eligibleRecordNames.isEmpty else { return }
+        let staleChanges = candidateChanges.filter { change in
+            guard case .saveRecord(let recordID) = change else { return false }
+            return eligibleRecordNames.contains(recordID.recordName)
+        }
+        if !staleChanges.isEmpty {
+            engine.state.remove(pendingRecordZoneChanges: staleChanges)
+        }
+    }
+
     func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
         guard let scope = activeScope(for: syncEngine) else {
             // A reset engine may finish an already queued callback. Its state,
@@ -1806,6 +1830,7 @@ final class CloudCollaborationStore {
     var lastSuccessfulSyncAt: Date?
     var lastErrorMessage: String?
     var isIdentityWriteLocked = false
+    private(set) var lastTombstoneReconciliationReport: CloudTombstoneReconciliationReport?
     var workerHealth: WorkerHealthResponse?
     private(set) var supabaseRealtimeHealthByFarmID: [UUID: SupabaseRealtimeHealth] = [:]
 
@@ -1815,6 +1840,7 @@ final class CloudCollaborationStore {
     let checkpoints: FarmCheckpointActor
     let membershipSnapshots: MembershipSnapshotActor
     let conflicts: ConflictResolutionActor
+    let tombstoneReconciliation: CloudTombstoneConflictReconciliationService
     let rebuilds: CloudRebuildActor
     let remoteSync: FarmRemoteSyncCoordinator?
     let supabaseTransport: SupabaseFarmTransport?
@@ -1869,6 +1895,10 @@ final class CloudCollaborationStore {
             containerIdentifier: identifier,
             persistence: persistence,
             startupRepair: startupRepair
+        )
+        self.tombstoneReconciliation = CloudTombstoneConflictReconciliationService(
+            containerIdentifier: identifier,
+            persistence: persistence
         )
         self.photoTransfers = PhotoTransferActor(modelContainer: container, containerIdentifier: identifier)
         self.checkpoints = FarmCheckpointActor(modelContainer: container, containerIdentifier: identifier)
@@ -2302,6 +2332,18 @@ final class CloudCollaborationStore {
                 // baseline v2 Outbox row was confirmed. Remove only obsolete
                 // mutable projections before the ordinary send pass.
                 try? await sync.discardRefreshedBootstrapProjectionChanges(farmID: farmID)
+                do {
+                    guard CloudFeatureConfiguration.isEnabled else { continue }
+                    let report = try await tombstoneReconciliation.reconcile(farmID: farmID)
+                    if !report.items.isEmpty {
+                        lastTombstoneReconciliationReport = report
+                    }
+                    try await sync.discardLegacyTombstoneProjectionChanges(farmID: farmID)
+                } catch {
+                    // A failed evidence check must never reopen or overwrite a
+                    // blocked deletion. Ordinary unrelated sync can continue.
+                    lastErrorMessage = "CloudKit 删除证据核对未完成：\(error.localizedDescription)"
+                }
             }
             let sharedFarmIDs = (try? maintenanceContext.fetch(
                 FetchDescriptor<CloudFarmBinding>()
@@ -2324,6 +2366,16 @@ final class CloudCollaborationStore {
         } catch {
             lastErrorMessage = error.localizedDescription
         }
+    }
+
+    func reconcileTombstoneConflicts(farmID: UUID) async throws -> CloudTombstoneReconciliationReport {
+        let report = try await tombstoneReconciliation.reconcile(farmID: farmID)
+        lastTombstoneReconciliationReport = report
+        try await sync.discardLegacyTombstoneProjectionChanges(farmID: farmID)
+        if report.items.contains(where: { $0.outcome == .operationRetryNeeded }) {
+            _ = try await sync.synchronizeBatch(maxOutboxItems: 25, farmID: farmID)
+        }
+        return report
     }
 
     func resumeAutomaticMigrationUploads(accountID: UUID) async {
@@ -2797,8 +2849,11 @@ final class CloudCollaborationStore {
                 try context.save()
             }
             let confirmed = OutboxStatus.confirmed.rawValue
+            let superseded = OutboxStatus.supersededRemoteAuthority.rawValue
             let beforeCount = try context.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
-                $0.farmID == migrationFarmID && $0.statusRawValue != confirmed
+                $0.farmID == migrationFarmID &&
+                    $0.statusRawValue != confirmed &&
+                    $0.statusRawValue != superseded
             }))
             // User-authorized accelerated migration: maximize throughput while
             // retaining CloudKit's own retry-after handling.
@@ -2818,7 +2873,9 @@ final class CloudCollaborationStore {
                 // partial batch error into a whole-migration failure.
                 context = ModelContext(modelContainer)
                 let afterCount = try context.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
-                    $0.farmID == migrationFarmID && $0.statusRawValue != confirmed
+                    $0.farmID == migrationFarmID &&
+                        $0.statusRawValue != confirmed &&
+                        $0.statusRawValue != superseded
                 }))
                 if afterCount < beforeCount {
                     consecutiveBatchFailures = 0
@@ -2846,7 +2903,7 @@ final class CloudCollaborationStore {
                 progressWatchdog.reset()
                 context = ModelContext(modelContainer)
                 let unresolved = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
-                    $0.farmID == migrationFarmID && $0.status != .confirmed
+                    $0.farmID == migrationFarmID && !$0.status.isTerminalDelivery
                 }
                 let hasPermanentBlock = unresolved.contains {
                     $0.status == .blockedConflict || $0.status == .rejectedPermission
@@ -2870,7 +2927,9 @@ final class CloudCollaborationStore {
 
             context = ModelContext(modelContainer)
             let afterCount = try context.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
-                $0.farmID == migrationFarmID && $0.statusRawValue != confirmed
+                $0.farmID == migrationFarmID &&
+                    $0.statusRawValue != confirmed &&
+                    $0.statusRawValue != superseded
             }))
             if progressWatchdog.observe(
                 scheduledRecordCount: scheduled,
@@ -2892,7 +2951,7 @@ final class CloudCollaborationStore {
 
         context = ModelContext(modelContainer)
         let pendingOutbox = try context.fetch(FetchDescriptor<OutboxItem>()).contains {
-            $0.farmID == farm.id && $0.status != .confirmed
+            $0.farmID == farm.id && !$0.status.isTerminalDelivery
         }
         let pendingAssets = try context.fetch(FetchDescriptor<CloudAssetTransfer>()).contains {
             $0.farmID == farm.id && $0.direction == .upload && $0.status != .completed

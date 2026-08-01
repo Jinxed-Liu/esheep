@@ -48,6 +48,20 @@ enum OutboxStatus: String, Codable, Sendable {
     case retryableFailure
     case blockedConflict
     case rejectedPermission
+    /// CloudKit already contains a different, fully verified immutable
+    /// deletion fact for the same entity. The local operation is retained for
+    /// audit, but it is no longer eligible for delivery or blocking metrics.
+    case supersededRemoteAuthority
+
+    var isTerminalDelivery: Bool {
+        switch self {
+        case .confirmed, .notRequiredLocalOnly, .supersededRemoteAuthority:
+            true
+        case .pending, .uploading, .awaitingConfirmation, .retryableFailure,
+             .blockedConflict, .rejectedPermission:
+            false
+        }
+    }
 }
 
 struct AppliedCommandResult: Sendable {

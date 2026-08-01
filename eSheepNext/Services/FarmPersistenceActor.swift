@@ -329,7 +329,7 @@ actor FarmPersistenceActor {
             throw CloudRebuildError.farmMismatch
         }
         let outbox = try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.farmID == bundle.farmID }
-        let pendingOutbox = outbox.filter { $0.status != .confirmed }
+        let pendingOutbox = outbox.filter { !$0.status.isTerminalDelivery }
         let pendingIDs = Set(pendingOutbox.map(\.operationID))
         let pendingOutboxByOperationID = Dictionary(grouping: pendingOutbox, by: \.operationID)
         let authoritativeByOperationID = Dictionary(uniqueKeysWithValues: bundle.operations.map { ($0.operationID, $0) })
@@ -565,7 +565,7 @@ actor FarmPersistenceActor {
             try context.save()
             return FarmCacheReplacementResult(
                 appliedOperationCount: authoritativeReplay.appliedOperationCount,
-                preservedOutboxCount: pendingOutbox.filter { $0.status != .confirmed }.count,
+                preservedOutboxCount: pendingOutbox.filter { !$0.status.isTerminalDelivery }.count,
                 highestRevision: bundle.operations.map(\.revision).max() ?? 0,
                 entityDigest: Self.entityDigest(bundle.operations)
             )
@@ -637,7 +637,7 @@ actor FarmPersistenceActor {
             return false
         }
         let pendingOutbox = try context.fetch(FetchDescriptor<OutboxItem>())
-            .filter { $0.farmID == bundle.farmID && $0.status != .confirmed }
+            .filter { $0.farmID == bundle.farmID && !$0.status.isTerminalDelivery }
         guard pendingOutbox.isEmpty else { return false }
 
         let currentAssetIdentity = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
@@ -984,7 +984,8 @@ actor FarmPersistenceActor {
         switch item.status {
         case .pending, .uploading, .awaitingConfirmation, .retryableFailure:
             return true
-        case .confirmed, .rejectedPermission, .blockedConflict, .notRequiredLocalOnly:
+        case .confirmed, .rejectedPermission, .blockedConflict, .notRequiredLocalOnly,
+             .supersededRemoteAuthority:
             return false
         }
     }
@@ -1113,6 +1114,7 @@ actor FarmPersistenceActor {
             }
         }
         let operationByID = Dictionary(uniqueKeysWithValues: operations.map { ($0.id, $0) })
+        let receipts = try context.fetch(FetchDescriptor<CloudOperationReceipt>())
         var bindingValues: [UUID: (zoneName: String, ownerName: String, scope: CloudDatabaseScope)] = [:]
         for binding in bindings where binding.state == .active {
             bindingValues[binding.farmID] = (binding.zoneName, binding.zoneOwnerName, binding.databaseScope)
@@ -1122,21 +1124,22 @@ actor FarmPersistenceActor {
         for item in outbox {
             guard let binding = bindingValues[item.farmID] else { continue }
             let zoneID = CKRecordZone.ID(zoneName: binding.zoneName, ownerName: binding.ownerName)
-            var recordNames = [mapper.recordName(for: item.operationID)]
-            if let entityID = item.entityID,
-               let operation = operationByID[item.operationID],
-               !Self.isRefreshedBootstrap(operation) {
-                recordNames.append(mapper.entityRecordName(for: entityID))
+            let operation = operationByID[item.operationID]
+            let requiredNames: Set<String>
+            if let operation {
+                requiredNames = requiredReceiptNames(for: operation, in: operations)
+            } else {
+                requiredNames = [mapper.recordName(for: item.operationID)]
             }
+            let confirmedNames = Set(receipts.lazy.filter {
+                $0.farmID == item.farmID &&
+                    $0.operationID == item.operationID &&
+                    $0.databaseScopeRawValue == binding.scope.rawValue &&
+                    $0.zoneName == binding.zoneName &&
+                    $0.zoneOwnerName == binding.ownerName
+            }.map(\.recordName))
+            let recordNames = requiredNames.subtracting(confirmedNames).sorted()
             for recordName in recordNames {
-                let key = "\(binding.scope.rawValue)|\(zoneID.zoneName)|\(recordName)"
-                if seen.insert(key).inserted {
-                    result.append((CKRecord.ID(recordName: recordName, zoneID: zoneID), binding.scope))
-                }
-            }
-            if operationByID[item.operationID]?.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue,
-               let entityID = item.entityID {
-                let recordName = mapper.tombstoneRecordName(for: entityID)
                 let key = "\(binding.scope.rawValue)|\(zoneID.zoneName)|\(recordName)"
                 if seen.insert(key).inserted {
                     result.append((CKRecord.ID(recordName: recordName, zoneID: zoneID), binding.scope))
@@ -1148,7 +1151,6 @@ actor FarmPersistenceActor {
 
     func refreshedBootstrapEntityRecordNames(farmID: UUID) throws -> Set<String> {
         let context = ModelContext(container)
-        let confirmed = OutboxStatus.confirmed.rawValue
         let outbox = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
             $0.farmID == farmID
         }))
@@ -1169,7 +1171,7 @@ actor FarmPersistenceActor {
             return operation.entityID
         })
         let protectedEntityIDs = Set(outbox.compactMap { item -> UUID? in
-            guard item.statusRawValue != confirmed else { return nil }
+            guard !item.status.isTerminalDelivery else { return nil }
             guard !duplicateOperationIDs.contains(item.operationID),
                   let operation = operationByID[item.operationID] else {
                 // An unconfirmed projection whose operation is missing or
@@ -1180,6 +1182,49 @@ actor FarmPersistenceActor {
             return operation.entityID
         })
         return Set(refreshedEntityIDs.subtracting(protectedEntityIDs).map(mapper.entityRecordName(for:)))
+    }
+
+    /// Returns only mutable entity projections that can be proven to belong to
+    /// a local tombstone operation in the same farm. The CloudSync actor adds
+    /// the active zone proof before removing serialized CKSyncEngine changes.
+    func legacyTombstoneEntityRecordNames(farmID: UUID) throws -> Set<String> {
+        let context = ModelContext(container)
+        let iCloud = FarmRemoteProvider.iCloud.rawValue
+        let items = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID
+        })).filter {
+            $0.deliveryProviderRawValue == nil || $0.deliveryProviderRawValue == iCloud
+        }
+        let operationIDs = Set(items.map(\.operationID))
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID
+        })).filter {
+            operationIDs.contains($0.id) &&
+                $0.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue
+        }
+        var operationIdentityByID: [UUID: (entityID: UUID, entityType: String, payloadDigest: String)] = [:]
+        var duplicateOperationIDs = Set<UUID>()
+        for operation in operations {
+            guard let entityID = operation.entityID else { continue }
+            if operationIdentityByID.updateValue(
+                (entityID, operation.entityType, operation.payloadDigest),
+                forKey: operation.id
+            ) != nil {
+                duplicateOperationIDs.insert(operation.id)
+            }
+        }
+        var recordNames = Set<String>()
+        for item in items {
+            guard !duplicateOperationIDs.contains(item.operationID),
+                  let identity = operationIdentityByID[item.operationID],
+                  item.entityID == identity.entityID,
+                  item.entityType == identity.entityType,
+                  item.payloadDigest == identity.payloadDigest else {
+                continue
+            }
+            recordNames.insert(mapper.entityRecordName(for: identity.entityID))
+        }
+        return recordNames
     }
 
     /// Initial migration projections have no server record yet and must not
@@ -1199,7 +1244,7 @@ actor FarmPersistenceActor {
         let confirmed = OutboxStatus.confirmed.rawValue
         let candidates = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
             $0.farmID == farmID && $0.entityID == entityID && $0.statusRawValue != confirmed
-        }))
+        })).filter { !$0.status.isTerminalDelivery }
         let candidateIDs = Set(candidates.map(\.operationID))
         let operation = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
             $0.farmID == farmID && $0.entityID == entityID
@@ -1624,7 +1669,7 @@ actor FarmPersistenceActor {
                 let confirmed = OutboxStatus.confirmed.rawValue
                 let candidates = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
                     $0.farmID == farmID && $0.entityID == entityID && $0.statusRawValue != confirmed
-                }))
+                })).filter { !$0.status.isTerminalDelivery }
                 let candidateIDs = Set(candidates.map(\.operationID))
                 operationID = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
                     $0.farmID == farmID && $0.entityID == entityID
@@ -1668,6 +1713,67 @@ actor FarmPersistenceActor {
                     context: context
                 )
             }
+            let currentOperationID = operation.id
+            let tombstone = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                $0.operationID == currentOperationID
+            })).first
+
+            // A Tombstone and its immutable Operation are one signed deletion
+            // fact. Once the first sibling record has assigned an authorization
+            // tuple, every retry must reuse it byte-for-byte. Re-signing each
+            // requested record can otherwise leave CloudKit with an Operation
+            // and Tombstone that point at the same ID but cannot prove each
+            // other.
+            if operation.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue,
+               operation.modifiedByDeviceID != nil,
+               operation.operationSignature != nil,
+               !operation.capabilityCertificate.isEmpty,
+               let tombstone {
+                do {
+                    let envelope = try validatedStoredTombstoneRetryEnvelope(
+                        operation: operation,
+                        tombstone: tombstone,
+                        item: item,
+                        context: context
+                    )
+                    item.statusRawValue = OutboxStatus.uploading.rawValue
+                    item.errorMessage = nil
+                    item.lastAttemptAt = .now
+                    item.attemptCount += 1
+                    try context.save()
+                    if mapper.operationID(from: recordID) == operation.id {
+                        return mapper.operationRecord(from: envelope, zoneID: recordID.zoneID)
+                    }
+                    if mapper.tombstoneEntityID(from: recordID) == entityID {
+                        let value = FarmTombstoneEnvelope(
+                            tombstoneID: tombstone.id,
+                            farmID: tombstone.farmID,
+                            entityType: tombstone.entityType,
+                            entityID: tombstone.entityID,
+                            revision: tombstone.revision,
+                            deletedAt: tombstone.deletedAt,
+                            deletedByAccountID: tombstone.deletedByAccountID,
+                            reason: tombstone.reason,
+                            operationID: operation.id,
+                            restoresTombstoneID: nil
+                        )
+                        return mapper.tombstoneRecord(
+                            envelope: value,
+                            certificate: envelope.capabilityCertificate,
+                            signature: envelope.operationSignature,
+                            zoneID: recordID.zoneID
+                        )
+                    }
+                    // Deletions no longer deliver a mutable Entity projection.
+                    return nil
+                } catch {
+                    item.statusRawValue = OutboxStatus.blockedConflict.rawValue
+                    item.errorMessage = "Tombstone 原始签名授权无法安全复用：\(error.localizedDescription)"
+                    item.nextRetryAt = nil
+                    try context.save()
+                    return nil
+                }
+            }
             let identity = try await device.identity()
             let certificates = try context.fetch(FetchDescriptor<CapabilityCertificateRecord>())
             guard let certificate = certificates
@@ -1683,10 +1789,6 @@ actor FarmPersistenceActor {
                 try context.save()
                 return nil
             }
-            let currentOperationID = operation.id
-            let tombstone = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
-                $0.operationID == currentOperationID
-            })).first
             var envelope = CloudOperationEnvelope(
                 farmID: operation.farmID,
                 entityID: entityID,
@@ -1766,6 +1868,99 @@ actor FarmPersistenceActor {
         } catch {
             return nil
         }
+    }
+
+    private func hasConfirmedTombstoneReceipt(
+        farmID: UUID,
+        operationID: UUID,
+        entityID: UUID,
+        scope: CloudDatabaseScope,
+        zoneID: CKRecordZone.ID,
+        context: ModelContext
+    ) throws -> Bool {
+        let recordName = mapper.tombstoneRecordName(for: entityID)
+        let scopeRawValue = scope.rawValue
+        let zoneName = zoneID.zoneName
+        let zoneOwnerName = zoneID.ownerName
+        var descriptor = FetchDescriptor<CloudOperationReceipt>(predicate: #Predicate {
+            $0.farmID == farmID &&
+                $0.operationID == operationID &&
+                $0.recordName == recordName &&
+                $0.databaseScopeRawValue == scopeRawValue &&
+                $0.zoneName == zoneName &&
+                $0.zoneOwnerName == zoneOwnerName
+        })
+        descriptor.fetchLimit = 2
+        return try context.fetch(descriptor).count == 1
+    }
+
+    private func validatedStoredTombstoneRetryEnvelope(
+        operation: DomainOperation,
+        tombstone: TombstoneRecord,
+        item: OutboxItem,
+        context: ModelContext
+    ) throws -> CloudOperationEnvelope {
+        guard let publicKey = capabilitySigningPublicKeyPEM, !publicKey.isEmpty,
+              operation.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue,
+              let entityID = operation.entityID,
+              let deviceID = operation.modifiedByDeviceID,
+              let signature = operation.operationSignature,
+              !operation.capabilityCertificate.isEmpty,
+              item.operationID == operation.id,
+              item.farmID == operation.farmID,
+              item.entityID == entityID,
+              item.payloadDigest == operation.payloadDigest,
+              item.operationSignature == signature,
+              item.capabilityCertificate == operation.capabilityCertificate,
+              tombstone.operationID == operation.id,
+              tombstone.farmID == operation.farmID,
+              tombstone.entityID == entityID,
+              tombstone.entityType == operation.entityType,
+              tombstone.revision == operation.resultingRevision,
+              tombstone.deletedByAccountID == operation.accountID else {
+            throw CloudContractError.malformedRecord
+        }
+        let envelope = CloudOperationEnvelope(
+            farmID: operation.farmID,
+            entityID: entityID,
+            entityType: operation.entityType,
+            schemaVersion: operation.schemaVersion,
+            revision: operation.resultingRevision,
+            baseRevision: operation.baseRevision,
+            operationID: operation.id,
+            modifiedAt: operation.occurredAt,
+            modifiedByAccountID: operation.accountID,
+            modifiedByDeviceID: deviceID,
+            payload: operation.payload,
+            payloadDigest: operation.payloadDigest,
+            capabilityCertificate: operation.capabilityCertificate,
+            operationSignature: signature,
+            deletedAt: tombstone.deletedAt
+        )
+        let claims = try CapabilityCertificateVerifier.verify(
+            envelope.capabilityCertificate,
+            publicKeyPEM: publicKey
+        )
+        guard claims.isCurrentlyValid else { throw CloudContractError.expiredCertificate }
+        let revoked = try context.fetch(FetchDescriptor<RevokedCapabilityCertificateRecord>())
+        guard !revoked.contains(where: {
+            $0.farmID == envelope.farmID && $0.serverCertificateID == claims.certificateID
+        }) else {
+            throw CloudContractError.invalidCertificate
+        }
+        let devices = try context.fetch(FetchDescriptor<DeviceIdentityRecord>())
+        guard let device = devices.first(where: {
+            $0.id == claims.deviceID && $0.accountID == claims.accountID
+        }) else {
+            throw CloudContractError.invalidDeviceSignature
+        }
+        try CloudOperationSecurity.validate(
+            envelope: envelope,
+            claims: claims,
+            devicePublicKeyX963: device.publicKeyX963,
+            authorizationDate: .now
+        )
+        return envelope
     }
 
     private func projectionIsVerifiedAncestor(
@@ -1889,25 +2084,26 @@ actor FarmPersistenceActor {
         for operation: DomainOperation,
         in operations: [DomainOperation]
     ) -> Set<String> {
-        var names: Set<String> = [mapper.recordName(for: operation.id)]
-        if let entityID = operation.entityID, !Self.isRefreshedBootstrap(operation) {
-            let latestOperation = operations
-                .filter { $0.farmID == operation.farmID && $0.entityID == entityID }
-                .max(by: {
-                    if $0.resultingRevision != $1.resultingRevision {
-                        return $0.resultingRevision < $1.resultingRevision
-                    }
-                    return $0.createdAt < $1.createdAt
-                })
-            if latestOperation?.id == operation.id {
-                names.insert(mapper.entityRecordName(for: entityID))
-            }
-        }
-        if operation.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue,
-           let entityID = operation.entityID {
-            names.insert(mapper.tombstoneRecordName(for: entityID))
-        }
-        return names
+        CloudDeliveryReceiptContract.requiredRecordNames(
+            for: operation,
+            latestOperationForEntity: latestOperation(for: operation, in: operations),
+            mapper: mapper
+        )
+    }
+
+    private func latestOperation(
+        for operation: DomainOperation,
+        in operations: [DomainOperation]
+    ) -> DomainOperation? {
+        guard let entityID = operation.entityID else { return nil }
+        return operations
+            .filter { $0.farmID == operation.farmID && $0.entityID == entityID }
+            .max(by: {
+                if $0.resultingRevision != $1.resultingRevision {
+                    return $0.resultingRevision < $1.resultingRevision
+                }
+                return $0.createdAt < $1.createdAt
+            })
     }
 
     private func validatedSentRecordTarget(
@@ -1935,14 +2131,11 @@ actor FarmPersistenceActor {
               matchingOperations.count == 1,
               let item = matchingItems.first,
               let operation = matchingOperations.first else { return nil }
-        var expectedRecordNames: Set<String> = [mapper.recordName(for: operationID)]
-        if let entityID = operation.entityID, !Self.isRefreshedBootstrap(operation) {
-            expectedRecordNames.insert(mapper.entityRecordName(for: entityID))
-        }
-        if operation.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue,
-           let entityID = operation.entityID {
-            expectedRecordNames.insert(mapper.tombstoneRecordName(for: entityID))
-        }
+        let expectedRecordNames = CloudDeliveryReceiptContract.acceptedRecordNames(
+            for: operation,
+            latestOperationForEntity: latestOperation(for: operation, in: operations),
+            mapper: mapper
+        )
         guard expectedRecordNames.contains(record.recordID.recordName) else { return nil }
         return (item, operation)
     }
@@ -2046,7 +2239,7 @@ actor FarmPersistenceActor {
         let confirmed = OutboxStatus.confirmed.rawValue
         let candidates = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
             $0.farmID == farmID && $0.statusRawValue != confirmed
-        }))
+        })).filter { !$0.status.isTerminalDelivery }
         guard !candidates.isEmpty else { return 0 }
 
         let candidateOperationIDs = Set(candidates.map(\.operationID))
@@ -2152,6 +2345,17 @@ actor FarmPersistenceActor {
             ) else { continue }
             let operation = target.operation
             let item = target.item
+            if operation.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue,
+               failure.record.recordType == CloudRecordType.farmEntity.rawValue {
+                // FarmEntity is only a mutable convenience projection for a
+                // deletion. Whether it collided, arrived late, or already
+                // existed cannot invalidate the immutable Operation +
+                // Tombstone authority chain.
+                item.statusRawValue = OutboxStatus.awaitingConfirmation.rawValue
+                item.errorMessage = nil
+                item.nextRetryAt = nil
+                continue
+            }
             let classification: CloudErrorClassifier.Result
             if failure.error.code == .serverRecordChanged,
                let serverRecord = failure.error.userInfo[CKRecordChangedErrorServerRecordKey] as? CKRecord,
@@ -3229,7 +3433,7 @@ actor FarmPersistenceActor {
             binding.updatedAt = .now
         }
         for item in try context.fetch(FetchDescriptor<OutboxItem>())
-        where item.farmID == farmID && item.status != .confirmed {
+        where item.farmID == farmID && !item.status.isTerminalDelivery {
             item.statusRawValue = OutboxStatus.rejectedPermission.rawValue
             item.errorMessage = "牧场共享访问已经撤销，未确认操作保留在本机只读导出区。"
         }
@@ -3409,7 +3613,8 @@ actor FarmPersistenceActor {
             // Outbox work. Removing it would leave blocked operations without
             // any user-review path after an otherwise successful rebuild.
             if value.statusRawValue != SyncConflictStatus.unresolved.rawValue &&
-                value.statusRawValue != SyncConflictStatus.quarantined.rawValue {
+                value.statusRawValue != SyncConflictStatus.quarantined.rawValue &&
+                value.reasonCode != "tombstoneSupersededRemoteAuthority" {
                 context.delete(value)
             }
         }
@@ -3612,6 +3817,623 @@ actor FarmPersistenceActor {
         }
         if !items.isEmpty { try context.save() }
         return items.count
+    }
+
+    func tombstoneConflictCandidates(farmID: UUID) throws -> [CloudTombstoneConflictCandidate] {
+        let context = ModelContext(container)
+        let active = CloudFarmBindingState.active.rawValue
+        var bindingDescriptor = FetchDescriptor<CloudFarmBinding>(predicate: #Predicate {
+            $0.farmID == farmID && $0.stateRawValue == active
+        })
+        bindingDescriptor.fetchLimit = 2
+        let bindings = try context.fetch(bindingDescriptor)
+        guard bindings.count == 1, let binding = bindings.first else {
+            throw CloudSyncError.farmBindingMissing
+        }
+
+        let blocked = OutboxStatus.blockedConflict.rawValue
+        let iCloud = FarmRemoteProvider.iCloud.rawValue
+        let items = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.statusRawValue == blocked
+        })).filter {
+            $0.deliveryProviderRawValue == nil || $0.deliveryProviderRawValue == iCloud
+        }
+        let allOperations = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        let allTombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        let tombstoneOperationIDs = Set(allOperations.filter {
+            $0.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue
+        }.map(\.id))
+        let expectedCandidateCount = items.count {
+            tombstoneOperationIDs.contains($0.operationID)
+        }
+
+        var result: [CloudTombstoneConflictCandidate] = []
+        for item in items {
+            let matchingOperations = allOperations.filter { $0.id == item.operationID }
+            guard matchingOperations.count == 1,
+                  let operation = matchingOperations.first,
+                  operation.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue,
+                  let entityID = operation.entityID,
+                  operation.entityID == item.entityID,
+                  operation.entityType == item.entityType,
+                  operation.payloadDigest == item.payloadDigest,
+                  operation.baseRevision == item.baseRevision,
+                  let deviceID = operation.modifiedByDeviceID,
+                  let signature = operation.operationSignature else {
+                continue
+            }
+            let matchingTombstones = allTombstones.filter {
+                $0.operationID == operation.id &&
+                    $0.entityID == entityID &&
+                    $0.entityType == operation.entityType
+            }
+            guard matchingTombstones.count == 1, let tombstone = matchingTombstones.first else {
+                continue
+            }
+            let localOperation = CloudOperationEnvelope(
+                farmID: operation.farmID,
+                entityID: entityID,
+                entityType: operation.entityType,
+                schemaVersion: operation.schemaVersion,
+                revision: operation.resultingRevision,
+                baseRevision: operation.baseRevision,
+                operationID: operation.id,
+                modifiedAt: operation.occurredAt,
+                modifiedByAccountID: operation.accountID,
+                modifiedByDeviceID: deviceID,
+                payload: operation.payload,
+                payloadDigest: operation.payloadDigest,
+                capabilityCertificate: operation.capabilityCertificate,
+                operationSignature: signature,
+                deletedAt: tombstone.deletedAt
+            )
+            let localTombstone = FarmTombstoneEnvelope(
+                tombstoneID: tombstone.id,
+                farmID: tombstone.farmID,
+                entityType: tombstone.entityType,
+                entityID: tombstone.entityID,
+                revision: tombstone.revision,
+                deletedAt: tombstone.deletedAt,
+                deletedByAccountID: tombstone.deletedByAccountID,
+                reason: tombstone.reason,
+                operationID: operation.id,
+                restoresTombstoneID: tombstone.restoredByOperationID
+            )
+            result.append(CloudTombstoneConflictCandidate(
+                outboxID: item.id,
+                farmID: farmID,
+                scope: binding.databaseScope,
+                zoneName: binding.zoneName,
+                zoneOwnerName: binding.zoneOwnerName,
+                localOperation: localOperation,
+                localTombstone: localTombstone
+            ))
+        }
+        guard result.count == expectedCandidateCount else {
+            throw CloudSyncError.recoveryCatchUpFailed(
+                "本机 Tombstone 阻塞项缺少唯一 Operation、Tombstone、签名或 Outbox 证据，已停止自动修复。"
+            )
+        }
+        return result.sorted { $0.localOperation.modifiedAt < $1.localOperation.modifiedAt }
+    }
+
+    /// A cleanly restored device has no Outbox rows, but can still retain two
+    /// local Tombstone projections for the same entity/revision after an old
+    /// client raced two deletion facts. Limit projection repair to that exact
+    /// duplicate shape; different revisions can represent legitimate history.
+    func tombstoneAuthorityProjectionCandidates(
+        farmID: UUID
+    ) throws -> [CloudTombstoneConflictCandidate] {
+        let context = ModelContext(container)
+        let active = CloudFarmBindingState.active.rawValue
+        var bindingDescriptor = FetchDescriptor<CloudFarmBinding>(predicate: #Predicate {
+            $0.farmID == farmID && $0.stateRawValue == active
+        })
+        bindingDescriptor.fetchLimit = 2
+        let bindings = try context.fetch(bindingDescriptor)
+        guard bindings.count == 1, let binding = bindings.first else {
+            throw CloudSyncError.farmBindingMissing
+        }
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+            $0.farmID == farmID
+        })).filter { $0.restoredAt == nil }
+        let grouped = Dictionary(grouping: tombstones) {
+            "\($0.entityID.uuidString.lowercased())|\($0.revision)"
+        }
+        let duplicates: [TombstoneRecord] = grouped.values
+            .filter { group in
+                group.count > 1 && Set(group.map(\.operationID)).count > 1
+            }
+            .flatMap { $0 }
+
+        var result: [CloudTombstoneConflictCandidate] = []
+        for tombstone in duplicates {
+            let matching = operations.filter {
+                $0.id == tombstone.operationID &&
+                    $0.entityID == tombstone.entityID &&
+                    $0.entityType == tombstone.entityType &&
+                    $0.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue
+            }
+            guard matching.count == 1, let operation = matching.first,
+                  let deviceID = operation.modifiedByDeviceID,
+                  let signature = operation.operationSignature,
+                  !operation.capabilityCertificate.isEmpty else {
+                throw CloudSyncError.recoveryCatchUpFailed(
+                    "重复 Tombstone 投影缺少唯一、已签名的本地 Operation，已停止自动核对。"
+                )
+            }
+            let localOperation = CloudOperationEnvelope(
+                farmID: operation.farmID,
+                entityID: tombstone.entityID,
+                entityType: operation.entityType,
+                schemaVersion: operation.schemaVersion,
+                revision: operation.resultingRevision,
+                baseRevision: operation.baseRevision,
+                operationID: operation.id,
+                modifiedAt: operation.occurredAt,
+                modifiedByAccountID: operation.accountID,
+                modifiedByDeviceID: deviceID,
+                payload: operation.payload,
+                payloadDigest: operation.payloadDigest,
+                capabilityCertificate: operation.capabilityCertificate,
+                operationSignature: signature,
+                deletedAt: tombstone.deletedAt
+            )
+            let localTombstone = FarmTombstoneEnvelope(
+                tombstoneID: tombstone.id,
+                farmID: tombstone.farmID,
+                entityType: tombstone.entityType,
+                entityID: tombstone.entityID,
+                revision: tombstone.revision,
+                deletedAt: tombstone.deletedAt,
+                deletedByAccountID: tombstone.deletedByAccountID,
+                reason: tombstone.reason,
+                operationID: operation.id,
+                restoresTombstoneID: tombstone.restoredByOperationID
+            )
+            result.append(CloudTombstoneConflictCandidate(
+                outboxID: nil,
+                farmID: farmID,
+                scope: binding.databaseScope,
+                zoneName: binding.zoneName,
+                zoneOwnerName: binding.zoneOwnerName,
+                localOperation: localOperation,
+                localTombstone: localTombstone
+            ))
+        }
+        return result.sorted {
+            if $0.localOperation.entityID != $1.localOperation.entityID {
+                return $0.localOperation.entityID.uuidString < $1.localOperation.entityID.uuidString
+            }
+            return $0.localOperation.modifiedAt < $1.localOperation.modifiedAt
+        }
+    }
+
+    func applyTombstoneReconciliation(
+        candidate: CloudTombstoneConflictCandidate,
+        evidence: CloudTombstoneRemoteEvidence
+    ) async throws -> CloudTombstoneReconciliationItem {
+        let decision = CloudTombstoneEvidenceEvaluator.evaluate(
+            candidate: candidate,
+            evidence: evidence,
+            mapper: mapper
+        )
+        switch decision {
+        case .unresolved(let detail):
+            return CloudTombstoneReconciliationItem(
+                operationID: candidate.localOperation.operationID,
+                entityID: candidate.localOperation.entityID,
+                outcome: .unresolvedDivergence,
+                detail: detail
+            )
+
+        case .equivalent(let operationRecord, let tombstoneRecord):
+            let envelope = try validatedTombstoneOperationRecord(
+                operationRecord,
+                candidate: candidate
+            )
+            guard CloudTombstoneEvidenceEvaluator.operationsHaveSameImmutableFact(
+                envelope,
+                candidate.localOperation
+            ) else {
+                return CloudTombstoneReconciliationItem(
+                    operationID: candidate.localOperation.operationID,
+                    entityID: candidate.localOperation.entityID,
+                    outcome: .unresolvedDivergence,
+                    detail: "云端操作通过签名验证，但不可变内容与本机不同。"
+                )
+            }
+            try adoptValidatedRemoteOperationAuthorization(
+                envelope,
+                candidate: candidate
+            )
+            if candidate.outboxID == nil {
+                try normalizeTombstoneAuthorityProjection(
+                    candidate: candidate,
+                    authoritativeEnvelope: envelope,
+                    tombstoneRecord: tombstoneRecord
+                )
+                return CloudTombstoneReconciliationItem(
+                    operationID: candidate.localOperation.operationID,
+                    entityID: candidate.localOperation.entityID,
+                    outcome: .equivalentConfirmed,
+                    detail: "本地 Tombstone 投影已与通过验证的 CloudKit 权威保持一致。"
+                )
+            }
+            try confirmSavedRecords([operationRecord, tombstoneRecord], scope: candidate.scope)
+            return CloudTombstoneReconciliationItem(
+                operationID: candidate.localOperation.operationID,
+                entityID: candidate.localOperation.entityID,
+                outcome: .equivalentConfirmed,
+                detail: "Operation 与 Tombstone 均已由 CloudKit 证实，Entity 投影不再阻塞交付。"
+            )
+
+        case .retryOperation(let tombstoneRecord):
+            try validateTombstoneEnvelopeAuthorization(
+                candidate.localOperation,
+                authorizationDate: tombstoneRecord.modificationDate ?? tombstoneRecord.creationDate
+            )
+            // The missing immutable Operation must be retried byte-for-byte
+            // with its original authorization. If that authorization has
+            // expired, keep the conflict unresolved instead of re-signing an
+            // operation that the existing Tombstone no longer proves.
+            try validateTombstoneEnvelopeAuthorization(
+                candidate.localOperation,
+                authorizationDate: .now
+            )
+            try confirmSavedRecords([tombstoneRecord], scope: candidate.scope)
+            return CloudTombstoneReconciliationItem(
+                operationID: candidate.localOperation.operationID,
+                entityID: candidate.localOperation.entityID,
+                outcome: .operationRetryNeeded,
+                detail: "Tombstone 已确认；只保留缺失的不可变 Operation 待重传。"
+            )
+
+        case .superseded(let operationRecord, let tombstoneRecord, let envelope):
+            let validated = try validatedTombstoneOperationRecord(
+                operationRecord,
+                candidate: candidate,
+                expectedOperationID: envelope.operationID
+            )
+            guard validated == envelope else {
+                return CloudTombstoneReconciliationItem(
+                    operationID: candidate.localOperation.operationID,
+                    entityID: candidate.localOperation.entityID,
+                    outcome: .unresolvedDivergence,
+                    detail: "云端权威操作在安全验证前后内容不一致。"
+                )
+            }
+            if candidate.outboxID == nil {
+                try normalizeTombstoneAuthorityProjection(
+                    candidate: candidate,
+                    authoritativeEnvelope: validated,
+                    tombstoneRecord: tombstoneRecord
+                )
+                return CloudTombstoneReconciliationItem(
+                    operationID: candidate.localOperation.operationID,
+                    entityID: candidate.localOperation.entityID,
+                    outcome: .supersededByRemote,
+                    detail: "本地重复 Tombstone 已采用同实体、同 revision 的已验证 CloudKit 权威；历史 Operation 保持不变。"
+                )
+            }
+            try markTombstoneOperationSuperseded(
+                candidate: candidate,
+                authoritativeEnvelope: validated,
+                operationRecord: operationRecord,
+                tombstoneRecord: tombstoneRecord
+            )
+            return CloudTombstoneReconciliationItem(
+                operationID: candidate.localOperation.operationID,
+                entityID: candidate.localOperation.entityID,
+                outcome: .supersededByRemote,
+                detail: "已采用同一实体、同一 revision 的已验证云端删除事实；本机操作保留为审计证据。"
+            )
+        }
+    }
+
+    func validateTombstoneCredentialRepairAuthority(
+        _ record: CKRecord,
+        candidate: CloudTombstoneConflictCandidate,
+        expectedOperationID: UUID
+    ) throws {
+        _ = try validatedTombstoneOperationRecord(
+            record,
+            candidate: candidate,
+            expectedOperationID: expectedOperationID
+        )
+    }
+
+    private func adoptValidatedRemoteOperationAuthorization(
+        _ envelope: CloudOperationEnvelope,
+        candidate: CloudTombstoneConflictCandidate
+    ) throws {
+        let context = ModelContext(container)
+        let operationID = candidate.localOperation.operationID
+        let farmID = candidate.farmID
+        var operationDescriptor = FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.id == operationID && $0.farmID == farmID
+        })
+        operationDescriptor.fetchLimit = 2
+        var outboxDescriptor = FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.operationID == operationID && $0.farmID == farmID
+        })
+        outboxDescriptor.fetchLimit = 2
+        let operations = try context.fetch(operationDescriptor)
+        let items = try context.fetch(outboxDescriptor)
+        guard operations.count == 1, let operation = operations.first,
+              let entityID = operation.entityID else {
+            throw CloudContractError.malformedRecord
+        }
+        if let expectedOutboxID = candidate.outboxID,
+           (items.count != 1 || items.first?.id != expectedOutboxID) {
+            throw CloudContractError.malformedRecord
+        }
+        let local = CloudOperationEnvelope(
+            farmID: operation.farmID,
+            entityID: entityID,
+            entityType: operation.entityType,
+            schemaVersion: operation.schemaVersion,
+            revision: operation.resultingRevision,
+            baseRevision: operation.baseRevision,
+            operationID: operation.id,
+            modifiedAt: operation.occurredAt,
+            modifiedByAccountID: operation.accountID,
+            modifiedByDeviceID: operation.modifiedByDeviceID ?? envelope.modifiedByDeviceID,
+            payload: operation.payload,
+            payloadDigest: operation.payloadDigest,
+            capabilityCertificate: operation.capabilityCertificate,
+            operationSignature: operation.operationSignature ?? Data(),
+            deletedAt: candidate.localTombstone.deletedAt
+        )
+        guard CloudTombstoneEvidenceEvaluator.operationsHaveSameImmutableFact(envelope, local) else {
+            throw CloudContractError.malformedRecord
+        }
+        operation.modifiedByDeviceID = envelope.modifiedByDeviceID
+        operation.capabilityCertificate = envelope.capabilityCertificate
+        operation.operationSignature = envelope.operationSignature
+        for item in items {
+            item.capabilityCertificate = envelope.capabilityCertificate
+            item.operationSignature = envelope.operationSignature
+            item.errorMessage = nil
+        }
+        try context.save()
+    }
+
+    private func normalizeTombstoneAuthorityProjection(
+        candidate: CloudTombstoneConflictCandidate,
+        authoritativeEnvelope: CloudOperationEnvelope,
+        tombstoneRecord: CKRecord
+    ) throws {
+        let context = ModelContext(container)
+        let tombstoneID = candidate.localTombstone.tombstoneID
+        let farmID = candidate.farmID
+        var descriptor = FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+            $0.id == tombstoneID && $0.farmID == farmID
+        })
+        descriptor.fetchLimit = 2
+        let records = try context.fetch(descriptor)
+        guard records.count == 1, let local = records.first else {
+            throw CloudContractError.malformedRecord
+        }
+        let remote = try mapper.tombstoneEnvelope(from: tombstoneRecord)
+        guard remote.farmID == candidate.farmID,
+              remote.entityID == candidate.localOperation.entityID,
+              remote.entityType == candidate.localOperation.entityType,
+              remote.revision == candidate.localOperation.revision,
+              remote.operationID == authoritativeEnvelope.operationID else {
+            throw CloudContractError.malformedRecord
+        }
+        local.operationID = authoritativeEnvelope.operationID
+        local.revision = remote.revision
+        local.deletedAt = remote.deletedAt
+        local.deletedByAccountID = remote.deletedByAccountID
+        local.reason = remote.reason
+        try context.save()
+    }
+
+    private func validatedTombstoneOperationRecord(
+        _ record: CKRecord,
+        candidate: CloudTombstoneConflictCandidate,
+        expectedOperationID: UUID? = nil
+    ) throws -> CloudOperationEnvelope {
+        let context = ModelContext(container)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard record.recordType == CloudRecordType.farmOperation.rawValue,
+              record.recordID.zoneID == candidate.zoneID,
+              let binding = try activeBinding(
+                matching: record.recordID.zoneID,
+                scope: candidate.scope,
+                context: context
+              ),
+              binding.farmID == candidate.farmID else {
+            throw CloudContractError.malformedRecord
+        }
+        let envelope = try mapper.operationEnvelope(from: record)
+        guard envelope.farmID == candidate.farmID,
+              envelope.operationID == (expectedOperationID ?? candidate.localOperation.operationID),
+              record.recordID.recordName == mapper.recordName(for: envelope.operationID),
+              CloudZoneName.farmID(from: record.recordID.zoneID.zoneName) == envelope.farmID,
+              let payload = try? decoder.decode(FarmCommandCloudPayload.self, from: envelope.payload),
+              payload.kind == .tombstoneEntity else {
+            throw CloudContractError.malformedRecord
+        }
+        try validateTombstoneEnvelopeAuthorization(
+            envelope,
+            authorizationDate: record.modificationDate ?? record.creationDate
+        )
+        return envelope
+    }
+
+    private func validateTombstoneEnvelopeAuthorization(
+        _ envelope: CloudOperationEnvelope,
+        authorizationDate: Date?
+    ) throws {
+        let context = ModelContext(container)
+        guard let publicKey = capabilitySigningPublicKeyPEM, !publicKey.isEmpty else {
+            throw CloudContractError.invalidCertificate
+        }
+        let claims = try CapabilityCertificateVerifier.verify(
+            envelope.capabilityCertificate,
+            publicKeyPEM: publicKey
+        )
+        let revoked = try context.fetch(FetchDescriptor<RevokedCapabilityCertificateRecord>())
+        guard !revoked.contains(where: {
+            $0.farmID == envelope.farmID && $0.serverCertificateID == claims.certificateID
+        }) else {
+            throw CloudContractError.invalidCertificate
+        }
+        let devices = try context.fetch(FetchDescriptor<DeviceIdentityRecord>())
+        guard let device = devices.first(where: {
+            $0.id == claims.deviceID && $0.accountID == claims.accountID
+        }) else {
+            throw CloudContractError.invalidDeviceSignature
+        }
+        try CloudOperationSecurity.validate(
+            envelope: envelope,
+            claims: claims,
+            devicePublicKeyX963: device.publicKeyX963,
+            authorizationDate: authorizationDate
+        )
+    }
+
+    private func markTombstoneOperationSuperseded(
+        candidate: CloudTombstoneConflictCandidate,
+        authoritativeEnvelope: CloudOperationEnvelope,
+        operationRecord: CKRecord,
+        tombstoneRecord: CKRecord
+    ) throws {
+        let context = ModelContext(container)
+        guard let candidateOutboxID = candidate.outboxID else {
+            throw CloudContractError.malformedRecord
+        }
+        let candidateFarmID = candidate.farmID
+        var itemDescriptor = FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.id == candidateOutboxID && $0.farmID == candidateFarmID
+        })
+        itemDescriptor.fetchLimit = 2
+        let items = try context.fetch(itemDescriptor)
+        guard items.count == 1, let item = items.first,
+              item.operationID == candidate.localOperation.operationID else {
+            throw CloudContractError.malformedRecord
+        }
+
+        _ = try RemoteDomainAuditProjection.insertIfNeeded(authoritativeEnvelope, context: context)
+        let authoritativeTombstone = try mapper.tombstoneEnvelope(from: tombstoneRecord)
+        let localOperationID = candidate.localOperation.operationID
+        let localTombstones = try context.fetch(FetchDescriptor<TombstoneRecord>()).filter {
+            $0.farmID == candidate.farmID &&
+                $0.operationID == localOperationID &&
+                $0.entityID == candidate.localOperation.entityID
+        }
+        guard localTombstones.count == 1, let localTombstone = localTombstones.first else {
+            throw CloudContractError.malformedRecord
+        }
+        // Preserve a single business Tombstone for this entity, but point its
+        // authority and semantic fields at the verified remote deletion. The
+        // original local operation remains in history, conflict evidence and
+        // the Outbox receipt archive.
+        localTombstone.operationID = authoritativeEnvelope.operationID
+        localTombstone.revision = authoritativeTombstone.revision
+        localTombstone.deletedAt = authoritativeTombstone.deletedAt
+        localTombstone.deletedByAccountID = authoritativeTombstone.deletedByAccountID
+        localTombstone.reason = authoritativeTombstone.reason
+        let receiptExists = try context.fetch(FetchDescriptor<CloudOperationReceipt>()).contains {
+            $0.farmID == candidate.farmID &&
+                $0.operationID == authoritativeEnvelope.operationID &&
+                $0.recordName == operationRecord.recordID.recordName &&
+                $0.databaseScopeRawValue == candidate.scope.rawValue &&
+                $0.zoneName == candidate.zoneName &&
+                $0.zoneOwnerName == candidate.zoneOwnerName
+        }
+        if !receiptExists {
+            context.insert(CloudOperationReceipt(
+                farmID: candidate.farmID,
+                operationID: authoritativeEnvelope.operationID,
+                recordName: operationRecord.recordID.recordName,
+                serverChangeTag: operationRecord.recordChangeTag,
+                databaseScope: candidate.scope,
+                zoneName: candidate.zoneName,
+                zoneOwnerName: candidate.zoneOwnerName
+            ))
+        }
+        let tombstoneReceiptExists = try context.fetch(FetchDescriptor<CloudOperationReceipt>()).contains {
+            $0.farmID == candidate.farmID &&
+                $0.operationID == authoritativeEnvelope.operationID &&
+                $0.recordName == tombstoneRecord.recordID.recordName &&
+                $0.databaseScopeRawValue == candidate.scope.rawValue &&
+                $0.zoneName == candidate.zoneName &&
+                $0.zoneOwnerName == candidate.zoneOwnerName
+        }
+        if !tombstoneReceiptExists {
+            context.insert(CloudOperationReceipt(
+                farmID: candidate.farmID,
+                operationID: authoritativeEnvelope.operationID,
+                recordName: tombstoneRecord.recordID.recordName,
+                serverChangeTag: tombstoneRecord.recordChangeTag,
+                databaseScope: candidate.scope,
+                zoneName: candidate.zoneName,
+                zoneOwnerName: candidate.zoneOwnerName
+            ))
+        }
+
+        let reasonCode = "tombstoneSupersededRemoteAuthority"
+        let conflicts = try context.fetch(FetchDescriptor<SyncConflictRecord>()).filter {
+            $0.farmID == candidate.farmID &&
+                $0.entityID == candidate.localOperation.entityID &&
+                $0.reasonCode == reasonCode &&
+                $0.localPayloadDigest == candidate.localOperation.payloadDigest &&
+                $0.remotePayloadDigest == authoritativeEnvelope.payloadDigest
+        }
+        let conflict: SyncConflictRecord
+        if let existing = conflicts.first {
+            conflict = existing
+        } else {
+            conflict = SyncConflictRecord(
+                farmID: candidate.farmID,
+                entityID: candidate.localOperation.entityID,
+                entityType: candidate.localOperation.entityType,
+                localRevision: candidate.localOperation.revision,
+                remoteRevision: authoritativeEnvelope.revision,
+                localPayload: candidate.localOperation.payload,
+                remotePayload: authoritativeEnvelope.payload,
+                remoteAccountID: authoritativeEnvelope.modifiedByAccountID,
+                remoteDeviceID: authoritativeEnvelope.modifiedByDeviceID,
+                reasonCode: reasonCode,
+                status: .acceptedRemote
+            )
+            context.insert(conflict)
+        }
+        conflict.statusRawValue = SyncConflictStatus.acceptedRemote.rawValue
+        conflict.resolvedAt = conflict.resolvedAt ?? .now
+        conflict.resolutionNote = "CloudKit 已存在另一条通过签名验证的同 revision 删除事实；本机操作保留但停止交付。"
+        conflict.remoteEnvelopeData = try JSONEncoder.cloud.encode(authoritativeEnvelope)
+        conflict.remoteAccountID = authoritativeEnvelope.modifiedByAccountID
+        conflict.remoteDeviceID = authoritativeEnvelope.modifiedByDeviceID
+
+        item.statusRawValue = OutboxStatus.supersededRemoteAuthority.rawValue
+        item.errorMessage = nil
+        item.nextRetryAt = nil
+        item.cloudRecordName = operationRecord.recordID.recordName
+        item.remoteReceiptData = try JSONEncoder.cloud.encode(CloudTombstoneSupersessionReceipt(
+            localOperationID: candidate.localOperation.operationID,
+            authoritativeOperation: authoritativeEnvelope,
+            operationRecordName: operationRecord.recordID.recordName,
+            tombstoneRecordName: tombstoneRecord.recordID.recordName,
+            zoneName: candidate.zoneName,
+            zoneOwnerName: candidate.zoneOwnerName,
+            databaseScope: candidate.scope,
+            reconciledAt: .now
+        ))
+        try FarmHistoryRebuilder().rebuild(farmID: candidate.farmID, context: context, from: .distantPast)
+        try context.save()
     }
 
     @discardableResult
