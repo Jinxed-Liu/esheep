@@ -44,6 +44,27 @@ enum DevelopmentSupabaseAcceptanceURLHandler {
             }
             return true
         }
+        if command == "uninvited-access-probe" {
+            guard let account else {
+                recordResult("uninvited-probe:rejected=no-account")
+                return true
+            }
+            guard let rawFarmID = components?.queryItems?
+                .first(where: { $0.name == "farmID" })?
+                .value,
+                  let farmID = UUID(uuidString: rawFarmID) else {
+                recordResult("uninvited-probe:rejected=invalid-farm-id")
+                return true
+            }
+            recordResult("uninvited-probe:started")
+            Task { @MainActor in
+                await runUninvitedAccessProbe(
+                    account: account,
+                    farmID: farmID
+                )
+            }
+            return true
+        }
         guard let account, let farm else {
             recordResult("rejected:no-active-account-or-farm")
             return true
@@ -297,6 +318,122 @@ enum DevelopmentSupabaseAcceptanceURLHandler {
         } catch {
             let value = error as NSError
             recordResult("revoked-probe:failed=\(value.domain):\(value.code)")
+        }
+    }
+
+    private struct FarmIDProbeRow: Decodable {
+        let farmID: UUID
+
+        enum CodingKeys: String, CodingKey {
+            case farmID = "farm_id"
+        }
+    }
+
+    private static func runUninvitedAccessProbe(
+        account: AccountProfile,
+        farmID: UUID
+    ) async {
+        guard let client = AccountIdentityClients.supabaseClient else {
+            recordResult("uninvited-probe:failed=no-supabase-client")
+            return
+        }
+        do {
+            let access: [SupabaseFarmAccessDescriptor] = try await client
+                .rpc("list_my_active_farm_access")
+                .execute()
+                .value
+
+            var registryDenied = false
+            do {
+                let rows: [FarmIDProbeRow] = try await client
+                    .from("farm_registry")
+                    .select("farm_id")
+                    .eq("farm_id", value: farmID)
+                    .limit(1)
+                    .execute()
+                    .value
+                registryDenied = rows.isEmpty
+            } catch {
+                registryDenied = true
+            }
+
+            var membersDenied = false
+            var memberCount = -1
+            do {
+                let members = try await SupabaseFarmTransport(client: client)
+                    .members(farmID: farmID)
+                memberCount = members.count
+                membersDenied = members.isEmpty
+            } catch {
+                membersDenied = true
+            }
+
+            var operationsDenied = false
+            var operationCount = -1
+            do {
+                let page = try await SupabaseFarmTransport(client: client)
+                    .pullOperations(
+                        farmID: farmID,
+                        authorityGeneration: 1,
+                        after: 0,
+                        limit: 1
+                    )
+                operationCount = page.operations.count
+                operationsDenied = page.operations.isEmpty
+            } catch {
+                operationsDenied = true
+            }
+
+            var rpcDenied = false
+            do {
+                _ = try await SupabaseFarmStorageMetricsClient(client: client)
+                    .metrics(farmID: farmID)
+            } catch {
+                rpcDenied = true
+            }
+
+            var storageDenied = false
+            do {
+                _ = try await client.storage
+                    .from("farm-assets")
+                    .download(
+                        path: "\(farmID.uuidString.lowercased())/\(String(repeating: "a", count: 64))"
+                    )
+            } catch {
+                storageDenied = true
+            }
+
+            var realtimeDenied = false
+            let session = try await client.auth.session
+            await client.realtimeV2.setAuth(session.accessToken)
+            let channel = client.channel(
+                "farm:\(farmID.uuidString.lowercased())"
+            ) { configuration in
+                configuration.isPrivate = true
+            }
+            do {
+                try await channel.subscribeWithError()
+            } catch {
+                realtimeDenied = true
+            }
+            await client.removeChannel(channel)
+
+            recordResult([
+                "uninvited-probe",
+                "account=\(account.effectiveAccountID.uuidString.lowercased())",
+                "access=\(access.count)",
+                "registryDenied=\(registryDenied)",
+                "members=\(memberCount)",
+                "membersDenied=\(membersDenied)",
+                "operations=\(operationCount)",
+                "operationsDenied=\(operationsDenied)",
+                "rpcDenied=\(rpcDenied)",
+                "storageDenied=\(storageDenied)",
+                "realtimeDenied=\(realtimeDenied)"
+            ].joined(separator: ";"))
+        } catch {
+            let value = error as NSError
+            recordResult("uninvited-probe:failed=\(value.domain):\(value.code)")
         }
     }
 
