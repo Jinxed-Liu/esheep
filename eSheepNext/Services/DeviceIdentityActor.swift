@@ -26,6 +26,18 @@ struct DeviceSigningIdentity: Sendable, Equatable {
 actor DeviceIdentityActor {
     static let shared = DeviceIdentityActor()
 
+    /// Reads the already-registered device identifier without creating a new
+    /// identity. Synchronous command validation uses this to ensure an iCloud
+    /// capability belongs to the device that will sign and deliver the
+    /// operation.
+    static func storedDeviceID() throws -> UUID? {
+        guard let data = try SecureAccountStore.data(account: "device-id"),
+              let text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return UUID(uuidString: text)
+    }
+
     func identity() throws -> DeviceSigningIdentity {
         let deviceID = try loadOrCreateDeviceID()
         if SecureEnclave.isAvailable {
@@ -64,9 +76,7 @@ actor DeviceIdentityActor {
     }
 
     private func loadOrCreateDeviceID() throws -> UUID {
-        if let data = try SecureAccountStore.data(account: "device-id"),
-           let text = String(data: data, encoding: .utf8),
-           let id = UUID(uuidString: text) {
+        if let id = try Self.storedDeviceID() {
             return id
         }
         let id = UUID()

@@ -1279,6 +1279,15 @@ actor CloudSyncActor {
         }
         try requireCurrentRecoveryReset(scope: scope, farmID: farmID, id: attemptID)
         let isAccountReviewReset = Self.isAccountReviewEngineResetCode(initialBinding.lastErrorCode)
+        // The first reset after a verified cache switch must discard the old
+        // incremental engine state. Once that reset has started, however,
+        // CKSyncEngine persists its own partial cursor through stateUpdate
+        // events. Retrying an in-progress/failed reset must seed the new
+        // engine from that serialization instead of deleting it and scanning
+        // the entire zone again.
+        let resumableEngineState = Self.shouldResumeRecoveryEngineState(
+            after: initialBinding.lastErrorCode
+        ) ? CloudEngineStateDiskStore.load(scope: scope) : nil
         let provenOperationSources = try await persistence.provenOperationSourcesForRecovery(
             farmID: farmID,
             scope: scope
@@ -1318,21 +1327,23 @@ actor CloudSyncActor {
         recoveryFetchFailures[retiredEngineID] = nil
         await retiredEngine.cancelOperations()
         try requireCurrentRecoveryReset(scope: scope, farmID: farmID, id: attemptID)
-        do {
-            try CloudEngineStateDiskStore.remove(scope: scope)
-        } catch {
-            try? await recordRetryableRecoveryResetFailure(
-                farmID: farmID,
-                initialErrorCode: resetInProgressCode,
-                scope: scope,
-                attemptID: attemptID
-            )
-            throw error
+        if resumableEngineState == nil {
+            do {
+                try CloudEngineStateDiskStore.remove(scope: scope)
+            } catch {
+                try? await recordRetryableRecoveryResetFailure(
+                    farmID: farmID,
+                    initialErrorCode: resetInProgressCode,
+                    scope: scope,
+                    attemptID: attemptID
+                )
+                throw error
+            }
         }
         let database = scope == .privateDatabase ? container.privateCloudDatabase : container.sharedCloudDatabase
         var configuration = CKSyncEngine.Configuration(
             database: database,
-            stateSerialization: nil,
+            stateSerialization: resumableEngineState,
             delegate: delegateProxy
         )
         configuration.automaticallySync = true
@@ -1354,17 +1365,40 @@ actor CloudSyncActor {
             sharedEngine = engine
         }
         do {
-            do {
-                try await engine.fetchChanges()
-                try requireCurrentRecoveryReset(scope: scope, farmID: farmID, id: attemptID)
-            } catch {
-                try? await recordRetryableRecoveryResetFailure(
-                    farmID: farmID,
-                    initialErrorCode: resetInProgressCode,
-                    scope: scope,
-                    attemptID: attemptID
-                )
-                throw error
+            var fetchAttempt = 0
+            while true {
+                do {
+                    try await engine.fetchChanges()
+                    try requireCurrentRecoveryReset(
+                        scope: scope,
+                        farmID: farmID,
+                        id: attemptID
+                    )
+                    break
+                } catch {
+                    fetchAttempt += 1
+                    if fetchAttempt < 8,
+                       let delay = CloudZoneChangeFetcher.retryDelay(
+                           for: error,
+                           attempt: fetchAttempt
+                       ) {
+                        try await Task.sleep(for: .seconds(delay))
+                        continue
+                    }
+                    let nsError = error as NSError
+                    try? await persistence.recordSecurityIncident(
+                        farmID: farmID,
+                        type: "recoveryEngineFetchFailed",
+                        detail: "domain=\(nsError.domain) code=\(nsError.code) description=\(error.localizedDescription)"
+                    )
+                    try? await recordRetryableRecoveryResetFailure(
+                        farmID: farmID,
+                        initialErrorCode: resetInProgressCode,
+                        scope: scope,
+                        attemptID: attemptID
+                    )
+                    throw error
+                }
             }
             expectedResetSignInEngineIDs.remove(engineID)
             if let detail = recoveryFetchFailures[engineID] {
@@ -1482,6 +1516,18 @@ actor CloudSyncActor {
              "engineResetInProgress",
              "engineResetFailed",
              "accountReviewCatchUp",
+             "accountReviewEngineResetInProgress",
+             "accountReviewEngineResetFailed":
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func shouldResumeRecoveryEngineState(after code: String?) -> Bool {
+        switch code {
+        case "engineResetInProgress",
+             "engineResetFailed",
              "accountReviewEngineResetInProgress",
              "accountReviewEngineResetFailed":
             return true
@@ -1858,7 +1904,9 @@ final class CloudCollaborationStore {
     private var sharedAdmissionFarmIDs = Set<UUID>()
     private var supabaseCursorPollTask: Task<Void, Never>?
     private var supabaseRealtimeTasks: [UUID: Task<Void, Never>] = [:]
-    private var supabaseOwnerDiscoveryAccountIDs = Set<UUID>()
+    private var supabaseAccessRecoveryAccountIDs = Set<UUID>()
+    private var activeSupabaseAccountID: UUID?
+    private var photoDataLoadTasks: [UUID: Task<Data, any Error>] = [:]
 
     nonisolated static func prepareStartup(
         container: ModelContainer
@@ -1867,6 +1915,11 @@ final class CloudCollaborationStore {
             container: container
         )
         var startupErrorMessages = startupRepair.errorMessages
+        do {
+            _ = try PhotoAssetProjectionRepair.repair(container: container)
+        } catch {
+            startupErrorMessages.append("照片本地投影修复失败：\(error.localizedDescription)")
+        }
         do {
             _ = try PostRecoveryHistoryProjectionRepair.repair(container: container)
         } catch {
@@ -1910,7 +1963,10 @@ final class CloudCollaborationStore {
             self.supabaseTransport = transport
             self.remoteSync = FarmRemoteSyncCoordinator(
                 container: container,
-                transport: transport
+                transport: transport,
+                shouldSuspendNetwork: {
+                    DevelopmentSupabaseNetworkGate.isForcedOffline
+                }
             )
             self.supabasePhotoTransfers = SupabasePhotoTransferCoordinator(
                 container: container,
@@ -1937,10 +1993,56 @@ final class CloudCollaborationStore {
     isolated deinit {
         supabaseCursorPollTask?.cancel()
         supabaseRealtimeTasks.values.forEach { $0.cancel() }
+        photoDataLoadTasks.values.forEach { $0.cancel() }
     }
 
     func supabaseRealtimeHealth(farmID: UUID) -> SupabaseRealtimeHealth {
         supabaseRealtimeHealthByFarmID[farmID] ?? .notActive
+    }
+
+    /// Returns verified local bytes, restoring the asset from the farm's
+    /// authoritative cloud provider when its local cache is missing or stale.
+    /// Concurrent avatar/banner/timeline requests share one download task.
+    func loadPhotoData(assetID: UUID) async throws -> Data {
+        if let existing = photoDataLoadTasks[assetID] {
+            return try await existing.value
+        }
+
+        let task = Task<Data, any Error> {
+            [photoTransfers = self.photoTransfers,
+             supabasePhotoTransfers = self.supabasePhotoTransfers] in
+            do {
+                return try await photoTransfers.localFileData(assetID: assetID)
+            } catch {
+                let localFailure = error
+                guard let provider = try await photoTransfers.deliveryProvider(
+                    assetID: assetID
+                ) else {
+                    throw localFailure
+                }
+                switch provider {
+                case .iCloud:
+                    try await photoTransfers.downloadIfNeeded(assetID: assetID)
+                case .supabase:
+                    guard let supabasePhotoTransfers else {
+                        throw PhotoTransferError.remoteProviderUnavailable
+                    }
+                    try await supabasePhotoTransfers.downloadIfNeeded(
+                        assetID: assetID
+                    )
+                }
+                return try await photoTransfers.localFileData(assetID: assetID)
+            }
+        }
+        photoDataLoadTasks[assetID] = task
+        do {
+            let data = try await task.value
+            photoDataLoadTasks[assetID] = nil
+            return data
+        } catch {
+            photoDataLoadTasks[assetID] = nil
+            throw error
+        }
     }
 
     func refreshSupabaseRealtimeAcceptanceMode() {
@@ -1951,10 +2053,22 @@ final class CloudCollaborationStore {
         }
     }
 
-    func resumeSupabaseSynchronization() async {
+    func resumeSupabaseSynchronization(accountID: UUID) async {
+        activeSupabaseAccountID = accountID
         startSupabaseCursorPollingIfNeeded()
+        guard await reconcileActiveSupabaseAccess(accountID: accountID) else {
+            refreshSupabaseRealtimeSubscriptions()
+            return
+        }
         refreshSupabaseRealtimeSubscriptions()
         await synchronizeSupabaseFarms()
+    }
+
+    func suspendSupabaseSynchronization() {
+        activeSupabaseAccountID = nil
+        supabaseRealtimeTasks.values.forEach { $0.cancel() }
+        supabaseRealtimeTasks.removeAll()
+        supabaseRealtimeHealthByFarmID.removeAll()
     }
 
     private func installRuntimeObservers() {
@@ -2018,17 +2132,35 @@ final class CloudCollaborationStore {
                         guard !DevelopmentSupabaseNetworkGate.isForcedOffline else {
                             continue
                         }
+                        guard let accountID = activeSupabaseAccountID,
+                              await reconcileActiveSupabaseAccess(
+                                accountID: accountID
+                              ) else {
+                            continue
+                        }
                         guard let remoteSync else {
                             throw AccountIdentityClientError.notConfigured
                         }
+                        guard isActiveSupabaseFarmAccessible(
+                            farmID,
+                            context: ModelContext(modelContainer)
+                        ) else {
+                            continue
+                        }
                         var result: FarmRemoteSyncResult
                         repeat {
+                            guard !DevelopmentSupabaseNetworkGate.isForcedOffline else {
+                                pendingSyncWakeFarmIDs.insert(farmID)
+                                return
+                            }
                             result = try await remoteSync.synchronize(
                                 farmID: farmID,
                                 maxOutboxItems: 25
                             )
                         } while result.uploadedOperationCount == 25
-                        await supabasePhotoTransfers?.processPendingTransfers()
+                        await supabasePhotoTransfers?.processPendingTransfers(
+                            authorizedFarmIDs: [farmID]
+                        )
                     } else {
                         while try await sync.synchronizeBatch(maxOutboxItems: 25, farmID: farmID) > 0 {}
                     }
@@ -2057,8 +2189,8 @@ final class CloudCollaborationStore {
                 } catch {
                     return
                 }
-                self?.refreshSupabaseRealtimeSubscriptions()
                 await self?.synchronizeSupabaseFarms()
+                self?.refreshSupabaseRealtimeSubscriptions()
             }
         }
     }
@@ -2066,11 +2198,7 @@ final class CloudCollaborationStore {
     private func refreshSupabaseRealtimeSubscriptions() {
         guard let supabaseTransport else { return }
         let context = ModelContext(modelContainer)
-        let activeFarmIDs = Set(
-            ((try? context.fetch(FetchDescriptor<FarmRemoteBinding>())) ?? [])
-                .filter { $0.provider == .supabase && $0.state == .active }
-                .map(\.farmID)
-        )
+        let activeFarmIDs = activeSupabaseFarmIDs(context: context)
         if DevelopmentSupabaseNetworkGate.isForcedOffline ||
             DevelopmentSupabaseRealtimeGate.isDisabled {
             supabaseRealtimeTasks.values.forEach { $0.cancel() }
@@ -2140,10 +2268,13 @@ final class CloudCollaborationStore {
               !DevelopmentSupabaseNetworkGate.isForcedOffline else {
             return
         }
+        guard let accountID = activeSupabaseAccountID,
+              await reconcileActiveSupabaseAccess(accountID: accountID) else {
+            refreshSupabaseRealtimeSubscriptions()
+            return
+        }
         let context = ModelContext(modelContainer)
-        let farmIDs = (try? context.fetch(FetchDescriptor<FarmRemoteBinding>()))?
-            .filter { $0.provider == .supabase && $0.state == .active }
-            .map(\.farmID) ?? []
+        let farmIDs = Array(activeSupabaseFarmIDs(context: context))
         for farmID in farmIDs {
             do {
                 _ = try await remoteSync.synchronize(
@@ -2158,8 +2289,63 @@ final class CloudCollaborationStore {
                 recordSupabaseSyncError(error, farmID: farmID)
             }
         }
-        await supabasePhotoTransfers?.processPendingTransfers()
+        await supabasePhotoTransfers?.processPendingTransfers(
+            authorizedFarmIDs: Set(farmIDs)
+        )
         await optimizeVerifiedSupabaseCachesIfPossible()
+    }
+
+    private func activeSupabaseFarmIDs(context: ModelContext) -> Set<UUID> {
+        guard let accountID = activeSupabaseAccountID else { return [] }
+        let memberFarmIDs = Set(
+            ((try? context.fetch(FetchDescriptor<FarmMembershipBinding>())) ?? [])
+                .filter {
+                    $0.accountID == accountID && $0.status == .active
+                }
+                .map(\.farmID)
+        )
+        return Set(
+            ((try? context.fetch(FetchDescriptor<FarmRemoteBinding>())) ?? [])
+                .filter {
+                    $0.provider == .supabase &&
+                        $0.state == .active &&
+                        memberFarmIDs.contains($0.farmID)
+                }
+                .map(\.farmID)
+        )
+    }
+
+    private func isActiveSupabaseFarmAccessible(
+        _ farmID: UUID,
+        context: ModelContext
+    ) -> Bool {
+        activeSupabaseFarmIDs(context: context).contains(farmID)
+    }
+
+    private func reconcileActiveSupabaseAccess(accountID: UUID) async -> Bool {
+        guard let client = AccountIdentityClients.supabaseClient else {
+            return false
+        }
+        guard supabaseAccessRecoveryAccountIDs.insert(accountID).inserted else {
+            return false
+        }
+        defer { supabaseAccessRecoveryAccountIDs.remove(accountID) }
+        do {
+            let context = ModelContext(modelContainer)
+            _ = try await SupabaseFarmAccessRecoveryService(client: client)
+                .discoverAndRestoreAccessibleFarms(
+                    accountID: accountID,
+                    context: context
+                )
+            activeSupabaseAccountID = accountID
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            lastErrorMessage =
+                "Supabase 访问权限核对失败：\(error.localizedDescription)"
+            return false
+        }
     }
 
     private func recordSupabaseSyncError(
@@ -2613,17 +2799,19 @@ final class CloudCollaborationStore {
         accountID: UUID,
         client: SupabaseClient
     ) async {
-        guard supabaseOwnerDiscoveryAccountIDs.insert(accountID).inserted else {
+        activeSupabaseAccountID = accountID
+        guard supabaseAccessRecoveryAccountIDs.insert(accountID).inserted else {
             return
         }
-        defer { supabaseOwnerDiscoveryAccountIDs.remove(accountID) }
+        defer { supabaseAccessRecoveryAccountIDs.remove(accountID) }
         do {
             let context = ModelContext(modelContainer)
-            _ = try await SupabaseOwnedFarmDiscoveryService(client: client)
-                .discoverAndRestoreOwnedFarms(
+            _ = try await SupabaseFarmAccessRecoveryService(client: client)
+                .discoverAndRestoreAccessibleFarms(
                     accountID: accountID,
                     context: context
                 )
+            refreshSupabaseRealtimeSubscriptions()
         } catch is CancellationError {
             return
         } catch {
@@ -3194,6 +3382,13 @@ final class CloudCollaborationStore {
     }
 
     func performIdentityMaintenance(accountID: UUID, farmIDs: [UUID]) async {
+        if SupabaseAccountConfiguration.isEnabled {
+            await performSupabaseICloudIdentityMaintenance(
+                accountID: accountID,
+                farmIDs: farmIDs
+            )
+            return
+        }
         guard IdentityWorkerConfiguration.baseURL != nil else { return }
         do {
             let status = try await IdentityWorkerClient.shared.accountStatus()
@@ -3240,6 +3435,64 @@ final class CloudCollaborationStore {
                         accountID: accountID
                     )
                 }
+            }
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func performSupabaseICloudIdentityMaintenance(
+        accountID: UUID,
+        farmIDs: [UUID]
+    ) async {
+        guard let supabase = AccountIdentityClients.supabaseClient else { return }
+        do {
+            let session = try await AccountIdentityClients.active().refreshSession()
+            guard session.accountID == accountID else {
+                isIdentityWriteLocked = true
+                lastErrorMessage = "Supabase 账号与本机牧场账号不一致，iCloud 牧场已锁定写入。"
+                return
+            }
+            let identity = try await DeviceIdentityActor.shared.registerWithActiveAccountProvider()
+            let capabilityClient = SupabaseICloudCapabilityClient(client: supabase)
+            isIdentityWriteLocked = false
+
+            for farmID in farmIDs {
+                guard let binding = try await persistence.bindingSnapshot(farmID: farmID),
+                      binding.databaseScope == .privateDatabase,
+                      binding.state == .active,
+                      binding.ownerAccountID == accountID else {
+                    continue
+                }
+                let response = try await capabilityClient.issueOwnerCapability(
+                    farmID: farmID,
+                    ownerAppAccountID: accountID,
+                    deviceID: identity.deviceID,
+                    zoneName: binding.zoneName,
+                    zoneOwnerName: binding.zoneOwnerName,
+                    observedSecurityGeneration: binding.securityGeneration
+                )
+                try await persistence.saveSecuritySnapshot(response.securitySnapshot)
+                try await persistence.saveCapability(
+                    response.capability,
+                    accountID: accountID,
+                    farmID: farmID,
+                    deviceID: identity.deviceID
+                )
+                _ = try await membershipSnapshots.publish(
+                    farmID: farmID,
+                    accountID: accountID,
+                    snapshot: response.securitySnapshot
+                )
+                // Some legacy owner assets were partially rewritten with the
+                // current device ID while retaining an older device's
+                // capability certificate. Repair only records whose local and
+                // remote identity and bytes have already been proven equal;
+                // the normal upload path then replaces the projection with a
+                // current certificate and signature under the same asset ID.
+                _ = try await photoTransfers.repairLegacyCredentialMismatches(
+                    farmID: farmID
+                )
             }
         } catch {
             lastErrorMessage = error.localizedDescription

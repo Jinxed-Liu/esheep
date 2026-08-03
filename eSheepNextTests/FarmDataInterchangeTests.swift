@@ -103,6 +103,24 @@ final class FarmDataInterchangeTests: XCTestCase {
         XCTAssertNotNil(data.range(of: Data("xl/styles.xml".utf8)))
     }
 
+    func testTemplateV5PreservesV3StableImportIdentity() {
+        let farmID = UUID()
+        let expected = StableCloudUUID.derived(
+            namespace: farmID,
+            name: "excel-v3:健康记录:stable-key"
+        )
+
+        XCTAssertEqual(FarmExcelImportService.templateVersion, 5)
+        XCTAssertEqual(
+            FarmExcelImportService.stableImportID(
+                farmID: farmID,
+                sheet: "健康记录",
+                key: "STABLE-KEY"
+            ),
+            expected
+        )
+    }
+
     func testPageExcelTemplateContainsOnlyInstructionsAndRequestedEntrySheet() throws {
         let data = try FarmExcelImportService.templateData(sheetNames: ["称重"])
         let sheets = try XLSXCodec.decodeSheets(data)
@@ -110,6 +128,73 @@ final class FarmDataInterchangeTests: XCTestCase {
         XCTAssertEqual(sheets.map(\.name), ["填写说明", "称重"])
         XCTAssertFalse(sheets.contains { $0.name == "新建羊只" })
         XCTAssertFalse(sheets.contains { $0.name == "转群" })
+    }
+
+    func testWeaningTemplateRequiresTransferAndDoesNotAskForDamOrLitterSize() throws {
+        let data = try FarmExcelImportService.templateData(sheetNames: ["断奶"])
+        let sheets = try XLSXCodec.decodeSheets(data)
+        let weaning = try XCTUnwrap(sheets.first { $0.name == "断奶" })
+
+        XCTAssertEqual(
+            weaning.rows.first,
+            ["导入键", "耳号", "断奶重kg", "转入圈舍", "发生日期", "出生日期", "备注"]
+        )
+        XCTAssertNotNil(data.range(of: Data("最早一条实际称重".utf8)))
+        XCTAssertNotNil(data.range(of: Data("断奶不填写母本或胎只数".utf8)))
+    }
+
+    func testWeaningExcelImportRecordsFactAndRequiredTransferTogether() throws {
+        let container = try AppSchema.makeContainer(
+            name: "excel-weaning-workflow-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let owner = AccountProfile(appleUserIdentifier: "excel-weaning-owner", displayName: "场主")
+        let farm = FarmRecord(ownerAccountID: owner.effectiveAccountID, name: "测试场")
+        let sourcePen = PenRecord(farmID: farm.id, name: "羔羊圈")
+        let targetPen = PenRecord(farmID: farm.id, name: "育肥圈")
+        let sheep = SheepRecord(
+            farmID: farm.id,
+            earTag: "L001",
+            breed: "湖羊",
+            sex: .ram,
+            penID: sourcePen.id,
+            enteredAt: date("2026-03-01"),
+            birthAt: date("2026-03-01")
+        )
+        context.insert(owner)
+        context.insert(farm)
+        context.insert(sourcePen)
+        context.insert(targetPen)
+        context.insert(sheep)
+        try context.save()
+        let workbook = try XLSXCodec.encode(sheets: [.init(name: "断奶", rows: [
+            ["导入键", "耳号", "断奶重kg", "转入圈舍", "发生日期", "出生日期", "备注"],
+            ["wean-001", "L001", "22.5", "育肥圈", "2026-07-19", "2026-03-01", "正常断奶"],
+        ])])
+
+        let preview = try FarmExcelImportService.preview(
+            data: workbook,
+            farm: farm,
+            context: context,
+            allowedSheetNames: ["断奶"]
+        )
+        XCTAssertTrue(preview.canCommit, preview.issues.map(\.message).joined(separator: "\n"))
+        XCTAssertEqual(
+            try FarmExcelImportService.commit(preview, account: owner, farm: farm, context: context),
+            1
+        )
+
+        let weaning = try XCTUnwrap(try context.fetch(FetchDescriptor<WeaningRecord>()).first)
+        let transfer = try XCTUnwrap(try context.fetch(FetchDescriptor<TransferRecord>()).first)
+        XCTAssertNil(weaning.damID)
+        XCTAssertNil(weaning.litterSize)
+        XCTAssertEqual(transfer.sheepID, sheep.id)
+        XCTAssertEqual(transfer.fromPenID, sourcePen.id)
+        XCTAssertEqual(transfer.toPenID, targetPen.id)
+        XCTAssertEqual(sheep.currentPenID, targetPen.id)
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>())
+        XCTAssertEqual(Set(operations.compactMap { DomainOperationKind(rawValue: $0.kindRawValue) }), [.recordWeaning, .transferSheep])
     }
 
     func testRemovalExcelTemplateUsesOneBatchTotalInsteadOfPerSheepAmount() throws {

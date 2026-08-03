@@ -347,9 +347,97 @@ final class InsightAssistantTests: XCTestCase {
         XCTAssertTrue(instructions.contains("本地批量匹配最多 200 个耳号"))
         XCTAssertTrue(instructions.contains("多个称重必须一次调用 draft_record_weights"))
         XCTAssertTrue(instructions.contains("直接一次调用 draft_sell_sheep_batch"))
+        XCTAssertTrue(instructions.contains("单只断奶调用 draft_record_weaning"))
+        XCTAssertTrue(instructions.contains("多只断奶必须一次调用 draft_record_weanings"))
+        XCTAssertTrue(instructions.contains("不需要母本或胎只数"))
         XCTAssertTrue(instructions.contains("绝不表示已经提交、保存或执行"))
+        XCTAssertTrue(instructions.contains("当前聊天页内回复用户"))
+        XCTAssertTrue(instructions.contains("不得说“前往 App”"))
+        XCTAssertTrue(instructions.contains("不得凭空增加行、改写耳号、把公斤自动换算成斤"))
         XCTAssertTrue(instructions.contains("AI 智能牧场助手"))
         XCTAssertFalse(instructions.contains("MiMo 智能牧场助手"))
+    }
+
+    func testAssistantResponseGuardRejectsUnbackedCardsAndIncompleteLeadIns() {
+        let fakeSuccess = """
+        全部 18 张断奶卡片已生成，请前往 App 逐条确认：
+        | 耳号 | 状态 |
+        | DH057 | ✅ 已提交 |
+        """
+        XCTAssertEqual(
+            InsightAssistantResponseGuard.issue(
+                for: fakeSuccess,
+                createdDraftCount: 0,
+                successfulToolNames: [],
+                earTagEvidence: nil
+            ),
+            .actionClaimWithoutDraft
+        )
+        XCTAssertEqual(
+            InsightAssistantResponseGuard.issue(
+                for: "好的，我重新批量生成。\n\n**第一批：断奶记录（18只）**",
+                createdDraftCount: 0,
+                successfulToolNames: [],
+                earTagEvidence: nil
+            ),
+            .incompleteResponse
+        )
+
+        let localized = InsightAssistantResponseGuard.localizedForCurrentApp(
+            "请前往 App 逐条确认。"
+        )
+        XCTAssertEqual(localized, "请在当前聊天页逐条确认。")
+        XCTAssertFalse(localized.contains("前往 App"))
+        XCTAssertEqual(
+            InsightAssistantResponseGuard.draftConfirmationText(
+                count: 18,
+                stoppedAtToolLimit: false
+            ),
+            "已在本条回复下方生成 18 张待确认操作卡片，牧场数据尚未写入。请逐张核对后再确认执行。"
+        )
+    }
+
+    func testAssistantResponseGuardUsesAuthoritativeEarTagEvidence() throws {
+        let evidence = try XCTUnwrap(InsightEarTagMatchEvidence(toolOutput: """
+        {
+          "status": "needs_review",
+          "canonical_ear_tags": ["DH057", "DH058"],
+          "unmatched_ear_tags": ["QA029"]
+        }
+        """))
+        XCTAssertEqual(
+            InsightAssistantResponseGuard.issue(
+                for: "请确认 DH057 是否确实存在？我找不到对应信息。",
+                createdDraftCount: 0,
+                successfulToolNames: ["match_sheep_ear_tags"],
+                earTagEvidence: evidence
+            ),
+            .contradictedEarTagEvidence
+        )
+        XCTAssertEqual(
+            InsightAssistantResponseGuard.issue(
+                for: "QA029 已匹配，但没有体重。",
+                createdDraftCount: 0,
+                successfulToolNames: ["match_sheep_ear_tags"],
+                earTagEvidence: evidence
+            ),
+            .contradictedEarTagEvidence
+        )
+        XCTAssertNil(InsightAssistantResponseGuard.issue(
+            for: "DH057 与 DH058 已匹配。\nQA029 未匹配，请核对。",
+            createdDraftCount: 0,
+            successfulToolNames: ["match_sheep_ear_tags"],
+            earTagEvidence: evidence
+        ))
+        XCTAssertEqual(
+            InsightAssistantResponseGuard.issue(
+                for: "系统中没有找到耳号 DH057。",
+                createdDraftCount: 0,
+                successfulToolNames: [],
+                earTagEvidence: nil
+            ),
+            .ungroundedEarTagClaim
+        )
     }
 
     func testConversationControllerRestoresOnlyTheBoundAccountAndFarm() throws {
@@ -482,6 +570,103 @@ final class InsightAssistantTests: XCTestCase {
         XCTAssertTrue(controller.messages.isEmpty)
         XCTAssertTrue(controller.drafts.isEmpty)
         XCTAssertEqual(controller.errorMessage, "该会话不属于当前牧场，已停止打开。")
+    }
+
+    func testConversationControllerCachesCardPresentationAndContextUsageBeforeTap() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-card-tap-cache-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let account = AccountProfile(
+            appleUserIdentifier: "card-cache-\(UUID().uuidString)",
+            displayName: "测试账号"
+        )
+        let farm = FarmRecord(
+            ownerAccountID: account.effectiveAccountID,
+            name: "长会话测试场"
+        )
+        let conversation = InsightConversationRecord(
+            accountID: account.effectiveAccountID,
+            farmID: farm.id,
+            title: "长会话卡片"
+        )
+        let baseDate = Date(timeIntervalSince1970: 1_767_225_600)
+        var latestAssistantMessage: InsightMessageRecord?
+
+        context.insert(account)
+        context.insert(farm)
+        context.insert(conversation)
+        for index in 0..<160 {
+            let role: InsightMessageRole = index.isMultiple(of: 2) ? .user : .assistant
+            let message = InsightMessageRecord(
+                conversationID: conversation.id,
+                accountID: account.effectiveAccountID,
+                farmID: farm.id,
+                role: role,
+                text: "历史消息 \(index) " + String(repeating: "羊", count: 80),
+                createdAt: baseDate.addingTimeInterval(Double(index))
+            )
+            context.insert(message)
+            if role == .assistant {
+                latestAssistantMessage = message
+            }
+        }
+
+        let occurredAt = Date(timeIntervalSince1970: 1_767_229_200)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let draft = InsightActionDraftRecord(
+            conversationID: conversation.id,
+            messageID: try XCTUnwrap(latestAssistantMessage).id,
+            accountID: account.effectiveAccountID,
+            farmID: farm.id,
+            originDeviceID: UUID(),
+            toolName: "draft_record_weight",
+            title: "记录称重",
+            summary: "DH057 · 52.5 kg",
+            argumentsJSON: try encoder.encode(RecordWeightToolPayload(
+                sheepID: UUID(),
+                earTag: "DH057",
+                kilogramsText: "52.5",
+                occurredAt: occurredAt,
+                note: ""
+            )),
+            risk: .normal,
+            requiredCapability: .recordProduction
+        )
+        context.insert(draft)
+        try context.save()
+
+        let controller = InsightConversationController(account: account, farm: farm)
+        controller.connectLocalState(to: context)
+        controller.selectConversation(conversation.id)
+
+        let cachedUsage = controller.contextWindowUsage
+        let cachedPresentation = controller.presentation(for: draft)
+        XCTAssertGreaterThan(cachedUsage.estimatedTokens, 0)
+        XCTAssertEqual(cachedPresentation.occurredAt, occurredAt)
+        XCTAssertTrue(cachedPresentation.editablePayloadText?.contains("DH057") == true)
+        XCTAssertNil(cachedPresentation.editablePayloadError)
+        XCTAssertEqual(controller.drafts(forMessageID: try XCTUnwrap(draft.messageID)).map(\.id), [draft.id])
+
+        // A tap causes SwiftUI to reevaluate the page. These model mutations
+        // deliberately happen without a controller reload: the hot path must
+        // keep returning the already-built values instead of rescanning the
+        // whole conversation or reparsing the draft JSON during rendering.
+        try XCTUnwrap(latestAssistantMessage).text += String(repeating: "新", count: 20_000)
+        draft.argumentsJSON = Data("{}".utf8)
+        XCTAssertEqual(controller.contextWindowUsage, cachedUsage)
+        XCTAssertEqual(controller.presentation(for: draft), cachedPresentation)
+
+        controller.selectConversation(conversation.id)
+        XCTAssertGreaterThan(controller.contextWindowUsage.estimatedTokens, cachedUsage.estimatedTokens)
+        XCTAssertNil(controller.presentation(for: draft).occurredAt)
+        let reloadedPayloadText = try XCTUnwrap(
+            controller.presentation(for: draft).editablePayloadText
+        )
+        XCTAssertTrue(reloadedPayloadText.contains("{"))
+        XCTAssertFalse(reloadedPayloadText.contains("DH057"))
     }
 
     func testBatchEarTagMatcherResolvesOneHundredTwentyOneNumericReferencesInOneCall() throws {
@@ -734,6 +919,254 @@ final class InsightAssistantTests: XCTestCase {
 
         XCTAssertEqual(usage.fraction, 1)
         XCTAssertEqual(usage.percentage, 100)
+    }
+
+    func testWeaningToolCreatesOneTrueWeaningCardWithAtomicTransferCommands() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-weaning-card-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let account = AccountProfile(appleUserIdentifier: "insight-weaning-owner", displayName: "场主")
+        let farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: "测试场")
+        let sourcePen = PenRecord(farmID: farm.id, name: "羔羊圈")
+        let targetPen = PenRecord(farmID: farm.id, name: "育成圈")
+        let enteredAt = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-03-01T00:00:00+08:00"))
+        let sheep = SheepRecord(
+            farmID: farm.id,
+            earTag: "L001",
+            breed: "湖羊",
+            sex: .ram,
+            penID: sourcePen.id,
+            enteredAt: enteredAt,
+            birthAt: enteredAt
+        )
+        context.insert(account)
+        context.insert(farm)
+        context.insert(sourcePen)
+        context.insert(targetPen)
+        context.insert(sheep)
+        try context.save()
+
+        let registry = InsightToolRegistry()
+        let farmContext = FarmContext(
+            accountID: account.effectiveAccountID,
+            farmID: farm.id,
+            role: .owner
+        )
+        XCTAssertTrue(registry.definitions(for: farmContext).contains {
+            $0.name == "draft_record_weaning" &&
+                $0.description.contains("断奶不需要母本或胎只数")
+        })
+        let agent = InsightAgentContext(
+            accountID: account.effectiveAccountID,
+            farmID: farm.id,
+            role: .owner,
+            originDeviceID: UUID(),
+            conversationID: UUID()
+        )
+        let result = try registry.execute(
+            .init(
+                callID: "weaning",
+                name: "draft_record_weaning",
+                argumentsJSON: """
+                {
+                  "ear_tag": "L001",
+                  "wean_weight": "24.5",
+                  "to_pen_name": "育成圈",
+                  "occurred_at": "2026-07-22T08:00:00+08:00",
+                  "note": "正常断奶"
+                }
+                """
+            ),
+            agent: agent,
+            context: context
+        )
+
+        let draft = try XCTUnwrap(result.actionDraft)
+        XCTAssertEqual(result.actionDrafts.count, 1)
+        XCTAssertEqual(draft.toolName, "draft_record_weaning")
+        XCTAssertEqual(draft.title, "记录断奶")
+        XCTAssertEqual(draft.summary, "L001 · 24.5 kg · 调入 育成圈")
+        let payloadDecoder = JSONDecoder()
+        payloadDecoder.dateDecodingStrategy = .iso8601
+        let payload = try payloadDecoder.decode(
+            RecordWeaningToolPayload.self,
+            from: draft.argumentsJSON
+        )
+        XCTAssertEqual(payload.sheepID, sheep.id)
+        XCTAssertEqual(payload.toPenID, targetPen.id)
+        try registry.validate(draft, agent: agent, context: context)
+
+        let legacyEncoder = JSONEncoder()
+        legacyEncoder.dateEncodingStrategy = .iso8601
+        let legacyDraft = InsightActionDraftRecord(
+            conversationID: agent.conversationID,
+            accountID: agent.accountID,
+            farmID: agent.farmID,
+            originDeviceID: agent.originDeviceID,
+            toolName: "draft_farm_command",
+            title: "记录断奶",
+            summary: "缺少断奶后目标圈舍",
+            argumentsJSON: try legacyEncoder.encode(CanonicalFarmCommandToolPayload(
+                commandPayload: try FarmCommandCloudPayloadEncoder.encode(.recordWeaning(
+                    sheepID: sheep.id,
+                    weanWeightText: "24.5",
+                    occurredAt: payload.occurredAt,
+                    birthAt: sheep.birthAt,
+                    birthWeightText: nil,
+                    averageDailyGainText: nil,
+                    damID: nil,
+                    litterSize: nil,
+                    note: "旧版卡片"
+                ))
+            )),
+            risk: .normal,
+            requiredCapability: .recordProduction,
+            expectedEntityID: sheep.id,
+            expectedRevision: sheep.revision
+        )
+        XCTAssertThrowsError(try registry.validate(legacyDraft, agent: agent, context: context)) {
+            XCTAssertEqual(
+                $0.localizedDescription,
+                InsightToolError.obsoleteWeaningDraft.localizedDescription
+            )
+        }
+
+        let commands = try registry.farmCommands(for: draft)
+        XCTAssertEqual(commands.count, 2)
+        guard case .recordWeaning(_, _, _, _, _, _, let damID, let litterSize, _) = commands[0] else {
+            return XCTFail("Expected recordWeaning as the primary card command")
+        }
+        XCTAssertNil(damID)
+        XCTAssertNil(litterSize)
+        guard case .transferSheep(let sheepID, let toPenID, _, _) = commands[1] else {
+            return XCTFail("Expected required transfer as the companion command")
+        }
+        XCTAssertEqual(sheepID, sheep.id)
+        XCTAssertEqual(toPenID, targetPen.id)
+
+        let receipts = try FarmCommandService().executeBatch(
+            [
+                (command: commands[0], sourceRequestID: draft.id),
+                (
+                    command: commands[1],
+                    sourceRequestID: WeaningWorkflow.transferSourceRequestID(for: draft.id)
+                ),
+            ],
+            in: farmContext,
+            context: context
+        )
+        XCTAssertEqual(receipts.count, 2)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<WeaningRecord>()).count, 1)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<TransferRecord>()).count, 1)
+        XCTAssertEqual(sheep.currentPenID, targetPen.id)
+    }
+
+    func testBatchWeaningToolCreatesEveryCompleteCardInOneCall() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-batch-weaning-card-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let farmID = UUID()
+        let sourcePen = PenRecord(farmID: farmID, name: "羔羊圈")
+        let targetPen = PenRecord(farmID: farmID, name: "大棚九舍")
+        let enteredAt = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-03-01T00:00:00+08:00")
+        )
+        let sheep = [
+            (earTag: "DH057", weight: "7.8"),
+            (earTag: "DH058", weight: "18.8"),
+            (earTag: "PA036", weight: "15.8"),
+        ].map { value in
+            SheepRecord(
+                farmID: farmID,
+                earTag: value.earTag,
+                breed: "湖羊",
+                sex: .ewe,
+                penID: sourcePen.id,
+                enteredAt: enteredAt,
+                birthAt: enteredAt
+            )
+        }
+        context.insert(sourcePen)
+        context.insert(targetPen)
+        sheep.forEach(context.insert)
+        try context.save()
+
+        let registry = InsightToolRegistry()
+        let farm = FarmContext(accountID: accountID, farmID: farmID, role: .owner)
+        XCTAssertTrue(registry.definitions(for: farm).contains {
+            $0.name == "draft_record_weanings" &&
+                $0.description.contains("整批校验成功后才生成")
+        })
+        let agent = InsightAgentContext(
+            accountID: accountID,
+            farmID: farmID,
+            role: .owner,
+            originDeviceID: UUID(),
+            conversationID: UUID()
+        )
+        let result = try registry.execute(
+            .init(
+                callID: "batch-weaning",
+                name: "draft_record_weanings",
+                argumentsJSON: """
+                {
+                  "occurred_at": "2026-07-21T08:00:00+08:00",
+                  "to_pen_name": "大棚九舍",
+                  "note": "图片批量录入",
+                  "items": [
+                    {"ear_tag": "DH057", "wean_weight": "7.8"},
+                    {"ear_tag": "DH058", "wean_weight": "18.8"},
+                    {"ear_tag": "PA036", "wean_weight": "15.8"}
+                  ]
+                }
+                """
+            ),
+            agent: agent,
+            context: context
+        )
+
+        XCTAssertEqual(result.actionDrafts.count, 3)
+        XCTAssertTrue(result.output.contains(#""proposal_count":3"#))
+        XCTAssertEqual(Set(result.actionDrafts.map(\.toolName)), ["draft_record_weaning"])
+        XCTAssertEqual(
+            Set(result.actionDrafts.map(\.summary)),
+            Set([
+                "DH057 · 7.8 kg · 调入 大棚九舍",
+                "DH058 · 18.8 kg · 调入 大棚九舍",
+                "PA036 · 15.8 kg · 调入 大棚九舍",
+            ])
+        )
+        try registry.validate(result.actionDrafts, agent: agent, context: context)
+        XCTAssertTrue(result.actionDrafts.allSatisfy {
+            (try? registry.farmCommands(for: $0).count) == 2
+        })
+        XCTAssertTrue(try context.fetch(FetchDescriptor<WeaningRecord>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<TransferRecord>()).isEmpty)
+
+        XCTAssertThrowsError(try registry.execute(
+            .init(
+                callID: "batch-weaning-invalid",
+                name: "draft_record_weanings",
+                argumentsJSON: """
+                {
+                  "occurred_at": "2026-07-21T08:00:00+08:00",
+                  "to_pen_name": "大棚九舍",
+                  "note": "",
+                  "items": [
+                    {"ear_tag": "DH057", "wean_weight": "7.8"},
+                    {"ear_tag": "NOT-FOUND", "wean_weight": "10"}
+                  ]
+                }
+                """
+            ),
+            agent: agent,
+            context: context
+        ))
     }
 
     func testBatchWeightToolCreatesAllPendingDraftsInOneCall() throws {
@@ -1001,6 +1434,236 @@ final class InsightAssistantTests: XCTestCase {
             }.count,
             2
         )
+    }
+
+    func testBatchDraftValidationBenchmark() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-batch-validation-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let farmID = UUID()
+        let originDeviceID = UUID()
+        let conversationID = UUID()
+        let batchID = UUID()
+        let occurredAt = Date.now
+        let sheep = (1...1_500).map { index in
+            SheepRecord(
+                farmID: farmID,
+                earTag: String(format: "PERF%04d", index),
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                enteredAt: occurredAt.addingTimeInterval(-86_400)
+            )
+        }
+        sheep.forEach(context.insert)
+        try context.save()
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let drafts = try sheep.prefix(121).map { item in
+            let command = FarmCommand.removeSheep(
+                sheepID: item.id,
+                kind: .sold,
+                reason: "出售",
+                amountText: nil,
+                occurredAt: occurredAt,
+                note: "",
+                removalBatchID: batchID,
+                batchTotalAmountText: "150780"
+            )
+            return InsightActionDraftRecord(
+                conversationID: conversationID,
+                accountID: accountID,
+                farmID: farmID,
+                originDeviceID: originDeviceID,
+                toolName: "draft_farm_command",
+                title: command.summary,
+                summary: command.summary,
+                argumentsJSON: try encoder.encode(CanonicalFarmCommandToolPayload(
+                    commandPayload: try FarmCommandCloudPayloadEncoder.encode(command)
+                )),
+                risk: .high,
+                requiredCapability: command.requiredCapability,
+                expectedEntityID: item.id,
+                expectedRevision: item.revision
+            )
+        }
+        let registry = InsightToolRegistry()
+        let agent = InsightAgentContext(
+            accountID: accountID,
+            farmID: farmID,
+            role: .owner,
+            originDeviceID: originDeviceID,
+            conversationID: conversationID
+        )
+
+        let startedAt = Date.now
+        try registry.validate(drafts, agent: agent, context: context)
+        let elapsed = Date.now.timeIntervalSince(startedAt)
+
+        print("BATCH_DRAFT_VALIDATION_SECONDS=\(elapsed)")
+        XCTAssertEqual(drafts.count, 121)
+        XCTAssertLessThan(
+            elapsed,
+            2,
+            "121-item draft validation must not regress to repeated full-farm scans."
+        )
+    }
+
+    func testBatchRemovalValidationStillRejectsStaleAndCrossFarmReferences() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-batch-validation-safety-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let farmID = UUID()
+        let otherFarmID = UUID()
+        let originDeviceID = UUID()
+        let conversationID = UUID()
+        let batchID = UUID()
+        let occurredAt = Date.now
+        let sheep = SheepRecord(
+            farmID: farmID,
+            earTag: "SAFE001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: occurredAt.addingTimeInterval(-86_400)
+        )
+        let otherFarmSheep = SheepRecord(
+            farmID: otherFarmID,
+            earTag: "OTHER001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: occurredAt.addingTimeInterval(-86_400)
+        )
+        context.insert(sheep)
+        context.insert(otherFarmSheep)
+        try context.save()
+
+        func draft(for target: SheepRecord, expectedRevision: Int) throws -> InsightActionDraftRecord {
+            let command = FarmCommand.removeSheep(
+                sheepID: target.id,
+                kind: .sold,
+                reason: "出售",
+                amountText: nil,
+                occurredAt: occurredAt,
+                note: "",
+                removalBatchID: batchID,
+                batchTotalAmountText: "17100"
+            )
+            return InsightActionDraftRecord(
+                conversationID: conversationID,
+                accountID: accountID,
+                farmID: farmID,
+                originDeviceID: originDeviceID,
+                toolName: "draft_farm_command",
+                title: command.summary,
+                summary: command.summary,
+                argumentsJSON: try JSONEncoder().encode(CanonicalFarmCommandToolPayload(
+                    commandPayload: try FarmCommandCloudPayloadEncoder.encode(command)
+                )),
+                risk: .high,
+                requiredCapability: command.requiredCapability,
+                expectedEntityID: target.id,
+                expectedRevision: expectedRevision
+            )
+        }
+
+        let registry = InsightToolRegistry()
+        let agent = InsightAgentContext(
+            accountID: accountID,
+            farmID: farmID,
+            role: .owner,
+            originDeviceID: originDeviceID,
+            conversationID: conversationID
+        )
+        let staleDraft = try draft(for: sheep, expectedRevision: sheep.revision)
+        sheep.revision += 1
+        XCTAssertThrowsError(try registry.validate([staleDraft], agent: agent, context: context)) { error in
+            guard case InsightToolError.staleRevision = error else {
+                return XCTFail("Expected staleRevision, got \(error)")
+            }
+        }
+
+        let validDraft = try draft(for: sheep, expectedRevision: sheep.revision)
+        let crossFarmDraft = try draft(
+            for: otherFarmSheep,
+            expectedRevision: otherFarmSheep.revision
+        )
+        XCTAssertThrowsError(
+            try registry.validate([validDraft, crossFarmDraft], agent: agent, context: context)
+        ) { error in
+            guard case InsightToolError.crossFarmReference = error else {
+                return XCTFail("Expected crossFarmReference, got \(error)")
+            }
+        }
+    }
+
+    func testBatchDraftExecutionBenchmark() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-batch-command-performance-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let farmID = UUID()
+        let batchID = UUID()
+        let occurredAt = Date.now
+        let sheep = (1...1_500).map { index in
+            SheepRecord(
+                farmID: farmID,
+                earTag: String(format: "EXEC%04d", index),
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                enteredAt: occurredAt.addingTimeInterval(-86_400)
+            )
+        }
+        sheep.forEach(context.insert)
+        try context.save()
+
+        let requests = sheep.prefix(121).map { item in
+            (
+                command: FarmCommand.removeSheep(
+                    sheepID: item.id,
+                    kind: .sold,
+                    reason: "出售",
+                    amountText: nil,
+                    occurredAt: occurredAt,
+                    note: "",
+                    removalBatchID: batchID,
+                    batchTotalAmountText: "150780"
+                ),
+                sourceRequestID: UUID()
+            )
+        }
+        let farm = FarmContext(accountID: accountID, farmID: farmID, role: .owner)
+
+        let startedAt = Date.now
+        let receipts = try FarmCommandService().executeBatch(
+            requests,
+            in: farm,
+            context: context
+        )
+        let elapsed = Date.now.timeIntervalSince(startedAt)
+
+        print("BATCH_DRAFT_EXECUTION_SECONDS=\(elapsed)")
+        XCTAssertLessThan(
+            elapsed,
+            2,
+            "121-item command execution must keep shared batch indexes and one save."
+        )
+        XCTAssertEqual(receipts.count, 121)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<RemovalRecord>()).count, 121)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<DomainOperation>()).count, 121)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<OutboxItem>()).count, 121)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<InsightExecutionReceiptRecord>()).count, 121)
     }
 
     func testBatchDraftExecutionRollsBackEveryWriteWhenOneCommandFails() throws {

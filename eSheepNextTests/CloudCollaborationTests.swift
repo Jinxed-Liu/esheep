@@ -47,6 +47,60 @@ private final class CloudSyncHardDeadlineTestCounter: @unchecked Sendable {
 
 @MainActor
 final class CloudCollaborationTests: XCTestCase {
+    func testCapabilityVerifierAcceptsLegacyAndRotatedSigningKeys() throws {
+        let legacyKey = P256.Signing.PrivateKey()
+        let rotatedKey = P256.Signing.PrivateKey()
+        let claims = CapabilityCertificateClaims(
+            certificateID: UUID().uuidString,
+            accountID: UUID(),
+            farmID: UUID(),
+            deviceID: UUID(),
+            role: .owner,
+            capabilities: FarmCapability.allCases,
+            iat: Int(Date().timeIntervalSince1970) - 1,
+            exp: Int(Date().timeIntervalSince1970) + 3600,
+            iss: "esheep-next-identity",
+            aud: "esheep-next-cloud-operation"
+        )
+        let legacyCertificate = try makeCapabilityCertificate(
+            claims: claims,
+            keyID: "development-2026-07-cloudbase-v2",
+            signingKey: legacyKey
+        )
+        let rotatedCertificate = try makeCapabilityCertificate(
+            claims: claims,
+            keyID: "development-2026-08-supabase-v1",
+            signingKey: rotatedKey
+        )
+        let rotatedKeys = [
+            "development-2026-08-supabase-v1": rotatedKey.publicKey.pemRepresentation
+        ]
+
+        XCTAssertEqual(
+            try CapabilityCertificateVerifier.verify(
+                legacyCertificate,
+                publicKeyPEM: legacyKey.publicKey.pemRepresentation,
+                rotatedPublicKeys: rotatedKeys
+            ),
+            claims
+        )
+        XCTAssertEqual(
+            try CapabilityCertificateVerifier.verify(
+                rotatedCertificate,
+                publicKeyPEM: legacyKey.publicKey.pemRepresentation,
+                rotatedPublicKeys: rotatedKeys
+            ),
+            claims
+        )
+        XCTAssertThrowsError(
+            try CapabilityCertificateVerifier.verify(
+                rotatedCertificate,
+                publicKeyPEM: legacyKey.publicKey.pemRepresentation,
+                rotatedPublicKeys: [:]
+            )
+        )
+    }
+
     func testSupabaseOwnerDiscoveryDoesNotDependOnCloudKitBeingEnabled() {
         XCTAssertEqual(
             FarmOwnerDiscoveryPolicy.targets(
@@ -968,6 +1022,90 @@ final class CloudCollaborationTests: XCTestCase {
         XCTAssertEqual(outbox.payloadDigest, operation.payloadDigest)
     }
 
+    func testICloudCommandRejectsCapabilityIssuedToAnotherDeviceBeforeWriting() throws {
+        let container = try AppSchema.makeContainer(
+            name: "icloud-current-device-reject-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let accountID = UUID()
+        let currentDeviceID = UUID()
+        context.insert(FarmRecord(id: farmID, ownerAccountID: accountID, name: "设备证书测试场"))
+        context.insert(CloudFarmBinding(
+            farmID: farmID,
+            ownerAccountID: accountID,
+            databaseScope: .privateDatabase,
+            state: .active
+        ))
+        context.insert(CapabilityCertificateRecord(
+            serverCertificateID: UUID().uuidString,
+            accountID: accountID,
+            farmID: farmID,
+            deviceID: UUID(),
+            role: .owner,
+            capabilitiesJSON: "[]",
+            certificateJWS: "other-device",
+            issuedAt: .now.addingTimeInterval(-60),
+            expiresAt: .now.addingTimeInterval(3_600)
+        ))
+        try context.save()
+
+        let service = FarmCommandService(currentDeviceID: { currentDeviceID })
+        XCTAssertThrowsError(try service.execute(
+            .createPen(name: "不得落盘", note: ""),
+            in: FarmContext(accountID: accountID, farmID: farmID, role: .owner),
+            context: context
+        )) { error in
+            guard case FarmCommandError.cloudIdentityLocked = error else {
+                return XCTFail("旧设备证书必须在业务数据落盘前锁定写入：\(error)")
+            }
+        }
+        XCTAssertTrue(try context.fetch(FetchDescriptor<PenRecord>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<DomainOperation>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<OutboxItem>()).isEmpty)
+    }
+
+    func testICloudCommandAcceptsCapabilityIssuedToCurrentDevice() throws {
+        let container = try AppSchema.makeContainer(
+            name: "icloud-current-device-accept-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let accountID = UUID()
+        let currentDeviceID = UUID()
+        context.insert(FarmRecord(id: farmID, ownerAccountID: accountID, name: "设备证书测试场"))
+        context.insert(CloudFarmBinding(
+            farmID: farmID,
+            ownerAccountID: accountID,
+            databaseScope: .privateDatabase,
+            state: .active
+        ))
+        context.insert(CapabilityCertificateRecord(
+            serverCertificateID: UUID().uuidString,
+            accountID: accountID,
+            farmID: farmID,
+            deviceID: currentDeviceID,
+            role: .owner,
+            capabilitiesJSON: "[]",
+            certificateJWS: "current-device",
+            issuedAt: .now.addingTimeInterval(-60),
+            expiresAt: .now.addingTimeInterval(3_600)
+        ))
+        try context.save()
+
+        try FarmCommandService(currentDeviceID: { currentDeviceID }).execute(
+            .createPen(name: "允许落盘", note: ""),
+            in: FarmContext(accountID: accountID, farmID: farmID, role: .owner),
+            context: context
+        )
+
+        XCTAssertEqual(try context.fetch(FetchDescriptor<PenRecord>()).count, 1)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<DomainOperation>()).count, 1)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<OutboxItem>()).count, 1)
+    }
+
     func testRemoteApplyIsIdempotent() throws {
         let container = try makeContainer()
         let context = ModelContext(container)
@@ -1588,6 +1726,10 @@ final class CloudCollaborationTests: XCTestCase {
         XCTAssertFalse(PhotoTransferInterruptionPolicy.shouldRequeue(status: .pending))
         XCTAssertFalse(PhotoTransferInterruptionPolicy.shouldRequeue(status: .failed))
         XCTAssertFalse(PhotoTransferInterruptionPolicy.shouldRequeue(status: .completed))
+        XCTAssertFalse(PhotoTransferInterruptionPolicy.shouldRequeue(status: .notRequired))
+        XCTAssertTrue(CloudAssetTransferStatus.completed.isTerminal)
+        XCTAssertTrue(CloudAssetTransferStatus.notRequired.isTerminal)
+        XCTAssertFalse(CloudAssetTransferStatus.failed.isTerminal)
     }
 
     func testCertificateIsValidatedAtOperationTimeNotDownloadTime() {
@@ -1823,6 +1965,31 @@ final class CloudCollaborationTests: XCTestCase {
             operationSignature: signature,
             deletedAt: deletedAt
         )
+    }
+
+    private func makeCapabilityCertificate(
+        claims: CapabilityCertificateClaims,
+        keyID: String,
+        signingKey: P256.Signing.PrivateKey
+    ) throws -> String {
+        let header = try JSONSerialization.data(withJSONObject: [
+            "alg": "ES256",
+            "kid": keyID,
+            "typ": "esheep-capability+jwt",
+        ], options: [.sortedKeys])
+        let payload = try JSONEncoder().encode(claims)
+        let encodedHeader = base64URL(header)
+        let encodedPayload = base64URL(payload)
+        let signedText = "\(encodedHeader).\(encodedPayload)"
+        let signature = try signingKey.signature(for: Data(signedText.utf8)).rawRepresentation
+        return "\(signedText).\(base64URL(signature))"
+    }
+
+    private func base64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 
     private func wrapRecovery(_ source: CloudOperationEnvelope, checkpointID: UUID, level: Int) throws -> CloudOperationEnvelope {

@@ -348,6 +348,17 @@ actor CloudRebuildActor {
            let sessionID = try retryablePreparedSessionID(farmID: farmID, scope: scope) {
             return try await uncancelledCommit(sessionID: sessionID, allowsPreparedRetry: true)
         }
+        if let sessionID = try resumableBuildSessionID(
+            farmID: farmID,
+            scope: scope
+        ) {
+            try await resume(sessionID: sessionID)
+            if let task = activeTasks[sessionID] { await task.value }
+            return try await uncancelledCommit(
+                sessionID: sessionID,
+                allowsPreparedRetry: false
+            )
+        }
         if let result = try await replayReusableDownloadedBundle(
             farmID: farmID,
             scope: scope
@@ -686,7 +697,16 @@ actor CloudRebuildActor {
 
     func resume(sessionID: UUID) async throws {
         guard let current = try session(id: sessionID) else { throw CloudRebuildError.sessionMissing }
-        guard [.failed, .cancelled].contains(current.status) else { throw CloudRebuildError.sessionNotResumable }
+        guard [
+            .preparing,
+            .fetching,
+            .downloadingAssets,
+            .validating,
+            .failed,
+            .cancelled,
+        ].contains(current.status) else {
+            throw CloudRebuildError.sessionNotResumable
+        }
         guard !committingFarmIDs.contains(current.farmID),
               try isLatestSession(sessionID, farmID: current.farmID) else {
             throw CloudRebuildError.sessionNotResumable
@@ -696,6 +716,10 @@ actor CloudRebuildActor {
         }
         let expectedBinding: (CloudFarmBindingState, String?)
         switch current.status {
+        case .preparing, .fetching, .downloadingAssets, .validating
+            where binding.state == .rebuildingCache &&
+                binding.lastErrorCode == nil:
+            expectedBinding = (.rebuildingCache, nil)
         case .cancelled where binding.state == .active && binding.lastErrorCode == "rebuildCancelled":
             expectedBinding = (.active, "rebuildCancelled")
         case .failed where binding.state == .rebuildingCache &&
@@ -714,12 +738,13 @@ actor CloudRebuildActor {
         )
         guard relocked else { throw CloudRebuildError.bindingMissing }
         do {
-            try removeStagingContents(sessionID: sessionID)
+            // Keep the atomically persisted CloudKit pages and server change
+            // token. Only derived validation issues are reset; build() will
+            // reload the checkpoint and continue from its last committed page.
+            try clearIssues(sessionID: sessionID)
             try updateSession(sessionID) { value in
                 value.statusRawValue = CloudRebuildStatus.preparing.rawValue
-                value.progress = 0
-                value.pageCount = 0
-                value.fetchedRecordCount = 0
+                value.progress = value.pageCount > 0 ? 0.45 : 0
                 value.fetchedOperationCount = 0
                 value.fetchedAssetCount = 0
                 value.downloadedAssetCount = 0
@@ -922,6 +947,38 @@ actor CloudRebuildActor {
         }
     }
 
+    private func resumableBuildSessionID(
+        farmID: UUID,
+        scope: CloudDatabaseScope
+    ) throws -> UUID? {
+        guard !committingFarmIDs.contains(farmID) else { return nil }
+        let context = ModelContext(modelContainer)
+        guard let latest = try context.fetch(
+            FetchDescriptor<CloudRebuildSessionRecord>()
+        )
+            .filter({ $0.farmID == farmID })
+            .max(by: {
+                if $0.createdAt != $1.createdAt {
+                    return $0.createdAt < $1.createdAt
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }),
+              latest.databaseScope == scope,
+              activeTasks[latest.id] == nil else {
+            return nil
+        }
+        switch latest.status {
+        case .preparing, .fetching, .downloadingAssets, .validating:
+            return latest.id
+        case .failed where latest.lastErrorCode != "commitFailed":
+            return latest.id
+        case .cancelled:
+            return latest.id
+        case .readyToCommit, .committing, .completed, .failed:
+            return nil
+        }
+    }
+
     private func reusableDownloadedSessionID(
         farmID: UUID,
         scope: CloudDatabaseScope
@@ -1113,28 +1170,67 @@ actor CloudRebuildActor {
 
         let database = binding.databaseScope == .privateDatabase ? cloudContainer.privateCloudDatabase : cloudContainer.sharedCloudDatabase
         let zoneID = CKRecordZone.ID(zoneName: binding.zoneName, ownerName: binding.zoneOwnerName)
+        let checkpoint = CloudRebuildFetchCheckpointStore(
+            workspace: workspace,
+            farmID: binding.farmID,
+            databaseScope: binding.databaseScope,
+            zoneID: zoneID
+        )
+        let resumed = try checkpoint.load()
         let fetcher = CloudZoneChangeFetcher(database: database)
-        var records: [CKRecord] = []
-        var deletions: [CKDatabase.RecordZoneChange.Deletion] = []
-        var pageCount = 0
-        for try await page in await fetcher.fetchAll(zoneID: zoneID) {
+        var recordsByName: [String: CKRecord] = [:]
+        for record in resumed?.records ?? [] {
+            recordsByName[record.recordID.recordName] = record
+        }
+        var deletedRecordNames = resumed?.deletedRecordNames ?? []
+        var pageCount = resumed?.pageCount ?? 0
+        try updateBuildSession(sessionID) { value in
+            value.pageCount = pageCount
+            value.fetchedRecordCount = recordsByName.count
+            value.progress = pageCount > 0 ? 0.45 : 0.05
+        }
+        for try await page in await fetcher.fetchAll(
+            zoneID: zoneID,
+            startingFrom: resumed?.changeToken,
+            startingPageIndex: pageCount
+        ) {
             try Task.checkCancellation()
-            records.append(contentsOf: page.records)
-            deletions.append(contentsOf: page.deletions)
+            // The page and token become durable before UI counters advance.
+            // If the process dies after this call, the next run can reload the
+            // page even when SwiftData still shows the previous counter.
+            try checkpoint.append(page)
+            for record in page.records {
+                recordsByName[record.recordID.recordName] = record
+                deletedRecordNames.remove(record.recordID.recordName)
+            }
+            for deletion in page.deletions {
+                recordsByName.removeValue(forKey: deletion.recordID.recordName)
+                deletedRecordNames.insert(deletion.recordID.recordName)
+            }
             pageCount = page.index
             try updateBuildSession(sessionID) { value in
                 value.pageCount = page.index
-                value.fetchedRecordCount = records.count
+                value.fetchedRecordCount = recordsByName.count
                 value.progress = min(0.45, 0.08 + Double(page.index) * 0.04)
             }
         }
 
         try requireCurrentBuildSession(sessionID)
+        guard let finalCheckpoint = try checkpoint.load() else {
+            throw CloudRebuildError.stagingValidation(
+                "CloudKit重建没有生成可恢复断点。"
+            )
+        }
+        pageCount = finalCheckpoint.pageCount
+        deletedRecordNames = finalCheckpoint.deletedRecordNames
+        let records = finalCheckpoint.records.sorted {
+            $0.recordID.recordName < $1.recordID.recordName
+        }
         let parsed = try await parseAndValidate(
             sessionID: sessionID,
             binding: binding,
             records: records,
-            deletions: deletions,
+            deletedRecordNames: deletedRecordNames,
             pageCount: pageCount,
             workspace: workspace
         )
@@ -1159,7 +1255,7 @@ actor CloudRebuildActor {
         sessionID: UUID,
         binding: CloudFarmBindingSnapshot,
         records: [CKRecord],
-        deletions: [CKDatabase.RecordZoneChange.Deletion],
+        deletedRecordNames: Set<String>,
         pageCount: Int,
         workspace: URL
     ) async throws -> CloudRebuildBundle {
@@ -1221,7 +1317,15 @@ actor CloudRebuildActor {
             root: root,
             localTrust: localTrust
         )
+        struct RejectedImmutableTombstoneOperation {
+            let record: CKRecord
+            let envelope: CloudOperationEnvelope
+            let error: any Error
+        }
+
         var immutableOperations: [CloudOperationEnvelope] = []
+        var immutableOperationRecords: [UUID: CKRecord] = [:]
+        var rejectedImmutableTombstones: [RejectedImmutableTombstoneOperation] = []
         var operationSourceProofs: [CloudRebuildOperationSourceProof] = []
         for record in records where record.recordType == CloudRecordType.farmOperation.rawValue {
             do {
@@ -1248,7 +1352,21 @@ actor CloudRebuildActor {
                     continue
                 }
                 immutableOperations.append(validatedEnvelope)
+                immutableOperationRecords[validatedEnvelope.operationID] = record
             } catch {
+                if let rejectedEnvelope = try? mapper.operationEnvelope(from: record),
+                   Self.isTombstoneOperation(rejectedEnvelope),
+                   rejectedEnvelope.farmID == binding.farmID,
+                   record.recordID.recordName == mapper.recordName(for: rejectedEnvelope.operationID) {
+                    rejectedImmutableTombstones.append(
+                        RejectedImmutableTombstoneOperation(
+                            record: record,
+                            envelope: rejectedEnvelope,
+                            error: error
+                        )
+                    )
+                    continue
+                }
                 let rejectedEnvelope = try? mapper.operationEnvelope(from: record)
                 try addIssue(
                     sessionID: sessionID,
@@ -1258,6 +1376,68 @@ actor CloudRebuildActor {
                     detail: "不可变云端操作未通过授权校验：\(error.localizedDescription)"
                 )
                 throw error
+            }
+        }
+
+        // Older clients could race two signed deletion facts for the same
+        // entity/revision. CloudKit keeps both append-only Operations while
+        // the single mutable Tombstone record points at the reconciled winner.
+        // A legacy loser may lack today's delete capability, but it must never
+        // block a clean-device rebuild once a separately authenticated winner
+        // and its exact Tombstone sibling prove the current cloud authority.
+        // Any mismatch remains blocking; this does not weaken validation of
+        // the authoritative deletion operation itself.
+        for rejected in rejectedImmutableTombstones {
+            do {
+                let tombstoneRecordName = mapper.tombstoneRecordName(
+                    for: rejected.envelope.entityID
+                )
+                let candidates = records.filter {
+                    $0.recordType == CloudRecordType.farmTombstone.rawValue &&
+                        $0.recordID.zoneID == rejected.record.recordID.zoneID &&
+                        $0.recordID.recordName == tombstoneRecordName
+                }
+                guard candidates.count == 1, let tombstoneRecord = candidates.first else {
+                    throw CloudRebuildError.stagingValidation(
+                        "被取代的旧删除操作缺少唯一 Tombstone 权威记录。"
+                    )
+                }
+                let tombstone = try mapper.tombstoneEnvelope(from: tombstoneRecord)
+                guard let authoritative = immutableOperations.first(where: {
+                    $0.operationID == tombstone.operationID
+                }),
+                      let authoritativeRecord = immutableOperationRecords[tombstone.operationID]
+                else {
+                    throw CloudRebuildError.stagingValidation(
+                        "Tombstone 指向的权威删除操作缺失或未通过授权校验。"
+                    )
+                }
+                try Self.validateSupersedingTombstoneAuthority(
+                    rejectedOperation: rejected.envelope,
+                    tombstone: tombstone,
+                    authoritativeOperation: authoritative,
+                    tombstoneCertificate: tombstoneRecord[CloudRecordField.capabilityCertificate] as? String,
+                    tombstoneSignature: tombstoneRecord[CloudRecordField.signature] as? Data,
+                    authoritativeRecordCertificate: authoritativeRecord[CloudRecordField.capabilityCertificate] as? String,
+                    authoritativeRecordSignature: authoritativeRecord[CloudRecordField.operationSignature] as? Data
+                )
+                try addIssue(
+                    sessionID: sessionID,
+                    farmID: binding.farmID,
+                    severity: .warning,
+                    code: "supersededLegacyTombstoneOperation",
+                    recordName: rejected.record.recordID.recordName,
+                    detail: "旧删除 Operation 已由同实体、同 revision 的有效云端 Tombstone 权威取代，重建已安全隔离旧记录。"
+                )
+            } catch {
+                try addIssue(
+                    sessionID: sessionID,
+                    farmID: binding.farmID,
+                    code: "invalidOperation",
+                    recordName: rejected.record.recordID.recordName,
+                    detail: "不可变云端操作未通过授权校验：\(rejected.error.localizedDescription)；且无法证明已被有效 Tombstone 权威取代：\(error.localizedDescription)"
+                )
+                throw rejected.error
             }
         }
 
@@ -1392,7 +1572,7 @@ actor CloudRebuildActor {
             operations: operations,
             assets: assets,
             membershipSnapshot: membership,
-            deletedRecordNames: deletions.map(\.recordID.recordName).sorted(),
+            deletedRecordNames: deletedRecordNames.sorted(),
             pageCount: pageCount,
             recordCount: records.count,
             createdAt: .now
@@ -1630,6 +1810,72 @@ actor CloudRebuildActor {
         return envelope
     }
 
+    /// Accepts no untrusted operation. It only proves that a rejected legacy
+    /// Tombstone operation is a losing duplicate of the independently
+    /// authenticated deletion selected by CloudKit's Tombstone projection.
+    /// The authoritative operation must already have passed the complete
+    /// certificate, capability and device-signature validation above.
+    static func validateSupersedingTombstoneAuthority(
+        rejectedOperation: CloudOperationEnvelope,
+        tombstone: FarmTombstoneEnvelope,
+        authoritativeOperation: CloudOperationEnvelope,
+        tombstoneCertificate: String?,
+        tombstoneSignature: Data?,
+        authoritativeRecordCertificate: String?,
+        authoritativeRecordSignature: Data?
+    ) throws {
+        let decoder = JSONDecoder.cloudRebuild
+        let rejectedPayload = try decoder.decode(
+            FarmCommandCloudPayload.self,
+            from: rejectedOperation.payload
+        )
+        let authoritativePayload = try decoder.decode(
+            FarmCommandCloudPayload.self,
+            from: authoritativeOperation.payload
+        )
+        guard rejectedPayload.kind == .tombstoneEntity,
+              authoritativePayload.kind == .tombstoneEntity,
+              rejectedOperation.operationID != authoritativeOperation.operationID,
+              rejectedOperation.farmID == authoritativeOperation.farmID,
+              rejectedOperation.entityID == authoritativeOperation.entityID,
+              rejectedOperation.entityType == authoritativeOperation.entityType,
+              rejectedOperation.baseRevision == authoritativeOperation.baseRevision,
+              rejectedOperation.revision == authoritativeOperation.revision,
+              tombstone.farmID == authoritativeOperation.farmID,
+              tombstone.entityID == authoritativeOperation.entityID,
+              tombstone.entityType == authoritativeOperation.entityType,
+              tombstone.revision == authoritativeOperation.revision,
+              tombstone.operationID == authoritativeOperation.operationID,
+              tombstone.deletedByAccountID == authoritativeOperation.modifiedByAccountID,
+              authoritativeOperation.deletedAt.map({
+                  abs($0.timeIntervalSince(tombstone.deletedAt)) < 1
+              }) == true,
+              authoritativePayload.identifiers["entityID"] == tombstone.entityID,
+              authoritativePayload.strings["entityType"] == tombstone.entityType,
+              authoritativePayload.strings["reason"] == tombstone.reason,
+              authoritativePayload.dates["deletedAt"].map({
+                  abs($0.timeIntervalSince(tombstone.deletedAt)) < 1
+              }) == true,
+              tombstoneCertificate == authoritativeOperation.capabilityCertificate,
+              tombstoneSignature == authoritativeOperation.operationSignature,
+              authoritativeRecordCertificate == authoritativeOperation.capabilityCertificate,
+              authoritativeRecordSignature == authoritativeOperation.operationSignature else {
+            throw CloudRebuildError.stagingValidation(
+                "旧删除操作与当前 Tombstone 权威的牧场、实体、revision、载荷或签名链不一致。"
+            )
+        }
+    }
+
+    private static func isTombstoneOperation(
+        _ envelope: CloudOperationEnvelope
+    ) -> Bool {
+        guard let payload = try? JSONDecoder.cloudRebuild.decode(
+            FarmCommandCloudPayload.self,
+            from: envelope.payload
+        ) else { return false }
+        return payload.kind == .tombstoneEntity
+    }
+
     private static func isCoveredOrdinaryOperation(
         _ envelope: CloudOperationEnvelope,
         authorizationDate: Date?,
@@ -1673,7 +1919,7 @@ actor CloudRebuildActor {
         )
     }
 
-    private static func assetEnvelope(record: CKRecord, mapper: CloudRecordMapper) throws -> FarmAssetEnvelope {
+    static func assetEnvelope(record: CKRecord, mapper: CloudRecordMapper) throws -> FarmAssetEnvelope {
         guard let farmText = record[CloudRecordField.farmID] as? String,
               let farmID = UUID(uuidString: farmText),
               let assetID = mapper.assetID(from: record.recordID),
@@ -2132,6 +2378,14 @@ actor CloudRebuildActor {
 
     private func issues(sessionID: UUID) throws -> [CloudRebuildIssueRecord] {
         try ModelContext(modelContainer).fetch(FetchDescriptor<CloudRebuildIssueRecord>()).filter { $0.sessionID == sessionID }
+    }
+
+    private func clearIssues(sessionID: UUID) throws {
+        let context = ModelContext(modelContainer)
+        let existing = try context.fetch(FetchDescriptor<CloudRebuildIssueRecord>())
+            .filter { $0.sessionID == sessionID }
+        for issue in existing { context.delete(issue) }
+        if !existing.isEmpty { try context.save() }
     }
 
     private func updateSession(_ id: UUID, mutate: (CloudRebuildSessionRecord) -> Void) throws {

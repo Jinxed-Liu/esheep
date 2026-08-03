@@ -1490,6 +1490,60 @@ final class CloudRebuildTests: XCTestCase {
         ), envelope)
     }
 
+    func testRejectedLegacyTombstoneCanBeQuarantinedByValidatedRemoteWinner() throws {
+        let fixture = try makeSupersededTombstoneFixture()
+
+        XCTAssertNoThrow(try CloudRebuildActor.validateSupersedingTombstoneAuthority(
+            rejectedOperation: fixture.rejected,
+            tombstone: fixture.tombstone,
+            authoritativeOperation: fixture.authoritative,
+            tombstoneCertificate: fixture.authoritative.capabilityCertificate,
+            tombstoneSignature: fixture.authoritative.operationSignature,
+            authoritativeRecordCertificate: fixture.authoritative.capabilityCertificate,
+            authoritativeRecordSignature: fixture.authoritative.operationSignature
+        ))
+    }
+
+    func testRejectedLegacyTombstoneCannotUseMismatchedTombstoneCredentials() throws {
+        let fixture = try makeSupersededTombstoneFixture()
+
+        XCTAssertThrowsError(try CloudRebuildActor.validateSupersedingTombstoneAuthority(
+            rejectedOperation: fixture.rejected,
+            tombstone: fixture.tombstone,
+            authoritativeOperation: fixture.authoritative,
+            tombstoneCertificate: fixture.authoritative.capabilityCertificate,
+            tombstoneSignature: Data("different-signature".utf8),
+            authoritativeRecordCertificate: fixture.authoritative.capabilityCertificate,
+            authoritativeRecordSignature: fixture.authoritative.operationSignature
+        ))
+    }
+
+    func testRejectedLegacyTombstoneCannotCrossEntityBoundary() throws {
+        let fixture = try makeSupersededTombstoneFixture()
+        let wrongEntity = FarmTombstoneEnvelope(
+            tombstoneID: fixture.tombstone.tombstoneID,
+            farmID: fixture.tombstone.farmID,
+            entityType: fixture.tombstone.entityType,
+            entityID: UUID(),
+            revision: fixture.tombstone.revision,
+            deletedAt: fixture.tombstone.deletedAt,
+            deletedByAccountID: fixture.tombstone.deletedByAccountID,
+            reason: fixture.tombstone.reason,
+            operationID: fixture.tombstone.operationID,
+            restoresTombstoneID: nil
+        )
+
+        XCTAssertThrowsError(try CloudRebuildActor.validateSupersedingTombstoneAuthority(
+            rejectedOperation: fixture.rejected,
+            tombstone: wrongEntity,
+            authoritativeOperation: fixture.authoritative,
+            tombstoneCertificate: fixture.authoritative.capabilityCertificate,
+            tombstoneSignature: fixture.authoritative.operationSignature,
+            authoritativeRecordCertificate: fixture.authoritative.capabilityCertificate,
+            authoritativeRecordSignature: fixture.authoritative.operationSignature
+        ))
+    }
+
     func testTamperedPreCutoffSignatureCannotUseBaselineExclusion() throws {
         let signingKey = P256.Signing.PrivateKey()
         let differentKey = P256.Signing.PrivateKey()
@@ -1990,6 +2044,74 @@ final class CloudRebuildTests: XCTestCase {
         )
     }
 
+    private func makeSupersededTombstoneFixture() throws -> (
+        rejected: CloudOperationEnvelope,
+        authoritative: CloudOperationEnvelope,
+        tombstone: FarmTombstoneEnvelope
+    ) {
+        let farmID = UUID()
+        let entityID = UUID()
+        let accountID = UUID()
+        let deviceID = UUID()
+        let payload = try FarmCommandCloudPayloadEncoder.encode(
+            .tombstoneEntity(entityType: .note, entityID: entityID, reason: "录入错误")
+        )
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(
+            FarmCommandCloudPayload.self,
+            from: payload
+        )
+        let deletedAt = try XCTUnwrap(decoded.dates["deletedAt"])
+        let authoritative = CloudOperationEnvelope(
+            farmID: farmID,
+            entityID: entityID,
+            entityType: CloudEntityType.note.rawValue,
+            schemaVersion: 2,
+            revision: 2,
+            baseRevision: 1,
+            operationID: UUID(),
+            modifiedAt: deletedAt,
+            modifiedByAccountID: accountID,
+            modifiedByDeviceID: deviceID,
+            payload: payload,
+            payloadDigest: CloudPayloadDigest.hex(for: payload),
+            capabilityCertificate: "current-delete-capability",
+            operationSignature: Data("authoritative-signature".utf8),
+            deletedAt: deletedAt
+        )
+        let rejected = CloudOperationEnvelope(
+            farmID: farmID,
+            entityID: entityID,
+            entityType: CloudEntityType.note.rawValue,
+            schemaVersion: 2,
+            revision: 2,
+            baseRevision: 1,
+            operationID: UUID(),
+            modifiedAt: deletedAt.addingTimeInterval(-10),
+            modifiedByAccountID: accountID,
+            modifiedByDeviceID: UUID(),
+            payload: payload,
+            payloadDigest: CloudPayloadDigest.hex(for: payload),
+            capabilityCertificate: "legacy-without-delete-capability",
+            operationSignature: Data("legacy-signature".utf8),
+            deletedAt: deletedAt
+        )
+        let tombstone = FarmTombstoneEnvelope(
+            tombstoneID: UUID(),
+            farmID: farmID,
+            entityType: authoritative.entityType,
+            entityID: entityID,
+            revision: authoritative.revision,
+            deletedAt: deletedAt,
+            deletedByAccountID: accountID,
+            reason: "录入错误",
+            operationID: authoritative.operationID,
+            restoresTombstoneID: nil
+        )
+        return (rejected, authoritative, tombstone)
+    }
+
     private func makeUnsignedOperation(
         command: FarmCommand,
         entityType: CloudEntityType,
@@ -2306,6 +2428,128 @@ final class CloudRebuildTests: XCTestCase {
                 .invalidDeviceSignature
             )
         }
+    }
+
+    func testMembershipSnapshotEnvelopeAdditivelyCarriesHistoricalOwnerDevices() throws {
+        let farmID = UUID()
+        let ownerID = UUID()
+        let currentDeviceID = UUID()
+        let historicalDeviceID = UUID()
+        let currentKey = P256.Signing.PrivateKey()
+        let historicalKey = P256.Signing.PrivateKey()
+        let snapshot = WorkerFarmSecuritySnapshot(
+            farmID: farmID,
+            generation: 4,
+            issuedAt: 1_775_000_000,
+            members: [
+                .init(
+                    membershipID: "owner-membership",
+                    accountID: ownerID,
+                    displayName: "场主",
+                    role: .owner,
+                    status: "active",
+                    shareParticipantRecordName: nil
+                ),
+            ],
+            devices: [
+                .init(
+                    deviceID: currentDeviceID,
+                    accountID: ownerID,
+                    publicKeyJWK: try jwkJSON(for: currentKey.publicKey)
+                ),
+            ],
+            revokedCertificates: []
+        )
+        let historical = FarmMembershipSnapshotEnvelope.Device(
+            deviceID: historicalDeviceID,
+            accountID: ownerID,
+            publicKeyJWK: try jwkJSON(for: historicalKey.publicKey)
+        )
+
+        let envelope = try MembershipSnapshotActor.envelope(
+            from: snapshot,
+            additionalDevices: [historical]
+        )
+
+        XCTAssertEqual(envelope.generation, 4)
+        XCTAssertEqual(Set(envelope.devices.map(\.deviceID)), [
+            currentDeviceID,
+            historicalDeviceID,
+        ])
+    }
+
+    func testMembershipSnapshotEnvelopeRejectsHistoricalDeviceKeyReplacement() throws {
+        let farmID = UUID()
+        let ownerID = UUID()
+        let deviceID = UUID()
+        let originalKey = P256.Signing.PrivateKey()
+        let replacementKey = P256.Signing.PrivateKey()
+        let snapshot = WorkerFarmSecuritySnapshot(
+            farmID: farmID,
+            generation: 4,
+            issuedAt: 1_775_000_000,
+            members: [
+                .init(
+                    membershipID: "owner-membership",
+                    accountID: ownerID,
+                    displayName: "场主",
+                    role: .owner,
+                    status: "active",
+                    shareParticipantRecordName: nil
+                ),
+            ],
+            devices: [
+                .init(
+                    deviceID: deviceID,
+                    accountID: ownerID,
+                    publicKeyJWK: try jwkJSON(for: originalKey.publicKey)
+                ),
+            ],
+            revokedCertificates: []
+        )
+        let replacement = FarmMembershipSnapshotEnvelope.Device(
+            deviceID: deviceID,
+            accountID: ownerID,
+            publicKeyJWK: try jwkJSON(for: replacementKey.publicKey)
+        )
+
+        XCTAssertThrowsError(
+            try MembershipSnapshotActor.envelope(
+                from: snapshot,
+                additionalDevices: [replacement]
+            )
+        ) { error in
+            XCTAssertEqual(error as? CloudContractError, .invalidDeviceSignature)
+        }
+    }
+
+    func testFetchCheckpointRecordArchiveRoundTripsCloudRecordAndAssetPath() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "cloud-rebuild-record-archive-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let assetURL = root.appending(path: "photo.jpg")
+        try Data("photo".utf8).write(to: assetURL)
+        let zoneID = CKRecordZone.ID(
+            zoneName: "farm-zone",
+            ownerName: CKCurrentUserDefaultName
+        )
+        let record = CKRecord(
+            recordType: CloudRecordType.farmAsset.rawValue,
+            recordID: .init(recordName: "asset_test", zoneID: zoneID)
+        )
+        record[CloudRecordField.farmID] = UUID().uuidString as CKRecordValue
+        record[CloudRecordField.asset] = CKAsset(fileURL: assetURL)
+
+        let archive = try CloudRebuildFetchCheckpointStore.encodeRecords([record])
+        let decoded = try CloudRebuildFetchCheckpointStore.decodeRecords(archive)
+
+        XCTAssertEqual(decoded.count, 1)
+        XCTAssertEqual(decoded[0].recordID, record.recordID)
+        XCTAssertEqual(
+            (decoded[0][CloudRecordField.asset] as? CKAsset)?.fileURL,
+            assetURL
+        )
     }
 
     private func makeClaims(

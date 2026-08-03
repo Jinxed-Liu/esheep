@@ -549,6 +549,7 @@ private struct LambSnapshotIndex {
     let latestWeaningBySheepID: [UUID: FarmAnalyticsSnapshot.Weaning]
     let latestWeightBySheepID: [UUID: SheepWeightSample]
     let lambingBySheepID: [UUID: FarmAnalyticsSnapshot.Lambing]
+    let gainSamplesBySheepID: [UUID: [WeaningGainSample]]
 
     init(snapshot: FarmAnalyticsSnapshot) {
         sheepByID = Dictionary(uniqueKeysWithValues: snapshot.sheep.map { ($0.id, $0) })
@@ -560,11 +561,24 @@ private struct LambSnapshotIndex {
         latestWeightBySheepID = Dictionary(grouping: canonicalWeights, by: \.sheepID).compactMapValues { records in
             records.max { $0.occurredAt < $1.occurredAt }
         }
+        gainSamplesBySheepID = Dictionary(grouping: snapshot.weights.map {
+            WeaningGainSample(id: $0.id, sheepID: $0.sheepID, kilograms: $0.kilograms, occurredAt: $0.occurredAt)
+        }, by: \.sheepID)
         var lambingLookup: [UUID: FarmAnalyticsSnapshot.Lambing] = [:]
         for lambing in snapshot.lambings {
             for sheepID in lambing.offspring.compactMap(\.sheepID) { lambingLookup[sheepID] = lambing }
         }
         lambingBySheepID = lambingLookup
+    }
+
+    func gain(for weaning: FarmAnalyticsSnapshot.Weaning, birthAt: Date?) -> WeaningGainResult? {
+        WeaningGainSemantics.calculate(
+            sheepID: weaning.sheepID,
+            birthAt: birthAt,
+            weaningAt: weaning.occurredAt,
+            weaningWeight: weaning.weanWeight,
+            samples: gainSamplesBySheepID[weaning.sheepID] ?? []
+        )
     }
 }
 
@@ -656,6 +670,7 @@ private struct LambingMonthDetailView: View {
         let sire = metadata?.sireID.flatMap { index.sheepByID[$0]?.earTag } ?? metadata?.semenName
         let pen = sheep?.currentPenID.flatMap { index.penNameByID[$0] }
         let isStillborn = rawIndex.stillbornOffspringIDs.contains(child.id)
+        let effectiveBirthAt = weaning?.birthAt ?? sheep?.birthAt ?? lambing.occurredAt
         return LambDetailFacts(
             id: child.id,
             earTag: child.earTag.isEmpty ? "未记录耳号" : child.earTag,
@@ -670,8 +685,9 @@ private struct LambingMonthDetailView: View {
             breed: sheep?.breed,
             pen: pen,
             weaning: weaning,
+            weaningGain: weaning.flatMap { index.gain(for: $0, birthAt: effectiveBirthAt) },
             latestWeight: latestWeight,
-            fallbackBirthAt: sheep?.birthAt ?? lambing.occurredAt,
+            fallbackBirthAt: effectiveBirthAt,
             note: weaning.flatMap { rawIndex.weaningNoteByID[$0.id] }
         )
     }
@@ -728,6 +744,7 @@ private struct WeaningMonthDetailView: View {
         let metadata = lambing.flatMap { rawIndex.lambingByID[$0.id] }
         let sire = metadata?.sireID.flatMap { index.sheepByID[$0]?.earTag } ?? metadata?.semenName
         let pen = sheep?.currentPenID.flatMap { index.penNameByID[$0] }
+        let effectiveBirthAt = weaning.birthAt ?? sheep?.birthAt ?? lambing?.occurredAt
         return LambDetailFacts(
             id: weaning.id,
             earTag: sheep?.earTag ?? child?.earTag ?? "未记录耳号",
@@ -742,8 +759,9 @@ private struct WeaningMonthDetailView: View {
             breed: sheep?.breed,
             pen: pen,
             weaning: weaning,
+            weaningGain: index.gain(for: weaning, birthAt: effectiveBirthAt),
             latestWeight: latestWeight,
-            fallbackBirthAt: weaning.birthAt ?? sheep?.birthAt ?? lambing?.occurredAt,
+            fallbackBirthAt: effectiveBirthAt,
             note: rawIndex.weaningNoteByID[weaning.id]
         )
     }
@@ -763,6 +781,7 @@ private struct LambDetailFacts: Identifiable {
     let breed: String?
     let pen: String?
     let weaning: FarmAnalyticsSnapshot.Weaning?
+    let weaningGain: WeaningGainResult?
     let latestWeight: SheepWeightSample?
     let fallbackBirthAt: Date?
     let note: String?
@@ -774,10 +793,7 @@ private struct LambDetailFacts: Identifiable {
     }
 
     var adg: Double? {
-        guard let weaning, let age = weaningAge, age > 0,
-              let startWeight = weaning.birthWeight ?? birthWeight,
-              startWeight > 0, weaning.weanWeight > startWeight else { return nil }
-        return (weaning.weanWeight - startWeight) / Double(age) * 1000
+        weaningGain?.gramsPerDay
     }
 }
 
@@ -808,6 +824,10 @@ private struct LambIndividualDetailCard: View {
                     GridRow {
                         DetailFact(label: "出生日期", value: dateText(facts.birthDate))
                         DetailFact(label: "断奶日期", value: dateText(facts.weaning?.occurredAt))
+                    }
+                    GridRow {
+                        DetailFact(label: "日增重起点", value: gainBaselineText)
+                        DetailFact(label: "计算间隔", value: facts.weaningGain.map { "\($0.intervalDays) 天" } ?? "未计算")
                     }
                     GridRow {
                         DetailFact(label: "母羊", value: facts.dam ?? "未记录")
@@ -843,6 +863,10 @@ private struct LambIndividualDetailCard: View {
     private var latestWeightText: String {
         guard let latest = facts.latestWeight else { return "未记录" }
         return "\(number(latest.kilograms))kg · \(dateText(latest.occurredAt))"
+    }
+    private var gainBaselineText: String {
+        guard let baseline = facts.weaningGain?.baseline else { return "未记录" }
+        return "\(number(baseline.kilograms))kg · \(dateText(baseline.occurredAt))"
     }
 }
 

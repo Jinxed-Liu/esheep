@@ -58,6 +58,11 @@ enum CloudRebuildBundleValidator {
                 break
             }
         }
+        let assetIDs = assets.map { $0.envelope.assetID }
+        guard Set(assetIDs).count == assetIDs.count else {
+            throw CloudContractError.malformedRecord
+        }
+        let assetsByID = Dictionary(uniqueKeysWithValues: assets.map { ($0.envelope.assetID, $0) })
         let operationIDs = operations.map(\.operationID)
         guard Set(operationIDs).count == operationIDs.count else { throw CloudContractError.malformedRecord }
 
@@ -83,10 +88,29 @@ enum CloudRebuildBundleValidator {
                 if let sireID = optionalID("sireID", payload) { try require(sireID, in: entitiesByType[.sheep], field: "sheep.sireID") }
                 if let donorID = optionalID("semenDonorID", payload) { try require(donorID, in: entitiesByType[.semenDonor], field: "sheep.semenDonorID") }
                 guard let earTag = payload.strings["earTag"] else { throw RemoteDomainApplyError.invalidPayload("earTag") }
+                if let currentParity = payload.integers["currentParity"] {
+                    guard currentParity >= 0, payload.strings["sex"] == SheepSex.ewe.rawValue else { throw RemoteDomainApplyError.invalidPayload("currentParity") }
+                }
                 guard normalizedEarTags.insert(EarTag.normalized(earTag)).inserted else { throw FarmCommandError.duplicateEarTag }
+                try validateAvatarReference(
+                    in: payload,
+                    sheepID: operation.entityID,
+                    assetsByID: assetsByID
+                )
             case .updateSheepProfile:
-                try require(identifier("sheepID", payload), in: entitiesByType[.sheep], field: "sheep.sheepID")
+                let sheepID = try identifier("sheepID", payload)
+                try require(sheepID, in: entitiesByType[.sheep], field: "sheep.sheepID")
                 guard payload.strings["earTag"] != nil else { throw RemoteDomainApplyError.invalidPayload("earTag") }
+                if let currentParity = payload.integers["currentParity"] {
+                    guard currentParity >= 0,
+                          payload.strings["sex"] == SheepSex.ewe.rawValue,
+                          payload.dates["parityRecordedAt"] != nil else { throw RemoteDomainApplyError.invalidPayload("currentParity") }
+                }
+                try validateAvatarReference(
+                    in: payload,
+                    sheepID: sheepID,
+                    assetsByID: assetsByID
+                )
             case .recordWeight:
                 try require(identifier("sheepID", payload), in: entitiesByType[.sheep], field: "weight.sheepID")
             case .correctWeight:
@@ -153,6 +177,21 @@ enum CloudRebuildBundleValidator {
             if let entityID = asset.envelope.entityID, !allEntities.contains(entityID) {
                 throw RemoteDomainApplyError.missingReference("photo.entityID")
             }
+        }
+    }
+
+    private static func validateAvatarReference(
+        in payload: FarmCommandCloudPayload,
+        sheepID: UUID,
+        assetsByID: [UUID: CloudRebuildAssetSnapshot]
+    ) throws {
+        guard let update = SheepAvatarCloudPayload.update(from: payload),
+              let photoAssetID = update.photoAssetID else {
+            return
+        }
+        guard let asset = assetsByID[photoAssetID],
+              asset.envelope.entityID == sheepID else {
+            throw RemoteDomainApplyError.invalidPayload("sheepAvatarPhotoAssetID")
         }
     }
 

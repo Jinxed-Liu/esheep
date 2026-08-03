@@ -38,7 +38,12 @@ enum CloudAssetTransferStatus: String, Codable, Sendable {
     case uploading
     case downloading
     case completed
+    case notRequired
     case failed
+
+    var isTerminal: Bool {
+        self == .completed || self == .notRequired
+    }
 }
 
 enum CloudAssetTransferDirection: String, Codable, Sendable {

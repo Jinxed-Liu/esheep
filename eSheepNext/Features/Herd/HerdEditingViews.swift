@@ -60,6 +60,7 @@ struct EditPenView: View {
 struct EditSheepProfileView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproduction: [ReproductionRecord]
     let account: AccountProfile
     let farm: FarmRecord
     let sheep: SheepRecord
@@ -69,6 +70,8 @@ struct EditSheepProfileView: View {
     @State private var sex: SheepSex
     @State private var hasBirthDate: Bool
     @State private var birthAt: Date
+    @State private var currentParityText = ""
+    @State private var originalCurrentParity: Int?
     @State private var note: String
     @State private var errorMessage: String?
 
@@ -97,6 +100,16 @@ struct EditSheepProfileView: View {
                 Toggle("记录出生日期", isOn: $hasBirthDate)
                 if hasBirthDate { DatePicker("出生日期", selection: $birthAt, in: ...Date.now, displayedComponents: .date) }
             }
+            if sex == .ewe {
+                Section {
+                    TextField("当前胎次", text: $currentParityText)
+                        .keyboardType(.numberPad)
+                } header: {
+                    Text("繁殖信息")
+                } footer: {
+                    Text("留空按 0 胎保存。修改后会保留一条带时间的胎次确认事实，不会改写已有产羔记录。")
+                }
+            }
             Section("备注") { TextField("可选", text: $note, axis: .vertical).lineLimit(2...5) }
         }
         .navigationTitle("编辑羊只档案")
@@ -105,12 +118,26 @@ struct EditSheepProfileView: View {
             ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) }
         }
         .recordErrorAlert($errorMessage)
+        .onAppear(perform: loadCurrentParity)
+    }
+
+    private func loadCurrentParity() {
+        let value = LambingEntrySemantics.currentParity(eweID: sheep.id, farmID: farm.id, before: .distantFuture, records: reproduction)
+        originalCurrentParity = value
+        currentParityText = String(value)
     }
 
     private func save() {
         do {
+            let parityText = currentParityText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard parityText.isEmpty || (Int(parityText).map { $0 >= 0 } == true) else {
+                errorMessage = "当前胎次必须是大于或等于 0 的整数。"
+                return
+            }
+            let enteredParity = sex == .ewe ? (Int(parityText) ?? 0) : nil
+            let changedParity = enteredParity != originalCurrentParity ? enteredParity : nil
             try commandService.execute(
-                .updateSheepProfile(sheepID: sheep.id, earTag: earTag, breed: breed, sex: sex, birthAt: hasBirthDate ? birthAt : nil, note: note),
+                .updateSheepProfile(sheepID: sheep.id, earTag: earTag, breed: breed, sex: sex, birthAt: hasBirthDate ? birthAt : nil, currentParity: changedParity, parityRecordedAt: changedParity == nil ? nil : .now, note: note),
                 in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
                 context: modelContext
             )

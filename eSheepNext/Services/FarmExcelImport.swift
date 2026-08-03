@@ -77,13 +77,19 @@ private struct FarmExcelSheetSchema {
 
 @MainActor
 enum FarmExcelImportService {
-    static let templateVersion = 3
+    static let templateVersion = 5
+
+    /// Template columns may evolve, but an import key is documented as a
+    /// long-lived business identity. Keep the original v3 namespace so the
+    /// same workbook row does not acquire a different record identity merely
+    /// because the app learned how to read a newer template format.
+    private static let stableIdentityVersion = 3
 
     private static let schemas: [FarmExcelSheetSchema] = [
         .init(name: "圈舍", capability: .recordProduction, columns: ["导入键", "圈舍名称", "备注"], required: ["导入键", "圈舍名称"], example: ["示例-pen-01", "育肥一圈", "南侧圈舍"]),
-        .init(name: "新建羊只", capability: .recordProduction, columns: ["导入键", "耳号", "品种", "性别", "圈舍", "入场日期", "出生日期", "备注"], required: ["导入键", "耳号", "品种", "性别", "入场日期"], example: ["示例-sheep-01", "A001", "湖羊", "母羊", "育肥一圈", "2026-07-19", "2026-02-01", ""]),
+        .init(name: "新建羊只", capability: .recordProduction, columns: ["导入键", "耳号", "品种", "性别", "当前胎次", "圈舍", "入场日期", "出生日期", "备注"], required: ["导入键", "耳号", "品种", "性别", "入场日期"], example: ["示例-sheep-01", "A001", "湖羊", "母羊", "0", "育肥一圈", "2026-07-19", "2026-02-01", ""]),
         .init(name: "称重", capability: .recordProduction, columns: ["导入键", "耳号", "体重kg", "发生日期", "备注"], required: ["导入键", "耳号", "体重kg", "发生日期"], example: ["示例-weight-01", "A001", "35.6", "2026-07-19", "晨间称重"]),
-        .init(name: "断奶", capability: .recordProduction, columns: ["导入键", "耳号", "断奶重kg", "发生日期", "出生日期", "出生重kg", "日增重kg", "母羊耳号", "胎只数", "备注"], required: ["导入键", "耳号", "断奶重kg", "发生日期"], example: ["示例-wean-01", "A001", "22.5", "2026-07-19", "2026-03-01", "3.6", "0.28", "E001", "2", ""]),
+        .init(name: "断奶", capability: .recordProduction, columns: ["导入键", "耳号", "断奶重kg", "转入圈舍", "发生日期", "出生日期", "备注"], required: ["导入键", "耳号", "断奶重kg", "转入圈舍", "发生日期"], example: ["示例-wean-01", "A001", "22.5", "育肥二圈", "2026-07-19", "2026-03-01", ""]),
         .init(name: "转群", capability: .recordProduction, columns: ["导入键", "耳号", "转入圈舍", "发生日期", "备注"], required: ["导入键", "耳号", "转入圈舍", "发生日期"], example: ["示例-transfer-01", "A001", "育肥二圈", "2026-07-19", ""]),
         .init(name: "离场", capability: .recordProduction, columns: ["导入键", "羊只耳号列表", "类型", "原因", "总售卖金额", "发生日期", "备注"], required: ["导入键", "羊只耳号列表", "类型", "原因", "发生日期"], example: ["示例-remove-01", "A001;A002", "出售", "正常销售", "2400", "2026-07-19", "同一行代表同一批离场"]),
         .init(name: "生产批次", capability: .recordProduction, columns: ["导入键", "批次名称", "生产目的", "开始日期", "羊只耳号列表", "备注"], required: ["导入键", "批次名称", "生产目的", "开始日期", "羊只耳号列表"], example: ["示例-batch-01", "2026春羔育肥", "育肥", "2026-07-01", "A001;A002", "只允许人工选择"]),
@@ -100,7 +106,7 @@ enum FarmExcelImportService {
         .init(name: "冻精入库", capability: .manageCatalogs, columns: ["导入键", "冻精编号", "品种", "来源", "批号", "数量", "供体登记号"], required: ["导入键", "冻精编号", "品种", "数量"], example: ["示例-semen-01", "S20260701", "杜泊", "种公羊站", "D01", "20", "CN-DP-001"]),
         .init(name: "冻精调整", capability: .manageCatalogs, columns: ["导入键", "冻精编号", "调整数量", "发生日期", "备注"], required: ["导入键", "冻精编号", "调整数量", "发生日期"], example: ["示例-semen-adjust-01", "S20260701", "-1", "2026-07-19", "盘点差异"]),
         .init(name: "繁殖记录", capability: .recordProduction, columns: ["导入键", "类型", "母羊耳号列表", "结果", "种公羊耳号", "冻精编号", "每只冻精数量", "发生日期", "提醒日期", "备注"], required: ["导入键", "类型", "母羊耳号列表", "发生日期"], example: ["示例-repro-01", "配种", "E001;E002", "已配", "R001", "", "", "2026-07-19", "2026-09-02", ""]),
-        .init(name: "产羔", capability: .recordProduction, columns: ["导入键", "母羊耳号", "发生日期", "种公羊耳号", "冻精编号", "胎次", "产羔明细", "圈舍", "备注"], required: ["导入键", "母羊耳号", "发生日期", "胎次", "产羔明细"], example: ["示例-lambing-01", "E001", "2026-07-19", "R001", "", "2", "L001|母羊|3.4|是|否;死胎1|未知|2.8|否|是", "产羔圈", ""]),
+        .init(name: "产羔", capability: .recordProduction, columns: ["导入键", "母羊耳号", "发生日期", "种公羊耳号", "冻精编号", "产羔明细", "圈舍", "备注"], required: ["导入键", "母羊耳号", "发生日期", "产羔明细"], example: ["示例-lambing-01", "E001", "2026-07-19", "R001", "", "L001|母羊|3.4|2026-07-19|是|否;死胎1|未知|2.8|2026-07-19|否|是", "产羔圈", ""]),
         .init(name: "系谱关系", capability: .editHistoricalFacts, columns: ["导入键", "羊只耳号", "母本耳号", "父本来源", "种公羊耳号", "供体登记号", "修改原因"], required: ["导入键", "羊只耳号", "父本来源", "修改原因"], example: ["示例-pedigree-01", "L001", "E001", "种公羊", "R001", "", "核对产羔本后确认"]),
         .init(name: "配种方案", capability: .manageCatalogs, columns: ["导入键", "方案名称", "创建日期", "步骤"], required: ["导入键", "方案名称", "创建日期", "步骤"], example: ["示例-program-01", "同期发情方案", "2026-07-19", "0|放栓;12|撤栓;14|配种"]),
         .init(name: "备注", capability: .recordProduction, columns: ["导入键", "耳号", "圈舍", "内容", "发生日期"], required: ["导入键", "内容", "发生日期"], example: ["示例-note-01", "A001", "", "观察采食情况", "2026-07-19"]),
@@ -112,6 +118,12 @@ enum FarmExcelImportService {
             "羊只耳号列表": ["耳号"],
             "总售卖金额": ["金额"],
         ],
+    ]
+
+    /// Added in v4. Older workbooks remain importable and use the documented
+    /// blank default (0) for a newly imported ewe.
+    private static let backwardCompatibleOptionalColumns: [String: Set<String>] = [
+        "新建羊只": ["当前胎次"],
     ]
 
     static func templateData() throws -> Data {
@@ -126,6 +138,11 @@ enum FarmExcelImportService {
             ["使用方法", "只填写需要导入的工作表；保留首行字段名；删除或覆盖示例行；日期统一使用 yyyy-MM-dd。"],
             ["导入键", "每行填写本文件内唯一、长期稳定的自定义编号，用于定位问题和生成稳定事实标识。"],
             ["新建羊只核对", "只核对当前牧场已有耳号和本文件内重复耳号；不会要求新耳号预先存在。"],
+            ["母羊当前胎次", "新建母羊时填写已经完成的胎次；留空或没有既往胎次事实均按 0 胎处理，首次产羔自动记为第 1 胎。"],
+            ["产羔胎次", "产羔表不手填胎次，系统以产羔时间点之前的有效胎次自动加 1。"],
+            ["羔羊称重", "填写体重时必须填写实际称重日期；出生 24 小时内记为初生重，超过 24 小时记为普通称重。未称重可同时留空。"],
+            ["断奶日增重", "系统以出生后、断奶前最早一条实际称重为起点自动计算；断奶表不填写初生重和日增重。没有有效称重时不计算。"],
+            ["断奶调舍", "断奶不填写母本或胎只数；每条断奶必须填写转入圈舍，断奶事实与调舍在同一事务中提交。"],
             ["引用核对", "称重、断奶、转群等事件的耳号，以及圈舍、目录、库存批号、冻精等引用，必须已在当前牧场存在或在本文件前置工作表中创建。"],
             ["批量列表", "多个耳号使用英文分号 ; 分隔。组合明细使用 | 分列、使用 ; 分条。"],
             ["离场批次", "离场表每行代表同一次离场；可填写多个耳号。出售时只填写整批总售卖金额，不填写或推算单羊价格。"],
@@ -150,7 +167,8 @@ enum FarmExcelImportService {
                 if let index = indexes[column] { return index }
                 return aliases[column]?.compactMap { indexes[$0] }.first
             }
-            for column in schema.columns where sourceIndex(for: column) == nil {
+            let optionalLegacyColumns = backwardCompatibleOptionalColumns[schema.name] ?? []
+            for column in schema.columns where sourceIndex(for: column) == nil && !optionalLegacyColumns.contains(column) {
                 issues.append(.init(sheet: schema.name, row: 1, field: column, message: "缺少模板字段“\(column)”。", severity: .error))
             }
             var count = 0
@@ -182,6 +200,13 @@ enum FarmExcelImportService {
         for field in positiveFields where !row[field].isEmpty && (Decimal.stable(row[field]).map { $0 > 0 } != true) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: field, message: "必须是大于零的数值。", severity: .error)) }
         for field in ["调整数量"] where !row[field].isEmpty && (Decimal.stable(row[field]).map { $0 != 0 } != true) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: field, message: "必须是非零数值。", severity: .error)) }
         if row.sheet == "新建羊只", !["母羊", "公羊", "未知"].contains(row["性别"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "性别", message: "只能填写母羊、公羊或未知。", severity: .error)) }
+        if row.sheet == "新建羊只", !row["当前胎次"].isEmpty {
+            if Int(row["当前胎次"]).map({ $0 >= 0 }) != true {
+                issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "当前胎次", message: "必须是大于或等于 0 的整数。", severity: .error))
+            } else if row["性别"] != "母羊" {
+                issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "当前胎次", message: "只有母羊可以填写当前胎次。", severity: .error))
+            }
+        }
         if row.sheet == "离场" {
             if !["出售", "淘汰", "死亡", "转出"].contains(row["类型"]) {
                 issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "类型", message: "只能填写出售、淘汰、死亡或转出。", severity: .error))
@@ -303,7 +328,13 @@ enum FarmExcelImportService {
                 if source == "种公羊", row["种公羊耳号"].isEmpty || !row["供体登记号"].isEmpty { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "父本来源", message: "种公羊来源必须且只能填写种公羊耳号。", severity: .error)) }
                 if source == "冻精供体", row["供体登记号"].isEmpty || !row["种公羊耳号"].isEmpty { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "父本来源", message: "冻精供体来源必须且只能填写供体登记号。", severity: .error)) }
             }
-            if row.sheet == "产羔", (try? parseLambs(row["产羔明细"], parentID: UUID())) == nil { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "产羔明细", message: "请使用 耳号|性别|出生重|建档|死胎 格式。", severity: .error)) }
+            if row.sheet == "产羔" {
+                guard let lambingAt = parseDate(row["发生日期"]),
+                      (try? parseLambs(row["产羔明细"], parentID: UUID(), lambingAt: lambingAt)) != nil else {
+                    issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "产羔明细", message: "请使用 耳号|性别|体重|称重日期|建档|死胎 格式。", severity: .error))
+                    continue
+                }
+            }
             if row.sheet == "配种方案", (try? parsePairs(row["步骤"])) == nil { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "步骤", message: "请使用 天数|操作;天数|操作 格式。", severity: .error)) }
         }
     }
@@ -331,6 +362,14 @@ enum FarmExcelImportService {
                 followups.append(contentsOf: commands.dropFirst().map(ExcelFollowup.command))
                 return first
             }
+            if row.sheet == "断奶" {
+                let commands = try weaningCommands(for: row, farmID: farm.id, context: context)
+                guard let first = commands.first else {
+                    throw FarmDataInterchangeError.malformedFile("断奶记录缺少可提交的操作。")
+                }
+                followups.append(contentsOf: commands.dropFirst().map(ExcelFollowup.command))
+                return first
+            }
             if row.sheet == "冻精供体", !row["关联种公羊耳号"].isEmpty,
                try existingDonor(for: row, farmID: farm.id, context: context) == nil {
                 followups.append(.linkNewDonor(row))
@@ -354,7 +393,7 @@ enum FarmExcelImportService {
         case .command(let command):
             return command
         case .linkNewDonor(let row):
-            let id = StableCloudUUID.derived(namespace: farmID, name: "excel-v\(templateVersion):\(row.sheet):\(row["导入键"].lowercased())")
+            let id = stableImportID(farmID: farmID, sheet: row.sheet, key: row["导入键"])
             guard let ram = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && EarTag.normalized($0.earTag) == EarTag.normalized(row["关联种公羊耳号"]) }) else { throw FarmCommandError.sheepNotFound }
             return .care(.upsertSemenDonor(.init(id: id, name: row["供体名称"], registrationNumber: row["登记号"], breed: row["品种"], linkedRamID: ram.id, note: row["备注"], status: row["状态"] == "停用" ? .inactive : .active, expectedRevision: 1)))
         case .linkSemenDonor(let row):
@@ -373,12 +412,18 @@ enum FarmExcelImportService {
         func donor(_ registration: String) throws -> SemenDonorRecord { guard let value = try context.fetch(FetchDescriptor<SemenDonorRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.registrationNumber.normalizedLookup == registration.normalizedLookup }) else { throw FarmCommandError.semenDonorNotFound }; return value }
         func catalog(_ name: String) throws -> HealthCatalogItemRecord { guard let value = try context.fetch(FetchDescriptor<HealthCatalogItemRecord>()).first(where: { $0.farmID == farmID && $0.name.normalizedLookup == name.normalizedLookup }) else { throw FarmCommandError.missingRequiredValue("健康目录") }; return value }
         func lot(_ name: String, _ batch: String) throws -> InventoryLotRecord { let matches = try context.fetch(FetchDescriptor<InventoryLotRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil && $0.catalogName.normalizedLookup == name.normalizedLookup && $0.batchNumber.normalizedLookup == batch.normalizedLookup }; guard matches.count == 1, let value = matches.first else { throw FarmCommandError.inventoryLotNotFound }; return value }
-        let id = StableCloudUUID.derived(namespace: farmID, name: "excel-v\(templateVersion):\(row.sheet):\(row["导入键"].lowercased())")
+        let id = stableImportID(farmID: farmID, sheet: row.sheet, key: row["导入键"])
         switch row.sheet {
         case "圈舍": return .createPen(name: row["圈舍名称"], note: row["备注"])
-        case "新建羊只": return .addSheep(earTag: row["耳号"], breed: row["品种"], sex: sheepSex(row["性别"]), penID: try optionalPen(row["圈舍"], pen: pen)?.id, occurredAt: parseDate(row["入场日期"])!, birthAt: parseDate(row["出生日期"]), note: row["备注"])
+        case "新建羊只":
+            let sex = sheepSex(row["性别"])
+            return .addSheep(earTag: row["耳号"], breed: row["品种"], sex: sex, penID: try optionalPen(row["圈舍"], pen: pen)?.id, occurredAt: parseDate(row["入场日期"])!, birthAt: parseDate(row["出生日期"]), currentParity: sex == .ewe ? (Int(row["当前胎次"]) ?? 0) : nil, note: row["备注"])
         case "称重": return .recordWeight(sheepID: try sheep(row["耳号"]).id, kilogramsText: row["体重kg"], occurredAt: parseDate(row["发生日期"])!, note: row["备注"])
-        case "断奶": return .recordWeaning(sheepID: try sheep(row["耳号"]).id, weanWeightText: row["断奶重kg"], occurredAt: parseDate(row["发生日期"])!, birthAt: parseDate(row["出生日期"]), birthWeightText: row["出生重kg"].nilIfEmpty, averageDailyGainText: row["日增重kg"].nilIfEmpty, damID: try row["母羊耳号"].nilIfEmpty.map { try sheep($0).id }, litterSize: Int(row["胎只数"]), note: row["备注"])
+        case "断奶":
+            guard let command = try weaningCommands(for: row, farmID: farmID, context: context).first else {
+                throw FarmDataInterchangeError.malformedFile("断奶记录缺少可提交的操作。")
+            }
+            return command
         case "转群": return .transferSheep(sheepID: try sheep(row["耳号"]).id, toPenID: try pen(row["转入圈舍"]).id, occurredAt: parseDate(row["发生日期"])!, note: row["备注"])
         case "离场":
             guard let command = try removalCommands(for: row, farmID: farmID, context: context).first else {
@@ -399,7 +444,13 @@ enum FarmExcelImportService {
         case "冻精入库": return .addSemen(code: row["冻精编号"], breed: row["品种"], source: row["来源"], batchNumber: row["批号"], quantityText: row["数量"])
         case "冻精调整": return .care(.adjustSemen(id: id, semenID: try semen(row["冻精编号"]).id, quantityDeltaText: row["调整数量"], occurredAt: parseDate(row["发生日期"])!, note: row["备注"]))
         case "繁殖记录": let subjects = try splitList(row["母羊耳号列表"]).map { CareReproductionSubjectDraft(id: StableCloudUUID.derived(namespace: id, name: EarTag.normalized($0)), eweID: try sheep($0).id, result: row["结果"]) }; return .care(.recordReproductionBatch(.init(id: id, kind: reproductionKind(row["类型"]), subjects: subjects, occurredAt: parseDate(row["发生日期"])!, sireID: try row["种公羊耳号"].nilIfEmpty.map { try sheep($0).id }, semenID: try row["冻精编号"].nilIfEmpty.map { try semen($0).id }, semenUnitsPerEweText: row["每只冻精数量"].nilIfEmpty, note: row["备注"], reminderAt: parseDate(row["提醒日期"]))))
-        case "产羔": let lambs = try parseLambs(row["产羔明细"], parentID: id); return .care(.recordLambing(.init(id: id, eweID: try sheep(row["母羊耳号"]).id, occurredAt: parseDate(row["发生日期"])!, sireID: try row["种公羊耳号"].nilIfEmpty.map { try sheep($0).id }, semenID: try row["冻精编号"].nilIfEmpty.map { try semen($0).id }, parity: Int(row["胎次"]) ?? 0, birthDeadCount: lambs.count { $0.isStillborn }, offspring: lambs, penID: try optionalPen(row["圈舍"], pen: pen)?.id, note: row["备注"])))
+        case "产羔":
+            let occurredAt = parseDate(row["发生日期"])!
+            let ewe = try sheep(row["母羊耳号"])
+            let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>())
+            let currentParity = LambingEntrySemantics.currentParity(eweID: ewe.id, farmID: farmID, before: occurredAt, records: reproduction)
+            let lambs = try parseLambs(row["产羔明细"], parentID: id, lambingAt: occurredAt)
+            return .care(.recordLambing(.init(id: id, eweID: ewe.id, occurredAt: occurredAt, sireID: try row["种公羊耳号"].nilIfEmpty.map { try sheep($0).id }, semenID: try row["冻精编号"].nilIfEmpty.map { try semen($0).id }, parity: currentParity + 1, birthDeadCount: lambs.count { $0.isStillborn }, offspring: lambs, penID: try optionalPen(row["圈舍"], pen: pen)?.id, note: row["备注"])))
         case "系谱关系": let child = try sheep(row["羊只耳号"]); let source = row["父本来源"]; return .care(.updateSheepPedigree(.init(id: id, sheepID: child.id, damID: try row["母本耳号"].nilIfEmpty.map { try sheep($0).id }, sireID: source == "种公羊" ? try sheep(row["种公羊耳号"]).id : nil, semenDonorID: source == "冻精供体" ? try donor(row["供体登记号"]).id : nil, reason: row["修改原因"], expectedRevision: child.revision)))
         case "配种方案": return .createBreedingProgram(name: row["方案名称"], createdAt: parseDate(row["创建日期"])!, steps: try parsePairs(row["步骤"]).map { guard let day = Int($0.0) else { throw FarmDataInterchangeError.malformedFile("配种方案步骤天数无效。") }; return BreedingProgramStepDraft(dayOffset: day, action: $0.1) })
         case "备注": return .addNote(sheepID: try row["耳号"].nilIfEmpty.map { try sheep($0).id }, penID: try optionalPen(row["圈舍"], pen: pen)?.id, text: row["内容"], occurredAt: parseDate(row["发生日期"])!)
@@ -415,7 +466,7 @@ enum FarmExcelImportService {
         let sheepByTag = Dictionary(uniqueKeysWithValues: sheep.map { (EarTag.normalized($0.earTag), $0) })
         let batchID = StableCloudUUID.derived(
             namespace: farmID,
-            name: "excel-v\(templateVersion):离场:\(row["导入键"].lowercased()):batch"
+            name: "excel-v\(stableIdentityVersion):离场:\(row["导入键"].lowercased()):batch"
         )
         let kind = removalKind(row["类型"])
         let batchTotal = kind == .sold ? row["总售卖金额"].nilIfEmpty : nil
@@ -437,6 +488,39 @@ enum FarmExcelImportService {
         }
     }
 
+    private static func weaningCommands(
+        for row: FarmExcelRow,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> [FarmCommand] {
+        guard let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: {
+            $0.farmID == farmID &&
+                $0.deletedAt == nil &&
+                EarTag.normalized($0.earTag) == EarTag.normalized(row["耳号"])
+        }) else {
+            throw FarmCommandError.sheepNotFound
+        }
+        guard let pen = try context.fetch(FetchDescriptor<PenRecord>()).first(where: {
+            $0.farmID == farmID &&
+                $0.deletedAt == nil &&
+                $0.isActive &&
+                $0.name.normalizedLookup == row["转入圈舍"].normalizedLookup
+        }) else {
+            throw FarmCommandError.penNotFound
+        }
+        guard let occurredAt = parseDate(row["发生日期"]) else {
+            throw FarmDataInterchangeError.malformedFile("断奶发生日期无效。")
+        }
+        return WeaningWorkflow.commands(
+            sheepID: sheep.id,
+            weanWeightText: row["断奶重kg"],
+            occurredAt: occurredAt,
+            birthAt: parseDate(row["出生日期"]),
+            toPenID: pen.id,
+            note: row["备注"]
+        )
+    }
+
     private static func existingDonor(for row: FarmExcelRow, farmID: UUID, context: ModelContext) throws -> SemenDonorRecord? {
         let donors = try context.fetch(FetchDescriptor<SemenDonorRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
         if !row["登记号"].isEmpty, let match = donors.first(where: { $0.registrationNumber.normalizedLookup == row["登记号"].normalizedLookup }) { return match }
@@ -444,9 +528,45 @@ enum FarmExcelImportService {
     }
 
     private static func optionalPen(_ value: String, pen: (String) throws -> PenRecord) throws -> PenRecord? { value.isEmpty ? nil : try pen(value) }
+
+    static func stableImportID(farmID: UUID, sheet: String, key: String) -> UUID {
+        StableCloudUUID.derived(
+            namespace: farmID,
+            name: "excel-v\(stableIdentityVersion):\(sheet):\(key.lowercased())"
+        )
+    }
+
     private static func splitList(_ value: String) -> [String] { value.components(separatedBy: CharacterSet(charactersIn: ";；,，、\n")).map(\.trimmed).filter { !$0.isEmpty } }
     private static func parsePairs(_ value: String) throws -> [(String, String)] { try splitList(value).map { let parts = $0.split(separator: "|", maxSplits: 1).map { String($0).trimmed }; guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { throw FarmDataInterchangeError.malformedFile("组合明细必须使用 名称|数值 格式。") }; return (parts[0], parts[1]) } }
-    private static func parseLambs(_ value: String, parentID: UUID) throws -> [CareLambDraft] { try splitList(value).enumerated().map { index, item in let parts = item.split(separator: "|", omittingEmptySubsequences: false).map { String($0).trimmed }; guard parts.count == 5 else { throw FarmDataInterchangeError.malformedFile("产羔明细必须使用 耳号|性别|出生重|建档|死胎 格式。") }; let sex = sheepSex(parts[1]); guard sex != .unknown || parts[1] == "未知" else { throw FarmDataInterchangeError.malformedFile("羔羊性别无效。") }; return CareLambDraft(id: StableCloudUUID.derived(namespace: parentID, name: "lamb-detail-\(index)"), sheepID: StableCloudUUID.derived(namespace: parentID, name: "lamb-sheep-\(index)"), earTag: parts[0], sex: sex, birthWeightText: parts[2], createSheepRecord: parts[3] == "是", isStillborn: parts[4] == "是") } }
+    private static func parseLambs(_ value: String, parentID: UUID, lambingAt: Date) throws -> [CareLambDraft] {
+        try splitList(value).enumerated().map { index, item in
+            let parts = item.split(separator: "|", omittingEmptySubsequences: false).map { String($0).trimmed }
+            guard parts.count == 5 || parts.count == 6 else {
+                throw FarmDataInterchangeError.malformedFile("产羔明细必须使用 耳号|性别|体重|称重日期|建档|死胎 格式；旧版五段格式仍按产羔当日称重处理。")
+            }
+            let sex = sheepSex(parts[1])
+            guard sex != .unknown || parts[1] == "未知" else {
+                throw FarmDataInterchangeError.malformedFile("羔羊性别无效。")
+            }
+            let hasWeightDate = parts.count == 6
+            let weightDate = hasWeightDate ? (parts[3].isEmpty ? nil : parseDate(parts[3])) : lambingAt
+            if hasWeightDate, !parts[2].isEmpty, weightDate == nil {
+                throw FarmDataInterchangeError.malformedFile("填写羔羊体重时，称重日期不能为空且必须有效。")
+            }
+            let createIndex = hasWeightDate ? 4 : 3
+            let stillbornIndex = hasWeightDate ? 5 : 4
+            return CareLambDraft(
+                id: StableCloudUUID.derived(namespace: parentID, name: "lamb-detail-\(index)"),
+                sheepID: StableCloudUUID.derived(namespace: parentID, name: "lamb-sheep-\(index)"),
+                earTag: parts[0],
+                sex: sex,
+                birthWeightText: parts[2],
+                weightOccurredAt: parts[2].isEmpty ? nil : weightDate,
+                createSheepRecord: parts[createIndex] == "是",
+                isStillborn: parts[stillbornIndex] == "是"
+            )
+        }
+    }
     private static func parseDate(_ value: String) -> Date? { guard !value.isEmpty else { return nil }; let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.calendar = Calendar(identifier: .gregorian); formatter.timeZone = TimeZone(secondsFromGMT: 0); formatter.isLenient = false; formatter.dateFormat = "yyyy-MM-dd"; if let date = formatter.date(from: value), formatter.string(from: date) == value { return date }; guard let serial = Double(value), serial >= 1, serial < 2_958_466 else { return nil }; var components = DateComponents(); components.calendar = Calendar(identifier: .gregorian); components.timeZone = TimeZone(secondsFromGMT: 0); components.year = 1899; components.month = 12; components.day = 30; return components.date?.addingTimeInterval(serial * 86_400) }
     private static func sheepSex(_ value: String) -> SheepSex { value == "母羊" ? .ewe : (value == "公羊" ? .ram : .unknown) }
     private static func healthKind(_ value: String) -> HealthRecordKind { value == "疫苗" ? .vaccination : .treatment }

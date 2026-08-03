@@ -1,4 +1,5 @@
 import Foundation
+import CoreData
 import SwiftData
 import XCTest
 @testable import eSheepNext
@@ -6,10 +7,10 @@ import XCTest
 @MainActor
 final class AppSchemaMigrationTests: XCTestCase {
     func testVersionedSchemaContainsEveryCurrentModel() {
-        let versioned = Schema(versionedSchema: AppSchemaV6.self)
+        let versioned = Schema(versionedSchema: AppSchemaV7.self)
         let current = AppSchema.makeSchema()
 
-        XCTAssertEqual(AppSchema.currentVersion, "6.0.0")
+        XCTAssertEqual(AppSchema.currentVersion, "7.0.0")
         XCTAssertEqual(versioned.entities.map(\.name).sorted(), current.entities.map(\.name).sorted())
         XCTAssertEqual(
             AppSchemaMigrationPlan.schemas.map { Schema(versionedSchema: $0).version },
@@ -20,9 +21,271 @@ final class AppSchemaMigrationTests: XCTestCase {
                 Schema.Version(4, 0, 0),
                 Schema.Version(5, 0, 0),
                 Schema.Version(6, 0, 0),
+                Schema.Version(7, 0, 0),
             ]
         )
-        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 5)
+        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 6)
+    }
+
+    func testPublishedV7RestoreRecordSchemaRemainsFrozen() throws {
+        let schema = Schema(versionedSchema: AppSchemaV7.self)
+        let entity = try XCTUnwrap(
+            schema.entities.first { $0.name == "FarmRemoteRestoreRecord" }
+        )
+
+        XCTAssertEqual(
+            Set(entity.properties.map(\.name)),
+            Set([
+                "id",
+                "accountID",
+                "ownerAccountID",
+                "memberRoleRawValue",
+                "serverMembershipID",
+                "farmID",
+                "authorityGeneration",
+                "stateRawValue",
+                "checkpointID",
+                "checkpointMigrationID",
+                "checkpointRelativePath",
+                "checkpointDigest",
+                "checkpointRevision",
+                "targetCursorRevision",
+                "currentCursorRevision",
+                "totalEntityCount",
+                "restoredEntityCount",
+                "totalAssetCount",
+                "downloadedAssetCount",
+                "promotedAssetCount",
+                "lastErrorCode",
+                "createdAt",
+                "updatedAt",
+                "completedAt",
+            ])
+        )
+    }
+
+    func testInstalledV7RestoreRecordReopensRepeatedly() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(
+                path: "AppSchemaInstalledV7-\(UUID().uuidString)",
+                directoryHint: .isDirectory
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "V7.store")
+        let accountID = UUID()
+        let ownerAccountID = UUID()
+        let farmID = UUID()
+        let membershipID = "supabase:\(farmID.uuidString.lowercased()):member"
+
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV7.self)
+            let configuration = ModelConfiguration(
+                "V7",
+                schema: schema,
+                url: storeURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            let container = try ModelContainer(
+                for: schema,
+                configurations: [configuration]
+            )
+            let context = ModelContext(container)
+            context.insert(FarmRemoteRestoreRecord(
+                accountID: accountID,
+                farmID: farmID,
+                authorityGeneration: 1,
+                ownerAccountID: ownerAccountID,
+                memberRole: .worker,
+                serverMembershipID: membershipID,
+                state: .completed,
+                targetCursorRevision: 842
+            ))
+            try context.save()
+        }
+
+        for _ in 0..<2 {
+            let reopened = try AppSchema.makeContainer(name: "V7", url: storeURL)
+            let context = ModelContext(reopened)
+            let record = try XCTUnwrap(
+                try context.fetch(FetchDescriptor<FarmRemoteRestoreRecord>()).first
+            )
+            XCTAssertEqual(record.accountID, accountID)
+            XCTAssertEqual(record.ownerAccountID, ownerAccountID)
+            XCTAssertEqual(record.farmID, farmID)
+            XCTAssertEqual(record.authorityGeneration, 1)
+            XCTAssertEqual(record.memberRole, .worker)
+            XCTAssertEqual(record.serverMembershipID, membershipID)
+            XCTAssertEqual(record.state, .completed)
+            XCTAssertEqual(record.targetCursorRevision, 842)
+            XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
+            XCTAssertEqual(try context.fetchCount(FetchDescriptor<OutboxItem>()), 0)
+        }
+    }
+
+    /// The stable-baseline gate can point this test at a copied device store.
+    /// The source backup is never opened in place: the store and SQLite
+    /// sidecars are copied to a disposable directory before SwiftData opens it.
+    func testProvidedDeviceV7BackupOpensRepeatedly() throws {
+        guard let sourcePath = ProcessInfo.processInfo.environment[
+            "ESHEEP_DEVICE_V7_STORE"
+        ], !sourcePath.isEmpty else {
+            return
+        }
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path))
+        let directory = FileManager.default.temporaryDirectory
+            .appending(
+                path: "AppSchemaDeviceV7-\(UUID().uuidString)",
+                directoryHint: .isDirectory
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let currentModelURL = directory.appending(path: "CurrentV7.store")
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV7.self)
+            let configuration = ModelConfiguration(
+                "CurrentV7",
+                schema: schema,
+                url: currentModelURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            _ = try ModelContainer(
+                for: schema,
+                configurations: [configuration]
+            )
+        }
+        let deviceMetadata = try NSPersistentStoreCoordinator
+            .metadataForPersistentStore(
+                ofType: NSSQLiteStoreType,
+                at: sourceURL
+            )
+        let currentMetadata = try NSPersistentStoreCoordinator
+            .metadataForPersistentStore(
+                ofType: NSSQLiteStoreType,
+                at: currentModelURL
+            )
+        let deviceHashes = try XCTUnwrap(
+            deviceMetadata["NSStoreModelVersionHashes"] as? [String: Data]
+        )
+        let currentHashes = try XCTUnwrap(
+            currentMetadata["NSStoreModelVersionHashes"] as? [String: Data]
+        )
+        XCTAssertEqual(Set(deviceHashes.keys), Set(currentHashes.keys))
+        for key in Set(deviceHashes.keys).intersection(currentHashes.keys) {
+            XCTAssertEqual(
+                deviceHashes[key],
+                currentHashes[key],
+                "已安装 V7 模型发生变化：\(key)"
+            )
+        }
+        guard deviceHashes == currentHashes else { return }
+        var expectedCounts: (farms: Int, sheep: Int, operations: Int, outbox: Int)?
+        for attempt in 0..<2 {
+            // Use a fresh copy for each open. SwiftData can retain the first
+            // store coordinator until the test autorelease pool drains; a
+            // second coordinator for the exact same URL would test file-lock
+            // lifetime rather than schema compatibility.
+            let copiedURL = directory.appending(path: "DeviceV7-\(attempt).store")
+            try FileManager.default.copyItem(at: sourceURL, to: copiedURL)
+            for suffix in ["-wal", "-shm"] {
+                let sourceSidecar = URL(fileURLWithPath: sourcePath + suffix)
+                guard FileManager.default.fileExists(atPath: sourceSidecar.path) else {
+                    continue
+                }
+                try FileManager.default.copyItem(
+                    at: sourceSidecar,
+                    to: URL(fileURLWithPath: copiedURL.path + suffix)
+                )
+            }
+            let container = try AppSchema.makeContainer(
+                name: "DeviceV7-\(attempt)",
+                url: copiedURL
+            )
+            let context = ModelContext(container)
+            let counts = (
+                farms: try context.fetchCount(FetchDescriptor<FarmRecord>()),
+                sheep: try context.fetchCount(FetchDescriptor<SheepRecord>()),
+                operations: try context.fetchCount(FetchDescriptor<DomainOperation>()),
+                outbox: try context.fetchCount(FetchDescriptor<OutboxItem>())
+            )
+            XCTAssertGreaterThan(counts.farms, 0)
+            XCTAssertGreaterThan(counts.sheep, 0)
+            if let expectedCounts {
+                XCTAssertEqual(counts.farms, expectedCounts.farms)
+                XCTAssertEqual(counts.sheep, expectedCounts.sheep)
+                XCTAssertEqual(counts.operations, expectedCounts.operations)
+                XCTAssertEqual(counts.outbox, expectedCounts.outbox)
+            } else {
+                expectedCounts = counts
+            }
+        }
+    }
+
+    func testInstalledV6MigratesToV7WithoutChangingSheepOrPhotos() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "AppSchemaInstalledV6-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "V6.store")
+        let accountID = UUID()
+        let farmID = UUID()
+        let sheepID = UUID()
+        let photoID = UUID()
+
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV6.self)
+            let configuration = ModelConfiguration(
+                "V6",
+                schema: schema,
+                url: storeURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+            context.insert(AccountProfile(
+                id: accountID,
+                appleUserIdentifier: "installed-v6",
+                displayName: "已安装 V6"
+            ))
+            context.insert(FarmRecord(id: farmID, ownerAccountID: accountID, name: "V6 牧场"))
+            context.insert(SheepRecord(
+                id: sheepID,
+                farmID: farmID,
+                earTag: "V6001",
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                enteredAt: .now
+            ))
+            context.insert(PhotoAssetRecord(
+                id: photoID,
+                farmID: farmID,
+                sheepID: sheepID,
+                legacySourceKey: "test:v6",
+                originalEarTag: "V6001",
+                relativePath: "Assets/v6.jpg",
+                sha256: "v6-photo"
+            ))
+            try context.save()
+        }
+
+        let reopened = try AppSchema.makeContainer(name: "V6", url: storeURL)
+        let context = ModelContext(reopened)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SheepRecord>()).first?.id, sheepID)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first?.id, photoID)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<SheepAvatarRecord>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<OutboxItem>()), 0)
     }
 
     func testInstalledV5MigratesToV6WithoutCreatingRestoreWork() throws {
@@ -303,7 +566,6 @@ final class AppSchemaMigrationTests: XCTestCase {
 
         let reopened = try AppSchema.makeContainer(name: "V2", url: storeURL)
         let context = ModelContext(reopened)
-        let operations = try context.fetch(FetchDescriptor<DomainOperation>())
         let outbox = try XCTUnwrap(
             context.fetch(FetchDescriptor<OutboxItem>())
                 .first(where: { $0.operationID == laterID })

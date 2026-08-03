@@ -139,9 +139,12 @@ struct FarmInsightConversationView: View {
                 }
             }
             .sheet(item: $selectedDraft) { draft in
+                let presentation = controller.presentation(for: draft)
                 InsightDraftConfirmationView(
                     draft: draft,
                     farmName: farm.name,
+                    initialPayloadText: presentation.editablePayloadText,
+                    initialPayloadError: presentation.editablePayloadError,
                     onConfirm: {
                         selectedDraft = nil
                         Task { await controller.execute(draft) }
@@ -236,6 +239,8 @@ struct FarmInsightConversationView: View {
                                 drafts: messageDrafts(for: message.id),
                                 endsRoleGroup: endsRoleGroup(at: index, in: controller.messages),
                                 canExecute: controller.canExecute,
+                                executionCount: controller.executionCount,
+                                draftPresentation: controller.presentation,
                                 onToggleAudio: { toggleStoredAudioPlayback(messageID: message.id) },
                                 onReview: review,
                                 onReject: reject
@@ -284,7 +289,8 @@ struct FarmInsightConversationView: View {
     }
 
     private var assistantIdentity: some View {
-        HStack(spacing: 8) {
+        let usage = controller.contextWindowUsage
+        return HStack(spacing: 8) {
             Image("MiMoAssistantAvatar")
                 .resizable()
                 .scaledToFill()
@@ -309,15 +315,15 @@ struct FarmInsightConversationView: View {
             Button {
                 isContextUsagePresented.toggle()
             } label: {
-                InsightContextUsageRing(usage: controller.contextWindowUsage)
+                InsightContextUsageRing(usage: usage)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(
-                "上下文窗口已使用约 \(controller.contextWindowUsage.percentage)%"
+                "上下文窗口已使用约 \(usage.percentage)%"
             )
             .popover(isPresented: $isContextUsagePresented) {
                 InsightContextUsageDetail(
-                    usage: controller.contextWindowUsage
+                    usage: usage
                 )
                 .presentationCompactAdaptation(.popover)
             }
@@ -563,7 +569,7 @@ struct FarmInsightConversationView: View {
     }
 
     private func messageDrafts(for messageID: UUID) -> [InsightActionDraftRecord] {
-        controller.drafts.filter { $0.messageID == messageID }
+        controller.drafts(forMessageID: messageID)
     }
 
     private var storedAudioRevision: String {
@@ -1102,6 +1108,8 @@ private struct InsightConversationMessageRow: View {
     let drafts: [InsightActionDraftRecord]
     let endsRoleGroup: Bool
     let canExecute: (InsightActionDraftRecord) -> Bool
+    let executionCount: (InsightActionDraftRecord) -> Int
+    let draftPresentation: (InsightActionDraftRecord) -> InsightActionDraftPresentation
     let onToggleAudio: () -> Void
     let onReview: (InsightActionDraftRecord) -> Void
     let onReject: (InsightActionDraftRecord) -> Void
@@ -1125,7 +1133,8 @@ private struct InsightConversationMessageRow: View {
                     draft: draft,
                     farmName: farmName,
                     isOriginDevice: canExecute(draft),
-                    executionCount: executionCount(for: draft),
+                    executionCount: executionCount(draft),
+                    presentation: draftPresentation(draft),
                     onReview: { onReview(draft) },
                     onReject: { onReject(draft) }
                 )
@@ -1134,17 +1143,6 @@ private struct InsightConversationMessageRow: View {
         }
     }
 
-    private func executionCount(for draft: InsightActionDraftRecord) -> Int {
-        let registry = InsightToolRegistry()
-        guard draft.status == .proposed,
-              let batchID = registry.removalBatchID(for: draft) else {
-            return 1
-        }
-        return drafts.filter {
-            $0.status == .proposed &&
-                registry.removalBatchID(for: $0) == batchID
-        }.count
-    }
 }
 
 private struct InsightContextCompressionNotice: View {
@@ -1203,6 +1201,7 @@ private struct InsightActionDraftCard: View {
     let farmName: String
     let isOriginDevice: Bool
     let executionCount: Int
+    let presentation: InsightActionDraftPresentation
     let onReview: () -> Void
     let onReject: () -> Void
 
@@ -1225,7 +1224,7 @@ private struct InsightActionDraftCard: View {
             Label(farmName, systemImage: "building.2")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if let importPayload = try? InsightImportCoordinator.payload(for: draft) {
+            if let importPayload = presentation.importPayload {
                 VStack(alignment: .leading, spacing: 5) {
                     ForEach(importPayload.sections.prefix(6), id: \.self) { section in
                         Label(section, systemImage: "checkmark.circle")
@@ -1248,7 +1247,7 @@ private struct InsightActionDraftCard: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
-            if let occurredAt = InsightToolRegistry().occurredAt(for: draft) {
+            if let occurredAt = presentation.occurredAt {
                 LabeledContent("发生日期") {
                     Text(
                         occurredAt,
@@ -1754,8 +1753,22 @@ private struct InsightDraftConfirmationView: View {
     @Bindable var draft: InsightActionDraftRecord
     let farmName: String
     let onConfirm: () -> Void
-    @State private var payloadText = ""
+    @State private var payloadText: String
     @State private var payloadError: String?
+
+    init(
+        draft: InsightActionDraftRecord,
+        farmName: String,
+        initialPayloadText: String?,
+        initialPayloadError: String?,
+        onConfirm: @escaping () -> Void
+    ) {
+        self.draft = draft
+        self.farmName = farmName
+        self.onConfirm = onConfirm
+        _payloadText = State(initialValue: initialPayloadText ?? "")
+        _payloadError = State(initialValue: initialPayloadError)
+    }
 
     var body: some View {
         NavigationStack {
@@ -1793,13 +1806,6 @@ private struct InsightDraftConfirmationView: View {
                         .disabled(
                             payloadText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         )
-                }
-            }
-            .task {
-                do {
-                    payloadText = try InsightToolRegistry().editablePayloadText(for: draft)
-                } catch {
-                    payloadError = error.localizedDescription
                 }
             }
             .alert("草案字段无效", isPresented: Binding(

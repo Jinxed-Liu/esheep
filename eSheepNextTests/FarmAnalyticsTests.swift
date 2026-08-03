@@ -11,6 +11,7 @@ final class FarmAnalyticsTests: XCTestCase {
         let farm = FarmRecord(ownerAccountID: account.id, name: "产羔测试场")
         let ewe = SheepRecord(farmID: farm.id, earTag: "E001", breed: "湖羊", purpose: "繁殖母羊", sex: .ewe, penID: nil, enteredAt: .now)
         context.insert(account); context.insert(farm); context.insert(ewe)
+        context.insert(ReproductionRecord(id: LambingEntrySemantics.entryParityBaselineID(sheepID: ewe.id), farmID: farm.id, eweID: ewe.id, kind: .parityBaseline, occurredAt: ewe.enteredAt, parity: 0, note: "测试胎次基准"))
         try context.save()
 
         let offspring = [
@@ -19,7 +20,7 @@ final class FarmAnalyticsTests: XCTestCase {
         ]
         try FarmCommandService().execute(.recordReproduction(eweID: ewe.id, kind: .lambing, occurredAt: .now, sireID: nil, semenName: nil, result: "", lambCount: 2, parity: 1, birthDeadCount: 0, offspring: offspring, note: ""), in: FarmContext(accountID: account.id, farmID: farm.id, role: .owner), context: context)
 
-        let lambing = try XCTUnwrap(context.fetch(FetchDescriptor<ReproductionRecord>()).first)
+        let lambing = try XCTUnwrap(context.fetch(FetchDescriptor<ReproductionRecord>()).first { $0.kind == .lambing })
         let details = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter { $0.lambingRecordID == lambing.id }
         XCTAssertEqual(details.count, 2)
         XCTAssertEqual(Set(details.map(\.legacyEarTag)), ["L001", "L002"])
@@ -55,6 +56,7 @@ final class FarmAnalyticsTests: XCTestCase {
     func testPlusCompatibleLambAndWeightRules() {
         let farmID = UUID(); let eweID = UUID(); let lambID = UUID()
         let dayOne = makeDate(year: 2026, month: 1, day: 1)
+        let dayTwo = makeDate(year: 2026, month: 1, day: 2)
         let dayTen = makeDate(year: 2026, month: 1, day: 10)
         let snapshot = FarmAnalyticsSnapshot(
             farmID: farmID,
@@ -63,7 +65,10 @@ final class FarmAnalyticsTests: XCTestCase {
                 .init(id: lambID, earTag: "L001", breed: "湖羊", purpose: "断奶羔羊", sex: .ram, status: .active, initialPenID: nil, currentPenID: nil, birthAt: dayOne, enteredAt: dayOne, removedAt: nil)
             ],
             pens: [],
-            weights: [.init(id: UUID(), sheepID: lambID, kilograms: 20, occurredAt: dayTen)],
+            weights: [
+                .init(id: UUID(), sheepID: lambID, kilograms: 4, occurredAt: dayTwo),
+                .init(id: UUID(), sheepID: lambID, kilograms: 20, occurredAt: dayTen)
+            ],
             weanings: [.init(id: UUID(), sheepID: lambID, occurredAt: dayTen, weanWeight: 19, birthAt: dayOne, birthWeight: 3, damID: eweID, litterSize: 1)],
             lambings: [.init(id: UUID(), eweID: eweID, occurredAt: dayOne, total: 1, parity: 1, birthDeadCount: 0, offspring: [.init(id: UUID(), sheepID: lambID, earTag: "L001", sex: .male, birthWeight: 3)])],
             removals: [], transfers: [], batchMemberships: [], feeds: []
@@ -71,10 +76,10 @@ final class FarmAnalyticsTests: XCTestCase {
         let lambResult = LambAnalyticsEngine.calculate(snapshot: snapshot, selectedYear: "2026")
         XCTAssertEqual(lambResult.lambStats.totalLambs, 1)
         XCTAssertEqual(lambResult.lambStats.months.first?.maleLambs, 1)
-        XCTAssertEqual(lambResult.weaning.months.first?.averageADG ?? 0, 1_777.777_777, accuracy: 0.001)
+        XCTAssertEqual(lambResult.weaning.months.first?.averageADG ?? 0, 1_875, accuracy: 0.001)
 
         let cohort = WeightGainAnalyticsEngine.cohort(snapshot: snapshot, snapshotDate: dayTen)
-        XCTAssertEqual(cohort.weightTrend.map(\.value), [3, 20])
+        XCTAssertEqual(cohort.weightTrend.map(\.value), [3, 4, 20])
         XCTAssertEqual(try XCTUnwrap(cohort.weightTrend.last?.value), 20, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(cohort.latestAverageADG), 17.0 / 9.0, accuracy: 0.001)
     }
@@ -107,6 +112,7 @@ final class FarmAnalyticsTests: XCTestCase {
     func testLambMonthlySexAveragesUseValidSamplesAndBirthCohort() throws {
         let farmID = UUID(); let eweID = UUID(); let ramLambID = UUID(); let eweLambID = UUID()
         let birthAt = makeDate(year: 2026, month: 2, day: 1)
+        let baselineAt = makeDate(year: 2026, month: 2, day: 2)
         let weaningAt = makeDate(year: 2026, month: 2, day: 11)
         let snapshot = FarmAnalyticsSnapshot(
             farmID: farmID,
@@ -115,7 +121,11 @@ final class FarmAnalyticsTests: XCTestCase {
                 .init(id: ramLambID, earTag: "L-M", breed: "湖羊", purpose: "断奶羔羊", sex: .ram, status: .active, initialPenID: nil, currentPenID: nil, birthAt: birthAt, enteredAt: birthAt, removedAt: nil),
                 .init(id: eweLambID, earTag: "L-F", breed: "湖羊", purpose: "断奶羔羊", sex: .ewe, status: .active, initialPenID: nil, currentPenID: nil, birthAt: birthAt, enteredAt: birthAt, removedAt: nil)
             ],
-            pens: [], weights: [],
+            pens: [],
+            weights: [
+                .init(id: UUID(), sheepID: ramLambID, kilograms: 4, occurredAt: baselineAt),
+                .init(id: UUID(), sheepID: eweLambID, kilograms: 3.3, occurredAt: baselineAt)
+            ],
             weanings: [
                 .init(id: UUID(), sheepID: ramLambID, occurredAt: weaningAt, weanWeight: 13, birthAt: birthAt, birthWeight: 3, damID: eweID, litterSize: 2),
                 .init(id: UUID(), sheepID: eweLambID, occurredAt: weaningAt, weanWeight: 10.5, birthAt: birthAt, birthWeight: 2.5, damID: eweID, litterSize: 2)
@@ -143,6 +153,59 @@ final class FarmAnalyticsTests: XCTestCase {
         XCTAssertEqual(weanMonth.femaleAverageWeight, 10.5, accuracy: 0.001)
         XCTAssertEqual(weanMonth.maleAverageADG, 1_000, accuracy: 0.001)
         XCTAssertEqual(weanMonth.femaleAverageADG, 800, accuracy: 0.001)
+    }
+
+    func testWeaningGainUsesEarliestActualPostBirthWeightBeforeWeaning() throws {
+        let sheepID = UUID()
+        let birthAt = makeDate(year: 2026, month: 3, day: 1)
+        let baselineAt = makeDate(year: 2026, month: 3, day: 3)
+        let laterAt = makeDate(year: 2026, month: 3, day: 10)
+        let weaningAt = makeDate(year: 2026, month: 3, day: 20)
+        let baselineID = UUID()
+        let samples = [
+            WeaningGainSample(id: UUID(), sheepID: sheepID, kilograms: 2.8, occurredAt: makeDate(year: 2026, month: 2, day: 28)),
+            WeaningGainSample(id: baselineID, sheepID: sheepID, kilograms: 4.2, occurredAt: baselineAt),
+            WeaningGainSample(id: UUID(), sheepID: sheepID, kilograms: 7, occurredAt: laterAt),
+            WeaningGainSample(id: UUID(), sheepID: sheepID, kilograms: 21, occurredAt: weaningAt),
+            WeaningGainSample(id: UUID(), sheepID: sheepID, kilograms: 22, occurredAt: makeDate(year: 2026, month: 3, day: 21))
+        ]
+
+        let result = try XCTUnwrap(WeaningGainSemantics.calculate(
+            sheepID: sheepID,
+            birthAt: birthAt,
+            weaningAt: weaningAt,
+            weaningWeight: 20,
+            samples: samples
+        ))
+
+        XCTAssertEqual(result.baseline.id, baselineID)
+        XCTAssertEqual(result.baseline.kilograms, 4.2, accuracy: 0.001)
+        XCTAssertEqual(result.intervalDays, 17)
+        XCTAssertEqual(result.gramsPerDay, (20 - 4.2) / 17 * 1_000, accuracy: 0.001)
+    }
+
+    func testWeaningAnalyticsDoesNotFabricateADGWithoutActualWeight() throws {
+        let farmID = UUID()
+        let lambID = UUID()
+        let birthAt = makeDate(year: 2026, month: 4, day: 1)
+        let weaningAt = makeDate(year: 2026, month: 6, day: 1)
+        let snapshot = FarmAnalyticsSnapshot(
+            farmID: farmID,
+            sheep: [
+                .init(id: lambID, earTag: "L-NO-WEIGHT", breed: "湖羊", purpose: "断奶羔羊", sex: .ewe, status: .active, initialPenID: nil, currentPenID: nil, birthAt: birthAt, enteredAt: birthAt, removedAt: nil)
+            ],
+            pens: [],
+            weights: [],
+            weanings: [
+                .init(id: UUID(), sheepID: lambID, occurredAt: weaningAt, weanWeight: 20, birthAt: birthAt, birthWeight: 3.2, damID: nil, litterSize: 1)
+            ],
+            lambings: [], removals: [], transfers: [], batchMemberships: [], feeds: []
+        )
+
+        let month = try XCTUnwrap(LambAnalyticsEngine.calculate(snapshot: snapshot, selectedYear: "2026").weaning.months.first)
+
+        XCTAssertEqual(month.adgCount, 0)
+        XCTAssertEqual(month.abnormalCount, 1)
     }
 
     func testReproductionSlicesUseFixedEndDatePenCohortAndPriorLambings() throws {

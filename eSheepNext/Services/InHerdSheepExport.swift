@@ -41,6 +41,7 @@ enum InHerdSheepExport {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd"
         let invalid = CharacterSet(charactersIn: "/\\:*?\"<>|")
         let cleaned = farmName
@@ -143,6 +144,7 @@ enum RemovedSheepExport {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd"
         let invalid = CharacterSet(charactersIn: "/\\:*?\"<>|")
         let cleaned = farmName

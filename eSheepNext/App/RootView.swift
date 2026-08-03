@@ -115,6 +115,20 @@ struct RootView: View {
             systemSnapshotRevision &+= 1
         }
         .onOpenURL { url in
+            #if DEBUG
+            let selectedFarm = visibleFarms.first {
+                $0.id == session.selectedFarmID
+            } ?? visibleFarms.first
+            if DevelopmentSupabaseAcceptanceURLHandler.handle(
+                url,
+                account: activeAccount,
+                farm: selectedFarm,
+                context: modelContext,
+                collaboration: collaboration
+            ) {
+                return
+            }
+            #endif
             if let invitation = PendingFarmInvitation(url: url) {
                 session.pendingFarmInvitation = invitation
                 session.isJoinFarmPresented = true
@@ -143,15 +157,24 @@ struct RootView: View {
             guard scenePhase == .active,
                   session.accountAccessStatus.allowsCloudOperations,
                   (CloudFeatureConfiguration.isEnabled || SupabaseAccountConfiguration.isConfigured),
-                  activeAccount?.serverBindingState == .verified,
-                  !migrationCommits.contains(where: {
-                      activeFarmIDs.contains($0.farmID) &&
-                      $0.ownerAccountID == activeAccount?.effectiveAccountID &&
-                      $0.cloudState != .synced
-                  }),
-                  !activeFarmIDs.isEmpty else { return }
-            await collaboration.resumeSupabaseSynchronization()
+                  activeAccount?.serverBindingState == .verified else { return }
+            if SupabaseAccountConfiguration.isConfigured,
+               let accountID = activeAccount?.effectiveAccountID {
+                // Access discovery must run before requiring a local binding.
+                // A newly invited member on a clean device has no local farm
+                // yet; the active membership snapshot is what starts the
+                // checkpoint restore and eventually creates that binding.
+                await collaboration.resumeSupabaseSynchronization(
+                    accountID: accountID
+                )
+            }
             guard !Task.isCancelled else { return }
+            guard !migrationCommits.contains(where: {
+                activeFarmIDs.contains($0.farmID) &&
+                $0.ownerAccountID == activeAccount?.effectiveAccountID &&
+                $0.cloudState != .synced
+            }),
+            !activeFarmIDs.isEmpty else { return }
             guard await waitForSecondaryLaunchWindow(.milliseconds(700)) else { return }
             await collaboration.synchronizeNow()
         }
@@ -504,6 +527,10 @@ struct RootView: View {
                 .map(\.farmID)
         )
         let bindingsByFarmID = Dictionary(grouping: cloudBindings, by: \.farmID)
+        let remoteBindingsByFarmID = Dictionary(
+            grouping: remoteBindings,
+            by: \.farmID
+        )
         let membershipsByFarmID = Dictionary(
             grouping: membershipBindings.filter {
                 $0.accountID == account.effectiveAccountID
@@ -513,6 +540,17 @@ struct RootView: View {
         return farms.filter { farm in
             guard !hiddenRestoringFarmIDs.contains(farm.id) else {
                 return false
+            }
+            if let supabaseBinding = remoteBindingsByFarmID[farm.id]?
+                .first(where: { $0.provider == .supabase }) {
+                return SupabaseFarmAccessIsolationPolicy.isVisible(
+                    bindingState: supabaseBinding.state,
+                    membershipStatus: membershipsByFarmID[farm.id],
+                    restoreState: remoteRestoreRecords.first(where: {
+                        $0.accountID == account.effectiveAccountID &&
+                            $0.farmID == farm.id
+                    })?.state
+                )
             }
             let binding = bindingsByFarmID[farm.id]?.first
             if let sharedBinding = bindingsByFarmID[farm.id]?.first(where: {

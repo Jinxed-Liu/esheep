@@ -32,6 +32,15 @@ struct FarmCompactBaselineRebuildProgress: Codable, Sendable, Equatable {
 }
 
 enum FarmCompactBaselineRebuildProgressStore {
+    private struct IncompatibleStoreEvidence: Codable {
+        let farmID: UUID
+        let migrationID: UUID
+        let errorDomain: String
+        let errorCode: Int
+        let errorDescription: String
+        let archivedAt: Date
+    }
+
     static func load(
         farmID: UUID,
         migrationID: UUID
@@ -91,6 +100,57 @@ enum FarmCompactBaselineRebuildProgressStore {
         ).appending(path: "staging.store")
     }
 
+    /// Preserves an unreadable, fully-rebuildable staging store as diagnostic
+    /// evidence before the caller creates a fresh one. The authoritative app
+    /// store, downloaded checkpoint and promoted photo directory are outside
+    /// this tree and are never touched here.
+    static func archiveIncompatibleStore(
+        farmID: UUID,
+        migrationID: UUID,
+        error: Error
+    ) throws {
+        let source = stagingDirectory(
+            farmID: farmID,
+            migrationID: migrationID
+        )
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            return
+        }
+
+        let destination = incompatibleArchiveRoot()
+            .appending(
+                path: farmID.uuidString.lowercased(),
+                directoryHint: .isDirectory
+            )
+            .appending(
+                path: migrationID.uuidString.lowercased(),
+                directoryHint: .isDirectory
+            )
+            .appending(
+                path: UUID().uuidString.lowercased(),
+                directoryHint: .isDirectory
+            )
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.moveItem(at: source, to: destination)
+
+        let value = error as NSError
+        let evidence = IncompatibleStoreEvidence(
+            farmID: farmID,
+            migrationID: migrationID,
+            errorDomain: value.domain,
+            errorCode: value.code,
+            errorDescription: value.localizedDescription,
+            archivedAt: .now
+        )
+        try JSONEncoder.cloud.encode(evidence).write(
+            to: destination.appending(path: "recovery.json"),
+            options: [.atomic, .completeFileProtection]
+        )
+    }
+
     private static func progressURL(
         farmID: UUID,
         migrationID: UUID
@@ -116,6 +176,17 @@ enum FarmCompactBaselineRebuildProgressStore {
         )
         .appending(
             path: migrationID.uuidString.lowercased(),
+            directoryHint: .isDirectory
+        )
+    }
+
+    private static func incompatibleArchiveRoot() -> URL {
+        FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+        .appending(
+            path: "SupabaseCompactStagingIncompatible",
             directoryHint: .isDirectory
         )
     }
@@ -174,10 +245,31 @@ actor FarmCompactBaselineRebuildService {
             at: storeURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        let container = try AppSchema.makeContainer(
-            name: "SupabaseCompactStaging",
-            url: storeURL
-        )
+        let container: ModelContainer
+        do {
+            container = try AppSchema.makeContainer(
+                name: "SupabaseCompactStaging",
+                url: storeURL
+            )
+        } catch {
+            guard FileManager.default.fileExists(atPath: storeURL.path) else {
+                throw error
+            }
+            try FarmCompactBaselineRebuildProgressStore
+                .archiveIncompatibleStore(
+                    farmID: manifest.farmID,
+                    migrationID: manifest.migrationID,
+                    error: error
+                )
+            try FileManager.default.createDirectory(
+                at: storeURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            container = try AppSchema.makeContainer(
+                name: "SupabaseCompactStaging",
+                url: storeURL
+            )
+        }
         let context = ModelContext(container)
         context.autosaveEnabled = false
 
@@ -494,12 +586,16 @@ actor FarmCompactBaselineRebuildService {
     func finalizeRestoredFarm(
         package: FarmCompactBaselinePackageV1,
         ownerAccountID: UUID,
+        currentAccountID: UUID? = nil,
+        memberRole: FarmRole = .owner,
+        serverMembershipID: String? = nil,
         cursor: Int,
         container: ModelContainer
     ) throws {
         let context = ModelContext(container)
         context.autosaveEnabled = false
         try validateRestoredPackage(package, context: context)
+        let accessingAccountID = currentAccountID ?? ownerAccountID
 
         let existingProfile = try context.fetch(
             FetchDescriptor<FarmStorageProfile>()
@@ -529,6 +625,14 @@ actor FarmCompactBaselineRebuildService {
             )
             existingBinding.lastSuccessfulSyncAt = .now
             existingBinding.updatedAt = .now
+            try upsertActiveMembership(
+                farmID: package.manifest.farmID,
+                ownerAccountID: ownerAccountID,
+                accountID: accessingAccountID,
+                role: memberRole,
+                serverMembershipID: serverMembershipID,
+                context: context
+            )
             try context.save()
             return
         }
@@ -538,7 +642,61 @@ actor FarmCompactBaselineRebuildService {
         try activateRestoredFarm(
             package: package,
             ownerAccountID: ownerAccountID,
+            currentAccountID: accessingAccountID,
+            memberRole: memberRole,
+            serverMembershipID: serverMembershipID,
             cursor: cursor,
+            context: context
+        )
+        try context.save()
+    }
+
+    /// Activates access to a cache that was already fully promoted for
+    /// another locally verified account. The caller must independently verify
+    /// the current remote checkpoint before invoking this method. It does not
+    /// replay the older baseline over newer entities, history, or Tombstones.
+    func finalizeExistingAuthoritativeCacheAccess(
+        farmID: UUID,
+        ownerAccountID: UUID,
+        currentAccountID: UUID,
+        memberRole: FarmRole,
+        serverMembershipID: String,
+        authorityGeneration: Int,
+        checkpointCursor: Int,
+        container: ModelContainer
+    ) throws {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        guard let profile = try context
+            .fetch(FetchDescriptor<FarmStorageProfile>())
+            .first(where: { $0.farmID == farmID }),
+              let binding = try context
+                .fetch(FetchDescriptor<FarmRemoteBinding>())
+                .first(where: {
+                    $0.farmID == farmID && $0.provider == .supabase
+                }),
+              profile.mode == .supabase,
+              profile.transitionState == .idle,
+              profile.authorityGeneration == authorityGeneration,
+              binding.ownerAccountID == ownerAccountID,
+              binding.authorityGeneration == authorityGeneration,
+              [.active, .accessRevoked].contains(binding.state) else {
+            throw FarmCompactBaselineRebuildError.markerMismatch
+        }
+        profile.updatedAt = .now
+        binding.stateRawValue = FarmRemoteBindingState.active.rawValue
+        binding.lastPulledRevision = max(
+            binding.lastPulledRevision,
+            checkpointCursor
+        )
+        binding.lastErrorCode = nil
+        binding.updatedAt = .now
+        try upsertActiveMembership(
+            farmID: farmID,
+            ownerAccountID: ownerAccountID,
+            accountID: currentAccountID,
+            role: memberRole,
+            serverMembershipID: serverMembershipID,
             context: context
         )
         try context.save()
@@ -632,6 +790,9 @@ actor FarmCompactBaselineRebuildService {
     private func activateRestoredFarm(
         package: FarmCompactBaselinePackageV1,
         ownerAccountID: UUID,
+        currentAccountID: UUID? = nil,
+        memberRole: FarmRole = .owner,
+        serverMembershipID: String? = nil,
         cursor: Int,
         context: ModelContext
     ) throws {
@@ -660,15 +821,54 @@ actor FarmCompactBaselineRebuildService {
         binding.lastPulledRevision = max(0, cursor)
         binding.lastSuccessfulSyncAt = .now
         context.insert(binding)
-        context.insert(FarmMembershipBinding(
-            serverMembershipID: "supabase:" +
-                "\(farmID.uuidString.lowercased()):" +
-                ownerAccountID.uuidString.lowercased(),
+        try upsertActiveMembership(
             farmID: farmID,
-            accountID: ownerAccountID,
-            role: .owner,
-            status: .active
-        ))
+            ownerAccountID: ownerAccountID,
+            accountID: currentAccountID ?? ownerAccountID,
+            role: memberRole,
+            serverMembershipID: serverMembershipID,
+            context: context
+        )
+    }
+
+    private func upsertActiveMembership(
+        farmID: UUID,
+        ownerAccountID: UUID,
+        accountID: UUID,
+        role: FarmRole,
+        serverMembershipID: String?,
+        context: ModelContext
+    ) throws {
+        guard let farm = try context.fetch(FetchDescriptor<FarmRecord>())
+            .first(where: { $0.id == farmID }),
+              farm.ownerAccountID == ownerAccountID else {
+            throw FarmCompactBaselineRebuildError.packageMismatch
+        }
+        farm.roleRawValue = role.rawValue
+        farm.membershipStatusRawValue = FarmMembershipStatus.active.rawValue
+        farm.updatedAt = .now
+
+        let identifier = serverMembershipID ??
+            "supabase:\(farmID.uuidString.lowercased()):" +
+            accountID.uuidString.lowercased()
+        if let membership = try context
+            .fetch(FetchDescriptor<FarmMembershipBinding>())
+            .first(where: {
+                $0.farmID == farmID && $0.accountID == accountID
+            }) {
+            membership.serverMembershipID = identifier
+            membership.roleRawValue = role.rawValue
+            membership.statusRawValue = FarmMembershipStatus.active.rawValue
+            membership.updatedAt = .now
+        } else {
+            context.insert(FarmMembershipBinding(
+                serverMembershipID: identifier,
+                farmID: farmID,
+                accountID: accountID,
+                role: role,
+                status: .active
+            ))
+        }
     }
 
     private func replaceTombstoneHistory(

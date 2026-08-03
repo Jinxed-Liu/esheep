@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(46);
+select plan(55);
 
 select set_config('esheep.test.user_a', gen_random_uuid()::text, false);
 select set_config('esheep.test.user_b', gen_random_uuid()::text, false);
@@ -233,6 +233,12 @@ select is(
   'user B cannot read farm Storage before invitation'
 );
 
+select is(
+  (select count(*)::integer from public.list_my_active_farm_access()),
+  0,
+  'user B has no active access snapshot before invitation'
+);
+
 select lives_ok(
   format(
     $$select public.redeem_farm_invite(%L)$$,
@@ -270,6 +276,21 @@ select is(
   ),
   1,
   'redeemed member can read invited farm Storage'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from public.list_my_active_farm_access() access
+    where access.farm_id = current_setting('esheep.test.farm_a')::uuid
+      and access.owner_user_id = current_setting('esheep.test.user_a')::uuid
+      and access.member_user_id = current_setting('esheep.test.user_b')::uuid
+      and access.member_role = 'worker'
+      and access.provider = 'supabase'
+      and access.farm_status = 'active'
+  ),
+  1,
+  'redeemed member receives a complete owner and membership access snapshot'
 );
 
 reset role;
@@ -324,6 +345,12 @@ select is(
   'revoked member loses Storage access after reauthentication'
 );
 
+select is(
+  (select count(*)::integer from public.list_my_active_farm_access()),
+  0,
+  'revoked member immediately loses the access snapshot'
+);
+
 reset role;
 select set_config(
   'request.jwt.claims',
@@ -376,7 +403,43 @@ select is(
   'uninvited user C cannot read farm Storage'
 );
 
+select is(
+  (select count(*)::integer from public.list_my_active_farm_access()),
+  0,
+  'uninvited user C has no active farm access snapshot'
+);
+
 reset role;
+
+select ok(
+  has_function_privilege(
+    'authenticated',
+    'public.list_my_active_farm_access()',
+    'EXECUTE'
+  ),
+  'authenticated users can request their own RLS-bound access snapshot'
+);
+
+select ok(
+  not has_function_privilege(
+    'anon',
+    'public.list_my_active_farm_access()',
+    'EXECUTE'
+  ),
+  'anonymous users cannot invoke the farm access snapshot'
+);
+
+select ok(
+  exists (
+    select 1
+    from pg_proc function
+    where function.oid =
+      'public.list_my_active_farm_access()'::regprocedure
+      and not function.prosecdef
+      and function.proconfig @> array['search_path=""']
+  ),
+  'access snapshot remains SECURITY INVOKER with an empty search_path'
+);
 
 select ok(
   has_function_privilege(
@@ -449,11 +512,11 @@ select is(
         'profiles', 'devices', 'farm_registry', 'farm_members', 'farm_invites',
         'farm_operations', 'farm_entities', 'farm_tombstones', 'farm_assets',
         'farm_checkpoints', 'authority_transitions', 'entitlements',
-        'account_deletion_requests'
+        'account_deletion_requests', 'icloud_capability_certificates'
       )
   ),
-  13,
-  'all thirteen public business tables have RLS enabled'
+  14,
+  'all fourteen public business and control-plane tables have RLS enabled'
 );
 
 select is(
@@ -465,7 +528,7 @@ select is(
         ('farm_invites'), ('farm_operations'), ('farm_entities'),
         ('farm_tombstones'), ('farm_assets'), ('farm_checkpoints'),
         ('authority_transitions'), ('entitlements'),
-        ('account_deletion_requests')
+        ('account_deletion_requests'), ('icloud_capability_certificates')
     ) as business_table(table_name)
     where has_table_privilege(
       'authenticated',
@@ -712,6 +775,35 @@ select is(
   ),
   0,
   'clients have no Realtime Broadcast insert policy'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from pg_policies
+    where schemaname = 'realtime'
+      and tablename = 'messages'
+      and roles @> array['authenticated'::name]
+      and cmd = 'SELECT'
+  ),
+  1,
+  'exactly one authenticated Realtime receive policy is installed'
+);
+
+select ok(
+  exists (
+    select 1
+    from pg_policies
+    where schemaname = 'realtime'
+      and tablename = 'messages'
+      and policyname = 'farm_realtime_receive_member'
+      and cmd = 'SELECT'
+      and qual ilike '%extension%'
+      and qual ilike '%broadcast%'
+      and qual ilike '%is_active_farm_member%'
+      and qual ilike '%realtime_farm_id%'
+  ),
+  'private Realtime receive authorization uses topic membership probe inputs'
 );
 
 select ok(

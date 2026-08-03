@@ -532,7 +532,11 @@ struct CloudCollaborationCenterView: View {
                     systemImage: "externaldrive.badge.icloud"
                 )
             }
-            CloudMetricRow(title: "照片传输", value: farmTransfers.filter { $0.statusRawValue != CloudAssetTransferStatus.completed.rawValue }.count, systemImage: "photo.stack")
+            CloudMetricRow(
+                title: "照片传输",
+                value: farmTransfers.filter { !$0.status.isTerminal }.count,
+                systemImage: "photo.stack"
+            )
             Text("CKShare 不能提供 App 字段级服务端权限。这里的证书、设备签名、隔离与恢复属于风险缓解机制，不等同于绝对不可绕过的服务端授权。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)

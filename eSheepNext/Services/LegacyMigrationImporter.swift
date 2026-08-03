@@ -161,7 +161,7 @@ enum LegacyMigrationImporter {
         for (i, vaccine) in records(health["vaccineRecords"]).enumerated() { for (j, tag) in (vaccine["sheepTagsSnapshot"] as? [String] ?? []).enumerated() { assignments.append(MigrationRecordAssignment(id: "health.vaccineRecords[\(i)].sheepTagsSnapshot[\(j)]", kind: "免疫对象", legacyEarTag: tag, dateText: string(vaccine["date"]), penHint: string(vaccine["pen"]), targetSheepSourceKey: nil, exclusionReason: nil)) } }
         for (i, entry) in photoEntries(media).enumerated() { assignments.append(MigrationRecordAssignment(id: "media.photoData[\(i)]", kind: "照片", legacyEarTag: entry.tag, dateText: "", penHint: nil, targetSheepSourceKey: nil, exclusionReason: nil)) }
         appendHistoricalArchiveCandidates(to: &candidates, assignments: assignments)
-        let id = UUID(); let checksum = SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined(); var session = MigrationSession(id: id, manifest: MigrationManifest(sessionID: id, sourceChecksum: checksum, sourceSchemaVersion: report.schemaVersion, importedAt: .now, importerVersion: 3), sourcePayload: source, inspectorReport: report, sheep: candidates, assignments: assignments, issues: [])
+        let id = UUID(); let checksum = SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined(); var session = MigrationSession(id: id, manifest: MigrationManifest(sessionID: id, sourceChecksum: checksum, sourceSchemaVersion: report.schemaVersion, importedAt: .now, importerVersion: 4), sourcePayload: source, inspectorReport: report, sheep: candidates, assignments: assignments, issues: [])
         applyAutomaticIdentityResolution(to: &session)
         validateSource(root: root, session: &session); MigrationResolutionService.refreshIssues(&session); try MigrationWorkspaceStore.save(session); return session
     }
@@ -363,7 +363,7 @@ enum LegacyMigrationImporter {
         convertLegacyTimelineEvents(root: root, session: session, farm: farm, sheep: bySource, context: context)
         let handledPedigreeSources = convertPedigree(root: root, session: session, farm: farm, sheep: bySource, context: context)
         archiveFactsAwaitingStructuredMigration(root: root, session: session, context: context, handledPedigreeSources: handledPedigreeSources)
-        for (i, photo) in photoEntries(media).enumerated() { guard let source = assignments["media.photoData[\(i)]"]?.targetSheepSourceKey, let sheep = bySource[source] else { continue }; let payload = photo.base64.components(separatedBy: ",").last ?? photo.base64; guard let data = Data(base64Encoded: payload, options: .ignoreUnknownCharacters) else { continue }; let sourceKey = "media.photoData[\(i)]"; let relative = "assets/photo-\(i).bin"; try data.write(to: staging.directory.appending(path: relative), options: .atomic); let asset = PhotoAssetRecord(id: stable(sourceKey), farmID: farm.id, sheepID: sheep.id, legacySourceKey: sourceKey, originalEarTag: photo.tag, relativePath: relative, sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()); context.insert(asset); audit(context, session, sourceKey, "photo", ["tag": photo.tag], [asset.id]) }
+        for (i, photo) in photoEntries(media).enumerated() { guard let source = assignments["media.photoData[\(i)]"]?.targetSheepSourceKey, let sheep = bySource[source] else { continue }; let payload = photo.base64.components(separatedBy: ",").last ?? photo.base64; guard let data = Data(base64Encoded: payload, options: .ignoreUnknownCharacters) else { continue }; let sourceKey = "media.photoData[\(i)]"; let relative = "assets/photo-\(i).bin"; try data.write(to: staging.directory.appending(path: relative), options: .atomic); let asset = PhotoAssetRecord(id: stable(sourceKey), farmID: farm.id, sheepID: sheep.id, legacySourceKey: sourceKey, originalEarTag: photo.tag, relativePath: relative, sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()); context.insert(asset); audit(context, session, sourceKey, "photo", ["tag": photo.tag, "sourceName": photo.sourceName], [asset.id]) }
         try context.save(); try FarmHistoryRebuilder().rebuild(farmID: farm.id, context: context); try context.save(); let reconciliation = MigrationReconciliationService.compare(source: session.inspectorReport.counts, session: session, context: context, farmID: farm.id, assetsDirectory: staging.directory, baseline: MigrationWorkspaceStore.baseline(for: session.id)); try JSONEncoder().encode(reconciliation).write(to: staging.reportURL, options: .atomic)
         try MigrationWorkspaceStore.commit(staging)
         return MigrationTemporaryFarm(container: container, farmID: farm.id, reconciliation: reconciliation)
@@ -789,7 +789,7 @@ enum LegacyMigrationImporter {
         for (i, photo) in photoEntries(media).enumerated() {
             let payload = photo.base64.components(separatedBy: ",").last ?? photo.base64
             if Data(base64Encoded: payload, options: .ignoreUnknownCharacters) == nil {
-                session.issues.append(MigrationIssue(severity: .blocking, title: "照片无法解码", detail: "耳号 \(photo.tag) 的照片数据损坏。", sourceKey: "media.photoData[\(i)]"))
+                session.issues.append(MigrationIssue(severity: .blocking, title: "照片无法解码", detail: "照片 \(photo.sourceName)（识别耳号 \(photo.tag)）的数据损坏。", sourceKey: "media.photoData[\(i)]"))
             }
         }
 
@@ -1032,5 +1032,22 @@ private func sex(_ value: String) -> SheepSex {
     value == "母" ? .ewe : ["公", "种公"].contains(value) ? .ram : .unknown
 }
 private func appendAssignments(_ output: inout [MigrationRecordAssignment], kind: String, path: String, records: [[String: Any]], tagKey: String, penKey: String? = nil) { for (index, item) in records.enumerated() { output.append(MigrationRecordAssignment(id: "\(path)[\(index)]", kind: kind, legacyEarTag: string(item[tagKey]), dateText: string(item["date"]), penHint: penKey.map { string(item[$0]) }, targetSheepSourceKey: nil, exclusionReason: nil)) } }
-private func photoEntries(_ media: [String: Any]) -> [(tag: String, base64: String)] { (media["photoData"] as? [String: String] ?? [:]).sorted(by: { $0.key < $1.key }).map { ($0.key, $0.value) } }
+private struct LegacyPhotoEntry {
+    let tag: String
+    let sourceName: String
+    let base64: String
+}
+
+private func photoEntries(_ media: [String: Any]) -> [LegacyPhotoEntry] {
+    (media["photoData"] as? [String: String] ?? [:])
+        .sorted(by: { $0.key < $1.key })
+        .map { sourceName, base64 in
+            LegacyPhotoEntry(
+                tag: LegacyPhotoFilenameIdentity.earTag(from: sourceName)
+                    ?? sourceName.trimmingCharacters(in: .whitespacesAndNewlines),
+                sourceName: sourceName,
+                base64: base64
+            )
+        }
+}
 private func audit(_ context: ModelContext, _ session: MigrationSession, _ sourceKey: String, _ type: String, _ payload: Any, _ targetIDs: [UUID], resolution: String = "converted", exclusionReason: String? = nil) { let data = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data(); let raw = String(data: data, encoding: .utf8) ?? "{}"; let ids = (try? String(data: JSONEncoder().encode(targetIDs.map(\.uuidString)), encoding: .utf8)) ?? "[]"; context.insert(MigrationAuditRecord(id: StableMigrationID.uuid(sessionID: session.id, sourceKey: "audit:\(sourceKey)"), sessionID: session.id, sourceKey: sourceKey, entityType: type, targetEntityIDsJSON: ids, rawPayloadJSON: raw, resolution: resolution, exclusionReason: exclusionReason)) }

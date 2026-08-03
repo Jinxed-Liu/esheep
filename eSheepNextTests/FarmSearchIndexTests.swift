@@ -1,3 +1,4 @@
+import SwiftData
 import XCTest
 @testable import eSheepNext
 
@@ -59,6 +60,59 @@ final class FarmSearchIndexTests: XCTestCase {
         XCTAssertEqual(result.pens.count, 20)
         XCTAssertEqual(result.totalPenCount, 100)
         XCTAssertTrue(result.hasMorePens)
+    }
+
+    @MainActor
+    func testIndexLoadsSelectedAvatarAndLeavesUnselectedSheepOnDefault() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "search-avatar-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let selectedSheep = SheepRecord(
+            farmID: farmID,
+            earTag: "A001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: .now
+        )
+        let defaultSheep = SheepRecord(
+            farmID: farmID,
+            earTag: "A002",
+            breed: "湖羊",
+            sex: .ram,
+            penID: nil,
+            enteredAt: .now
+        )
+        let photo = PhotoAssetRecord(
+            farmID: farmID,
+            sheepID: selectedSheep.id,
+            legacySourceKey: "test:search-avatar",
+            originalEarTag: selectedSheep.earTag,
+            relativePath: "Assets/search-avatar.jpg",
+            sha256: "search-avatar-digest"
+        )
+        context.insert(selectedSheep)
+        context.insert(defaultSheep)
+        context.insert(photo)
+        context.insert(SheepAvatarRecord(
+            farmID: farmID,
+            sheepID: selectedSheep.id,
+            photoAssetID: photo.id
+        ))
+        try context.save()
+
+        let source = try await FarmSearchIndexActor(container: container).load(farmID: farmID)
+        let selectedEntry = try XCTUnwrap(source.sheep.first { $0.id == selectedSheep.id })
+        let defaultEntry = try XCTUnwrap(source.sheep.first { $0.id == defaultSheep.id })
+
+        XCTAssertEqual(
+            selectedEntry.avatarPhoto,
+            SheepPhotoReference(id: photo.id, digest: photo.sha256)
+        )
+        XCTAssertNil(defaultEntry.avatarPhoto)
     }
 
     private func sheep(

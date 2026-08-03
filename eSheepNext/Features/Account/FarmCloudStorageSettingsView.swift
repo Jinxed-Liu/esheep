@@ -56,8 +56,15 @@ struct FarmCloudStorageSettingsView: View {
         outboxItems.count {
             $0.farmID == farm.id
                 && $0.deliveryProvider == .supabase
-                && $0.status != .confirmed
-                && $0.status != .notRequiredLocalOnly
+                && !$0.status.isTerminalDelivery
+        }
+    }
+
+    private var quarantinedOutboxCount: Int {
+        outboxItems.count {
+            $0.farmID == farm.id
+                && $0.deliveryProvider == .supabase
+                && $0.status == .quarantinedMembershipRevoked
         }
     }
 
@@ -190,6 +197,12 @@ struct FarmCloudStorageSettingsView: View {
                         value: (remoteBinding?.lastPulledRevision ?? 0).formatted()
                     )
                     LabeledContent("Outbox", value: pendingOutboxCount.formatted())
+                    if quarantinedOutboxCount > 0 {
+                        LabeledContent(
+                            "撤权隔离",
+                            value: quarantinedOutboxCount.formatted()
+                        )
+                    }
                     if let remoteStorageMetrics {
                         LabeledContent(
                             "云端实体",
@@ -410,12 +423,17 @@ struct FarmCloudStorageSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await refresh()
+            var developmentRefreshTick = 0
             while !Task.isCancelled {
                 refreshCompactRebuildProgress()
                 do {
                     try await Task.sleep(for: .seconds(1))
                 } catch {
                     return
+                }
+                developmentRefreshTick += 1
+                if developmentRefreshTick.isMultiple(of: 5) {
+                    await refreshRemoteDiagnostics()
                 }
             }
         }
@@ -457,26 +475,38 @@ struct FarmCloudStorageSettingsView: View {
                 context: modelContext
             )
             entitlement = try await SupabaseEntitlementClient(client: client).current()
-            if profile?.mode == .supabase {
-                remoteStorageMetrics = try await
-                    SupabaseFarmStorageMetricsClient(client: client)
-                    .metrics(farmID: farm.id)
-                if let migration = baselineProgress {
-                    remoteTransitionStatus = try? await
-                        SupabaseFarmTransport(client: client)
-                        .compactAuthorityTransitionStatus(
-                            farmID: farm.id,
-                            migrationID: migration.migrationID
-                        )
-                } else {
-                    remoteTransitionStatus = nil
-                }
+            await refreshRemoteDiagnostics()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func refreshRemoteDiagnostics() async {
+        guard profile?.mode == .supabase,
+              let client = AccountIdentityClients.supabaseClient else {
+            remoteStorageMetrics = nil
+            remoteTransitionStatus = nil
+            return
+        }
+        guard !DevelopmentSupabaseNetworkGate.isForcedOffline else { return }
+        do {
+            remoteStorageMetrics = try await
+                SupabaseFarmStorageMetricsClient(client: client)
+                .metrics(farmID: farm.id)
+            if let migration = baselineProgress {
+                remoteTransitionStatus = try? await
+                    SupabaseFarmTransport(client: client)
+                    .compactAuthorityTransitionStatus(
+                        farmID: farm.id,
+                        migrationID: migration.migrationID
+                    )
             } else {
-                remoteStorageMetrics = nil
                 remoteTransitionStatus = nil
             }
         } catch {
-            errorMessage = error.localizedDescription
+            // Diagnostics are observational and must not interrupt farm work.
+            // Preserve the last successful values while normal sync reports its
+            // own durable error state.
         }
     }
 

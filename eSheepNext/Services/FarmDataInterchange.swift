@@ -322,7 +322,7 @@ enum FarmImportCommitService {
                     penID = pens.first(where: { $0.name.localizedCaseInsensitiveCompare(requestedPen) == .orderedSame })?.id
                 }
             }
-            try commandService.execute(.addSheep(earTag: row.earTag, breed: row.breed, sex: row.sex, penID: penID, occurredAt: row.enteredAt, birthAt: row.birthAt, note: row.note), in: farmContext, context: context)
+            try commandService.execute(.addSheep(earTag: row.earTag, breed: row.breed, sex: row.sex, penID: penID, occurredAt: row.enteredAt, birthAt: row.birthAt, currentParity: row.sex == .ewe ? 0 : nil, note: row.note), in: farmContext, context: context)
             imported += 1
         }
         return FarmImportCommitResult(importedCount: imported, skippedCount: skipped)

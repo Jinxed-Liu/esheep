@@ -74,6 +74,7 @@ enum FarmCommandCloudPayloadDecoder {
                 penID: optionalIdentifier("penID", in: payload),
                 occurredAt: try date("occurredAt", in: payload),
                 birthAt: optionalDate("birthAt", in: payload),
+                currentParity: payload.integers["currentParity"],
                 note: try string("note", in: payload)
             )
         case .updateSheepProfile:
@@ -87,6 +88,8 @@ enum FarmCommandCloudPayloadDecoder {
                     value: try string("sex", in: payload)
                 ),
                 birthAt: optionalDate("birthAt", in: payload),
+                currentParity: payload.integers["currentParity"],
+                parityRecordedAt: payload.dates["parityRecordedAt"],
                 note: try string("note", in: payload)
             )
         case .recordWeight:

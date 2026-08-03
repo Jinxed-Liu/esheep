@@ -1,6 +1,6 @@
 # Development advisor review
 
-Reviewed: 2026-07-28
+Reviewed: 2026-08-02
 
 ## Security Advisor
 
@@ -21,11 +21,12 @@ entitlements. Converting them to invoker functions would require widening
 direct table write privileges and would weaken the single transactional write
 boundary.
 
-The 16 externally reported functions were reviewed individually:
+The 27 externally reported security-definer functions were reviewed individually:
 
 | RPC | Server-side authorization and concurrency evidence |
 | --- | --- |
 | `register_device` | Requires `auth.uid()` and writes only the caller's device row. |
+| `register_owned_icloud_farm` | Requires `auth.uid()`, the caller's matching app account, an active caller-owned device, the canonical CloudKit zone and no conflicting provider; stores control-plane metadata only. |
 | `claim_legacy_account` | Requires `auth.uid()` and a server-created, unexpired, one-time ticket; not exposed in this Development UI. |
 | `request_account_deletion` | Requires `auth.uid()` and records only the caller's request; the UI is disabled until the deletion worker exists. |
 | `register_farm_authority` | Requires `auth.uid()`, owner eligibility and Supabase entitlement before creating owner membership. |
@@ -40,13 +41,29 @@ The 16 externally reported functions were reviewed individually:
 | `stage_farm_operations_batch` | Requires the transition owner, migration ID, target generation, ordered client sequence and operation-ID idempotency. |
 | `create_farm_invite` | Requires owner or administrator membership, an allowed role, a 64-character SHA-256 digest and expiry within 24 hours. |
 | `redeem_farm_invite` | Requires `auth.uid()`, atomically consumes one unexpired digest and creates only the selected farm membership. |
-| `revoke_farm_member` | Requires owner or administrator membership, forbids owner removal and revokes only the selected active member. |
+| `revoke_farm_member` | Requires owner or administrator membership, forbids owner removal, revokes only the selected member and invalidates that member's active iCloud capabilities. |
+| `abort_farm_authority_transition` | Requires the transition owner and exact migration ID, and rejects an authority that has already been committed. |
+| `begin_compact_farm_authority_transition` | Requires the owner, entitlement, next generation, archive digest and a farm transaction lock. |
+| `complete_farm_authority_transition` | Requires the owner, committed migration ID, active Supabase authority and expected generation; repeated completion is idempotent. |
+| `get_compact_authority_transition_status` | Requires the transition owner and exact migration ID, and returns only that migration's resumable progress. |
+| `get_farm_authority_transition_status` | Requires the transition owner and exact migration ID, and exposes no cross-farm transition state. |
+| `get_farm_storage_metrics` | Requires active membership and returns aggregate storage counters rather than business payloads. |
+| `register_compact_farm_checkpoint` | Requires the transition owner, migration ID, generation, private Storage path, archive digest and declared projection/history/asset counts. |
+| `stage_farm_baseline_batch` | Requires the transition owner, migration ID and target generation; enforces the 25-item limit and immutable operation-ID semantics. |
+| `stage_farm_projection_batch` | Requires the transition owner, migration ID and target generation; validates projection identity, revision and digest before staging. |
+| `verify_and_activate_compact_farm_authority` | Requires the transition owner and exact migration/checkpoint/generation/archive digest, then verifies all declared counts before the one authority commit. |
 
 The live catalog check also confirmed that every callable RPC pins
 `search_path=""`, grants `EXECUTE` only to `authenticated`, and denies `anon`.
 The pgTAP suite separately proves direct-table rejection, cross-farm denial,
 one-time invite consumption, Storage isolation and post-revocation loss of
 access.
+
+`list_my_active_farm_access` is intentionally not in the warning table: it is
+`SECURITY INVOKER`, pins `search_path=""`, reads through `farm_members` RLS,
+returns only rows for the current `auth.uid()`, and grants execution only to
+`authenticated`. It is the client access snapshot used before login recovery,
+foreground synchronization and Realtime reconnects.
 
 The hosted project's legacy `supabase_admin` default ACL cannot be altered by
 the customer migration role (`permission denied to change default
@@ -58,6 +75,17 @@ effective access.
 
 The legacy-account and account-deletion RPCs are present for the wider 3.1
 schema but remain outside this Development vertical slice.
+
+`icloud_capability_certificates` has RLS enabled and grants no client table
+access. The authenticated Edge Function validates the caller through the
+invoker/RLS client before its service-role client signs, rotates or reads the
+certificate trust set. The P-256 private key exists only as a hosted project
+secret; the iOS app contains public verification keys only.
+
+The Advisor `rls_enabled_no_policy` INFO for that table is intentional: adding
+a client policy would widen access to server-only certificate material. Direct
+client privileges are revoked and pgTAP proves `authenticated` cannot query or
+mutate the table.
 
 ## Performance Advisor
 

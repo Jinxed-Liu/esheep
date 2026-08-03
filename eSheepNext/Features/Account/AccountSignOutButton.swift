@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AccountSignOutButton: View {
     @Environment(AppSession.self) private var session
+    @Environment(CloudCollaborationStore.self) private var collaboration
 
     @State private var isConfirming = false
     @State private var isSigningOut = false
@@ -36,6 +37,7 @@ struct AccountSignOutButton: View {
             defer { isSigningOut = false }
             do {
                 let result = try await AccountIdentityClients.active().signOut()
+                collaboration.suspendSupabaseSynchronization()
                 session.authenticationDidSignOut(warning: result.warningMessage)
             } catch {
                 errorMessage = error.localizedDescription

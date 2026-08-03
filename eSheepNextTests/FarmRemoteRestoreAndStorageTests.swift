@@ -5,6 +5,106 @@ import XCTest
 
 @MainActor
 final class FarmRemoteRestoreAndStorageTests: XCTestCase {
+    func testUnreadableCompactStagingStoreIsArchivedBeforeRebuild() throws {
+        let farmID = UUID()
+        let migrationID = UUID()
+        let storeURL = FarmCompactBaselineRebuildProgressStore.storeURL(
+            farmID: farmID,
+            migrationID: migrationID
+        )
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+        let archiveRoot = support
+            .appending(path: "SupabaseCompactStagingIncompatible")
+            .appending(path: farmID.uuidString.lowercased())
+            .appending(path: migrationID.uuidString.lowercased())
+        defer {
+            try? FileManager.default.removeItem(
+                at: storeURL.deletingLastPathComponent()
+            )
+            try? FileManager.default.removeItem(
+                at: archiveRoot
+            )
+        }
+
+        try FileManager.default.createDirectory(
+            at: storeURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("unknown-model".utf8).write(to: storeURL)
+        try Data("wal".utf8).write(
+            to: URL(fileURLWithPath: storeURL.path + "-wal")
+        )
+
+        try FarmCompactBaselineRebuildProgressStore
+            .archiveIncompatibleStore(
+                farmID: farmID,
+                migrationID: migrationID,
+                error: NSError(
+                    domain: NSCocoaErrorDomain,
+                    code: 134_504,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Cannot use staged migration with an unknown model version."
+                    ]
+                )
+            )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: storeURL.path))
+        let archives = try FileManager.default.contentsOfDirectory(
+            at: archiveRoot,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(archives.count, 1)
+        let archive = try XCTUnwrap(archives.first)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: archive.appending(path: "staging.store").path
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: archive.appending(path: "staging.store-wal").path
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: archive.appending(path: "recovery.json").path
+        ))
+    }
+
+    func testSupabaseAccessDescriptorDecodesOwnerAndCurrentMemberSeparately() throws {
+        let farmID = UUID()
+        let ownerUserID = UUID()
+        let ownerAccountID = UUID()
+        let memberUserID = UUID()
+        let memberAccountID = UUID()
+        let json = """
+        {
+          "farm_id": "\(farmID.uuidString.lowercased())",
+          "owner_user_id": "\(ownerUserID.uuidString.lowercased())",
+          "owner_app_account_id": "\(ownerAccountID.uuidString.lowercased())",
+          "member_user_id": "\(memberUserID.uuidString.lowercased())",
+          "member_app_account_id": "\(memberAccountID.uuidString.lowercased())",
+          "member_role": "worker",
+          "provider": "supabase",
+          "farm_status": "active",
+          "authority_generation": 1,
+          "current_revision": 492
+        }
+        """
+        let value = try JSONDecoder().decode(
+            SupabaseFarmAccessDescriptor.self,
+            from: Data(json.utf8)
+        )
+
+        XCTAssertEqual(value.farmID, farmID)
+        XCTAssertEqual(value.ownerAccountID, ownerAccountID)
+        XCTAssertEqual(value.memberAccountID, memberAccountID)
+        XCTAssertEqual(value.memberRole, .worker)
+        XCTAssertEqual(value.currentRevision, 492)
+        XCTAssertTrue(value.serverMembershipID.contains(
+            memberUserID.uuidString.lowercased()
+        ))
+    }
+
     @MainActor
     func testDevelopmentRestorePausePointIsConsumedOnce() {
         let suiteName = "DevelopmentSupabaseRestoreGateTests.\(UUID())"
@@ -39,11 +139,15 @@ final class FarmRemoteRestoreAndStorageTests: XCTestCase {
 
     func testRestoreRecordPersistsEveryRecoveryBoundary() throws {
         let accountID = UUID()
+        let ownerAccountID = UUID()
         let farmID = UUID()
         let record = FarmRemoteRestoreRecord(
             accountID: accountID,
             farmID: farmID,
             authorityGeneration: 1,
+            ownerAccountID: ownerAccountID,
+            memberRole: .worker,
+            serverMembershipID: "membership-1",
             targetCursorRevision: 42
         )
 
@@ -65,9 +169,148 @@ final class FarmRemoteRestoreAndStorageTests: XCTestCase {
         XCTAssertTrue(record.state.isTerminal)
         XCTAssertNotNil(record.completedAt)
         XCTAssertEqual(record.accountID, accountID)
+        XCTAssertEqual(record.ownerAccountID, ownerAccountID)
+        XCTAssertEqual(record.memberRole, .worker)
+        XCTAssertEqual(record.serverMembershipID, "membership-1")
         XCTAssertEqual(record.farmID, farmID)
         XCTAssertEqual(record.authorityGeneration, 1)
         XCTAssertEqual(record.targetCursorRevision, 42)
+    }
+
+    func testSupabaseMemberFarmVisibilityRequiresEveryVerifiedBoundary() {
+        XCTAssertTrue(SupabaseFarmAccessIsolationPolicy.isVisible(
+            bindingState: .active,
+            membershipStatus: .active,
+            restoreState: .completed
+        ))
+        XCTAssertFalse(SupabaseFarmAccessIsolationPolicy.isVisible(
+            bindingState: .active,
+            membershipStatus: .active,
+            restoreState: .downloadingAssets
+        ))
+        XCTAssertFalse(SupabaseFarmAccessIsolationPolicy.isVisible(
+            bindingState: .accessRevoked,
+            membershipStatus: .revoked,
+            restoreState: .completed
+        ))
+        XCTAssertFalse(SupabaseFarmAccessIsolationPolicy.isVisible(
+            bindingState: .active,
+            membershipStatus: nil,
+            restoreState: nil
+        ))
+    }
+
+    func testMembershipRevocationQuarantinesOnlyNonterminalOutbox() {
+        XCTAssertTrue(SupabaseFarmAccessIsolationPolicy.shouldQuarantine(.pending))
+        XCTAssertTrue(SupabaseFarmAccessIsolationPolicy.shouldQuarantine(.uploading))
+        XCTAssertTrue(SupabaseFarmAccessIsolationPolicy.shouldQuarantine(.blockedConflict))
+        XCTAssertFalse(SupabaseFarmAccessIsolationPolicy.shouldQuarantine(.confirmed))
+        XCTAssertFalse(SupabaseFarmAccessIsolationPolicy.shouldQuarantine(
+            .quarantinedMembershipRevoked
+        ))
+        XCTAssertFalse(SupabaseFarmAccessIsolationPolicy.shouldQuarantine(
+            .supersededRemoteAuthority
+        ))
+        XCTAssertTrue(
+            OutboxStatus.quarantinedMembershipRevoked.isTerminalDelivery
+        )
+        XCTAssertTrue(OutboxStatus.supersededRemoteAuthority.isTerminalDelivery)
+        XCTAssertFalse(OutboxStatus.blockedConflict.isTerminalDelivery)
+    }
+
+    func testMemberAccessActivationPreservesNewerAuthoritativeCache() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "MemberAccessActivationTests",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let ownerAccountID = UUID()
+        let memberAccountID = UUID()
+        let operationID = UUID()
+        let entityID = UUID()
+        let farm = FarmRecord(
+            id: farmID,
+            ownerAccountID: ownerAccountID,
+            name: "星露谷",
+            role: .owner
+        )
+        context.insert(farm)
+        context.insert(FarmStorageProfile(
+            farmID: farmID,
+            mode: .supabase,
+            authorityGeneration: 1
+        ))
+        let binding = FarmRemoteBinding(
+            farmID: farmID,
+            ownerAccountID: ownerAccountID,
+            provider: .supabase,
+            state: .active,
+            authorityGeneration: 1
+        )
+        binding.lastPulledRevision = 492
+        context.insert(binding)
+        context.insert(FarmMembershipBinding(
+            serverMembershipID: "owner-membership",
+            farmID: farmID,
+            accountID: ownerAccountID,
+            role: .owner,
+            status: .active
+        ))
+        context.insert(DomainOperation(
+            id: operationID,
+            farmID: farmID,
+            accountID: ownerAccountID,
+            kind: .addNote,
+            summary: "较新增量"
+        ))
+        context.insert(TombstoneRecord(
+            farmID: farmID,
+            entityType: CloudEntityType.note.rawValue,
+            entityID: entityID,
+            deletedByAccountID: ownerAccountID,
+            reason: "测试删除",
+            revision: 27,
+            operationID: operationID
+        ))
+        try context.save()
+
+        try await FarmCompactBaselineRebuildService()
+            .finalizeExistingAuthoritativeCacheAccess(
+                farmID: farmID,
+                ownerAccountID: ownerAccountID,
+                currentAccountID: memberAccountID,
+                memberRole: .worker,
+                serverMembershipID: "member-membership",
+                authorityGeneration: 1,
+                checkpointCursor: 0,
+                container: container
+            )
+
+        let verified = ModelContext(container)
+        let verifiedFarm = try XCTUnwrap(
+            verified.fetch(FetchDescriptor<FarmRecord>()).first
+        )
+        let verifiedBinding = try XCTUnwrap(
+            verified.fetch(FetchDescriptor<FarmRemoteBinding>()).first
+        )
+        XCTAssertEqual(verifiedFarm.ownerAccountID, ownerAccountID)
+        XCTAssertEqual(verifiedFarm.role, .worker)
+        XCTAssertEqual(verifiedBinding.lastPulledRevision, 492)
+        XCTAssertEqual(
+            try verified.fetchCount(FetchDescriptor<DomainOperation>()),
+            1
+        )
+        XCTAssertEqual(
+            try verified.fetchCount(FetchDescriptor<TombstoneRecord>()),
+            1
+        )
+        let member = try XCTUnwrap(
+            verified.fetch(FetchDescriptor<FarmMembershipBinding>())
+                .first(where: { $0.accountID == memberAccountID })
+        )
+        XCTAssertEqual(member.role, .worker)
+        XCTAssertEqual(member.status, .active)
     }
 
     func testInventoryOnlyCleansAllowlistedTerminalWorkspacesAfterBackupConfirmation() throws {

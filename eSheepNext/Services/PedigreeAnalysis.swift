@@ -168,6 +168,61 @@ struct PedigreeProfileSnapshot: Sendable, Equatable {
     let audits: [PedigreeAuditSummary]
 }
 
+struct PedigreeScreenSnapshot: Sendable, Equatable {
+    let profile: PedigreeProfileSnapshot?
+    let sireCandidates: [PedigreeSireCandidate]
+    let gestationDays: Int
+}
+
+struct PedigreeBatchSireProposal: Identifiable, Sendable, Equatable {
+    var id: UUID { child.id }
+    let child: PedigreeSheepSnapshot
+    let candidate: PedigreeSireCandidate
+}
+
+struct PedigreeCheckSnapshot: Sendable, Equatable {
+    let issues: [PedigreeIssue]
+    let batchSireProposals: [PedigreeBatchSireProposal]
+    let earTagsByID: [UUID: String]
+    let gestationDays: Int
+}
+
+/// Keeps the full-farm SwiftData read off the navigation/render executor.
+///
+/// A real farm can retain thousands of historical sheep and transfer records.
+/// Building the profile and sire-candidate index from the view's `ModelContext`
+/// blocks SwiftUI until every model has faulted and been indexed.
+actor PedigreeSnapshotActor {
+    private let container: ModelContainer
+
+    init(container: ModelContainer) {
+        self.container = container
+    }
+
+    func load(sheepID: UUID, farmID: UUID) throws -> PedigreeScreenSnapshot {
+        try Task.checkCancellation()
+        let context = ModelContext(container)
+        let snapshot = try PedigreeAnalysis.screenSnapshot(
+            sheepID: sheepID,
+            farmID: farmID,
+            context: context
+        )
+        try Task.checkCancellation()
+        return snapshot
+    }
+
+    func loadCheck(farmID: UUID) throws -> PedigreeCheckSnapshot {
+        try Task.checkCancellation()
+        let context = ModelContext(container)
+        let snapshot = try PedigreeAnalysis.checkSnapshot(
+            farmID: farmID,
+            context: context
+        )
+        try Task.checkCancellation()
+        return snapshot
+    }
+}
+
 protocol PedigreeCandidateRanking: Sendable {
     func score(_ features: PedigreeCandidateFeatures) -> Double
 }
@@ -181,7 +236,6 @@ struct RuleBasedPedigreeCandidateRanking: PedigreeCandidateRanking {
 
 #if canImport(CoreML)
 /// 只有随 App 提供经过验收的 `PedigreeSireRanker.mlmodelc` 时才启用；模型输出只排序候选，不确认父本。
-@MainActor
 final class BundledCoreMLPedigreeCandidateRanking {
     private let model: MLModel
 
@@ -235,6 +289,13 @@ enum PedigreeAnalysis {
 
     @MainActor
     static func loadInput(farmID: UUID, context: ModelContext) throws -> PedigreeAnalysisInput {
+        try readInput(farmID: farmID, context: context)
+    }
+
+    private nonisolated static func readInput(
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> PedigreeAnalysisInput {
         let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
         }))
@@ -264,13 +325,214 @@ enum PedigreeAnalysis {
         context: ModelContext,
         ranking: any PedigreeCandidateRanking = RuleBasedPedigreeCandidateRanking()
     ) throws -> [PedigreeSireCandidate] {
-        let input = try loadInput(farmID: farmID, context: context)
+        let input = try readInput(farmID: farmID, context: context)
+        let penNames = try readPenNames(farmID: farmID, context: context)
+        return makeSireCandidates(
+            input: input,
+            eweID: eweID,
+            lambingAt: lambingAt,
+            gestationDays: gestationDays,
+            penNames: penNames,
+            ranking: ranking
+        )
+    }
+
+    /// One immutable read used by the pedigree screen.
+    ///
+    /// The sheep collection is fetched once and shared by the relationship and
+    /// sire-candidate projections. Transfer history is only fetched when the
+    /// selected sheep actually needs a sire candidate.
+    nonisolated static func screenSnapshot(
+        sheepID: UUID,
+        farmID: UUID,
+        context: ModelContext,
+        ranking: any PedigreeCandidateRanking = RuleBasedPedigreeCandidateRanking()
+    ) throws -> PedigreeScreenSnapshot {
+        try Task.checkCancellation()
+        let gestationDays = try context.fetch(FetchDescriptor<FarmCareRuleRecord>(predicate: #Predicate {
+            $0.farmID == farmID
+        })).first?.gestationDays ?? 150
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        })).map(PedigreeSheepSnapshot.init)
+        try Task.checkCancellation()
+        let penNames = try readPenNames(farmID: farmID, context: context)
+        let profile = try makeProfile(
+            sheepID: sheepID,
+            farmID: farmID,
+            sheep: sheep,
+            penNames: penNames,
+            context: context
+        )
+        guard let record = profile?.record,
+              record.sireID == nil,
+              record.semenDonorID == nil,
+              let eweID = record.damID,
+              let birthAt = record.birthAt else {
+            return PedigreeScreenSnapshot(
+                profile: profile,
+                sireCandidates: [],
+                gestationDays: gestationDays
+            )
+        }
+
+        let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        })).map {
+            TransferSnapshot(
+                sheepID: $0.sheepID,
+                toPenID: $0.toPenID,
+                occurredAt: $0.occurredAt,
+                recordedAt: $0.recordedAt,
+                stableID: $0.id
+            )
+        }
+        try Task.checkCancellation()
+        let candidates = makeSireCandidates(
+            input: PedigreeAnalysisInput(sheep: sheep, transfers: transfers),
+            eweID: eweID,
+            lambingAt: birthAt,
+            gestationDays: gestationDays,
+            penNames: penNames,
+            ranking: ranking
+        )
+        return PedigreeScreenSnapshot(
+            profile: profile,
+            sireCandidates: candidates,
+            gestationDays: gestationDays
+        )
+    }
+
+    nonisolated static func checkSnapshot(
+        farmID: UUID,
+        context: ModelContext,
+        ranking: any PedigreeCandidateRanking = RuleBasedPedigreeCandidateRanking()
+    ) throws -> PedigreeCheckSnapshot {
+        try Task.checkCancellation()
+        let gestationDays = try context.fetch(FetchDescriptor<FarmCareRuleRecord>(predicate: #Predicate {
+            $0.farmID == farmID
+        })).first?.gestationDays ?? 150
+        let input = try readInput(farmID: farmID, context: context)
+        try Task.checkCancellation()
+        let penNames = try readPenNames(farmID: farmID, context: context)
+        let issues = issues(input: input, gestationDays: gestationDays)
+        try Task.checkCancellation()
+        return PedigreeCheckSnapshot(
+            issues: issues,
+            batchSireProposals: batchSireProposals(
+                input: input,
+                gestationDays: gestationDays,
+                penNames: penNames,
+                ranking: ranking
+            ),
+            earTagsByID: Dictionary(uniqueKeysWithValues: input.sheep.map { ($0.id, $0.earTag) }),
+            gestationDays: gestationDays
+        )
+    }
+
+    /// Only an unambiguous candidate is eligible for batch review.
+    ///
+    /// This does not confirm anything. It groups the same evidence that the
+    /// per-sheep screen already shows, while keeping multi-candidate, date
+    /// inversion, and cycle-risk records in the individual review queue.
+    static func batchSireProposals(
+        input: PedigreeAnalysisInput,
+        gestationDays: Int,
+        penNames: [UUID: String] = [:],
+        ranking: any PedigreeCandidateRanking = RuleBasedPedigreeCandidateRanking()
+    ) -> [PedigreeBatchSireProposal] {
         let index = CandidateIndex(input: input)
-        guard let match = index.match(eweID: eweID, lambingAt: lambingAt, gestationDays: gestationDays) else { return [] }
-        let penNames = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+        let byID = index.sheepByID
+        var matchCache: [CandidateLookupKey: CandidateMatch] = [:]
+        var missingMatches = Set<CandidateLookupKey>()
+        var proposals: [PedigreeBatchSireProposal] = []
+
+        for child in input.sheep where child.sireID == nil && child.semenDonorID == nil {
+            guard let eweID = child.damID, let birthAt = child.birthAt else { continue }
+            let key = CandidateLookupKey(
+                eweID: eweID,
+                lambingAt: birthAt,
+                gestationDays: gestationDays
+            )
+            let match: CandidateMatch?
+            if let cached = matchCache[key] {
+                match = cached
+            } else if missingMatches.contains(key) {
+                match = nil
+            } else if let loaded = index.match(
+                eweID: eweID,
+                lambingAt: birthAt,
+                gestationDays: gestationDays
+            ) {
+                matchCache[key] = loaded
+                match = loaded
+            } else {
+                missingMatches.insert(key)
+                match = nil
+            }
+            guard let match, match.rams.count == 1, let evidence = match.rams.first,
+                  let ram = byID[evidence.ramID] else { continue }
+            if let ramBirthAt = ram.birthAt, ramBirthAt >= birthAt { continue }
+            if ancestryContains(child.id, startingAt: ram.id, byID: byID) { continue }
+
+            let ageDays = ram.birthAt.map {
+                max(0, evidence.matchedAt.timeIntervalSince($0) / 86_400)
+            } ?? 365
+            let features = PedigreeCandidateFeatures(
+                ramAgeDaysAtConception: ageDays,
+                gestationDays: gestationDays,
+                sameHistoricalPen: true,
+                presentAtConception: true,
+                explicitlyMarkedBreedingRam: ram.isBreedingRam
+            )
+            proposals.append(.init(
+                child: child,
+                candidate: .init(
+                    ramID: ram.id,
+                    earTag: ram.earTag,
+                    breed: ram.breed,
+                    conceptionAt: match.standardConceptionAt,
+                    matchedAt: evidence.matchedAt,
+                    candidateWindowEndAt: match.windowEndAt,
+                    inferredGestationDays: evidence.inferredGestationDays,
+                    prematurityAllowanceDays: evidence.prematurityAllowanceDays,
+                    historicalPenID: evidence.penID,
+                    historicalPenName: penNames[evidence.penID],
+                    rankingScore: ranking.score(features),
+                    isConfirmedBreedingRam: ram.isBreedingRam,
+                    ramRevision: ram.revision
+                )
+            ))
+        }
+        return proposals.sorted {
+            let sireOrder = $0.candidate.earTag.localizedStandardCompare($1.candidate.earTag)
+            if sireOrder != .orderedSame { return sireOrder == .orderedAscending }
+            return $0.child.earTag.localizedStandardCompare($1.child.earTag) == .orderedAscending
+        }
+    }
+
+    private nonisolated static func readPenNames(
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> [UUID: String] {
+        Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
         })).map { ($0.id, $0.name) })
+    }
+
+    private nonisolated static func makeSireCandidates(
+        input: PedigreeAnalysisInput,
+        eweID: UUID,
+        lambingAt: Date,
+        gestationDays: Int,
+        penNames: [UUID: String],
+        ranking: any PedigreeCandidateRanking
+    ) -> [PedigreeSireCandidate] {
+        let index = CandidateIndex(input: input)
+        guard let match = index.match(eweID: eweID, lambingAt: lambingAt, gestationDays: gestationDays) else { return [] }
+        #if canImport(CoreML)
         let coreMLRanking = BundledCoreMLPedigreeCandidateRanking.load()
+        #endif
         return match.rams.compactMap { evidence -> PedigreeSireCandidate? in
             guard let ram = index.sheepByID[evidence.ramID] else { return nil }
             let ageDays = ram.birthAt.map { max(0, evidence.matchedAt.timeIntervalSince($0) / 86_400) } ?? 365
@@ -368,17 +630,45 @@ enum PedigreeAnalysis {
         return issues.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 
+    private static func ancestryContains(
+        _ target: UUID,
+        startingAt root: UUID,
+        byID: [UUID: PedigreeSheepSnapshot]
+    ) -> Bool {
+        var pending = [root]
+        var visited = Set<UUID>()
+        while let current = pending.popLast() {
+            if current == target { return true }
+            guard visited.insert(current).inserted, let record = byID[current] else { continue }
+            if let damID = record.damID { pending.append(damID) }
+            if let sireID = record.sireID { pending.append(sireID) }
+        }
+        return false
+    }
+
     @MainActor
     static func profile(sheepID: UUID, farmID: UUID, context: ModelContext) throws -> PedigreeProfileSnapshot? {
         let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
         })).map(PedigreeSheepSnapshot.init)
-        guard let record = sheep.first(where: { $0.id == sheepID }) else { return nil }
+        let penNames = try readPenNames(farmID: farmID, context: context)
+        return try makeProfile(
+            sheepID: sheepID,
+            farmID: farmID,
+            sheep: sheep,
+            penNames: penNames,
+            context: context
+        )
+    }
 
-        let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
-            $0.farmID == farmID && $0.deletedAt == nil
-        }))
-        let penNames = Dictionary(uniqueKeysWithValues: pens.map { ($0.id, $0.name) })
+    private nonisolated static func makeProfile(
+        sheepID: UUID,
+        farmID: UUID,
+        sheep: [PedigreeSheepSnapshot],
+        penNames: [UUID: String],
+        context: ModelContext
+    ) throws -> PedigreeProfileSnapshot? {
+        guard let record = sheep.first(where: { $0.id == sheepID }) else { return nil }
         let byID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
 
         func related(_ item: PedigreeSheepSnapshot) -> PedigreeRelatedSheep {
@@ -532,6 +822,11 @@ enum PedigreeAnalysis {
         }
 
         func match(eweID: UUID, lambingAt: Date, gestationDays: Int, calendar: Calendar = .current) -> CandidateMatch? {
+            // Farm dates are date-only business facts. Keep arithmetic in a
+            // fixed Gregorian UTC calendar so a daylight-saving transition on
+            // the device cannot shift the inferred conception day by an hour.
+            var calendar = calendar
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
             let normalizedGestationDays = max(1, gestationDays)
             let toleranceDays = min(PedigreeAnalysis.prematureBirthToleranceDays, normalizedGestationDays - 1)
             let standardConceptionAt = calendar.date(byAdding: .day, value: -normalizedGestationDays, to: lambingAt) ?? lambingAt

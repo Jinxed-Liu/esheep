@@ -119,7 +119,11 @@ actor ConflictResolutionActor {
 }
 
 enum CapabilityCertificateVerifier {
-    static func verify(_ jws: String, publicKeyPEM: String) throws -> CapabilityCertificateClaims {
+    static func verify(
+        _ jws: String,
+        publicKeyPEM: String,
+        rotatedPublicKeys: [String: String] = configuredRotatedPublicKeys
+    ) throws -> CapabilityCertificateClaims {
         let parts = jws.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3,
               let headerData = Data(base64URL: String(parts[0])),
@@ -131,7 +135,8 @@ enum CapabilityCertificateVerifier {
         guard header.alg == "ES256", header.typ == "esheep-capability+jwt" else {
             throw CloudContractError.invalidCertificate
         }
-        let key = try P256.Signing.PublicKey(pemRepresentation: publicKeyPEM.replacingOccurrences(of: "\\n", with: "\n"))
+        let selectedPublicKey = rotatedPublicKeys[header.kid] ?? publicKeyPEM
+        let key = try P256.Signing.PublicKey(pemRepresentation: selectedPublicKey.replacingOccurrences(of: "\\n", with: "\n"))
         let signature = try P256.Signing.ECDSASignature(rawRepresentation: signatureData)
         let signedData = Data("\(parts[0]).\(parts[1])".utf8)
         guard key.isValidSignature(signature, for: signedData) else { throw CloudContractError.invalidCertificate }
@@ -142,6 +147,16 @@ enum CapabilityCertificateVerifier {
         let alg: String
         let kid: String
         let typ: String
+    }
+
+    private static var configuredRotatedPublicKeys: [String: String] {
+        guard let keyID = Bundle.main.object(forInfoDictionaryKey: "CAPABILITY_SIGNING_ROTATED_KEY_ID") as? String,
+              let publicKey = Bundle.main.object(forInfoDictionaryKey: "CAPABILITY_SIGNING_ROTATED_PUBLIC_KEY_PEM") as? String,
+              !keyID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !publicKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return [:]
+        }
+        return [keyID: publicKey]
     }
 }
 

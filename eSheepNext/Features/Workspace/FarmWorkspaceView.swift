@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 
 struct SharedFarmAdmissionStatus: Equatable {
@@ -6,6 +7,8 @@ struct SharedFarmAdmissionStatus: Equatable {
 
 struct FarmWorkspaceView: View {
     @Environment(AppSession.self) private var session
+    @Environment(CloudCollaborationStore.self) private var collaboration
+    @Environment(\.modelContext) private var modelContext
     @State private var searchQuery = ""
     @State private var isWeatherDetailPresented = false
     @State private var isMetricDetailPresented = false
@@ -123,6 +126,34 @@ struct FarmWorkspaceView: View {
                 guard let pendingQuery else { return }
                 searchQuery = pendingQuery
                 session.pendingSearchQuery = nil
+            }
+            .task(id: activeFarm.id) {
+                do {
+                    let commandService = FarmCommandService()
+                    let repairAssetIDs = try commandService
+                        .legacyPhotoFilenameRepairAssetIDs(
+                            farmID: activeFarm.id,
+                            context: modelContext
+                        )
+                    for assetID in repairAssetIDs {
+                        _ = try? await collaboration.loadPhotoData(assetID: assetID)
+                    }
+                    let report = try commandService.repairLegacyPhotoFilenameSheep(
+                        in: FarmContext(
+                            accountID: account.effectiveAccountID,
+                            farmID: activeFarm.id,
+                            role: activeFarm.role
+                        ),
+                        context: modelContext
+                    )
+                    if report.repairedSheepCount > 0 {
+                        await collaboration.synchronizeNow()
+                    }
+                } catch {
+                    // Search performs the same idempotent repair and surfaces
+                    // an actionable error if the active workspace task raced a
+                    // not-yet-ready cloud identity.
+                }
             }
         }
     }

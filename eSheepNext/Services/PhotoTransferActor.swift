@@ -12,6 +12,7 @@ enum PhotoTransferError: LocalizedError {
     case bindingMissing
     case assetMissing
     case remoteAssetMissing
+    case remoteProviderUnavailable
     case checksumMismatch
 
     var errorDescription: String? {
@@ -21,7 +22,8 @@ enum PhotoTransferError: LocalizedError {
         case .imageEncodeFailed: "无法生成云端照片版本。"
         case .bindingMissing: "牧场尚未建立有效的 CloudKit 绑定。"
         case .assetMissing: "本地照片记录不存在。"
-        case .remoteAssetMissing: "CloudKit 照片二进制不存在。"
+        case .remoteAssetMissing: "云端照片二进制不存在。"
+        case .remoteProviderUnavailable: "当前云端照片服务不可用。"
         case .checksumMismatch: "照片下载后的校验值不一致。"
         }
     }
@@ -67,9 +69,69 @@ actor PhotoTransferActor {
         let optimized = try Self.optimize(sourceURL: sourceURL, farmID: farmID, assetID: assetID)
         let context = ModelContext(modelContainer)
         if let duplicate = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first(where: {
-            $0.farmID == farmID && $0.sha256 == optimized.payloadDigest && $0.deletedAt == nil
+            $0.farmID == farmID &&
+                $0.sheepID == entityID &&
+                $0.sha256 == optimized.payloadDigest &&
+                $0.deletedAt == nil
         }) {
+            let existingURL = Self.absoluteURL(for: duplicate.relativePath)
+            if FileManager.default.fileExists(atPath: existingURL.path),
+               (try? Self.digest(existingURL)) == optimized.payloadDigest {
+                try? FileManager.default.removeItem(at: optimized.fileURL)
+                return duplicate.id
+            }
+
+            // A metadata projection may survive after its rebuildable local
+            // cache disappeared. Reusing the photo must restore those bytes,
+            // not discard the newly supplied valid image and return a broken ID.
+            let fileExtension = optimized.mimeType == "image/heic" ? "heic" : "jpg"
+            let destination = try Self.assetURL(
+                farmID: farmID,
+                assetID: duplicate.id,
+                fileExtension: fileExtension
+            )
+            try Self.replaceItem(at: destination, with: optimized.fileURL)
             try? FileManager.default.removeItem(at: optimized.fileURL)
+            duplicate.relativePath = Self.relativePath(for: destination)
+            duplicate.sourceSHA256 = optimized.sourceDigest
+            duplicate.sourcePixelWidth = optimized.sourceWidth
+            duplicate.sourcePixelHeight = optimized.sourceHeight
+            duplicate.cloudPixelWidth = optimized.cloudWidth
+            duplicate.cloudPixelHeight = optimized.cloudHeight
+            duplicate.capturedAt = optimized.capturedAt
+            duplicate.mimeType = optimized.mimeType
+
+            let uploads = try context.fetch(FetchDescriptor<CloudAssetTransfer>()).filter {
+                $0.farmID == farmID &&
+                    $0.assetID == duplicate.id &&
+                    $0.direction == .upload
+            }
+            if let transfer = uploads.max(by: { $0.updatedAt < $1.updatedAt }) {
+                transfer.localRelativePath = duplicate.relativePath
+                transfer.payloadDigest = duplicate.sha256
+                transfer.byteCount = optimized.byteCount
+                transfer.sourceDigest = duplicate.sourceSHA256
+                transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+                transfer.transferredByteCount = 0
+                transfer.lastErrorCode = nil
+                transfer.nextRetryAt = nil
+                transfer.updatedAt = .now
+            } else {
+                context.insert(CloudAssetTransfer(
+                    farmID: farmID,
+                    assetID: duplicate.id,
+                    localRelativePath: duplicate.relativePath,
+                    payloadDigest: duplicate.sha256,
+                    byteCount: optimized.byteCount,
+                    direction: .upload,
+                    sourceDigest: duplicate.sourceSHA256
+                ))
+            }
+            let route = try FarmStorageRouter.route(farmID: farmID, context: context)
+            try context.save()
+            if route.deliveryProvider == .supabase {
+                CloudRuntimeNotification.postSyncWake(farmID: farmID)
+            }
             return duplicate.id
         }
         let asset = PhotoAssetRecord(
@@ -236,6 +298,125 @@ actor PhotoTransferActor {
         }
     }
 
+    /// Repairs a narrow legacy projection bug where an existing FarmAsset was
+    /// rewritten with a new `modifiedByDeviceID` while retaining another
+    /// device's capability certificate. The invalid remote record is never
+    /// trusted as data: the local owner cache and local bytes must match the
+    /// remote farm, asset ID, linked entity and SHA-256 before the same asset
+    /// ID is re-signed and uploaded by the current device.
+    @discardableResult
+    func repairLegacyCredentialMismatches(farmID: UUID) async throws -> Int {
+        let context = ModelContext(modelContainer)
+        guard let binding = try context.fetch(FetchDescriptor<CloudFarmBinding>())
+            .first(where: {
+                $0.farmID == farmID &&
+                    $0.state == .active &&
+                    $0.databaseScope == .privateDatabase
+            }),
+              let accountID = try context.fetch(FetchDescriptor<AccountProfile>())
+                .first?.effectiveAccountID,
+              binding.ownerAccountID == accountID,
+              let capabilityPublicKeyPEM = Bundle.main.object(
+                  forInfoDictionaryKey: "CAPABILITY_SIGNING_PUBLIC_KEY_PEM"
+              ) as? String,
+              !capabilityPublicKeyPEM.isEmpty else {
+            return 0
+        }
+        let zoneID = CKRecordZone.ID(
+            zoneName: binding.zoneName,
+            ownerName: binding.zoneOwnerName
+        )
+        let assets = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+            .filter {
+                $0.farmID == farmID &&
+                    $0.deletedAt == nil &&
+                    !$0.relativePath.isEmpty
+            }
+        var repaired = 0
+        for asset in assets {
+            let localURL = Self.absoluteURL(for: asset.relativePath)
+            guard FileManager.default.fileExists(atPath: localURL.path),
+                  try Self.digest(localURL) == asset.sha256 else {
+                continue
+            }
+            let recordID = CKRecord.ID(
+                recordName: mapper.assetRecordName(for: asset.id),
+                zoneID: zoneID
+            )
+            let record: CKRecord
+            do {
+                record = try await cloudContainer.privateCloudDatabase.record(
+                    for: recordID
+                )
+            } catch let error as CKError where error.code == .unknownItem {
+                continue
+            }
+            let remote = try CloudRebuildActor.assetEnvelope(
+                record: record,
+                mapper: mapper
+            )
+            guard remote.farmID == farmID,
+                  remote.assetID == asset.id,
+                  remote.entityID == asset.sheepID,
+                  remote.payloadDigest == asset.sha256,
+                  let remoteAsset = record[CloudRecordField.asset] as? CKAsset,
+                  let remoteURL = remoteAsset.fileURL,
+                  try Self.digest(remoteURL) == asset.sha256 else {
+                throw PhotoTransferError.checksumMismatch
+            }
+            let claims = try CapabilityCertificateVerifier.verify(
+                remote.capabilityCertificate,
+                publicKeyPEM: capabilityPublicKeyPEM
+            )
+            guard claims.farmID == farmID,
+                  claims.accountID == remote.modifiedByAccountID,
+                  claims.capabilities.contains(.recordProduction),
+                  claims.isValid(
+                      at: record.modificationDate ?? record.creationDate ?? remote.createdAt
+                  ) else {
+                throw CloudContractError.capabilityDenied
+            }
+            guard claims.deviceID != remote.modifiedByDeviceID else { continue }
+
+            // Reuse the normal transfer path so the replacement carries the
+            // current device key, current certificate and a v2 asset signature.
+            try requeueUpload(assetID: asset.id)
+            try await upload(assetID: asset.id)
+            repaired += 1
+        }
+        return repaired
+    }
+
+    private func requeueUpload(assetID: UUID) throws {
+        let context = ModelContext(modelContainer)
+        guard let asset = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+            .first(where: { $0.id == assetID && $0.deletedAt == nil }) else {
+            throw PhotoTransferError.assetMissing
+        }
+        if let transfer = try context.fetch(FetchDescriptor<CloudAssetTransfer>())
+            .first(where: { $0.assetID == assetID && $0.direction == .upload }) {
+            transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+            transfer.nextRetryAt = nil
+            transfer.lastErrorCode = nil
+            transfer.updatedAt = .now
+        } else {
+            let fileURL = Self.absoluteURL(for: asset.relativePath)
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                throw PhotoTransferError.sourceUnreadable
+            }
+            context.insert(CloudAssetTransfer(
+                farmID: asset.farmID,
+                assetID: asset.id,
+                localRelativePath: asset.relativePath,
+                payloadDigest: asset.sha256,
+                byteCount: Self.fileSize(fileURL),
+                direction: .upload,
+                sourceDigest: asset.sourceSHA256.isEmpty ? asset.sha256 : asset.sourceSHA256
+            ))
+        }
+        try context.save()
+    }
+
     func download(assetID: UUID) async throws {
         let context = ModelContext(modelContainer)
         guard let asset = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first(where: { $0.id == assetID }) else { throw PhotoTransferError.assetMissing }
@@ -301,10 +482,42 @@ actor PhotoTransferActor {
 
     func localFileData(assetID: UUID) throws -> Data {
         let context = ModelContext(modelContainer)
-        guard let asset = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first(where: { $0.id == assetID }) else {
+        let candidates = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).filter {
+            $0.id == assetID && $0.deletedAt == nil
+        }
+        guard !candidates.isEmpty else {
             throw PhotoTransferError.assetMissing
         }
-        return try Data(contentsOf: Self.absoluteURL(for: asset.relativePath))
+        var foundLocalFile = false
+        for asset in candidates where !asset.relativePath.isEmpty {
+            let fileURL = Self.absoluteURL(for: asset.relativePath)
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                continue
+            }
+            foundLocalFile = true
+            guard try Self.digest(fileURL) == asset.sha256 else { continue }
+            return try Data(contentsOf: fileURL)
+        }
+        if foundLocalFile { throw PhotoTransferError.checksumMismatch }
+        throw PhotoTransferError.sourceUnreadable
+    }
+
+    func deliveryProvider(assetID: UUID) throws -> FarmRemoteProvider? {
+        let context = ModelContext(modelContainer)
+        guard let asset = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first(where: {
+            $0.id == assetID && $0.deletedAt == nil
+        }) else {
+            throw PhotoTransferError.assetMissing
+        }
+        return try FarmStorageRouter.route(
+            farmID: asset.farmID,
+            context: context
+        ).deliveryProvider
+    }
+
+    func downloadIfNeeded(assetID: UUID) async throws {
+        if (try? localFileData(assetID: assetID)) != nil { return }
+        try await download(assetID: assetID)
     }
 
     func updateCapturedAt(assetID: UUID, capturedAt: Date) throws {
@@ -473,15 +686,24 @@ actor PhotoTransferActor {
         return localAssetURL(for: path, applicationSupportDirectory: support)
     }
 
-    /// Formal migration assets predate the eSheepNext subdirectory used by
-    /// newly captured photos. Keep that persisted relative-path contract so
-    /// upgraded farms can upload their original files without moving them.
+    /// Formal migration assets and early development-clone assets predate the
+    /// eSheepNext subdirectory used by newly captured photos. Prefer the
+    /// current location, but resolve an existing legacy root-level file so an
+    /// upgraded store never loses readable bytes solely because of its path.
     static func localAssetURL(for path: String, applicationSupportDirectory: URL) -> URL {
         if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
         if path.hasPrefix("MigrationAssets/") {
             return applicationSupportDirectory.appending(path: path)
         }
-        return applicationSupportDirectory.appending(path: "eSheepNext/\(path)")
+        let current = applicationSupportDirectory.appending(path: "eSheepNext/\(path)")
+        if FileManager.default.fileExists(atPath: current.path) {
+            return current
+        }
+        let legacy = applicationSupportDirectory.appending(path: path)
+        if FileManager.default.fileExists(atPath: legacy.path) {
+            return legacy
+        }
+        return current
     }
 
     static func relativePath(for url: URL) -> String {

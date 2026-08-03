@@ -574,13 +574,7 @@ struct FarmBaselinePackageBuilder {
     }
 
     static func assetURL(relativePath: String) throws -> URL {
-        if relativePath.hasPrefix("/") {
-            return URL(fileURLWithPath: relativePath)
-        }
-        return FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        )[0].appending(path: relativePath)
+        PhotoTransferActor.absoluteURL(for: relativePath)
     }
 
     static func digest(_ data: Data) -> String {

@@ -27,6 +27,21 @@ actor MembershipSnapshotActor {
 
     func publish(farmID: UUID, accountID: UUID) async throws -> MembershipSnapshotRecordValue {
         let workerSnapshot = try await worker.farmSecuritySnapshot(farmID: farmID)
+        return try await publish(
+            farmID: farmID,
+            accountID: accountID,
+            snapshot: workerSnapshot
+        )
+    }
+
+    func publish(
+        farmID: UUID,
+        accountID: UUID,
+        snapshot workerSnapshot: WorkerFarmSecuritySnapshot
+    ) async throws -> MembershipSnapshotRecordValue {
+        guard workerSnapshot.farmID == farmID else {
+            throw CloudContractError.malformedRecord
+        }
         try await persistence.saveSecuritySnapshot(workerSnapshot)
         let context = ModelContext(modelContainer)
         guard let certificate = try context.fetch(FetchDescriptor<CapabilityCertificateRecord>())
@@ -35,7 +50,18 @@ actor MembershipSnapshotActor {
             throw FarmPermissionError.denied(.manageMembers)
         }
         let identity = try await deviceIdentity.identity()
-        let envelope = Self.envelope(from: workerSnapshot)
+        let activeAccountIDs = Set(
+            workerSnapshot.members
+                .filter { $0.status == "active" }
+                .map(\.accountID)
+        )
+        let historicalDevices = try await persistence.trustedMembershipDevices(
+            activeAccountIDs: activeAccountIDs
+        )
+        let envelope = try Self.envelope(
+            from: workerSnapshot,
+            additionalDevices: historicalDevices
+        )
         let payload = try JSONEncoder.cloud.encode(envelope)
         let issuedAt = Date(timeIntervalSince1970: TimeInterval(workerSnapshot.issuedAt))
         let signingData = Self.signingData(
@@ -155,13 +181,45 @@ actor MembershipSnapshotActor {
         ].joined(separator: "\n").utf8)
     }
 
-    private static func envelope(from snapshot: WorkerFarmSecuritySnapshot) -> FarmMembershipSnapshotEnvelope {
-        FarmMembershipSnapshotEnvelope(
+    static func envelope(
+        from snapshot: WorkerFarmSecuritySnapshot,
+        additionalDevices: [FarmMembershipSnapshotEnvelope.Device] = []
+    ) throws -> FarmMembershipSnapshotEnvelope {
+        var devicesByID: [UUID: FarmMembershipSnapshotEnvelope.Device] = [:]
+        let workerDevices = snapshot.devices.map {
+            FarmMembershipSnapshotEnvelope.Device(
+                deviceID: $0.deviceID,
+                accountID: $0.accountID,
+                publicKeyJWK: $0.publicKeyJWK
+            )
+        }
+        for device in workerDevices + additionalDevices {
+            if let existing = devicesByID[device.deviceID] {
+                guard existing.accountID == device.accountID,
+                      CloudDevicePublicKeyDecoder.x963Representation(
+                          fromJWKJSON: existing.publicKeyJWK
+                      ) == CloudDevicePublicKeyDecoder.x963Representation(
+                          fromJWKJSON: device.publicKeyJWK
+                      ) else {
+                    throw CloudContractError.invalidDeviceSignature
+                }
+                continue
+            }
+            guard CloudDevicePublicKeyDecoder.x963Representation(
+                fromJWKJSON: device.publicKeyJWK
+            ) != nil else {
+                throw CloudContractError.invalidDeviceSignature
+            }
+            devicesByID[device.deviceID] = device
+        }
+        return FarmMembershipSnapshotEnvelope(
             farmID: snapshot.farmID,
             generation: snapshot.generation,
             issuedAt: Date(timeIntervalSince1970: TimeInterval(snapshot.issuedAt)),
             members: snapshot.members.map { .init(membershipID: $0.membershipID, accountID: $0.accountID, role: $0.role, status: $0.status, shareParticipantRecordName: $0.shareParticipantRecordName) },
-            devices: snapshot.devices.map { .init(deviceID: $0.deviceID, accountID: $0.accountID, publicKeyJWK: $0.publicKeyJWK) },
+            devices: devicesByID.values.sorted {
+                $0.deviceID.uuidString < $1.deviceID.uuidString
+            },
             revokedCertificates: snapshot.revokedCertificates.map { .init(certificateID: $0.certificateID, revokedAt: $0.revokedAt) }
         )
     }

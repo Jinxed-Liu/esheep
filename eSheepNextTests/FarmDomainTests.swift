@@ -1228,6 +1228,38 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(try context.fetch(FetchDescriptor<RemovalRecord>()).count, 1)
     }
 
+    func testLegacyPhotoFilenameExtensionIsNotImportedAsPartOfEarTag() throws {
+        let payload = """
+        {
+          "schemaVersion": 3,
+          "herd": {
+            "sheep": [{"tag":"S005","pen":"基础舍"}],
+            "transfers": [], "removals": [], "weighRecords": [],
+            "productionBatches": [], "batchMemberships": []
+          },
+          "reproduction": {"lambing": [], "semenRecords": []},
+          "media": {"photoData": {"S005.jpg":"AQID"}}
+        }
+        """.data(using: .utf8)!
+
+        let session = try LegacyMigrationImporter.preview(source: payload)
+
+        XCTAssertEqual(session.manifest.importerVersion, 4)
+        XCTAssertEqual(session.sheep.map(\.legacyEarTag), ["S005"])
+        let assignment = try XCTUnwrap(session.assignments.first { $0.kind == "照片" })
+        XCTAssertEqual(assignment.legacyEarTag, "S005")
+        XCTAssertEqual(assignment.targetSheepSourceKey, "herd.sheep[0]")
+
+        let temporary = try LegacyMigrationImporter.buildTemporaryFarm(sessionID: session.id)
+        let context = ModelContext(temporary.container)
+        let sheep = try XCTUnwrap(try context.fetch(FetchDescriptor<SheepRecord>()).first)
+        let photo = try XCTUnwrap(try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SheepRecord>()).count, 1)
+        XCTAssertEqual(sheep.earTag, "S005")
+        XCTAssertEqual(photo.sheepID, sheep.id)
+        XCTAssertEqual(photo.originalEarTag, "S005")
+    }
+
     func testMigrationConvertsAbortionIntoStructuredReproductionRecord() throws {
         let payload = """
         {"schemaVersion":3,"herd":{"sheep":[{"tag":"E001","pen":"繁殖舍","sex":"母"}],"transfers":[],"removals":[],"weighRecords":[],"abortionRecords":[{"tag":"E001","date":"2025-03-05","time":"09:20","parity":2,"count":2,"note":"观察恢复"}],"productionBatches":[],"batchMemberships":[]},"reproduction":{"lambing":[],"semenRecords":[]}}
@@ -1553,6 +1585,9 @@ final class FarmDomainTests: XCTestCase {
 
         let occurredAt = Date(timeIntervalSince1970: 1_741_000_000)
         let birthAt = occurredAt.addingTimeInterval(-70 * 86_400)
+        let baselineAt = occurredAt.addingTimeInterval(-60 * 86_400)
+        context.insert(WeightRecord(farmID: farm.id, sheepID: lamb.id, kilogramsText: "5.5", occurredAt: baselineAt))
+        try context.save()
         try FarmCommandService().execute(
             .recordWeaning(sheepID: lamb.id, weanWeightText: "27.5", occurredAt: occurredAt, birthAt: birthAt, birthWeightText: "3.8", averageDailyGainText: "0.339", damID: dam.id, litterSize: 2, note: "健康断奶"),
             in: FarmContext(accountID: account.id, farmID: farm.id, role: .owner),
@@ -1563,7 +1598,7 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(record.sheepID, lamb.id)
         XCTAssertEqual(record.damID, dam.id)
         XCTAssertEqual(record.weanWeightText, "27.5")
-        XCTAssertEqual(record.averageDailyGainText, "0.339")
+        XCTAssertEqual(record.averageDailyGainText, "0.366667")
         let operation = try XCTUnwrap(try context.fetch(FetchDescriptor<DomainOperation>()).first { $0.kindRawValue == DomainOperationKind.recordWeaning.rawValue })
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -1572,7 +1607,78 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(payload.identifiers["sheepID"], lamb.id)
         XCTAssertEqual(payload.optionalIdentifiers["damID"] ?? nil, dam.id)
         XCTAssertEqual(payload.strings["weanWeightText"], "27.5")
+        XCTAssertEqual(payload.optionalStrings["averageDailyGainText"] ?? nil, "0.366667")
         XCTAssertEqual(payload.integers["litterSize"], 2)
+    }
+
+    func testCurrentWeaningWorkflowRequiresRealTransferAndCommitsBothFactsAtomically() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let account = AccountProfile(appleUserIdentifier: "weaning-workflow-owner", displayName: "场主")
+        let farm = FarmRecord(ownerAccountID: account.id, name: "断奶场")
+        let sourcePen = PenRecord(farmID: farm.id, name: "羔羊圈")
+        let targetPen = PenRecord(farmID: farm.id, name: "育成圈")
+        let birthAt = Date(timeIntervalSince1970: 1_735_689_600)
+        let occurredAt = birthAt.addingTimeInterval(70 * 86_400)
+        let lamb = SheepRecord(
+            farmID: farm.id,
+            earTag: "L-WORKFLOW",
+            breed: "湖羊",
+            sex: .ram,
+            penID: sourcePen.id,
+            enteredAt: birthAt,
+            birthAt: birthAt
+        )
+        context.insert(account)
+        context.insert(farm)
+        context.insert(sourcePen)
+        context.insert(targetPen)
+        context.insert(lamb)
+        try context.save()
+        let farmContext = FarmContext(accountID: account.id, farmID: farm.id, role: .owner)
+        let service = FarmCommandService()
+
+        XCTAssertThrowsError(try service.executeBatch(
+            WeaningWorkflow.commands(
+                sheepID: lamb.id,
+                weanWeightText: "24.5",
+                occurredAt: occurredAt,
+                birthAt: birthAt,
+                toPenID: sourcePen.id,
+                note: "不应提交"
+            ),
+            in: farmContext,
+            context: context
+        )) { error in
+            XCTAssertEqual(error.localizedDescription, FarmCommandError.transferDestinationUnchanged.localizedDescription)
+        }
+        XCTAssertTrue(try context.fetch(FetchDescriptor<WeaningRecord>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<TransferRecord>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<DomainOperation>()).isEmpty)
+
+        try service.executeBatch(
+            WeaningWorkflow.commands(
+                sheepID: lamb.id,
+                weanWeightText: "24.5",
+                occurredAt: occurredAt,
+                birthAt: birthAt,
+                toPenID: targetPen.id,
+                note: "正常断奶"
+            ),
+            in: farmContext,
+            context: context
+        )
+
+        let weaning = try XCTUnwrap(try context.fetch(FetchDescriptor<WeaningRecord>()).first)
+        let transfer = try XCTUnwrap(try context.fetch(FetchDescriptor<TransferRecord>()).first)
+        XCTAssertNil(weaning.damID)
+        XCTAssertNil(weaning.litterSize)
+        XCTAssertEqual(transfer.fromPenID, sourcePen.id)
+        XCTAssertEqual(transfer.toPenID, targetPen.id)
+        XCTAssertEqual(lamb.currentPenID, targetPen.id)
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>())
+        XCTAssertEqual(Set(operations.compactMap { DomainOperationKind(rawValue: $0.kindRawValue) }), [.recordWeaning, .transferSheep])
+        XCTAssertEqual(try context.fetch(FetchDescriptor<OutboxItem>()).count, 2)
     }
 
     func testBreedingProgramCommandPersistsStepsAndCloudPayload() throws {

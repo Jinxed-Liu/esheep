@@ -862,6 +862,24 @@ actor SupabaseFarmTransport: FarmRemoteTransport {
         }
     }
 
+    private struct RegisteredAssetRow: Decodable, Sendable {
+        let assetID: UUID
+        let farmID: UUID
+        let sha256: String
+        let storagePath: String
+        let byteCount: Int64
+        let contentType: String
+
+        enum CodingKeys: String, CodingKey {
+            case assetID = "asset_id"
+            case farmID = "farm_id"
+            case sha256
+            case storagePath = "storage_path"
+            case byteCount = "byte_count"
+            case contentType = "content_type"
+        }
+    }
+
     private struct MemberRow: Decodable, Sendable {
         let userID: UUID
         let appAccountID: UUID
@@ -1503,27 +1521,69 @@ actor SupabaseFarmTransport: FarmRemoteTransport {
         byteCount: Int64,
         contentType: String
     ) async throws -> FarmRemoteAsset {
-        let rows: [AssetRow] = try await client.rpc(
-            "register_farm_asset",
-            params: RegisterAssetParameters(
-                p_asset_id: assetID,
-                p_farm_id: farmID,
-                p_authority_generation: authorityGeneration,
-                p_sha256: sha256,
-                p_storage_path: storagePath,
-                p_byte_count: byteCount,
-                p_content_type: contentType
+        do {
+            let rows: [AssetRow] = try await client.rpc(
+                "register_farm_asset",
+                params: RegisterAssetParameters(
+                    p_asset_id: assetID,
+                    p_farm_id: farmID,
+                    p_authority_generation: authorityGeneration,
+                    p_sha256: sha256,
+                    p_storage_path: storagePath,
+                    p_byte_count: byteCount,
+                    p_content_type: contentType
+                )
+            ).execute().value
+            guard let row = rows.first else {
+                throw FarmRemoteTransportError.malformedResponse
+            }
+            return FarmRemoteAsset(
+                assetID: row.assetID,
+                farmID: farmID,
+                sha256: sha256,
+                byteCount: byteCount,
+                contentType: contentType,
+                storagePath: row.storagePath
             )
-        ).execute().value
-        guard let row = rows.first else { throw FarmRemoteTransportError.malformedResponse }
-        return FarmRemoteAsset(
-            assetID: row.assetID,
-            farmID: farmID,
-            sha256: sha256,
-            byteCount: byteCount,
-            contentType: contentType,
-            storagePath: row.storagePath
-        )
+        } catch {
+            let registrationError = error
+            // Storage objects are keyed by SHA-256, while two immutable local
+            // photo records may legitimately reference the same bytes. Reuse
+            // the existing registered object only after every immutable field
+            // has been verified. This deliberately does not depend on the
+            // concrete SDK error wrapper: PostgREST may surface the same SQL
+            // failure as different Swift error types across SDK releases. A
+            // missing row or digest collision with different metadata still
+            // returns the original registration error.
+            do {
+                let rows: [RegisteredAssetRow] = try await client
+                    .from("farm_assets")
+                    .select("asset_id,farm_id,sha256,storage_path,byte_count,content_type")
+                    .eq("farm_id", value: farmID)
+                    .eq("sha256", value: sha256)
+                    .limit(1)
+                    .execute()
+                    .value
+                guard let row = rows.first,
+                      row.farmID == farmID,
+                      row.sha256 == sha256,
+                      row.storagePath == storagePath,
+                      row.byteCount == byteCount,
+                      row.contentType == contentType else {
+                    throw registrationError
+                }
+                return FarmRemoteAsset(
+                    assetID: row.assetID,
+                    farmID: row.farmID,
+                    sha256: row.sha256,
+                    byteCount: row.byteCount,
+                    contentType: row.contentType,
+                    storagePath: row.storagePath
+                )
+            } catch {
+                throw registrationError
+            }
+        }
     }
 
     func downloadAsset(_ asset: FarmRemoteAsset) async throws -> Data {
@@ -1580,6 +1640,18 @@ actor SupabaseFarmTransport: FarmRemoteTransport {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 let topic = "farm:\(farmID.uuidString.lowercased())"
+                // Private Realtime authorization is evaluated at channel join.
+                // A restored Keychain session can be available before the
+                // Supabase client's auth-state listener has propagated its JWT
+                // into RealtimeV2, which otherwise joins with the publishable
+                // key and is correctly rejected by realtime.messages RLS.
+                do {
+                    let session = try await client.auth.session
+                    await client.realtimeV2.setAuth(session.accessToken)
+                } catch {
+                    continuation.finish(throwing: error)
+                    return
+                }
                 let channel = client.channel(topic) { configuration in
                     configuration.isPrivate = true
                 }

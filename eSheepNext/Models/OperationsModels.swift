@@ -48,6 +48,10 @@ enum OutboxStatus: String, Codable, Sendable {
     case retryableFailure
     case blockedConflict
     case rejectedPermission
+    /// The remote membership was authoritatively revoked. The operation and
+    /// its audit history remain local, but automatic delivery is permanently
+    /// stopped until a user explicitly resolves or exports it.
+    case quarantinedMembershipRevoked
     /// CloudKit already contains a different, fully verified immutable
     /// deletion fact for the same entity. The local operation is retained for
     /// audit, but it is no longer eligible for delivery or blocking metrics.
@@ -55,7 +59,8 @@ enum OutboxStatus: String, Codable, Sendable {
 
     var isTerminalDelivery: Bool {
         switch self {
-        case .confirmed, .notRequiredLocalOnly, .supersededRemoteAuthority:
+        case .confirmed, .notRequiredLocalOnly, .supersededRemoteAuthority,
+             .quarantinedMembershipRevoked:
             true
         case .pending, .uploading, .awaitingConfirmation, .retryableFailure,
              .blockedConflict, .rejectedPermission:

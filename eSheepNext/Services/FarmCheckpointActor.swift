@@ -467,9 +467,15 @@ enum FarmCheckpointOperationHistory {
         context: ModelContext
     ) throws -> [FarmCheckpointManifest.EntitySnapshot] {
         let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>()).filter { $0.farmID == farmID }
-        let deletedAtByOperationID = Dictionary(uniqueKeysWithValues: tombstones.compactMap { tombstone in
-            tombstone.operationID.map { ($0, tombstone.deletedAt) }
-        })
+        var deletedAtByOperationID: [UUID: Date] = [:]
+        for tombstone in tombstones {
+            guard let operationID = tombstone.operationID else { continue }
+            if let existing = deletedAtByOperationID[operationID] {
+                deletedAtByOperationID[operationID] = min(existing, tombstone.deletedAt)
+            } else {
+                deletedAtByOperationID[operationID] = tombstone.deletedAt
+            }
+        }
         return operations.compactMap { operation in
             guard let entityID = operation.entityID else { return nil }
             return FarmCheckpointManifest.EntitySnapshot(

@@ -11,14 +11,17 @@ final class SheepDetailSnapshotActorTests: XCTestCase {
         )
         let context = ModelContext(container)
         let farmID = UUID()
+        let penID = UUID()
+        let pen = PenRecord(id: penID, farmID: farmID, name: "产羔舍")
         let sheep = SheepRecord(
             farmID: farmID,
             earTag: "S3-SH030",
             breed: "湖羊",
             sex: .ewe,
-            penID: UUID(),
+            penID: penID,
             enteredAt: Date(timeIntervalSince1970: 100),
-            birthAt: Date(timeIntervalSince1970: 50)
+            birthAt: Date(timeIntervalSince1970: 50),
+            note: "重点观察"
         )
         let otherSheep = SheepRecord(
             farmID: farmID,
@@ -118,6 +121,7 @@ final class SheepDetailSnapshotActorTests: XCTestCase {
             sha256: "abc"
         )
         photo.capturedAt = Date(timeIntervalSince1970: 800)
+        context.insert(pen)
         context.insert(sheep)
         context.insert(otherSheep)
         context.insert(olderWeight)
@@ -148,8 +152,13 @@ final class SheepDetailSnapshotActorTests: XCTestCase {
             removedAt: sheep.removedAt
         )
         let reader = SheepDetailSnapshotActor(container: container)
+        let entry = try await reader.loadEntry(farmID: farmID, sheepID: sheep.id)
         let snapshot = try await reader.load(farmID: farmID, sheepID: sheep.id, subject: subject)
 
+        XCTAssertEqual(entry?.subject.id, sheep.id)
+        XCTAssertEqual(entry?.subject.earTag, "S3-SH030")
+        XCTAssertEqual(entry?.subject.note, "重点观察")
+        XCTAssertEqual(entry?.penName, "产羔舍")
         XCTAssertEqual(snapshot.weights.map(\.kilograms), [42.5, 25, 40, 3.2])
         XCTAssertEqual(snapshot.weights.map(\.source), [.weighing, .weaning, .weighing, .lambingBirth])
         XCTAssertEqual(snapshot.photos.map(\.id), [photo.id])

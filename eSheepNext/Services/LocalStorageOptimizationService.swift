@@ -324,6 +324,8 @@ struct LocalStorageOptimizationService {
     private static let terminalOutboxStatuses: Set<OutboxStatus> = [
         .confirmed,
         .notRequiredLocalOnly,
+        .quarantinedMembershipRevoked,
+        .supersededRemoteAuthority,
     ]
 
     func optimizeAfterVerifiedSupabaseActivation(

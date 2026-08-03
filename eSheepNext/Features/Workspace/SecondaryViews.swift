@@ -91,6 +91,7 @@ struct FarmInsightsView: View {
 struct FarmSearchView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
+    @Environment(CloudCollaborationStore.self) private var collaboration
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -130,18 +131,20 @@ struct FarmSearchView: View {
                 Section("羊只") {
                     ForEach(results.sheep) { item in
                         NavigationLink {
-                            FarmSearchSheepDestination(
+                            SheepDetailEntryView(
                                 account: account,
                                 farm: farm,
-                                sheepID: item.id,
-                                penName: item.penName
+                                sheepID: item.id
                             )
                         } label: {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(item.earTag).font(.headline)
-                                Text("\(item.breed) · \(item.statusName)")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
+                            HStack(spacing: 12) {
+                                SheepAvatarView(photo: item.avatarPhoto, size: 48)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.earTag).font(.headline)
+                                    Text("\(item.breed) · \(item.statusName)")
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                     }
@@ -175,8 +178,8 @@ struct FarmSearchView: View {
             placement: .navigationBarDrawer(displayMode: .always),
             prompt: "耳号、品种或圈舍"
         )
-        .task(id: farm.id) {
-            await reloadSource()
+        .onAppear {
+            Task { await reloadSource() }
         }
         .task(id: FarmSearchRequest(query: query, sourceRevision: sourceRevision)) {
             await updateResults()
@@ -189,11 +192,10 @@ struct FarmSearchView: View {
             set: { if !$0 { session.pendingSheepID = nil } }
         )) {
             if let sheepID = session.pendingSheepID {
-                FarmSearchSheepDestination(
+                SheepDetailEntryView(
                     account: account,
                     farm: farm,
-                    sheepID: sheepID,
-                    penName: source.sheep.first(where: { $0.id == sheepID })?.penName
+                    sheepID: sheepID
                 )
             } else {
                 ContentUnavailableView("羊只不存在", systemImage: "questionmark.folder", description: Text("该羊只可能已删除或不属于当前牧场。"))
@@ -206,6 +208,26 @@ struct FarmSearchView: View {
     private func reloadSource() async {
         isLoadingSource = source == .empty
         do {
+            let commandService = FarmCommandService()
+            let repairAssetIDs = try commandService
+                .legacyPhotoFilenameRepairAssetIDs(
+                    farmID: farm.id,
+                    context: modelContext
+                )
+            for assetID in repairAssetIDs {
+                _ = try? await collaboration.loadPhotoData(assetID: assetID)
+            }
+            let repair = try commandService.repairLegacyPhotoFilenameSheep(
+                in: FarmContext(
+                    accountID: account.effectiveAccountID,
+                    farmID: farm.id,
+                    role: farm.role
+                ),
+                context: modelContext
+            )
+            if repair.repairedSheepCount > 0 {
+                await collaboration.synchronizeNow()
+            }
             let updatedSource = try await FarmSearchIndexActor(
                 container: modelContext.container
             ).load(farmID: farm.id)
@@ -252,36 +274,6 @@ struct FarmSearchView: View {
 private struct FarmSearchRequest: Equatable {
     let query: String
     let sourceRevision: Int
-}
-
-private struct FarmSearchSheepDestination: View {
-    @Query private var sheep: [SheepRecord]
-
-    let account: AccountProfile
-    let farm: FarmRecord
-    let penName: String?
-
-    init(account: AccountProfile, farm: FarmRecord, sheepID: UUID, penName: String?) {
-        self.account = account
-        self.farm = farm
-        self.penName = penName
-        let farmID = farm.id
-        _sheep = Query(filter: #Predicate<SheepRecord> {
-            $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
-        })
-    }
-
-    var body: some View {
-        if let sheep = sheep.first {
-            SheepDetailView(account: account, farm: farm, sheep: sheep, penName: penName)
-        } else {
-            ContentUnavailableView(
-                "羊只不存在",
-                systemImage: "questionmark.folder",
-                description: Text("该羊只可能已删除或不属于当前牧场。")
-            )
-        }
-    }
 }
 
 private struct FarmSearchPenDestination: View {

@@ -777,8 +777,26 @@ struct MigrationCloudBootstrapService {
         for value in try context.fetch(FetchDescriptor<PenRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
             values.append((.pen, value.id, value.revision, try FarmCommandCloudPayloadEncoder.encode(.createPen(name: value.name, note: value.note)), 10))
         }
+        let avatarSelections = try context.fetch(FetchDescriptor<SheepAvatarRecord>())
+            .filter { $0.farmID == farmID }
+        var latestAvatarBySheepID: [UUID: SheepAvatarRecord] = [:]
+        for selection in avatarSelections {
+            if let current = latestAvatarBySheepID[selection.sheepID],
+               current.updatedAt >= selection.updatedAt {
+                continue
+            }
+            latestAvatarBySheepID[selection.sheepID] = selection
+        }
+        let activePhotos = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+            .filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let activePhotosByID = Dictionary(uniqueKeysWithValues: activePhotos.map { ($0.id, $0) })
+        let activeReproduction = try context.fetch(FetchDescriptor<ReproductionRecord>())
+            .filter { $0.farmID == farmID && $0.deletedAt == nil }
         for value in try context.fetch(FetchDescriptor<SheepRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
-            var payload = try decodePayload(FarmCommandCloudPayloadEncoder.encode(.addSheep(earTag: value.earTag, breed: value.breed, sex: value.sex, penID: value.initialPenID, occurredAt: value.enteredAt, birthAt: value.birthAt, note: value.note)))
+            let entryParity = activeReproduction.first {
+                $0.id == LambingEntrySemantics.entryParityBaselineID(sheepID: value.id)
+            }?.parity
+            var payload = try decodePayload(FarmCommandCloudPayloadEncoder.encode(.addSheep(earTag: value.earTag, breed: value.breed, sex: value.sex, penID: value.initialPenID, occurredAt: value.enteredAt, birthAt: value.birthAt, currentParity: entryParity, note: value.note)))
             payload.optionalStrings["legacyEarTag"] = value.legacyEarTag
             payload.optionalStrings["legacySourceKey"] = value.legacySourceKey
             payload.strings["purpose"] = value.purpose
@@ -797,6 +815,19 @@ struct MigrationCloudBootstrapService {
             payload.optionalStrings["semenDonorNameSnapshot"] = value.semenDonorNameSnapshot
             payload.optionalStrings["semenDonorRegistrationNumberSnapshot"] = value.semenDonorRegistrationNumberSnapshot
             payload.optionalStrings["semenDonorBreedSnapshot"] = value.semenDonorBreedSnapshot
+            if let selection = latestAvatarBySheepID[value.id] {
+                let selectedPhotoID: UUID?
+                if let photoID = selection.photoAssetID,
+                   activePhotosByID[photoID]?.sheepID == value.id {
+                    selectedPhotoID = photoID
+                } else {
+                    selectedPhotoID = nil
+                }
+                SheepAvatarCloudPayload.write(
+                    SheepAvatarPhotoUpdate(photoAssetID: selectedPhotoID),
+                    to: &payload
+                )
+            }
             values.append((.sheep, value.id, value.revision, try JSONEncoder.cloud.encode(payload), 20))
         }
         for value in try context.fetch(FetchDescriptor<WeightRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
@@ -849,7 +880,7 @@ struct MigrationCloudBootstrapService {
             values.append((.health, value.id, 1, try FarmCommandCloudPayloadEncoder.encode(.recordHealth(sheepID: value.sheepID, penID: value.penID, kind: HealthRecordKind(rawValue: value.kindRawValue) ?? .treatment, itemName: value.itemNameSnapshot, occurredAt: value.occurredAt, note: value.note, inventoryLotID: value.inventoryLotID, quantityText: value.quantityText)), 30))
         }
         let offspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter { $0.farmID == farmID }
-        for value in try context.fetch(FetchDescriptor<ReproductionRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
+        for value in activeReproduction where value.id != LambingEntrySemantics.entryParityBaselineID(sheepID: value.eweID) {
             var payload = try decodePayload(FarmCommandCloudPayloadEncoder.encode(.recordReproduction(eweID: value.eweID, kind: value.kind, occurredAt: value.occurredAt, sireID: value.sireID, semenName: value.semenNameSnapshot, result: value.result, lambCount: value.lambCount, parity: value.parity, birthDeadCount: value.birthDeadCount, offspring: [], note: value.note)))
             payload.optionalIdentifiers["semenID"] = value.semenID
             payload.optionalIdentifiers["batchID"] = value.batchID
@@ -885,7 +916,6 @@ struct MigrationCloudBootstrapService {
     }
 
     private static func assetURL(relativePath: String) -> URL {
-        if relativePath.hasPrefix("/") { return URL(fileURLWithPath: relativePath) }
-        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appending(path: relativePath)
+        PhotoTransferActor.absoluteURL(for: relativePath)
     }
 }

@@ -31,14 +31,21 @@ enum FarmCommandError: LocalizedError {
     case duplicateSemenDonorRegistration
     case linkedBreedingNotFound
     case linkedBreedingAlreadyClosed
+    case lambingParityMismatch(current: Int, attempted: Int)
     case lambingCorrectionConflict(String)
+    case lambWeightBeforeBirth
+    case futureFactDate(String)
+    case routineLambWeightRequiresSheepRecord
+    case stillbornWeightMustBeBirth
     case weaningDamMustBeEwe
+    case transferDestinationUnchanged
     case cloudIdentityLocked
     case invalidFarmCoordinate
     case invalidFarmTimeZone
     case penHasCurrentSheep
     case protectedPenReferences
     case protectedSheepReferences
+    case parityBaselineManagedInProfile
     case sourceRecordNotFound
 
     var errorDescription: String? {
@@ -72,14 +79,21 @@ enum FarmCommandError: LocalizedError {
         case .duplicateSemenDonorRegistration: "当前牧场已存在相同的供体登记号。"
         case .linkedBreedingNotFound: "未找到这只母羊此前可关联的配种记录。"
         case .linkedBreedingAlreadyClosed: "所选配种记录已经由流产或产羔闭合。"
+        case .lambingParityMismatch(let current, let attempted): "母羊当前为第 \(current) 胎，本次产羔必须记录为第 \(current + 1) 胎，不能记录为第 \(attempted) 胎。"
         case .lambingCorrectionConflict(let detail): "产羔修正与后续记录冲突：\(detail)"
+        case .lambWeightBeforeBirth: "称重时间不能早于羔羊出生时间。"
+        case .futureFactDate(let label): "\(label)不能晚于当前时间。"
+        case .routineLambWeightRequiresSheepRecord: "出生 24 小时后的体重属于普通称重，必须先建立羔羊档案。"
+        case .stillbornWeightMustBeBirth: "死胎只能记录出生 24 小时内测得的初生重。"
         case .weaningDamMustBeEwe: "断奶记录中的母本必须是母羊。"
+        case .transferDestinationUnchanged: "目标圈舍与羊只当时所在圈舍相同，请选择实际调入的圈舍。"
         case .cloudIdentityLocked: "当前云端牧场缺少有效的账号绑定或能力证书，已锁定写入。"
         case .invalidFarmCoordinate: "牧场坐标必须位于有效的经纬度范围内。"
         case .invalidFarmTimeZone: "请选择有效的 IANA 时区。"
         case .penHasCurrentSheep: "圈舍内仍有在场羊只，请先转群后再停用。"
         case .protectedPenReferences: "圈舍仍被羊只或生产历史引用，不能直接删除；可以先停用。"
         case .protectedSheepReferences: "该羊只已有生产历史或亲缘关系，不能直接删除建档事件；请删除或修正关联事实。"
+        case .parityBaselineManagedInProfile: "胎次确认由母羊档案管理，不能作为普通繁殖记录修正或删除。"
         case .sourceRecordNotFound: "未找到可修正的原始记录。"
         }
     }
@@ -139,8 +153,8 @@ enum FarmCommand: Sendable {
     case createPen(name: String, note: String)
     case updatePen(penID: UUID, name: String, note: String)
     case setPenActive(penID: UUID, isActive: Bool)
-    case addSheep(earTag: String, breed: String, sex: SheepSex, penID: UUID?, occurredAt: Date, birthAt: Date?, note: String)
-    case updateSheepProfile(sheepID: UUID, earTag: String, breed: String, sex: SheepSex, birthAt: Date?, note: String)
+    case addSheep(earTag: String, breed: String, sex: SheepSex, penID: UUID?, occurredAt: Date, birthAt: Date?, currentParity: Int? = nil, note: String)
+    case updateSheepProfile(sheepID: UUID, earTag: String, breed: String, sex: SheepSex, birthAt: Date?, currentParity: Int? = nil, parityRecordedAt: Date? = nil, note: String)
     case recordWeight(sheepID: UUID, kilogramsText: String, occurredAt: Date, note: String)
     case correctWeight(originalID: UUID, kilogramsText: String, occurredAt: Date, note: String, reason: String)
     case recordWeaning(sheepID: UUID, weanWeightText: String, occurredAt: Date, birthAt: Date?, birthWeightText: String?, averageDailyGainText: String?, damID: UUID?, litterSize: Int?, note: String)
@@ -234,8 +248,8 @@ enum FarmCommand: Sendable {
         case .createPen(let name, _): "新建圈舍：\(name)"
         case .updatePen(_, let name, _): "更新圈舍：\(name)"
         case .setPenActive(_, let active): active ? "重新启用圈舍" : "停用圈舍"
-        case .addSheep(let earTag, _, _, _, _, _, _): "新建羊只：\(earTag)"
-        case .updateSheepProfile(_, let earTag, _, _, _, _): "更新羊只档案：\(earTag)"
+        case .addSheep(let earTag, _, _, _, _, _, _, _): "新建羊只：\(earTag)"
+        case .updateSheepProfile(_, let earTag, _, _, _, _, _, _): "更新羊只档案：\(earTag)"
         case .recordWeight: "记录称重"
         case .correctWeight: "修正称重记录"
         case .recordWeaning: "记录断奶"
@@ -264,6 +278,59 @@ enum FarmCommand: Sendable {
     }
 }
 
+/// A current weaning entry is one farm workflow: record the weaning fact and
+/// move the lamb into its post-weaning pen in the same transaction. Dam and
+/// litter-size fields remain only for historical records and payload compatibility.
+enum WeaningWorkflow {
+    static func transferSourceRequestID(for weaningSourceRequestID: UUID) -> UUID {
+        StableCloudUUID.derived(
+            namespace: weaningSourceRequestID,
+            name: "weaning-transfer"
+        )
+    }
+
+    static func commands(
+        sheepID: UUID,
+        weanWeightText: String,
+        occurredAt: Date,
+        birthAt: Date?,
+        toPenID: UUID,
+        note: String
+    ) -> [FarmCommand] {
+        [
+            .recordWeaning(
+                sheepID: sheepID,
+                weanWeightText: weanWeightText,
+                occurredAt: occurredAt,
+                birthAt: birthAt,
+                birthWeightText: nil,
+                averageDailyGainText: nil,
+                damID: nil,
+                litterSize: nil,
+                note: note
+            ),
+            .transferSheep(
+                sheepID: sheepID,
+                toPenID: toPenID,
+                occurredAt: occurredAt,
+                note: "随断奶事件调舍"
+            ),
+        ]
+    }
+}
+
+struct LegacyPhotoFilenameRepairReport: Sendable, Equatable {
+    let repairedSheepCount: Int
+    let reassignedPhotoCount: Int
+    let skippedCandidateCount: Int
+
+    static let empty = LegacyPhotoFilenameRepairReport(
+        repairedSheepCount: 0,
+        reassignedPhotoCount: 0,
+        skippedCandidateCount: 0
+    )
+}
+
 @MainActor
 final class FarmCommandService {
     private struct HistoryImpact {
@@ -282,15 +349,134 @@ final class FarmCommandService {
         }
     }
 
+    private struct StagedCommandResult {
+        let historyImpact: HistoryImpact?
+        let operation: DomainOperation
+    }
+
+    /// A command batch owns one storage route and one sequence counter. The
+    /// generic router intentionally tolerates legacy stores, but calling it for
+    /// every item repeatedly scans the same sequence/profile tables.
+    private final class BatchExecutionState {
+        let route: FarmStorageRoute
+        private let sequenceCounter: FarmOperationSequenceCounter
+
+        init(
+            farmID: UUID,
+            route: FarmStorageRoute,
+            context: ModelContext
+        ) throws {
+            self.route = route
+            if let existing = try context.fetch(FetchDescriptor<FarmOperationSequenceCounter>())
+                .first(where: { $0.farmID == farmID }) {
+                sequenceCounter = existing
+            } else {
+                let highest = try context.fetch(FetchDescriptor<FarmOperationSequenceRecord>())
+                    .lazy
+                    .filter { $0.farmID == farmID }
+                    .map(\.clientSequence)
+                    .max() ?? 0
+                let created = FarmOperationSequenceCounter(
+                    farmID: farmID,
+                    nextSequence: highest + 1
+                )
+                context.insert(created)
+                sequenceCounter = created
+            }
+        }
+
+        func stageSequence(
+            farmID: UUID,
+            operationID: UUID,
+            context: ModelContext
+        ) {
+            let sequence = max(1, sequenceCounter.nextSequence)
+            sequenceCounter.nextSequence = sequence + 1
+            context.insert(FarmOperationSequenceRecord(
+                farmID: farmID,
+                operationID: operationID,
+                clientSequence: sequence
+            ))
+        }
+    }
+
+    private struct RemovalBatchSignature: Equatable {
+        let kind: RemovalKind
+        let reason: String
+        let occurredAt: Date
+        let note: String
+        let batchTotalAmountText: String?
+    }
+
+    /// Removal drafts are the large AI confirmation case. Keep one active-sheep
+    /// index and one set of pre-existing batch facts for the whole transaction,
+    /// while still validating every command and every batch signature.
+    private final class RemovalBatchExecutionState {
+        let sheepByID: [UUID: SheepRecord]
+        private let existingRecordsByBatchID: [UUID: [RemovalRecord]]
+        private var stagedSignatureByBatchID: [UUID: RemovalBatchSignature] = [:]
+
+        init(
+            sheepByID: [UUID: SheepRecord],
+            existingRecordsByBatchID: [UUID: [RemovalRecord]]
+        ) {
+            self.sheepByID = sheepByID
+            self.existingRecordsByBatchID = existingRecordsByBatchID
+        }
+
+        func sheepRecord(id: UUID) throws -> SheepRecord {
+            guard let sheep = sheepByID[id] else {
+                throw FarmCommandError.sheepNotFound
+            }
+            return sheep
+        }
+
+        func validate(
+            batchID: UUID,
+            signature: RemovalBatchSignature
+        ) throws {
+            let existing = existingRecordsByBatchID[batchID] ?? []
+            guard existing.allSatisfy({
+                $0.kind == signature.kind &&
+                    $0.reason == signature.reason &&
+                    $0.occurredAt == signature.occurredAt &&
+                    $0.note == signature.note &&
+                    $0.batchTotalAmountText == signature.batchTotalAmountText
+            }) else {
+                throw FarmCommandError.invalidRemovalBatch("同一批次的类型、原因、日期、备注和总额必须一致。")
+            }
+            if let staged = stagedSignatureByBatchID[batchID], staged != signature {
+                throw FarmCommandError.invalidRemovalBatch("同一批次的类型、原因、日期、备注和总额必须一致。")
+            }
+            stagedSignatureByBatchID[batchID] = signature
+        }
+    }
+
+    private struct LegacyPhotoFilenameRepairPlan {
+        let ghost: SheepRecord
+        let target: SheepRecord
+        let photos: [PhotoAssetRecord]
+    }
+
+    private struct CompositeChildSnapshot {
+        let sheepIDs: Set<UUID>
+        let weightIDs: Set<UUID>
+
+        static let empty = CompositeChildSnapshot(sheepIDs: [], weightIDs: [])
+    }
+
     private let historyRebuilder: FarmHistoryRebuilder
     private let historyRebuildObserver: ((Set<UUID>, Date) -> Void)?
+    private let currentDeviceID: () throws -> UUID?
 
     init(
         historyRebuilder: FarmHistoryRebuilder = FarmHistoryRebuilder(),
-        historyRebuildObserver: ((Set<UUID>, Date) -> Void)? = nil
+        historyRebuildObserver: ((Set<UUID>, Date) -> Void)? = nil,
+        currentDeviceID: @escaping () throws -> UUID? = DeviceIdentityActor.storedDeviceID
     ) {
         self.historyRebuilder = historyRebuilder
         self.historyRebuildObserver = historyRebuildObserver
+        self.currentDeviceID = currentDeviceID
     }
     func createFarm(
         named name: String,
@@ -341,6 +527,182 @@ final class FarmCommandService {
         if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
             CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
         }
+    }
+
+    /// Updates only the selected profile photo while preserving the existing
+    /// `updateSheepProfile` cloud contract for older clients and providers.
+    func setSheepAvatar(
+        sheepID: UUID,
+        photoAssetID: UUID?,
+        in farm: FarmContext,
+        context: ModelContext
+    ) throws {
+        var committed = false
+        defer {
+            if !committed { context.rollback() }
+        }
+        try validateCloudIdentity(in: farm, context: context)
+        let sheep = try sheepRecord(sheepID, farmID: farm.farmID, context: context)
+        let update = SheepAvatarPhotoUpdate(photoAssetID: photoAssetID)
+        try SheepAvatarSelectionStore.validate(
+            update,
+            sheepID: sheepID,
+            farmID: farm.farmID,
+            context: context
+        )
+        let command = FarmCommand.updateSheepProfile(
+            sheepID: sheep.id,
+            earTag: sheep.earTag,
+            breed: sheep.breed,
+            sex: sheep.sex,
+            birthAt: sheep.birthAt,
+            note: sheep.note
+        )
+        _ = try executeWithoutSaving(
+            command,
+            in: farm,
+            context: context,
+            sheepAvatarUpdate: update
+        )
+        try context.save()
+        committed = true
+        if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
+            CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        }
+    }
+
+    /// Repairs a narrowly identifiable legacy-import artifact: an archived
+    /// sheep created only because an image filename such as `S005.jpg` was
+    /// mistaken for an ear tag. The photo projection is moved first and the
+    /// synthetic sheep is then tombstoned through the normal command pipeline.
+    func legacyPhotoFilenameRepairAssetIDs(
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> [UUID] {
+        let candidates = try legacyPhotoFilenameRepairPlans(
+            farmID: farmID,
+            context: context
+        )
+        return Array(Set(candidates.plans.flatMap { $0.photos.map(\.id) }))
+            .sorted { $0.uuidString < $1.uuidString }
+    }
+
+    @discardableResult
+    func repairLegacyPhotoFilenameSheep(
+        in farm: FarmContext,
+        context: ModelContext
+    ) throws -> LegacyPhotoFilenameRepairReport {
+        let candidates = try legacyPhotoFilenameRepairPlans(
+            farmID: farm.farmID,
+            context: context
+        )
+        guard !candidates.plans.isEmpty else {
+            return LegacyPhotoFilenameRepairReport(
+                repairedSheepCount: 0,
+                reassignedPhotoCount: 0,
+                skippedCandidateCount: candidates.skippedCount
+            )
+        }
+        guard farm.capabilities.allows(.deleteProtectedFacts) else {
+            return LegacyPhotoFilenameRepairReport(
+                repairedSheepCount: 0,
+                reassignedPhotoCount: 0,
+                skippedCandidateCount: candidates.skippedCount + candidates.plans.count
+            )
+        }
+
+        var committed = false
+        defer {
+            if !committed { context.rollback() }
+        }
+        try validateCloudIdentity(in: farm, context: context)
+        let route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
+        let applicablePlans: [LegacyPhotoFilenameRepairPlan]
+        let providerSkippedCount: Int
+        if route.deliveryProvider == .iCloud {
+            applicablePlans = candidates.plans.filter { plan in
+                plan.photos.allSatisfy {
+                    FileManager.default.fileExists(
+                        atPath: PhotoTransferActor.absoluteURL(for: $0.relativePath).path
+                    )
+                }
+            }
+            providerSkippedCount = candidates.plans.count - applicablePlans.count
+        } else {
+            applicablePlans = candidates.plans
+            providerSkippedCount = 0
+        }
+        guard !applicablePlans.isEmpty else {
+            return LegacyPhotoFilenameRepairReport(
+                repairedSheepCount: 0,
+                reassignedPhotoCount: 0,
+                skippedCandidateCount: candidates.skippedCount + providerSkippedCount
+            )
+        }
+
+        var photoRevisionByID = Dictionary(
+            grouping: try context.fetch(FetchDescriptor<DomainOperation>()).filter {
+                $0.farmID == farm.farmID &&
+                    $0.entityType == CloudEntityType.photoAsset.rawValue &&
+                    $0.entityID != nil
+            },
+            by: { $0.entityID! }
+        ).mapValues { operations in
+            max(1, operations.map(\.resultingRevision).max() ?? 1)
+        }
+        var historyImpacts: [HistoryImpact] = []
+        var reassignedPhotoCount = 0
+
+        for plan in applicablePlans {
+            for photo in plan.photos {
+                photo.sheepID = plan.target.id
+                photo.originalEarTag = plan.target.earTag
+                switch route.deliveryProvider {
+                case .supabase:
+                    let baseRevision = photoRevisionByID[photo.id] ?? 1
+                    try stageSupabasePhotoProjectionRefresh(
+                        photo: photo,
+                        targetSheep: plan.target,
+                        baseRevision: baseRevision,
+                        farm: farm,
+                        route: route,
+                        context: context
+                    )
+                    photoRevisionByID[photo.id] = baseRevision + 1
+                case .iCloud:
+                    try stageICloudPhotoProjectionRefresh(photo: photo, context: context)
+                case nil:
+                    break
+                }
+                reassignedPhotoCount += 1
+            }
+            if let impact = try executeWithoutSaving(
+                .tombstoneEntity(
+                    entityType: .sheep,
+                    entityID: plan.ghost.id,
+                    reason: "修复旧版照片文件名误建羊只：\(plan.ghost.earTag) → \(plan.target.earTag)"
+                ),
+                in: farm,
+                context: context
+            ) {
+                historyImpacts.append(impact)
+            }
+        }
+        try rebuildHistoryIfNeeded(
+            for: historyImpacts,
+            farmID: farm.farmID,
+            context: context
+        )
+        try context.save()
+        committed = true
+        if route.requiresOutbox {
+            CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        }
+        return LegacyPhotoFilenameRepairReport(
+            repairedSheepCount: applicablePlans.count,
+            reassignedPhotoCount: reassignedPhotoCount,
+            skippedCandidateCount: candidates.skippedCount + providerSkippedCount
+        )
     }
 
     func execute(
@@ -410,8 +772,17 @@ final class FarmCommandService {
     /// 任一命令失败都会回滚本批已插入的事实、审计记录和 Outbox，避免半导入。
     func executeBatch(_ commands: [FarmCommand], in farm: FarmContext, context: ModelContext) throws {
         guard !commands.isEmpty else { return }
+        let pedigreeSheepByID = try pedigreeBatchSheepByID(
+            for: commands,
+            farmID: farm.farmID,
+            context: context
+        )
         var index = 0
-        try performBatch(in: farm, context: context) {
+        try performBatch(
+            in: farm,
+            context: context,
+            pedigreeSheepByID: pedigreeSheepByID
+        ) {
             guard commands.indices.contains(index) else { return nil }
             defer { index += 1 }
             return commands[index]
@@ -438,6 +809,47 @@ final class FarmCommandService {
 
         var pendingHistory: [HistoryImpact] = []
         var receiptBySourceRequestID: [UUID: FarmCommandExecutionReceipt] = [:]
+        var operationBySourceRequestID: [UUID: DomainOperation] = [:]
+        let requestedSourceIDs = Set(requests.map(\.sourceRequestID))
+        let farmID = farm.farmID
+        let accountID = farm.accountID
+        let existingReceipts = try context.fetch(
+            FetchDescriptor<InsightExecutionReceiptRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.accountID == accountID
+            })
+        )
+        for existing in existingReceipts where requestedSourceIDs.contains(existing.sourceRequestID) {
+            receiptBySourceRequestID[existing.sourceRequestID] = FarmCommandExecutionReceipt(
+                sourceRequestID: existing.sourceRequestID,
+                operationID: existing.operationID,
+                entityType: existing.entityType,
+                entityID: existing.entityID,
+                createdAt: existing.createdAt
+            )
+        }
+        let route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
+        let commandsToExecute = requests.compactMap { request in
+            receiptBySourceRequestID[request.sourceRequestID] == nil
+                ? request.command
+                : nil
+        }
+        let batchState = commandsToExecute.isEmpty
+            ? nil
+            : try BatchExecutionState(
+                farmID: farm.farmID,
+                route: route,
+                context: context
+            )
+        let pedigreeSheepByID = try pedigreeBatchSheepByID(
+            for: commandsToExecute,
+            farmID: farm.farmID,
+            context: context
+        )
+        let removalBatchState = try removalBatchExecutionState(
+            for: commandsToExecute,
+            farmID: farm.farmID,
+            context: context
+        )
 
         func flushHistory() throws {
             guard !pendingHistory.isEmpty else { return }
@@ -450,42 +862,30 @@ final class FarmCommandService {
         }
 
         for request in requests {
-            if let existing = try context.fetch(FetchDescriptor<InsightExecutionReceiptRecord>())
-                .first(where: {
-                    $0.sourceRequestID == request.sourceRequestID &&
-                        $0.accountID == farm.accountID &&
-                        $0.farmID == farm.farmID
-                }) {
-                receiptBySourceRequestID[request.sourceRequestID] = FarmCommandExecutionReceipt(
-                    sourceRequestID: existing.sourceRequestID,
-                    operationID: existing.operationID,
-                    entityType: existing.entityType,
-                    entityID: existing.entityID,
-                    createdAt: existing.createdAt
-                )
+            if receiptBySourceRequestID[request.sourceRequestID] != nil {
                 continue
             }
             if !affectsHistoryProjection(request.command) {
                 try flushHistory()
             }
-            if let impact = try executeWithoutSaving(
+            let staged = try stageCommandWithoutSaving(
                 request.command,
                 in: farm,
                 context: context,
-                sourceRequestID: request.sourceRequestID
-            ) {
+                sourceRequestID: request.sourceRequestID,
+                pedigreeSheepByID: pedigreeSheepByID,
+                removalBatchState: removalBatchState,
+                batchState: batchState
+            )
+            operationBySourceRequestID[request.sourceRequestID] = staged.operation
+            if let impact = staged.historyImpact {
                 pendingHistory.append(impact)
             }
         }
         try flushHistory()
 
         for request in requests where receiptBySourceRequestID[request.sourceRequestID] == nil {
-            guard let operation = try context.fetch(FetchDescriptor<DomainOperation>())
-                .first(where: {
-                    $0.sourceRequestID == request.sourceRequestID &&
-                        $0.accountID == farm.accountID &&
-                        $0.farmID == farm.farmID
-                }) else {
+            guard let operation = operationBySourceRequestID[request.sourceRequestID] else {
                 throw FarmCommandError.sourceRecordNotFound
             }
             let record = InsightExecutionReceiptRecord(
@@ -508,7 +908,7 @@ final class FarmCommandService {
 
         try context.save()
         committed = true
-        if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
+        if route.requiresOutbox {
             CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
         }
         return try requests.map { request in
@@ -524,7 +924,12 @@ final class FarmCommandService {
         try performBatch(in: farm, context: context, nextCommand: nextCommand)
     }
 
-    private func performBatch(in farm: FarmContext, context: ModelContext, nextCommand: () throws -> FarmCommand?) throws {
+    private func performBatch(
+        in farm: FarmContext,
+        context: ModelContext,
+        pedigreeSheepByID: [UUID: SheepRecord]? = nil,
+        nextCommand: () throws -> FarmCommand?
+    ) throws {
         var committed = false
         defer {
             if !committed { context.rollback() }
@@ -544,7 +949,12 @@ final class FarmCommandService {
             if !affectsHistoryProjection(command) {
                 try flushHistory()
             }
-            if let impact = try executeWithoutSaving(command, in: farm, context: context) {
+            if let impact = try executeWithoutSaving(
+                command,
+                in: farm,
+                context: context,
+                pedigreeSheepByID: pedigreeSheepByID
+            ) {
                 pendingHistory.append(impact)
             }
         }
@@ -553,6 +963,216 @@ final class FarmCommandService {
         committed = true
         if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
             CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+        }
+    }
+
+    private func legacyPhotoFilenameRepairPlans(
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> (plans: [LegacyPhotoFilenameRepairPlan], skippedCount: Int) {
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }
+        let photos = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).filter {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }
+        let referencedSheepIDs = try legacyPhotoRepairReferencedSheepIDs(
+            farmID: farmID,
+            sheep: sheep,
+            context: context
+        )
+        var plans: [LegacyPhotoFilenameRepairPlan] = []
+        var skippedCount = 0
+
+        for ghost in sheep where ghost.isHistoricalArchive && ghost.status == .removed {
+            let sourceName = ghost.legacyEarTag ?? ghost.earTag
+            guard let repairedEarTag = LegacyPhotoFilenameIdentity.earTag(from: sourceName),
+                  EarTag.normalized(repairedEarTag) != EarTag.normalized(sourceName),
+                  ghost.note == "由照片历史记录自动补建",
+                  ghost.purpose == "历史归档",
+                  let legacySourceKey = ghost.legacySourceKey,
+                  legacySourceKey.lowercased().hasPrefix("history.archive.") else {
+                continue
+            }
+            let sourceSuffix = String(legacySourceKey.dropFirst("history.archive.".count))
+            guard EarTag.normalized(sourceSuffix) == EarTag.normalized(sourceName) else {
+                skippedCount += 1
+                continue
+            }
+            let matchingTargets = sheep.filter {
+                $0.id != ghost.id &&
+                    !$0.isHistoricalArchive &&
+                    (EarTag.normalized($0.earTag) == EarTag.normalized(repairedEarTag) ||
+                        EarTag.normalized($0.legacyEarTag ?? "") == EarTag.normalized(repairedEarTag))
+            }
+            guard matchingTargets.count == 1,
+                  let target = matchingTargets.first,
+                  !referencedSheepIDs.contains(ghost.id) else {
+                skippedCount += 1
+                continue
+            }
+            plans.append(LegacyPhotoFilenameRepairPlan(
+                ghost: ghost,
+                target: target,
+                photos: photos.filter { $0.sheepID == ghost.id }
+            ))
+        }
+        return (plans, skippedCount)
+    }
+
+    private func legacyPhotoRepairReferencedSheepIDs(
+        farmID: UUID,
+        sheep: [SheepRecord],
+        context: ModelContext
+    ) throws -> Set<UUID> {
+        var values = Set<UUID>()
+        for value in sheep {
+            if let damID = value.damID { values.insert(damID) }
+            if let sireID = value.sireID { values.insert(sireID) }
+        }
+        for value in try context.fetch(FetchDescriptor<WeightRecord>()) where value.farmID == farmID {
+            values.insert(value.sheepID)
+        }
+        for value in try context.fetch(FetchDescriptor<WeaningRecord>()) where value.farmID == farmID {
+            values.insert(value.sheepID)
+            if let damID = value.damID { values.insert(damID) }
+        }
+        for value in try context.fetch(FetchDescriptor<TransferRecord>()) where value.farmID == farmID {
+            values.insert(value.sheepID)
+        }
+        for value in try context.fetch(FetchDescriptor<RemovalRecord>()) where value.farmID == farmID {
+            values.insert(value.sheepID)
+        }
+        for value in try context.fetch(FetchDescriptor<BatchMembershipRecord>()) where value.farmID == farmID {
+            values.insert(value.sheepID)
+        }
+        for value in try context.fetch(FetchDescriptor<HealthRecord>()) where value.farmID == farmID {
+            if let sheepID = value.sheepID { values.insert(sheepID) }
+        }
+        for value in try context.fetch(FetchDescriptor<HealthSubjectLink>()) where value.farmID == farmID {
+            values.insert(value.sheepID)
+        }
+        for value in try context.fetch(FetchDescriptor<ReproductionRecord>()) where value.farmID == farmID {
+            values.insert(value.eweID)
+            if let sireID = value.sireID { values.insert(sireID) }
+        }
+        for value in try context.fetch(FetchDescriptor<LambingOffspringRecord>()) where value.farmID == farmID {
+            if let sheepID = value.sheepID { values.insert(sheepID) }
+        }
+        for value in try context.fetch(FetchDescriptor<NoteRecord>()) where value.farmID == farmID {
+            if let sheepID = value.sheepID { values.insert(sheepID) }
+        }
+        for value in try context.fetch(FetchDescriptor<CareReminderRecord>()) where value.farmID == farmID {
+            if let sheepID = value.sheepID { values.insert(sheepID) }
+        }
+        for value in try context.fetch(FetchDescriptor<PedigreeChangeRecord>()) where value.farmID == farmID {
+            values.insert(value.sheepID)
+            for relatedID in [
+                value.beforeDamID, value.afterDamID,
+                value.beforeSireID, value.afterSireID
+            ].compactMap({ $0 }) {
+                values.insert(relatedID)
+            }
+        }
+        for value in try context.fetch(FetchDescriptor<SheepAvatarRecord>()) where value.farmID == farmID {
+            values.insert(value.sheepID)
+        }
+        return values
+    }
+
+    private func stageSupabasePhotoProjectionRefresh(
+        photo: PhotoAssetRecord,
+        targetSheep: SheepRecord,
+        baseRevision: Int,
+        farm: FarmContext,
+        route: FarmStorageRoute,
+        context: ModelContext
+    ) throws {
+        var payload = FarmCommandCloudPayload(kind: .addPhoto)
+        payload.strings = [
+            "sha256": photo.sha256,
+            "sourceSHA256": photo.sourceSHA256.isEmpty ? photo.sha256 : photo.sourceSHA256,
+            "mimeType": photo.mimeType,
+            "originalEarTag": targetSheep.earTag
+        ]
+        payload.optionalIdentifiers = ["sheepID": targetSheep.id]
+        payload.optionalDates = ["capturedAt": photo.capturedAt]
+        let transferByteCount = try context.fetch(FetchDescriptor<CloudAssetTransfer>())
+            .first(where: { $0.farmID == farm.farmID && $0.assetID == photo.id })?
+            .byteCount ?? 0
+        payload.integers = [
+            "sourcePixelWidth": photo.sourcePixelWidth,
+            "sourcePixelHeight": photo.sourcePixelHeight,
+            "cloudPixelWidth": photo.cloudPixelWidth,
+            "cloudPixelHeight": photo.cloudPixelHeight,
+            "byteCount": Int(clamping: transferByteCount)
+        ]
+        let operationID = UUID()
+        _ = try FarmStorageRouter.takeNextOperationSequence(
+            farmID: farm.farmID,
+            operationID: operationID,
+            context: context
+        )
+        let operation = DomainOperation(
+            id: operationID,
+            farmID: farm.farmID,
+            accountID: farm.accountID,
+            kind: .addPhoto,
+            summary: "修复照片归属：\(targetSheep.earTag)",
+            entityType: CloudEntityType.photoAsset.rawValue,
+            entityID: photo.id,
+            baseRevision: baseRevision,
+            resultingRevision: baseRevision + 1,
+            payload: try JSONEncoder.cloud.encode(payload)
+        )
+        context.insert(operation)
+        context.insert(OutboxItem(
+            farmID: farm.farmID,
+            accountID: farm.accountID,
+            operationID: operation.id,
+            entityType: operation.entityType,
+            entityID: operation.entityID,
+            baseRevision: operation.baseRevision,
+            payloadDigest: operation.payloadDigest,
+            deliveryProvider: .supabase,
+            authorityGeneration: route.deliveryAuthorityGeneration
+        ))
+    }
+
+    private func stageICloudPhotoProjectionRefresh(
+        photo: PhotoAssetRecord,
+        context: ModelContext
+    ) throws {
+        let fileURL = PhotoTransferActor.absoluteURL(for: photo.relativePath)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            throw PhotoTransferError.sourceUnreadable
+        }
+        let byteCount = Int64(
+            try fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        )
+        if let transfer = try context.fetch(FetchDescriptor<CloudAssetTransfer>()).first(where: {
+            $0.farmID == photo.farmID &&
+                $0.assetID == photo.id &&
+                $0.direction == .upload
+        }) {
+            transfer.localRelativePath = photo.relativePath
+            transfer.payloadDigest = photo.sha256
+            transfer.byteCount = byteCount
+            transfer.sourceDigest = photo.sourceSHA256.isEmpty ? photo.sha256 : photo.sourceSHA256
+            transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+            transfer.nextRetryAt = nil
+            transfer.lastErrorCode = nil
+            transfer.updatedAt = .now
+        } else {
+            context.insert(CloudAssetTransfer(
+                farmID: photo.farmID,
+                assetID: photo.id,
+                localRelativePath: photo.relativePath,
+                payloadDigest: photo.sha256,
+                byteCount: byteCount,
+                direction: .upload,
+                sourceDigest: photo.sourceSHA256.isEmpty ? photo.sha256 : photo.sourceSHA256
+            ))
         }
     }
 
@@ -577,8 +1197,11 @@ final class FarmCommandService {
             $0.farmID == farmID
         })).first
         if let cloudBinding {
+            guard let deviceID = try currentDeviceID() else {
+                throw FarmCommandError.cloudIdentityLocked
+            }
             let hasUsableCertificate = try context.fetch(FetchDescriptor<CapabilityCertificateRecord>(predicate: #Predicate {
-                $0.farmID == farmID && $0.accountID == accountID
+                $0.farmID == farmID && $0.accountID == accountID && $0.deviceID == deviceID
             })).contains(where: \.isUsable)
             guard cloudBinding.state == .active, hasUsableCertificate else { throw FarmCommandError.cloudIdentityLocked }
         }
@@ -588,22 +1211,69 @@ final class FarmCommandService {
         _ command: FarmCommand,
         in farm: FarmContext,
         context: ModelContext,
-        sourceRequestID: UUID? = nil
+        sourceRequestID: UUID? = nil,
+        pedigreeSheepByID: [UUID: SheepRecord]? = nil,
+        sheepAvatarUpdate: SheepAvatarPhotoUpdate? = nil
     ) throws -> HistoryImpact? {
+        try stageCommandWithoutSaving(
+            command,
+            in: farm,
+            context: context,
+            sourceRequestID: sourceRequestID,
+            pedigreeSheepByID: pedigreeSheepByID,
+            sheepAvatarUpdate: sheepAvatarUpdate
+        ).historyImpact
+    }
+
+    private func stageCommandWithoutSaving(
+        _ command: FarmCommand,
+        in farm: FarmContext,
+        context: ModelContext,
+        sourceRequestID: UUID? = nil,
+        pedigreeSheepByID: [UUID: SheepRecord]? = nil,
+        sheepAvatarUpdate: SheepAvatarPhotoUpdate? = nil,
+        removalBatchState: RemovalBatchExecutionState? = nil,
+        batchState: BatchExecutionState? = nil
+    ) throws -> StagedCommandResult {
         let farmID = farm.farmID
         guard farm.capabilities.allows(command.requiredCapability) else {
             throw FarmPermissionError.denied(command.requiredCapability)
         }
 
-        try validate(command, farmID: farm.farmID, context: context)
-        let result = try apply(command, farm: farm, context: context)
-        let projectedHistoryImpact = try historyImpact(for: command, result: result, farmID: farm.farmID, context: context)
-        let operationID = UUID()
-        _ = try FarmStorageRouter.takeNextOperationSequence(
+        try validate(
+            command,
             farmID: farm.farmID,
-            operationID: operationID,
+            context: context,
+            removalBatchState: removalBatchState
+        )
+        let compositeChildrenBefore = try compositeChildSnapshot(
+            for: command,
+            farmID: farm.farmID,
             context: context
         )
+        let result = try apply(
+            command,
+            farm: farm,
+            context: context,
+            pedigreeSheepByID: pedigreeSheepByID,
+            sheepAvatarUpdate: sheepAvatarUpdate,
+            removalBatchState: removalBatchState
+        )
+        let projectedHistoryImpact = try historyImpact(for: command, result: result, farmID: farm.farmID, context: context)
+        let operationID = UUID()
+        if let batchState {
+            batchState.stageSequence(
+                farmID: farm.farmID,
+                operationID: operationID,
+                context: context
+            )
+        } else {
+            _ = try FarmStorageRouter.takeNextOperationSequence(
+                farmID: farm.farmID,
+                operationID: operationID,
+                context: context
+            )
+        }
         let operation = DomainOperation(
             id: operationID,
             farmID: farm.farmID,
@@ -658,7 +1328,12 @@ final class FarmCommandService {
         default:
             break
         }
-        let route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
+        let route: FarmStorageRoute
+        if let batchState {
+            route = batchState.route
+        } else {
+            route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
+        }
         if let deliveryProvider = route.deliveryProvider {
             context.insert(OutboxItem(
                 farmID: farm.farmID,
@@ -672,7 +1347,511 @@ final class FarmCommandService {
                 authorityGeneration: route.deliveryAuthorityGeneration
             ))
         }
-        return projectedHistoryImpact
+        try stageNewCompositeChildOperations(
+            for: command,
+            parentOperation: operation,
+            childrenBefore: compositeChildrenBefore,
+            farm: farm,
+            route: route,
+            batchState: batchState,
+            context: context
+        )
+        return StagedCommandResult(
+            historyImpact: projectedHistoryImpact,
+            operation: operation
+        )
+    }
+
+    /// Older clients encoded lambing and its automatically created lamb/weight
+    /// projections in one care operation. Replaying that payload rebuilds the
+    /// local children, but Supabase's provider-neutral entity table only sees
+    /// the operation's primary reproduction entity. Persist explicit child
+    /// operations in the same command transaction so later edits have a real
+    /// remote revision chain and a compact checkpoint can restore them alone.
+    private func compositeChildSnapshot(
+        for command: FarmCommand,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> CompositeChildSnapshot {
+        guard Self.lambingDraft(from: command) != nil else { return .empty }
+        return CompositeChildSnapshot(
+            sheepIDs: Set(try context.fetch(FetchDescriptor<SheepRecord>())
+                .lazy.filter { $0.farmID == farmID }.map(\.id)),
+            weightIDs: Set(try context.fetch(FetchDescriptor<WeightRecord>())
+                .lazy.filter { $0.farmID == farmID }.map(\.id))
+        )
+    }
+
+    private func stageNewCompositeChildOperations(
+        for command: FarmCommand,
+        parentOperation: DomainOperation,
+        childrenBefore: CompositeChildSnapshot,
+        farm: FarmContext,
+        route: FarmStorageRoute,
+        batchState: BatchExecutionState?,
+        context: ModelContext
+    ) throws {
+        guard let draft = Self.lambingDraft(from: command) else { return }
+        let intendedSheepIDs = Set<UUID>(draft.offspring
+            .filter { $0.createSheepRecord }.map { $0.sheepID })
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter {
+            $0.farmID == farm.farmID &&
+                intendedSheepIDs.contains($0.id) &&
+                !childrenBefore.sheepIDs.contains($0.id)
+        }
+        let offspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter {
+            $0.farmID == farm.farmID && $0.lambingRecordID == draft.id
+        }
+        let intendedWeightIDs = Set<UUID>(offspring.compactMap {
+            $0.autoBirthWeightRecordID
+        })
+        let weights = try context.fetch(FetchDescriptor<WeightRecord>()).filter {
+            $0.farmID == farm.farmID &&
+                intendedWeightIDs.contains($0.id) &&
+                !childrenBefore.weightIDs.contains($0.id)
+        }
+        try stageCompositeChildOperations(
+            parentOperation: parentOperation,
+            sheep: sheep,
+            weights: weights,
+            accountID: farm.accountID,
+            route: route,
+            batchState: batchState,
+            context: context
+        )
+    }
+
+    /// Backfills only children of already confirmed Supabase care operations.
+    /// Baseline history has no confirmed Supabase Outbox item, so it is never
+    /// mistaken for a post-activation operation and cannot be uploaded twice.
+    @discardableResult
+    func repairMissingCompositeChildDeliveryOperations(
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> Int {
+        let route = try FarmStorageRouter.route(farmID: farmID, context: context)
+        guard route.deliveryProvider == .supabase else { return 0 }
+        let confirmedParentIDs = Set(try context.fetch(FetchDescriptor<OutboxItem>()).lazy
+            .filter {
+                $0.farmID == farmID &&
+                    $0.deliveryProvider == .supabase &&
+                    $0.status == .confirmed
+            }
+            .map(\.operationID))
+        guard !confirmedParentIDs.isEmpty else { return 0 }
+
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            $0.farmID == farmID &&
+                confirmedParentIDs.contains($0.id) &&
+                $0.kindRawValue == DomainOperationKind.care.rawValue
+        }
+        let existingOperations = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            $0.farmID == farmID
+        }
+        let existingOperationsByID = Dictionary(uniqueKeysWithValues:
+            existingOperations.map { ($0.id, $0) }
+        )
+        let existingOutboxes = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.farmID == farmID && $0.deliveryProvider == .supabase
+        }
+        let rejectedInvalidRevisionOperationIDs = Set(existingOutboxes
+            .filter {
+                $0.statusRawValue == OutboxStatus.retryableFailure.rawValue &&
+                    $0.errorMessage == "resulting_revision_invalid"
+            }
+            .map(\.operationID))
+        var insertedCount = 0
+        for parent in operations {
+            guard let payload = try? Self.decodeCloudPayload(parent.payload),
+            let careCommand = payload.careCommand,
+            let draft = Self.lambingDraft(from: .care(careCommand)) else {
+                continue
+            }
+            let intendedSheepIDs = Set<UUID>(draft.offspring
+                .filter { $0.createSheepRecord }.map { $0.sheepID })
+            var correctedSheepIDs = Set<UUID>()
+            let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter {
+                $0.farmID == farmID && intendedSheepIDs.contains($0.id)
+            }.filter {
+                let originalID = Self.compositeSheepOperationID(
+                    parentOperationID: parent.id,
+                    sheepID: $0.id
+                )
+                let correctedID = Self.correctedCompositeSheepOperationID(
+                    parentOperationID: parent.id,
+                    sheepID: $0.id
+                )
+                guard existingOperationsByID[correctedID] == nil else { return false }
+                guard let original = existingOperationsByID[originalID] else { return true }
+                let invalidOutboxes = existingOutboxes.filter {
+                    $0.operationID == originalID &&
+                        rejectedInvalidRevisionOperationIDs.contains($0.operationID)
+                }
+                guard original.baseRevision == 0,
+                      !invalidOutboxes.isEmpty else {
+                    return false
+                }
+                for item in invalidOutboxes {
+                    item.statusRawValue = OutboxStatus.supersededRemoteAuthority.rawValue
+                    item.errorMessage = "superseded_invalid_child_revision"
+                    item.nextRetryAt = nil
+                }
+                correctedSheepIDs.insert($0.id)
+                return true
+            }
+            let offspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter {
+                $0.farmID == farmID && $0.lambingRecordID == draft.id
+            }
+            let intendedWeightIDs = Set<UUID>(offspring.compactMap {
+                $0.autoBirthWeightRecordID
+            })
+            let weights = try context.fetch(FetchDescriptor<WeightRecord>()).filter {
+                $0.farmID == farmID && intendedWeightIDs.contains($0.id)
+            }.filter {
+                existingOperationsByID[Self.compositeWeightOperationID(
+                    parentOperationID: parent.id,
+                    weightID: $0.id
+                )] == nil
+            }
+            insertedCount += sheep.count + weights.count
+            try stageCompositeChildOperations(
+                parentOperation: parent,
+                sheep: sheep,
+                weights: weights,
+                accountID: parent.accountID,
+                route: route,
+                batchState: nil,
+                correctedSheepOperationIDs: correctedSheepIDs,
+                context: context
+            )
+        }
+        if insertedCount > 0 { try context.save() }
+        return insertedCount
+    }
+
+    /// A legacy photo-name repair created valid local tombstones on clients
+    /// restored from compact checkpoints, but older code derived the base
+    /// revision only from visible operation history. Retry only the narrowly
+    /// proven artifact whose local projection revision equals the rejected
+    /// operation's resulting revision. Other conflicts remain blocked.
+    @discardableResult
+    func repairBlockedLegacyPhotoFilenameTombstones(
+        in farm: FarmContext,
+        context: ModelContext
+    ) throws -> Int {
+        let route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
+        guard route.deliveryProvider == .supabase else { return 0 }
+        let blockedItems = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.farmID == farm.farmID &&
+                $0.deliveryProvider == .supabase &&
+                $0.status == .blockedConflict &&
+                $0.errorMessage == "base_revision_mismatch"
+        }
+        guard !blockedItems.isEmpty else { return 0 }
+        let operationIDs = Set(blockedItems.map(\.operationID))
+        let operationsByID = Dictionary(uniqueKeysWithValues:
+            try context.fetch(FetchDescriptor<DomainOperation>()).filter {
+                $0.farmID == farm.farmID && operationIDs.contains($0.id)
+            }.map { ($0.id, $0) }
+        )
+        let sheepByID = Dictionary(uniqueKeysWithValues:
+            try context.fetch(FetchDescriptor<SheepRecord>()).filter {
+                $0.farmID == farm.farmID
+            }.map { ($0.id, $0) }
+        )
+        var impacts: [HistoryImpact] = []
+        var repairedCount = 0
+        for item in blockedItems {
+            guard let operation = operationsByID[item.operationID],
+                  operation.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue,
+                  let entityID = operation.entityID,
+                  let sheep = sheepByID[entityID],
+                  sheep.deletedAt != nil,
+                  sheep.revision == operation.resultingRevision,
+                  sheep.isHistoricalArchive,
+                  sheep.status == .removed,
+                  sheep.note == "由照片历史记录自动补建",
+                  LegacyPhotoFilenameIdentity.earTag(
+                    from: sheep.legacyEarTag ?? sheep.earTag
+                  ) != nil,
+                  let payload = try? Self.decodeCloudPayload(operation.payload),
+                  payload.kind == DomainOperationKind.tombstoneEntity,
+                  payload.strings["entityType"] == CloudEntityType.sheep.rawValue,
+                  payload.identifiers["entityID"] == entityID,
+                  let reason = payload.strings["reason"],
+                  reason.hasPrefix("修复旧版照片文件名误建羊只：") else {
+                continue
+            }
+            if let impact = try executeWithoutSaving(
+                .tombstoneEntity(
+                    entityType: .sheep,
+                    entityID: entityID,
+                    reason: reason
+                ),
+                in: farm,
+                context: context
+            ) {
+                impacts.append(impact)
+            }
+            item.statusRawValue = OutboxStatus.supersededRemoteAuthority.rawValue
+            item.errorMessage = "superseded_by_revision_aware_retry"
+            item.nextRetryAt = nil
+            repairedCount += 1
+        }
+        guard repairedCount > 0 else { return 0 }
+        try rebuildHistoryIfNeeded(
+            for: impacts,
+            farmID: farm.farmID,
+            context: context
+        )
+        try context.save()
+        return repairedCount
+    }
+
+    private func stageCompositeChildOperations(
+        parentOperation: DomainOperation,
+        sheep: [SheepRecord],
+        weights: [WeightRecord],
+        accountID: UUID,
+        route: FarmStorageRoute,
+        batchState: BatchExecutionState?,
+        correctedSheepOperationIDs: Set<UUID> = [],
+        context: ModelContext
+    ) throws {
+        for record in sheep.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+            let payload = try Self.sheepProjectionPayload(record)
+            let operationID = correctedSheepOperationIDs.contains(record.id)
+                ? Self.correctedCompositeSheepOperationID(
+                    parentOperationID: parentOperation.id,
+                    sheepID: record.id
+                )
+                : Self.compositeSheepOperationID(
+                    parentOperationID: parentOperation.id,
+                    sheepID: record.id
+                )
+            let operation = DomainOperation(
+                id: operationID,
+                farmID: record.farmID,
+                accountID: accountID,
+                kind: .addSheep,
+                occurredAt: record.enteredAt,
+                summary: "产羔自动建档：\(record.earTag)",
+                entityType: CloudEntityType.sheep.rawValue,
+                entityID: record.id,
+                baseRevision: 0,
+                resultingRevision: 1,
+                payload: payload
+            )
+            try stageCompositeChildOperation(
+                operation,
+                route: route,
+                batchState: batchState,
+                context: context
+            )
+        }
+        for record in weights.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+            let payload = try FarmCommandCloudPayloadEncoder.encode(.recordWeight(
+                sheepID: record.sheepID,
+                kilogramsText: record.kilogramsText,
+                occurredAt: record.occurredAt,
+                note: record.note
+            ))
+            let operation = DomainOperation(
+                id: Self.compositeWeightOperationID(
+                    parentOperationID: parentOperation.id,
+                    weightID: record.id
+                ),
+                farmID: record.farmID,
+                accountID: accountID,
+                kind: .recordWeight,
+                occurredAt: record.occurredAt,
+                summary: "产羔自动记录初生重",
+                entityType: CloudEntityType.weight.rawValue,
+                entityID: record.id,
+                baseRevision: 0,
+                resultingRevision: 1,
+                payload: payload
+            )
+            try stageCompositeChildOperation(
+                operation,
+                route: route,
+                batchState: batchState,
+                context: context
+            )
+        }
+    }
+
+    private func stageCompositeChildOperation(
+        _ operation: DomainOperation,
+        route: FarmStorageRoute,
+        batchState: BatchExecutionState?,
+        context: ModelContext
+    ) throws {
+        if try context.fetch(FetchDescriptor<DomainOperation>()).contains(where: {
+            $0.id == operation.id && $0.farmID == operation.farmID
+        }) {
+            return
+        }
+        context.insert(operation)
+        if let batchState {
+            batchState.stageSequence(
+                farmID: operation.farmID,
+                operationID: operation.id,
+                context: context
+            )
+        } else {
+            _ = try FarmStorageRouter.takeNextOperationSequence(
+                farmID: operation.farmID,
+                operationID: operation.id,
+                context: context
+            )
+        }
+        if let provider = route.deliveryProvider {
+            context.insert(OutboxItem(
+                farmID: operation.farmID,
+                accountID: operation.accountID,
+                operationID: operation.id,
+                entityType: operation.entityType,
+                entityID: operation.entityID,
+                baseRevision: operation.baseRevision,
+                payloadDigest: operation.payloadDigest,
+                deliveryProvider: provider,
+                authorityGeneration: route.deliveryAuthorityGeneration
+            ))
+        }
+    }
+
+    private static func lambingDraft(from command: FarmCommand) -> CareLambingDraft? {
+        guard case .care(let care) = command else { return nil }
+        switch care {
+        case .recordLambing(let draft): return draft
+        case .correctLambing(_, let replacement, _): return replacement
+        default: return nil
+        }
+    }
+
+    private static func compositeSheepOperationID(
+        parentOperationID: UUID,
+        sheepID: UUID
+    ) -> UUID {
+        StableCloudUUID.derived(
+            namespace: parentOperationID,
+            name: "lambing-child-sheep:\(sheepID.uuidString.lowercased())"
+        )
+    }
+
+    private static func compositeWeightOperationID(
+        parentOperationID: UUID,
+        weightID: UUID
+    ) -> UUID {
+        StableCloudUUID.derived(
+            namespace: parentOperationID,
+            name: "lambing-child-weight:\(weightID.uuidString.lowercased())"
+        )
+    }
+
+    private static func correctedCompositeSheepOperationID(
+        parentOperationID: UUID,
+        sheepID: UUID
+    ) -> UUID {
+        StableCloudUUID.derived(
+            namespace: parentOperationID,
+            name: "lambing-child-sheep-v2:\(sheepID.uuidString.lowercased())"
+        )
+    }
+
+    private static func sheepProjectionPayload(_ record: SheepRecord) throws -> Data {
+        var payload = try decodeCloudPayload(
+            FarmCommandCloudPayloadEncoder.encode(.addSheep(
+                earTag: record.earTag,
+                breed: record.breed,
+                sex: record.sex,
+                penID: record.initialPenID,
+                occurredAt: record.enteredAt,
+                birthAt: record.birthAt,
+                note: record.note
+            ))
+        )
+        payload.optionalStrings["legacyEarTag"] = record.legacyEarTag
+        payload.optionalStrings["legacySourceKey"] = record.legacySourceKey
+        payload.strings["purpose"] = record.purpose
+        payload.integers["isHistoricalArchive"] = record.isHistoricalArchive ? 1 : 0
+        payload.integers["isBreedingRam"] = record.isBreedingRam ? 1 : 0
+        payload.optionalIdentifiers["damID"] = record.damID
+        payload.optionalIdentifiers["sireID"] = record.sireID
+        payload.optionalIdentifiers["semenDonorID"] = record.semenDonorID
+        payload.optionalStrings["damProvenance"] = record.damProvenanceRawValue
+        payload.optionalStrings["sireProvenance"] = record.sireProvenanceRawValue
+        payload.optionalStrings["semenDonorNameSnapshot"] = record.semenDonorNameSnapshot
+        payload.optionalStrings["semenDonorRegistrationNumberSnapshot"] =
+            record.semenDonorRegistrationNumberSnapshot
+        payload.optionalStrings["semenDonorBreedSnapshot"] = record.semenDonorBreedSnapshot
+        return try JSONEncoder.cloud.encode(payload)
+    }
+
+    private static func decodeCloudPayload(_ data: Data) throws -> FarmCommandCloudPayload {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(FarmCommandCloudPayload.self, from: data)
+    }
+
+    private func pedigreeBatchSheepByID(
+        for commands: [FarmCommand],
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> [UUID: SheepRecord]? {
+        guard !commands.isEmpty else { return nil }
+        let isPedigreeOnlyBatch = commands.allSatisfy { command in
+            switch command {
+            case .care(.updateSheepPedigree), .care(.setBreedingRam):
+                true
+            default:
+                false
+            }
+        }
+        guard isPedigreeOnlyBatch else { return nil }
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        return Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
+    }
+
+    private func removalBatchExecutionState(
+        for commands: [FarmCommand],
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> RemovalBatchExecutionState? {
+        guard !commands.isEmpty,
+              commands.allSatisfy({ command in
+                  if case .removeSheep = command { return true }
+                  return false
+              }) else {
+            return nil
+        }
+
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let batchIDs = Set(commands.compactMap { command -> UUID? in
+            guard case .removeSheep(_, _, _, _, _, _, _, let batchID, _) = command else {
+                return nil
+            }
+            return batchID
+        })
+        var existingRecordsByBatchID: [UUID: [RemovalRecord]] = [:]
+        for batchID in batchIDs {
+            existingRecordsByBatchID[batchID] = try context.fetch(
+                FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+                    $0.farmID == farmID &&
+                        $0.removalBatchID == batchID &&
+                        $0.deletedAt == nil
+                })
+            )
+        }
+        return RemovalBatchExecutionState(
+            sheepByID: Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) }),
+            existingRecordsByBatchID: existingRecordsByBatchID
+        )
     }
 
     private func affectsHistoryProjection(_ command: FarmCommand) -> Bool {
@@ -696,7 +1875,7 @@ final class FarmCommandService {
     ) throws -> HistoryImpact? {
         let impact: HistoryImpact?
         switch command {
-        case .addSheep(_, _, _, _, let occurredAt, _, _):
+        case .addSheep(_, _, _, _, let occurredAt, _, _, _):
             impact = HistoryImpact(sheepID: result.entityID, changedAt: occurredAt)
         case .transferSheep(let sheepID, _, let occurredAt, _):
             impact = HistoryImpact(sheepID: sheepID, changedAt: occurredAt)
@@ -787,6 +1966,31 @@ final class FarmCommandService {
         })).first
     }
 
+    private func releaseLegacyHistoryProjectionAuthority(
+        affectedBy entityType: CloudEntityType,
+        entityID: UUID,
+        farmID: UUID,
+        context: ModelContext
+    ) throws {
+        let sheepID: UUID?
+        switch entityType {
+        case .transfer:
+            sheepID = try transferRecord(id: entityID, farmID: farmID, context: context)?.sheepID
+        case .removal:
+            sheepID = try removalRecord(id: entityID, farmID: farmID, context: context)?.sheepID
+        default:
+            sheepID = nil
+        }
+        guard let sheepID,
+              let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                  $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
+              })).first else {
+            return
+        }
+        sheep.legacyStatusSnapshotIsAuthoritative = false
+        sheep.legacyPenSnapshotIsAuthoritative = false
+    }
+
     @discardableResult
     func resolveConflict(conflictID: UUID, decision: ConflictResolutionDecision, note: String, in farm: FarmContext, context: ModelContext) throws -> UUID {
         guard farm.capabilities.allows(.resolveConflicts) else { throw FarmPermissionError.denied(.resolveConflicts) }
@@ -854,6 +2058,20 @@ final class FarmCommandService {
         conflict.resolvedByAccountID = farm.accountID
         conflict.resolvedAt = .now
         conflict.resolutionFailureReason = nil
+        if case .acceptRemote = decision {
+            let superseded = try context.fetch(FetchDescriptor<OutboxItem>())
+                .filter {
+                    $0.farmID == farm.farmID &&
+                        $0.entityID == conflict.entityID &&
+                        $0.entityType == conflict.entityType &&
+                        $0.status == .blockedConflict
+                }
+            for item in superseded {
+                item.statusRawValue = OutboxStatus.supersededRemoteAuthority.rawValue
+                item.errorMessage = "superseded_by_conflict_resolution:\(operation.id.uuidString.lowercased())"
+                item.nextRetryAt = nil
+            }
+        }
         try context.save()
         if route.requiresOutbox {
             CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
@@ -861,7 +2079,12 @@ final class FarmCommandService {
         return operation.id
     }
 
-    private func validate(_ command: FarmCommand, farmID: UUID, context: ModelContext) throws {
+    private func validate(
+        _ command: FarmCommand,
+        farmID: UUID,
+        context: ModelContext,
+        removalBatchState: RemovalBatchExecutionState? = nil
+    ) throws {
         switch command {
         case .care:
             break
@@ -883,18 +2106,25 @@ final class FarmCommandService {
                     throw FarmCommandError.penHasCurrentSheep
                 }
             }
-        case .addSheep(let earTag, let breed, _, let penID, _, _, _):
+        case .addSheep(let earTag, let breed, let sex, let penID, _, _, let currentParity, _):
             let normalizedTag = try required(earTag, label: "耳号")
             _ = try required(breed, label: "品种")
+            if let currentParity {
+                guard currentParity >= 0, sex == .ewe else { throw FarmCommandError.invalidNumber("当前胎次") }
+            }
             let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
             guard !sheep.contains(where: { $0.farmID == farmID && EarTag.normalized($0.earTag) == EarTag.normalized(normalizedTag) }) else {
                 throw FarmCommandError.duplicateEarTag
             }
             if let penID { try assertPen(penID, farmID: farmID, context: context) }
-        case .updateSheepProfile(let sheepID, let earTag, let breed, _, _, _):
+        case .updateSheepProfile(let sheepID, let earTag, let breed, let sex, _, let currentParity, let parityRecordedAt, _):
             let current = try sheepRecord(sheepID, farmID: farmID, context: context)
             let normalizedTag = try required(earTag, label: "耳号")
             _ = try required(breed, label: "品种")
+            if let currentParity {
+                guard currentParity >= 0, sex == .ewe else { throw FarmCommandError.invalidNumber("当前胎次") }
+                guard parityRecordedAt != nil else { throw FarmCommandError.missingRequiredValue("胎次确认时间") }
+            }
             if EarTag.normalized(current.earTag) != EarTag.normalized(normalizedTag) {
                 let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
                     $0.farmID == farmID && $0.deletedAt == nil
@@ -912,11 +2142,10 @@ final class FarmCommandService {
             }
             try positiveDecimal(kilogramsText, label: "体重")
             _ = try required(reason, label: "修正原因")
-        case .recordWeaning(let sheepID, let weanWeightText, _, _, let birthWeightText, let averageDailyGainText, let damID, let litterSize, _):
+        case .recordWeaning(let sheepID, let weanWeightText, _, _, let birthWeightText, _, let damID, let litterSize, _):
             try assertSheep(sheepID, farmID: farmID, context: context)
             try positiveDecimal(weanWeightText, label: "断奶重")
             if let birthWeightText, !birthWeightText.isEmpty { try positiveDecimal(birthWeightText, label: "出生重") }
-            if let averageDailyGainText, !averageDailyGainText.isEmpty { try positiveDecimal(averageDailyGainText, label: "日增重") }
             if let litterSize { guard litterSize > 0 else { throw FarmCommandError.invalidNumber("胎只数") } }
             if let damID {
                 guard damID != sheepID else { throw FarmCommandError.weaningDamMustBeEwe }
@@ -930,9 +2159,15 @@ final class FarmCommandService {
                 guard step.dayOffset >= 0 else { throw FarmCommandError.invalidNumber("步骤日龄") }
                 _ = try required(step.action, label: "步骤操作")
             }
-        case .transferSheep(let sheepID, let toPenID, _, _):
-            try assertSheep(sheepID, farmID: farmID, context: context)
+        case .transferSheep(let sheepID, let toPenID, let occurredAt, _):
+            let sheep = try sheepRecord(sheepID, farmID: farmID, context: context)
             if let toPenID { try assertPen(toPenID, farmID: farmID, context: context) }
+            let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil
+            }))
+            guard FarmHistoryTimeline.pen(for: sheep, at: occurredAt, transfers: transfers) != toPenID else {
+                throw FarmCommandError.transferDestinationUnchanged
+            }
         case .correctTransfer(let originalID, let toPenID, _, _, let reason):
             guard try context.fetch(FetchDescriptor<TransferRecord>()).contains(where: { $0.id == originalID && $0.farmID == farmID && $0.deletedAt == nil }) else {
                 throw FarmCommandError.sourceRecordNotFound
@@ -940,7 +2175,11 @@ final class FarmCommandService {
             if let toPenID { try assertPen(toPenID, farmID: farmID, context: context) }
             _ = try required(reason, label: "修正原因")
         case .removeSheep(let sheepID, let kind, let reason, let amountText, let occurredAt, let note, _, let removalBatchID, let batchTotalAmountText):
-            try assertSheep(sheepID, farmID: farmID, context: context)
+            if let removalBatchState {
+                _ = try removalBatchState.sheepRecord(id: sheepID)
+            } else {
+                try assertSheep(sheepID, farmID: farmID, context: context)
+            }
             let normalizedReason = try required(reason, label: "离场原因")
             if let amountText, !amountText.isEmpty { try positiveDecimal(amountText, label: "金额") }
             if let removalBatchID {
@@ -956,19 +2195,32 @@ final class FarmCommandService {
                 } else if normalizedTotal?.isEmpty == false {
                     throw FarmCommandError.invalidRemovalBatch("只有出售批次可以填写总售卖金额。")
                 }
-                let existingBatch = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
-                    $0.farmID == farmID && $0.removalBatchID == removalBatchID && $0.deletedAt == nil
-                }))
                 let normalizedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
                 let stableTotal = normalizedTotal.flatMap { $0.isEmpty ? nil : Decimal.stable($0)?.stableText }
-                guard existingBatch.allSatisfy({
-                    $0.kind == kind &&
-                        $0.reason == normalizedReason &&
-                        $0.occurredAt == occurredAt &&
-                        $0.note == normalizedNote &&
-                        $0.batchTotalAmountText == stableTotal
-                }) else {
-                    throw FarmCommandError.invalidRemovalBatch("同一批次的类型、原因、日期、备注和总额必须一致。")
+                if let removalBatchState {
+                    try removalBatchState.validate(
+                        batchID: removalBatchID,
+                        signature: RemovalBatchSignature(
+                            kind: kind,
+                            reason: normalizedReason,
+                            occurredAt: occurredAt,
+                            note: normalizedNote,
+                            batchTotalAmountText: stableTotal
+                        )
+                    )
+                } else {
+                    let existingBatch = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+                        $0.farmID == farmID && $0.removalBatchID == removalBatchID && $0.deletedAt == nil
+                    }))
+                    guard existingBatch.allSatisfy({
+                        $0.kind == kind &&
+                            $0.reason == normalizedReason &&
+                            $0.occurredAt == occurredAt &&
+                            $0.note == normalizedNote &&
+                            $0.batchTotalAmountText == stableTotal
+                    }) else {
+                        throw FarmCommandError.invalidRemovalBatch("同一批次的类型、原因、日期、备注和总额必须一致。")
+                    }
                 }
             } else if batchTotalAmountText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
                 throw FarmCommandError.invalidRemovalBatch("总售卖金额必须关联离场批次。")
@@ -1066,9 +2318,10 @@ final class FarmCommandService {
             guard !semen.contains(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.code.caseInsensitiveCompare(trimmedCode) == .orderedSame }) else {
                 throw FarmCommandError.missingRequiredValue("唯一冻精编号")
             }
-        case .recordReproduction(let eweID, let kind, _, let sireID, let semenName, _, let lambCount, let parity, let birthDeadCount, let offspring, _):
+        case .recordReproduction(let eweID, let kind, let occurredAt, let sireID, let semenName, _, let lambCount, let parity, let birthDeadCount, let offspring, _):
             let ewe = try sheepRecord(eweID, farmID: farmID, context: context)
             guard ewe.sex == .ewe else { throw FarmCommandError.reproductionSubjectMustBeEwe }
+            guard kind != .parityBaseline else { throw FarmCommandError.invalidReproductionRecord }
             if let sireID {
                 let sire = try sheepRecord(sireID, farmID: farmID, context: context)
                 guard sire.sex == .ram else { throw FarmCommandError.reproductionSireMustBeRam }
@@ -1080,11 +2333,17 @@ final class FarmCommandService {
                 throw FarmCommandError.pregnancyCheckCannotSetPaternity
             }
             if kind == .lambing {
+                guard occurredAt <= Date.now else { throw FarmCommandError.futureFactDate("产羔时间") }
                 guard lambCount >= 1,
                       parity.map({ $0 >= 1 }) == true,
                       birthDeadCount.map({ $0 >= 0 && $0 <= lambCount }) == true,
                       offspring.count == lambCount else {
                     throw FarmCommandError.invalidReproductionRecord
+                }
+                let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>())
+                let currentParity = LambingEntrySemantics.currentParity(eweID: eweID, farmID: farmID, before: occurredAt, records: reproduction)
+                guard parity == currentParity + 1 else {
+                    throw FarmCommandError.lambingParityMismatch(current: currentParity, attempted: parity ?? 0)
                 }
                 let normalizedTags = offspring.map { EarTag.normalized($0.earTag) }
                 guard normalizedTags.allSatisfy({ !$0.isEmpty }), Set(normalizedTags).count == normalizedTags.count else {
@@ -1111,6 +2370,13 @@ final class FarmCommandService {
             _ = try required(reason, label: "删除原因")
             guard try entityExists(type: entityType, id: entityID, farmID: farmID, context: context) else {
                 throw FarmCommandError.missingRequiredValue("可删除的权威记录")
+            }
+            if entityType == .reproduction,
+               let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>()).first(where: {
+                   $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
+               }),
+               reproduction.kind == .parityBaseline {
+                throw FarmCommandError.parityBaselineManagedInProfile
             }
             if entityType == .pen {
                 let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
@@ -1160,8 +2426,18 @@ final class FarmCommandService {
         }
     }
 
-    private func apply(_ command: FarmCommand, farm: FarmContext, context: ModelContext) throws -> AppliedCommandResult {
-        let defaultPayload = try FarmCommandCloudPayloadEncoder.encode(command)
+    private func apply(
+        _ command: FarmCommand,
+        farm: FarmContext,
+        context: ModelContext,
+        pedigreeSheepByID: [UUID: SheepRecord]? = nil,
+        sheepAvatarUpdate: SheepAvatarPhotoUpdate? = nil,
+        removalBatchState: RemovalBatchExecutionState? = nil
+    ) throws -> AppliedCommandResult {
+        let defaultPayload = try FarmCommandCloudPayloadEncoder.encode(
+            command,
+            sheepAvatarUpdate: sheepAvatarUpdate
+        )
         func appliedResult(_ type: CloudEntityType, _ id: UUID, baseRevision: Int = 0, revision: Int = 1, payload: Data? = nil) -> AppliedCommandResult {
             AppliedCommandResult(entityType: type.rawValue, entityID: id, baseRevision: baseRevision, resultingRevision: revision, payload: payload ?? defaultPayload)
         }
@@ -1172,7 +2448,8 @@ final class FarmCommandService {
                 careCommand,
                 farmID: farm.farmID,
                 accountID: farm.accountID,
-                context: context
+                context: context,
+                pedigreeSheepByID: pedigreeSheepByID
             )
             return AppliedCommandResult(entityType: result.entityType.rawValue, entityID: result.entityID, baseRevision: result.baseRevision, resultingRevision: result.resultingRevision, payload: defaultPayload)
         case .updateFarmLocation(let displayName, let latitude, let longitude, let addressSnapshot, let timeZoneIdentifier, let source, let accuracy):
@@ -1180,7 +2457,12 @@ final class FarmCommandService {
             guard let record = farms.first(where: { $0.id == farm.farmID && $0.deletedAt == nil }) else {
                 throw FarmCommandError.missingRequiredValue("当前牧场")
             }
-            let baseRevision = try latestRevision(entityID: record.id, farmID: farm.farmID, context: context)
+            let baseRevision = try latestRevision(
+                entityType: .farm,
+                entityID: record.id,
+                farmID: farm.farmID,
+                context: context
+            )
             record.locationDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
             record.latitude = latitude
             record.longitude = longitude
@@ -1216,11 +2498,22 @@ final class FarmCommandService {
             record.updatedAt = .now
             record.revision += 1
             return appliedResult(.pen, record.id, baseRevision: baseRevision, revision: record.revision)
-        case .addSheep(let earTag, let breed, let sex, let penID, let occurredAt, let birthAt, let note):
+        case .addSheep(let earTag, let breed, let sex, let penID, let occurredAt, let birthAt, let currentParity, let note):
             let record = SheepRecord(farmID: farm.farmID, earTag: earTag.trimmingCharacters(in: .whitespacesAndNewlines), breed: breed.trimmingCharacters(in: .whitespacesAndNewlines), sex: sex, penID: penID, enteredAt: occurredAt, birthAt: birthAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
             context.insert(record)
+            if sex == .ewe, let currentParity {
+                context.insert(ReproductionRecord(
+                    id: LambingEntrySemantics.entryParityBaselineID(sheepID: record.id),
+                    farmID: farm.farmID,
+                    eweID: record.id,
+                    kind: .parityBaseline,
+                    occurredAt: occurredAt,
+                    parity: currentParity,
+                    note: "建档时当前胎次"
+                ))
+            }
             return appliedResult(.sheep, record.id)
-        case .updateSheepProfile(let sheepID, let earTag, let breed, let sex, let birthAt, let note):
+        case .updateSheepProfile(let sheepID, let earTag, let breed, let sex, let birthAt, let currentParity, let parityRecordedAt, let note):
             let record = try sheepRecord(sheepID, farmID: farm.farmID, context: context)
             let baseRevision = record.revision
             record.earTag = earTag.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1231,6 +2524,26 @@ final class FarmCommandService {
             record.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
             record.updatedAt = .now
             record.revision += 1
+            if let currentParity, let parityRecordedAt {
+                context.insert(ReproductionRecord(
+                    id: LambingEntrySemantics.parityCorrectionID(sheepID: record.id, sheepRevision: record.revision),
+                    farmID: farm.farmID,
+                    eweID: record.id,
+                    kind: .parityBaseline,
+                    occurredAt: parityRecordedAt,
+                    parity: currentParity,
+                    note: "档案确认当前胎次"
+                ))
+            }
+            if let sheepAvatarUpdate {
+                try SheepAvatarSelectionStore.apply(
+                    sheepAvatarUpdate,
+                    sheepID: record.id,
+                    farmID: farm.farmID,
+                    updatedAt: record.updatedAt,
+                    context: context
+                )
+            }
             return appliedResult(.sheep, record.id, baseRevision: baseRevision, revision: record.revision)
         case .recordWeight(let sheepID, let kilogramsText, let occurredAt, let note):
             let record = WeightRecord(farmID: farm.farmID, sheepID: sheepID, kilogramsText: normalizedDecimal(kilogramsText), occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1246,21 +2559,48 @@ final class FarmCommandService {
             let replacement = WeightRecord(farmID: farm.farmID, sheepID: original.sheepID, kilogramsText: normalizedDecimal(kilogramsText), occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
             context.insert(replacement)
             return appliedResult(.weight, replacement.id)
-        case .recordWeaning(let sheepID, let weanWeightText, let occurredAt, let birthAt, let birthWeightText, let averageDailyGainText, let damID, let litterSize, let note):
+        case .recordWeaning(let sheepID, let weanWeightText, let occurredAt, let birthAt, let birthWeightText, _, let damID, let litterSize, let note):
+            let child = try sheepRecord(sheepID, farmID: farm.farmID, context: context)
+            let effectiveBirthAt = birthAt ?? child.birthAt
+            let normalizedWeanWeightText = normalizedDecimal(weanWeightText)
+            let normalizedBirthWeightText = birthWeightText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }
+            let farmID = farm.farmID
+            let weightRecords = try context.fetch(FetchDescriptor<WeightRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil
+            }))
+            let weaningWeight = NSDecimalNumber(decimal: Decimal.stable(normalizedWeanWeightText) ?? 0).doubleValue
+            let gain = WeaningGainSemantics.calculate(
+                sheepID: sheepID,
+                birthAt: effectiveBirthAt,
+                weaningAt: occurredAt,
+                weaningWeight: weaningWeight,
+                samples: WeaningGainSemantics.samples(from: weightRecords, farmID: farmID)
+            )
             let record = WeaningRecord(
-                farmID: farm.farmID,
+                farmID: farmID,
                 sheepID: sheepID,
                 occurredAt: occurredAt,
-                weanWeightText: normalizedDecimal(weanWeightText),
-                birthAt: birthAt,
-                birthWeightText: birthWeightText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) },
-                averageDailyGainText: averageDailyGainText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) },
+                weanWeightText: normalizedWeanWeightText,
+                birthAt: effectiveBirthAt,
+                birthWeightText: normalizedBirthWeightText,
+                averageDailyGainText: gain?.kilogramsPerDayText,
                 damID: damID,
                 litterSize: litterSize,
                 note: note.trimmingCharacters(in: .whitespacesAndNewlines)
             )
             context.insert(record)
-            return appliedResult(.weaning, record.id)
+            let payload = try FarmCommandCloudPayloadEncoder.encode(.recordWeaning(
+                sheepID: sheepID,
+                weanWeightText: normalizedWeanWeightText,
+                occurredAt: occurredAt,
+                birthAt: effectiveBirthAt,
+                birthWeightText: normalizedBirthWeightText,
+                averageDailyGainText: gain?.kilogramsPerDayText,
+                damID: damID,
+                litterSize: litterSize,
+                note: note.trimmingCharacters(in: .whitespacesAndNewlines)
+            ))
+            return appliedResult(.weaning, record.id, payload: payload)
         case .createBreedingProgram(let name, let createdAt, let steps):
             let program = BreedingProgramRecord(farmID: farm.farmID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), createdAt: createdAt)
             context.insert(program)
@@ -1304,7 +2644,12 @@ final class FarmCommandService {
             context.insert(replacement)
             return appliedResult(.transfer, replacement.id)
         case .removeSheep(let sheepID, let kind, let reason, let amountText, let occurredAt, let note, let recordID, let removalBatchID, let batchTotalAmountText):
-            let sheep = try sheepRecord(sheepID, farmID: farm.farmID, context: context)
+            let sheep: SheepRecord
+            if let removalBatchState {
+                sheep = try removalBatchState.sheepRecord(id: sheepID)
+            } else {
+                sheep = try sheepRecord(sheepID, farmID: farm.farmID, context: context)
+            }
             sheep.legacyStatusSnapshotIsAuthoritative = false
             sheep.legacyPenSnapshotIsAuthoritative = false
             let record = RemovalRecord(
@@ -1489,7 +2834,18 @@ final class FarmCommandService {
             context.insert(record)
             return appliedResult(.note, record.id)
         case .tombstoneEntity(let entityType, let entityID, let reason):
-            let baseRevision = try latestRevision(entityID: entityID, farmID: farm.farmID, context: context)
+            let baseRevision = try latestRevision(
+                entityType: entityType,
+                entityID: entityID,
+                farmID: farm.farmID,
+                context: context
+            )
+            try releaseLegacyHistoryProjectionAuthority(
+                affectedBy: entityType,
+                entityID: entityID,
+                farmID: farm.farmID,
+                context: context
+            )
             try DomainEntityDeletionService.setDeletedAt(.now, type: entityType, id: entityID, farmID: farm.farmID, context: context)
             context.insert(TombstoneRecord(
                 farmID: farm.farmID,
@@ -1511,12 +2867,108 @@ final class FarmCommandService {
         }
     }
 
-    private func latestRevision(entityID: UUID, farmID: UUID, context: ModelContext) throws -> Int {
-        try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+    private func latestRevision(
+        entityType: CloudEntityType,
+        entityID: UUID,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> Int {
+        let operationRevision = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
             $0.farmID == farmID && $0.entityID == entityID
         }))
             .map(\.resultingRevision)
             .max() ?? 1
+        let tombstoneRevision = try context.fetch(FetchDescriptor<TombstoneRecord>()).lazy
+            .filter { $0.farmID == farmID && $0.entityID == entityID }
+            .map(\.revision)
+            .max() ?? 1
+        let projectionRevision = try projectionRevision(
+            entityType: entityType,
+            entityID: entityID,
+            farmID: farmID,
+            context: context
+        ) ?? 1
+        return max(operationRevision, max(tombstoneRevision, projectionRevision))
+    }
+
+    private func projectionRevision(
+        entityType: CloudEntityType,
+        entityID: UUID,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> Int? {
+        return switch entityType {
+        case .pen:
+            try context.fetch(FetchDescriptor<PenRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .sheep:
+            try context.fetch(FetchDescriptor<SheepRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .weight:
+            try context.fetch(FetchDescriptor<WeightRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .weaning:
+            try context.fetch(FetchDescriptor<WeaningRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .breedingProgram:
+            try context.fetch(FetchDescriptor<BreedingProgramRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .breedingProgramStep:
+            try context.fetch(FetchDescriptor<BreedingProgramStepRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .transfer:
+            try context.fetch(FetchDescriptor<TransferRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .removal:
+            try context.fetch(FetchDescriptor<RemovalRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .feed:
+            try context.fetch(FetchDescriptor<FeedRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .reproduction:
+            try context.fetch(FetchDescriptor<ReproductionRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .semen:
+            try context.fetch(FetchDescriptor<SemenRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .semenDonor:
+            try context.fetch(FetchDescriptor<SemenDonorRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .note:
+            try context.fetch(FetchDescriptor<NoteRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .lambingOffspring:
+            try context.fetch(FetchDescriptor<LambingOffspringRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .careRule:
+            try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .careReminder:
+            try context.fetch(FetchDescriptor<CareReminderRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .farm, .productionBatch, .batchMembership, .feedIngredient,
+             .feedRecipe, .feedRecipeComponent, .feedLine, .inventoryLot,
+             .inventoryTransaction, .health, .pedigreeChange, .photoAsset,
+             .feedIngredientBatch, .healthCatalogItem, .healthSubjectLink,
+             .careBatch, .semenTransaction:
+            nil
+        }
     }
 
     private func entityExists(type: CloudEntityType, id: UUID, farmID: UUID, context: ModelContext) throws -> Bool {
@@ -1654,7 +3106,12 @@ final class FarmCommandService {
         if try context.fetch(FetchDescriptor<RemovalRecord>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }) { return true }
         if try context.fetch(FetchDescriptor<HealthRecord>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }) { return true }
         if try context.fetch(FetchDescriptor<HealthSubjectLink>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID }) { return true }
-        if try context.fetch(FetchDescriptor<ReproductionRecord>()).contains(where: { $0.farmID == farmID && ($0.eweID == sheepID || $0.sireID == sheepID) && $0.deletedAt == nil }) { return true }
+        if try context.fetch(FetchDescriptor<ReproductionRecord>()).contains(where: {
+            $0.farmID == farmID &&
+                ($0.eweID == sheepID || $0.sireID == sheepID) &&
+                $0.deletedAt == nil &&
+                $0.kind != .parityBaseline
+        }) { return true }
         if try context.fetch(FetchDescriptor<NoteRecord>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }) { return true }
         if try context.fetch(FetchDescriptor<BatchMembershipRecord>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil }) { return true }
         if try context.fetch(FetchDescriptor<LambingOffspringRecord>()).contains(where: { $0.farmID == farmID && $0.sheepID == sheepID }) { return true }

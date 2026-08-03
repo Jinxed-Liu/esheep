@@ -25,7 +25,7 @@ enum ConflictDomainMergeService {
         decoder.dateDecodingStrategy = .iso8601
         let payload = try decoder.decode(FarmCommandCloudPayload.self, from: data)
         switch payload.kind {
-        case .createPen:
+        case .createPen, .updatePen:
             guard entityType == CloudEntityType.pen.rawValue,
                   let value = try context.fetch(FetchDescriptor<PenRecord>()).first(where: { $0.id == entityID && $0.farmID == farmID }),
                   let name = payload.strings["name"]?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { throw ConflictResolutionError.invalidResolvedPayload }
@@ -51,6 +51,18 @@ enum ConflictDomainMergeService {
             value.note = payload.strings["note"] ?? ""
             value.revision = revision
             value.updatedAt = .now
+            if let currentParity = payload.integers["currentParity"], currentParity >= 0, value.sex == .ewe {
+                let parityID = LambingEntrySemantics.entryParityBaselineID(sheepID: value.id)
+                if let baseline = try context.fetch(FetchDescriptor<ReproductionRecord>()).first(where: { $0.id == parityID && $0.farmID == farmID }) {
+                    baseline.parity = currentParity
+                    baseline.occurredAt = value.enteredAt
+                    baseline.deletedAt = nil
+                    baseline.updatedAt = .now
+                    baseline.revision += 1
+                } else {
+                    context.insert(ReproductionRecord(id: parityID, farmID: farmID, eweID: value.id, kind: .parityBaseline, occurredAt: value.enteredAt, parity: currentParity, note: "建档时当前胎次"))
+                }
+            }
             return value.enteredAt
         case .recordWeight:
             guard entityType == CloudEntityType.weight.rawValue,

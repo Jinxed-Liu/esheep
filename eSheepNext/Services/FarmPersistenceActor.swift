@@ -1,4 +1,5 @@
 import CloudKit
+import CryptoKit
 import Foundation
 import SwiftData
 
@@ -60,6 +61,29 @@ struct CloudFarmBindingSnapshot: Sendable {
     let shareRecordName: String?
     let state: CloudFarmBindingState
     let lastErrorCode: String?
+    let securityGeneration: Int
+
+    init(
+        farmID: UUID,
+        ownerAccountID: UUID,
+        zoneName: String,
+        zoneOwnerName: String,
+        databaseScope: CloudDatabaseScope,
+        shareRecordName: String?,
+        state: CloudFarmBindingState,
+        lastErrorCode: String?,
+        securityGeneration: Int = 0
+    ) {
+        self.farmID = farmID
+        self.ownerAccountID = ownerAccountID
+        self.zoneName = zoneName
+        self.zoneOwnerName = zoneOwnerName
+        self.databaseScope = databaseScope
+        self.shareRecordName = shareRecordName
+        self.state = state
+        self.lastErrorCode = lastErrorCode
+        self.securityGeneration = securityGeneration
+    }
 }
 
 struct CloudRecoveryRootExpectation: Sendable {
@@ -158,6 +182,46 @@ actor FarmPersistenceActor {
         )
     }
 
+    /// Returns only device keys that were previously persisted through an
+    /// authenticated worker or membership snapshot. An active owner can add
+    /// these historical keys to a newer owner-signed snapshot so immutable
+    /// records created by an older installation remain verifiable after a
+    /// clean-device rebuild.
+    func trustedMembershipDevices(
+        activeAccountIDs: Set<UUID>
+    ) throws -> [FarmMembershipSnapshotEnvelope.Device] {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<DeviceIdentityRecord>())
+            .filter {
+                $0.isRegistered && activeAccountIDs.contains($0.accountID)
+            }
+            .map { device in
+                // Constructing the CryptoKit key rejects malformed points;
+                // length checks alone are not a trust boundary.
+                _ = try P256.Signing.PublicKey(
+                    x963Representation: device.publicKeyX963
+                )
+                let identity = DeviceSigningIdentity(
+                    deviceID: device.id,
+                    publicKeyX963: device.publicKeyX963,
+                    usesSecureEnclave: device.usesSecureEnclave
+                )
+                let data = try JSONSerialization.data(
+                    withJSONObject: identity.publicKeyJWK,
+                    options: [.sortedKeys]
+                )
+                guard let json = String(data: data, encoding: .utf8) else {
+                    throw CloudContractError.invalidDeviceSignature
+                }
+                return FarmMembershipSnapshotEnvelope.Device(
+                    deviceID: device.id,
+                    accountID: device.accountID,
+                    publicKeyJWK: json
+                )
+            }
+            .sorted { $0.deviceID.uuidString < $1.deviceID.uuidString }
+    }
+
     /// Records a recovery-engine failure only when the binding is still the
     /// exact rebuild lock observed at the start of that attempt. A delegate
     /// may install a stronger security reason while CloudKit is fetching; an
@@ -245,7 +309,8 @@ actor FarmPersistenceActor {
                 databaseScope: binding.databaseScope,
                 shareRecordName: binding.shareRecordName,
                 state: binding.state,
-                lastErrorCode: binding.lastErrorCode
+                lastErrorCode: binding.lastErrorCode,
+                securityGeneration: binding.securityGeneration
             ),
             baseline: baseline
         )
@@ -985,7 +1050,7 @@ actor FarmPersistenceActor {
         case .pending, .uploading, .awaitingConfirmation, .retryableFailure:
             return true
         case .confirmed, .rejectedPermission, .blockedConflict, .notRequiredLocalOnly,
-             .supersededRemoteAuthority:
+             .quarantinedMembershipRevoked, .supersededRemoteAuthority:
             return false
         }
     }
@@ -1290,7 +1355,8 @@ actor FarmPersistenceActor {
             databaseScope: binding.databaseScope,
             shareRecordName: binding.shareRecordName,
             state: binding.state,
-            lastErrorCode: binding.lastErrorCode
+            lastErrorCode: binding.lastErrorCode,
+            securityGeneration: binding.securityGeneration
         )
     }
 
@@ -1317,7 +1383,8 @@ actor FarmPersistenceActor {
             databaseScope: binding.databaseScope,
             shareRecordName: binding.shareRecordName,
             state: binding.state,
-            lastErrorCode: binding.lastErrorCode
+            lastErrorCode: binding.lastErrorCode,
+            securityGeneration: binding.securityGeneration
         )
     }
 
@@ -2966,6 +3033,10 @@ actor FarmPersistenceActor {
     ) throws -> Bool {
         var rejectedRecoveryRecord = false
         let existing = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+        var assetsByID: [UUID: PhotoAssetRecord] = [:]
+        for asset in existing where assetsByID[asset.id] == nil {
+            assetsByID[asset.id] = asset
+        }
         let transfers = try context.fetch(FetchDescriptor<CloudAssetTransfer>())
         let devices = try context.fetch(FetchDescriptor<DeviceIdentityRecord>())
         let revokedCertificates = try context.fetch(FetchDescriptor<RevokedCapabilityCertificateRecord>())
@@ -3033,12 +3104,13 @@ actor FarmPersistenceActor {
                 continue
             }
             let asset: PhotoAssetRecord
-            let existingAsset = existing.first(where: { $0.id == assetID })
+            let existingAsset = assetsByID[assetID]
             if let value = existingAsset {
                 asset = value
             } else {
                 asset = PhotoAssetRecord(id: assetID, farmID: farmID, sheepID: linkedID, legacySourceKey: "cloud:\(record.recordID.recordName)", originalEarTag: "", relativePath: "", sha256: digest, mimeType: mimeType)
                 context.insert(asset)
+                assetsByID[assetID] = asset
             }
             if signatureFormat == .legacyV1 {
                 let payloadChanged = asset.sha256 != digest

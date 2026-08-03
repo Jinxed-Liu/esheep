@@ -20,6 +20,7 @@ struct FarmSearchSheepEntry: Identifiable, Equatable, Sendable {
     let breed: String
     let statusName: String
     let penName: String?
+    let avatarPhoto: SheepPhotoReference?
     let normalizedEarTag: String
     let normalizedBreed: String
 
@@ -28,13 +29,15 @@ struct FarmSearchSheepEntry: Identifiable, Equatable, Sendable {
         earTag: String,
         breed: String,
         statusName: String,
-        penName: String?
+        penName: String?,
+        avatarPhoto: SheepPhotoReference? = nil
     ) {
         self.id = id
         self.earTag = earTag
         self.breed = breed
         self.statusName = statusName
         self.penName = penName
+        self.avatarPhoto = avatarPhoto
         normalizedEarTag = SearchText.normalized(earTag)
         normalizedBreed = SearchText.normalized(breed)
     }
@@ -161,6 +164,10 @@ actor FarmSearchIndexActor {
             sortBy: [SortDescriptor(\.earTag)]
         ))
         let penNames = Dictionary(uniqueKeysWithValues: pens.map { ($0.id, $0.name) })
+        let avatarPhotos = try SheepAvatarSelectionStore.references(
+            farmID: farmID,
+            context: context
+        )
 
         return FarmSearchSource(
             sheep: sheep.map {
@@ -169,7 +176,8 @@ actor FarmSearchIndexActor {
                     earTag: $0.earTag,
                     breed: $0.breed,
                     statusName: $0.status.displayName,
-                    penName: $0.currentPenID.flatMap { penNames[$0] }
+                    penName: $0.currentPenID.flatMap { penNames[$0] },
+                    avatarPhoto: avatarPhotos[$0.id]
                 )
             },
             pens: pens.map { FarmSearchPenEntry(id: $0.id, name: $0.name) }

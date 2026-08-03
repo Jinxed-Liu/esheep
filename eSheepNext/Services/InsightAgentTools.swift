@@ -9,6 +9,7 @@ enum InsightToolError: LocalizedError {
     case permissionDenied
     case crossFarmReference
     case staleRevision
+    case obsoleteWeaningDraft
     case resultTooLarge
     case extendedDataConsentRequired
     case deviceActionUnavailable(String)
@@ -25,6 +26,8 @@ enum InsightToolError: LocalizedError {
             "工具引用的数据不属于当前牧场。"
         case .staleRevision:
             "草案引用的数据已经变化，请重新生成草案。"
+        case .obsoleteWeaningDraft:
+            "这张旧版断奶草案缺少目标圈舍，请删除后重新让 AI 生成断奶卡片。"
         case .resultTooLarge:
             "工具结果超过安全发送范围，需要缩小查询。"
         case .extendedDataConsentRequired:
@@ -120,6 +123,16 @@ struct RecordWeightToolPayload: Codable {
     let note: String
 }
 
+struct RecordWeaningToolPayload: Codable {
+    let sheepID: UUID
+    let earTag: String
+    let weanWeightText: String
+    let toPenID: UUID
+    let penName: String
+    let occurredAt: Date
+    let note: String
+}
+
 private struct AddNoteToolPayload: Codable {
     let sheepID: UUID?
     let penID: UUID?
@@ -169,6 +182,11 @@ final class InsightToolRegistry {
         case matched(SheepRecord, matchKind: String)
         case ambiguous([SheepRecord])
         case notFound
+    }
+
+    private struct FarmValidationSnapshot {
+        let knownEntityIDs: Set<UUID>
+        let revisionsByEntityID: [UUID: Int]
     }
 
     func definitions(for farm: FarmContext) -> [InsightToolDefinition] {
@@ -329,6 +347,46 @@ final class InsightToolRegistry {
         }
         if farm.capabilities.allows(.recordProduction) {
             values.append(contentsOf: [
+                Self.tool(
+                    "draft_record_weaning",
+                    "为单只羊生成一张真正的断奶事件草案，并在同一次用户确认中把该羊调入目标圈舍。多只羊必须改用 draft_record_weanings。断奶不需要母本或胎只数；不要改用称重草案，也不要另生成转群草案。只接受当前牧场已存在的精确耳号、有效圈舍和大于零的断奶重。",
+                    properties: [
+                        "ear_tag": Self.string("断奶羊只的精确耳号"),
+                        "wean_weight": Self.string("大于零的断奶重量，单位千克"),
+                        "to_pen_name": Self.string("断奶后调入的精确目标圈舍名称"),
+                        "occurred_at": Self.string("ISO 8601 断奶及调舍时间"),
+                        "note": Self.string("备注，可为空"),
+                    ],
+                    required: ["ear_tag", "wean_weight", "to_pen_name", "occurred_at", "note"]
+                ),
+                Self.tool(
+                    "draft_record_weanings",
+                    "一次为 1 到 50 只羊生成完整断奶卡片。整批使用同一个断奶日期、目标圈舍和备注；每张卡片在一次用户确认后原子写入断奶事实并调入目标圈舍。必须整批校验成功后才生成，不能拆成称重卡片和转群卡片。",
+                    properties: [
+                        "occurred_at": Self.string("全部羊只共同使用的 ISO 8601 断奶及调舍时间"),
+                        "to_pen_name": Self.string("全部羊只断奶后调入的精确目标圈舍名称"),
+                        "note": Self.string("全部羊只共同使用的备注，可为空"),
+                        "items": .object([
+                            "type": .string("array"),
+                            "description": .string("1 到 50 条断奶数据，保持用户确认的原始顺序"),
+                            "minItems": .number(1),
+                            "maxItems": .number(Double(Self.maximumRows)),
+                            "items": .object([
+                                "type": .string("object"),
+                                "properties": .object([
+                                    "ear_tag": Self.string("当前牧场已存在的精确耳号"),
+                                    "wean_weight": Self.string("大于零的断奶重量，单位千克"),
+                                ]),
+                                "required": .array([
+                                    .string("ear_tag"),
+                                    .string("wean_weight"),
+                                ]),
+                                "additionalProperties": .bool(false),
+                            ]),
+                        ]),
+                    ],
+                    required: ["occurred_at", "to_pen_name", "note", "items"]
+                ),
                 Self.tool(
                     "draft_record_weight",
                     "生成一条羊只称重草案。只接受当前牧场已存在的精确耳号，用户确认后才执行。",
@@ -501,6 +559,12 @@ final class InsightToolRegistry {
             )
         case "draft_farm_command":
             return try canonicalFarmCommandDraft(arguments, agent: agent, context: context)
+        case "draft_record_weaning":
+            try require(.recordProduction, agent: agent)
+            return try recordWeaningDraft(arguments, agent: agent, context: context)
+        case "draft_record_weanings":
+            try require(.recordProduction, agent: agent)
+            return try recordWeaningDrafts(arguments, agent: agent, context: context)
         case "draft_record_weight":
             try require(.recordProduction, agent: agent)
             return try recordWeightDraft(arguments, agent: agent, context: context)
@@ -558,6 +622,19 @@ final class InsightToolRegistry {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         switch draft.toolName {
+        case "draft_record_weaning":
+            let value = try decoder.decode(RecordWeaningToolPayload.self, from: draft.argumentsJSON)
+            return .recordWeaning(
+                sheepID: value.sheepID,
+                weanWeightText: value.weanWeightText,
+                occurredAt: value.occurredAt,
+                birthAt: nil,
+                birthWeightText: nil,
+                averageDailyGainText: nil,
+                damID: nil,
+                litterSize: nil,
+                note: value.note
+            )
         case "draft_record_weight":
             let value = try decoder.decode(RecordWeightToolPayload.self, from: draft.argumentsJSON)
             return .recordWeight(
@@ -593,6 +670,26 @@ final class InsightToolRegistry {
         }
     }
 
+    /// Most action cards map to one authoritative command. A weaning card maps
+    /// to the weaning fact plus its required pen transfer so the controller can
+    /// commit both operations atomically while still presenting one card.
+    func farmCommands(for draft: InsightActionDraftRecord) throws -> [FarmCommand] {
+        guard draft.toolName == "draft_record_weaning" else {
+            return [try farmCommand(for: draft)]
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let value = try decoder.decode(RecordWeaningToolPayload.self, from: draft.argumentsJSON)
+        return WeaningWorkflow.commands(
+            sheepID: value.sheepID,
+            weanWeightText: value.weanWeightText,
+            occurredAt: value.occurredAt,
+            birthAt: nil,
+            toPenID: value.toPenID,
+            note: value.note
+        )
+    }
+
     func removalBatchID(for draft: InsightActionDraftRecord) -> UUID? {
         guard let command = try? farmCommand(for: draft),
               case .removeSheep(
@@ -625,6 +722,11 @@ final class InsightToolRegistry {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         switch draft.toolName {
+        case "draft_record_weaning":
+            return try? decoder.decode(
+                RecordWeaningToolPayload.self,
+                from: draft.argumentsJSON
+            ).occurredAt
         case "draft_record_weight":
             return try? decoder.decode(
                 RecordWeightToolPayload.self,
@@ -680,6 +782,23 @@ final class InsightToolRegistry {
             ))
             draft.title = newCommand.summary
             draft.summary = newCommand.summary
+        case "draft_record_weaning":
+            let oldValue = try decodeEdited(
+                RecordWeaningToolPayload.self,
+                from: draft.argumentsJSON
+            )
+            let value = try decodeEdited(RecordWeaningToolPayload.self, from: data)
+            guard value.sheepID == oldValue.sheepID,
+                  value.toPenID == oldValue.toPenID,
+                  EarTag.normalized(value.earTag) == EarTag.normalized(oldValue.earTag),
+                  value.penName.trimmingCharacters(in: .whitespacesAndNewlines)
+                      .localizedCaseInsensitiveCompare(
+                          oldValue.penName.trimmingCharacters(in: .whitespacesAndNewlines)
+                      ) == .orderedSame else {
+                throw InsightToolError.permissionDenied
+            }
+            draft.argumentsJSON = try encoder.encode(value)
+            draft.summary = "\(value.earTag) · \(value.weanWeightText) kg · 调入 \(value.penName)"
         case "draft_record_weight":
             let value = try decodeEdited(RecordWeightToolPayload.self, from: data)
             draft.argumentsJSON = try encoder.encode(value)
@@ -716,6 +835,49 @@ final class InsightToolRegistry {
         agent: InsightAgentContext,
         context: ModelContext
     ) throws {
+        try validate(draft, agent: agent, context: context, snapshot: nil)
+    }
+
+    /// Validates a user-confirmed group against one consistent farm snapshot.
+    /// The previous per-draft path reloaded every farm entity table for every
+    /// card, turning a 121-item confirmation into thousands of main-thread
+    /// SwiftData fetches. Security checks remain per draft; only the immutable
+    /// lookup snapshot is shared by the batch.
+    func validate(
+        _ drafts: [InsightActionDraftRecord],
+        agent: InsightAgentContext,
+        context: ModelContext
+    ) throws {
+        guard !drafts.isEmpty else { return }
+        let expectedEntityIDs = Set(drafts.compactMap { draft -> UUID? in
+            guard draft.expectedRevision != nil else { return nil }
+            return draft.expectedEntityID
+        })
+        let removalReferenceIDs = try canonicalRemovalReferenceIDs(for: drafts)
+        let revisionsByEntityID = try entityRevisions(
+            ids: expectedEntityIDs,
+            farmID: agent.farmID,
+            context: context
+        )
+        let snapshot = FarmValidationSnapshot(
+            knownEntityIDs: removalReferenceIDs == nil
+                ? (drafts.contains(where: { $0.toolName == "draft_farm_command" })
+                    ? try knownFarmEntityIDs(farmID: agent.farmID, context: context)
+                    : [])
+                : Set(revisionsByEntityID.keys),
+            revisionsByEntityID: revisionsByEntityID
+        )
+        for draft in drafts {
+            try validate(draft, agent: agent, context: context, snapshot: snapshot)
+        }
+    }
+
+    private func validate(
+        _ draft: InsightActionDraftRecord,
+        agent: InsightAgentContext,
+        context: ModelContext,
+        snapshot: FarmValidationSnapshot?
+    ) throws {
         guard draft.accountID == agent.accountID, draft.farmID == agent.farmID else {
             throw InsightToolError.crossFarmReference
         }
@@ -739,17 +901,26 @@ final class InsightToolRegistry {
                 payload: payload,
                 command: command,
                 farmID: agent.farmID,
-                context: context
+                context: context,
+                knownEntityIDs: snapshot?.knownEntityIDs
             )
+        } else if draft.toolName == "draft_record_weaning" {
+            try validateWeaningDraft(draft, farmID: agent.farmID, context: context)
         }
         guard let expectedEntityID = draft.expectedEntityID,
               let expectedRevision = draft.expectedRevision else { return }
 
-        if let currentRevision = try entityRevision(
-            id: expectedEntityID,
-            farmID: agent.farmID,
-            context: context
-        ) {
+        let currentRevision: Int?
+        if let snapshot {
+            currentRevision = snapshot.revisionsByEntityID[expectedEntityID]
+        } else {
+            currentRevision = try entityRevision(
+                id: expectedEntityID,
+                farmID: agent.farmID,
+                context: context
+            )
+        }
+        if let currentRevision {
             guard currentRevision == expectedRevision else {
                 throw InsightToolError.staleRevision
             }
@@ -758,11 +929,32 @@ final class InsightToolRegistry {
         throw InsightToolError.crossFarmReference
     }
 
+    /// A generated removal draft references only its sheep; the shared batch
+    /// revision snapshot already proves that sheep belongs to this farm. This
+    /// avoids loading every unrelated entity table before a large sale while
+    /// retaining the same cross-farm and stale-revision rejection behavior.
+    private func canonicalRemovalReferenceIDs(
+        for drafts: [InsightActionDraftRecord]
+    ) throws -> Set<UUID>? {
+        var result: Set<UUID> = []
+        for draft in drafts {
+            guard draft.toolName == "draft_farm_command",
+                  draft.expectedRevision != nil,
+                  let expectedEntityID = draft.expectedEntityID,
+                  case .removeSheep(let sheepID, _, _, _, _, _, _, _, _) = try farmCommand(for: draft),
+                  sheepID == expectedEntityID else {
+                return nil
+            }
+            result.insert(sheepID)
+        }
+        return result
+    }
+
     private func policy(
         for draft: InsightActionDraftRecord
     ) throws -> (capability: FarmCapability, risk: InsightActionRisk) {
         switch draft.toolName {
-        case "draft_record_weight", "draft_add_note", "draft_transfer_sheep":
+        case "draft_record_weaning", "draft_record_weight", "draft_add_note", "draft_transfer_sheep":
             return (.recordProduction, .normal)
         case InsightImportCoordinator.toolName:
             return (.recordProduction, .high)
@@ -770,6 +962,9 @@ final class InsightToolRegistry {
             return (.readFarm, .normal)
         case "draft_farm_command":
             let command = try farmCommand(for: draft)
+            if case .recordWeaning = command {
+                throw InsightToolError.obsoleteWeaningDraft
+            }
             return (command.requiredCapability, Self.risk(for: command))
         default:
             throw InsightToolError.unknownTool
@@ -1589,6 +1784,204 @@ final class InsightToolRegistry {
         )
     }
 
+    private func recordWeaningDraft(
+        _ arguments: [String: Any],
+        agent: InsightAgentContext,
+        context: ModelContext
+    ) throws -> InsightToolExecution {
+        let sheep = try exactSheep(
+            earTag: try Self.string(arguments, "ear_tag"),
+            farmID: agent.farmID,
+            context: context
+        )
+        guard sheep.status == .active else {
+            throw InsightToolError.invalidArguments("ear_tag")
+        }
+        let weanWeight = try Self.string(arguments, "wean_weight")
+        guard Decimal.stable(weanWeight).map({ $0 > 0 }) == true else {
+            throw InsightToolError.invalidArguments("wean_weight")
+        }
+        let pen = try exactPen(
+            name: try Self.nonempty(arguments, "to_pen_name"),
+            farmID: agent.farmID,
+            context: context
+        )
+        let occurredAt = try Self.date(arguments, "occurred_at")
+        guard occurredAt <= Date.now,
+              sheep.birthAt.map({ $0 <= occurredAt }) ?? true else {
+            throw InsightToolError.invalidArguments("occurred_at")
+        }
+        let transfers = try context.fetch(FetchDescriptor<TransferRecord>()).filter {
+            $0.farmID == agent.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil
+        }
+        guard FarmHistoryTimeline.pen(for: sheep, at: occurredAt, transfers: transfers) != pen.id else {
+            throw InsightToolError.invalidArguments("to_pen_name")
+        }
+        let payload = RecordWeaningToolPayload(
+            sheepID: sheep.id,
+            earTag: sheep.earTag,
+            weanWeightText: weanWeight,
+            toPenID: pen.id,
+            penName: pen.name,
+            occurredAt: occurredAt,
+            note: try Self.string(arguments, "note")
+        )
+        let draft = try makeDraft(
+            toolName: "draft_record_weaning",
+            title: "记录断奶",
+            summary: "\(sheep.earTag) · \(weanWeight) kg · 调入 \(pen.name)",
+            payload: payload,
+            risk: .normal,
+            capability: .recordProduction,
+            expectedEntityID: sheep.id,
+            expectedRevision: sheep.revision,
+            agent: agent
+        )
+        return proposalOutput(draft)
+    }
+
+    private func recordWeaningDrafts(
+        _ arguments: [String: Any],
+        agent: InsightAgentContext,
+        context: ModelContext
+    ) throws -> InsightToolExecution {
+        guard let items = arguments["items"] as? [[String: Any]],
+              (1...Self.maximumRows).contains(items.count) else {
+            throw InsightToolError.invalidArguments("items")
+        }
+        let occurredAt = try Self.date(arguments, "occurred_at")
+        guard occurredAt <= Date.now else {
+            throw InsightToolError.invalidArguments("occurred_at")
+        }
+        let pen = try exactPen(
+            name: try Self.nonempty(arguments, "to_pen_name"),
+            farmID: agent.farmID,
+            context: context
+        )
+        let note = try Self.string(arguments, "note")
+        let sheepByEarTag = Dictionary(grouping: try context.fetch(
+            FetchDescriptor<SheepRecord>()
+        ).filter {
+            $0.farmID == agent.farmID && $0.deletedAt == nil
+        }) {
+            EarTag.normalized($0.earTag)
+        }
+        let transfersBySheepID = Dictionary(grouping: try context.fetch(
+            FetchDescriptor<TransferRecord>()
+        ).filter {
+            $0.farmID == agent.farmID && $0.deletedAt == nil
+        }, by: \.sheepID)
+        var seenSheepIDs = Set<UUID>()
+        var resolved: [(sheep: SheepRecord, weanWeight: String)] = []
+        resolved.reserveCapacity(items.count)
+
+        // Validate the complete batch before creating any card. A single OCR,
+        // ear-tag, date or target-pen error must not leave a partial batch that
+        // the assistant can mistakenly describe as complete.
+        for (index, item) in items.enumerated() {
+            let inputEarTag = try Self.nonempty(item, "ear_tag")
+            let matches = sheepByEarTag[EarTag.normalized(inputEarTag)] ?? []
+            guard matches.count == 1, let sheep = matches.first else {
+                throw InsightToolError.invalidArguments("items[\(index)].ear_tag")
+            }
+            guard sheep.status == .active,
+                  seenSheepIDs.insert(sheep.id).inserted else {
+                throw InsightToolError.invalidArguments("items[\(index)].ear_tag")
+            }
+            let weanWeight = try Self.string(item, "wean_weight")
+            guard Decimal.stable(weanWeight).map({ $0 > 0 }) == true else {
+                throw InsightToolError.invalidArguments("items[\(index)].wean_weight")
+            }
+            guard sheep.birthAt.map({ $0 <= occurredAt }) ?? true else {
+                throw InsightToolError.invalidArguments("occurred_at")
+            }
+            let transfers = transfersBySheepID[sheep.id] ?? []
+            guard FarmHistoryTimeline.pen(
+                for: sheep,
+                at: occurredAt,
+                transfers: transfers
+            ) != pen.id else {
+                throw InsightToolError.invalidArguments("to_pen_name")
+            }
+            resolved.append((sheep, weanWeight))
+        }
+
+        let drafts = try resolved.map { value in
+            try makeDraft(
+                toolName: "draft_record_weaning",
+                title: "记录断奶",
+                summary: "\(value.sheep.earTag) · \(value.weanWeight) kg · 调入 \(pen.name)",
+                payload: RecordWeaningToolPayload(
+                    sheepID: value.sheep.id,
+                    earTag: value.sheep.earTag,
+                    weanWeightText: value.weanWeight,
+                    toPenID: pen.id,
+                    penName: pen.name,
+                    occurredAt: occurredAt,
+                    note: note
+                ),
+                risk: .normal,
+                capability: .recordProduction,
+                expectedEntityID: value.sheep.id,
+                expectedRevision: value.sheep.revision,
+                agent: agent
+            )
+        }
+        return proposalOutput(drafts)
+    }
+
+    private func validateWeaningDraft(
+        _ draft: InsightActionDraftRecord,
+        farmID: UUID,
+        context: ModelContext
+    ) throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let value: RecordWeaningToolPayload
+        do {
+            value = try decoder.decode(RecordWeaningToolPayload.self, from: draft.argumentsJSON)
+        } catch {
+            throw InsightToolError.invalidArguments("草案字段")
+        }
+        let sheepID = value.sheepID
+        let penID = value.toPenID
+        let activeStatus = SheepStatus.active.rawValue
+        var sheepDescriptor = FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.id == sheepID &&
+                $0.farmID == farmID &&
+                $0.deletedAt == nil &&
+                $0.statusRawValue == activeStatus
+        })
+        sheepDescriptor.fetchLimit = 1
+        var penDescriptor = FetchDescriptor<PenRecord>(predicate: #Predicate {
+            $0.id == penID &&
+                $0.farmID == farmID &&
+                $0.deletedAt == nil &&
+                $0.isActive
+        })
+        penDescriptor.fetchLimit = 1
+        guard draft.expectedEntityID == value.sheepID,
+              Decimal.stable(value.weanWeightText).map({ $0 > 0 }) == true,
+              value.occurredAt <= Date.now,
+              let sheep = try context.fetch(sheepDescriptor).first,
+              EarTag.normalized(sheep.earTag) == EarTag.normalized(value.earTag),
+              let pen = try context.fetch(penDescriptor).first,
+              pen.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                  .localizedCaseInsensitiveCompare(
+                      value.penName.trimmingCharacters(in: .whitespacesAndNewlines)
+                  ) == .orderedSame else {
+            throw InsightToolError.crossFarmReference
+        }
+        let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+            $0.farmID == farmID &&
+                $0.sheepID == sheepID &&
+                $0.deletedAt == nil
+        }))
+        guard FarmHistoryTimeline.pen(for: sheep, at: value.occurredAt, transfers: transfers) != pen.id else {
+            throw InsightToolError.invalidArguments("toPenID")
+        }
+    }
+
     private func recordWeightDraft(
         _ arguments: [String: Any],
         agent: InsightAgentContext,
@@ -2007,7 +2400,10 @@ final class InsightToolRegistry {
     private func exactPen(name: String, farmID: UUID, context: ModelContext) throws -> PenRecord {
         let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let value = try context.fetch(FetchDescriptor<PenRecord>()).first(where: {
-            $0.farmID == farmID && $0.deletedAt == nil && $0.name.localizedCaseInsensitiveCompare(normalized) == .orderedSame
+            $0.farmID == farmID &&
+                $0.deletedAt == nil &&
+                $0.isActive &&
+                $0.name.localizedCaseInsensitiveCompare(normalized) == .orderedSame
         }) else {
             throw InsightToolError.invalidArguments("pen_name")
         }
@@ -2018,7 +2414,8 @@ final class InsightToolRegistry {
         payload: FarmCommandCloudPayload,
         command: FarmCommand,
         farmID: UUID,
-        context: ModelContext
+        context: ModelContext,
+        knownEntityIDs: Set<UUID>? = nil
     ) throws {
         var referencedIDs = Set(payload.identifiers.values)
         referencedIDs.formUnion(payload.optionalIdentifiers.values.compactMap { $0 })
@@ -2041,7 +2438,8 @@ final class InsightToolRegistry {
         default:
             break
         }
-        let knownIDs = try knownFarmEntityIDs(farmID: farmID, context: context)
+        let knownIDs = try knownEntityIDs
+            ?? knownFarmEntityIDs(farmID: farmID, context: context)
         guard referencedIDs.isSubset(of: knownIDs) else {
             throw InsightToolError.crossFarmReference
         }
@@ -2160,6 +2558,71 @@ final class InsightToolRegistry {
         return nil
     }
 
+    private func entityRevisions(
+        ids: Set<UUID>,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> [UUID: Int] {
+        guard !ids.isEmpty else { return [:] }
+        var unresolved = ids
+        var revisions: [UUID: Int] = [:]
+
+        func capture<T>(
+            _ values: [T],
+            id: KeyPath<T, UUID>,
+            farmID valueFarmID: KeyPath<T, UUID>,
+            revision: KeyPath<T, Int>
+        ) {
+            for value in values where value[keyPath: valueFarmID] == farmID {
+                let entityID = value[keyPath: id]
+                guard unresolved.remove(entityID) != nil else { continue }
+                revisions[entityID] = value[keyPath: revision]
+            }
+        }
+
+        // Most assistant action cards target sheep. Keep the confirmation hot
+        // path proportional to the selected cards instead of faulting every
+        // sheep in a large farm just to compare one or a few revisions.
+        let sheepIDs = Array(unresolved)
+        capture(
+            try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                sheepIDs.contains($0.id) && $0.farmID == farmID
+            })),
+            id: \.id,
+            farmID: \.farmID,
+            revision: \.revision
+        )
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<PenRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<WeightRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<WeaningRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<TransferRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<RemovalRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<FeedRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<ReproductionRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<LambingOffspringRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<SemenRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<SemenDonorRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<NoteRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<FarmCareRuleRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<CareReminderRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<TombstoneRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        return revisions
+    }
+
     private static func careReferenceIDs(_ command: CareCommand) -> Set<UUID> {
         var result: Set<UUID> = []
         func add(_ value: UUID?) {
@@ -2240,7 +2703,7 @@ final class InsightToolRegistry {
         .updateFarmLocation,
         .createPen, .updatePen, .setPenActive,
         .addSheep, .updateSheepProfile,
-        .recordWeight, .correctWeight, .recordWeaning,
+        .recordWeight, .correctWeight,
         .createBreedingProgram,
         .transferSheep, .correctTransfer,
         .removeSheep, .correctRemoval, .restoreSheep,
@@ -2324,7 +2787,6 @@ final class InsightToolRegistry {
 
     private static let optionalStringFields: [DomainOperationKind: [String]] = [
         .updateFarmLocation: ["addressSnapshot", "horizontalAccuracyMeters"],
-        .recordWeaning: ["birthWeightText", "averageDailyGainText"],
         .removeSheep: ["amountText", "batchTotalAmountText"],
         .correctRemoval: ["amountText"],
         .addIngredient: ["dryMatterText"],

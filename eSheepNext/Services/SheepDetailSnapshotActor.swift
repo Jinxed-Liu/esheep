@@ -8,11 +8,69 @@ struct SheepDetailSubjectSnapshot: Sendable, Hashable {
     let purpose: String
     let sex: SheepSex
     let status: SheepStatus
+    let isHistoricalArchive: Bool
     let initialPenID: UUID?
     let currentPenID: UUID?
     let birthAt: Date?
     let enteredAt: Date
     let removedAt: Date?
+    let note: String
+
+    init(
+        id: UUID,
+        earTag: String,
+        breed: String,
+        purpose: String,
+        sex: SheepSex,
+        status: SheepStatus,
+        isHistoricalArchive: Bool = false,
+        initialPenID: UUID?,
+        currentPenID: UUID?,
+        birthAt: Date?,
+        enteredAt: Date,
+        removedAt: Date?,
+        note: String = ""
+    ) {
+        self.id = id
+        self.earTag = earTag
+        self.breed = breed
+        self.purpose = purpose
+        self.sex = sex
+        self.status = status
+        self.isHistoricalArchive = isHistoricalArchive
+        self.initialPenID = initialPenID
+        self.currentPenID = currentPenID
+        self.birthAt = birthAt
+        self.enteredAt = enteredAt
+        self.removedAt = removedAt
+        self.note = note
+    }
+
+    init(record: SheepRecord) {
+        self.init(
+            id: record.id,
+            earTag: record.earTag,
+            breed: record.breed,
+            purpose: record.purpose,
+            sex: record.sex,
+            status: record.status,
+            isHistoricalArchive: record.isHistoricalArchive,
+            initialPenID: record.initialPenID,
+            currentPenID: record.currentPenID,
+            birthAt: record.birthAt,
+            enteredAt: record.enteredAt,
+            removedAt: record.removedAt,
+            note: record.note
+        )
+    }
+
+    var isCurrentlyPresent: Bool {
+        status == .active && !isHistoricalArchive
+    }
+
+    func currentPenDisplayName(_ penName: String?) -> String {
+        isCurrentlyPresent ? (penName ?? "未分圈") : "已离群"
+    }
 
     var analyticsValue: FarmAnalyticsSnapshot.Sheep {
         FarmAnalyticsSnapshot.Sheep(
@@ -29,6 +87,12 @@ struct SheepDetailSubjectSnapshot: Sendable, Hashable {
             removedAt: removedAt
         )
     }
+}
+
+struct SheepDetailEntrySnapshot: Sendable, Hashable {
+    let subject: SheepDetailSubjectSnapshot
+    let penName: String?
+    let avatarPhoto: SheepPhotoReference?
 }
 
 struct SheepDetailWeightSnapshot: Identifiable, Sendable, Hashable {
@@ -59,6 +123,7 @@ struct SheepDetailSnapshot: Sendable {
     let weights: [SheepDetailWeightSnapshot]
     let photos: [SheepDetailPhotoSnapshot]
     let timeline: [SheepDetailTimelineEntry]
+    let currentParity: Int?
     let lifecycleInsight: FarmInsight
     let reproductionInsight: FarmInsight
 }
@@ -74,6 +139,40 @@ actor SheepDetailSnapshotActor {
 
     init(container: ModelContainer) {
         self.container = container
+    }
+
+    /// Resolves a sheep navigation destination once, outside `View.body`.
+    ///
+    /// A live `@Query` in the navigation stack refetched this row on every
+    /// SwiftUI graph update and could keep the main thread in a render loop.
+    func loadEntry(farmID: UUID, sheepID: UUID) throws -> SheepDetailEntrySnapshot? {
+        try Task.checkCancellation()
+        let context = ModelContext(container)
+        guard let record = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
+        })).first else {
+            return nil
+        }
+        let subject = SheepDetailSubjectSnapshot(record: record)
+        let penName: String?
+        if let penID = subject.currentPenID {
+            penName = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+                $0.id == penID && $0.farmID == farmID && $0.deletedAt == nil
+            })).first?.name
+        } else {
+            penName = nil
+        }
+        let avatarPhoto = try SheepAvatarSelectionStore.reference(
+            sheepID: sheepID,
+            farmID: farmID,
+            context: context
+        )
+        try Task.checkCancellation()
+        return SheepDetailEntrySnapshot(
+            subject: subject,
+            penName: penName,
+            avatarPhoto: avatarPhoto
+        )
     }
 
     func load(
@@ -256,6 +355,12 @@ actor SheepDetailSnapshotActor {
             weights: weightValues,
             photos: photoValues,
             timeline: timeline,
+            currentParity: LambingEntrySemantics.currentParity(
+                eweID: sheepID,
+                farmID: farmID,
+                before: .distantFuture,
+                records: reproduction
+            ),
             lifecycleInsight: SheepAnalyticsEngine.lifecycle(sheepID: sheepID, snapshot: analyticsSnapshot),
             reproductionInsight: SheepAnalyticsEngine.reproduction(sheepID: sheepID, snapshot: analyticsSnapshot)
         )

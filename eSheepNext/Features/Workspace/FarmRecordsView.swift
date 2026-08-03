@@ -165,25 +165,54 @@ struct WeaningEntryView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
+    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
+    @Query(sort: \WeightRecord.occurredAt) private var weights: [WeightRecord]
     let account: AccountProfile
     let farm: FarmRecord
     private let commandService = FarmCommandService()
     @State private var sheepID: UUID?
-    @State private var damID: UUID?
+    @State private var targetPenID: UUID?
     @State private var weanWeight = ""
-    @State private var birthWeight = ""
-    @State private var averageDailyGain = ""
     @State private var occurredAt = Date.now
     @State private var birthAt = Date.now
     @State private var includesBirthDate = false
-    @State private var litterSize = 1
     @State private var note = ""
     @State private var errorMessage: String?
 
     private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active } }
-    private var ewes: [SheepRecord] { farmSheep.filter { $0.sex == .ewe } }
+    private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
     private var sheepCandidates: [SheepEarTagSearchCandidate] { farmSheep.map { .init(sheep: $0) } }
-    private var damCandidates: [SheepEarTagSearchCandidate] { ewes.map { .init(sheep: $0) } }
+    private var selectedSheep: SheepRecord? { farmSheep.first { $0.id == sheepID } }
+    private var effectiveBirthAt: Date? { selectedSheep?.birthAt ?? (includesBirthDate ? birthAt : nil) }
+    private var gainSamples: [WeaningGainSample] { WeaningGainSemantics.samples(from: weights, farmID: farm.id) }
+    private var parsedWeanWeight: Double? {
+        Decimal.stable(weanWeight.trimmingCharacters(in: .whitespacesAndNewlines))
+            .map { NSDecimalNumber(decimal: $0).doubleValue }
+    }
+    private var gainBaseline: WeaningGainSample? {
+        guard let sheepID else { return nil }
+        return WeaningGainSemantics.earliestBaseline(
+            sheepID: sheepID,
+            birthAt: effectiveBirthAt,
+            weaningAt: occurredAt,
+            samples: gainSamples
+        )
+    }
+    private var gainResult: WeaningGainResult? {
+        guard let sheepID, let parsedWeanWeight else { return nil }
+        return WeaningGainSemantics.calculate(
+            sheepID: sheepID,
+            birthAt: effectiveBirthAt,
+            weaningAt: occurredAt,
+            weaningWeight: parsedWeanWeight,
+            samples: gainSamples
+        )
+    }
+    private var weaningDateRange: ClosedRange<Date> {
+        let upper = Date.now
+        let lower = selectedSheep?.birthAt.map { min($0, upper) } ?? Date.distantPast
+        return lower...upper
+    }
 
     var body: some View {
         Form {
@@ -194,25 +223,49 @@ struct WeaningEntryView: View {
                     emptySelectionText: "尚未确认断奶羊只"
                 )
             }
-            Section("母本（可选）") {
-                SheepEarTagSingleSearchField(
-                    candidates: damCandidates,
-                    selection: $damID,
-                    prompt: "输入母本耳号搜索",
-                    emptySelectionText: "未关联母本",
-                    accessibilityName: "母本耳号"
-                )
-            }
-            Section("断奶指标") {
+            Section("断奶信息") {
                 TextField("断奶重（千克）", text: $weanWeight).keyboardType(.decimalPad)
-                TextField("出生重（可选，千克）", text: $birthWeight).keyboardType(.decimalPad)
-                TextField("日增重（可选，千克/天）", text: $averageDailyGain).keyboardType(.decimalPad)
-                Stepper("胎只数：\(litterSize)", value: $litterSize, in: 1...10)
+            }
+            Section("断奶后调舍") {
+                Picker("转入圈舍", selection: $targetPenID) {
+                    Text("请选择目标圈舍").tag(UUID?.none)
+                    ForEach(farmPens, id: \.id) { pen in
+                        Text(pen.name).tag(UUID?.some(pen.id))
+                    }
+                }
             }
             Section("时间") {
-                DatePicker("断奶时间", selection: $occurredAt)
-                Toggle("补充出生日期", isOn: $includesBirthDate)
-                if includesBirthDate { DatePicker("出生日期", selection: $birthAt, in: ...occurredAt, displayedComponents: .date) }
+                DatePicker("断奶时间", selection: $occurredAt, in: weaningDateRange)
+                if let profileBirthAt = selectedSheep?.birthAt {
+                    LabeledContent("出生日期", value: profileBirthAt.formatted(date: .abbreviated, time: .omitted))
+                } else {
+                    Toggle("补充出生日期", isOn: $includesBirthDate)
+                    if includesBirthDate {
+                        DatePicker("出生日期", selection: $birthAt, in: ...occurredAt, displayedComponents: .date)
+                    }
+                }
+            }
+            Section {
+                if let baseline = gainBaseline {
+                    LabeledContent("起算体重", value: "\(weightText(baseline.kilograms)) 千克")
+                    LabeledContent("起算日期", value: baseline.occurredAt.formatted(date: .abbreviated, time: .omitted))
+                    if let gainResult {
+                        LabeledContent("计算间隔", value: "\(gainResult.intervalDays) 天")
+                        LabeledContent("断奶日增重", value: "\(gainText(gainResult.gramsPerDay)) 克/天")
+                    } else {
+                        Text(calculationUnavailableMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(calculationUnavailableMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("自动日增重")
+            } footer: {
+                Text("以出生后、断奶前最早一条实际称重为起点；没有有效称重时不计算，也不会用初生重字段代替。")
             }
             TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
         }
@@ -220,21 +273,30 @@ struct WeaningEntryView: View {
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["断奶"])
+        .onChange(of: sheepID) { _, _ in
+            targetPenID = nil
+            includesBirthDate = false
+            birthAt = min(occurredAt, Date.now)
+            if let profileBirthAt = selectedSheep?.birthAt, occurredAt < profileBirthAt {
+                occurredAt = min(profileBirthAt, Date.now)
+            }
+        }
+        .onChange(of: occurredAt) { _, newValue in
+            if birthAt > newValue { birthAt = newValue }
+        }
     }
 
     private func save() {
         guard let sheepID else { errorMessage = "请先搜索并确认断奶羊只。"; return }
+        guard let targetPenID else { errorMessage = "请选择断奶后调入的圈舍。"; return }
         do {
-            try commandService.execute(
-                .recordWeaning(
+            try commandService.executeBatch(
+                WeaningWorkflow.commands(
                     sheepID: sheepID,
                     weanWeightText: weanWeight,
                     occurredAt: occurredAt,
-                    birthAt: includesBirthDate ? birthAt : nil,
-                    birthWeightText: birthWeight,
-                    averageDailyGainText: averageDailyGain,
-                    damID: damID,
-                    litterSize: litterSize,
+                    birthAt: effectiveBirthAt,
+                    toPenID: targetPenID,
                     note: note
                 ),
                 in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
@@ -242,6 +304,23 @@ struct WeaningEntryView: View {
             )
             dismiss()
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    private var calculationUnavailableMessage: String {
+        guard sheepID != nil else { return "确认断奶羊只后，将查找其最早的有效称重。" }
+        guard parsedWeanWeight.map({ $0 > 0 }) == true else { return "填写断奶重后才能计算日增重。" }
+        guard let gainBaseline else { return "没有出生后且早于断奶时间的实际称重，暂不计算日增重。" }
+        let days = FarmAnalyticsDate.days(from: gainBaseline.occurredAt, to: occurredAt)
+        guard days > 0 else { return "起算称重与断奶在同一天，无法按日计算。" }
+        return "断奶重未高于起算体重，该条记录不计入日增重。"
+    }
+
+    private func weightText(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...3)))
+    }
+
+    private func gainText(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...1)))
     }
 }
 

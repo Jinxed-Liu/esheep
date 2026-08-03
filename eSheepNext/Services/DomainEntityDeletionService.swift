@@ -9,7 +9,7 @@ enum DomainEntityDeletionService {
         switch type {
         case .farm: throw FarmPermissionError.denied(.manageFarm)
         case .pen: try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
-        case .sheep: try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
+        case .sheep: try setSheepDeletedAt(date, id: id, farmID: farmID, context: context)
         case .weight: try context.fetch(FetchDescriptor<WeightRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .weaning: try context.fetch(FetchDescriptor<WeaningRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .breedingProgram:
@@ -43,7 +43,15 @@ enum DomainEntityDeletionService {
         case .semenDonor: try context.fetch(FetchDescriptor<SemenDonorRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .pedigreeChange: throw FarmPermissionError.denied(.deleteProtectedFacts)
         case .note: try context.fetch(FetchDescriptor<NoteRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
-        case .photoAsset: try context.fetch(FetchDescriptor<PhotoAssetRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
+        case .photoAsset:
+            // Older live/cloud replay paths could leave more than one local
+            // projection row for the same immutable photo ID. Deleting only
+            // `.first` allowed another projection to remain visible forever.
+            for photo in try context.fetch(FetchDescriptor<PhotoAssetRecord>(predicate: #Predicate {
+                $0.id == id && $0.farmID == farmID
+            })) {
+                photo.deletedAt = date
+            }
         case .breedingProgramStep: try context.fetch(FetchDescriptor<BreedingProgramStepRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .feedIngredientBatch:
             if date != nil, let value = try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
@@ -58,6 +66,21 @@ enum DomainEntityDeletionService {
         case .careRule:
             if date != nil, let value = try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
         case .careReminder: try context.fetch(FetchDescriptor<CareReminderRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
+        }
+    }
+
+    private static func setSheepDeletedAt(_ date: Date?, id: UUID, farmID: UUID, context: ModelContext) throws {
+        try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.id == id && $0.farmID == farmID
+        })).first?.deletedAt = date
+
+        // Parity confirmations are profile-owned facts. They must not prevent
+        // deleting an otherwise unreferenced ewe or remain active as orphans.
+        for record in try context.fetch(FetchDescriptor<ReproductionRecord>()) where
+            record.farmID == farmID &&
+            record.eweID == id &&
+            record.kind == .parityBaseline {
+            record.deletedAt = date
         }
     }
 

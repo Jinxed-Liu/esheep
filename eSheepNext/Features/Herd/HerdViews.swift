@@ -53,15 +53,17 @@ struct HerdManagementView: View {
                         SheepDetailEntryView(
                             account: account,
                             farm: farm,
-                            sheepID: sheep.id,
-                            penName: sheep.currentPenID.flatMap { penNames[$0] }
+                            sheepID: sheep.id
                         )
                     } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(sheep.earTag).font(.headline)
-                            Text([sheep.breed, sheep.sex.displayName, sheep.currentPenDisplayName(sheep.currentPenID.flatMap { penNames[$0] }), sheep.status.displayName].joined(separator: " · "))
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                        HStack(spacing: 12) {
+                            SheepAvatarView(photo: sheep.avatarPhoto, size: 48)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(sheep.earTag).font(.headline)
+                                Text([sheep.breed, sheep.sex.displayName, sheep.currentPenDisplayName(sheep.currentPenID.flatMap { penNames[$0] }), sheep.status.displayName].joined(separator: " · "))
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                     .tag(sheep.id)
@@ -210,7 +212,13 @@ struct HerdManagementView: View {
             let pens = try modelContext.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
                 $0.farmID == farmID && $0.deletedAt == nil
             }))
-            sourceSheep = sheep.map(HerdSheepRow.init)
+            let avatarPhotos = try SheepAvatarSelectionStore.references(
+                farmID: farmID,
+                context: modelContext
+            )
+            sourceSheep = sheep.map {
+                HerdSheepRow($0, avatarPhoto: avatarPhotos[$0.id])
+            }
             penOptions = pens.map { HerdPenOption(id: $0.id, name: $0.name) }
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             presentSheepCount = sourceSheep.lazy.filter(\.isCurrentlyPresent).count
@@ -286,8 +294,9 @@ private struct HerdSheepRow: Identifiable, Sendable {
     let enteredAt: Date
     let isCurrentlyPresent: Bool
     let searchableText: String
+    let avatarPhoto: SheepPhotoReference?
 
-    init(_ sheep: SheepRecord) {
+    init(_ sheep: SheepRecord, avatarPhoto: SheepPhotoReference?) {
         id = sheep.id
         earTag = sheep.earTag
         breed = sheep.breed
@@ -297,6 +306,7 @@ private struct HerdSheepRow: Identifiable, Sendable {
         enteredAt = sheep.enteredAt
         isCurrentlyPresent = sheep.isCurrentlyPresent
         searchableText = SearchText.normalized(sheep.earTag + "\u{0}" + sheep.breed)
+        self.avatarPhoto = avatarPhoto
     }
 
     func currentPenDisplayName(_ penName: String?) -> String {
@@ -410,28 +420,51 @@ private struct BatchTransferSheepView: View {
 }
 
 struct SheepDetailEntryView: View {
-    @Query private var sheep: [SheepRecord]
+    @Environment(\.modelContext) private var modelContext
 
     let account: AccountProfile
     let farm: FarmRecord
-    let penName: String?
+    let sheepID: UUID
 
-    init(account: AccountProfile, farm: FarmRecord, sheepID: UUID, penName: String?) {
-        self.account = account
-        self.farm = farm
-        self.penName = penName
-        let farmID = farm.id
-        _sheep = Query(filter: #Predicate<SheepRecord> {
-            $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
-        })
-    }
+    @State private var entry: SheepDetailEntrySnapshot?
+    @State private var isLoading = true
+    @State private var loadError: String?
 
     var body: some View {
-        if let sheep = sheep.first {
-            SheepDetailView(account: account, farm: farm, sheep: sheep, penName: penName)
-        } else {
-            ContentUnavailableView("羊只档案不存在", systemImage: "exclamationmark.triangle")
+        Group {
+            if let entry {
+                SheepDetailView(account: account, farm: farm, entry: entry)
+            } else if isLoading {
+                ProgressView("正在读取羊只档案")
+            } else {
+                ContentUnavailableView(
+                    "羊只档案不存在",
+                    systemImage: "exclamationmark.triangle",
+                    description: loadError.map(Text.init)
+                )
+            }
         }
+        .task(id: sheepID) {
+            await loadEntry()
+        }
+    }
+
+    @MainActor
+    private func loadEntry() async {
+        isLoading = true
+        do {
+            entry = try await SheepDetailSnapshotActor(
+                container: modelContext.container
+            ).loadEntry(farmID: farm.id, sheepID: sheepID)
+            try Task.checkCancellation()
+            loadError = entry == nil ? "该羊只可能已删除或不属于当前牧场。" : nil
+        } catch is CancellationError {
+            return
+        } catch {
+            entry = nil
+            loadError = error.localizedDescription
+        }
+        isLoading = false
     }
 }
 
@@ -441,11 +474,12 @@ struct SheepDetailView: View {
 
     let account: AccountProfile
     let farm: FarmRecord
-    let sheep: SheepRecord
-    let penName: String?
-    private let detailSubject: SheepDetailSubjectSnapshot
+    @State private var subject: SheepDetailSubjectSnapshot
+    @State private var penName: String?
+    @State private var avatarPhoto: SheepPhotoReference?
 
     @State private var selectedPhoto: PhotosPickerItem?
+    @State private var isCameraPresented = false
     @State private var isProcessingPhoto = false
     @State private var photoMessage: String?
     @State private var exportDocument: FarmInterchangeDocument?
@@ -455,41 +489,44 @@ struct SheepDetailView: View {
     @State private var isLoadingDetail = true
     @State private var detailLoadError: String?
     @State private var isEditingProfile = false
+    @State private var editingSheep: SheepRecord?
     @State private var editingPhotoTime: PhotoTimeDraft?
+    @State private var previewingPhoto: SheepPhotoPreviewItem?
     @State private var pendingPhotoDeletion: PhotoDeletionDraft?
     private let commandService = FarmCommandService()
 
-    init(account: AccountProfile, farm: FarmRecord, sheep: SheepRecord, penName: String?) {
+    init(account: AccountProfile, farm: FarmRecord, entry: SheepDetailEntrySnapshot) {
         self.account = account
         self.farm = farm
-        self.sheep = sheep
-        self.penName = penName
-        detailSubject = SheepDetailSubjectSnapshot(
-            id: sheep.id,
-            earTag: sheep.earTag,
-            breed: sheep.breed,
-            purpose: sheep.purpose,
-            sex: sheep.sex,
-            status: sheep.status,
-            initialPenID: sheep.initialPenID,
-            currentPenID: sheep.currentPenID,
-            birthAt: sheep.birthAt,
-            enteredAt: sheep.enteredAt,
-            removedAt: sheep.removedAt
-        )
+        _subject = State(initialValue: entry.subject)
+        _penName = State(initialValue: entry.penName)
+        _avatarPhoto = State(initialValue: entry.avatarPhoto)
     }
 
     private var sheepPhotos: [SheepDetailPhotoSnapshot] { detailSnapshot?.photos ?? [] }
+
+    private var bannerPhotos: [SheepPhotoReference] {
+        var seen = Set<UUID>()
+        return ([avatarPhoto].compactMap { $0 } + sheepPhotos.map {
+            SheepPhotoReference(id: $0.id, digest: $0.sha256)
+        }).filter { seen.insert($0.id).inserted }
+    }
 
     var body: some View {
         List {
             Section {
                 SheepProfileBanner(
-                    sheep: sheep,
+                    sheep: subject,
                     penName: penName,
-                    photo: sheepPhotos.first,
-                    photoCount: sheepPhotos.count
+                    photos: bannerPhotos,
+                    photoCount: sheepPhotos.count,
+                    canEdit: canEditPhotos,
+                    isProcessing: isProcessingPhoto,
+                    onPreview: previewBannerPhoto,
+                    onCamera: openCamera
                 )
+                .listRowInsets(.init())
+                .listRowBackground(Color.clear)
             }
             if let detailLoadError {
                 Section {
@@ -503,19 +540,22 @@ struct SheepDetailView: View {
             }
 
             Section("档案") {
-                LabeledContent("耳号", value: sheep.earTag)
-                LabeledContent("品种", value: sheep.breed)
-                LabeledContent("性别", value: sheep.sex.displayName)
-                LabeledContent("状态", value: sheep.status.displayName)
-                LabeledContent("当前圈舍", value: sheep.currentPenDisplayName(penName))
-                LabeledContent("入场时间") { Text(sheep.enteredAt, format: .dateTime.year().month().day()) }
+                LabeledContent("耳号", value: subject.earTag)
+                LabeledContent("品种", value: subject.breed)
+                LabeledContent("性别", value: subject.sex.displayName)
+                if subject.sex == .ewe {
+                    LabeledContent("当前胎次", value: currentParityDisplayName)
+                }
+                LabeledContent("状态", value: subject.status.displayName)
+                LabeledContent("当前圈舍", value: subject.currentPenDisplayName(penName))
+                LabeledContent("入场时间") { Text(subject.enteredAt, format: .dateTime.year().month().day()) }
             }
-            if !sheep.note.isEmpty {
-                Section("备注") { Text(sheep.note) }
+            if !subject.note.isEmpty {
+                Section("备注") { Text(subject.note) }
             }
             Section("系谱") {
                 NavigationLink {
-                    AnyView(SheepPedigreeView(account: account, farm: farm, sheepID: sheep.id))
+                    SheepPedigreeView(account: account, farm: farm, sheepID: subject.id)
                 } label: {
                     Label("父母、祖先、同胞与后代", systemImage: "point.3.connected.trianglepath.dotted")
                 }
@@ -537,15 +577,25 @@ struct SheepDetailView: View {
                 } else {
                     ForEach(sheepPhotos, id: \.id) { photo in
                         HStack(spacing: 12) {
-                            Button {
-                                editPhotoTime(photo)
-                            } label: {
-                                PhotoTimelineRow(photo: photo)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(!canEditPhotos)
+                            PhotoTimelineRow(
+                                photo: photo,
+                                canEdit: canEditPhotos,
+                                onPreview: { previewPhoto(photo) },
+                                onEdit: { editPhotoTime(photo) }
+                            )
 
                             Menu {
+                                if avatarPhoto?.id == photo.id {
+                                    Button("取消头像", systemImage: "person.crop.circle.badge.minus") {
+                                        setAvatar(photoAssetID: nil)
+                                    }
+                                    .disabled(!canEditPhotos)
+                                } else {
+                                    Button("设为头像", systemImage: "person.crop.circle.badge.checkmark") {
+                                        setAvatar(photoAssetID: photo.id)
+                                    }
+                                    .disabled(!canEditPhotos)
+                                }
                                 Button("修改照片时间", systemImage: "calendar.badge.clock") {
                                     editPhotoTime(photo)
                                 }
@@ -571,33 +621,44 @@ struct SheepDetailView: View {
             timelineSection
             Section("记录管理") {
                 NavigationLink {
-                    SheepRecordHistoryScreen(account: account, farm: farm, sheepID: sheep.id)
+                    SheepRecordHistoryScreen(account: account, farm: farm, sheepID: subject.id)
                 } label: {
                     Label("修正、撤销与恢复", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
                 }
             }
         }
-        .navigationTitle(sheep.earTag)
+        .navigationTitle(subject.earTag)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("编辑") { isEditingProfile = true }
+                Button("编辑") { prepareProfileEditing() }
                     .disabled(!CapabilitySet(role: farm.role).allows(.recordProduction))
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button { exportSingleSheep() } label: {
+                Menu {
+                    Button("导出完整档案 XLSX", systemImage: "tablecells") {
+                        exportSingleSheep()
+                    }
+                } label: {
                     if isPreparingExport {
                         ProgressView()
                     } else {
                         Image(systemName: "square.and.arrow.up")
                     }
                 }
-                    .accessibilityLabel("导出单羊完整档案 XLSX")
-                    .disabled(isPreparingExport || !CapabilitySet(role: farm.role).allows(.exportFarm))
+                .accessibilityLabel("导出羊只档案")
+                .disabled(isPreparingExport || !CapabilitySet(role: farm.role).allows(.exportFarm))
             }
         }
-        .sheet(isPresented: $isEditingProfile, onDismiss: { Task { await reloadDetailSnapshot() } }) {
-            NavigationStack { EditSheepProfileView(account: account, farm: farm, sheep: sheep) }
+        .sheet(isPresented: $isEditingProfile, onDismiss: {
+            editingSheep = nil
+            Task { await reloadEntryAndDetail() }
+        }) {
+            if let editingSheep {
+                NavigationStack {
+                    EditSheepProfileView(account: account, farm: farm, sheep: editingSheep)
+                }
+            }
         }
         .sheet(item: $editingPhotoTime) { draft in
             NavigationStack {
@@ -605,6 +666,19 @@ struct SheepDetailView: View {
                     updatePhotoTime(assetID: draft.assetID, capturedAt: date)
                 }
             }
+        }
+        .fullScreenCover(item: $previewingPhoto) { item in
+            SheepPhotoViewer(item: item, earTag: subject.earTag)
+        }
+        .sheet(isPresented: $isCameraPresented) {
+            SheepCameraPicker(
+                onCapture: { image in
+                    isCameraPresented = false
+                    addCapturedPhoto(image)
+                },
+                onCancel: { isCameraPresented = false }
+            )
+            .ignoresSafeArea()
         }
         .confirmationDialog(
             "删除这张照片？",
@@ -619,7 +693,7 @@ struct SheepDetailView: View {
         } message: {
             Text("照片会从当前档案和时间线中移除，并保留审计记录，可在“修正、撤销与恢复”中恢复。")
         }
-        .fileExporter(isPresented: $isExporting, document: exportDocument, contentType: .officeOpenXMLSpreadsheet, defaultFilename: "羊只档案_\(sheep.earTag).xlsx") { result in
+        .fileExporter(isPresented: $isExporting, document: exportDocument, contentType: .officeOpenXMLSpreadsheet, defaultFilename: "羊只档案_\(subject.earTag).xlsx") { result in
             switch result {
             case .success: photoMessage = "已导出包含基础资料和完整时间线的 XLSX 工作簿。"
             case .failure(let error): photoMessage = "导出失败：\(error.localizedDescription)"
@@ -627,9 +701,9 @@ struct SheepDetailView: View {
         }
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
-            addPhoto(item)
+            addPhoto(item, setAsAvatar: false)
         }
-        .task(id: sheep.id) { await reloadDetailSnapshot() }
+        .task(id: subject.id) { await reloadDetailSnapshot() }
         .alert("照片", isPresented: Binding(get: { photoMessage != nil }, set: { if !$0 { photoMessage = nil } })) {
             Button("完成", role: .cancel) {}
         } message: { Text(photoMessage ?? "") }
@@ -649,8 +723,27 @@ struct SheepDetailView: View {
         editingPhotoTime = PhotoTimeDraft(assetID: photo.id, capturedAt: photo.displayedAt)
     }
 
+    private func previewPhoto(_ photo: SheepDetailPhotoSnapshot) {
+        previewingPhoto = SheepPhotoPreviewItem(
+            candidates: [SheepPhotoReference(id: photo.id, digest: photo.sha256)],
+            displayedAt: photo.displayedAt
+        )
+    }
+
+    private func previewBannerPhoto() {
+        previewingPhoto = SheepPhotoPreviewItem(candidates: bannerPhotos)
+    }
+
     private func requestPhotoDeletion(_ photo: SheepDetailPhotoSnapshot) {
         pendingPhotoDeletion = PhotoDeletionDraft(assetID: photo.id, capturedAt: photo.displayedAt)
+    }
+
+    private func openCamera() {
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+            photoMessage = "当前设备无法使用相机，请从照片时间线选择“从照片库添加”。"
+            return
+        }
+        isCameraPresented = true
     }
 
     @ViewBuilder
@@ -665,7 +758,7 @@ struct SheepDetailView: View {
                         PointMark(x: .value("日期", record.occurredAt), y: .value("体重", record.kilograms))
                     }
                     .frame(height: 160)
-                    .accessibilityLabel("\(sheep.earTag)体重变化曲线，共\(records.count)个体重数据点")
+                    .accessibilityLabel("\(subject.earTag)体重变化曲线，共\(records.count)个体重数据点")
                 }
             }
         }
@@ -716,9 +809,10 @@ struct SheepDetailView: View {
         do {
             detailSnapshot = try await SheepDetailSnapshotActor(container: modelContext.container).load(
                 farmID: farm.id,
-                sheepID: sheep.id,
-                subject: detailSubject
+                sheepID: subject.id,
+                subject: subject
             )
+            try Task.checkCancellation()
             detailLoadError = nil
         } catch is CancellationError {
             return
@@ -727,7 +821,56 @@ struct SheepDetailView: View {
         }
     }
 
-    private func addPhoto(_ item: PhotosPickerItem) {
+    @MainActor
+    private func reloadEntryAndDetail() async {
+        isLoadingDetail = true
+        defer { isLoadingDetail = false }
+        do {
+            let actor = SheepDetailSnapshotActor(container: modelContext.container)
+            guard let updatedEntry = try await actor.loadEntry(
+                farmID: farm.id,
+                sheepID: subject.id
+            ) else {
+                detailLoadError = "羊只档案不存在。"
+                return
+            }
+            try Task.checkCancellation()
+            subject = updatedEntry.subject
+            penName = updatedEntry.penName
+            avatarPhoto = updatedEntry.avatarPhoto
+            detailSnapshot = try await actor.load(
+                farmID: farm.id,
+                sheepID: updatedEntry.subject.id,
+                subject: updatedEntry.subject
+            )
+            try Task.checkCancellation()
+            detailLoadError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            detailLoadError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func prepareProfileEditing() {
+        do {
+            let sheepID = subject.id
+            let farmID = farm.id
+            guard let record = try modelContext.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
+            })).first else {
+                detailLoadError = "羊只档案不存在。"
+                return
+            }
+            editingSheep = record
+            isEditingProfile = true
+        } catch {
+            detailLoadError = error.localizedDescription
+        }
+    }
+
+    private func addPhoto(_ item: PhotosPickerItem, setAsAvatar: Bool) {
         guard !isProcessingPhoto else { return }
         isProcessingPhoto = true
         Task {
@@ -737,14 +880,113 @@ struct SheepDetailView: View {
             }
             do {
                 guard let data = try await item.loadTransferable(type: Data.self) else { throw PhotoTransferError.sourceUnreadable }
-                _ = try await collaboration.photoTransfers.enqueue(data: data, farmID: farm.id, entityID: sheep.id)
-                await collaboration.synchronizeNow()
-                await reloadDetailSnapshot()
-                photoMessage = collaboration.lastErrorMessage ?? "照片已压缩保存并进入云端同步队列。"
+                try await persistPhoto(data, setAsAvatar: setAsAvatar)
             } catch {
+                await collaboration.synchronizeNow()
                 photoMessage = error.localizedDescription
             }
         }
+    }
+
+    private func addCapturedPhoto(_ image: UIImage) {
+        guard let data = image.jpegData(compressionQuality: 0.95) else {
+            photoMessage = PhotoTransferError.imageEncodeFailed.localizedDescription
+            return
+        }
+        guard !isProcessingPhoto else { return }
+        isProcessingPhoto = true
+        Task {
+            defer { isProcessingPhoto = false }
+            do {
+                try await persistPhoto(data, setAsAvatar: true)
+            } catch {
+                await collaboration.synchronizeNow()
+                photoMessage = error.localizedDescription
+            }
+        }
+    }
+
+    @MainActor
+    private func persistPhoto(_ data: Data, setAsAvatar: Bool) async throws {
+        let preflightContext = ModelContext(modelContext.container)
+        let automaticAvatarPlan = try SheepAvatarSelectionStore.photoAdditionPlan(
+            sheepID: subject.id,
+            farmID: farm.id,
+            context: preflightContext
+        )
+        let assetID = try await collaboration.photoTransfers.enqueue(
+            data: data,
+            farmID: farm.id,
+            entityID: subject.id
+        )
+        var automaticallySelectedPhotoAssetID: UUID?
+        do {
+            // `enqueue` commits through PhotoTransferActor's context. Use a
+            // fresh context so avatar validation observes the committed photo
+            // instead of a stale view-context snapshot.
+            let commandContext = ModelContext(modelContext.container)
+            let automaticPhotoAssetID = try SheepAvatarSelectionStore.automaticSelectionAfterAdding(
+                photoAssetID: assetID,
+                plan: automaticAvatarPlan,
+                sheepID: subject.id,
+                farmID: farm.id,
+                context: commandContext
+            )
+            let avatarAssetID = setAsAvatar ? assetID : automaticPhotoAssetID
+            automaticallySelectedPhotoAssetID = setAsAvatar ? nil : automaticPhotoAssetID
+            if let avatarAssetID {
+                try commandService.setSheepAvatar(
+                    sheepID: subject.id,
+                    photoAssetID: avatarAssetID,
+                    in: farmContext,
+                    context: commandContext
+                )
+            }
+        } catch {
+            // The photo itself has already been committed. Never hide it from
+            // the timeline merely because the separate avatar command failed.
+            await reloadEntryAndDetail()
+            throw error
+        }
+
+        // Local bytes and profile selection are authoritative for immediate
+        // display. Do not make the banner wait for a cloud round trip.
+        await reloadEntryAndDetail()
+        await collaboration.synchronizeNow()
+        await reloadEntryAndDetail()
+        photoMessage = collaboration.lastErrorMessage ?? (setAsAvatar
+            ? "已拍摄并设为羊只头像，照片已进入云端同步队列。"
+            : automaticallySelectedPhotoAssetID == assetID
+                ? "照片已保存；当前唯一照片已自动设为羊只头像。"
+                : automaticallySelectedPhotoAssetID != nil
+                    ? "照片已保存；原唯一照片继续作为羊只头像。"
+                : "照片已压缩保存并进入云端同步队列。")
+    }
+
+    private func setAvatar(photoAssetID: UUID?) {
+        do {
+            try commandService.setSheepAvatar(
+                sheepID: subject.id,
+                photoAssetID: photoAssetID,
+                in: farmContext,
+                context: modelContext
+            )
+            photoMessage = photoAssetID == nil ? "已恢复系统默认头像。" : "已设为羊只头像。"
+            Task {
+                await reloadEntryAndDetail()
+                await collaboration.synchronizeNow()
+            }
+        } catch {
+            photoMessage = "头像更新失败：\(error.localizedDescription)"
+        }
+    }
+
+    private var farmContext: FarmContext {
+        FarmContext(
+            accountID: account.effectiveAccountID,
+            farmID: farm.id,
+            role: farm.role
+        )
     }
 
     private func exportSingleSheep() {
@@ -755,7 +997,7 @@ struct SheepDetailView: View {
             do {
                 let data = try await SheepDetailSnapshotActor(container: modelContext.container).singleSheepXLSXData(
                     farmID: farm.id,
-                    sheepID: sheep.id,
+                    sheepID: subject.id,
                     penName: penName
                 )
                 exportDocument = FarmInterchangeDocument(data: data)
@@ -779,6 +1021,11 @@ struct SheepDetailView: View {
         }
     }
 
+    private var currentParityDisplayName: String {
+        guard let parity = detailSnapshot?.currentParity else { return "未确认" }
+        return parity == 0 ? "0（尚未产羔）" : "第 \(parity) 胎"
+    }
+
     private func deletePendingPhoto() {
         guard let draft = pendingPhotoDeletion else { return }
         pendingPhotoDeletion = nil
@@ -794,7 +1041,7 @@ struct SheepDetailView: View {
             )
             photoMessage = "照片已删除，可在记录管理中恢复。"
             Task {
-                await reloadDetailSnapshot()
+                await reloadEntryAndDetail()
                 await collaboration.synchronizeNow()
             }
         } catch {
@@ -804,74 +1051,185 @@ struct SheepDetailView: View {
 }
 
 private struct SheepProfileBanner: View {
-    let sheep: SheepRecord
+    let sheep: SheepDetailSubjectSnapshot
     let penName: String?
-    let photo: SheepDetailPhotoSnapshot?
+    let photos: [SheepPhotoReference]
     let photoCount: Int
+    let canEdit: Bool
+    let isProcessing: Bool
+    let onPreview: () -> Void
+    let onCamera: () -> Void
 
     var body: some View {
-        HStack(spacing: 16) {
+        ZStack(alignment: .bottomLeading) {
             Group {
-                if let photo {
-                    CloudPhotoThumbnail(
-                        assetID: photo.id,
-                        digest: photo.sha256,
-                        width: 112,
-                        height: 96,
-                        cornerRadius: 12
-                    )
+                if photos.isEmpty {
+                    SheepBannerPhotoView(photos: photos)
                 } else {
-                    Image(systemName: "sheep")
-                        .font(.system(size: 36, weight: .medium))
-                        .foregroundStyle(AppTheme.brand)
-                        .frame(width: 112, height: 96)
-                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 12))
+                    Button(action: onPreview) {
+                        SheepBannerPhotoView(photos: photos)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("查看羊只照片大图")
                 }
             }
-            .accessibilityLabel(photo == nil ? "暂无羊只照片" : "最新羊只照片")
+                .frame(maxWidth: .infinity)
+                .frame(height: 218)
+                .clipped()
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(sheep.earTag)
-                    .font(.title2.bold())
-                    .lineLimit(1)
+            LinearGradient(stops: [
+                .init(color: .clear, location: 0.32),
+                .init(color: Color(uiColor: .systemBackground).opacity(0.38), location: 0.56),
+                .init(color: Color(uiColor: .systemBackground).opacity(0.88), location: 0.78),
+                .init(color: Color(uiColor: .systemBackground), location: 1)
+            ], startPoint: .top, endPoint: .bottom)
+            .allowsHitTesting(false)
 
-                Text([sheep.breed.isEmpty ? "未填写品种" : sheep.breed, sheep.sex.displayName, sheep.status.displayName].joined(separator: " · "))
-                    .lineLimit(1)
-                Label(sheep.currentPenDisplayName(penName), systemImage: "square.grid.2x2")
-                Label("\(photoCount) 张照片", systemImage: "photo.stack")
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(sheep.earTag)
+                        .font(.title.bold())
+                        .lineLimit(1)
+                    Spacer(minLength: 12)
+                    Text(sheep.status.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 5)
+                        .background(AppTheme.brand, in: .capsule)
+                }
+                HStack(spacing: 14) {
+                    Label(sheep.breed.isEmpty ? "未填写品种" : sheep.breed, systemImage: "leaf")
+                    Label(sheep.sex.displayName, systemImage: "sheep")
+                    Label(sheep.currentPenDisplayName(penName), systemImage: "square.grid.2x2")
+                    Label("\(photoCount)张", systemImage: "photo.stack")
+                }
+                .font(.subheadline)
+                .lineLimit(1)
             }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .foregroundStyle(.primary)
+            .padding(18)
+            .allowsHitTesting(false)
+
+            Button(action: onCamera) {
+                Group {
+                    if isProcessing {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "camera.fill")
+                    }
+                }
+                .frame(width: 42, height: 42)
+                .background(.ultraThinMaterial, in: .circle)
+            }
+            .disabled(!canEdit || isProcessing)
+            .padding(14)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .accessibilityLabel("拍摄并设置羊只头像")
         }
-        .accessibilityElement(children: .combine)
+        .frame(height: 218)
+        .clipShape(.rect(cornerRadius: 24))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(sheep.earTag)，\(sheep.breed)，\(sheep.sex.displayName)，\(sheep.status.displayName)，\(sheep.currentPenDisplayName(penName))")
+    }
+}
+
+private struct SheepCameraPicker: UIViewControllerRepresentable {
+    let onCapture: (UIImage) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onCapture: onCapture, onCancel: onCancel)
+    }
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.cameraCaptureMode = .photo
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        let onCapture: (UIImage) -> Void
+        let onCancel: () -> Void
+
+        init(onCapture: @escaping (UIImage) -> Void, onCancel: @escaping () -> Void) {
+            self.onCapture = onCapture
+            self.onCancel = onCancel
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            guard let image = info[.originalImage] as? UIImage else {
+                onCancel()
+                return
+            }
+            onCapture(image)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            onCancel()
+        }
     }
 }
 
 private struct PhotoTimelineRow: View {
     let photo: SheepDetailPhotoSnapshot
+    let canEdit: Bool
+    let onPreview: () -> Void
+    let onEdit: () -> Void
 
     private var displayedDate: Date { photo.displayedAt }
 
     var body: some View {
         HStack(spacing: 12) {
-            CloudPhotoThumbnail(assetID: photo.id, digest: photo.sha256, width: 82, height: 82, cornerRadius: 14)
+            Button(action: onPreview) {
+                CloudPhotoThumbnail(
+                    assetID: photo.id,
+                    digest: photo.sha256,
+                    width: 82,
+                    height: 82,
+                    cornerRadius: 14
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("查看羊只照片大图")
 
-            VStack(alignment: .leading, spacing: 6) {
-                Label("羊只照片", systemImage: "camera.fill")
-                    .font(.subheadline.weight(.semibold))
-                Text(displayedDate, format: .dateTime.year().month().day())
-                    .font(.subheadline)
-                Text(displayedDate, format: .dateTime.hour().minute())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if photo.capturedAt == nil {
-                    Text("未记录拍摄时间，当前显示添加时间")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+            Group {
+                if canEdit {
+                    Button(action: onEdit) {
+                        metadata
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("修改照片时间")
+                } else {
+                    metadata
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var metadata: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("羊只照片", systemImage: "camera.fill")
+                .font(.subheadline.weight(.semibold))
+            Text(displayedDate, format: .dateTime.year().month().day())
+                .font(.subheadline)
+            Text(displayedDate, format: .dateTime.hour().minute())
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if photo.capturedAt == nil {
+                Text("未记录拍摄时间，当前显示添加时间")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .foregroundStyle(.primary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(.rect)
     }
@@ -940,6 +1298,7 @@ private struct CloudPhotoThumbnail: View {
     let height: CGFloat
     let cornerRadius: CGFloat
     @State private var image: UIImage?
+    @State private var didFail = false
 
     init(assetID: UUID, digest: String, width: CGFloat = 104, height: CGFloat = 104, cornerRadius: CGFloat = 16) {
         self.assetID = assetID
@@ -955,17 +1314,32 @@ private struct CloudPhotoThumbnail: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+            } else if didFail {
+                Image(systemName: "sheep")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(AppTheme.brand)
             } else {
                 ProgressView()
             }
         }
         .frame(width: width, height: height)
+        .background(Color(uiColor: .secondarySystemGroupedBackground))
         .clipShape(.rect(cornerRadius: cornerRadius))
-        .task(id: digest) {
-            if let data = try? await collaboration.photoTransfers.localFileData(assetID: assetID) {
-                image = UIImage(data: data)
-            }
+        .task(id: PhotoLoadKey(
+            digest: digest,
+            lastSuccessfulSyncAt: collaboration.lastSuccessfulSyncAt
+        )) {
+            image = nil
+            didFail = false
+            let data = try? await collaboration.loadPhotoData(assetID: assetID)
+            image = data.flatMap(UIImage.init(data:))
+            didFail = image == nil
         }
+    }
+
+    private struct PhotoLoadKey: Hashable {
+        let digest: String
+        let lastSuccessfulSyncAt: Date?
     }
 }
 
@@ -1123,8 +1497,7 @@ struct PenDetailView: View {
                         SheepDetailEntryView(
                             account: account,
                             farm: farm,
-                            sheepID: item.id,
-                            penName: pen.name
+                            sheepID: item.id
                         )
                     } label: {
                         Text(item.earTag)
@@ -1170,6 +1543,7 @@ struct AddSheepView: View {
     @State private var penID: UUID?
     @State private var occurredAt = Date.now
     @State private var birthAt: Date?
+    @State private var currentParityText = ""
     @State private var note = ""
     @State private var errorMessage: String?
 
@@ -1181,6 +1555,16 @@ struct AddSheepView: View {
                 TextField("耳号", text: $earTag)
                 TextField("品种", text: $breed)
                 Picker("性别", selection: $sex) { ForEach(SheepSex.allCases, id: \.self) { Text($0.displayName).tag($0) } }
+            }
+            if sex == .ewe {
+                Section {
+                    TextField("当前胎次", text: $currentParityText)
+                        .keyboardType(.numberPad)
+                } header: {
+                    Text("繁殖信息")
+                } footer: {
+                    Text("留空按 0 胎保存；只有当前胎次明确为 0 的青年母羊，下一次产羔才会记为第 1 胎。")
+                }
             }
             Section("发生时间") {
                 DatePicker("入场时间", selection: $occurredAt)
@@ -1206,7 +1590,12 @@ struct AddSheepView: View {
 
     private func save() {
         do {
-            try commandService.execute(.addSheep(earTag: earTag, breed: breed, sex: sex, penID: penID, occurredAt: occurredAt, birthAt: birthAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            let parityText = currentParityText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard parityText.isEmpty || (Int(parityText).map { $0 >= 0 } == true) else {
+                errorMessage = "当前胎次必须是大于或等于 0 的整数。"
+                return
+            }
+            try commandService.execute(.addSheep(earTag: earTag, breed: breed, sex: sex, penID: penID, occurredAt: occurredAt, birthAt: birthAt, currentParity: sex == .ewe ? (Int(parityText) ?? 0) : nil, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
             dismiss()
         } catch { errorMessage = error.localizedDescription }
     }

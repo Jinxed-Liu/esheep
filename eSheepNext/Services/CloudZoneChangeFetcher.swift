@@ -24,12 +24,16 @@ actor CloudZoneChangeFetcher {
         self.database = database
     }
 
-    func fetchAll(zoneID: CKRecordZone.ID) -> AsyncThrowingStream<CloudZoneChangePage, Error> {
+    func fetchAll(
+        zoneID: CKRecordZone.ID,
+        startingFrom initialToken: CKServerChangeToken? = nil,
+        startingPageIndex: Int = 0
+    ) -> AsyncThrowingStream<CloudZoneChangePage, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    var token: CKServerChangeToken?
-                    var pageIndex = 0
+                    var token = initialToken
+                    var pageIndex = startingPageIndex
                     repeat {
                         try Task.checkCancellation()
                         let result = try await fetchPage(zoneID: zoneID, token: token)
