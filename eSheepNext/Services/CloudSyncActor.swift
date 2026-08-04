@@ -1859,6 +1859,7 @@ final class CloudCollaborationStore {
     private var supabaseCursorPollTask: Task<Void, Never>?
     private var supabaseRealtimeTasks: [UUID: Task<Void, Never>] = [:]
     private var supabaseOwnerDiscoveryAccountIDs = Set<UUID>()
+    private var photoDataLoadTasks: [UUID: Task<Data, any Error>] = [:]
 
     nonisolated static func prepareStartup(
         container: ModelContainer
@@ -1867,6 +1868,11 @@ final class CloudCollaborationStore {
             container: container
         )
         var startupErrorMessages = startupRepair.errorMessages
+        do {
+            _ = try PhotoAssetProjectionRepair.repair(container: container)
+        } catch {
+            startupErrorMessages.append("照片本地投影修复失败：\(error.localizedDescription)")
+        }
         do {
             _ = try PostRecoveryHistoryProjectionRepair.repair(container: container)
         } catch {
@@ -1937,10 +1943,56 @@ final class CloudCollaborationStore {
     isolated deinit {
         supabaseCursorPollTask?.cancel()
         supabaseRealtimeTasks.values.forEach { $0.cancel() }
+        photoDataLoadTasks.values.forEach { $0.cancel() }
     }
 
     func supabaseRealtimeHealth(farmID: UUID) -> SupabaseRealtimeHealth {
         supabaseRealtimeHealthByFarmID[farmID] ?? .notActive
+    }
+
+    /// Returns verified local bytes, restoring the asset from the farm's
+    /// authoritative cloud provider when its local cache is missing or stale.
+    /// Concurrent avatar/banner/timeline requests share one download task.
+    func loadPhotoData(assetID: UUID) async throws -> Data {
+        if let existing = photoDataLoadTasks[assetID] {
+            return try await existing.value
+        }
+
+        let task = Task<Data, any Error> {
+            [photoTransfers = self.photoTransfers,
+             supabasePhotoTransfers = self.supabasePhotoTransfers] in
+            do {
+                return try await photoTransfers.localFileData(assetID: assetID)
+            } catch {
+                let localFailure = error
+                guard let provider = try await photoTransfers.deliveryProvider(
+                    assetID: assetID
+                ) else {
+                    throw localFailure
+                }
+                switch provider {
+                case .iCloud:
+                    try await photoTransfers.downloadIfNeeded(assetID: assetID)
+                case .supabase:
+                    guard let supabasePhotoTransfers else {
+                        throw PhotoTransferError.remoteProviderUnavailable
+                    }
+                    try await supabasePhotoTransfers.downloadIfNeeded(
+                        assetID: assetID
+                    )
+                }
+                return try await photoTransfers.localFileData(assetID: assetID)
+            }
+        }
+        photoDataLoadTasks[assetID] = task
+        do {
+            let data = try await task.value
+            photoDataLoadTasks[assetID] = nil
+            return data
+        } catch {
+            photoDataLoadTasks[assetID] = nil
+            throw error
+        }
     }
 
     func refreshSupabaseRealtimeAcceptanceMode() {

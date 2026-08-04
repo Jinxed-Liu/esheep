@@ -38,6 +38,56 @@ actor SupabasePhotoTransferCoordinator {
         self.localPhotos = localPhotos
     }
 
+    func downloadIfNeeded(assetID: UUID) async throws {
+        if (try? await localPhotos.localFileData(assetID: assetID)) != nil {
+            return
+        }
+
+        let context = ModelContext(container)
+        guard let asset = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+            .first(where: { $0.id == assetID && $0.deletedAt == nil }),
+              try context.fetch(FetchDescriptor<FarmRemoteBinding>())
+                .contains(where: {
+                    $0.farmID == asset.farmID &&
+                        $0.provider == .supabase &&
+                        $0.state == .active
+                }) else {
+            throw PhotoTransferError.bindingMissing
+        }
+
+        let downloads = try context.fetch(FetchDescriptor<CloudAssetTransfer>())
+            .filter {
+                $0.assetID == assetID &&
+                    $0.farmID == asset.farmID &&
+                    $0.direction == .download
+            }
+        let transfer: CloudAssetTransfer
+        if let existing = downloads.max(by: { $0.updatedAt < $1.updatedAt }) {
+            transfer = existing
+            transfer.localRelativePath = ""
+            transfer.payloadDigest = asset.sha256
+            transfer.sourceDigest = asset.sourceSHA256
+            transfer.transferredByteCount = 0
+            transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+            transfer.lastErrorCode = nil
+            transfer.nextRetryAt = nil
+            transfer.updatedAt = .now
+        } else {
+            transfer = CloudAssetTransfer(
+                farmID: asset.farmID,
+                assetID: asset.id,
+                localRelativePath: "",
+                payloadDigest: asset.sha256,
+                byteCount: 0,
+                direction: .download,
+                sourceDigest: asset.sourceSHA256
+            )
+            context.insert(transfer)
+        }
+        try context.save()
+        try await process(transferID: transfer.id)
+    }
+
     func processPendingTransfers() async {
         let context = ModelContext(container)
         let activeFarmIDs = Set(
@@ -46,6 +96,29 @@ actor SupabasePhotoTransferCoordinator {
                 .map(\.farmID)
         )
         guard !activeFarmIDs.isEmpty else { return }
+
+        let assets = (try? context.fetch(FetchDescriptor<PhotoAssetRecord>())) ?? []
+        let assetsByID = Dictionary(uniqueKeysWithValues: assets.map { ($0.id, $0) })
+        let obsoleteTransfers = ((try? context.fetch(
+            FetchDescriptor<CloudAssetTransfer>()
+        )) ?? []).filter {
+            guard activeFarmIDs.contains($0.farmID),
+                  $0.status == .pending || $0.status == .failed else {
+                return false
+            }
+            guard let asset = assetsByID[$0.assetID] else { return true }
+            return asset.deletedAt != nil
+        }
+        for transfer in obsoleteTransfers {
+            transfer.statusRawValue = CloudAssetTransferStatus.notRequired.rawValue
+            transfer.lastErrorCode = assetsByID[transfer.assetID] == nil
+                ? "notRequiredMissingLocalPhotoRecord"
+                : "notRequiredDeletedPhoto"
+            transfer.nextRetryAt = nil
+            transfer.updatedAt = .now
+        }
+        if !obsoleteTransfers.isEmpty { try? context.save() }
+
         if !didRecoverInterruptedTransfers {
             didRecoverInterruptedTransfers = true
             let interrupted = ((try? context.fetch(
@@ -84,7 +157,7 @@ actor SupabasePhotoTransferCoordinator {
         guard let transfer = try context.fetch(FetchDescriptor<CloudAssetTransfer>())
             .first(where: { $0.id == transferID }),
               let asset = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
-                  .first(where: { $0.id == transfer.assetID }),
+                  .first(where: { $0.id == transfer.assetID && $0.deletedAt == nil }),
               let binding = try context.fetch(FetchDescriptor<FarmRemoteBinding>())
                   .first(where: {
                       $0.farmID == transfer.farmID &&
@@ -117,16 +190,11 @@ actor SupabasePhotoTransferCoordinator {
                 transfer.remoteRecordName = remote.storagePath
                 transfer.transferredByteCount = remote.byteCount
             case .download:
-                let rows: [AssetRow] = try await client
-                    .from("farm_assets")
-                    .select("asset_id,farm_id,sha256,storage_path,byte_count,content_type")
-                    .eq("farm_id", value: asset.farmID)
-                    .eq("asset_id", value: asset.id)
-                    .limit(1)
-                    .execute()
-                    .value
-                guard let row = rows.first else {
-                    throw PhotoTransferError.remoteAssetMissing
+                let row = try await registeredAsset(for: asset)
+                guard row.farmID == asset.farmID,
+                      row.sha256 == asset.sha256,
+                      row.contentType == asset.mimeType else {
+                    throw PhotoTransferError.checksumMismatch
                 }
                 let remote = FarmRemoteAsset(
                     assetID: row.assetID,
@@ -148,6 +216,8 @@ actor SupabasePhotoTransferCoordinator {
                 asset.cloudRecordName = remote.storagePath
                 asset.isCloudAuthoritative = true
                 transfer.localRelativePath = asset.relativePath
+                transfer.payloadDigest = remote.sha256
+                transfer.byteCount = remote.byteCount
                 transfer.remoteRecordName = remote.storagePath
                 transfer.transferredByteCount = remote.byteCount
             case .recoveryBackup, .recoveryRestore:
@@ -168,6 +238,39 @@ actor SupabasePhotoTransferCoordinator {
             try? context.save()
             throw error
         }
+    }
+
+    private func registeredAsset(
+        for asset: PhotoAssetRecord
+    ) async throws -> AssetRow {
+        let directRows: [AssetRow] = try await client
+            .from("farm_assets")
+            .select("asset_id,farm_id,sha256,storage_path,byte_count,content_type")
+            .eq("farm_id", value: asset.farmID)
+            .eq("asset_id", value: asset.id)
+            .limit(1)
+            .execute()
+            .value
+        if let direct = directRows.first {
+            return direct
+        }
+
+        // Multiple immutable photo records can reference identical bytes.
+        // The bucket and farm_assets registry deduplicate those bytes by SHA,
+        // so a restored device must be able to resolve the shared object even
+        // when its canonical remote asset ID belongs to the first reference.
+        let digestRows: [AssetRow] = try await client
+            .from("farm_assets")
+            .select("asset_id,farm_id,sha256,storage_path,byte_count,content_type")
+            .eq("farm_id", value: asset.farmID)
+            .eq("sha256", value: asset.sha256)
+            .limit(1)
+            .execute()
+            .value
+        guard let digestMatch = digestRows.first else {
+            throw PhotoTransferError.remoteAssetMissing
+        }
+        return digestMatch
     }
 
     private static func retryDelay(attemptCount: Int) -> TimeInterval {

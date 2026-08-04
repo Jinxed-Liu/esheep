@@ -267,25 +267,15 @@ struct SheepPedigreeView: View {
         sireCandidates = []
         await Task.yield()
         do {
-            let farmID = farm.id
-            gestationDays = try modelContext.fetch(FetchDescriptor<FarmCareRuleRecord>(predicate: #Predicate {
-                $0.farmID == farmID
-            })).first?.gestationDays ?? 150
-            let loadedProfile = try PedigreeAnalysis.profile(sheepID: sheepID, farmID: farm.id, context: modelContext)
-            profile = loadedProfile
-            if let record = loadedProfile?.record,
-               record.sireID == nil,
-               record.semenDonorID == nil,
-               let eweID = record.damID,
-               let birthAt = record.birthAt {
-                sireCandidates = try PedigreeAnalysis.sireCandidates(
-                    eweID: eweID,
-                    lambingAt: birthAt,
-                    gestationDays: gestationDays,
-                    farmID: farm.id,
-                    context: modelContext
-                )
-            }
+            let snapshot = try await PedigreeSnapshotActor(
+                container: modelContext.container
+            ).load(sheepID: sheepID, farmID: farm.id)
+            try Task.checkCancellation()
+            profile = snapshot.profile
+            sireCandidates = snapshot.sireCandidates
+            gestationDays = snapshot.gestationDays
+        } catch is CancellationError {
+            return
         } catch {
             profile = nil
             errorMessage = error.localizedDescription
@@ -570,18 +560,21 @@ struct SheepPedigreeEditorView: View {
 
 struct PedigreeCheckView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query private var rules: [FarmCareRuleRecord]
     let account: AccountProfile
     let farm: FarmRecord
 
     @State private var issues: [PedigreeIssue] = []
+    @State private var batchSireProposals: [PedigreeBatchSireProposal] = []
     @State private var earTagsByID: [UUID: String] = [:]
     @State private var isLoading = false
     @State private var hasLoaded = false
     @State private var visibleLimit = 100
     @State private var errorMessage: String?
 
-    private var gestationDays: Int { rules.first { $0.farmID == farm.id }?.gestationDays ?? 150 }
+    private var batchSireCount: Int { Set(batchSireProposals.map(\.candidate.ramID)).count }
+    private var ambiguousSireCount: Int {
+        issues.count { $0.kind == .candidateSire && $0.candidateRamIDs.count > 1 }
+    }
 
     var body: some View {
         List {
@@ -594,6 +587,28 @@ struct PedigreeCheckView: View {
                 Text("父本候选优先使用已确认种公羊；旧档用途仅作为待人工核实线索，普通公羊不参与。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+            if !batchSireProposals.isEmpty {
+                Section("批量处理") {
+                    NavigationLink {
+                        PedigreeBatchSireReviewView(
+                            account: account,
+                            farm: farm,
+                            proposals: batchSireProposals,
+                            onSaved: { Task { await refresh() } }
+                        )
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("批量确认唯一父本", systemImage: "checkmark.rectangle.stack")
+                            Text("\(batchSireProposals.count) 只后代 · \(batchSireCount) 个候选父本")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Text("只汇总唯一候选且通过日期、循环检查的记录；可按父本一次确认多只。多候选 \(ambiguousSireCount) 条仍保留人工选择。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             if isLoading || !hasLoaded {
                 Section {
@@ -652,14 +667,291 @@ struct PedigreeCheckView: View {
         visibleLimit = 100
         await Task.yield()
         do {
-            let input = try PedigreeAnalysis.loadInput(farmID: farm.id, context: modelContext)
-            let days = gestationDays
-            let result = await Task.detached(priority: .userInitiated) {
-                PedigreeAnalysis.issues(input: input, gestationDays: days)
-            }.value
-            guard !Task.isCancelled else { return }
-            earTagsByID = Dictionary(uniqueKeysWithValues: input.sheep.map { ($0.id, $0.earTag) })
-            issues = result
+            let snapshot = try await PedigreeSnapshotActor(
+                container: modelContext.container
+            ).loadCheck(farmID: farm.id)
+            try Task.checkCancellation()
+            earTagsByID = snapshot.earTagsByID
+            issues = snapshot.issues
+            batchSireProposals = snapshot.batchSireProposals
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct PedigreeBatchSireGroup: Identifiable {
+    var id: UUID { ramID }
+    let ramID: UUID
+    let ramEarTag: String
+    let proposals: [PedigreeBatchSireProposal]
+
+    var isConfirmedBreedingRam: Bool {
+        proposals.first?.candidate.isConfirmedBreedingRam == true
+    }
+
+    var prematurityMatchCount: Int {
+        proposals.count { $0.candidate.isPrematurityWindowMatch }
+    }
+}
+
+private struct PedigreeBatchSireReviewView: View {
+    let account: AccountProfile
+    let farm: FarmRecord
+    let onSaved: @MainActor () -> Void
+
+    @State private var proposals: [PedigreeBatchSireProposal]
+
+    init(
+        account: AccountProfile,
+        farm: FarmRecord,
+        proposals: [PedigreeBatchSireProposal],
+        onSaved: @escaping @MainActor () -> Void
+    ) {
+        self.account = account
+        self.farm = farm
+        self.onSaved = onSaved
+        _proposals = State(initialValue: proposals)
+    }
+
+    private var groups: [PedigreeBatchSireGroup] {
+        Dictionary(grouping: proposals, by: \.candidate.ramID)
+            .compactMap { ramID, values in
+                guard let candidate = values.first?.candidate else { return nil }
+                return PedigreeBatchSireGroup(
+                    ramID: ramID,
+                    ramEarTag: candidate.earTag,
+                    proposals: values.sorted {
+                        $0.child.earTag.localizedStandardCompare($1.child.earTag) == .orderedAscending
+                    }
+                )
+            }
+            .sorted {
+                $0.ramEarTag.localizedStandardCompare($1.ramEarTag) == .orderedAscending
+            }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                Text("这里按唯一候选父本分组。进入一个父本后可全选或取消部分后代，只填写一次核实原因。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if groups.isEmpty {
+                ContentUnavailableView("本轮批量确认已完成", systemImage: "checkmark.seal")
+            } else {
+                Section("候选父本 · \(groups.count)") {
+                    ForEach(groups) { group in
+                        NavigationLink {
+                            PedigreeBatchSireConfirmationView(
+                                account: account,
+                                farm: farm,
+                                group: group,
+                                onSaved: { confirmedIDs in
+                                    proposals.removeAll { confirmedIDs.contains($0.child.id) }
+                                    onSaved()
+                                }
+                            )
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(group.ramEarTag)
+                                    Spacer()
+                                    Text("\(group.proposals.count) 只")
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text(group.isConfirmedBreedingRam ? "已确认种公羊" : "旧档种公羊线索 · 本批同时确认资格")
+                                    .font(.caption)
+                                    .foregroundStyle(group.isConfirmedBreedingRam ? .green : .orange)
+                                if group.prematurityMatchCount > 0 {
+                                    Text("含 \(group.prematurityMatchCount) 条早产容差证据")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("批量确认父本")
+    }
+}
+
+private struct PedigreeBatchSireConfirmationView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+
+    let account: AccountProfile
+    let farm: FarmRecord
+    let group: PedigreeBatchSireGroup
+    let onSaved: @MainActor (Set<UUID>) -> Void
+
+    @State private var selectedChildIDs: Set<UUID>
+    @State private var reason = "核对历史配种圈舍，批量确认唯一父本"
+    @State private var showsConfirmation = false
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    private let service = FarmCommandService()
+
+    init(
+        account: AccountProfile,
+        farm: FarmRecord,
+        group: PedigreeBatchSireGroup,
+        onSaved: @escaping @MainActor (Set<UUID>) -> Void
+    ) {
+        self.account = account
+        self.farm = farm
+        self.group = group
+        self.onSaved = onSaved
+        _selectedChildIDs = State(initialValue: Set(group.proposals.map(\.child.id)))
+    }
+
+    private var selectedProposals: [PedigreeBatchSireProposal] {
+        group.proposals.filter { selectedChildIDs.contains($0.child.id) }
+    }
+
+    private var canEdit: Bool {
+        CapabilitySet(role: farm.role).allows(.editHistoricalFacts)
+    }
+
+    var body: some View {
+        List {
+            Section("候选父本") {
+                LabeledContent("种公羊", value: group.ramEarTag)
+                LabeledContent("本组后代", value: "\(group.proposals.count) 只")
+                LabeledContent(
+                    "种公羊资格",
+                    value: group.isConfirmedBreedingRam ? "已确认" : "旧档线索，保存时一并确认"
+                )
+            }
+
+            Section {
+                HStack {
+                    Button("全选") {
+                        selectedChildIDs = Set(group.proposals.map(\.child.id))
+                    }
+                    Spacer()
+                    Button("清空") {
+                        selectedChildIDs.removeAll()
+                    }
+                }
+            }
+
+            Section("待确认后代 · \(selectedChildIDs.count)/\(group.proposals.count)") {
+                ForEach(group.proposals) { proposal in
+                    Toggle(isOn: Binding(
+                        get: { selectedChildIDs.contains(proposal.child.id) },
+                        set: { isSelected in
+                            if isSelected {
+                                selectedChildIDs.insert(proposal.child.id)
+                            } else {
+                                selectedChildIDs.remove(proposal.child.id)
+                            }
+                        }
+                    )) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(proposal.child.earTag)
+                            if let birthAt = proposal.child.birthAt {
+                                Text("出生 \(birthAt.formatted(date: .abbreviated, time: .omitted))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(proposal.candidate.displayEvidence)
+                                .font(.caption)
+                                .foregroundStyle(
+                                    proposal.candidate.isPrematurityWindowMatch ? .orange : .secondary
+                                )
+                        }
+                    }
+                }
+            }
+
+            Section("审计原因") {
+                TextField("批量确认原因（必填）", text: $reason, axis: .vertical)
+                Text("每只后代仍会生成独立系谱审计和云同步操作；任一记录校验失败，整批全部回滚。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("确认 \(group.ramEarTag)")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("确认 \(selectedChildIDs.count) 只") {
+                    showsConfirmation = true
+                }
+                .disabled(
+                    !canEdit ||
+                    isSaving ||
+                    selectedChildIDs.isEmpty ||
+                    reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+            }
+        }
+        .alert("确认批量写入父本？", isPresented: $showsConfirmation) {
+            Button("取消", role: .cancel) {}
+            Button("确认 \(selectedChildIDs.count) 只") {
+                Task { await save() }
+            }
+        } message: {
+            Text("父本将写为 \(group.ramEarTag)。保存后可从每只羊的系谱审计中追溯。")
+        }
+        .recordErrorAlert($errorMessage)
+    }
+
+    @MainActor
+    private func save() async {
+        let humanReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !humanReason.isEmpty, !selectedProposals.isEmpty else { return }
+        isSaving = true
+        await Task.yield()
+        defer { isSaving = false }
+
+        do {
+            let farmID = farm.id
+            let ramID = group.ramID
+            guard let ram = try modelContext.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                $0.id == ramID && $0.farmID == farmID && $0.deletedAt == nil
+            })).first else {
+                errorMessage = "候选种公羊档案已不存在，请重新检查。"
+                return
+            }
+
+            var commands: [FarmCommand] = []
+            if !ram.isBreedingRam {
+                commands.append(.care(.setBreedingRam(
+                    sheepID: ram.id,
+                    isBreedingRam: true,
+                    expectedRevision: ram.revision
+                )))
+            }
+            let batchReason = "\(humanReason)；本次批量确认 \(selectedProposals.count) 只"
+            commands.append(contentsOf: selectedProposals.map { proposal in
+                .care(.updateSheepPedigree(.init(
+                    sheepID: proposal.child.id,
+                    damID: proposal.child.damID,
+                    sireID: group.ramID,
+                    semenDonorID: nil,
+                    reason: proposal.candidate.auditReason(appendingTo: batchReason),
+                    expectedRevision: proposal.child.revision
+                )))
+            })
+
+            try service.executeBatch(
+                commands,
+                in: FarmContext(
+                    accountID: account.effectiveAccountID,
+                    farmID: farm.id,
+                    role: farm.role
+                ),
+                context: modelContext
+            )
+            let confirmedIDs = selectedChildIDs
+            onSaved(confirmedIDs)
+            dismiss()
         } catch {
             errorMessage = error.localizedDescription
         }

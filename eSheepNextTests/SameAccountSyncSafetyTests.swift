@@ -162,6 +162,123 @@ final class SameAccountSyncSafetyTests: XCTestCase {
         XCTAssertEqual(preserved.legacyPenSnapshotIsAuthoritative, true)
     }
 
+    func testStartupRepairAppliesPostActivationSupabaseTombstoneOnly() throws {
+        let container = try AppSchema.makeContainer(
+            name: "supabase-originating-device-projection-repair-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let ownerID = UUID()
+        let cutoff = Date(timeIntervalSince1970: 1_750_100_000)
+        let pen = PenRecord(farmID: farmID, name: "基础圈舍")
+        let repairedSheep = SheepRecord(
+            farmID: farmID,
+            earTag: "U41018",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: cutoff.addingTimeInterval(-86_400 * 30)
+        )
+        repairedSheep.statusRawValue = SheepStatus.deceased.rawValue
+        repairedSheep.currentPenID = nil
+        repairedSheep.removedAt = cutoff.addingTimeInterval(-86_400)
+        repairedSheep.legacyStatusSnapshotIsAuthoritative = true
+        repairedSheep.legacyPenSnapshotIsAuthoritative = true
+        let preservedSheep = SheepRecord(
+            farmID: farmID,
+            earTag: "BASELINE-DECEASED",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: cutoff.addingTimeInterval(-86_400 * 30)
+        )
+        preservedSheep.statusRawValue = SheepStatus.deceased.rawValue
+        preservedSheep.currentPenID = nil
+        preservedSheep.removedAt = cutoff.addingTimeInterval(-86_400 * 10)
+        preservedSheep.legacyStatusSnapshotIsAuthoritative = true
+        preservedSheep.legacyPenSnapshotIsAuthoritative = true
+        let revokedRemoval = RemovalRecord(
+            farmID: farmID,
+            sheepID: repairedSheep.id,
+            kind: .deceased,
+            reason: "误录死亡",
+            occurredAt: cutoff.addingTimeInterval(-86_400)
+        )
+        revokedRemoval.recordedAt = cutoff.addingTimeInterval(-20)
+        revokedRemoval.deletedAt = cutoff.addingTimeInterval(20)
+        let baselineRemoval = RemovalRecord(
+            farmID: farmID,
+            sheepID: preservedSheep.id,
+            kind: .deceased,
+            reason: "迁移前真实死亡",
+            occurredAt: cutoff.addingTimeInterval(-86_400 * 10)
+        )
+        baselineRemoval.recordedAt = cutoff.addingTimeInterval(-20)
+        let tombstone = TombstoneRecord(
+            farmID: farmID,
+            entityType: CloudEntityType.removal.rawValue,
+            entityID: revokedRemoval.id,
+            deletedByAccountID: ownerID,
+            reason: "事件记录删除：录入错误"
+        )
+        tombstone.deletedAt = cutoff.addingTimeInterval(20)
+        let binding = FarmRemoteBinding(
+            farmID: farmID,
+            ownerAccountID: ownerID,
+            provider: .supabase,
+            state: .active,
+            authorityGeneration: 1,
+            remoteFarmID: farmID.uuidString.lowercased()
+        )
+        binding.createdAt = cutoff
+        binding.updatedAt = cutoff
+        let migration = FarmBaselineMigrationRecord(
+            farmID: farmID,
+            migrationID: UUID(),
+            frozenOperationSequence: 0,
+            packageRelativePath: "SupabaseCompactCheckpoints/test.esbc",
+            packageDigest: "digest",
+            operationCount: 0,
+            entityCount: 2,
+            tombstoneCount: 0,
+            assetCount: 0,
+            createdAt: cutoff.addingTimeInterval(-100),
+            updatedAt: cutoff
+        )
+        context.insert(FarmRecord(id: farmID, ownerAccountID: ownerID, name: "星露谷牧场"))
+        context.insert(pen)
+        context.insert(repairedSheep)
+        context.insert(preservedSheep)
+        context.insert(revokedRemoval)
+        context.insert(baselineRemoval)
+        context.insert(tombstone)
+        context.insert(binding)
+        context.insert(migration)
+        try context.save()
+
+        XCTAssertEqual(
+            try PostRecoveryHistoryProjectionRepair.repair(container: container),
+            1
+        )
+
+        let verify = ModelContext(container)
+        let repaired = try XCTUnwrap(
+            try verify.fetch(FetchDescriptor<SheepRecord>()).first { $0.id == repairedSheep.id }
+        )
+        let preserved = try XCTUnwrap(
+            try verify.fetch(FetchDescriptor<SheepRecord>()).first { $0.id == preservedSheep.id }
+        )
+        XCTAssertEqual(repaired.status, .active)
+        XCTAssertEqual(repaired.currentPenID, pen.id)
+        XCTAssertNil(repaired.removedAt)
+        XCTAssertEqual(repaired.legacyStatusSnapshotIsAuthoritative, false)
+        XCTAssertEqual(repaired.legacyPenSnapshotIsAuthoritative, false)
+        XCTAssertEqual(preserved.status, .deceased)
+        XCTAssertEqual(preserved.legacyStatusSnapshotIsAuthoritative, true)
+        XCTAssertEqual(preserved.legacyPenSnapshotIsAuthoritative, true)
+    }
+
     func testCloudZoneFetcherRetriesTransientNetworkFailureButNotPermissionFailure() {
         let network = NSError(
             domain: CKErrorDomain,

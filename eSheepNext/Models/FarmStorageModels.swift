@@ -285,6 +285,13 @@ final class FarmBaselineMigrationRecord {
 final class FarmRemoteRestoreRecord {
     var id: UUID
     var accountID: UUID
+    /// The immutable owner encoded by the remote registry and checkpoint.
+    /// This can differ from `accountID` for invited members.
+    var ownerAccountID: UUID?
+    /// Durable membership identity required to resume a member restore after
+    /// process termination without falling back to owner semantics.
+    var memberRoleRawValue: String?
+    var serverMembershipID: String?
     var farmID: UUID
     var authorityGeneration: Int
     var stateRawValue: String
@@ -310,11 +317,17 @@ final class FarmRemoteRestoreRecord {
         accountID: UUID,
         farmID: UUID,
         authorityGeneration: Int,
+        ownerAccountID: UUID? = nil,
+        memberRole: FarmRole? = nil,
+        serverMembershipID: String? = nil,
         state: FarmRemoteRestoreState = .discovering,
         targetCursorRevision: Int = 0
     ) {
         self.id = id
         self.accountID = accountID
+        self.ownerAccountID = ownerAccountID
+        self.memberRoleRawValue = memberRole?.rawValue
+        self.serverMembershipID = serverMembershipID
         self.farmID = farmID
         self.authorityGeneration = max(0, authorityGeneration)
         self.stateRawValue = state.rawValue
@@ -332,6 +345,10 @@ final class FarmRemoteRestoreRecord {
 
     var state: FarmRemoteRestoreState {
         FarmRemoteRestoreState(rawValue: stateRawValue) ?? .failed
+    }
+
+    var memberRole: FarmRole? {
+        memberRoleRawValue.flatMap(FarmRole.init(rawValue:))
     }
 
     func advance(to state: FarmRemoteRestoreState) {

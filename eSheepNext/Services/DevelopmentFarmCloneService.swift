@@ -873,6 +873,21 @@ enum DevelopmentFarmCloneService {
                 clonedBusinessRecordCount += 1
             }
 
+            for value in try farmRecords(
+                SheepAvatarRecord.self,
+                farmID: sourceFarmID,
+                context: context
+            ) {
+                context.insert(SheepAvatarRecord(
+                    id: map.id(value.id),
+                    farmID: targetFarmID,
+                    sheepID: map.id(value.sheepID),
+                    photoAssetID: map.optional(value.photoAssetID),
+                    updatedAt: value.updatedAt
+                ))
+                clonedBusinessRecordCount += 1
+            }
+
             clonedBusinessRecordCount += try cloneInsightContent(
                 sourceFarmID: sourceFarmID,
                 targetFarmID: targetFarmID,
@@ -1339,13 +1354,7 @@ enum DevelopmentFarmCloneService {
         targetFarmID: UUID
     ) throws -> (relativePath: String, url: URL, wasCreated: Bool) {
         let fileManager = FileManager.default
-        let applicationSupport = fileManager.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        )[0]
-        let sourceURL = source.relativePath.hasPrefix("/")
-            ? URL(fileURLWithPath: source.relativePath)
-            : applicationSupport.appending(path: source.relativePath)
+        let sourceURL = PhotoTransferActor.absoluteURL(for: source.relativePath)
         guard let data = try? Data(contentsOf: sourceURL) else {
             throw DevelopmentFarmCloneError.missingPhoto(source.relativePath)
         }
@@ -1362,7 +1371,7 @@ enum DevelopmentFarmCloneService {
             "development-clone",
             "\(clonedID.uuidString.lowercased()).\(fileExtension)",
         ].joined(separator: "/")
-        let targetURL = applicationSupport.appending(path: relativePath)
+        let targetURL = PhotoTransferActor.absoluteURL(for: relativePath)
         try fileManager.createDirectory(
             at: targetURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -1430,6 +1439,7 @@ enum DevelopmentFarmCloneService {
             case let value as FarmCareRuleRecord: value.farmID == farmID
             case let value as CareReminderRecord: value.farmID == farmID
             case let value as PhotoAssetRecord: value.farmID == farmID
+            case let value as SheepAvatarRecord: value.farmID == farmID
             case let value as InsightConversationRecord: value.farmID == farmID
             case let value as InsightMessageRecord: value.farmID == farmID
             case let value as InsightAttachmentRecord: value.farmID == farmID
@@ -1480,6 +1490,7 @@ enum DevelopmentFarmCloneService {
             + farmRecords(FarmCareRuleRecord.self, farmID: farmID, context: context).count
             + farmRecords(CareReminderRecord.self, farmID: farmID, context: context).count
             + farmRecords(PhotoAssetRecord.self, farmID: farmID, context: context).count
+            + farmRecords(SheepAvatarRecord.self, farmID: farmID, context: context).count
             + farmRecords(InsightConversationRecord.self, farmID: farmID, context: context).count
             + farmRecords(InsightMessageRecord.self, farmID: farmID, context: context).count
             + farmRecords(InsightAttachmentRecord.self, farmID: farmID, context: context).count

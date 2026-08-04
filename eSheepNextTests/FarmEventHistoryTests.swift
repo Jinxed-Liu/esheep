@@ -241,10 +241,18 @@ final class FarmEventHistoryTests: XCTestCase {
             litterSize: 3,
             note: "留种观察"
         )
+        let gainBaseline = WeightRecord(
+            farmID: farmID,
+            sheepID: lamb.id,
+            kilogramsText: "5.5",
+            occurredAt: birthAt.addingTimeInterval(10 * 86_400),
+            note: "出生后首次称重"
+        )
         context.insert(pen)
         context.insert(dam)
         context.insert(sire)
         context.insert(lamb)
+        context.insert(gainBaseline)
         context.insert(weaning)
         try context.save()
 
@@ -258,7 +266,10 @@ final class FarmEventHistoryTests: XCTestCase {
         XCTAssertEqual(fields["当前圈舍"], "羔羊一舍")
         XCTAssertEqual(fields["断奶重kg"], "25.5")
         XCTAssertEqual(fields["出生重kg"], "3.2")
-        XCTAssertEqual(fields["日增重kg/天"], "0.372")
+        XCTAssertEqual(fields["日增重起算体重kg"], "5.5")
+        XCTAssertEqual(fields["日增重起算日期"], "2025-01-11")
+        XCTAssertEqual(fields["日增重计算天数"], "50")
+        XCTAssertEqual(fields["日增重kg/天"], "0.4")
         XCTAssertEqual(fields["母本"], "D001")
         XCTAssertEqual(fields["父本来源"], "S001")
         XCTAssertEqual(fields["胎只数"], "3")
@@ -403,6 +414,67 @@ final class FarmEventHistoryTests: XCTestCase {
         XCTAssertEqual(removedSheep.status, .active)
         XCTAssertEqual(removedSheep.currentPenID, pen.id)
         XCTAssertNil(unaffectedSheep.deletedAt)
+    }
+
+    @MainActor
+    func testOriginatingDeviceDeletingMigratedRemovalReleasesLegacySnapshotAuthority() throws {
+        let container = try AppSchema.makeContainer(
+            name: "event-migrated-removal-delete-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        let entryDay = try XCTUnwrap(calendar.date(byAdding: .day, value: -3, to: today))
+        let removalDay = try XCTUnwrap(calendar.date(byAdding: .day, value: -2, to: today))
+        let farmID = UUID()
+        let pen = PenRecord(farmID: farmID, name: "迁移前圈舍")
+        let sheep = SheepRecord(
+            farmID: farmID,
+            earTag: "U41018",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: entryDay
+        )
+        sheep.statusRawValue = SheepStatus.deceased.rawValue
+        sheep.currentPenID = nil
+        sheep.removedAt = removalDay
+        sheep.legacyStatusSnapshotIsAuthoritative = true
+        sheep.legacyPenSnapshotIsAuthoritative = true
+        let removal = RemovalRecord(
+            farmID: farmID,
+            sheepID: sheep.id,
+            kind: .deceased,
+            reason: "误录死亡",
+            occurredAt: removalDay
+        )
+        context.insert(pen)
+        context.insert(sheep)
+        context.insert(removal)
+        try FarmHistoryRebuilder(calendar: calendar).rebuild(
+            farmID: farmID,
+            context: context,
+            from: entryDay,
+            through: today
+        )
+        try context.save()
+
+        XCTAssertEqual(sheep.status, .deceased)
+        XCTAssertEqual(sheep.legacyStatusSnapshotIsAuthoritative, true)
+
+        try FarmCommandService().execute(
+            .tombstoneEntity(entityType: .removal, entityID: removal.id, reason: "录入错误"),
+            in: FarmContext(accountID: UUID(), farmID: farmID, role: .owner),
+            context: context
+        )
+
+        XCTAssertNotNil(removal.deletedAt)
+        XCTAssertEqual(sheep.status, .active)
+        XCTAssertEqual(sheep.currentPenID, pen.id)
+        XCTAssertNil(sheep.removedAt)
+        XCTAssertEqual(sheep.legacyStatusSnapshotIsAuthoritative, false)
+        XCTAssertEqual(sheep.legacyPenSnapshotIsAuthoritative, false)
     }
 
     @MainActor

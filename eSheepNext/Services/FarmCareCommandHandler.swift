@@ -137,7 +137,40 @@ enum FarmCareCommandHandler {
         case .setSemenDonor(let semenID, let donorID, _):
             return try context.fetch(FetchDescriptor<SemenRecord>()).contains { $0.id == semenID && $0.farmID == farmID && $0.donorID == donorID }
         case .updateSheepPedigree(let draft):
-            return try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).contains { $0.id == draft.id && $0.farmID == farmID && $0.sheepID == draft.sheepID }
+            if try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).contains(where: {
+                $0.id == draft.id &&
+                    $0.farmID == farmID &&
+                    $0.sheepID == draft.sheepID
+            }) {
+                return true
+            }
+            guard let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+                .first(where: {
+                    $0.id == draft.sheepID &&
+                        $0.farmID == farmID &&
+                        $0.deletedAt == nil
+                }),
+                  sheep.revision == draft.expectedRevision + 1,
+                  sheep.damID == draft.damID,
+                  sheep.semenDonorID == draft.semenDonorID else {
+                return false
+            }
+            let expectedSireID: UUID?
+            if let donorID = draft.semenDonorID {
+                guard let donor = try context
+                    .fetch(FetchDescriptor<SemenDonorRecord>())
+                    .first(where: {
+                        $0.id == donorID &&
+                            $0.farmID == farmID &&
+                            $0.deletedAt == nil
+                    }) else {
+                    return false
+                }
+                expectedSireID = donor.linkedRamID
+            } else {
+                expectedSireID = draft.sireID
+            }
+            return sheep.sireID == expectedSireID
         case .setBreedingRam(let sheepID, let active, _):
             return try context.fetch(FetchDescriptor<SheepRecord>()).contains { $0.id == sheepID && $0.farmID == farmID && $0.isBreedingRam == active }
         case .restorePedigreeAudit(let snapshot):
@@ -159,7 +192,12 @@ enum FarmCareCommandHandler {
         }
     }
 
-    static func validate(_ command: CareCommand, farmID: UUID, context: ModelContext) throws {
+    static func validate(
+        _ command: CareCommand,
+        farmID: UUID,
+        context: ModelContext,
+        pedigreeSheepByID: [UUID: SheepRecord]? = nil
+    ) throws {
         switch command {
         case .upsertHealthCatalog(_, let kindRawValue, let name, _, let unit, let dose, _, let interval, _, _):
             guard HealthRecordKind(rawValue: kindRawValue) != nil else { throw FarmCommandError.missingRequiredValue("健康目录类型") }
@@ -207,10 +245,20 @@ enum FarmCareCommandHandler {
             if let donorID { _ = try semenDonor(donorID, farmID: farmID, context: context, requiresActive: false) }
 
         case .updateSheepPedigree(let draft):
-            try validatePedigree(draft, farmID: farmID, context: context)
+            try validatePedigree(
+                draft,
+                farmID: farmID,
+                context: context,
+                sheepByID: pedigreeSheepByID
+            )
 
         case .setBreedingRam(let sheepID, let active, let expectedRevision):
-            guard let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sheepNotFound }
+            let sheep = try pedigreeSheepByID?[sheepID] ?? context.fetch(
+                FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                    $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
+                })
+            ).first
+            guard let sheep else { throw FarmCommandError.sheepNotFound }
             guard sheep.revision == expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
             if active, sheep.sex != .ram { throw FarmCommandError.reproductionSireMustBeRam }
 
@@ -258,7 +306,8 @@ enum FarmCareCommandHandler {
         farmID: UUID,
         accountID: UUID,
         context: ModelContext,
-        modifiedAt: Date = .now
+        modifiedAt: Date = .now,
+        pedigreeSheepByID: [UUID: SheepRecord]? = nil
     ) throws -> CareApplyResult {
         switch command {
         case .recordHealth(let draft):
@@ -300,18 +349,31 @@ enum FarmCareCommandHandler {
             )
 
         default:
-            try validate(command, farmID: farmID, context: context)
+            try validate(
+                command,
+                farmID: farmID,
+                context: context,
+                pedigreeSheepByID: pedigreeSheepByID
+            )
             return try apply(
                 command,
                 farmID: farmID,
                 accountID: accountID,
                 context: context,
-                modifiedAt: modifiedAt
+                modifiedAt: modifiedAt,
+                pedigreeSheepByID: pedigreeSheepByID
             )
         }
     }
 
-    static func apply(_ command: CareCommand, farmID: UUID, accountID: UUID, context: ModelContext, modifiedAt: Date = .now) throws -> CareApplyResult {
+    static func apply(
+        _ command: CareCommand,
+        farmID: UUID,
+        accountID: UUID,
+        context: ModelContext,
+        modifiedAt: Date = .now,
+        pedigreeSheepByID: [UUID: SheepRecord]? = nil
+    ) throws -> CareApplyResult {
         switch command {
         case .upsertHealthCatalog(let id, let kindRawValue, let name, let category, let unit, let dose, let route, let interval, let note, let isActive):
             let records = try context.fetch(FetchDescriptor<HealthCatalogItemRecord>())
@@ -396,7 +458,12 @@ enum FarmCareCommandHandler {
             return .init(entityType: .semen, entityID: record.id, baseRevision: base, resultingRevision: record.revision)
 
         case .updateSheepPedigree(let draft):
-            guard let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == draft.sheepID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sheepNotFound }
+            let sheep = try pedigreeSheepByID?[draft.sheepID] ?? context.fetch(
+                FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                    $0.id == draft.sheepID && $0.farmID == farmID && $0.deletedAt == nil
+                })
+            ).first
+            guard let sheep else { throw FarmCommandError.sheepNotFound }
             let donor = try draft.semenDonorID.map { try semenDonor($0, farmID: farmID, context: context, requiresActive: false) }
             let resolvedSireID = donor?.linkedRamID ?? draft.sireID
             let base = sheep.revision
@@ -432,7 +499,12 @@ enum FarmCareCommandHandler {
             return .init(entityType: .sheep, entityID: sheep.id, baseRevision: base, resultingRevision: sheep.revision)
 
         case .setBreedingRam(let sheepID, let active, _):
-            guard let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sheepNotFound }
+            let sheep = try pedigreeSheepByID?[sheepID] ?? context.fetch(
+                FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                    $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
+                })
+            ).first
+            guard let sheep else { throw FarmCommandError.sheepNotFound }
             let base = sheep.revision
             sheep.isBreedingRam = active
             sheep.updatedAt = modifiedAt
@@ -449,7 +521,7 @@ enum FarmCareCommandHandler {
         case .recordReproductionBatch(let draft):
             if try context.fetch(FetchDescriptor<CareBatchRecord>()).contains(where: { $0.id == draft.id && $0.farmID == farmID }) { return .init(entityType: .careBatch, entityID: draft.id, baseRevision: 0, resultingRevision: 1) }
             let batchKind: CareBatchKind
-            switch draft.kind { case .breeding: batchKind = .breeding; case .pregnancyCheck: batchKind = .pregnancyCheck; case .abortion: batchKind = .abortion; case .lambing: throw FarmCommandError.invalidReproductionRecord }
+            switch draft.kind { case .breeding: batchKind = .breeding; case .pregnancyCheck: batchKind = .pregnancyCheck; case .abortion: batchKind = .abortion; case .parityBaseline, .lambing: throw FarmCommandError.invalidReproductionRecord }
             context.insert(CareBatchRecord(id: draft.id, farmID: farmID, kind: batchKind, occurredAt: draft.occurredAt, note: draft.note.trimmed))
             let paternity = draft.kind == .breeding
                 ? try resolvePaternity(sireID: draft.sireID, semenID: draft.semenID, farmID: farmID, context: context)
@@ -479,14 +551,15 @@ enum FarmCareCommandHandler {
             context.insert(reproduction)
             let ewe = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == draft.eweID && $0.farmID == farmID })
             for lamb in draft.offspring {
-                let birthWeightID = StableCloudUUID.derived(namespace: lamb.sheepID, name: "birth-weight")
+                let weightFact = lambWeightFact(lamb, lambingAt: draft.occurredAt)
+                let autoWeightID = weightFact.map { newAutoWeightRecordID(for: lamb, fact: $0) }
                 if lamb.createSheepRecord {
                     context.insert(SheepRecord(id: lamb.sheepID, farmID: farmID, earTag: lamb.earTag.trimmed, breed: ewe?.breed ?? "未知", sex: lamb.sex, penID: draft.penID, enteredAt: draft.occurredAt, birthAt: draft.occurredAt, damID: draft.eweID, sireID: paternity.sireID, damProvenance: .lambing, sireProvenance: paternity.source == .unknown ? nil : .lambing, semenDonorID: paternity.donorID, semenDonorNameSnapshot: paternity.donorNameSnapshot, semenDonorRegistrationNumberSnapshot: paternity.donorRegistrationNumberSnapshot, semenDonorBreedSnapshot: paternity.donorBreedSnapshot, note: "由产羔记录自动建档"))
-                    if let weight = Decimal.stable(lamb.birthWeightText) {
-                        context.insert(WeightRecord(id: birthWeightID, farmID: farmID, sheepID: lamb.sheepID, kilogramsText: weight.stableText, occurredAt: draft.occurredAt, note: "初生重"))
+                    if let weightFact, let autoWeightID {
+                        context.insert(WeightRecord(id: autoWeightID, farmID: farmID, sheepID: lamb.sheepID, kilogramsText: weightFact.kilogramsText, occurredAt: weightFact.occurredAt, note: weightFact.note))
                     }
                 }
-                context.insert(LambingOffspringRecord(id: lamb.id, farmID: farmID, lambingRecordID: draft.id, sheepID: lamb.createSheepRecord ? lamb.sheepID : nil, legacyEarTag: lamb.earTag.trimmed, sexRawValue: lamb.sex.rawValue, birthWeightText: Decimal.stable(lamb.birthWeightText)!.stableText, isStillborn: lamb.isStillborn, autoCreatedSheep: lamb.createSheepRecord, autoBirthWeightRecordID: lamb.createSheepRecord ? birthWeightID : nil))
+                context.insert(LambingOffspringRecord(id: lamb.id, farmID: farmID, lambingRecordID: draft.id, sheepID: lamb.createSheepRecord ? lamb.sheepID : nil, legacyEarTag: lamb.earTag.trimmed, sexRawValue: lamb.sex.rawValue, birthWeightText: weightFact?.birthWeightText ?? "", isStillborn: lamb.isStillborn, autoCreatedSheep: lamb.createSheepRecord, autoBirthWeightRecordID: lamb.createSheepRecord ? autoWeightID : nil))
             }
             deleteExpectedLambingReminders(eweID: draft.eweID, farmID: farmID, at: modifiedAt, context: context)
             return .init(entityType: .reproduction, entityID: draft.id, baseRevision: 0, resultingRevision: 1)
@@ -579,12 +652,14 @@ enum FarmCareCommandHandler {
         guard details.count == draft.offspring.count else { return false }
         let detailByID = Dictionary(uniqueKeysWithValues: details.map { ($0.id, $0) })
         let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+        let weights = try context.fetch(FetchDescriptor<WeightRecord>())
         for lamb in draft.offspring {
+            let weightFact = lambWeightFact(lamb, lambingAt: draft.occurredAt)
             guard let detail = detailByID[lamb.id],
                   detail.sheepID == (lamb.createSheepRecord ? lamb.sheepID : nil),
                   EarTag.normalized(detail.legacyEarTag) == EarTag.normalized(lamb.earTag),
                   detail.sexRawValue == lamb.sex.rawValue,
-                  detail.birthWeightText == Decimal.stable(lamb.birthWeightText)?.stableText,
+                  detail.birthWeightText == (weightFact?.birthWeightText ?? ""),
                   detail.isStillborn == lamb.isStillborn,
                   detail.autoCreatedSheep == lamb.createSheepRecord else { return false }
             if lamb.createSheepRecord {
@@ -596,6 +671,18 @@ enum FarmCareCommandHandler {
                       child.damID == draft.eweID,
                       child.sireID == record.sireID,
                       child.semenDonorID == record.semenDonorID else { return false }
+                let linkedWeight = detail.autoBirthWeightRecordID.flatMap { weightID in
+                    weights.first { $0.id == weightID && $0.farmID == farmID }
+                }
+                if let weightFact {
+                    guard let linkedWeight,
+                          linkedWeight.deletedAt == nil,
+                          linkedWeight.kilogramsText == weightFact.kilogramsText,
+                          linkedWeight.occurredAt == weightFact.occurredAt,
+                          linkedWeight.note == weightFact.note else { return false }
+                } else if linkedWeight?.deletedAt == nil {
+                    return false
+                }
             }
         }
         return true
@@ -868,48 +955,118 @@ enum FarmCareCommandHandler {
         return donor
     }
 
-    private static func validatePedigree(_ draft: CarePedigreeUpdateDraft, farmID: UUID, context: ModelContext) throws {
+    private static func validatePedigree(
+        _ draft: CarePedigreeUpdateDraft,
+        farmID: UUID,
+        context: ModelContext,
+        sheepByID cachedSheepByID: [UUID: SheepRecord]? = nil
+    ) throws {
         guard !draft.reason.trimmed.isEmpty else { throw FarmCommandError.pedigreeReasonRequired }
-        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
-        guard let child = sheep.first(where: { $0.id == draft.sheepID }) else { throw FarmCommandError.sheepNotFound }
+        let sheepByID: [UUID: SheepRecord]
+        if let cachedSheepByID {
+            sheepByID = cachedSheepByID
+        } else {
+            sheepByID = Dictionary(uniqueKeysWithValues: try context.fetch(
+                FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                    $0.farmID == farmID && $0.deletedAt == nil
+                })
+            ).map { ($0.id, $0) })
+        }
+        guard let child = sheepByID[draft.sheepID] else { throw FarmCommandError.sheepNotFound }
         guard child.revision == draft.expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
         guard draft.damID != child.id, draft.sireID != child.id else { throw FarmCommandError.pedigreeSelfReference }
-        let dam = draft.damID.flatMap { id in sheep.first(where: { $0.id == id }) }
+        let dam = draft.damID.flatMap { sheepByID[$0] }
         if draft.damID != nil, dam?.sex != .ewe { throw FarmCommandError.pedigreeParentSexMismatch }
-        let directSire = draft.sireID.flatMap { id in sheep.first(where: { $0.id == id }) }
+        let directSire = draft.sireID.flatMap { sheepByID[$0] }
         if draft.sireID != nil, directSire?.sex != .ram || directSire?.isBreedingRam != true { throw FarmCommandError.pedigreeParentSexMismatch }
         let donor = try draft.semenDonorID.map { try semenDonor($0, farmID: farmID, context: context, requiresActive: false) }
         if donor != nil, directSire != nil { throw FarmCommandError.pedigreePaternalSourceConflict }
-        let resolvedSire = donor?.linkedRamID.flatMap { id in sheep.first(where: { $0.id == id }) } ?? directSire
+        let resolvedSire = donor?.linkedRamID.flatMap { sheepByID[$0] } ?? directSire
         if let dam, let resolvedSire, dam.id == resolvedSire.id { throw FarmCommandError.pedigreePaternalSourceConflict }
         if let birthAt = child.birthAt {
             if let parentBirth = dam?.birthAt, parentBirth >= birthAt { throw FarmCommandError.pedigreeDateInversion }
             if let parentBirth = resolvedSire?.birthAt, parentBirth >= birthAt { throw FarmCommandError.pedigreeDateInversion }
         }
-        if let dam, try ancestryContains(child.id, startingAt: dam.id, sheep: sheep) { throw FarmCommandError.pedigreeCycle }
-        if let resolvedSire, try ancestryContains(child.id, startingAt: resolvedSire.id, sheep: sheep) { throw FarmCommandError.pedigreeCycle }
+        if let dam, ancestryContains(child.id, startingAt: dam.id, sheepByID: sheepByID) { throw FarmCommandError.pedigreeCycle }
+        if let resolvedSire, ancestryContains(child.id, startingAt: resolvedSire.id, sheepByID: sheepByID) { throw FarmCommandError.pedigreeCycle }
     }
 
-    private static func ancestryContains(_ target: UUID, startingAt root: UUID, sheep: [SheepRecord]) throws -> Bool {
+    private static func ancestryContains(
+        _ target: UUID,
+        startingAt root: UUID,
+        sheepByID: [UUID: SheepRecord]
+    ) -> Bool {
         var pending = [root]
         var visited = Set<UUID>()
-        let byID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
         while let current = pending.popLast() {
             if current == target { return true }
-            guard visited.insert(current).inserted, let record = byID[current] else { continue }
+            guard visited.insert(current).inserted, let record = sheepByID[current] else { continue }
             if let damID = record.damID { pending.append(damID) }
             if let sireID = record.sireID { pending.append(sireID) }
         }
         return false
     }
 
+    private struct LambWeightFact {
+        let kilogramsText: String
+        let occurredAt: Date
+        let kind: LambRecordedWeightKind
+
+        var birthWeightText: String { kind == .birth ? kilogramsText : "" }
+        var note: String { kind == .birth ? "初生重" : "产羔录入称重" }
+    }
+
+    private static func lambWeightFact(_ lamb: CareLambDraft, lambingAt: Date) -> LambWeightFact? {
+        guard let value = Decimal.stable(lamb.birthWeightText) else { return nil }
+        let occurredAt = lamb.weightOccurredAt ?? lambingAt
+        return LambWeightFact(
+            kilogramsText: value.stableText,
+            occurredAt: occurredAt,
+            kind: LambingEntrySemantics.weightKind(lambingAt: lambingAt, weighedAt: occurredAt)
+        )
+    }
+
+    private static func newAutoWeightRecordID(for lamb: CareLambDraft, fact: LambWeightFact) -> UUID {
+        if fact.kind == .birth {
+            return StableCloudUUID.derived(namespace: lamb.sheepID, name: "birth-weight")
+        }
+        return StableCloudUUID.derived(namespace: lamb.id, name: "lambing-recorded-weight")
+    }
+
     private static func validateLambing(_ draft: CareLambingDraft, farmID: UUID, existingRecordID: UUID?, context: ModelContext) throws {
+        guard draft.occurredAt <= Date.now else { throw FarmCommandError.futureFactDate("产羔时间") }
         let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
         guard let ewe = sheep.first(where: { $0.id == draft.eweID && $0.farmID == farmID && $0.deletedAt == nil }), ewe.sex == .ewe else { throw FarmCommandError.reproductionSubjectMustBeEwe }
         guard draft.parity > 0, draft.birthDeadCount >= 0, draft.birthDeadCount == draft.offspring.count(where: \.isStillborn), !draft.offspring.isEmpty, draft.offspring.allSatisfy({ !$0.isStillborn || !$0.createSheepRecord }), Set(draft.offspring.map(\.id)).count == draft.offspring.count else { throw FarmCommandError.invalidReproductionRecord }
         _ = try resolveLambingPaternity(draft, farmID: farmID, context: context)
         if let penID = draft.penID {
             guard try context.fetch(FetchDescriptor<PenRecord>()).contains(where: { $0.id == penID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.penNotFound }
+        }
+        let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>())
+        let currentParity = LambingEntrySemantics.priorParityForLambing(
+            eweID: draft.eweID,
+            farmID: farmID,
+            at: draft.occurredAt,
+            existingRecordID: existingRecordID,
+            records: reproduction
+        )
+        guard draft.parity == currentParity + 1 else {
+            throw FarmCommandError.lambingParityMismatch(current: currentParity, attempted: draft.parity)
+        }
+        let nextParityFact = reproduction
+            .filter {
+                $0.id != existingRecordID &&
+                    $0.farmID == farmID &&
+                    $0.eweID == draft.eweID &&
+                    $0.deletedAt == nil &&
+                    ($0.kind == .lambing || $0.kind == .parityBaseline) &&
+                    $0.occurredAt > draft.occurredAt
+            }
+            .sorted { $0.occurredAt < $1.occurredAt }
+            .first
+        if let nextParityFact, nextParityFact.kind == .lambing,
+           nextParityFact.parity != draft.parity + 1 {
+            throw FarmCommandError.lambingCorrectionConflict("本次胎次会与后续产羔记录冲突")
         }
         let existingOffspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter { $0.farmID == farmID && $0.lambingRecordID == existingRecordID }
         let originalLambing = try existingRecordID.flatMap { id in
@@ -920,7 +1077,18 @@ enum FarmCareCommandHandler {
         let newTags = draft.offspring.filter(\.createSheepRecord).map { EarTag.normalized($0.earTag) }
         guard newTags.allSatisfy({ !$0.isEmpty }), Set(newTags).count == newTags.count, existingTags.isDisjoint(with: newTags) else { throw FarmCommandError.duplicateEarTag }
         for lamb in draft.offspring {
-            _ = try positive(lamb.birthWeightText, "初生重")
+            let weightText = lamb.birthWeightText.trimmed
+            if weightText.isEmpty {
+                guard lamb.weightOccurredAt == nil else { throw FarmCommandError.missingRequiredValue("羔羊体重") }
+            } else {
+                _ = try positive(weightText, "羔羊体重")
+                let weighedAt = lamb.weightOccurredAt ?? draft.occurredAt
+                guard weighedAt >= draft.occurredAt else { throw FarmCommandError.lambWeightBeforeBirth }
+                guard weighedAt <= Date.now else { throw FarmCommandError.futureFactDate("称重时间") }
+                let kind = LambingEntrySemantics.weightKind(lambingAt: draft.occurredAt, weighedAt: weighedAt)
+                if lamb.isStillborn, kind != .birth { throw FarmCommandError.stillbornWeightMustBeBirth }
+                if kind == .routine, !lamb.createSheepRecord { throw FarmCommandError.routineLambWeightRequiresSheepRecord }
+            }
             if let prior = existingOffspring.first(where: { $0.id == lamb.id }), let sheepID = prior.sheepID {
                 guard lamb.createSheepRecord, sheepID == lamb.sheepID else { throw FarmCommandError.lambingCorrectionConflict("已建档羔羊不能改成死羔或替换档案") }
                 guard let child = sheep.first(where: { $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil }),
@@ -967,12 +1135,12 @@ enum FarmCareCommandHandler {
         }
 
         for lamb in replacement.offspring {
-            let birthWeight = Decimal.stable(lamb.birthWeightText)!.stableText
-            let birthWeightID = StableCloudUUID.derived(namespace: lamb.sheepID, name: "birth-weight")
+            let weightFact = lambWeightFact(lamb, lambingAt: replacement.occurredAt)
+            let suggestedWeightID = weightFact.map { newAutoWeightRecordID(for: lamb, fact: $0) }
             if let prior = offspring.first(where: { $0.id == lamb.id }) {
                 prior.legacyEarTag = lamb.earTag.trimmed
                 prior.sexRawValue = lamb.sex.rawValue
-                prior.birthWeightText = birthWeight
+                prior.birthWeightText = weightFact?.birthWeightText ?? ""
                 prior.isStillborn = lamb.isStillborn
                 prior.deletedAt = nil
                 prior.updatedAt = modifiedAt
@@ -991,21 +1159,35 @@ enum FarmCareCommandHandler {
                     try updateLambingPedigree(child: child, damID: replacement.eweID, paternity: paternity, reason: reason, accountID: accountID, auditNamespace: prior.id, farmID: farmID, context: context, modifiedAt: modifiedAt)
                     child.updatedAt = modifiedAt
                     child.revision += 1
-                    if let weight = try context.fetch(FetchDescriptor<WeightRecord>()).first(where: { $0.id == (prior.autoBirthWeightRecordID ?? birthWeightID) && $0.farmID == farmID && $0.deletedAt == nil }) {
-                        weight.kilogramsText = birthWeight
-                        weight.occurredAt = replacement.occurredAt
-                        weight.revision += 1
-                    } else if prior.autoBirthWeightRecordID == nil {
-                        context.insert(WeightRecord(id: birthWeightID, farmID: farmID, sheepID: child.id, kilogramsText: birthWeight, occurredAt: replacement.occurredAt, note: "初生重"))
-                        prior.autoBirthWeightRecordID = birthWeightID
+                    let linkedWeight = try prior.autoBirthWeightRecordID.flatMap { weightID in
+                        try context.fetch(FetchDescriptor<WeightRecord>()).first { $0.id == weightID && $0.farmID == farmID }
+                    }
+                    if let weightFact {
+                        if let linkedWeight {
+                            linkedWeight.kilogramsText = weightFact.kilogramsText
+                            linkedWeight.occurredAt = weightFact.occurredAt
+                            linkedWeight.note = weightFact.note
+                            linkedWeight.deletedAt = nil
+                            linkedWeight.revision += 1
+                        } else if let suggestedWeightID {
+                            context.insert(WeightRecord(id: suggestedWeightID, farmID: farmID, sheepID: child.id, kilogramsText: weightFact.kilogramsText, occurredAt: weightFact.occurredAt, note: weightFact.note))
+                            prior.autoBirthWeightRecordID = suggestedWeightID
+                        }
+                        prior.autoBirthWeightRevokedByLambing = false
+                    } else if let linkedWeight, linkedWeight.deletedAt == nil {
+                        linkedWeight.deletedAt = modifiedAt
+                        linkedWeight.revision += 1
+                        prior.autoBirthWeightRevokedByLambing = false
                     }
                 }
             } else {
                 if lamb.createSheepRecord {
                     context.insert(SheepRecord(id: lamb.sheepID, farmID: farmID, earTag: lamb.earTag.trimmed, breed: ewe?.breed ?? "未知", sex: lamb.sex, penID: replacement.penID, enteredAt: replacement.occurredAt, birthAt: replacement.occurredAt, damID: replacement.eweID, sireID: paternity.sireID, damProvenance: .lambing, sireProvenance: paternity.source == .unknown ? nil : .lambing, semenDonorID: paternity.donorID, semenDonorNameSnapshot: paternity.donorNameSnapshot, semenDonorRegistrationNumberSnapshot: paternity.donorRegistrationNumberSnapshot, semenDonorBreedSnapshot: paternity.donorBreedSnapshot, note: "由产羔修正补录建档"))
-                    context.insert(WeightRecord(id: birthWeightID, farmID: farmID, sheepID: lamb.sheepID, kilogramsText: birthWeight, occurredAt: replacement.occurredAt, note: "初生重"))
+                    if let weightFact, let suggestedWeightID {
+                        context.insert(WeightRecord(id: suggestedWeightID, farmID: farmID, sheepID: lamb.sheepID, kilogramsText: weightFact.kilogramsText, occurredAt: weightFact.occurredAt, note: weightFact.note))
+                    }
                 }
-                context.insert(LambingOffspringRecord(id: lamb.id, farmID: farmID, lambingRecordID: originalID, sheepID: lamb.createSheepRecord ? lamb.sheepID : nil, legacyEarTag: lamb.earTag.trimmed, sexRawValue: lamb.sex.rawValue, birthWeightText: birthWeight, isStillborn: lamb.isStillborn, autoCreatedSheep: lamb.createSheepRecord, autoBirthWeightRecordID: lamb.createSheepRecord ? birthWeightID : nil))
+                context.insert(LambingOffspringRecord(id: lamb.id, farmID: farmID, lambingRecordID: originalID, sheepID: lamb.createSheepRecord ? lamb.sheepID : nil, legacyEarTag: lamb.earTag.trimmed, sexRawValue: lamb.sex.rawValue, birthWeightText: weightFact?.birthWeightText ?? "", isStillborn: lamb.isStillborn, autoCreatedSheep: lamb.createSheepRecord, autoBirthWeightRecordID: lamb.createSheepRecord ? suggestedWeightID : nil))
             }
         }
 
@@ -1048,7 +1230,7 @@ enum FarmCareCommandHandler {
             offspring.autoPedigreeRevokedByLambing = true
         }
         if let weightID = offspring.autoBirthWeightRecordID,
-           let weight = try context.fetch(FetchDescriptor<WeightRecord>()).first(where: { $0.id == weightID && $0.farmID == farmID && $0.deletedAt == nil && $0.note == "初生重" }) {
+           let weight = try context.fetch(FetchDescriptor<WeightRecord>()).first(where: { $0.id == weightID && $0.farmID == farmID && $0.deletedAt == nil }) {
             weight.deletedAt = modifiedAt
             weight.revision += 1
             offspring.autoBirthWeightRevokedByLambing = true

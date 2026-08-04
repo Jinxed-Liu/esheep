@@ -6,10 +6,10 @@ import XCTest
 @MainActor
 final class AppSchemaMigrationTests: XCTestCase {
     func testVersionedSchemaContainsEveryCurrentModel() {
-        let versioned = Schema(versionedSchema: AppSchemaV6.self)
+        let versioned = Schema(versionedSchema: AppSchemaV7.self)
         let current = AppSchema.makeSchema()
 
-        XCTAssertEqual(AppSchema.currentVersion, "6.0.0")
+        XCTAssertEqual(AppSchema.currentVersion, "7.0.0")
         XCTAssertEqual(versioned.entities.map(\.name).sorted(), current.entities.map(\.name).sorted())
         XCTAssertEqual(
             AppSchemaMigrationPlan.schemas.map { Schema(versionedSchema: $0).version },
@@ -20,9 +20,68 @@ final class AppSchemaMigrationTests: XCTestCase {
                 Schema.Version(4, 0, 0),
                 Schema.Version(5, 0, 0),
                 Schema.Version(6, 0, 0),
+                Schema.Version(7, 0, 0),
             ]
         )
-        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 5)
+        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 6)
+    }
+
+    func testInstalledV6MigratesToV7WithoutChangingSheepOrPhotos() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "AppSchemaInstalledV6-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "V6.store")
+        let accountID = UUID()
+        let farmID = UUID()
+        let sheepID = UUID()
+        let photoID = UUID()
+
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV6.self)
+            let configuration = ModelConfiguration(
+                "V6",
+                schema: schema,
+                url: storeURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+            context.insert(AccountProfile(
+                id: accountID,
+                appleUserIdentifier: "installed-v6",
+                displayName: "已安装 V6"
+            ))
+            context.insert(FarmRecord(id: farmID, ownerAccountID: accountID, name: "V6 牧场"))
+            context.insert(SheepRecord(
+                id: sheepID,
+                farmID: farmID,
+                earTag: "V6001",
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                enteredAt: .now
+            ))
+            context.insert(PhotoAssetRecord(
+                id: photoID,
+                farmID: farmID,
+                sheepID: sheepID,
+                legacySourceKey: "test:v6",
+                originalEarTag: "V6001",
+                relativePath: "Assets/v6.jpg",
+                sha256: "v6-photo"
+            ))
+            try context.save()
+        }
+
+        let reopened = try AppSchema.makeContainer(name: "V6", url: storeURL)
+        let context = ModelContext(reopened)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SheepRecord>()).first?.id, sheepID)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first?.id, photoID)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<SheepAvatarRecord>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<OutboxItem>()), 0)
     }
 
     func testInstalledV5MigratesToV6WithoutCreatingRestoreWork() throws {
@@ -303,7 +362,6 @@ final class AppSchemaMigrationTests: XCTestCase {
 
         let reopened = try AppSchema.makeContainer(name: "V2", url: storeURL)
         let context = ModelContext(reopened)
-        let operations = try context.fetch(FetchDescriptor<DomainOperation>())
         let outbox = try XCTUnwrap(
             context.fetch(FetchDescriptor<OutboxItem>())
                 .first(where: { $0.operationID == laterID })

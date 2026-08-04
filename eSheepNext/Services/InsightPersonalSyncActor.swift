@@ -447,7 +447,9 @@ final class InsightPersonalSyncActor {
                 accountID: accountID
             ))
         }
-        for value in try context.fetch(FetchDescriptor<InsightActionDraftRecord>()) where value.accountID == accountID {
+        let actionDrafts = try context.fetch(FetchDescriptor<InsightActionDraftRecord>())
+            .filter { $0.accountID == accountID }
+        for value in actionDrafts {
             let payload = InsightDraftPayload(
                 id: value.id,
                 conversationID: value.conversationID,
@@ -479,11 +481,14 @@ final class InsightPersonalSyncActor {
                 accountID: accountID
             ))
         }
-        let draftConversationIDs = Dictionary(
-            uniqueKeysWithValues: try context.fetch(FetchDescriptor<InsightActionDraftRecord>())
-                .filter { $0.accountID == accountID }
-                .map { ($0.id, $0.conversationID) }
+        var draftConversationIDs = Dictionary(
+            uniqueKeysWithValues: actionDrafts.map { ($0.id, $0.conversationID) }
         )
+        for draft in actionDrafts where draft.toolName == "draft_record_weaning" {
+            draftConversationIDs[
+                WeaningWorkflow.transferSourceRequestID(for: draft.id)
+            ] = draft.conversationID
+        }
         for value in try context.fetch(FetchDescriptor<InsightExecutionReceiptRecord>()) where value.accountID == accountID {
             let payload = InsightReceiptPayload(
                 sourceRequestID: value.sourceRequestID,
@@ -810,7 +815,10 @@ final class InsightPersonalSyncActor {
                 $0.accountID == accountID &&
                     conversationIDs.contains($0.conversationID)
             }
-        let draftIDs = Set(drafts.map(\.id))
+        var draftIDs = Set(drafts.map(\.id))
+        for draft in drafts where draft.toolName == "draft_record_weaning" {
+            draftIDs.insert(WeaningWorkflow.transferSourceRequestID(for: draft.id))
+        }
         for receipt in try context.fetch(FetchDescriptor<InsightExecutionReceiptRecord>())
         where receipt.accountID == accountID && draftIDs.contains(receipt.sourceRequestID) {
             context.delete(receipt)

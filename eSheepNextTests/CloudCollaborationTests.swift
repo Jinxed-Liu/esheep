@@ -1588,6 +1588,10 @@ final class CloudCollaborationTests: XCTestCase {
         XCTAssertFalse(PhotoTransferInterruptionPolicy.shouldRequeue(status: .pending))
         XCTAssertFalse(PhotoTransferInterruptionPolicy.shouldRequeue(status: .failed))
         XCTAssertFalse(PhotoTransferInterruptionPolicy.shouldRequeue(status: .completed))
+        XCTAssertFalse(PhotoTransferInterruptionPolicy.shouldRequeue(status: .notRequired))
+        XCTAssertTrue(CloudAssetTransferStatus.completed.isTerminal)
+        XCTAssertTrue(CloudAssetTransferStatus.notRequired.isTerminal)
+        XCTAssertFalse(CloudAssetTransferStatus.failed.isTerminal)
     }
 
     func testCertificateIsValidatedAtOperationTimeNotDownloadTime() {

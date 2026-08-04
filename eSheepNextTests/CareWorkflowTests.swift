@@ -84,6 +84,7 @@ final class CareWorkflowTests: XCTestCase {
     func testLambingCreatesPedigreeAndDuplicateEarTagRollsBack() throws {
         let fixture = try makeFixture()
         let ewe = try insertEwe(fixture, earTag: "E001")
+        insertParityBaseline(fixture, ewe: ewe, parity: 1)
         let ram = SheepRecord(farmID: fixture.farm.id, earTag: "R001", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: nil, enteredAt: .now)
         fixture.context.insert(ram)
         let lambingID = UUID()
@@ -93,6 +94,22 @@ final class CareWorkflowTests: XCTestCase {
         XCTAssertEqual(lamb.damID, ewe.id)
         XCTAssertEqual(lamb.sireID, ram.id)
         XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter { $0.lambingRecordID == lambingID }.count, 1)
+        let childOperations = try fixture.context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            $0.farmID == fixture.farm.id &&
+                ($0.entityID == lamb.id ||
+                    ($0.entityType == CloudEntityType.weight.rawValue &&
+                        $0.kindRawValue == DomainOperationKind.recordWeight.rawValue))
+        }
+        XCTAssertTrue(childOperations.contains {
+            $0.entityID == lamb.id &&
+                $0.kindRawValue == DomainOperationKind.addSheep.rawValue &&
+                $0.baseRevision == 0 &&
+                $0.resultingRevision == 1
+        })
+        XCTAssertTrue(childOperations.contains {
+            $0.entityType == CloudEntityType.weight.rawValue &&
+                $0.kindRawValue == DomainOperationKind.recordWeight.rawValue
+        })
 
         let before = try fixture.context.fetch(FetchDescriptor<ReproductionRecord>()).count
         let duplicate = CareLambingDraft(id: UUID(), eweID: ewe.id, occurredAt: .now, sireID: ram.id, semenID: nil, parity: 3, birthDeadCount: 0, offspring: [.init(earTag: "L001", sex: .ram, birthWeightText: "3")], penID: nil, note: "")
@@ -102,6 +119,551 @@ final class CareWorkflowTests: XCTestCase {
         let invalidDeadCount = CareLambingDraft(id: UUID(), eweID: ewe.id, occurredAt: .now, sireID: ram.id, semenID: nil, parity: 3, birthDeadCount: 0, offspring: [.init(earTag: "", sex: .ram, birthWeightText: "2.5", createSheepRecord: false, isStillborn: true)], penID: nil, note: "")
         XCTAssertThrowsError(try fixture.service.execute(.care(.recordLambing(invalidDeadCount)), in: fixture.ownerContext, context: fixture.context))
         XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<ReproductionRecord>()).count, before)
+    }
+
+    func testConfirmedSupabaseLambingBackfillsMissingChildDeliveryOperations() throws {
+        let fixture = try makeFixture()
+        let ewe = try insertEwe(fixture, earTag: "E-BACKFILL")
+        insertParityBaseline(fixture, ewe: ewe, parity: 0)
+        let draft = CareLambingDraft(
+            eweID: ewe.id,
+            occurredAt: .now.addingTimeInterval(-60),
+            sireID: nil,
+            semenID: nil,
+            parity: 1,
+            birthDeadCount: 0,
+            offspring: [.init(earTag: "L-BACKFILL", sex: .ewe, birthWeightText: "3.1")],
+            penID: nil,
+            note: ""
+        )
+        try fixture.service.execute(
+            .care(.recordLambing(draft)),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+        let parent = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<DomainOperation>()).first {
+            $0.kindRawValue == DomainOperationKind.care.rawValue && $0.entityID == draft.id
+        })
+        let children = try fixture.context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            $0.id != parent.id &&
+                ($0.kindRawValue == DomainOperationKind.addSheep.rawValue ||
+                    $0.kindRawValue == DomainOperationKind.recordWeight.rawValue)
+        }
+        XCTAssertEqual(children.count, 2)
+        let childIDs = Set(children.map(\.id))
+        for operation in children { fixture.context.delete(operation) }
+        for sequence in try fixture.context.fetch(FetchDescriptor<FarmOperationSequenceRecord>())
+            where childIDs.contains(sequence.operationID) {
+            fixture.context.delete(sequence)
+        }
+        fixture.context.insert(FarmStorageProfile(
+            farmID: fixture.farm.id,
+            mode: .supabase,
+            authorityGeneration: 1
+        ))
+        fixture.context.insert(FarmRemoteBinding(
+            farmID: fixture.farm.id,
+            ownerAccountID: fixture.account.effectiveAccountID,
+            provider: .supabase,
+            state: .active,
+            authorityGeneration: 1,
+            remoteFarmID: fixture.farm.id.uuidString.lowercased()
+        ))
+        let parentOutbox = OutboxItem(
+            farmID: fixture.farm.id,
+            accountID: fixture.account.effectiveAccountID,
+            operationID: parent.id,
+            entityType: parent.entityType,
+            entityID: parent.entityID,
+            baseRevision: parent.baseRevision,
+            payloadDigest: parent.payloadDigest,
+            deliveryProvider: .supabase,
+            authorityGeneration: 1
+        )
+        parentOutbox.statusRawValue = OutboxStatus.confirmed.rawValue
+        fixture.context.insert(parentOutbox)
+        try fixture.context.save()
+
+        XCTAssertEqual(try fixture.service.repairMissingCompositeChildDeliveryOperations(
+            farmID: fixture.farm.id,
+            context: fixture.context
+        ), 2)
+        let repairedOperations = try fixture.context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            childIDs.contains($0.id)
+        }
+        XCTAssertEqual(repairedOperations.count, 2)
+        XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.farmID == fixture.farm.id &&
+                $0.deliveryProvider == .supabase &&
+                $0.status == .pending
+        }.count, 2)
+
+        let repairedSheepOperation = try XCTUnwrap(repairedOperations.first {
+            $0.kindRawValue == DomainOperationKind.addSheep.rawValue
+        })
+        let invalidSheepOutbox = try XCTUnwrap(
+            try fixture.context.fetch(FetchDescriptor<OutboxItem>()).first {
+                $0.operationID == repairedSheepOperation.id
+            }
+        )
+        repairedSheepOperation.resultingRevision = 3
+        invalidSheepOutbox.statusRawValue = OutboxStatus.retryableFailure.rawValue
+        invalidSheepOutbox.errorMessage = "resulting_revision_invalid"
+        try fixture.context.save()
+
+        XCTAssertEqual(try fixture.service.repairMissingCompositeChildDeliveryOperations(
+            farmID: fixture.farm.id,
+            context: fixture.context
+        ), 1)
+        XCTAssertEqual(invalidSheepOutbox.status, .supersededRemoteAuthority)
+        XCTAssertEqual(invalidSheepOutbox.errorMessage, "superseded_invalid_child_revision")
+        let correctedSheepOperations = try fixture.context.fetch(
+            FetchDescriptor<DomainOperation>()
+        ).filter {
+            $0.entityID == repairedSheepOperation.entityID &&
+                $0.kindRawValue == DomainOperationKind.addSheep.rawValue &&
+                $0.id != repairedSheepOperation.id
+        }
+        let correctedSheepOperation = try XCTUnwrap(correctedSheepOperations.first)
+        XCTAssertEqual(correctedSheepOperation.baseRevision, 0)
+        XCTAssertEqual(correctedSheepOperation.resultingRevision, 1)
+        XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.operationID == correctedSheepOperation.id && $0.status == .pending
+        }.count, 1)
+    }
+
+    func testFirstLambingWithoutStoredParityStartsAtOne() throws {
+        let fixture = try makeFixture()
+        let lambingAt = Date.now.addingTimeInterval(-60)
+        let ewe = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "E-NO-PARITY",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: lambingAt.addingTimeInterval(-30 * 86_400)
+        )
+        fixture.context.insert(ewe)
+        try fixture.context.save()
+
+        let wrongParity = CareLambingDraft(
+            eweID: ewe.id,
+            occurredAt: lambingAt,
+            sireID: nil,
+            semenID: nil,
+            parity: 2,
+            birthDeadCount: 0,
+            offspring: [.init(earTag: "L-NO-PARITY-WRONG", sex: .ewe)],
+            penID: nil,
+            note: ""
+        )
+        XCTAssertThrowsError(try fixture.service.execute(.care(.recordLambing(wrongParity)), in: fixture.ownerContext, context: fixture.context)) { error in
+            guard case FarmCommandError.lambingParityMismatch(current: 0, attempted: 2) = error else {
+                return XCTFail("无胎次记录应按 0 胎计算，实际错误：\(error)")
+            }
+        }
+
+        let firstLambing = CareLambingDraft(
+            eweID: ewe.id,
+            occurredAt: lambingAt,
+            sireID: nil,
+            semenID: nil,
+            parity: 1,
+            birthDeadCount: 0,
+            offspring: [.init(earTag: "L-NO-PARITY-FIRST", sex: .ram)],
+            penID: nil,
+            note: "首次录入"
+        )
+        try fixture.service.execute(.care(.recordLambing(firstLambing)), in: fixture.ownerContext, context: fixture.context)
+
+        let saved = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ReproductionRecord>()).first {
+            $0.eweID == ewe.id && $0.kind == .lambing && $0.deletedAt == nil
+        })
+        XCTAssertEqual(saved.parity, 1)
+    }
+
+    func testNewEweParityBaselineControlsFirstAndLaterLambingParity() throws {
+        let fixture = try makeFixture()
+        let enteredAt = Date(timeIntervalSince1970: 1_650_000_000)
+        let firstLambingAt = enteredAt.addingTimeInterval(30 * 86_400)
+        try fixture.service.execute(
+            .addSheep(
+                earTag: "E004",
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                occurredAt: enteredAt,
+                birthAt: nil,
+                currentParity: 4,
+                note: "外场转入"
+            ),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+        let ewe = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<SheepRecord>()).first { $0.earTag == "E004" })
+        let baseline = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ReproductionRecord>()).first {
+            $0.id == LambingEntrySemantics.entryParityBaselineID(sheepID: ewe.id)
+        })
+        XCTAssertEqual(baseline.kind, .parityBaseline)
+        XCTAssertEqual(baseline.parity, 4)
+        XCTAssertThrowsError(try fixture.service.execute(.tombstoneEntity(entityType: .reproduction, entityID: baseline.id, reason: "不应直接删除"), in: fixture.ownerContext, context: fixture.context)) { error in
+            guard case FarmCommandError.parityBaselineManagedInProfile = error else { return XCTFail("实际错误：\(error)") }
+        }
+
+        let addOperation = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<DomainOperation>()).first { $0.entityID == ewe.id })
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        XCTAssertEqual(try decoder.decode(FarmCommandCloudPayload.self, from: addOperation.payload).integers["currentParity"], 4)
+
+        let wrong = CareLambingDraft(
+            eweID: ewe.id,
+            occurredAt: firstLambingAt,
+            sireID: nil,
+            semenID: nil,
+            parity: 1,
+            birthDeadCount: 0,
+            offspring: [.init(earTag: "L-WRONG", sex: .ewe)],
+            penID: nil,
+            note: ""
+        )
+        XCTAssertThrowsError(try fixture.service.execute(.care(.recordLambing(wrong)), in: fixture.ownerContext, context: fixture.context)) { error in
+            guard case FarmCommandError.lambingParityMismatch(current: 4, attempted: 1) = error else {
+                return XCTFail("应按当前 4 胎阻止手填第 1 胎，实际错误：\(error)")
+            }
+        }
+
+        let first = CareLambingDraft(
+            eweID: ewe.id,
+            occurredAt: firstLambingAt,
+            sireID: nil,
+            semenID: nil,
+            parity: 5,
+            birthDeadCount: 0,
+            offspring: [.init(earTag: "L005", sex: .ewe)],
+            penID: nil,
+            note: "转入后首次记录"
+        )
+        try fixture.service.execute(.care(.recordLambing(first)), in: fixture.ownerContext, context: fixture.context)
+
+        let secondLambingAt = firstLambingAt.addingTimeInterval(180 * 86_400)
+        let second = CareLambingDraft(
+            eweID: ewe.id,
+            occurredAt: secondLambingAt,
+            sireID: nil,
+            semenID: nil,
+            parity: 6,
+            birthDeadCount: 0,
+            offspring: [.init(earTag: "L006", sex: .ram)],
+            penID: nil,
+            note: ""
+        )
+        try fixture.service.execute(.care(.recordLambing(second)), in: fixture.ownerContext, context: fixture.context)
+        let facts = try fixture.context.fetch(FetchDescriptor<ReproductionRecord>())
+        XCTAssertEqual(LambingEntrySemantics.currentParity(eweID: ewe.id, farmID: fixture.farm.id, before: secondLambingAt.addingTimeInterval(1), records: facts), 6)
+
+        try fixture.service.execute(
+            .addSheep(earTag: "Y000", breed: "湖羊", sex: .ewe, penID: nil, occurredAt: enteredAt, birthAt: nil, currentParity: 0, note: "青年母羊"),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+        let youngEwe = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<SheepRecord>()).first { $0.earTag == "Y000" })
+        try fixture.service.execute(
+            .care(.recordLambing(.init(eweID: youngEwe.id, occurredAt: firstLambingAt, sireID: nil, semenID: nil, parity: 1, birthDeadCount: 0, offspring: [.init(earTag: "Y001", sex: .ewe)], penID: nil, note: "初产"))),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+        XCTAssertTrue(try fixture.context.fetch(FetchDescriptor<ReproductionRecord>()).contains {
+            $0.eweID == youngEwe.id && $0.kind == .lambing && $0.parity == 1
+        })
+    }
+
+    func testRemoteSheepParityBaselineAndProfileCorrectionReplayDeterministically() throws {
+        let fixture = try makeFixture()
+        let sheepID = UUID()
+        let enteredAt = Date(timeIntervalSince1970: 1_910_000_000)
+        let addPayload = try FarmCommandCloudPayloadEncoder.encode(
+            .addSheep(earTag: "REMOTE-EWE", breed: "湖羊", sex: .ewe, penID: nil, occurredAt: enteredAt, birthAt: nil, currentParity: 3, note: "")
+        )
+        let addEnvelope = CloudOperationEnvelope(
+            farmID: fixture.farm.id,
+            entityID: sheepID,
+            entityType: CloudEntityType.sheep.rawValue,
+            schemaVersion: 2,
+            revision: 1,
+            baseRevision: 0,
+            operationID: UUID(),
+            modifiedAt: enteredAt,
+            modifiedByAccountID: fixture.account.effectiveAccountID,
+            modifiedByDeviceID: UUID(),
+            payload: addPayload,
+            payloadDigest: CloudPayloadDigest.hex(for: addPayload),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+        XCTAssertEqual(try RemoteDomainApplyService().apply(addEnvelope, context: fixture.context), .applied(rebuildHistoryFrom: enteredAt))
+        XCTAssertEqual(try RemoteDomainApplyService().apply(addEnvelope, context: fixture.context), .duplicate)
+        let entryBaseline = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ReproductionRecord>()).first {
+            $0.id == LambingEntrySemantics.entryParityBaselineID(sheepID: sheepID)
+        })
+        XCTAssertEqual(entryBaseline.parity, 3)
+
+        let correctedAt = enteredAt.addingTimeInterval(10 * 86_400)
+        let updatePayload = try FarmCommandCloudPayloadEncoder.encode(
+            .updateSheepProfile(sheepID: sheepID, earTag: "REMOTE-EWE", breed: "湖羊", sex: .ewe, birthAt: nil, currentParity: 7, parityRecordedAt: correctedAt, note: "核对产羔本")
+        )
+        let updateEnvelope = CloudOperationEnvelope(
+            farmID: fixture.farm.id,
+            entityID: sheepID,
+            entityType: CloudEntityType.sheep.rawValue,
+            schemaVersion: 2,
+            revision: 2,
+            baseRevision: 1,
+            operationID: UUID(),
+            modifiedAt: correctedAt,
+            modifiedByAccountID: fixture.account.effectiveAccountID,
+            modifiedByDeviceID: UUID(),
+            payload: updatePayload,
+            payloadDigest: CloudPayloadDigest.hex(for: updatePayload),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+        XCTAssertEqual(try RemoteDomainApplyService().apply(updateEnvelope, context: fixture.context), .applied(rebuildHistoryFrom: nil))
+        let correction = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ReproductionRecord>()).first {
+            $0.id == LambingEntrySemantics.parityCorrectionID(sheepID: sheepID, sheepRevision: 2)
+        })
+        XCTAssertEqual(correction.parity, 7)
+        XCTAssertEqual(correction.occurredAt, correctedAt)
+        let facts = try fixture.context.fetch(FetchDescriptor<ReproductionRecord>())
+        XCTAssertEqual(LambingEntrySemantics.currentParity(eweID: sheepID, farmID: fixture.farm.id, before: .distantFuture, records: facts), 7)
+    }
+
+    func testParityBaselineFollowsUnreferencedEweDeletionAndRestore() throws {
+        let fixture = try makeFixture()
+        let enteredAt = Date(timeIntervalSince1970: 1_905_000_000)
+        try fixture.service.execute(
+            .addSheep(
+                earTag: "DELETE-EWE",
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                occurredAt: enteredAt,
+                birthAt: nil,
+                currentParity: 2,
+                note: ""
+            ),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+        let ewe = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<SheepRecord>()).first {
+            $0.earTag == "DELETE-EWE"
+        })
+        let parityID = LambingEntrySemantics.entryParityBaselineID(sheepID: ewe.id)
+
+        try fixture.service.execute(
+            .tombstoneEntity(entityType: .sheep, entityID: ewe.id, reason: "误建档"),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+        XCTAssertNotNil(ewe.deletedAt)
+        let deletedParity = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ReproductionRecord>()).first {
+            $0.id == parityID
+        })
+        XCTAssertNotNil(deletedParity.deletedAt)
+
+        let tombstone = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<TombstoneRecord>()).first {
+            $0.entityID == ewe.id && $0.restoredAt == nil
+        })
+        try fixture.service.execute(
+            .restoreTombstonedEntity(tombstoneID: tombstone.id),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+        XCTAssertNil(ewe.deletedAt)
+        XCTAssertNil(deletedParity.deletedAt)
+    }
+
+    func testTombstoneUsesProjectionRevisionAfterCompactRestore() throws {
+        let fixture = try makeFixture()
+        let sheep = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "RESTORED-REVISION",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: .now.addingTimeInterval(-86_400)
+        )
+        sheep.revision = 7
+        fixture.context.insert(sheep)
+        try fixture.context.save()
+
+        try fixture.service.execute(
+            .tombstoneEntity(
+                entityType: .sheep,
+                entityID: sheep.id,
+                reason: "验证紧凑检查点 revision"
+            ),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+
+        let operation = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<DomainOperation>()).first {
+            $0.entityID == sheep.id &&
+                $0.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue
+        })
+        XCTAssertEqual(operation.baseRevision, 7)
+        XCTAssertEqual(operation.resultingRevision, 8)
+    }
+
+    func testMissingParityDefaultsToZeroAndLegacyCorrectionKeepsRecordedParity() throws {
+        let farmID = UUID()
+        let eweID = UUID()
+        let lambingAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let legacy = ReproductionRecord(
+            farmID: farmID,
+            eweID: eweID,
+            kind: .lambing,
+            occurredAt: lambingAt,
+            parity: 4
+        )
+
+        XCTAssertEqual(LambingEntrySemantics.currentParity(
+            eweID: eweID,
+            farmID: farmID,
+            before: lambingAt,
+            records: []
+        ), 0)
+        XCTAssertEqual(LambingEntrySemantics.priorParityForLambing(
+            eweID: eweID,
+            farmID: farmID,
+            at: lambingAt,
+            existingRecordID: nil,
+            records: [legacy]
+        ), 0)
+        XCTAssertEqual(LambingEntrySemantics.priorParityForLambing(
+            eweID: eweID,
+            farmID: farmID,
+            at: lambingAt,
+            existingRecordID: legacy.id,
+            records: [legacy]
+        ), 3)
+    }
+
+    func testLambingWeightUsesActualDateAndOnlyTwentyFourHourWeightIsBirthWeight() throws {
+        let fixture = try makeFixture()
+        let lambingAt = Date(timeIntervalSince1970: 1_650_000_000)
+        let ewe = SheepRecord(farmID: fixture.farm.id, earTag: "E-WEIGHT", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: lambingAt.addingTimeInterval(-30 * 86_400))
+        fixture.context.insert(ewe)
+        insertParityBaseline(fixture, ewe: ewe, parity: 0)
+        let newborn = CareLambDraft(earTag: "L-BIRTH", sex: .ewe, birthWeightText: "3.2", weightOccurredAt: lambingAt.addingTimeInterval(12 * 3_600))
+        let later = CareLambDraft(earTag: "L-LATER", sex: .ram, birthWeightText: "5.1", weightOccurredAt: lambingAt.addingTimeInterval(5 * 86_400))
+        let unweighed = CareLambDraft(earTag: "L-NONE", sex: .ewe)
+
+        try fixture.service.execute(
+            .care(.recordLambing(.init(eweID: ewe.id, occurredAt: lambingAt, sireID: nil, semenID: nil, parity: 1, birthDeadCount: 0, offspring: [newborn, later, unweighed], penID: nil, note: ""))),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+
+        let details = try fixture.context.fetch(FetchDescriptor<LambingOffspringRecord>())
+        let birthDetail = try XCTUnwrap(details.first { $0.legacyEarTag == "L-BIRTH" })
+        let laterDetail = try XCTUnwrap(details.first { $0.legacyEarTag == "L-LATER" })
+        let unweighedDetail = try XCTUnwrap(details.first { $0.legacyEarTag == "L-NONE" })
+        XCTAssertEqual(birthDetail.birthWeightText, "3.2")
+        XCTAssertEqual(laterDetail.birthWeightText, "", "出生多日后的体重不能进入初生重事实")
+        XCTAssertEqual(unweighedDetail.birthWeightText, "")
+        XCTAssertNil(unweighedDetail.autoBirthWeightRecordID)
+
+        let weights = try fixture.context.fetch(FetchDescriptor<WeightRecord>())
+        let birthWeight = try XCTUnwrap(birthDetail.autoBirthWeightRecordID.flatMap { id in weights.first { $0.id == id } })
+        let laterWeight = try XCTUnwrap(laterDetail.autoBirthWeightRecordID.flatMap { id in weights.first { $0.id == id } })
+        XCTAssertEqual(birthWeight.occurredAt, newborn.weightOccurredAt)
+        XCTAssertEqual(birthWeight.note, "初生重")
+        XCTAssertEqual(laterWeight.occurredAt, later.weightOccurredAt)
+        XCTAssertEqual(laterWeight.note, "产羔录入称重")
+        XCTAssertFalse(weights.contains { $0.sheepID == unweighed.sheepID })
+    }
+
+    func testLateLambWeightRequiresAProfileAndStillbornWeightMustBeWithinBirthWindow() throws {
+        let fixture = try makeFixture()
+        let lambingAt = Date(timeIntervalSince1970: 1_650_000_000)
+        let ewe = SheepRecord(farmID: fixture.farm.id, earTag: "E-INVALID-WEIGHT", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: lambingAt.addingTimeInterval(-86_400))
+        fixture.context.insert(ewe)
+        insertParityBaseline(fixture, ewe: ewe, parity: 0)
+        let lateAt = lambingAt.addingTimeInterval(2 * 86_400)
+
+        let withoutProfile = CareLambingDraft(eweID: ewe.id, occurredAt: lambingAt, sireID: nil, semenID: nil, parity: 1, birthDeadCount: 0, offspring: [.init(earTag: "L-NO-PROFILE", sex: .ram, birthWeightText: "4.5", weightOccurredAt: lateAt, createSheepRecord: false)], penID: nil, note: "")
+        XCTAssertThrowsError(try fixture.service.execute(.care(.recordLambing(withoutProfile)), in: fixture.ownerContext, context: fixture.context)) { error in
+            guard case FarmCommandError.routineLambWeightRequiresSheepRecord = error else { return XCTFail("实际错误：\(error)") }
+        }
+
+        let stillborn = CareLambingDraft(eweID: ewe.id, occurredAt: lambingAt, sireID: nil, semenID: nil, parity: 1, birthDeadCount: 1, offspring: [.init(earTag: "L-STILL", sex: .ewe, birthWeightText: "4", weightOccurredAt: lateAt, createSheepRecord: false, isStillborn: true)], penID: nil, note: "")
+        XCTAssertThrowsError(try fixture.service.execute(.care(.recordLambing(stillborn)), in: fixture.ownerContext, context: fixture.context)) { error in
+            guard case FarmCommandError.stillbornWeightMustBeBirth = error else { return XCTFail("实际错误：\(error)") }
+        }
+    }
+
+    func testLambingAndLambWeightRejectFutureFacts() throws {
+        let fixture = try makeFixture()
+        let now = Date.now
+        let ewe = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "E-FUTURE",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: now.addingTimeInterval(-30 * 86_400)
+        )
+        fixture.context.insert(ewe)
+        insertParityBaseline(fixture, ewe: ewe, parity: 0)
+
+        let futureLambing = CareLambingDraft(
+            eweID: ewe.id,
+            occurredAt: now.addingTimeInterval(3_600),
+            sireID: nil,
+            semenID: nil,
+            parity: 1,
+            birthDeadCount: 0,
+            offspring: [.init(earTag: "L-FUTURE-BIRTH", sex: .ewe)],
+            penID: nil,
+            note: ""
+        )
+        XCTAssertThrowsError(try fixture.service.execute(.care(.recordLambing(futureLambing)), in: fixture.ownerContext, context: fixture.context)) { error in
+            guard case FarmCommandError.futureFactDate(let label) = error else {
+                return XCTFail("应阻止未来产羔时间，实际错误：\(error)")
+            }
+            XCTAssertEqual(label, "产羔时间")
+        }
+
+        let futureWeight = CareLambingDraft(
+            eweID: ewe.id,
+            occurredAt: now.addingTimeInterval(-2 * 86_400),
+            sireID: nil,
+            semenID: nil,
+            parity: 1,
+            birthDeadCount: 0,
+            offspring: [
+                .init(
+                    earTag: "L-FUTURE-WEIGHT",
+                    sex: .ram,
+                    birthWeightText: "4.2",
+                    weightOccurredAt: now.addingTimeInterval(3_600)
+                )
+            ],
+            penID: nil,
+            note: ""
+        )
+        XCTAssertThrowsError(try fixture.service.execute(.care(.recordLambing(futureWeight)), in: fixture.ownerContext, context: fixture.context)) { error in
+            guard case FarmCommandError.futureFactDate(let label) = error else {
+                return XCTFail("应阻止未来称重时间，实际错误：\(error)")
+            }
+            XCTAssertEqual(label, "称重时间")
+        }
+
+        XCTAssertFalse(try fixture.context.fetch(FetchDescriptor<ReproductionRecord>()).contains {
+            $0.eweID == ewe.id && $0.kind == .lambing && $0.deletedAt == nil
+        })
     }
 
     func testWorkerCanRecordButCannotMaintainCatalogAndCareBackupRestores() throws {
@@ -155,6 +717,19 @@ final class CareWorkflowTests: XCTestCase {
     private func insertEwe(_ fixture: Fixture, earTag: String) throws -> SheepRecord {
         let sheep = SheepRecord(farmID: fixture.farm.id, earTag: earTag, breed: "湖羊", sex: .ewe, penID: nil, enteredAt: .now.addingTimeInterval(-3_600))
         fixture.context.insert(sheep); try fixture.context.save(); return sheep
+    }
+
+    private func insertParityBaseline(_ fixture: Fixture, ewe: SheepRecord, parity: Int) {
+        fixture.context.insert(ReproductionRecord(
+            id: LambingEntrySemantics.entryParityBaselineID(sheepID: ewe.id),
+            farmID: fixture.farm.id,
+            eweID: ewe.id,
+            kind: .parityBaseline,
+            occurredAt: ewe.enteredAt,
+            parity: parity,
+            note: "测试胎次基准"
+        ))
+        try? fixture.context.save()
     }
 
     private func receiveInventory(_ fixture: Fixture, quantity: String) throws -> InventoryLotRecord {

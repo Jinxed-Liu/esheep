@@ -115,9 +115,368 @@ final class PedigreeWorkflowTests: XCTestCase {
         XCTAssertEqual(Set(profile.grandparents.map(\.earTag)), Set(["MGD", "MGS", "PGD", "PGS"]))
     }
 
+    func testPedigreeScreenSnapshotLoadsProfileAndCandidatesInBackgroundContext() async throws {
+        let fixture = try makeFixture()
+        let pen = PenRecord(farmID: fixture.farm.id, name: "配种舍")
+        fixture.context.insert(pen)
+        let birthAt = date("2026-07-20")
+        let ewe = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "EWE",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: date("2024-01-01")
+        )
+        let ram = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "RAM",
+            breed: "杜泊",
+            isBreedingRam: true,
+            sex: .ram,
+            penID: pen.id,
+            enteredAt: date("2024-01-01"),
+            birthAt: date("2023-01-01")
+        )
+        let child = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "CHILD",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: birthAt,
+            birthAt: birthAt,
+            damID: ewe.id
+        )
+        [ewe, ram, child].forEach(fixture.context.insert)
+        try fixture.context.save()
+
+        let snapshot = try await PedigreeSnapshotActor(container: fixture.container).load(
+            sheepID: child.id,
+            farmID: fixture.farm.id
+        )
+
+        XCTAssertEqual(snapshot.profile?.record.earTag, "CHILD")
+        XCTAssertEqual(snapshot.profile?.dam?.earTag, "EWE")
+        XCTAssertEqual(snapshot.sireCandidates.map(\.ramID), [ram.id])
+        XCTAssertEqual(snapshot.gestationDays, 150)
+        XCTAssertNil(child.sireID, "后台读取只能建立候选，不得修改系谱事实")
+    }
+
+    func testBatchSireProposalsOnlyIncludeUniqueCandidatesWithoutDateConflict() throws {
+        let fixture = try makeFixture()
+        let uniquePen = PenRecord(farmID: fixture.farm.id, name: "唯一父本舍")
+        let ambiguousPen = PenRecord(farmID: fixture.farm.id, name: "多父本舍")
+        let invertedPen = PenRecord(farmID: fixture.farm.id, name: "日期冲突舍")
+        [uniquePen, ambiguousPen, invertedPen].forEach(fixture.context.insert)
+        let birthAt = date("2026-07-20")
+
+        let uniqueDam = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "E-UNIQUE",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: uniquePen.id,
+            enteredAt: date("2024-01-01")
+        )
+        let legacyRam = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "R-UNIQUE",
+            breed: "杜泊",
+            purpose: "种公羊",
+            isBreedingRam: false,
+            sex: .ram,
+            penID: uniquePen.id,
+            enteredAt: date("2024-01-01"),
+            birthAt: date("2023-01-01")
+        )
+        let uniqueChildren = ["L-001", "L-002"].map {
+            SheepRecord(
+                farmID: fixture.farm.id,
+                earTag: $0,
+                breed: "湖羊",
+                sex: .ewe,
+                penID: uniquePen.id,
+                enteredAt: birthAt,
+                birthAt: birthAt,
+                damID: uniqueDam.id
+            )
+        }
+
+        let ambiguousDam = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "E-AMBIGUOUS",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: ambiguousPen.id,
+            enteredAt: date("2024-01-01")
+        )
+        let ambiguousRams = ["R-A", "R-B"].map {
+            SheepRecord(
+                farmID: fixture.farm.id,
+                earTag: $0,
+                breed: "杜泊",
+                isBreedingRam: true,
+                sex: .ram,
+                penID: ambiguousPen.id,
+                enteredAt: date("2024-01-01"),
+                birthAt: date("2023-01-01")
+            )
+        }
+        let ambiguousChild = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "L-AMBIGUOUS",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: ambiguousPen.id,
+            enteredAt: birthAt,
+            birthAt: birthAt,
+            damID: ambiguousDam.id
+        )
+
+        let invertedDam = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "E-INVERTED",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: invertedPen.id,
+            enteredAt: date("2024-01-01")
+        )
+        let youngerRam = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "R-YOUNG",
+            breed: "杜泊",
+            isBreedingRam: true,
+            sex: .ram,
+            penID: invertedPen.id,
+            enteredAt: date("2024-01-01"),
+            birthAt: birthAt
+        )
+        let invertedChild = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "L-INVERTED",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: invertedPen.id,
+            enteredAt: birthAt,
+            birthAt: birthAt,
+            damID: invertedDam.id
+        )
+
+        (
+            [uniqueDam, legacyRam, ambiguousDam, ambiguousChild, invertedDam, youngerRam, invertedChild] +
+            uniqueChildren +
+            ambiguousRams
+        ).forEach(fixture.context.insert)
+        try fixture.context.save()
+
+        let input = try PedigreeAnalysis.loadInput(
+            farmID: fixture.farm.id,
+            context: fixture.context
+        )
+        let proposals = PedigreeAnalysis.batchSireProposals(
+            input: input,
+            gestationDays: 150,
+            penNames: [
+                uniquePen.id: uniquePen.name,
+                ambiguousPen.id: ambiguousPen.name,
+                invertedPen.id: invertedPen.name,
+            ]
+        )
+
+        XCTAssertEqual(Set(proposals.map(\.child.id)), Set(uniqueChildren.map(\.id)))
+        XCTAssertTrue(proposals.allSatisfy { $0.candidate.ramID == legacyRam.id })
+        XCTAssertTrue(proposals.allSatisfy { !$0.candidate.isConfirmedBreedingRam })
+        XCTAssertTrue(proposals.allSatisfy { $0.candidate.historicalPenName == "唯一父本舍" })
+        XCTAssertFalse(proposals.contains { $0.child.id == ambiguousChild.id })
+        XCTAssertFalse(proposals.contains { $0.child.id == invertedChild.id })
+    }
+
+    func testBatchSireConfirmationIsAtomicAndWritesOneAuditPerChild() throws {
+        let fixture = try makeFixture()
+        let pen = PenRecord(farmID: fixture.farm.id, name: "配种舍")
+        fixture.context.insert(pen)
+        let birthAt = date("2026-07-20")
+        let dam = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "E001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: date("2024-01-01")
+        )
+        let ram = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "R001",
+            breed: "杜泊",
+            purpose: "种公羊",
+            isBreedingRam: false,
+            sex: .ram,
+            penID: pen.id,
+            enteredAt: date("2024-01-01"),
+            birthAt: date("2023-01-01")
+        )
+        let children = ["L001", "L002"].map {
+            SheepRecord(
+                farmID: fixture.farm.id,
+                earTag: $0,
+                breed: "湖羊",
+                sex: .ewe,
+                penID: pen.id,
+                enteredAt: birthAt,
+                birthAt: birthAt,
+                damID: dam.id
+            )
+        }
+        ([dam, ram] + children).forEach(fixture.context.insert)
+        try fixture.context.save()
+
+        let input = try PedigreeAnalysis.loadInput(
+            farmID: fixture.farm.id,
+            context: fixture.context
+        )
+        let proposals = PedigreeAnalysis.batchSireProposals(
+            input: input,
+            gestationDays: 150,
+            penNames: [pen.id: pen.name]
+        )
+        XCTAssertEqual(proposals.count, 2)
+
+        let qualifier: FarmCommand = .care(.setBreedingRam(
+            sheepID: ram.id,
+            isBreedingRam: true,
+            expectedRevision: ram.revision
+        ))
+        let invalidUpdates: [FarmCommand] = proposals.enumerated().map { index, proposal in
+            .care(.updateSheepPedigree(.init(
+                sheepID: proposal.child.id,
+                damID: proposal.child.damID,
+                sireID: ram.id,
+                semenDonorID: nil,
+                reason: "批量核对历史配种舍",
+                expectedRevision: proposal.child.revision + (index == 1 ? 1 : 0)
+            )))
+        }
+        XCTAssertThrowsError(
+            try fixture.service.executeBatch(
+                [qualifier] + invalidUpdates,
+                in: fixture.ownerContext,
+                context: fixture.context
+            )
+        )
+        XCTAssertFalse(ram.isBreedingRam)
+        XCTAssertTrue(children.allSatisfy { $0.sireID == nil })
+        XCTAssertTrue(try fixture.context.fetch(FetchDescriptor<PedigreeChangeRecord>()).isEmpty)
+
+        let validUpdates: [FarmCommand] = proposals.map { proposal in
+            .care(.updateSheepPedigree(.init(
+                sheepID: proposal.child.id,
+                damID: proposal.child.damID,
+                sireID: ram.id,
+                semenDonorID: nil,
+                reason: "批量核对历史配种舍",
+                expectedRevision: proposal.child.revision
+            )))
+        }
+        try fixture.service.executeBatch(
+            [qualifier] + validUpdates,
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+
+        XCTAssertTrue(ram.isBreedingRam)
+        XCTAssertTrue(children.allSatisfy { $0.sireID == ram.id })
+        XCTAssertEqual(
+            try fixture.context.fetch(FetchDescriptor<PedigreeChangeRecord>())
+                .filter { children.map(\.id).contains($0.sheepID) }
+                .count,
+            children.count
+        )
+    }
+
+    func testBatchSireConfirmationAtRealFarmGroupScaleStaysBounded() throws {
+        let fixture = try makeFixture()
+        let birthAt = date("2026-07-20")
+        let dam = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "E-BATCH",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: date("2024-01-01"),
+            birthAt: date("2022-01-01")
+        )
+        let ram = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "R-BATCH",
+            breed: "杜泊",
+            isBreedingRam: true,
+            sex: .ram,
+            penID: nil,
+            enteredAt: date("2024-01-01"),
+            birthAt: date("2022-01-01")
+        )
+        let children = (0..<105).map { index in
+            SheepRecord(
+                farmID: fixture.farm.id,
+                earTag: "L-BATCH-\(index)",
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                enteredAt: birthAt,
+                birthAt: birthAt,
+                damID: dam.id
+            )
+        }
+        let unrelatedSheep = (0..<(3_073 - children.count - 2)).map { index in
+            SheepRecord(
+                farmID: fixture.farm.id,
+                earTag: "OTHER-\(index)",
+                breed: "湖羊",
+                sex: index.isMultiple(of: 2) ? .ewe : .ram,
+                penID: nil,
+                enteredAt: date("2024-01-01")
+            )
+        }
+        ([dam, ram] + children + unrelatedSheep).forEach(fixture.context.insert)
+        try fixture.context.save()
+
+        let commands: [FarmCommand] = children.map { child in
+            .care(.updateSheepPedigree(.init(
+                sheepID: child.id,
+                damID: dam.id,
+                sireID: ram.id,
+                semenDonorID: nil,
+                reason: "批量核对历史配种舍",
+                expectedRevision: child.revision
+            )))
+        }
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        try fixture.service.executeBatch(
+            commands,
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+        let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
+
+        XCTAssertTrue(children.allSatisfy { $0.sireID == ram.id })
+        XCTAssertEqual(
+            try fixture.context.fetch(FetchDescriptor<PedigreeChangeRecord>())
+                .filter { children.map(\.id).contains($0.sheepID) }
+                .count,
+            children.count
+        )
+        XCTAssertLessThan(
+            elapsed,
+            3,
+            "当前真场最大父本分组约 105 只；批量确认不能重新形成可感知的主线程卡死"
+        )
+    }
+
     func testPedigreeProfileKeepsFiveLambsFromOneLambingTogether() throws {
         let fixture = try makeFixture()
         let ewe = insertSheep(fixture, tag: "EWE", sex: .ewe, birthAt: date("2022-01-01"))
+        insertParityBaseline(fixture, ewe: ewe, parity: 1)
         let sire = insertSheep(fixture, tag: "SIRE", sex: .ram, isBreedingRam: true, birthAt: date("2021-01-01"))
         let lambing = CareLambingDraft(
             eweID: ewe.id,
@@ -200,6 +559,7 @@ final class PedigreeWorkflowTests: XCTestCase {
     func testDirectRamExternalDonorAndLinkedDonorKeepHistoricalSnapshots() throws {
         let fixture = try makeFixture()
         let ewe = insertSheep(fixture, tag: "E001", sex: .ewe)
+        insertParityBaseline(fixture, ewe: ewe, parity: 0)
         let breedingRam = insertSheep(fixture, tag: "BR001", sex: .ram, isBreedingRam: true)
         let ordinaryRam = insertSheep(fixture, tag: "R002", sex: .ram)
         let directDraft = CareLambingDraft(eweID: ewe.id, occurredAt: date("2026-07-20"), sireID: breedingRam.id, semenID: nil, parity: 1, birthDeadCount: 0, offspring: [.init(earTag: "L001", sex: .ewe, birthWeightText: "3.2")], penID: nil, note: "本交")
@@ -269,6 +629,7 @@ final class PedigreeWorkflowTests: XCTestCase {
         let laterPen = PenRecord(farmID: fixture.farm.id, name: "羔羊舍")
         fixture.context.insert(birthPen); fixture.context.insert(laterPen)
         let ewe = insertSheep(fixture, tag: "E001", sex: .ewe)
+        insertParityBaseline(fixture, ewe: ewe, parity: 0)
         let ram = insertSheep(fixture, tag: "BR001", sex: .ram, isBreedingRam: true)
         let breedingAt = date("2026-02-20")
         let subject = CareReproductionSubjectDraft(eweID: ewe.id)
@@ -293,7 +654,7 @@ final class PedigreeWorkflowTests: XCTestCase {
         try fixture.service.execute(.transferSheep(sheepID: child.id, toPenID: laterPen.id, occurredAt: date("2026-07-20"), note: "转入羔羊舍"), in: fixture.ownerContext, context: fixture.context)
         try fixture.service.execute(.recordWeight(sheepID: child.id, kilogramsText: "10", occurredAt: date("2026-07-20"), note: "下游称重"), in: fixture.ownerContext, context: fixture.context)
         let omitted = CareLambDraft(earTag: "L002", sex: .ram, birthWeightText: "3.0")
-        let corrected = CareLambingDraft(id: lambingID, eweID: ewe.id, occurredAt: date("2026-07-19"), sireID: nil, semenID: nil, relatedBreedingRecordID: breeding.id, parity: 2, birthDeadCount: 0, offspring: [firstLamb, omitted], penID: birthPen.id, note: "补录双羔")
+        let corrected = CareLambingDraft(id: lambingID, eweID: ewe.id, occurredAt: date("2026-07-19"), sireID: nil, semenID: nil, relatedBreedingRecordID: breeding.id, parity: 1, birthDeadCount: 0, offspring: [firstLamb, omitted], penID: birthPen.id, note: "补录双羔")
         try fixture.service.execute(.care(.correctLambing(originalID: lambingID, replacement: corrected, reason: "胎次与羔羊漏录")), in: fixture.ownerContext, context: fixture.context)
         XCTAssertEqual(try sheep(fixture, "L001").birthAt, date("2026-07-19"))
         XCTAssertEqual(child.currentPenID, laterPen.id, "产羔修正不能覆盖后续转舍形成的当前圈舍")
@@ -309,7 +670,7 @@ final class PedigreeWorkflowTests: XCTestCase {
         XCTAssertEqual(child.damID, ewe.id); XCTAssertEqual(child.sireID, ram.id)
         XCTAssertNil(try fixture.context.fetch(FetchDescriptor<ReproductionRecord>()).first { $0.id == lambingID }?.deletedAt)
 
-        let removedByCorrection = CareLambingDraft(id: lambingID, eweID: ewe.id, occurredAt: date("2026-07-19"), sireID: nil, semenID: nil, relatedBreedingRecordID: breeding.id, parity: 2, birthDeadCount: 0, offspring: [firstLamb], penID: birthPen.id, note: "复核为单羔")
+        let removedByCorrection = CareLambingDraft(id: lambingID, eweID: ewe.id, occurredAt: date("2026-07-19"), sireID: nil, semenID: nil, relatedBreedingRecordID: breeding.id, parity: 1, birthDeadCount: 0, offspring: [firstLamb], penID: birthPen.id, note: "复核为单羔")
         try fixture.service.execute(.care(.correctLambing(originalID: lambingID, replacement: removedByCorrection, reason: "删除误录羔羊子项")), in: fixture.ownerContext, context: fixture.context)
         let removedDetail = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<LambingOffspringRecord>()).first { $0.id == omitted.id })
         XCTAssertNotNil(removedDetail.deletedAt)
@@ -364,6 +725,19 @@ final class PedigreeWorkflowTests: XCTestCase {
         fixture.context.insert(record)
         try? fixture.context.save()
         return record
+    }
+
+    private func insertParityBaseline(_ fixture: Fixture, ewe: SheepRecord, parity: Int) {
+        fixture.context.insert(ReproductionRecord(
+            id: LambingEntrySemantics.entryParityBaselineID(sheepID: ewe.id),
+            farmID: fixture.farm.id,
+            eweID: ewe.id,
+            kind: .parityBaseline,
+            occurredAt: ewe.enteredAt,
+            parity: parity,
+            note: "测试胎次基准"
+        ))
+        try? fixture.context.save()
     }
 
     private func sheep(_ fixture: Fixture, _ tag: String) throws -> SheepRecord {

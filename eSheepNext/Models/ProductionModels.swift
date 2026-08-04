@@ -54,6 +54,7 @@ enum HealthRecordKind: String, CaseIterable, Codable, Sendable {
 }
 
 enum ReproductionRecordKind: String, CaseIterable, Codable, Sendable {
+    case parityBaseline
     case breeding
     case pregnancyCheck
     case lambing
@@ -61,6 +62,7 @@ enum ReproductionRecordKind: String, CaseIterable, Codable, Sendable {
 
     var displayName: String {
         switch self {
+        case .parityBaseline: "胎次确认"
         case .breeding: "配种"
         case .pregnancyCheck: "孕检"
         case .lambing: "产羔"

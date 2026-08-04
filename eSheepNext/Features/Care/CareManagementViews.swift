@@ -47,7 +47,7 @@ struct CareManagementView: View {
                 }
                 NavigationLink { CareRulesView(account: account, farm: farm) } label: { Label("提醒规则", systemImage: "calendar.badge.clock") }
                 NavigationLink { HealthHistoryView(account: account, farm: farm) } label: { LabeledContent("健康记录", value: "\(health.count { $0.farmID == farm.id && $0.deletedAt == nil })") }
-                NavigationLink { ReproductionHistoryView(account: account, farm: farm) } label: { LabeledContent("繁殖记录", value: "\(reproduction.count { $0.farmID == farm.id && $0.deletedAt == nil })") }
+                NavigationLink { ReproductionHistoryView(account: account, farm: farm) } label: { LabeledContent("繁殖记录", value: "\(reproduction.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.kind != .parityBaseline })") }
             }
         }
         .navigationTitle("健康与繁殖")
@@ -440,25 +440,151 @@ private struct LambFormRow: Identifiable {
     let sheepID: UUID
     var earTag: String
     var sex: SheepSex
-    var birthWeight: String
+    var weight: String
+    var weightOccurredAt: Date?
     var createRecord: Bool
     var isStillborn: Bool
 
-    init(id: UUID = UUID(), sheepID: UUID = UUID(), earTag: String = "", sex: SheepSex = .ram, birthWeight: String = "", createRecord: Bool = true, isStillborn: Bool = false) {
-        self.id = id; self.sheepID = sheepID; self.earTag = earTag; self.sex = sex; self.birthWeight = birthWeight; self.createRecord = createRecord; self.isStillborn = isStillborn
+    init(id: UUID = UUID(), sheepID: UUID = UUID(), earTag: String = "", sex: SheepSex = .ram, weight: String = "", weightOccurredAt: Date? = nil, createRecord: Bool = true, isStillborn: Bool = false) {
+        self.id = id; self.sheepID = sheepID; self.earTag = earTag; self.sex = sex; self.weight = weight; self.weightOccurredAt = weightOccurredAt; self.createRecord = createRecord; self.isStillborn = isStillborn
+    }
+}
+
+private enum LambingFormLimits {
+    static let maximumLambCount = 100
+}
+
+private func parityDisplayName(_ parity: Int) -> String {
+    parity == 0 ? "0 胎" : "第 \(parity) 胎"
+}
+
+private struct LambCountSection: View {
+    @Binding var countText: String
+    let deadCount: Int
+
+    var body: some View {
+        Section {
+            TextField("产羔总数", text: $countText)
+                .keyboardType(.numberPad)
+            LabeledContent("死胎数", value: "\(deadCount)")
+        } header: {
+            Text("羔羊数量")
+        } footer: {
+            Text("填写总数后会自动生成对应数量的羔羊区块；减少总数会移除末尾的羔羊明细。")
+        }
+    }
+}
+
+private struct LambFormSection: View {
+    @Binding var row: LambFormRow
+    let number: Int
+    let lambingAt: Date
+    let canRemove: Bool
+    let remove: () -> Void
+
+    private var recordsWeight: Binding<Bool> {
+        Binding(
+            get: { row.weightOccurredAt != nil },
+            set: { enabled in
+                if enabled {
+                    row.weightOccurredAt = lambingAt
+                } else {
+                    row.weight = ""
+                    row.weightOccurredAt = nil
+                }
+            }
+        )
+    }
+
+    private var weightDate: Binding<Date> {
+        Binding(
+            get: { row.weightOccurredAt ?? lambingAt },
+            set: { row.weightOccurredAt = $0 }
+        )
+    }
+
+    private var weightKind: LambRecordedWeightKind? {
+        row.weightOccurredAt.map {
+            LambingEntrySemantics.weightKind(lambingAt: lambingAt, weighedAt: $0)
+        }
+    }
+
+    var body: some View {
+        Section {
+            TextField("耳号", text: $row.earTag)
+            Picker("性别", selection: $row.sex) {
+                Text("公").tag(SheepSex.ram)
+                Text("母").tag(SheepSex.ewe)
+            }
+            Toggle("死胎", isOn: $row.isStillborn)
+                .onChange(of: row.isStillborn) { _, isStillborn in
+                    if isStillborn { row.createRecord = false }
+                }
+            Toggle("建立羊只档案", isOn: $row.createRecord)
+                .disabled(row.isStillborn)
+            Toggle("记录体重", isOn: recordsWeight)
+            if row.weightOccurredAt != nil {
+                TextField("体重（kg）", text: $row.weight)
+                    .keyboardType(.decimalPad)
+                DatePicker("称重日期与时间", selection: weightDate, in: lambingAt...Date.now)
+                if let weightKind {
+                    LabeledContent("记录类型", value: weightKind.displayName)
+                }
+            }
+            if canRemove {
+                Button("删除这只羔羊", role: .destructive, action: remove)
+            }
+        } header: {
+            Text("羔羊 \(number)")
+        } footer: {
+            if weightKind == .routine {
+                Text(row.createRecord ? "已超过出生 24 小时，将按实际时间保存为普通称重。" : "普通称重必须建立羊只档案后才能保存。")
+            }
+        }
     }
 }
 
 struct CareLambingEntryView: View {
-    @Environment(\.dismiss) private var dismiss; @Environment(\.modelContext) private var modelContext
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]; @Query(sort: \PenRecord.name) private var pens: [PenRecord]; @Query(sort: \SemenRecord.code) private var semen: [SemenRecord]; @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproduction: [ReproductionRecord]; @Query private var rules: [FarmCareRuleRecord]
-    let account: AccountProfile; let farm: FarmRecord; private let service = FarmCommandService()
-    @State private var eweID: UUID?; @State private var sireID: UUID?; @State private var semenID: UUID?; @State private var relatedBreedingID: UUID?; @State private var penID: UUID?; @State private var occurredAt = Date.now; @State private var parity = 1; @State private var rows = [LambFormRow()]; @State private var note = ""; @State private var candidates: [PedigreeSireCandidate] = []; @State private var candidateWasPreselected = false; @State private var errorMessage: String?
-    private var ewes: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ewe } }; private var breedingRams: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ram && $0.isBreedingRam } }; private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }; private var farmSemen: [SemenRecord] { semen.filter { $0.farmID == farm.id && $0.deletedAt == nil } }; private var gestationDays: Int { rules.first { $0.farmID == farm.id }?.gestationDays ?? 150 }
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
+    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
+    @Query(sort: \SemenRecord.code) private var semen: [SemenRecord]
+    @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproduction: [ReproductionRecord]
+    @Query private var rules: [FarmCareRuleRecord]
+
+    let account: AccountProfile
+    let farm: FarmRecord
+    private let service = FarmCommandService()
+
+    @State private var eweID: UUID?
+    @State private var sireID: UUID?
+    @State private var semenID: UUID?
+    @State private var relatedBreedingID: UUID?
+    @State private var penID: UUID?
+    @State private var occurredAt = Date.now
+    @State private var rows = [LambFormRow()]
+    @State private var lambCountText = "1"
+    @State private var note = ""
+    @State private var candidates: [PedigreeSireCandidate] = []
+    @State private var candidateWasPreselected = false
+    @State private var errorMessage: String?
+
+    private var ewes: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ewe } }
+    private var breedingRams: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ram && $0.isBreedingRam } }
+    private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
+    private var farmSemen: [SemenRecord] { semen.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
+    private var gestationDays: Int { rules.first { $0.farmID == farm.id }?.gestationDays ?? 150 }
     private var eweCandidates: [SheepEarTagSearchCandidate] { ewes.map { .init(sheep: $0) } }
     private var ramCandidates: [SheepEarTagSearchCandidate] { breedingRams.map { .init(sheep: $0) } }
     private var openBreedings: [ReproductionRecord] { guard let eweID else { return [] }; return reproduction.filter { record in record.farmID == farm.id && record.eweID == eweID && record.kind == .breeding && record.deletedAt == nil && record.occurredAt <= occurredAt && !reproduction.contains { closure in closure.farmID == farm.id && closure.relatedBreedingRecordID == record.id && closure.deletedAt == nil && (closure.kind == .lambing || closure.kind == .abortion) } } }
     private var relatedBreeding: ReproductionRecord? { relatedBreedingID.flatMap { id in openBreedings.first { $0.id == id } } }
+    private var recordedCurrentParity: Int {
+        guard let eweID else { return 0 }
+        return LambingEntrySemantics.currentParity(eweID: eweID, farmID: farm.id, before: occurredAt, records: reproduction)
+    }
+    private var nextParity: Int { recordedCurrentParity + 1 }
+
     var body: some View {
         Form {
             Section("产羔母羊") {
@@ -470,7 +596,23 @@ struct CareLambingEntryView: View {
                     accessibilityName: "母羊耳号"
                 )
             }
-            DatePicker("产羔时间", selection: $occurredAt)
+            Section("产羔事实") {
+                DatePicker("产羔时间", selection: $occurredAt, in: ...Date.now)
+                Picker("羔羊圈舍", selection: $penID) {
+                    Text("未分圈").tag(UUID?.none)
+                    ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
+                }
+            }
+            Section("母羊胎次") {
+                if eweID == nil {
+                    Text("确认母羊后计算本次胎次。")
+                        .foregroundStyle(.secondary)
+                } else {
+                    LabeledContent("产羔前当前胎次", value: parityDisplayName(recordedCurrentParity))
+                    LabeledContent("本次产羔胎次", value: parityDisplayName(recordedCurrentParity + 1))
+                }
+            }
+            LambCountSection(countText: $lambCountText, deadCount: rows.count(where: \.isStillborn))
             Section("繁殖链") {
                 Picker("关联配种", selection: $relatedBreedingID) { Text("保持未关联").tag(UUID?.none); ForEach(openBreedings, id: \.id) { Text("\($0.occurredAt.formatted(date: .abbreviated, time: .omitted)) · \($0.paternalSource.displayName)").tag(UUID?.some($0.id)) } }
                 if let relatedBreeding {
@@ -502,23 +644,87 @@ struct CareLambingEntryView: View {
                     }
                 }
             }
-            Picker("羔羊圈舍", selection: $penID) { Text("未分圈").tag(UUID?.none); ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }
-            Stepper("胎次：\(parity)", value: $parity, in: 1...20); LabeledContent("产羔总数", value: "\(rows.count)"); LabeledContent("死胎数", value: "\(rows.count(where: \.isStillborn))")
-            Section("逐只羔羊") { ForEach($rows) { $row in VStack { TextField("耳号", text: $row.earTag); Picker("性别", selection: $row.sex) { Text("公").tag(SheepSex.ram); Text("母").tag(SheepSex.ewe) }; TextField("初生重", text: $row.birthWeight).keyboardType(.decimalPad); Toggle("死胎", isOn: $row.isStillborn); Toggle("建立羊只档案", isOn: $row.createRecord).disabled(row.isStillborn) } }.onDelete { rows.remove(atOffsets: $0) }; Button("增加一只羔羊") { rows.append(LambFormRow()) } }
-            TextField("备注", text: $note, axis: .vertical)
+            ForEach($rows) { $row in
+                LambFormSection(
+                    row: $row,
+                    number: (rows.firstIndex { $0.id == row.id } ?? 0) + 1,
+                    lambingAt: occurredAt,
+                    canRemove: rows.count > 1,
+                    remove: { removeLamb(row.id) }
+                )
+            }
+            Section {
+                Button("增加一只羔羊", action: appendLamb)
+                    .disabled(rows.count >= LambingFormLimits.maximumLambCount)
+            }
+            Section("备注") { TextField("备注", text: $note, axis: .vertical) }
         }
             .navigationTitle("产羔记录").toolbar { EntrySaveToolbar(action: save) }.recordErrorAlert($errorMessage)
             .farmExcelImport(account: account, farm: farm, sheets: ["产羔"])
             .onAppear(perform: refreshCandidates)
             .onChange(of: eweID) { _, _ in relatedBreedingID = nil; resetAndRefreshCandidates() }
-            .onChange(of: occurredAt) { _, _ in relatedBreedingID = nil; resetAndRefreshCandidates() }
+            .onChange(of: occurredAt) { oldValue, newValue in
+                for index in rows.indices {
+                    guard let weighedAt = rows[index].weightOccurredAt else { continue }
+                    if weighedAt == oldValue || weighedAt < newValue {
+                        rows[index].weightOccurredAt = newValue
+                    }
+                }
+                relatedBreedingID = nil
+                resetAndRefreshCandidates()
+            }
+            .onChange(of: lambCountText) { _, value in resizeRows(to: value) }
             .onChange(of: relatedBreedingID) { _, value in if value != nil { sireID = nil; semenID = nil } }
             .onChange(of: sireID) { _, value in if value != nil { semenID = nil } }
             .onChange(of: semenID) { _, value in if value != nil { sireID = nil } }
     }
+    private func appendLamb() {
+        guard rows.count < LambingFormLimits.maximumLambCount else { return }
+        rows.append(LambFormRow())
+        lambCountText = "\(rows.count)"
+    }
+    private func removeLamb(_ id: UUID) {
+        rows.removeAll { $0.id == id }
+        lambCountText = "\(rows.count)"
+    }
+    private func resizeRows(to text: String) {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let count = Int(normalized), (1...LambingFormLimits.maximumLambCount).contains(count) else { return }
+        if count > rows.count {
+            rows.append(contentsOf: (rows.count..<count).map { _ in LambFormRow() })
+        } else if count < rows.count {
+            rows.removeLast(rows.count - count)
+        }
+    }
     private func resetAndRefreshCandidates() { candidateWasPreselected = false; sireID = nil; semenID = nil; refreshCandidates() }
     private func refreshCandidates() { guard let eweID else { candidates = []; return }; do { candidates = try PedigreeAnalysis.sireCandidates(eweID: eweID, lambingAt: occurredAt, gestationDays: gestationDays, farmID: farm.id, context: modelContext); if candidates.count == 1 && sireID == nil && semenID == nil && relatedBreedingID == nil && !candidateWasPreselected { sireID = candidates[0].ramID; candidateWasPreselected = true } } catch { errorMessage = error.localizedDescription } }
-    private func save() { guard let eweID else { errorMessage = "请先搜索并确认产羔母羊。"; return }; let offspring = rows.map { CareLambDraft(id: $0.id, sheepID: $0.sheepID, earTag: $0.earTag, sex: $0.sex, birthWeightText: $0.birthWeight, createSheepRecord: $0.isStillborn ? false : $0.createRecord, isStillborn: $0.isStillborn) }; let draft = CareLambingDraft(id: UUID(), eweID: eweID, occurredAt: occurredAt, sireID: relatedBreedingID == nil ? sireID : nil, semenID: relatedBreedingID == nil ? semenID : nil, relatedBreedingRecordID: relatedBreedingID, parity: parity, birthDeadCount: offspring.count(where: \.isStillborn), offspring: offspring, penID: penID, note: note); do { try service.execute(.care(.recordLambing(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); dismiss() } catch { errorMessage = error.localizedDescription } }
+    private func save() {
+        guard let eweID else { errorMessage = "请先搜索并确认产羔母羊。"; return }
+        let normalizedCount = lambCountText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let intendedCount = Int(normalizedCount),
+              (1...LambingFormLimits.maximumLambCount).contains(intendedCount),
+              intendedCount == rows.count else {
+            errorMessage = "产羔总数必须是 1 到 \(LambingFormLimits.maximumLambCount) 的整数。"
+            return
+        }
+        let offspring = rows.map {
+            CareLambDraft(
+                id: $0.id,
+                sheepID: $0.sheepID,
+                earTag: $0.earTag,
+                sex: $0.sex,
+                birthWeightText: $0.weight,
+                weightOccurredAt: $0.weightOccurredAt,
+                createSheepRecord: $0.isStillborn ? false : $0.createRecord,
+                isStillborn: $0.isStillborn
+            )
+        }
+        let draft = CareLambingDraft(id: UUID(), eweID: eweID, occurredAt: occurredAt, sireID: relatedBreedingID == nil ? sireID : nil, semenID: relatedBreedingID == nil ? semenID : nil, relatedBreedingRecordID: relatedBreedingID, parity: nextParity, birthDeadCount: offspring.count(where: \.isStillborn), offspring: offspring, penID: penID, note: note)
+        do {
+            try service.execute(.care(.recordLambing(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            dismiss()
+        } catch { errorMessage = error.localizedDescription }
+    }
 }
 
 struct CareSemenView: View {
@@ -677,8 +883,8 @@ struct HealthCorrectionView: View {
 struct ReproductionHistoryView: View {
     @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var records: [ReproductionRecord]; @Query private var sheep: [SheepRecord]
     let account: AccountProfile; let farm: FarmRecord; @State private var kind: ReproductionRecordKind?
-    private var filtered: [ReproductionRecord] { records.filter { $0.farmID == farm.id && (kind == nil || $0.kind == kind) } }
-    var body: some View { List { Section { Picker("类型", selection: $kind) { Text("全部").tag(ReproductionRecordKind?.none); ForEach(ReproductionRecordKind.allCases, id: \.self) { Text($0.displayName).tag(ReproductionRecordKind?.some($0)) } } }; ForEach(filtered, id: \.id) { record in NavigationLink { ReproductionRecordDetailView(account: account, farm: farm, record: record) } label: { VStack(alignment: .leading) { Text("\(earTag(record.eweID)) · \(record.kind.displayName)"); Text(record.occurredAt, format: .dateTime.year().month().day()).font(.footnote).foregroundStyle(.secondary); if record.deletedAt != nil { Text("已撤销").font(.caption).foregroundStyle(.red) } } } } }.navigationTitle("繁殖历史") }
+    private var filtered: [ReproductionRecord] { records.filter { $0.farmID == farm.id && $0.kind != .parityBaseline && (kind == nil || $0.kind == kind) } }
+    var body: some View { List { Section { Picker("类型", selection: $kind) { Text("全部").tag(ReproductionRecordKind?.none); ForEach(ReproductionRecordKind.allCases.filter { $0 != .parityBaseline }, id: \.self) { Text($0.displayName).tag(ReproductionRecordKind?.some($0)) } } }; ForEach(filtered, id: \.id) { record in NavigationLink { ReproductionRecordDetailView(account: account, farm: farm, record: record) } label: { VStack(alignment: .leading) { Text("\(earTag(record.eweID)) · \(record.kind.displayName)"); Text(record.occurredAt, format: .dateTime.year().month().day()).font(.footnote).foregroundStyle(.secondary); if record.deletedAt != nil { Text("已撤销").font(.caption).foregroundStyle(.red) } } } } }.navigationTitle("繁殖历史") }
     private func earTag(_ id: UUID) -> String { sheep.first(where: { $0.id == id })?.earTag ?? "未知母羊" }
 }
 
@@ -689,8 +895,8 @@ private struct ReproductionRecordDetailView: View {
     var body: some View {
         List {
             Section("事实") { LabeledContent("母羊", value: eweName); LabeledContent("类型", value: record.kind.displayName); LabeledContent("发生时间", value: record.occurredAt.formatted()); LabeledContent("父本来源", value: record.paternalSource.displayName); if let sireID = record.sireID { LabeledContent("种公羊", value: sheep.first(where: { $0.id == sireID })?.earTag ?? sireID.uuidString) }; if let semen = record.semenNameSnapshot { LabeledContent("冻精", value: semen) }; if let donor = record.semenDonorNameSnapshot { LabeledContent("供体快照", value: donor) }; if let related = record.relatedBreedingRecordID { LabeledContent("关联配种", value: related.uuidString) }; if !record.result.isEmpty { LabeledContent("结果", value: record.result) }; if record.kind == .lambing { LabeledContent("产羔总数", value: "\(record.lambCount)"); LabeledContent("死胎", value: "\(record.birthDeadCount ?? 0)") }; if !record.note.isEmpty { Text(record.note) } }
-            Section { if record.deletedAt == nil { Button("修正记录") { correction = .init(id: record.id) }; Button("撤销记录", role: .destructive) { if record.kind == .lambing { revokeReason = ""; showRevokePrompt = true } else { revoke() } } } else if record.kind == .lambing { Button("安全恢复产羔") { restoreLambing() } } else if let tombstone = tombstones.first(where: { $0.farmID == farm.id && $0.entityID == record.id && $0.restoredAt == nil && !$0.reason.hasPrefix("修正：") }) { Button("恢复记录") { restore(tombstone.id) } } }
-        }.navigationTitle("繁殖记录详情").recordErrorAlert($errorMessage).sheet(item: $correction) { _ in NavigationStack { if record.kind == .lambing { LambingCorrectionView(account: account, farm: farm, record: record) } else { ReproductionCorrectionView(account: account, farm: farm, record: record) } } }.alert("撤销产羔记录", isPresented: $showRevokePrompt) { TextField("撤销原因（必填）", text: $revokeReason); Button("撤销", role: .destructive, action: revoke); Button("取消", role: .cancel) {} } message: { Text("不会删除羔羊档案及其后续记录，只补偿本次产羔自动建立且未被人工修正的关系与初生重。") }
+            Section { if record.kind == .parityBaseline { Text("胎次请在母羊档案中确认；这里保留事实但不允许直接改写。") } else if record.deletedAt == nil { Button("修正记录") { correction = .init(id: record.id) }; Button("撤销记录", role: .destructive) { if record.kind == .lambing { revokeReason = ""; showRevokePrompt = true } else { revoke() } } } else if record.kind == .lambing { Button("安全恢复产羔") { restoreLambing() } } else if let tombstone = tombstones.first(where: { $0.farmID == farm.id && $0.entityID == record.id && $0.restoredAt == nil && !$0.reason.hasPrefix("修正：") }) { Button("恢复记录") { restore(tombstone.id) } } }
+        }.navigationTitle("繁殖记录详情").recordErrorAlert($errorMessage).sheet(item: $correction) { _ in NavigationStack { if record.kind == .lambing { LambingCorrectionView(account: account, farm: farm, record: record) } else { ReproductionCorrectionView(account: account, farm: farm, record: record) } } }.alert("撤销产羔记录", isPresented: $showRevokePrompt) { TextField("撤销原因（必填）", text: $revokeReason); Button("撤销", role: .destructive, action: revoke); Button("取消", role: .cancel) {} } message: { Text("不会删除羔羊档案及其后续记录，只补偿本次产羔自动建立且未被人工修正的关系与称重记录。") }
     }
     private func revoke() { do { let command: FarmCommand = record.kind == .lambing ? .care(.revokeLambing(recordID: record.id, reason: revokeReason)) : .tombstoneEntity(entityType: .reproduction, entityID: record.id, reason: "用户撤销繁殖记录"); try service.execute(command, in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext) } catch { errorMessage = error.localizedDescription } }
     private func restore(_ id: UUID) { do { try service.execute(.restoreTombstonedEntity(tombstoneID: id), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext) } catch { errorMessage = error.localizedDescription } }
@@ -756,6 +962,7 @@ struct LambingCorrectionView: View {
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
     @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproduction: [ReproductionRecord]
     @Query private var offspringRecords: [LambingOffspringRecord]
+    @Query private var weightRecords: [WeightRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -768,8 +975,8 @@ struct LambingCorrectionView: View {
     @State private var sireID: UUID?
     @State private var semenID: UUID?
     @State private var penID: UUID?
-    @State private var parity = 1
     @State private var rows: [LambFormRow] = []
+    @State private var lambCountText = ""
     @State private var note = ""
     @State private var reason = ""
     @State private var errorMessage: String?
@@ -784,17 +991,29 @@ struct LambingCorrectionView: View {
         }
     } }
     private var linkedBreeding: ReproductionRecord? { relatedBreedingID.flatMap { id in eligibleBreedings.first { $0.id == id } } }
+    private var priorParity: Int {
+        LambingEntrySemantics.priorParityForLambing(
+            eweID: record.eweID,
+            farmID: farm.id,
+            at: occurredAt,
+            existingRecordID: record.id,
+            records: reproduction
+        )
+    }
+    private var correctedParity: Int { priorParity + 1 }
 
     var body: some View {
         Form {
             Section("产羔事实") {
-                DatePicker("产羔时间", selection: $occurredAt)
-                Stepper("胎次：\(parity)", value: $parity, in: 1...20)
+                DatePicker("产羔时间", selection: $occurredAt, in: ...Date.now)
+                LabeledContent("产羔前胎次", value: parityDisplayName(priorParity))
+                LabeledContent("本次产羔胎次", value: parityDisplayName(correctedParity))
                 Picker("羔羊圈舍", selection: $penID) {
                     Text("未分圈").tag(UUID?.none)
                     ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
                 }
             }
+            LambCountSection(countText: $lambCountText, deadCount: rows.count(where: \.isStillborn))
             Section("繁殖链") {
                 Picker("关联配种", selection: $relatedBreedingID) {
                     Text("保持未关联").tag(UUID?.none)
@@ -818,18 +1037,18 @@ struct LambingCorrectionView: View {
                     }
                 }
             }
-            Section("逐只羔羊") {
-                ForEach($rows) { $row in
-                    VStack {
-                        TextField("耳号", text: $row.earTag)
-                        Picker("性别", selection: $row.sex) { Text("公").tag(SheepSex.ram); Text("母").tag(SheepSex.ewe) }
-                        TextField("初生重", text: $row.birthWeight).keyboardType(.decimalPad)
-                        Toggle("死胎", isOn: $row.isStillborn)
-                        Toggle("建立羊只档案", isOn: $row.createRecord).disabled(row.isStillborn)
-                    }
-                }
-                .onDelete { rows.remove(atOffsets: $0) }
-                Button("补录一只羔羊") { rows.append(LambFormRow()) }
+            ForEach($rows) { $row in
+                LambFormSection(
+                    row: $row,
+                    number: (rows.firstIndex { $0.id == row.id } ?? 0) + 1,
+                    lambingAt: occurredAt,
+                    canRemove: rows.count > 1,
+                    remove: { removeLamb(row.id) }
+                )
+            }
+            Section {
+                Button("补录一只羔羊", action: appendLamb)
+                    .disabled(rows.count >= LambingFormLimits.maximumLambCount)
             }
             Section("备注") { TextField("备注", text: $note, axis: .vertical) }
             Section("审计") {
@@ -842,6 +1061,15 @@ struct LambingCorrectionView: View {
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
         .onAppear(perform: load)
+        .onChange(of: occurredAt) { oldValue, newValue in
+            for index in rows.indices {
+                guard let weighedAt = rows[index].weightOccurredAt else { continue }
+                if weighedAt == oldValue || weighedAt < newValue {
+                    rows[index].weightOccurredAt = newValue
+                }
+            }
+        }
+        .onChange(of: lambCountText) { _, value in resizeRows(to: value) }
         .onChange(of: relatedBreedingID) { _, value in if value != nil { paternalMode = .unknown; sireID = nil; semenID = nil } }
         .onChange(of: paternalMode) { _, value in if value != .breedingRam { sireID = nil }; if value != .semen { semenID = nil } }
     }
@@ -852,17 +1080,73 @@ struct LambingCorrectionView: View {
         sireID = record.sireID
         semenID = record.semenID
         paternalMode = record.semenID != nil ? .semen : (record.sireID != nil ? .breedingRam : .unknown)
-        parity = record.parity ?? 1
         note = record.note
         rows = offspringRecords
             .filter { $0.farmID == farm.id && $0.lambingRecordID == record.id && $0.deletedAt == nil }
             .map { detail in
-                LambFormRow(id: detail.id, sheepID: detail.sheepID ?? UUID(), earTag: detail.legacyEarTag, sex: SheepSex(rawValue: detail.sexRawValue) ?? .unknown, birthWeight: detail.birthWeightText, createRecord: detail.sheepID != nil, isStillborn: detail.isStillborn)
+                let linkedWeight = detail.autoBirthWeightRecordID.flatMap { weightID in
+                    weightRecords.first { $0.id == weightID && $0.farmID == farm.id && $0.deletedAt == nil }
+                }
+                let legacyBirthWeight = Decimal.stable(detail.birthWeightText).flatMap { $0 > 0 ? $0.stableText : nil }
+                return LambFormRow(
+                    id: detail.id,
+                    sheepID: detail.sheepID ?? UUID(),
+                    earTag: detail.legacyEarTag,
+                    sex: SheepSex(rawValue: detail.sexRawValue) ?? .unknown,
+                    weight: linkedWeight?.kilogramsText ?? legacyBirthWeight ?? "",
+                    weightOccurredAt: linkedWeight?.occurredAt ?? (legacyBirthWeight == nil ? nil : record.occurredAt),
+                    createRecord: detail.sheepID != nil,
+                    isStillborn: detail.isStillborn
+                )
             }
+        let initialCount = max(rows.count, record.lambCount, 1)
+        if initialCount > rows.count {
+            rows.append(contentsOf: (rows.count..<initialCount).map { _ in LambFormRow() })
+        }
+        lambCountText = "\(rows.count)"
+    }
+
+    private func appendLamb() {
+        guard rows.count < LambingFormLimits.maximumLambCount else { return }
+        rows.append(LambFormRow())
+        lambCountText = "\(rows.count)"
+    }
+
+    private func removeLamb(_ id: UUID) {
+        rows.removeAll { $0.id == id }
+        lambCountText = "\(rows.count)"
+    }
+
+    private func resizeRows(to text: String) {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let count = Int(normalized), (1...LambingFormLimits.maximumLambCount).contains(count) else { return }
+        if count > rows.count {
+            rows.append(contentsOf: (rows.count..<count).map { _ in LambFormRow() })
+        } else if count < rows.count {
+            rows.removeLast(rows.count - count)
+        }
     }
 
     private func save() {
-        let lambs = rows.map { CareLambDraft(id: $0.id, sheepID: $0.sheepID, earTag: $0.earTag, sex: $0.sex, birthWeightText: $0.birthWeight, createSheepRecord: $0.isStillborn ? false : $0.createRecord, isStillborn: $0.isStillborn) }
+        let normalizedCount = lambCountText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let intendedCount = Int(normalizedCount),
+              (1...LambingFormLimits.maximumLambCount).contains(intendedCount),
+              intendedCount == rows.count else {
+            errorMessage = "产羔总数必须是 1 到 \(LambingFormLimits.maximumLambCount) 的整数。"
+            return
+        }
+        let lambs = rows.map {
+            CareLambDraft(
+                id: $0.id,
+                sheepID: $0.sheepID,
+                earTag: $0.earTag,
+                sex: $0.sex,
+                birthWeightText: $0.weight,
+                weightOccurredAt: $0.weightOccurredAt,
+                createSheepRecord: $0.isStillborn ? false : $0.createRecord,
+                isStillborn: $0.isStillborn
+            )
+        }
         let draft = CareLambingDraft(
             id: record.id,
             eweID: record.eweID,
@@ -870,7 +1154,7 @@ struct LambingCorrectionView: View {
             sireID: relatedBreedingID == nil && paternalMode == .breedingRam ? sireID : nil,
             semenID: relatedBreedingID == nil && paternalMode == .semen ? semenID : nil,
             relatedBreedingRecordID: relatedBreedingID,
-            parity: parity,
+            parity: correctedParity,
             birthDeadCount: lambs.count(where: \.isStillborn),
             offspring: lambs,
             penID: penID,

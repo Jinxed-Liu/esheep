@@ -189,6 +189,10 @@ actor FarmEventHistoryActor {
         let weights = try context.fetch(FetchDescriptor<WeightRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
         }))
+        let gainSamplesBySheepID = Dictionary(
+            grouping: WeaningGainSemantics.samples(from: weights, farmID: farmID),
+            by: \.sheepID
+        )
         events.append(contentsOf: weights.map { record in
             return FarmEventSnapshot(
                 id: record.id, entityType: .weight, category: .herd,
@@ -213,6 +217,20 @@ actor FarmEventHistoryActor {
                 ?? child?.semenDonorNameSnapshot
                 ?? "未关联"
             let currentPen = child?.currentPenID.flatMap { penName[$0] } ?? "未分圈"
+            let gainSamples = gainSamplesBySheepID[record.sheepID] ?? []
+            let gainBaseline = WeaningGainSemantics.earliestBaseline(
+                sheepID: record.sheepID,
+                birthAt: birthAt,
+                weaningAt: record.occurredAt,
+                samples: gainSamples
+            )
+            let gain = WeaningGainSemantics.calculate(
+                sheepID: record.sheepID,
+                birthAt: birthAt,
+                weaningAt: record.occurredAt,
+                weaningWeight: NSDecimalNumber(decimal: record.weanWeight).doubleValue,
+                samples: gainSamples
+            )
             return FarmEventSnapshot(
                 id: record.id, entityType: .weaning, category: .herd,
                 occurredAt: record.occurredAt, recordedAt: record.recordedAt,
@@ -227,7 +245,10 @@ actor FarmEventHistoryActor {
                     .init(label: "出生日期", value: birthAt.map(dateFormatter.string(from:)) ?? ""),
                     .init(label: "断奶重kg", value: record.weanWeightText),
                     .init(label: "出生重kg", value: record.birthWeightText ?? ""),
-                    .init(label: "日增重kg/天", value: record.averageDailyGainText ?? ""),
+                    .init(label: "日增重起算体重kg", value: gainBaseline?.kilogramsText ?? ""),
+                    .init(label: "日增重起算日期", value: gainBaseline.map { dateFormatter.string(from: $0.occurredAt) } ?? ""),
+                    .init(label: "日增重计算天数", value: gain.map { String($0.intervalDays) } ?? ""),
+                    .init(label: "日增重kg/天", value: gain?.kilogramsPerDayText ?? ""),
                     .init(label: "母本", value: dam),
                     .init(label: "父本来源", value: sire),
                     .init(label: "胎只数", value: record.litterSize.map { String($0) } ?? "")
@@ -455,8 +476,17 @@ struct FarmEventHistoryView: View {
     }
 
     private func canEdit(_ event: FarmEventSnapshot) -> Bool {
+        guard !isParityConfirmation(event) else { return false }
         guard let capability = event.editCapability else { return false }
         return CapabilitySet(role: farm.role).allows(capability)
+    }
+
+    private func canDelete(_ event: FarmEventSnapshot) -> Bool {
+        canDelete && !isParityConfirmation(event)
+    }
+
+    private func isParityConfirmation(_ event: FarmEventSnapshot) -> Bool {
+        event.entityType == .reproduction && event.title == ReproductionRecordKind.parityBaseline.displayName
     }
 
     private var hasActiveSearchOrFilter: Bool {
@@ -486,13 +516,13 @@ struct FarmEventHistoryView: View {
                         farmName: farm.name,
                         canExport: canExport,
                         canEdit: canEdit(event),
-                        canDelete: canDelete,
+                        canDelete: canDelete(event),
                         requestEditing: { beginEditing(event) },
                         requestDeletion: { pendingDeletion = event }
                     )
                     .listRowInsets(.init(top: 7, leading: 16, bottom: 7, trailing: 12))
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        if canDelete {
+                        if canDelete(event) {
                             Button("删除", systemImage: "trash", role: .destructive) {
                                 pendingDeletion = event
                             }
@@ -691,6 +721,7 @@ struct FarmEventHistoryView: View {
                 guard let record = try modelContext.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
                     $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
                 })).first else { throw FarmEventEditError.recordUnavailable }
+                guard record.kind != .parityBaseline else { throw FarmEventEditError.unsupported }
                 pendingEditor = .reproduction(record)
             default:
                 throw FarmEventEditError.unsupported
@@ -1013,6 +1044,9 @@ enum FarmEventDeletionCommandResolver {
         let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
             $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
         })).first
+        if reproduction?.kind == .parityBaseline {
+            throw FarmCommandError.parityBaselineManagedInProfile
+        }
         guard reproduction?.kind == .lambing else {
             return .tombstoneEntity(
                 entityType: event.entityType,

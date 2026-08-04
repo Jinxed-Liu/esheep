@@ -149,6 +149,11 @@ enum AppSchemaV5: VersionedSchema {
 
 enum AppSchemaV6: VersionedSchema {
     static let versionIdentifier = Schema.Version(6, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.preV7ModelTypes }
+}
+
+enum AppSchemaV7: VersionedSchema {
+    static let versionIdentifier = Schema.Version(7, 0, 0)
     static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
 }
 
@@ -161,6 +166,7 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             AppSchemaV4.self,
             AppSchemaV5.self,
             AppSchemaV6.self,
+            AppSchemaV7.self,
         ]
     }
 
@@ -245,12 +251,13 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             ),
             .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self),
             .lightweight(fromVersion: AppSchemaV5.self, toVersion: AppSchemaV6.self),
+            .lightweight(fromVersion: AppSchemaV6.self, toVersion: AppSchemaV7.self),
         ]
     }
 }
 
 enum AppSchema {
-    static let currentVersion = "6.0.0"
+    static let currentVersion = "7.0.0"
 
     static func defaultStoreURL(name: String = "eSheepNext") -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -292,6 +299,7 @@ enum AppSchema {
             MigrationCommitRecord.self,
             MigrationAuditRecord.self,
             PhotoAssetRecord.self,
+            SheepAvatarRecord.self,
             HealthSubjectLink.self,
             LambingOffspringRecord.self,
             FeedIngredientBatchRecord.self,
@@ -326,7 +334,7 @@ enum AppSchema {
     }
 
     fileprivate static var preV3BusinessModelTypes: [any PersistentModel.Type] {
-        businessModelTypes.filter {
+        preV7BusinessModelTypes.filter {
             ObjectIdentifier($0) != ObjectIdentifier(OutboxItem.self) &&
             ObjectIdentifier($0) != ObjectIdentifier(FarmStorageProfile.self) &&
             ObjectIdentifier($0) != ObjectIdentifier(FarmRemoteBinding.self) &&
@@ -342,21 +350,27 @@ enum AppSchema {
     }
 
     fileprivate static var preV4BusinessModelTypes: [any PersistentModel.Type] {
-        businessModelTypes.filter {
+        preV7BusinessModelTypes.filter {
             ObjectIdentifier($0) != ObjectIdentifier(FarmOperationSequenceCounter.self) &&
             ObjectIdentifier($0) != ObjectIdentifier(FarmOperationSequenceRecord.self)
         }
     }
 
     fileprivate static var preV5BusinessModelTypes: [any PersistentModel.Type] {
-        businessModelTypes.filter {
+        preV7BusinessModelTypes.filter {
             ObjectIdentifier($0) != ObjectIdentifier(FarmBaselineMigrationRecord.self)
         }
     }
 
     fileprivate static var preV6BusinessModelTypes: [any PersistentModel.Type] {
-        businessModelTypes.filter {
+        preV7BusinessModelTypes.filter {
             ObjectIdentifier($0) != ObjectIdentifier(FarmRemoteRestoreRecord.self)
+        }
+    }
+
+    fileprivate static var preV7BusinessModelTypes: [any PersistentModel.Type] {
+        businessModelTypes.filter {
+            ObjectIdentifier($0) != ObjectIdentifier(SheepAvatarRecord.self)
         }
     }
 
@@ -387,8 +401,12 @@ enum AppSchema {
         preV6BusinessModelTypes + insightModelTypes
     }
 
+    fileprivate static var preV7ModelTypes: [any PersistentModel.Type] {
+        preV7BusinessModelTypes + insightModelTypes
+    }
+
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV6.self)
+        Schema(versionedSchema: AppSchemaV7.self)
     }
 
     static func makeConfiguration(

@@ -12,6 +12,7 @@ enum PhotoTransferError: LocalizedError {
     case bindingMissing
     case assetMissing
     case remoteAssetMissing
+    case remoteProviderUnavailable
     case checksumMismatch
 
     var errorDescription: String? {
@@ -21,7 +22,8 @@ enum PhotoTransferError: LocalizedError {
         case .imageEncodeFailed: "无法生成云端照片版本。"
         case .bindingMissing: "牧场尚未建立有效的 CloudKit 绑定。"
         case .assetMissing: "本地照片记录不存在。"
-        case .remoteAssetMissing: "CloudKit 照片二进制不存在。"
+        case .remoteAssetMissing: "云端照片二进制不存在。"
+        case .remoteProviderUnavailable: "当前云端照片服务不可用。"
         case .checksumMismatch: "照片下载后的校验值不一致。"
         }
     }
@@ -67,9 +69,69 @@ actor PhotoTransferActor {
         let optimized = try Self.optimize(sourceURL: sourceURL, farmID: farmID, assetID: assetID)
         let context = ModelContext(modelContainer)
         if let duplicate = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first(where: {
-            $0.farmID == farmID && $0.sha256 == optimized.payloadDigest && $0.deletedAt == nil
+            $0.farmID == farmID &&
+                $0.sheepID == entityID &&
+                $0.sha256 == optimized.payloadDigest &&
+                $0.deletedAt == nil
         }) {
+            let existingURL = Self.absoluteURL(for: duplicate.relativePath)
+            if FileManager.default.fileExists(atPath: existingURL.path),
+               (try? Self.digest(existingURL)) == optimized.payloadDigest {
+                try? FileManager.default.removeItem(at: optimized.fileURL)
+                return duplicate.id
+            }
+
+            // A metadata projection may survive after its rebuildable local
+            // cache disappeared. Reusing the photo must restore those bytes,
+            // not discard the newly supplied valid image and return a broken ID.
+            let fileExtension = optimized.mimeType == "image/heic" ? "heic" : "jpg"
+            let destination = try Self.assetURL(
+                farmID: farmID,
+                assetID: duplicate.id,
+                fileExtension: fileExtension
+            )
+            try Self.replaceItem(at: destination, with: optimized.fileURL)
             try? FileManager.default.removeItem(at: optimized.fileURL)
+            duplicate.relativePath = Self.relativePath(for: destination)
+            duplicate.sourceSHA256 = optimized.sourceDigest
+            duplicate.sourcePixelWidth = optimized.sourceWidth
+            duplicate.sourcePixelHeight = optimized.sourceHeight
+            duplicate.cloudPixelWidth = optimized.cloudWidth
+            duplicate.cloudPixelHeight = optimized.cloudHeight
+            duplicate.capturedAt = optimized.capturedAt
+            duplicate.mimeType = optimized.mimeType
+
+            let uploads = try context.fetch(FetchDescriptor<CloudAssetTransfer>()).filter {
+                $0.farmID == farmID &&
+                    $0.assetID == duplicate.id &&
+                    $0.direction == .upload
+            }
+            if let transfer = uploads.max(by: { $0.updatedAt < $1.updatedAt }) {
+                transfer.localRelativePath = duplicate.relativePath
+                transfer.payloadDigest = duplicate.sha256
+                transfer.byteCount = optimized.byteCount
+                transfer.sourceDigest = duplicate.sourceSHA256
+                transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
+                transfer.transferredByteCount = 0
+                transfer.lastErrorCode = nil
+                transfer.nextRetryAt = nil
+                transfer.updatedAt = .now
+            } else {
+                context.insert(CloudAssetTransfer(
+                    farmID: farmID,
+                    assetID: duplicate.id,
+                    localRelativePath: duplicate.relativePath,
+                    payloadDigest: duplicate.sha256,
+                    byteCount: optimized.byteCount,
+                    direction: .upload,
+                    sourceDigest: duplicate.sourceSHA256
+                ))
+            }
+            let route = try FarmStorageRouter.route(farmID: farmID, context: context)
+            try context.save()
+            if route.deliveryProvider == .supabase {
+                CloudRuntimeNotification.postSyncWake(farmID: farmID)
+            }
             return duplicate.id
         }
         let asset = PhotoAssetRecord(
@@ -301,10 +363,42 @@ actor PhotoTransferActor {
 
     func localFileData(assetID: UUID) throws -> Data {
         let context = ModelContext(modelContainer)
-        guard let asset = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first(where: { $0.id == assetID }) else {
+        let candidates = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).filter {
+            $0.id == assetID && $0.deletedAt == nil
+        }
+        guard !candidates.isEmpty else {
             throw PhotoTransferError.assetMissing
         }
-        return try Data(contentsOf: Self.absoluteURL(for: asset.relativePath))
+        var foundLocalFile = false
+        for asset in candidates where !asset.relativePath.isEmpty {
+            let fileURL = Self.absoluteURL(for: asset.relativePath)
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                continue
+            }
+            foundLocalFile = true
+            guard try Self.digest(fileURL) == asset.sha256 else { continue }
+            return try Data(contentsOf: fileURL)
+        }
+        if foundLocalFile { throw PhotoTransferError.checksumMismatch }
+        throw PhotoTransferError.sourceUnreadable
+    }
+
+    func deliveryProvider(assetID: UUID) throws -> FarmRemoteProvider? {
+        let context = ModelContext(modelContainer)
+        guard let asset = try context.fetch(FetchDescriptor<PhotoAssetRecord>()).first(where: {
+            $0.id == assetID && $0.deletedAt == nil
+        }) else {
+            throw PhotoTransferError.assetMissing
+        }
+        return try FarmStorageRouter.route(
+            farmID: asset.farmID,
+            context: context
+        ).deliveryProvider
+    }
+
+    func downloadIfNeeded(assetID: UUID) async throws {
+        if (try? localFileData(assetID: assetID)) != nil { return }
+        try await download(assetID: assetID)
     }
 
     func updateCapturedAt(assetID: UUID, capturedAt: Date) throws {
@@ -473,15 +567,24 @@ actor PhotoTransferActor {
         return localAssetURL(for: path, applicationSupportDirectory: support)
     }
 
-    /// Formal migration assets predate the eSheepNext subdirectory used by
-    /// newly captured photos. Keep that persisted relative-path contract so
-    /// upgraded farms can upload their original files without moving them.
+    /// Formal migration assets and early development-clone assets predate the
+    /// eSheepNext subdirectory used by newly captured photos. Prefer the
+    /// current location, but resolve an existing legacy root-level file so an
+    /// upgraded store never loses readable bytes solely because of its path.
     static func localAssetURL(for path: String, applicationSupportDirectory: URL) -> URL {
         if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
         if path.hasPrefix("MigrationAssets/") {
             return applicationSupportDirectory.appending(path: path)
         }
-        return applicationSupportDirectory.appending(path: "eSheepNext/\(path)")
+        let current = applicationSupportDirectory.appending(path: "eSheepNext/\(path)")
+        if FileManager.default.fileExists(atPath: current.path) {
+            return current
+        }
+        let legacy = applicationSupportDirectory.appending(path: path)
+        if FileManager.default.fileExists(atPath: legacy.path) {
+            return legacy
+        }
+        return current
     }
 
     static func relativePath(for url: URL) -> String {

@@ -646,19 +646,22 @@ final class FarmHistoryRebuilder {
 
 /// A completed cloud rebuild intentionally preserves legacy snapshot authority
 /// because the imported event timeline can be incomplete. Any transfer or
-/// removal received *after* that cache switch is a new immutable cloud fact and
-/// must take authority from the legacy snapshot. Older builds persisted the new
-/// fact and its CloudKit receipt but forgot this handoff, leaving the dashboard
-/// on the pre-sync sheep count. Repair that narrow post-rebuild window before
-/// CKSyncEngine starts so already-received operations become visible without a
+/// removal received *after* that authority switch is a new immutable remote fact
+/// and must take authority from the legacy snapshot. Older builds persisted the
+/// new fact and its receipt but forgot this handoff, leaving the dashboard on the
+/// pre-sync sheep count. Repair that narrow post-recovery window before cloud
+/// collaboration starts so already-received operations become visible without a
 /// re-upload or another full cloud rebuild.
 enum PostRecoveryHistoryProjectionRepair {
     @discardableResult
     static func repair(container: ModelContainer) throws -> Int {
         let context = ModelContext(container)
-        let activeFarmIDs = Set(try context.fetch(FetchDescriptor<CloudFarmBinding>())
+        let activeCloudFarmIDs = Set(try context.fetch(FetchDescriptor<CloudFarmBinding>())
             .filter { $0.state == .active }
             .map(\.farmID))
+        let activeRemoteBindings = try context.fetch(FetchDescriptor<FarmRemoteBinding>())
+            .filter { $0.state == .active }
+        let activeFarmIDs = activeCloudFarmIDs.union(activeRemoteBindings.map(\.farmID))
         guard !activeFarmIDs.isEmpty else { return 0 }
 
         let completedSessions = try context.fetch(FetchDescriptor<CloudRebuildSessionRecord>())
@@ -667,13 +670,31 @@ enum PostRecoveryHistoryProjectionRepair {
                     $0.status == .completed &&
                     $0.completedAt != nil
             }
+        let completedRemoteRestores = try context.fetch(FetchDescriptor<FarmRemoteRestoreRecord>())
+            .filter {
+                activeFarmIDs.contains($0.farmID) &&
+                    $0.state == .completed &&
+                    $0.completedAt != nil
+            }
+        let baselineMigrationFarmIDs = Set(try context.fetch(FetchDescriptor<FarmBaselineMigrationRecord>())
+            .map(\.farmID))
         var latestCutoffByFarmID: [UUID: Date] = [:]
+        func registerCutoff(_ cutoff: Date, farmID: UUID) {
+            latestCutoffByFarmID[farmID] = max(
+                latestCutoffByFarmID[farmID] ?? .distantPast,
+                cutoff
+            )
+        }
         for session in completedSessions {
             guard let completedAt = session.completedAt else { continue }
-            latestCutoffByFarmID[session.farmID] = max(
-                latestCutoffByFarmID[session.farmID] ?? .distantPast,
-                completedAt
-            )
+            registerCutoff(completedAt, farmID: session.farmID)
+        }
+        for restore in completedRemoteRestores {
+            guard let completedAt = restore.completedAt else { continue }
+            registerCutoff(completedAt, farmID: restore.farmID)
+        }
+        for binding in activeRemoteBindings where baselineMigrationFarmIDs.contains(binding.farmID) {
+            registerCutoff(binding.createdAt, farmID: binding.farmID)
         }
         guard !latestCutoffByFarmID.isEmpty else { return 0 }
 

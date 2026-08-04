@@ -76,7 +76,11 @@ struct FarmCommandCloudPayload: Codable, Sendable, Equatable {
 }
 
 enum FarmCommandCloudPayloadEncoder {
-    static func encode(_ command: FarmCommand, resolvedFeedLines: [FarmCommandCloudPayload.FeedLine]? = nil) throws -> Data {
+    static func encode(
+        _ command: FarmCommand,
+        resolvedFeedLines: [FarmCommandCloudPayload.FeedLine]? = nil,
+        sheepAvatarUpdate: SheepAvatarPhotoUpdate? = nil
+    ) throws -> Data {
         var payload = FarmCommandCloudPayload(kind: command.operationKind)
         switch command {
         case .care(let careCommand):
@@ -101,15 +105,18 @@ enum FarmCommandCloudPayloadEncoder {
         case .setPenActive(let penID, let isActive):
             payload.identifiers = ["penID": penID]
             payload.integers = ["isActive": isActive ? 1 : 0]
-        case .addSheep(let earTag, let breed, let sex, let penID, let occurredAt, let birthAt, let note):
+        case .addSheep(let earTag, let breed, let sex, let penID, let occurredAt, let birthAt, let currentParity, let note):
             payload.strings = ["earTag": earTag, "breed": breed, "sex": sex.rawValue, "note": note]
             payload.optionalIdentifiers = ["penID": penID]
             payload.dates = ["occurredAt": occurredAt]
             payload.optionalDates = ["birthAt": birthAt]
-        case .updateSheepProfile(let sheepID, let earTag, let breed, let sex, let birthAt, let note):
+            if let currentParity { payload.integers["currentParity"] = currentParity }
+        case .updateSheepProfile(let sheepID, let earTag, let breed, let sex, let birthAt, let currentParity, let parityRecordedAt, let note):
             payload.identifiers = ["sheepID": sheepID]
             payload.strings = ["earTag": earTag, "breed": breed, "sex": sex.rawValue, "note": note]
             payload.optionalDates = ["birthAt": birthAt]
+            if let currentParity { payload.integers["currentParity"] = currentParity }
+            if let parityRecordedAt { payload.dates["parityRecordedAt"] = parityRecordedAt }
         case .recordWeight(let sheepID, let kilogramsText, let occurredAt, let note):
             payload.identifiers = ["sheepID": sheepID]
             payload.strings = ["kilogramsText": kilogramsText, "note": note]
@@ -222,6 +229,10 @@ enum FarmCommandCloudPayloadEncoder {
             payload.dates = ["deletedAt": .now]
         case .restoreTombstonedEntity(let tombstoneID):
             payload.identifiers = ["tombstoneID": tombstoneID]
+        }
+        if case .updateSheepProfile = command,
+           let sheepAvatarUpdate {
+            SheepAvatarCloudPayload.write(sheepAvatarUpdate, to: &payload)
         }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

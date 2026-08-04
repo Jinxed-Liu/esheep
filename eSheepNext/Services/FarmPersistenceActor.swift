@@ -2966,6 +2966,10 @@ actor FarmPersistenceActor {
     ) throws -> Bool {
         var rejectedRecoveryRecord = false
         let existing = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+        var assetsByID: [UUID: PhotoAssetRecord] = [:]
+        for asset in existing where assetsByID[asset.id] == nil {
+            assetsByID[asset.id] = asset
+        }
         let transfers = try context.fetch(FetchDescriptor<CloudAssetTransfer>())
         let devices = try context.fetch(FetchDescriptor<DeviceIdentityRecord>())
         let revokedCertificates = try context.fetch(FetchDescriptor<RevokedCapabilityCertificateRecord>())
@@ -3033,12 +3037,13 @@ actor FarmPersistenceActor {
                 continue
             }
             let asset: PhotoAssetRecord
-            let existingAsset = existing.first(where: { $0.id == assetID })
+            let existingAsset = assetsByID[assetID]
             if let value = existingAsset {
                 asset = value
             } else {
                 asset = PhotoAssetRecord(id: assetID, farmID: farmID, sheepID: linkedID, legacySourceKey: "cloud:\(record.recordID.recordName)", originalEarTag: "", relativePath: "", sha256: digest, mimeType: mimeType)
                 context.insert(asset)
+                assetsByID[assetID] = asset
             }
             if signatureFormat == .legacyV1 {
                 let payloadChanged = asset.sha256 != digest

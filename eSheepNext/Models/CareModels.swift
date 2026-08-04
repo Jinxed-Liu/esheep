@@ -84,16 +84,30 @@ struct CareLambDraft: Codable, Sendable, Equatable, Identifiable {
     let sheepID: UUID
     let earTag: String
     let sex: SheepSex
+    /// Kept under its legacy payload name for backward cloud compatibility.
+    /// The value is only a true birth weight when `weightOccurredAt` is within
+    /// the birth-weight window; later values become ordinary WeightRecords.
     let birthWeightText: String
+    let weightOccurredAt: Date?
     let createSheepRecord: Bool
     let isStillborn: Bool
 
-    init(id: UUID = UUID(), sheepID: UUID = UUID(), earTag: String, sex: SheepSex, birthWeightText: String, createSheepRecord: Bool = true, isStillborn: Bool = false) {
+    init(
+        id: UUID = UUID(),
+        sheepID: UUID = UUID(),
+        earTag: String,
+        sex: SheepSex,
+        birthWeightText: String = "",
+        weightOccurredAt: Date? = nil,
+        createSheepRecord: Bool = true,
+        isStillborn: Bool = false
+    ) {
         self.id = id
         self.sheepID = sheepID
         self.earTag = earTag
         self.sex = sex
         self.birthWeightText = birthWeightText
+        self.weightOccurredAt = weightOccurredAt
         self.createSheepRecord = createSheepRecord
         self.isStillborn = isStillborn
     }

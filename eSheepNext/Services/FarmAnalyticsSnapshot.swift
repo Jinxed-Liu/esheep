@@ -325,6 +325,9 @@ struct LambWeaningAnalysis: Sendable {
 enum LambAnalyticsEngine {
     static func calculate(snapshot: FarmAnalyticsSnapshot, selectedYear: String?, selectedWeaningMonth: String = "全部") -> FarmLambAnalyticsResult {
         let sheepByID = Dictionary(uniqueKeysWithValues: snapshot.sheep.map { ($0.id, $0) })
+        let gainSamplesBySheepID = Dictionary(grouping: snapshot.weights.map {
+            WeaningGainSample(id: $0.id, sheepID: $0.sheepID, kilograms: $0.kilograms, occurredAt: $0.occurredAt)
+        }, by: \.sheepID)
         let yearLambings = snapshot.lambings.filter { selectedYear == nil || FarmAnalyticsDate.year($0.occurredAt) == selectedYear }
         let completeLambings = yearLambings.filter(\.hasCompleteAnalyticsData)
         let weaningBySheepID = Dictionary(grouping: snapshot.weanings, by: \.sheepID).compactMapValues { records in
@@ -347,14 +350,16 @@ enum LambAnalyticsEngine {
                     else if child.sex == .female { stats.femaleWeightCount += 1; stats.femaleWeightAverage += weight }
                 }
                 guard let sheepID = child.sheepID,
-                      let weaning = weaningBySheepID[sheepID],
-                      let birthWeight = weaning.birthWeight ?? child.birthWeight,
-                      birthWeight > 0,
-                      weaning.weanWeight > birthWeight else { continue }
+                      let weaning = weaningBySheepID[sheepID] else { continue }
                 let birthAt = weaning.birthAt ?? sheepByID[sheepID]?.birthAt ?? lambing.occurredAt
-                let ageDays = FarmAnalyticsDate.days(from: birthAt, to: weaning.occurredAt)
-                guard ageDays > 0 else { continue }
-                let adg = (weaning.weanWeight - birthWeight) / Double(ageDays) * 1000
+                guard let gain = WeaningGainSemantics.calculate(
+                    sheepID: sheepID,
+                    birthAt: birthAt,
+                    weaningAt: weaning.occurredAt,
+                    weaningWeight: weaning.weanWeight,
+                    samples: gainSamplesBySheepID[sheepID] ?? []
+                ) else { continue }
+                let adg = gain.gramsPerDay
                 if child.sex == .male { stats.maleADGCount += 1; stats.maleADGAverage += adg }
                 else if child.sex == .female { stats.femaleADGCount += 1; stats.femaleADGAverage += adg }
             }
@@ -386,11 +391,23 @@ enum LambAnalyticsEngine {
         let totalLambs = sortedMonths.reduce(0) { $0 + $1.totalLambs }
         let totalDead = sortedMonths.reduce(0) { $0 + $1.birthDead }
         let totalCull = sortedMonths.reduce(0) { $0 + $1.culled + $1.disappeared }
-        let weaning = calculateWeaning(snapshot: snapshot, sheepByID: sheepByID, selectedYear: selectedYear, selectedMonth: selectedWeaningMonth)
+        let weaning = calculateWeaning(
+            snapshot: snapshot,
+            sheepByID: sheepByID,
+            gainSamplesBySheepID: gainSamplesBySheepID,
+            selectedYear: selectedYear,
+            selectedMonth: selectedWeaningMonth
+        )
         return FarmLambAnalyticsResult(lambStats: LambStats(months: sortedMonths, totalLambs: totalLambs, mortalityRate: totalLambs > 0 ? Double(totalDead) / Double(totalLambs) : 0, deathCullRate: totalLambs > totalDead ? Double(totalCull) / Double(totalLambs - totalDead) : 0), weaning: weaning, incompleteLambingCount: yearLambings.count - completeLambings.count)
     }
 
-    private static func calculateWeaning(snapshot: FarmAnalyticsSnapshot, sheepByID: [UUID: FarmAnalyticsSnapshot.Sheep], selectedYear: String?, selectedMonth: String) -> LambWeaningAnalysis {
+    private static func calculateWeaning(
+        snapshot: FarmAnalyticsSnapshot,
+        sheepByID: [UUID: FarmAnalyticsSnapshot.Sheep],
+        gainSamplesBySheepID: [UUID: [WeaningGainSample]],
+        selectedYear: String?,
+        selectedMonth: String
+    ) -> LambWeaningAnalysis {
         var rows: [String: WeanMonthStats] = [:]
         for record in snapshot.weanings where selectedYear == nil || FarmAnalyticsDate.year(record.occurredAt) == selectedYear {
             guard selectedMonth == "全部" || FarmAnalyticsDate.monthNumber(record.occurredAt) == selectedMonth else { continue }
@@ -401,17 +418,24 @@ enum LambAnalyticsEngine {
             if sex == .male { stats.maleCount += 1 } else if sex == .female { stats.femaleCount += 1 } else { stats.otherSexCount += 1 }
             let validWeight = record.weanWeight > 0
             if validWeight { stats.weightCount += 1; stats.weightSum += record.weanWeight; if sex == .male { stats.maleWeightCount += 1; stats.maleWeightSum += record.weanWeight }; if sex == .female { stats.femaleWeightCount += 1; stats.femaleWeightSum += record.weanWeight } }
-            let ageDays = record.birthAt.map { FarmAnalyticsDate.days(from: $0, to: record.occurredAt) } ?? 0
+            let birthAt = record.birthAt ?? sheepByID[record.sheepID]?.birthAt
+            let ageDays = birthAt.map { FarmAnalyticsDate.days(from: $0, to: record.occurredAt) } ?? 0
             let validAge = ageDays > 0
             if validAge { stats.ageCount += 1; stats.ageDays += ageDays; if sex == .male { stats.maleAgeCount += 1; stats.maleAgeDays += ageDays }; if sex == .female { stats.femaleAgeCount += 1; stats.femaleAgeDays += ageDays } }
-            let validBirthWeight = record.birthWeight.map { $0 > 0 && $0 < record.weanWeight } ?? false
-            if validAge && validWeight, let birthWeight = record.birthWeight, validBirthWeight {
-                let adg = (record.weanWeight - birthWeight) / Double(ageDays) * 1000
+            let gain = WeaningGainSemantics.calculate(
+                sheepID: record.sheepID,
+                birthAt: birthAt,
+                weaningAt: record.occurredAt,
+                weaningWeight: record.weanWeight,
+                samples: gainSamplesBySheepID[record.sheepID] ?? []
+            )
+            if validWeight, let gain {
+                let adg = gain.gramsPerDay
                 stats.adgCount += 1; stats.adgSum += adg
                 if sex == .male { stats.maleADGCount += 1; stats.maleADGSum += adg }
                 if sex == .female { stats.femaleADGCount += 1; stats.femaleADGSum += adg }
             }
-            if sex == nil || !validWeight || !validAge || !validBirthWeight { stats.abnormalCount += 1 }
+            if sex == nil || !validWeight || !validAge || gain == nil { stats.abnormalCount += 1 }
             rows[month] = stats
         }
         return LambWeaningAnalysis(months: rows.values.sorted { $0.month < $1.month })

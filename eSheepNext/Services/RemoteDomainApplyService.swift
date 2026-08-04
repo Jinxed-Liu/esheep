@@ -546,6 +546,10 @@ private final class RemoteDomainReplayIndex {
             where value.farmID == farmID {
             register(value)
         }
+        for value in try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
 
         let farmOperations = try context.fetch(FetchDescriptor<DomainOperation>())
             .filter {
@@ -611,6 +615,7 @@ private final class RemoteDomainReplayIndex {
         case let value as ReproductionRecord: register(value, id: value.id)
         case let value as SemenRecord: register(value, id: value.id)
         case let value as NoteRecord: register(value, id: value.id)
+        case let value as PhotoAssetRecord: register(value, id: value.id)
         default: break
         }
     }
@@ -834,7 +839,33 @@ struct RemoteDomainApplyService {
                 record.currentPenID = nil
             }
             record.updatedAt = envelope.modifiedAt
+            if let avatarUpdate = SheepAvatarCloudPayload.update(from: payload) {
+                try SheepAvatarSelectionStore.apply(
+                    avatarUpdate,
+                    sheepID: record.id,
+                    farmID: envelope.farmID,
+                    updatedAt: envelope.modifiedAt,
+                    context: context
+                )
+            }
             insertIndexed(record, context: context)
+            if let currentParity = payload.integers["currentParity"] {
+                guard currentParity >= 0, record.sex == .ewe else {
+                    throw RemoteDomainApplyError.invalidPayload("currentParity")
+                }
+                let parityID = LambingEntrySemantics.entryParityBaselineID(sheepID: record.id)
+                if !(try exists(ReproductionRecord.self, id: parityID, context: context)) {
+                    context.insert(ReproductionRecord(
+                        id: parityID,
+                        farmID: envelope.farmID,
+                        eweID: record.id,
+                        kind: .parityBaseline,
+                        occurredAt: record.enteredAt,
+                        parity: currentParity,
+                        note: "建档时当前胎次"
+                    ))
+                }
+            }
             return .applied(rebuildHistoryFrom: record.enteredAt)
         case .updateSheepProfile:
             guard let record = try fetch(SheepRecord.self, id: try identifier("sheepID", payload), context: context) else { throw RemoteDomainApplyError.missingReference("sheepID") }
@@ -866,6 +897,32 @@ struct RemoteDomainApplyService {
             record.note = payload.strings["note"] ?? ""
             record.updatedAt = envelope.modifiedAt
             record.revision = envelope.revision
+            if let currentParity = payload.integers["currentParity"] {
+                guard currentParity >= 0, record.sex == .ewe else {
+                    throw RemoteDomainApplyError.invalidPayload("currentParity")
+                }
+                let parityID = LambingEntrySemantics.parityCorrectionID(sheepID: record.id, sheepRevision: record.revision)
+                if !(try exists(ReproductionRecord.self, id: parityID, context: context)) {
+                    context.insert(ReproductionRecord(
+                        id: parityID,
+                        farmID: envelope.farmID,
+                        eweID: record.id,
+                        kind: .parityBaseline,
+                        occurredAt: payload.dates["parityRecordedAt"] ?? envelope.modifiedAt,
+                        parity: currentParity,
+                        note: "档案确认当前胎次"
+                    ))
+                }
+            }
+            if let avatarUpdate = SheepAvatarCloudPayload.update(from: payload) {
+                try SheepAvatarSelectionStore.apply(
+                    avatarUpdate,
+                    sheepID: record.id,
+                    farmID: envelope.farmID,
+                    updatedAt: envelope.modifiedAt,
+                    context: context
+                )
+            }
             return .applied(rebuildHistoryFrom: nil)
         case .recordWeight:
             if try exists(WeightRecord.self, id: envelope.entityID, context: context) { return .duplicate }
@@ -1146,20 +1203,56 @@ struct RemoteDomainApplyService {
             insertIndexed(NoteRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: optionalID("sheepID", payload), penID: optionalID("penID", payload), text: try string("text", payload), occurredAt: try date("occurredAt", payload)), context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .addPhoto:
-            if try exists(PhotoAssetRecord.self, id: envelope.entityID, context: context) {
-                return .duplicate
-            }
             let sha256 = try string("sha256", payload)
             let mimeType = try string("mimeType", payload)
             guard sha256.count == 64 else {
                 throw RemoteDomainApplyError.invalidPayload("sha256")
+            }
+            let existing: PhotoAssetRecord?
+            if let indexed = replayIndex?.fetch(
+                PhotoAssetRecord.self,
+                id: envelope.entityID
+            ) {
+                existing = indexed
+            } else {
+                existing = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+                    .first(where: {
+                        $0.id == envelope.entityID &&
+                            $0.farmID == envelope.farmID
+                    })
+            }
+            if let existing {
+                guard existing.sha256 == sha256,
+                      existing.mimeType == mimeType else {
+                    throw RemoteDomainApplyError.invalidPayload("photo.identity")
+                }
+                // Base revision zero is the original immutable add. Only a
+                // later, explicitly versioned projection refresh may repair a
+                // legacy sheep association for the same binary asset.
+                guard envelope.baseRevision > 0 else { return .duplicate }
+                if let sheepID = optionalID("sheepID", payload) {
+                    guard try exists(SheepRecord.self, id: sheepID, context: context) else {
+                        throw RemoteDomainApplyError.missingReference("photo.sheepID")
+                    }
+                    existing.sheepID = sheepID
+                }
+                if let originalEarTag = payload.strings["originalEarTag"] {
+                    existing.originalEarTag = originalEarTag
+                }
+                existing.sourceSHA256 = payload.strings["sourceSHA256"] ?? existing.sourceSHA256
+                existing.sourcePixelWidth = payload.integers["sourcePixelWidth"] ?? existing.sourcePixelWidth
+                existing.sourcePixelHeight = payload.integers["sourcePixelHeight"] ?? existing.sourcePixelHeight
+                existing.cloudPixelWidth = payload.integers["cloudPixelWidth"] ?? existing.cloudPixelWidth
+                existing.cloudPixelHeight = payload.integers["cloudPixelHeight"] ?? existing.cloudPixelHeight
+                existing.capturedAt = payload.optionalDates["capturedAt"] ?? existing.capturedAt
+                return .applied(rebuildHistoryFrom: nil)
             }
             let asset = PhotoAssetRecord(
                 id: envelope.entityID,
                 farmID: envelope.farmID,
                 sheepID: optionalID("sheepID", payload),
                 legacySourceKey: "supabase:\(envelope.entityID.uuidString.lowercased())",
-                originalEarTag: "",
+                originalEarTag: payload.strings["originalEarTag"] ?? "",
                 relativePath: "",
                 sha256: sha256,
                 mimeType: mimeType
@@ -1170,7 +1263,7 @@ struct RemoteDomainApplyService {
             asset.cloudPixelWidth = payload.integers["cloudPixelWidth"] ?? 0
             asset.cloudPixelHeight = payload.integers["cloudPixelHeight"] ?? 0
             asset.capturedAt = payload.optionalDates["capturedAt"] ?? nil
-            context.insert(asset)
+            insertIndexed(asset, context: context)
             context.insert(CloudAssetTransfer(
                 farmID: envelope.farmID,
                 assetID: asset.id,
