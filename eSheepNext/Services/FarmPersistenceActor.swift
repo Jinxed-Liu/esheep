@@ -1342,9 +1342,21 @@ actor FarmPersistenceActor {
         requiredTargets.formUnion(try context.fetch(FetchDescriptor<ProductionBatchRecord>()).filter { $0.farmID == farmID }.map(\.id))
         requiredTargets.formUnion(try context.fetch(FetchDescriptor<BatchMembershipRecord>()).filter { $0.farmID == farmID }.map(\.id))
         requiredTargets.formUnion(try context.fetch(FetchDescriptor<FeedIngredientRecord>()).filter { $0.farmID == farmID }.map(\.id))
+        requiredTargets.formUnion(try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).filter { $0.farmID == farmID }.map(\.id))
         requiredTargets.formUnion(try context.fetch(FetchDescriptor<FeedRecipeRecord>()).filter { $0.farmID == farmID }.map(\.id))
-        requiredTargets.formUnion(try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()).filter { $0.farmID == farmID }.map(\.id))
         requiredTargets.formUnion(try context.fetch(FetchDescriptor<FeedRecord>()).filter { $0.farmID == farmID }.map(\.id))
+        requiredTargets.formUnion(try context.fetch(FetchDescriptor<FeedTroughObservationRecord>()).filter { $0.farmID == farmID }.map(\.id))
+        let feedRecordIDs = Set(try context.fetch(FetchDescriptor<FeedRecord>()).filter { $0.farmID == farmID }.map(\.id))
+        let feedLineIDs = try context.fetch(FetchDescriptor<FeedRecordLine>()).filter { $0.farmID == farmID }.map(\.id)
+        let feedConsumptionIDs = Set(feedLineIDs.map(FeedStockLedger.consumptionID(for:)))
+        let feedReversalIDs = Set(feedConsumptionIDs.map(FeedStockLedger.reversalID(for:)))
+        requiredTargets.formUnion(try context.fetch(FetchDescriptor<FeedStockTransactionRecord>()).filter {
+            guard $0.farmID == farmID else { return false }
+            let hasFeedSource = $0.sourceRecordID.map(feedRecordIDs.contains) == true
+            return !(($0.kind == .consumption || $0.kind == .reversal) &&
+                (hasFeedSource || feedConsumptionIDs.contains($0.id) || feedReversalIDs.contains($0.id)))
+        }.map(\.id))
+        requiredTargets.formUnion(try context.fetch(FetchDescriptor<FeedStockCountRecord>()).filter { $0.farmID == farmID }.map(\.id))
         requiredTargets.formUnion(try context.fetch(FetchDescriptor<InventoryLotRecord>()).filter { $0.farmID == farmID }.map(\.id))
         requiredTargets.formUnion(try context.fetch(FetchDescriptor<HealthRecord>()).filter { $0.farmID == farmID }.map(\.id))
         requiredTargets.formUnion(try context.fetch(FetchDescriptor<ReproductionRecord>()).filter { $0.farmID == farmID }.map(\.id))
@@ -3554,6 +3566,9 @@ actor FarmPersistenceActor {
         for value in try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<FeedRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<FeedRecordLine>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<FeedTroughObservationRecord>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<FeedStockTransactionRecord>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<FeedStockCountRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<InventoryLotRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<InventoryTransactionRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<HealthRecord>()) where value.farmID == farmID { context.delete(value) }
@@ -3571,6 +3586,7 @@ actor FarmPersistenceActor {
         for value in try context.fetch(FetchDescriptor<SemenTransactionRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<FarmCareRuleRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<CareReminderRecord>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<FarmActivity>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<FarmMembershipBinding>()) where value.farmID == farmID { context.delete(value) }
         if let farm = try context.fetch(FetchDescriptor<FarmRecord>()).first(where: { $0.id == farmID }) { context.delete(farm) }
@@ -3593,6 +3609,9 @@ actor FarmPersistenceActor {
         for value in try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<FeedRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<FeedRecordLine>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<FeedTroughObservationRecord>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<FeedStockTransactionRecord>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<FeedStockCountRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<InventoryLotRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<InventoryTransactionRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<HealthRecord>()) where value.farmID == farmID { context.delete(value) }
@@ -3610,6 +3629,7 @@ actor FarmPersistenceActor {
         for value in try context.fetch(FetchDescriptor<SemenTransactionRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<FarmCareRuleRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<CareReminderRecord>()) where value.farmID == farmID { context.delete(value) }
+        for value in try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<FarmActivity>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<TombstoneRecord>()) where value.farmID == farmID { context.delete(value) }
         for value in try context.fetch(FetchDescriptor<CloudOperationReceipt>()) where value.farmID == farmID { context.delete(value) }

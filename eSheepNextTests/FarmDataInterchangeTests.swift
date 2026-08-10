@@ -103,14 +103,14 @@ final class FarmDataInterchangeTests: XCTestCase {
         XCTAssertNotNil(data.range(of: Data("xl/styles.xml".utf8)))
     }
 
-    func testTemplateV5PreservesV3StableImportIdentity() {
+    func testCurrentTemplatePreservesV3StableImportIdentity() {
         let farmID = UUID()
         let expected = StableCloudUUID.derived(
             namespace: farmID,
             name: "excel-v3:健康记录:stable-key"
         )
 
-        XCTAssertEqual(FarmExcelImportService.templateVersion, 5)
+        XCTAssertEqual(FarmExcelImportService.templateVersion, 7)
         XCTAssertEqual(
             FarmExcelImportService.stableImportID(
                 farmID: farmID,

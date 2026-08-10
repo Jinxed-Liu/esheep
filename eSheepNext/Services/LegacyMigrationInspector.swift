@@ -36,10 +36,7 @@ struct LegacyMigrationReport: Codable, Sendable, Equatable {
 
 enum LegacyMigrationInspector {
     static func inspect(_ data: Data) throws -> LegacyMigrationReport {
-        let object = try JSONSerialization.jsonObject(with: data)
-        guard let root = object as? [String: Any] else {
-            return LegacyMigrationReport(schemaVersion: nil, counts: .init(), fatalIssues: ["迁移包根节点不是对象。"], warnings: [])
-        }
+        let root = try LegacySourceDecoder.decode(data).root
 
         var issues: [String] = []
         var warnings: [String] = []

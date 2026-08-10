@@ -4,17 +4,14 @@ import SwiftData
 import SwiftUI
 
 struct FarmAnalysisCenterView: View {
-    @Query(sort: \SheepRecord.updatedAt, order: .reverse) private var sheep: [SheepRecord]
-    @Query(sort: \PenRecord.updatedAt, order: .reverse) private var pens: [PenRecord]
-    @Query(sort: \WeightRecord.occurredAt, order: .reverse) private var weights: [WeightRecord]
-    @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproduction: [ReproductionRecord]
-    @Query(sort: \FeedRecord.occurredAt, order: .reverse) private var feeds: [FeedRecord]
+    @Environment(\.modelContext) private var modelContext
 
     let farm: FarmRecord
     let assistantTransition: Namespace.ID
     let assistantTransitionID: MotionTransitionID
     let assistantTransitionSpec: MotionTransitionSpec
     let onAskAssistant: () -> Void
+    @State private var deepAnalytics = FarmDeepAnalyticsStore()
 
     init(
         farm: FarmRecord,
@@ -30,28 +27,6 @@ struct FarmAnalysisCenterView: View {
         self.onAskAssistant = onAskAssistant
     }
 
-    private var activeSheepCount: Int {
-        sheep.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent }
-    }
-
-    private var activePenCount: Int {
-        CurrentFarmOccupancy.occupiedPens(farmID: farm.id, sheep: sheep, pens: pens).count
-    }
-
-    private var currentMonthFeedCount: Int {
-        let interval = Calendar.current.dateInterval(of: .month, for: .now)
-        return feeds.count {
-            $0.farmID == farm.id && $0.deletedAt == nil && interval?.contains($0.occurredAt) == true
-        }
-    }
-
-    private var latestActivityDate: Date? {
-        let weightDate = weights.first { $0.farmID == farm.id && $0.deletedAt == nil }?.occurredAt
-        let reproductionDate = reproduction.first { $0.farmID == farm.id && $0.deletedAt == nil }?.occurredAt
-        let feedDate = feeds.first { $0.farmID == farm.id && $0.deletedAt == nil }?.occurredAt
-        return [weightDate, reproductionDate, feedDate].compactMap { $0 }.max()
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -61,11 +36,11 @@ struct FarmAnalysisCenterView: View {
                     Text("牧场快照")
                         .font(.headline)
                     HStack(spacing: 0) {
-                        DashboardMetric(title: "在场羊只", value: "\(activeSheepCount)", unit: "只")
+                        DashboardMetric(title: "在场羊只", value: metricText(\.activeSheepCount), unit: "只")
                         Divider().frame(height: 46)
-                        DashboardMetric(title: "有羊圈舍", value: "\(activePenCount)", unit: "个")
+                        DashboardMetric(title: "有羊圈舍", value: metricText(\.activePenCount), unit: "个")
                         Divider().frame(height: 46)
-                        DashboardMetric(title: "本月投喂", value: "\(currentMonthFeedCount)", unit: "次")
+                        DashboardMetric(title: "本月投喂", value: metricText(\.currentMonthFeedCount), unit: "次")
                     }
                     .padding(.vertical, 12)
                     .background(.background, in: .rect(cornerRadius: 18))
@@ -77,13 +52,13 @@ struct FarmAnalysisCenterView: View {
                         .font(.headline)
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 154), spacing: 12)], spacing: 12) {
                         AnalysisDestination(title: "增重", detail: "体重与 ADG 趋势", symbol: "chart.line.uptrend.xyaxis", tint: .blue) {
-                            WeightGainAnalysisView(farm: farm)
+                            WeightGainAnalysisView(farm: farm, dataStore: deepAnalytics)
                         }
                         AnalysisDestination(title: "羔羊", detail: "产羔与断奶质量", symbol: "figure.and.child.holdinghands", tint: .orange) {
-                            LambAnalysisView(farm: farm)
+                            LambAnalysisView(farm: farm, dataStore: deepAnalytics)
                         }
                         AnalysisDestination(title: "繁殖", detail: "胎均与繁殖节律", symbol: "heart.text.square", tint: .pink) {
-                            ReproductionAnalysisView(farm: farm)
+                            ReproductionAnalysisView(farm: farm, dataStore: deepAnalytics)
                         }
                         AnalysisDestination(title: "采食", detail: "羊天与采食区间", symbol: "chart.bar.xaxis", tint: .green) {
                             FarmAnalyticsView(farm: farm)
@@ -99,6 +74,12 @@ struct FarmAnalysisCenterView: View {
         }
         .scrollIndicators(.hidden)
         .background(AppTheme.pageBackground)
+        .task(id: farm.id) {
+            await deepAnalytics.load(container: modelContext.container, farmID: farm.id)
+        }
+        .refreshable {
+            await deepAnalytics.load(container: modelContext.container, farmID: farm.id, force: true)
+        }
     }
 
     private var analysisHero: some View {
@@ -121,8 +102,14 @@ struct FarmAnalysisCenterView: View {
     }
 
     private var latestActivityText: String {
-        guard let latestActivityDate else { return "还没有可用于分析的生产记录" }
+        if deepAnalytics.isLoading, deepAnalytics.payload == nil { return "正在后台准备分析数据…" }
+        if let errorMessage = deepAnalytics.errorMessage { return "分析数据暂时无法读取：\(errorMessage)" }
+        guard let latestActivityDate = deepAnalytics.payload?.latestActivityDate else { return "还没有可用于分析的生产记录" }
         return "最近记录于 \(latestActivityDate.formatted(.relative(presentation: .named)))"
+    }
+
+    private func metricText(_ keyPath: KeyPath<FarmDeepAnalyticsPayload, Int>) -> String {
+        deepAnalytics.payload.map { String($0[keyPath: keyPath]) } ?? "—"
     }
 
     private var assistantPrompt: some View {
@@ -186,46 +173,30 @@ private struct DashboardMetric: View {
 }
 
 private struct WeightGainAnalysisView: View {
-    @Query(sort: \WeightRecord.occurredAt) private var weights: [WeightRecord]
-    @Query private var sheep: [SheepRecord]
-    @Query private var pens: [PenRecord]
-    @Query private var weanings: [WeaningRecord]
-    @Query private var reproduction: [ReproductionRecord]
-    @Query private var offspring: [LambingOffspringRecord]
-    @Query private var removals: [RemovalRecord]
-    @Query private var transfers: [TransferRecord]
-    @Query private var memberships: [BatchMembershipRecord]
-    @Query private var batches: [ProductionBatchRecord]
-    @Query private var feeds: [FeedRecord]
-    @Query private var feedLines: [FeedRecordLine]
+    @Environment(\.modelContext) private var modelContext
 
     let farm: FarmRecord
+    let dataStore: FarmDeepAnalyticsStore
     @State private var scope = WeightSampleScope.all
     @State private var selectedPenID: UUID?
     @State private var selectedBatchID: UUID?
     @State private var regressionKind = WeightRegressionKind.linear
     @State private var analytics = FarmAnalyticsViewModel()
 
-    private func makeSnapshot() -> FarmAnalyticsSnapshot {
-        FarmAnalyticsSnapshot.make(farmID: farm.id, sheep: sheep, pens: pens, weights: weights, weanings: weanings, reproduction: reproduction, offspring: offspring, removals: removals, transfers: transfers, memberships: memberships, feeds: feeds, feedLines: feedLines)
-    }
-
     private var cutoff: Date {
-        guard let snapshot = analytics.snapshot else { return .now }
-        return snapshot.weightSamples.map(\.occurredAt).max() ?? .now
+        dataStore.payload?.weightCutoff ?? .now
     }
     private var cohort: WeightCohort { analytics.weightCohort ?? WeightCohort(sheepIDs: [], latestAverageWeight: nil, latestAverageADG: nil, weightTrend: [], adgTrend: [], scatter: []) }
+    private var eligiblePenIDs: Set<UUID> {
+        dataStore.payload?.eligibleWeightPenIDs ?? []
+    }
     private var farmPens: [FarmAnalyticsSnapshot.Pen] {
-        guard let snapshot = analytics.snapshot else { return [] }
-        let occupiedIDs = CurrentFarmOccupancy.occupiedPenIDs(farmID: farm.id, sheep: sheep)
-        return snapshot.pens.filter { occupiedIDs.contains($0.id) }
+        guard let snapshot = dataStore.payload?.snapshot else { return [] }
+        return snapshot.pens.filter { eligiblePenIDs.contains($0.id) }
     }
-    private var farmBatches: [ProductionBatchRecord] {
-        ProductionBatchVisibility.userManaged(farmID: farm.id, batches: batches)
-    }
+    private var farmBatches: [FarmAnalyticsBatchSnapshot] { dataStore.payload?.batches ?? [] }
     private var visibleBatchIDs: [UUID] { farmBatches.map(\.id).sorted { $0.uuidString < $1.uuidString } }
     private var regression: [WeightRegressionPoint] { WeightGainAnalyticsEngine.trendline(for: cohort.scatter, kind: regressionKind) }
-    private var sourceRevision: [Int] { [sheep.count, pens.count, weights.count, weanings.count, reproduction.count, offspring.count, removals.count, transfers.count, memberships.count, feeds.count, feedLines.count] }
 
     var body: some View {
         ScrollView {
@@ -251,7 +222,9 @@ private struct WeightGainAnalysisView: View {
                     .pickerStyle(.menu)
                     .analysisFilterChip()
                 }
-                if analytics.isCalculating && analytics.weightCohort == nil {
+                if dataStore.errorMessage != nil, analytics.snapshot == nil {
+                    AnalysisNotice(text: "分析数据读取失败：\(dataStore.errorMessage ?? "未知错误")")
+                } else if analytics.isCalculating && analytics.weightCohort == nil || dataStore.isLoading && analytics.snapshot == nil {
                     AnalysisLoading(title: "正在计算增重数据")
                 } else {
                     MetricGrid {
@@ -315,8 +288,10 @@ private struct WeightGainAnalysisView: View {
         .scrollIndicators(.hidden)
         .background(AppTheme.pageBackground)
         .navigationTitle("增重分析")
-        .onAppear(perform: reloadAnalytics)
-        .onChange(of: sourceRevision) { _, _ in reloadAnalytics() }
+        .task(id: dataStore.revision) { await applySharedSnapshot() }
+        .refreshable {
+            await dataStore.load(container: modelContext.container, farmID: farm.id, force: true)
+        }
         .onChange(of: scope) { _, _ in calculateWeight() }
         .onChange(of: selectedPenID) { _, _ in calculateWeight() }
         .onChange(of: selectedBatchID) { _, _ in calculateWeight() }
@@ -325,11 +300,30 @@ private struct WeightGainAnalysisView: View {
                 self.selectedBatchID = nil
             }
         }
+        .onChange(of: eligiblePenIDs) { _, validIDs in
+            if let selectedPenID, !validIDs.contains(selectedPenID) {
+                self.selectedPenID = nil
+            }
+        }
     }
 
-    private func reloadAnalytics() { analytics.replaceSnapshot(makeSnapshot()); calculateWeight() }
+    private func applySharedSnapshot() async {
+        await dataStore.load(container: modelContext.container, farmID: farm.id)
+        guard !Task.isCancelled, let payload = dataStore.payload else { return }
+        analytics.replaceSnapshot(payload.snapshot)
+        if let selectedPenID, !payload.eligibleWeightPenIDs.contains(selectedPenID) {
+            self.selectedPenID = nil
+        }
+        if let selectedBatchID, !payload.batches.contains(where: { $0.id == selectedBatchID }) {
+            self.selectedBatchID = nil
+        }
+        calculateWeight()
+    }
+
     private func calculateWeight() {
-        let batchID = ProductionBatchVisibility.validatedSelection(selectedBatchID, farmID: farm.id, batches: batches)
+        let batchID = selectedBatchID.flatMap { selected in
+            farmBatches.contains(where: { $0.id == selected }) ? selected : nil
+        }
         analytics.calculateWeight(penID: selectedPenID, batchID: batchID, snapshotDate: cutoff, scope: scope)
     }
 }
@@ -341,42 +335,17 @@ private enum LambAnalysisSection: String, CaseIterable, Identifiable {
 }
 
 private struct LambAnalysisView: View {
-    @Query private var sheep: [SheepRecord]
-    @Query private var pens: [PenRecord]
-    @Query private var weights: [WeightRecord]
-    @Query(sort: \WeaningRecord.occurredAt) private var weanings: [WeaningRecord]
-    @Query(sort: \ReproductionRecord.occurredAt) private var reproduction: [ReproductionRecord]
-    @Query private var offspring: [LambingOffspringRecord]
-    @Query private var removals: [RemovalRecord]
+    @Environment(\.modelContext) private var modelContext
 
     let farm: FarmRecord
+    let dataStore: FarmDeepAnalyticsStore
     @State private var selectedYear = "全部"
     @State private var section = LambAnalysisSection.lambing
     @State private var analytics = FarmAnalyticsViewModel()
     @State private var detailIndex: LambSnapshotIndex?
     @State private var detailIndexRevision = UUID()
 
-    init(farm: FarmRecord) {
-        self.farm = farm
-        let farmID = farm.id
-        _sheep = Query(filter: #Predicate<SheepRecord> { $0.farmID == farmID && $0.deletedAt == nil })
-        _pens = Query(filter: #Predicate<PenRecord> { $0.farmID == farmID && $0.deletedAt == nil })
-        _weights = Query(filter: #Predicate<WeightRecord> { $0.farmID == farmID && $0.deletedAt == nil })
-        _weanings = Query(
-            filter: #Predicate<WeaningRecord> { $0.farmID == farmID && $0.deletedAt == nil },
-            sort: \WeaningRecord.occurredAt
-        )
-        _reproduction = Query(
-            filter: #Predicate<ReproductionRecord> { $0.farmID == farmID && $0.deletedAt == nil },
-            sort: \ReproductionRecord.occurredAt
-        )
-        _offspring = Query(filter: #Predicate<LambingOffspringRecord> { $0.farmID == farmID })
-        _removals = Query(filter: #Predicate<RemovalRecord> { $0.farmID == farmID && $0.deletedAt == nil })
-    }
-
-    private func makeSnapshot() -> FarmAnalyticsSnapshot { FarmAnalyticsSnapshot.make(farmID: farm.id, sheep: sheep, pens: pens, weights: weights, weanings: weanings, reproduction: reproduction, offspring: offspring, removals: removals, transfers: [], memberships: [], feeds: [], feedLines: []) }
     private var years: [String] { guard let snapshot = analytics.snapshot else { return [] }; return Array(Set(snapshot.lambings.map { FarmAnalyticsDate.year($0.occurredAt) } + snapshot.weanings.map { FarmAnalyticsDate.year($0.occurredAt) })).sorted(by: >) }
-    private var sourceRevision: [Int] { [sheep.count, pens.count, weights.count, weanings.count, reproduction.count, offspring.count, removals.count] }
 
     var body: some View {
         ScrollView {
@@ -398,6 +367,8 @@ private struct LambAnalysisView: View {
                     } else {
                         weaningContent(result)
                     }
+                } else if let errorMessage = dataStore.errorMessage, analytics.snapshot == nil {
+                    AnalysisNotice(text: "分析数据读取失败：\(errorMessage)")
                 } else {
                     AnalysisLoading(title: "正在计算羔羊数据")
                 }
@@ -409,27 +380,25 @@ private struct LambAnalysisView: View {
         .scrollIndicators(.hidden)
         .background(AppTheme.pageBackground)
         .navigationTitle("羔羊分析")
-        .onAppear(perform: loadAnalyticsIfNeeded)
-        .onChange(of: sourceRevision) { _, _ in reloadAnalytics() }
+        .task(id: dataStore.revision) { await applySharedSnapshot() }
+        .refreshable {
+            await dataStore.load(container: modelContext.container, farmID: farm.id, force: true)
+        }
         .onChange(of: selectedYear) { _, _ in calculateLambs() }
     }
 
-    private func loadAnalyticsIfNeeded() {
-        guard analytics.snapshot == nil else { return }
-        reloadAnalytics()
-    }
-
-    private func reloadAnalytics() {
-        let snapshot = makeSnapshot()
+    private func applySharedSnapshot() async {
+        await dataStore.load(container: modelContext.container, farmID: farm.id)
+        guard !Task.isCancelled, let snapshot = dataStore.payload?.snapshot else { return }
         analytics.replaceSnapshot(snapshot)
         detailIndex = nil
         let revision = UUID()
         detailIndexRevision = revision
-        Task { @MainActor in
-            await Task.yield()
-            guard detailIndexRevision == revision else { return }
-            detailIndex = LambSnapshotIndex(snapshot: snapshot)
-        }
+        let index = await Task.detached(priority: .userInitiated) {
+            LambSnapshotIndex(snapshot: snapshot)
+        }.value
+        guard !Task.isCancelled, detailIndexRevision == revision else { return }
+        detailIndex = index
         calculateLambs()
     }
     private func calculateLambs() { analytics.calculateLambs(selectedYear: selectedYear == "全部" ? nil : selectedYear, selectedWeaningMonth: "全部") }
@@ -543,7 +512,7 @@ private struct AnalysisSexSummary: View {
     }
 }
 
-private struct LambSnapshotIndex {
+private struct LambSnapshotIndex: Sendable {
     let sheepByID: [UUID: FarmAnalyticsSnapshot.Sheep]
     let penNameByID: [UUID: String]
     let latestWeaningBySheepID: [UUID: FarmAnalyticsSnapshot.Weaning]
@@ -911,77 +880,23 @@ private enum ReproductionAnalysisSheet: Identifiable {
 }
 
 private struct ReproductionAnalysisView: View {
-    @Query private var sheep: [SheepRecord]
-    @Query private var pens: [PenRecord]
-    @Query(sort: \ReproductionRecord.occurredAt) private var reproduction: [ReproductionRecord]
-    @Query private var offspring: [LambingOffspringRecord]
-    @Query private var removals: [RemovalRecord]
-    @Query private var transfers: [TransferRecord]
+    @Environment(\.modelContext) private var modelContext
 
     let farm: FarmRecord
-    @State private var filter: ReproductionAnalyticsFilter
+    let dataStore: FarmDeepAnalyticsStore
+    @State private var filter = ReproductionAnalyticsFilter.recentYear()
     @State private var selectedSection = ReproductionAnalysisSection.interval
     @State private var presentedSheet: ReproductionAnalysisSheet?
     @State private var analytics = FarmAnalyticsViewModel()
 
-    init(farm: FarmRecord) {
-        self.farm = farm
-        let farmID = farm.id
-        _sheep = Query(filter: #Predicate<SheepRecord> { $0.farmID == farmID && $0.deletedAt == nil })
-        _pens = Query(
-            filter: #Predicate<PenRecord> { $0.farmID == farmID },
-            sort: \PenRecord.name
-        )
-        _reproduction = Query(
-            filter: #Predicate<ReproductionRecord> { $0.farmID == farmID && $0.deletedAt == nil },
-            sort: \ReproductionRecord.occurredAt
-        )
-        _offspring = Query(filter: #Predicate<LambingOffspringRecord> { $0.farmID == farmID })
-        _removals = Query(filter: #Predicate<RemovalRecord> { $0.farmID == farmID && $0.deletedAt == nil })
-        _transfers = Query(filter: #Predicate<TransferRecord> { $0.farmID == farmID && $0.deletedAt == nil })
-        _filter = State(initialValue: .recentYear())
-    }
-
-    private func makeSnapshot() -> FarmAnalyticsSnapshot {
-        FarmAnalyticsSnapshot.make(
-            farmID: farm.id,
-            sheep: sheep,
-            pens: pens,
-            weights: [],
-            weanings: [],
-            reproduction: reproduction,
-            offspring: offspring,
-            removals: removals,
-            transfers: transfers,
-            memberships: [],
-            feeds: [],
-            feedLines: []
-        )
-    }
-
-    private var filterSheetSnapshot: FarmAnalyticsSnapshot {
-        analytics.snapshot ?? makeSnapshot()
-    }
-
     private var penNames: [UUID: String] {
-        Dictionary(uniqueKeysWithValues: pens.map { ($0.id, $0.name) })
+        Dictionary(uniqueKeysWithValues: (analytics.snapshot?.pens ?? []).map { ($0.id, $0.name) })
     }
 
     private var earliestLambingDate: Date {
         analytics.snapshot?.lambings.map(\.occurredAt).min().map(FarmAnalyticsDate.day)
             ?? FarmAnalyticsDate.calendar.date(byAdding: .year, value: -1, to: FarmAnalyticsDate.day(.now))
             ?? FarmAnalyticsDate.day(.now)
-    }
-
-    private var sourceRevision: [Int] {
-        [
-            sheep.count, sheep.reduce(0) { $0 &+ $1.revision },
-            pens.count, pens.reduce(0) { $0 &+ $1.revision },
-            reproduction.count, reproduction.reduce(0) { $0 &+ $1.revision },
-            offspring.count, offspring.reduce(0) { $0 &+ $1.revision },
-            removals.count, removals.reduce(0) { $0 &+ $1.revision },
-            transfers.count, transfers.reduce(0) { $0 &+ $1.revision }
-        ]
     }
 
     var body: some View {
@@ -993,12 +908,15 @@ private struct ReproductionAnalysisView: View {
                     ReproductionFilterChip(symbol: "calendar", title: dateRangeText) {
                         presentedSheet = .filters
                     }
+                    .disabled(analytics.snapshot == nil)
                     ReproductionFilterChip(symbol: "house", title: selectedPenText) {
                         presentedSheet = .filters
                     }
+                    .disabled(analytics.snapshot == nil)
                     ReproductionFilterChip(symbol: "pawprint", title: filter.breed ?? "全部品种") {
                         presentedSheet = .filters
                     }
+                    .disabled(analytics.snapshot == nil)
                 }
                 if let result = analytics.reproductionResult {
                     Text("截止 \(filter.endDate.formatted(date: .abbreviated, time: .omitted)) 固定查询母羊群 · \(result.cohortCount) 只")
@@ -1024,6 +942,8 @@ private struct ReproductionAnalysisView: View {
                             if item.id != result.monthly.last?.id { Divider() }
                         }
                     }
+                } else if let errorMessage = dataStore.errorMessage, analytics.snapshot == nil {
+                    AnalysisNotice(text: "分析数据读取失败：\(errorMessage)")
                 } else {
                     AnalysisLoading(title: "正在计算繁殖数据")
                 }
@@ -1035,22 +955,35 @@ private struct ReproductionAnalysisView: View {
         .scrollIndicators(.hidden)
         .background(AppTheme.pageBackground)
         .navigationTitle("繁殖表现")
-        .onAppear(perform: reloadAnalytics)
-        .onChange(of: sourceRevision) { _, _ in reloadAnalytics() }
+        .task(id: dataStore.revision) { await applySharedSnapshot() }
+        .refreshable {
+            await dataStore.load(container: modelContext.container, farmID: farm.id, force: true)
+        }
         .onChange(of: filter) { _, _ in calculateReproduction() }
         .sheet(item: $presentedSheet) { _ in
-            ReproductionFilterSheet(
-                snapshot: filterSheetSnapshot,
-                penNames: penNames,
-                earliestDate: earliestLambingDate,
-                initialFilter: filter
-            ) { appliedFilter in
-                filter = appliedFilter
+            if let snapshot = analytics.snapshot {
+                ReproductionFilterSheet(
+                    snapshot: snapshot,
+                    penNames: penNames,
+                    earliestDate: earliestLambingDate,
+                    initialFilter: filter
+                ) { appliedFilter in
+                    filter = appliedFilter
+                }
+            } else {
+                ProgressView("正在准备筛选数据")
+                    .presentationDetents([.medium])
             }
         }
     }
 
-    private func reloadAnalytics() { analytics.replaceSnapshot(makeSnapshot()); calculateReproduction() }
+    private func applySharedSnapshot() async {
+        await dataStore.load(container: modelContext.container, farmID: farm.id)
+        guard !Task.isCancelled, let snapshot = dataStore.payload?.snapshot else { return }
+        analytics.replaceSnapshot(snapshot)
+        calculateReproduction()
+    }
+
     private func calculateReproduction() { analytics.calculateReproduction(filter: filter) }
 
     @ViewBuilder

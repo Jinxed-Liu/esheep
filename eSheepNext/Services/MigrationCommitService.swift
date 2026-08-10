@@ -47,16 +47,45 @@ struct MigrationCommitService {
 
         let existingCommits = try destinationContext.fetch(FetchDescriptor<MigrationCommitRecord>())
         if let existing = existingCommits.first(where: {
-            $0.sessionID == sessionID && $0.sourceChecksum == session.manifest.sourceChecksum && $0.status == .completed
+            ($0.sessionID == sessionID || $0.sourceChecksum == session.manifest.sourceChecksum)
+                && $0.ownerAccountID == account.effectiveAccountID
+                && $0.status == .completed
         }), let farm = try destinationContext.fetch(FetchDescriptor<FarmRecord>()).first(where: { $0.id == existing.farmID }) {
-            if farm.isLocalOnlyMigration || existing.cloudState == .localCommitted || existing.cloudState == .failed {
-                _ = try MigrationCloudBootstrapService().prepare(
-                    commit: existing,
-                    farm: farm,
-                    accountID: account.effectiveAccountID,
-                    context: destinationContext
+            do {
+                let sourceContext = ModelContext(temporary.container)
+                let repairedFeedCount = try repairMissingFeedHistory(
+                    sourceFarmID: temporary.farmID,
+                    destinationFarmID: farm.id,
+                    source: sourceContext,
+                    destination: destinationContext
                 )
-                try destinationContext.save()
+                if repairedFeedCount > 0 {
+                    existing.recordCountsJSON = try refreshedRecordCountsJSON(
+                        existing.recordCountsJSON,
+                        farmID: farm.id,
+                        context: destinationContext
+                    )
+                    _ = try MigrationCloudBootstrapService().prepare(
+                        commit: existing,
+                        farm: farm,
+                        accountID: account.effectiveAccountID,
+                        context: destinationContext,
+                        allowsExistingBinding: true,
+                        forceRefresh: true
+                    )
+                    try destinationContext.save()
+                } else if farm.isLocalOnlyMigration || existing.cloudState == .localCommitted || existing.cloudState == .failed {
+                    _ = try MigrationCloudBootstrapService().prepare(
+                        commit: existing,
+                        farm: farm,
+                        accountID: account.effectiveAccountID,
+                        context: destinationContext
+                    )
+                    try destinationContext.save()
+                }
+            } catch {
+                destinationContext.rollback()
+                throw error
             }
             return MigrationCommitResult(
                 farmID: farm.id,
@@ -220,19 +249,19 @@ struct MigrationCommitService {
             destination.insert(DailyPenCountRecord(id: value.id, farmID: farmID, penID: value.penID, purpose: value.purpose, date: value.date, count: value.count, rebuiltAt: value.rebuiltAt))
         }
         for value in try farmValues(FeedIngredientRecord.self, farmID: farmID, source: source) {
-            let copy = FeedIngredientRecord(id: value.id, farmID: farmID, name: value.name, unit: value.unit, dryMatterText: value.dryMatterText, category: value.category, legacySourceKey: value.legacySourceKey, nutrientSnapshotJSON: value.nutrientSnapshotJSON)
+            let copy = FeedIngredientRecord(id: value.id, farmID: farmID, name: value.name, unit: value.unit, dryMatterText: value.dryMatterText, category: value.category, legacySourceKey: value.legacySourceKey, nutrientSnapshotJSON: value.nutrientSnapshotJSON, kind: value.kind, sourceTemplateID: value.sourceTemplateID, sourceTemplateCode: value.sourceTemplateCode, mixtureComponentsJSON: value.mixtureComponentsJSON, note: value.note)
             copy.isActive = value.isActive; copy.createdAt = value.createdAt; copy.updatedAt = value.updatedAt; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(FeedRecipeRecord.self, farmID: farmID, source: source) {
-            let copy = FeedRecipeRecord(id: value.id, farmID: farmID, name: value.name, note: value.note, targetPenName: value.targetPenName, stageRawValue: value.stageRawValue, headCount: value.headCount, legacySourceKey: value.legacySourceKey)
+            let copy = FeedRecipeRecord(id: value.id, farmID: farmID, name: value.name, note: value.note, targetPenName: value.targetPenName, targetPenID: value.targetPenID, stageRawValue: value.stageRawValue, headCount: value.headCount, legacySourceKey: value.legacySourceKey)
             copy.isActive = value.isActive; copy.createdAt = value.createdAt; copy.updatedAt = value.updatedAt; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(FeedRecipeComponentRecord.self, farmID: farmID, source: source) {
-            let copy = FeedRecipeComponentRecord(id: value.id, farmID: farmID, recipeID: value.recipeID, ingredientID: value.ingredientID, kilogramsText: value.kilogramsText, legacyBatchID: value.legacyBatchID, pricePerKilogramText: value.pricePerKilogramText, nutrientSnapshotJSON: value.nutrientSnapshotJSON)
+            let copy = FeedRecipeComponentRecord(id: value.id, farmID: farmID, recipeID: value.recipeID, ingredientID: value.ingredientID, kilogramsText: value.kilogramsText, ingredientBatchID: value.ingredientBatchID, legacyBatchID: value.legacyBatchID, pricePerKilogramText: value.pricePerKilogramText, nutrientSnapshotJSON: value.nutrientSnapshotJSON)
             copy.createdAt = value.createdAt; copy.updatedAt = value.updatedAt; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(FeedRecord.self, farmID: farmID, source: source) {
-            let copy = FeedRecord(id: value.id, farmID: farmID, penID: value.penID, recipeID: value.recipeID, mode: value.mode, occurredAt: value.occurredAt, note: value.note, mealName: value.mealName, feederName: value.feederName, remainingKilogramsText: value.remainingKilogramsText, discardedKilogramsText: value.discardedKilogramsText, legacySourceKey: value.legacySourceKey)
+            let copy = FeedRecord(id: value.id, farmID: farmID, penID: value.penID, recipeID: value.recipeID, mode: value.mode, occurredAt: value.occurredAt, note: value.note, mealName: value.mealName, feederName: value.feederName, remainingKilogramsText: value.remainingKilogramsText, discardedKilogramsText: value.discardedKilogramsText, recipeHeadCountSnapshot: value.recipeHeadCountSnapshot, actualHeadCountSnapshot: value.actualHeadCountSnapshot, scaleFactorText: value.scaleFactorText, remainingCompositionJSON: value.remainingCompositionJSON, excludedSheepIDs: value.excludedSheepIDs, legacySourceKey: value.legacySourceKey)
             copy.recordedAt = value.recordedAt; copy.revision = value.revision; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(FeedRecordLine.self, farmID: farmID, source: source) {
@@ -242,6 +271,7 @@ struct MigrationCommitService {
                 feedRecordID: value.feedRecordID,
                 ingredientID: value.ingredientID,
                 kilogramsText: value.kilogramsText,
+                stockQuantityText: value.stockQuantityText,
                 ingredientNameSnapshot: value.ingredientNameSnapshot,
                 ingredientBatchID: value.ingredientBatchID,
                 ingredientBatchNameSnapshot: value.ingredientBatchNameSnapshot,
@@ -251,6 +281,22 @@ struct MigrationCommitService {
                 dryMatterTextSnapshot: value.dryMatterTextSnapshot
             )
             copy.createdAt = value.createdAt; copy.deletedAt = value.deletedAt; destination.insert(copy)
+        }
+        for value in try farmValues(FeedTroughObservationRecord.self, farmID: farmID, source: source) {
+            let copy = FeedTroughObservationRecord(
+                id: value.id,
+                farmID: farmID,
+                penID: value.penID,
+                relatedFeedRecordID: value.relatedFeedRecordID,
+                feederName: value.feederName,
+                observedAt: value.observedAt,
+                actualRemainingKilogramsText: value.actualRemainingKilogramsText,
+                discardedKilogramsText: value.discardedKilogramsText,
+                measurementMethod: value.measurementMethod,
+                compositionSnapshotJSON: value.compositionSnapshotJSON,
+                note: value.note
+            )
+            copy.recordedAt = value.recordedAt; copy.revision = value.revision; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(InventoryLotRecord.self, farmID: farmID, source: source) {
             let kind = HealthRecordKind(rawValue: value.kindRawValue) ?? .treatment
@@ -290,8 +336,8 @@ struct MigrationCommitService {
             destination.insert(PedigreeChangeRecord(id: value.id, farmID: farmID, sheepID: value.sheepID, beforeDamID: value.beforeDamID, afterDamID: value.afterDamID, beforeSireID: value.beforeSireID, afterSireID: value.afterSireID, beforeSemenDonorID: value.beforeSemenDonorID, afterSemenDonorID: value.afterSemenDonorID, beforeDamSourceRawValue: value.beforeDamSourceRawValue, afterDamSourceRawValue: value.afterDamSourceRawValue, beforeSireSourceRawValue: value.beforeSireSourceRawValue, afterSireSourceRawValue: value.afterSireSourceRawValue, reason: value.reason, changedByAccountID: value.changedByAccountID, sheepRevision: value.sheepRevision, occurredAt: value.occurredAt))
         }
         for value in try farmValues(FeedIngredientBatchRecord.self, farmID: farmID, source: source) {
-            let copy = FeedIngredientBatchRecord(id: value.id, farmID: farmID, ingredientID: value.ingredientID, legacySourceKey: value.legacySourceKey, batchName: value.batchName, purchaseDate: value.purchaseDate, supplier: value.supplier, storageLocation: value.storageLocation, pricePerKilogramText: value.pricePerKilogramText, initialKilogramsText: value.initialKilogramsText, remainingKilogramsText: value.remainingKilogramsText, note: value.note, isActive: value.isActive)
-            copy.createdAt = value.createdAt; destination.insert(copy)
+            let copy = FeedIngredientBatchRecord(id: value.id, farmID: farmID, ingredientID: value.ingredientID, legacySourceKey: value.legacySourceKey, batchName: value.batchName, purchaseDate: value.purchaseDate, supplier: value.supplier, storageLocation: value.storageLocation, pricePerKilogramText: value.pricePerKilogramText, purchasedKilogramsText: value.purchasedKilogramsText, packagingKind: value.packagingKind, packageCountText: value.packageCountText, nominalPackageKilogramsText: value.nominalPackageKilogramsText, stockWeightConfirmed: value.stockWeightConfirmed, initialKilogramsText: value.initialKilogramsText, remainingKilogramsText: value.remainingKilogramsText, note: value.note, isActive: value.isActive)
+            copy.createdAt = value.createdAt; copy.updatedAt = value.updatedAt; copy.revision = value.revision; copy.deletedAt = value.deletedAt; destination.insert(copy)
         }
         for value in try farmValues(HealthCatalogItemRecord.self, farmID: farmID, source: source) {
             let copy = HealthCatalogItemRecord(id: value.id, farmID: farmID, legacySourceKey: value.legacySourceKey, legacyCatalogID: value.legacyCatalogID, kindRawValue: value.kindRawValue, name: value.name, category: value.category, unit: value.unit, defaultDoseText: value.defaultDoseText, defaultRoute: value.defaultRoute, reminderIntervalDays: value.reminderIntervalDays, note: value.note, isActive: value.isActive)
@@ -328,6 +374,7 @@ struct MigrationCommitService {
             case let item as FeedRecipeComponentRecord: item.farmID == farmID
             case let item as FeedRecord: item.farmID == farmID
             case let item as FeedRecordLine: item.farmID == farmID
+            case let item as FeedTroughObservationRecord: item.farmID == farmID
             case let item as InventoryLotRecord: item.farmID == farmID
             case let item as InventoryTransactionRecord: item.farmID == farmID
             case let item as HealthRecord: item.farmID == farmID
@@ -344,6 +391,250 @@ struct MigrationCommitService {
             default: false
             }
         }
+    }
+
+    /// Supplements feed history omitted by older importer builds. Historical
+    /// feeds intentionally do not create stock transactions: the current stock
+    /// baseline remains authoritative from the date the new feed ledger starts.
+    private func repairMissingFeedHistory(
+        sourceFarmID: UUID,
+        destinationFarmID: UUID,
+        source: ModelContext,
+        destination: ModelContext
+    ) throws -> Int {
+        var insertedEntities = 0
+        let sourceIngredients = try farmValues(FeedIngredientRecord.self, farmID: sourceFarmID, source: source)
+        var destinationIngredients = try farmValues(FeedIngredientRecord.self, farmID: destinationFarmID, source: destination)
+        var ingredientMap: [UUID: UUID] = [:]
+        for value in sourceIngredients {
+            let match = destinationIngredients.first {
+                ($0.legacySourceKey != nil && $0.legacySourceKey == value.legacySourceKey)
+                    || ($0.sourceTemplateID != nil && $0.sourceTemplateID == value.sourceTemplateID)
+                    || ($0.name == value.name && $0.category == value.category)
+            }
+            if let match {
+                ingredientMap[value.id] = match.id
+                continue
+            }
+            let copy = FeedIngredientRecord(
+                id: value.id,
+                farmID: destinationFarmID,
+                name: value.name,
+                unit: value.unit,
+                dryMatterText: value.dryMatterText,
+                category: value.category,
+                legacySourceKey: value.legacySourceKey,
+                nutrientSnapshotJSON: value.nutrientSnapshotJSON,
+                kind: value.kind,
+                sourceTemplateID: value.sourceTemplateID,
+                sourceTemplateCode: value.sourceTemplateCode,
+                mixtureComponentsJSON: value.mixtureComponentsJSON,
+                note: value.note
+            )
+            copy.isActive = value.isActive
+            copy.createdAt = value.createdAt
+            copy.updatedAt = value.updatedAt
+            copy.deletedAt = value.deletedAt
+            destination.insert(copy)
+            insertedEntities += 1
+            destinationIngredients.append(copy)
+            ingredientMap[value.id] = copy.id
+        }
+
+        let sourceBatches = try farmValues(FeedIngredientBatchRecord.self, farmID: sourceFarmID, source: source)
+        var destinationBatches = try farmValues(FeedIngredientBatchRecord.self, farmID: destinationFarmID, source: destination)
+        var batchMap: [UUID: UUID] = [:]
+        for value in sourceBatches {
+            guard let ingredientID = ingredientMap[value.ingredientID] else { continue }
+            let match = destinationBatches.first {
+                ($0.legacySourceKey == value.legacySourceKey && !value.legacySourceKey.isEmpty)
+                    || ($0.ingredientID == ingredientID && $0.batchName == value.batchName)
+            }
+            if let match {
+                batchMap[value.id] = match.id
+                continue
+            }
+            let copy = FeedIngredientBatchRecord(
+                id: value.id,
+                farmID: destinationFarmID,
+                ingredientID: ingredientID,
+                legacySourceKey: value.legacySourceKey,
+                batchName: value.batchName,
+                purchaseDate: value.purchaseDate,
+                supplier: value.supplier,
+                storageLocation: value.storageLocation,
+                pricePerKilogramText: value.pricePerKilogramText,
+                purchasedKilogramsText: value.purchasedKilogramsText,
+                packagingKind: value.packagingKind,
+                packageCountText: value.packageCountText,
+                nominalPackageKilogramsText: value.nominalPackageKilogramsText,
+                stockWeightConfirmed: value.stockWeightConfirmed,
+                initialKilogramsText: value.initialKilogramsText,
+                remainingKilogramsText: value.remainingKilogramsText,
+                note: value.note,
+                isActive: value.isActive
+            )
+            copy.createdAt = value.createdAt
+            copy.updatedAt = value.updatedAt
+            copy.revision = value.revision
+            copy.deletedAt = value.deletedAt
+            destination.insert(copy)
+            insertedEntities += 1
+            destinationBatches.append(copy)
+            batchMap[value.id] = copy.id
+        }
+
+        let sourceRecipes = try farmValues(FeedRecipeRecord.self, farmID: sourceFarmID, source: source)
+        var destinationRecipes = try farmValues(FeedRecipeRecord.self, farmID: destinationFarmID, source: destination)
+        var recipeMap: [UUID: UUID] = [:]
+        let destinationPens = try farmValues(PenRecord.self, farmID: destinationFarmID, source: destination)
+        let sourcePens = try farmValues(PenRecord.self, farmID: sourceFarmID, source: source)
+        let penMap = Dictionary(uniqueKeysWithValues: sourcePens.compactMap { sourcePen in
+            destinationPens.first(where: { $0.name == sourcePen.name }).map { (sourcePen.id, $0.id) }
+        })
+        for value in sourceRecipes {
+            let match = destinationRecipes.first {
+                ($0.legacySourceKey != nil && $0.legacySourceKey == value.legacySourceKey)
+                    || $0.name == value.name
+            }
+            if let match {
+                recipeMap[value.id] = match.id
+                continue
+            }
+            let copy = FeedRecipeRecord(
+                id: value.id,
+                farmID: destinationFarmID,
+                name: value.name,
+                note: value.note,
+                targetPenName: value.targetPenName,
+                targetPenID: value.targetPenID.flatMap { penMap[$0] },
+                stageRawValue: value.stageRawValue,
+                headCount: value.headCount,
+                legacySourceKey: value.legacySourceKey
+            )
+            copy.isActive = value.isActive
+            copy.createdAt = value.createdAt
+            copy.updatedAt = value.updatedAt
+            copy.deletedAt = value.deletedAt
+            destination.insert(copy)
+            insertedEntities += 1
+            destinationRecipes.append(copy)
+            recipeMap[value.id] = copy.id
+        }
+
+        var destinationComponents = try farmValues(FeedRecipeComponentRecord.self, farmID: destinationFarmID, source: destination)
+        for value in try farmValues(FeedRecipeComponentRecord.self, farmID: sourceFarmID, source: source) {
+            guard let recipeID = recipeMap[value.recipeID], let ingredientID = ingredientMap[value.ingredientID] else { continue }
+            let batchID = value.ingredientBatchID.flatMap { batchMap[$0] }
+            guard !destinationComponents.contains(where: {
+                $0.recipeID == recipeID && $0.ingredientID == ingredientID
+                    && $0.kilogramsText == value.kilogramsText && $0.ingredientBatchID == batchID
+            }) else { continue }
+            let copy = FeedRecipeComponentRecord(
+                id: value.id,
+                farmID: destinationFarmID,
+                recipeID: recipeID,
+                ingredientID: ingredientID,
+                kilogramsText: value.kilogramsText,
+                ingredientBatchID: batchID,
+                legacyBatchID: value.legacyBatchID,
+                pricePerKilogramText: value.pricePerKilogramText,
+                nutrientSnapshotJSON: value.nutrientSnapshotJSON
+            )
+            copy.createdAt = value.createdAt
+            copy.updatedAt = value.updatedAt
+            copy.deletedAt = value.deletedAt
+            destination.insert(copy)
+            destinationComponents.append(copy)
+            insertedEntities += 1
+        }
+
+        let sourceFeeds = try farmValues(FeedRecord.self, farmID: sourceFarmID, source: source)
+        var destinationFeeds = try farmValues(FeedRecord.self, farmID: destinationFarmID, source: destination)
+        var feedMap: [UUID: UUID] = [:]
+        for value in sourceFeeds {
+            let match = destinationFeeds.first {
+                ($0.legacySourceKey != nil && $0.legacySourceKey == value.legacySourceKey)
+                    || $0.id == value.id
+            }
+            if let match {
+                feedMap[value.id] = match.id
+                continue
+            }
+            guard let penID = penMap[value.penID] else { continue }
+            let copy = FeedRecord(
+                id: value.id,
+                farmID: destinationFarmID,
+                penID: penID,
+                recipeID: value.recipeID.flatMap { recipeMap[$0] },
+                mode: value.mode,
+                occurredAt: value.occurredAt,
+                note: value.note,
+                mealName: value.mealName,
+                feederName: value.feederName,
+                remainingKilogramsText: value.remainingKilogramsText,
+                discardedKilogramsText: value.discardedKilogramsText,
+                recipeHeadCountSnapshot: value.recipeHeadCountSnapshot,
+                actualHeadCountSnapshot: value.actualHeadCountSnapshot,
+                scaleFactorText: value.scaleFactorText,
+                remainingCompositionJSON: value.remainingCompositionJSON,
+                // This compatibility repair only imports historical feed data;
+                // pre-V10 sources never carried stable excluded-sheep UUIDs.
+                excludedSheepIDs: [],
+                legacySourceKey: value.legacySourceKey
+            )
+            copy.recordedAt = value.recordedAt
+            copy.revision = value.revision
+            copy.deletedAt = value.deletedAt
+            destination.insert(copy)
+            destinationFeeds.append(copy)
+            feedMap[value.id] = copy.id
+            insertedEntities += 1
+        }
+
+        var destinationLines = try farmValues(FeedRecordLine.self, farmID: destinationFarmID, source: destination)
+        for value in try farmValues(FeedRecordLine.self, farmID: sourceFarmID, source: source) {
+            guard let feedRecordID = feedMap[value.feedRecordID], let ingredientID = ingredientMap[value.ingredientID] else { continue }
+            let batchID = value.ingredientBatchID.flatMap { batchMap[$0] }
+            guard !destinationLines.contains(where: {
+                $0.feedRecordID == feedRecordID && $0.ingredientID == ingredientID
+                    && $0.kilogramsText == value.kilogramsText
+                    && $0.ingredientBatchNameSnapshot == value.ingredientBatchNameSnapshot
+            }) else { continue }
+            let copy = FeedRecordLine(
+                id: value.id,
+                farmID: destinationFarmID,
+                feedRecordID: feedRecordID,
+                ingredientID: ingredientID,
+                kilogramsText: value.kilogramsText,
+                stockQuantityText: value.stockQuantityText,
+                ingredientNameSnapshot: value.ingredientNameSnapshot,
+                ingredientBatchID: batchID,
+                ingredientBatchNameSnapshot: value.ingredientBatchNameSnapshot,
+                pricePerKilogramTextSnapshot: value.pricePerKilogramTextSnapshot,
+                nutrientSnapshotJSON: value.nutrientSnapshotJSON,
+                unitSnapshot: value.unitSnapshot,
+                dryMatterTextSnapshot: value.dryMatterTextSnapshot
+            )
+            copy.createdAt = value.createdAt
+            copy.deletedAt = value.deletedAt
+            destination.insert(copy)
+            destinationLines.append(copy)
+            insertedEntities += 1
+        }
+        return insertedEntities
+    }
+
+    private func refreshedRecordCountsJSON(
+        _ current: String,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> String {
+        var counts = current.data(using: .utf8).flatMap { try? JSONDecoder().decode([String: Int].self, from: $0) } ?? [:]
+        counts["原料"] = try farmValues(FeedIngredientRecord.self, farmID: farmID, source: context).count
+        counts["配方"] = try farmValues(FeedRecipeRecord.self, farmID: farmID, source: context).count
+        counts["投喂"] = try farmValues(FeedRecord.self, farmID: farmID, source: context).count
+        return String(data: try JSONEncoder().encode(counts), encoding: .utf8) ?? current
     }
 
     private func decodedCount(_ json: String) -> Int {

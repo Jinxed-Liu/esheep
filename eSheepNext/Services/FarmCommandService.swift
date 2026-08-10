@@ -7,6 +7,8 @@ enum FarmCommandError: LocalizedError {
     case duplicateEarTag
     case sheepNotFound
     case penNotFound
+    case feedPenHasNoSheepOnDate
+    case penHasNoSheepAtTime
     case ingredientNotFound
     case feedIngredientBatchNotFound
     case batchNotFound
@@ -55,6 +57,8 @@ enum FarmCommandError: LocalizedError {
         case .duplicateEarTag: "当前牧场已存在相同耳号。耳号在本牧场内永久唯一。"
         case .sheepNotFound: "未找到当前牧场中的羊只。"
         case .penNotFound: "未找到当前牧场中的圈舍。"
+        case .feedPenHasNoSheepOnDate: "所选圈舍在投喂发生日期没有羊只，不能记录投喂。"
+        case .penHasNoSheepAtTime: "所选圈舍在该发生时间没有羊只。"
         case .ingredientNotFound: "投喂原料不存在或已停用。"
         case .feedIngredientBatchNotFound: "投喂原料批次不存在、已停用，或不属于所选原料。"
         case .batchNotFound: "未找到当前牧场中的生产批次。"
@@ -110,6 +114,341 @@ struct FeedLineDraft: Sendable, Hashable, Identifiable {
         self.ingredientID = ingredientID
         self.ingredientBatchID = ingredientBatchID
         self.kilogramsText = kilogramsText
+    }
+}
+
+struct FeedIngredientDraft: Sendable, Hashable {
+    let id: UUID?
+    let name: String
+    let unit: String
+    let category: String
+    let dryMatterText: String?
+    let nutrientSnapshotJSON: String
+    let kind: FeedIngredientKind
+    let sourceTemplateID: String?
+    let sourceTemplateCode: String?
+    let mixtureComponentsJSON: String?
+    let note: String
+
+    init(id: UUID? = nil, name: String, unit: String = "千克", category: String = "", dryMatterText: String? = nil, nutrientSnapshotJSON: String = "{}", kind: FeedIngredientKind = .custom, sourceTemplateID: String? = nil, sourceTemplateCode: String? = nil, mixtureComponentsJSON: String? = nil, note: String = "") {
+        self.id = id
+        self.name = name
+        self.unit = unit
+        self.category = category
+        self.dryMatterText = dryMatterText
+        self.nutrientSnapshotJSON = nutrientSnapshotJSON
+        self.kind = kind
+        self.sourceTemplateID = sourceTemplateID
+        self.sourceTemplateCode = sourceTemplateCode
+        self.mixtureComponentsJSON = mixtureComponentsJSON
+        self.note = note
+    }
+}
+
+struct FeedBatchDraft: Sendable, Hashable {
+    let id: UUID?
+    let ingredientID: UUID
+    let batchName: String
+    let purchaseDate: Date?
+    let supplier: String
+    let storageLocation: String
+    let pricePerKilogramText: String
+    let purchasedKilogramsText: String?
+    let packagingKind: FeedPackagingKind
+    let packageCountText: String?
+    let nominalPackageKilogramsText: String?
+    let stockWeightConfirmed: Bool
+    let initialKilogramsText: String?
+    let remainingKilogramsText: String?
+    let note: String
+    let isActive: Bool
+
+    init(id: UUID? = nil, ingredientID: UUID, batchName: String, purchaseDate: Date? = nil, supplier: String = "", storageLocation: String = "", pricePerKilogramText: String, purchasedKilogramsText: String? = nil, packagingKind: FeedPackagingKind = .bulk, packageCountText: String? = nil, nominalPackageKilogramsText: String? = nil, stockWeightConfirmed: Bool = false, initialKilogramsText: String? = nil, remainingKilogramsText: String? = nil, note: String = "", isActive: Bool = true) {
+        self.id = id
+        self.ingredientID = ingredientID
+        self.batchName = batchName
+        self.purchaseDate = purchaseDate
+        self.supplier = supplier
+        self.storageLocation = storageLocation
+        self.pricePerKilogramText = pricePerKilogramText
+        self.purchasedKilogramsText = purchasedKilogramsText
+        self.packagingKind = packagingKind
+        self.packageCountText = packageCountText
+        self.nominalPackageKilogramsText = nominalPackageKilogramsText
+        self.stockWeightConfirmed = stockWeightConfirmed
+        self.initialKilogramsText = initialKilogramsText
+        self.remainingKilogramsText = remainingKilogramsText
+        self.note = note
+        self.isActive = isActive
+    }
+}
+
+struct FeedRecipeComponentDraft: Sendable, Hashable {
+    let id: UUID
+    let ingredientID: UUID
+    let ingredientBatchID: UUID?
+    let kilogramsText: String
+    let pricePerKilogramText: String?
+    let nutrientSnapshotJSON: String
+
+    init(id: UUID = UUID(), ingredientID: UUID, ingredientBatchID: UUID?, kilogramsText: String, pricePerKilogramText: String? = nil, nutrientSnapshotJSON: String = "{}") {
+        self.id = id
+        self.ingredientID = ingredientID
+        self.ingredientBatchID = ingredientBatchID
+        self.kilogramsText = kilogramsText
+        self.pricePerKilogramText = pricePerKilogramText
+        self.nutrientSnapshotJSON = nutrientSnapshotJSON
+    }
+}
+
+struct FeedRecipeDraft: Sendable, Hashable {
+    let id: UUID?
+    let name: String
+    let targetPenID: UUID?
+    let targetPenName: String?
+    let stage: FeedRecipeStage
+    let headCount: Int?
+    let components: [FeedRecipeComponentDraft]
+    let note: String
+
+    init(id: UUID? = nil, name: String, targetPenID: UUID? = nil, targetPenName: String? = nil, stage: FeedRecipeStage = .custom, headCount: Int? = nil, components: [FeedRecipeComponentDraft], note: String = "") {
+        self.id = id
+        self.name = name
+        self.targetPenID = targetPenID
+        self.targetPenName = targetPenName
+        self.stage = stage
+        self.headCount = headCount
+        self.components = components
+        self.note = note
+    }
+}
+
+struct FeedEntryDraft: Sendable, Hashable {
+    let id: UUID
+    let penID: UUID
+    let recipeID: UUID?
+    let mode: FeedMode
+    let occurredAt: Date
+    let mealName: String
+    let feederName: String
+    let remainingKilogramsText: String?
+    let discardedKilogramsText: String?
+    let remainingCompositionJSON: String?
+    let recipeHeadCountSnapshot: Int?
+    let actualHeadCountSnapshot: Int?
+    let scaleFactorText: String?
+    let excludedSheepIDs: [UUID]
+    let lines: [FeedLineDraft]
+    let note: String
+
+    init(id: UUID = UUID(), penID: UUID, recipeID: UUID? = nil, mode: FeedMode, occurredAt: Date, mealName: String = "", feederName: String = "", remainingKilogramsText: String? = nil, discardedKilogramsText: String? = nil, remainingCompositionJSON: String? = nil, recipeHeadCountSnapshot: Int? = nil, actualHeadCountSnapshot: Int? = nil, scaleFactorText: String? = nil, excludedSheepIDs: [UUID] = [], lines: [FeedLineDraft], note: String = "") {
+        self.id = id
+        self.penID = penID
+        self.recipeID = recipeID
+        self.mode = mode
+        self.occurredAt = occurredAt
+        self.mealName = mealName
+        self.feederName = feederName
+        self.remainingKilogramsText = remainingKilogramsText
+        self.discardedKilogramsText = discardedKilogramsText
+        self.remainingCompositionJSON = remainingCompositionJSON
+        self.recipeHeadCountSnapshot = recipeHeadCountSnapshot
+        self.actualHeadCountSnapshot = actualHeadCountSnapshot
+        self.scaleFactorText = scaleFactorText
+        self.excludedSheepIDs = Array(Set(excludedSheepIDs)).sorted { $0.uuidString < $1.uuidString }
+        self.lines = lines
+        self.note = note
+    }
+}
+
+struct FeedTroughObservationDraft: Sendable, Hashable {
+    let id: UUID
+    let penID: UUID
+    let relatedFeedRecordID: UUID?
+    let feederName: String
+    let observedAt: Date
+    let actualRemainingKilogramsText: String
+    let discardedKilogramsText: String?
+    let measurementMethod: FeedTroughMeasurementMethod
+    let compositionSnapshotJSON: String?
+    let note: String
+
+    init(
+        id: UUID = UUID(),
+        penID: UUID,
+        relatedFeedRecordID: UUID? = nil,
+        feederName: String,
+        observedAt: Date,
+        actualRemainingKilogramsText: String,
+        discardedKilogramsText: String? = nil,
+        measurementMethod: FeedTroughMeasurementMethod,
+        compositionSnapshotJSON: String? = nil,
+        note: String = ""
+    ) {
+        self.id = id
+        self.penID = penID
+        self.relatedFeedRecordID = relatedFeedRecordID
+        self.feederName = feederName
+        self.observedAt = observedAt
+        self.actualRemainingKilogramsText = actualRemainingKilogramsText
+        self.discardedKilogramsText = discardedKilogramsText
+        self.measurementMethod = measurementMethod
+        self.compositionSnapshotJSON = compositionSnapshotJSON
+        self.note = note
+    }
+}
+
+struct HistoricalFeedLineDraft: Sendable, Hashable, Identifiable {
+    let id: UUID
+    let ingredientID: UUID
+    let kilogramsText: String
+    let ingredientNameSnapshot: String
+    let ingredientBatchNameSnapshot: String?
+    let pricePerKilogramTextSnapshot: String?
+    let nutrientSnapshotJSON: String
+    let unitSnapshot: String
+    let dryMatterTextSnapshot: String?
+
+    init(id: UUID, ingredientID: UUID, kilogramsText: String, ingredientNameSnapshot: String, ingredientBatchNameSnapshot: String? = nil, pricePerKilogramTextSnapshot: String? = nil, nutrientSnapshotJSON: String = "{}", unitSnapshot: String = "千克", dryMatterTextSnapshot: String? = nil) {
+        self.id = id
+        self.ingredientID = ingredientID
+        self.kilogramsText = kilogramsText
+        self.ingredientNameSnapshot = ingredientNameSnapshot
+        self.ingredientBatchNameSnapshot = ingredientBatchNameSnapshot
+        self.pricePerKilogramTextSnapshot = pricePerKilogramTextSnapshot
+        self.nutrientSnapshotJSON = nutrientSnapshotJSON
+        self.unitSnapshot = unitSnapshot
+        self.dryMatterTextSnapshot = dryMatterTextSnapshot
+    }
+}
+
+struct HistoricalFeedEntryDraft: Sendable, Hashable {
+    let id: UUID
+    let legacySourceKey: String
+    let penID: UUID
+    let mode: FeedMode
+    let occurredAt: Date
+    let mealName: String
+    let feederName: String
+    let remainingKilogramsText: String?
+    let discardedKilogramsText: String?
+    let remainingCompositionJSON: String?
+    let lines: [HistoricalFeedLineDraft]
+    let note: String
+}
+
+enum FeedPenEligibility {
+    static func sheepByPen(
+        on date: Date,
+        sheep: [SheepRecord],
+        transfers: [TransferRecord],
+        removals: [RemovalRecord],
+        calendar: Calendar = .current
+    ) -> [UUID: [SheepRecord]] {
+        let selectedDay = calendar.startOfDay(for: date)
+        let today = calendar.startOfDay(for: .now)
+        if selectedDay >= today {
+            var current: [UUID: [SheepRecord]] = [:]
+            for item in sheep where item.deletedAt == nil && item.isCurrentlyPresent {
+                guard let penID = item.currentPenID else { continue }
+                current[penID, default: []].append(item)
+            }
+            return current.mapValues { $0.sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending } }
+        }
+
+        let dayEnd = (calendar.date(byAdding: .day, value: 1, to: selectedDay) ?? date).addingTimeInterval(-0.001)
+        let transfersBySheep = Dictionary(grouping: transfers.filter { $0.deletedAt == nil }, by: \.sheepID)
+        let removalsBySheep = Dictionary(grouping: removals.filter { $0.deletedAt == nil }, by: \.sheepID)
+        var result: [UUID: [SheepRecord]] = [:]
+        for item in sheep where item.deletedAt == nil && item.enteredAt <= dayEnd {
+            guard FarmHistoryTimeline.removal(for: item.id, at: dayEnd, removals: removalsBySheep[item.id] ?? []) == nil,
+                  let penID = FarmHistoryTimeline.pen(for: item, at: dayEnd, transfers: transfersBySheep[item.id] ?? []) else { continue }
+            result[penID, default: []].append(item)
+        }
+        return result.mapValues { $0.sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending } }
+    }
+
+    static func headCounts(
+        on date: Date,
+        sheep: [SheepRecord],
+        transfers: [TransferRecord],
+        removals: [RemovalRecord],
+        calendar: Calendar = .current
+    ) -> [UUID: Int] {
+        sheepByPen(on: date, sheep: sheep, transfers: transfers, removals: removals, calendar: calendar)
+            .mapValues(\.count)
+    }
+}
+
+enum FeedMixtureAllocator {
+    static func roundedKilograms(_ value: Decimal) -> Decimal {
+        var source = value
+        var result = Decimal.zero
+        NSDecimalRound(&result, &source, 6, .plain)
+        return result
+    }
+
+    static func mixtureByPen(totalKilograms: Decimal, weightedHeadCounts: [(penID: UUID, headCount: Int)]) -> [UUID: Decimal] {
+        let totalHeadCount = weightedHeadCounts.reduce(0) { $0 + max(0, $1.headCount) }
+        guard totalKilograms > 0, totalHeadCount > 0 else { return [:] }
+        var result: [UUID: Decimal] = [:]
+        var used: Decimal = 0
+        for (index, item) in weightedHeadCounts.enumerated() {
+            let value = index == weightedHeadCounts.count - 1
+                ? totalKilograms - used
+                : roundedKilograms(totalKilograms * Decimal(max(0, item.headCount)) / Decimal(totalHeadCount))
+            result[item.penID] = value
+            used += value
+        }
+        return result
+    }
+
+    static func ingredientsByPen(
+        components: [(lineID: UUID, kilograms: Decimal)],
+        penMixtures: [(penID: UUID, kilograms: Decimal)]
+    ) -> [UUID: [UUID: Decimal]] {
+        let mixtureTotal = components.reduce(Decimal.zero) { $0 + $1.kilograms }
+        guard mixtureTotal > 0, !penMixtures.isEmpty else { return [:] }
+        var result = Dictionary(uniqueKeysWithValues: penMixtures.map { ($0.penID, [UUID: Decimal]()) })
+        for component in components {
+            var used: Decimal = 0
+            for (index, pen) in penMixtures.enumerated() {
+                let quantity = index == penMixtures.count - 1
+                    ? component.kilograms - used
+                    : roundedKilograms(component.kilograms * pen.kilograms / mixtureTotal)
+                result[pen.penID, default: [:]][component.lineID] = quantity
+                used += quantity
+            }
+        }
+        return result
+    }
+}
+
+enum FeedExclusionRecommendation {
+    /// 只推荐有明确出生日期、投喂日尚未断奶且出生未满 1.5 个月（按 45 日龄）的羔羊。
+    /// 推荐结果仅用于界面提示，必须由用户主动选择后才会从均分计数中扣除。
+    static func nursingLambIDs(
+        on date: Date,
+        sheep: [SheepRecord],
+        weanings: [WeaningRecord],
+        calendar: Calendar = .current
+    ) -> Set<UUID> {
+        let selectedDay = calendar.startOfDay(for: date)
+        let dayEnd = (calendar.date(byAdding: .day, value: 1, to: selectedDay) ?? date).addingTimeInterval(-0.001)
+        let weanedIDs = Set(weanings.lazy.filter {
+            $0.deletedAt == nil && $0.occurredAt <= dayEnd
+        }.map(\.sheepID))
+        return Set(sheep.compactMap { item in
+            guard let birthAt = item.birthAt,
+                  birthAt <= dayEnd,
+                  !weanedIDs.contains(item.id) else { return nil }
+            let ageDays = calendar.dateComponents(
+                [.day],
+                from: calendar.startOfDay(for: birthAt),
+                to: selectedDay
+            ).day ?? -1
+            return (0...45).contains(ageDays) ? item.id : nil
+        })
     }
 }
 
@@ -181,6 +520,14 @@ enum FarmCommand: Sendable {
     case createRecipe(name: String, note: String)
     case addRecipeComponent(recipeID: UUID, ingredientID: UUID, kilogramsText: String)
     case recordFeed(penID: UUID, recipeID: UUID?, mode: FeedMode, occurredAt: Date, lines: [FeedLineDraft], note: String)
+    case saveFeedIngredient(FeedIngredientDraft)
+    case saveFeedBatch(FeedBatchDraft)
+    case adjustFeedStock(batchID: UUID, kind: FeedStockTransactionKind, quantityText: String, occurredAt: Date, note: String)
+    case countFeedStock(countID: UUID, batchID: UUID, actualKilogramsText: String?, method: FeedStockCountMethod, occurredAt: Date, note: String)
+    case saveFeedRecipe(FeedRecipeDraft)
+    case recordFeedV2(FeedEntryDraft)
+    case recordFeedTroughObservation(FeedTroughObservationDraft)
+    case importHistoricalFeed(HistoricalFeedEntryDraft)
     case recordHealth(sheepID: UUID?, penID: UUID?, kind: HealthRecordKind, itemName: String, occurredAt: Date, note: String, inventoryLotID: UUID?, quantityText: String?)
     case receiveInventory(catalogName: String, kind: HealthRecordKind, expiresAt: Date?, quantityText: String, occurredAt: Date, note: String)
     case addSemen(code: String, breed: String, source: String, batchNumber: String, quantityText: String)
@@ -198,7 +545,7 @@ enum FarmCommand: Sendable {
             .deleteProtectedFacts
         case .correctWeight, .correctTransfer, .correctRemoval:
             .editHistoricalFacts
-        case .addIngredient, .createRecipe, .addRecipeComponent, .createBreedingProgram:
+        case .addIngredient, .createRecipe, .addRecipeComponent, .saveFeedIngredient, .saveFeedBatch, .adjustFeedStock, .countFeedStock, .saveFeedRecipe, .createBreedingProgram:
             .manageCatalogs
         case .care(let command):
             command.requiredCapability
@@ -231,6 +578,14 @@ enum FarmCommand: Sendable {
         case .createRecipe: .createRecipe
         case .addRecipeComponent: .addRecipeComponent
         case .recordFeed: .recordFeed
+        case .saveFeedIngredient: .saveFeedIngredient
+        case .saveFeedBatch: .saveFeedBatch
+        case .adjustFeedStock: .adjustFeedStock
+        case .countFeedStock: .countFeedStock
+        case .saveFeedRecipe: .saveFeedRecipe
+        case .recordFeedV2: .recordFeedV2
+        case .recordFeedTroughObservation: .recordFeedTroughObservation
+        case .importHistoricalFeed: .importHistoricalFeed
         case .recordHealth: .recordHealth
         case .receiveInventory: .receiveInventory
         case .addSemen: .addSemen
@@ -266,6 +621,14 @@ enum FarmCommand: Sendable {
         case .createRecipe(let name, _): "新建配方：\(name)"
         case .addRecipeComponent: "更新配方组成"
         case .recordFeed: "记录投喂"
+        case .saveFeedIngredient(let draft): "保存原料：\(draft.name)"
+        case .saveFeedBatch(let draft): "保存原料批次：\(draft.batchName)"
+        case .adjustFeedStock: "调整原料库存"
+        case .countFeedStock: "盘库并校正原料库存"
+        case .saveFeedRecipe(let draft): "保存配方：\(draft.name)"
+        case .recordFeedV2: "记录投喂并扣减库存"
+        case .recordFeedTroughObservation: "记录盘槽"
+        case .importHistoricalFeed: "补录 eSheep+ 历史投喂（不扣库存）"
         case .recordHealth: "记录健康事项"
         case .receiveInventory(let catalogName, _, _, _, _, _): "入库：\(catalogName)"
         case .addSemen(let code, _, _, _, _): "新增冻精：\(code)"
@@ -521,6 +884,7 @@ final class FarmCommandService {
         }
         try context.save()
         committed = true
+        FarmOperationalAlertRuntimeNotification.post(farmID: farm.farmID)
         if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
             CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
         }
@@ -563,6 +927,7 @@ final class FarmCommandService {
         )
         try context.save()
         committed = true
+        FarmOperationalAlertRuntimeNotification.post(farmID: farm.farmID)
         if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
             CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
         }
@@ -692,6 +1057,7 @@ final class FarmCommandService {
         )
         try context.save()
         committed = true
+        FarmOperationalAlertRuntimeNotification.post(farmID: farm.farmID)
         if route.requiresOutbox {
             CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
         }
@@ -753,6 +1119,7 @@ final class FarmCommandService {
         context.insert(receiptRecord)
         try context.save()
         committed = true
+        FarmOperationalAlertRuntimeNotification.post(farmID: farm.farmID)
         if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
             CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
         }
@@ -905,6 +1272,7 @@ final class FarmCommandService {
 
         try context.save()
         committed = true
+        FarmOperationalAlertRuntimeNotification.post(farmID: farm.farmID)
         if route.requiresOutbox {
             CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
         }
@@ -958,6 +1326,7 @@ final class FarmCommandService {
         try flushHistory()
         try context.save()
         committed = true
+        FarmOperationalAlertRuntimeNotification.post(farmID: farm.farmID)
         if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
             CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
         }
@@ -1445,8 +1814,11 @@ final class FarmCommandService {
         let existingOperationsByID = Dictionary(uniqueKeysWithValues:
             existingOperations.map { ($0.id, $0) }
         )
+        // Keep legacy-provider rows in scope. A farm can switch authority after
+        // the original composite operation was staged, leaving more than one
+        // Outbox row for the same operation ID.
         let existingOutboxes = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
-            $0.farmID == farmID && $0.deliveryProvider == .supabase
+            $0.farmID == farmID
         }
         var insertedCount = 0
         for parent in operations {
@@ -1471,17 +1843,27 @@ final class FarmCommandService {
                 )
                 guard existingOperationsByID[correctedID] == nil else { return false }
                 guard let original = existingOperationsByID[originalID] else { return true }
-                let invalidOutboxes = existingOutboxes.filter {
-                    $0.operationID == originalID &&
+                let originalOutboxes = existingOutboxes.filter {
+                    $0.operationID == originalID
+                }
+                let hasInvalidRevision = originalOutboxes.contains {
                         $0.status == .retryableFailure &&
                         $0.errorMessage == "resulting_revision_invalid"
                 }
+                let hasConfirmedAuthoritativeDelivery = originalOutboxes.contains {
+                    $0.deliveryProvider == .supabase && $0.status == .confirmed
+                }
                 guard original.baseRevision == 0,
                       original.resultingRevision != 1,
-                      !invalidOutboxes.isEmpty else {
+                      hasInvalidRevision,
+                      !hasConfirmedAuthoritativeDelivery else {
                     return false
                 }
-                for item in invalidOutboxes {
+                // The operation revision is invalid regardless of which
+                // authority row received the rejection. Retire every
+                // non-terminal duplicate so the corrected operation is the
+                // only deliverable fact.
+                for item in originalOutboxes where !item.status.isTerminalDelivery {
                     item.statusRawValue = OutboxStatus.supersededRemoteAuthority.rawValue
                     item.errorMessage = "superseded_invalid_child_revision"
                     item.nextRetryAt = nil
@@ -2258,8 +2640,10 @@ final class FarmCommandService {
             try assertRecipe(recipeID, farmID: farmID, context: context)
             try assertIngredient(ingredientID, farmID: farmID, context: context)
             try positiveDecimal(kilogramsText, label: "配方用量")
-        case .recordFeed(let penID, let recipeID, _, _, let lines, _):
-            try assertPen(penID, farmID: farmID, context: context)
+        case .recordFeed(let penID, let recipeID, _, let occurredAt, let lines, _):
+            guard occurredAt <= Date.now else { throw FarmCommandError.futureFactDate("投喂时间") }
+            try assertPen(penID, farmID: farmID, context: context, includeInactive: true)
+            try assertPenHasSheep(penID, on: occurredAt, farmID: farmID, context: context)
             if let recipeID { try assertRecipe(recipeID, farmID: farmID, context: context) }
             guard !lines.isEmpty else { throw FarmCommandError.missingRequiredValue("投喂明细") }
             for line in lines {
@@ -2269,10 +2653,160 @@ final class FarmCommandService {
                 }
                 try positiveDecimal(line.kilogramsText, label: "投喂数量")
             }
-        case .recordHealth(let sheepID, let penID, _, let itemName, _, _, let inventoryLotID, let quantityText):
+        case .saveFeedIngredient(let draft):
+            _ = try required(draft.name, label: "原料名称")
+            _ = try required(draft.unit, label: "单位")
+            if let dryMatterText = draft.dryMatterText, !dryMatterText.isEmpty {
+                try positiveDecimal(dryMatterText, label: "干物质")
+                guard Decimal.stable(dryMatterText)! <= 100 else { throw FarmCommandError.invalidNumber("干物质") }
+            }
+            if let id = draft.id,
+               draft.kind != .legacy,
+               try context.fetch(FetchDescriptor<FeedIngredientRecord>()).first(where: { $0.id == id && $0.farmID == farmID && $0.deletedAt == nil }) == nil {
+                throw FarmCommandError.ingredientNotFound
+            }
+        case .saveFeedBatch(let draft):
+            try assertIngredient(draft.ingredientID, farmID: farmID, context: context)
+            _ = try required(draft.batchName, label: "批次名称")
+            try nonNegativeDecimal(draft.pricePerKilogramText, label: "批次单价")
+            if let purchased = draft.purchasedKilogramsText, !purchased.isEmpty { try nonNegativeDecimal(purchased, label: "购入量") }
+            if let initial = draft.initialKilogramsText, !initial.isEmpty { try nonNegativeDecimal(initial, label: "期初库存") }
+            if let remaining = draft.remainingKilogramsText, !remaining.isEmpty { try nonNegativeDecimal(remaining, label: "当前库存") }
+            if let packageCount = draft.packageCountText, !packageCount.isEmpty { try positiveDecimal(packageCount, label: "包装数量") }
+            if let nominal = draft.nominalPackageKilogramsText, !nominal.isEmpty { try positiveDecimal(nominal, label: "包装规格重量") }
+            if let id = draft.id, try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first(where: { $0.id == id && $0.farmID == farmID && $0.deletedAt == nil }) == nil {
+                throw FarmCommandError.feedIngredientBatchNotFound
+            }
+        case .adjustFeedStock(let batchID, let kind, let quantityText, _, _):
+            let batch = try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first(where: { $0.id == batchID && $0.farmID == farmID && $0.isActive && $0.deletedAt == nil })
+            guard let batch else { throw FarmCommandError.feedIngredientBatchNotFound }
+            guard let quantity = Decimal.stable(quantityText) else { throw FarmCommandError.invalidNumber("库存数量") }
+            switch kind {
+            case .receipt:
+                guard quantity > 0 else { throw FarmCommandError.invalidNumber("入库数量") }
+            case .adjustment:
+                guard quantity != 0 else { throw FarmCommandError.invalidNumber("调整数量") }
+            case .openingBalance, .consumption, .reversal, .conflict:
+                throw FarmCommandError.invalidNumber("库存流水类型")
+            }
+            if kind == .adjustment {
+                guard let current = try FeedStockLedger.balance(for: batch, context: context) else {
+                    throw FarmStockCommandError.batchRequired
+                }
+                if current + quantity < 0 { throw FarmCommandError.insufficientInventory }
+            }
+        case .countFeedStock(_, let batchID, let actualKilogramsText, let method, _, _):
+            guard let batch = try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first(where: { $0.id == batchID && $0.farmID == farmID && $0.isActive && $0.deletedAt == nil }) else { throw FarmCommandError.feedIngredientBatchNotFound }
+            guard try FeedStockLedger.balance(for: batch, context: context) != nil else { throw FarmStockCommandError.batchRequired }
+            if method == .notMeasured, actualKilogramsText != nil {
+                throw FarmCommandError.invalidNumber("暂未称量不能填写公斤数")
+            } else if let actualKilogramsText {
+                guard let actual = Decimal.stable(actualKilogramsText), actual >= 0 else { throw FarmCommandError.invalidNumber("盘点实际剩余量") }
+            } else if method != .notMeasured {
+                throw FarmCommandError.missingRequiredValue("盘点实际剩余量")
+            }
+        case .saveFeedRecipe(let draft):
+            _ = try required(draft.name, label: "配方名称")
+            guard !draft.components.isEmpty else { throw FarmCommandError.missingRequiredValue("配方原料") }
+            if let headCount = draft.headCount, headCount <= 0 { throw FarmCommandError.invalidNumber("设计羊数") }
+            if let targetPenID = draft.targetPenID { try assertPen(targetPenID, farmID: farmID, context: context) }
+            if let id = draft.id, try context.fetch(FetchDescriptor<FeedRecipeRecord>()).first(where: { $0.id == id && $0.farmID == farmID && $0.deletedAt == nil }) == nil {
+                throw FarmCommandError.sourceRecordNotFound
+            }
+            for component in draft.components {
+                try assertIngredient(component.ingredientID, farmID: farmID, context: context)
+                if let batchID = component.ingredientBatchID {
+                    _ = try feedIngredientBatchRecord(batchID, ingredientID: component.ingredientID, farmID: farmID, context: context)
+                }
+                try positiveDecimal(component.kilogramsText, label: "配方用量")
+            }
+        case .recordFeedV2(let draft):
+            guard draft.occurredAt <= Date.now else { throw FarmCommandError.futureFactDate("投喂时间") }
+            try assertPen(draft.penID, farmID: farmID, context: context, includeInactive: true)
+            try assertPenHasSheep(draft.penID, on: draft.occurredAt, farmID: farmID, context: context)
+            if let recipeID = draft.recipeID { try assertRecipe(recipeID, farmID: farmID, context: context) }
+            guard !draft.lines.isEmpty else { throw FarmCommandError.missingRequiredValue("投喂明细") }
+            for line in draft.lines {
+                try assertIngredient(line.ingredientID, farmID: farmID, context: context)
+                try positiveDecimal(line.kilogramsText, label: "投喂数量")
+            }
+            let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            }))
+            let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            }))
+            let removals = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            }))
+            let eligibleIDs = Set(FeedPenEligibility.sheepByPen(
+                on: draft.occurredAt,
+                sheep: sheep,
+                transfers: transfers,
+                removals: removals
+            )[draft.penID, default: []].map(\.id))
+            guard Set(draft.excludedSheepIDs).isSubset(of: eligibleIDs) else {
+                throw FarmCommandError.sheepNotFound
+            }
+            if let actualHeadCount = draft.actualHeadCountSnapshot {
+                guard actualHeadCount >= 0,
+                      actualHeadCount == eligibleIDs.count - Set(draft.excludedSheepIDs).count else {
+                    throw FarmCommandError.invalidNumber("实际参与投喂羊数")
+                }
+            }
+            try FeedStockLedger.validateConsumption(lines: draft.lines, farmID: farmID, context: context)
+            if let remaining = draft.remainingKilogramsText, !remaining.isEmpty { try nonNegativeDecimal(remaining, label: "剩料") }
+            if let discarded = draft.discardedKilogramsText, !discarded.isEmpty { try nonNegativeDecimal(discarded, label: "清出报废") }
+        case .recordFeedTroughObservation(let draft):
+            guard draft.observedAt <= Date.now else { throw FarmCommandError.futureFactDate("盘槽时间") }
+            try assertPen(draft.penID, farmID: farmID, context: context, includeInactive: true)
+            try assertPenOccupied(draft.penID, at: draft.observedAt, farmID: farmID, context: context)
+            _ = try required(draft.feederName, label: "料罐或投喂点")
+            try nonNegativeDecimal(draft.actualRemainingKilogramsText, label: "实际剩余量")
+            let actual = Decimal.stable(draft.actualRemainingKilogramsText) ?? 0
+            if let discardedText = draft.discardedKilogramsText, !discardedText.isEmpty {
+                try nonNegativeDecimal(discardedText, label: "清出量")
+                guard (Decimal.stable(discardedText) ?? 0) <= actual else {
+                    throw FarmCommandError.invalidNumber("清出量不能大于盘槽时实际剩余量")
+                }
+            }
+            if let feedID = draft.relatedFeedRecordID {
+                guard let feed = try context.fetch(FetchDescriptor<FeedRecord>()).first(where: {
+                    $0.id == feedID && $0.farmID == farmID && $0.penID == draft.penID &&
+                        $0.occurredAt <= draft.observedAt && $0.deletedAt == nil
+                }) else { throw FarmCommandError.sourceRecordNotFound }
+                _ = feed
+            }
+            if let json = draft.compositionSnapshotJSON {
+                guard let data = json.data(using: .utf8),
+                      let components = try? JSONDecoder().decode([FeedTroughCompositionComponent].self, from: data),
+                      !components.isEmpty else {
+                    throw FarmCommandError.missingRequiredValue("有效剩料组成")
+                }
+                let quantities = components.compactMap { Decimal.stable($0.kilogramsText) }
+                guard quantities.count == components.count,
+                      quantities.allSatisfy({ $0 >= 0 }),
+                      abs(NSDecimalNumber(decimal: quantities.reduce(0, +) - actual).doubleValue) <= 0.001 else {
+                    throw FarmCommandError.invalidNumber("剩料组成合计")
+                }
+            }
+        case .importHistoricalFeed(let draft):
+            try assertPen(draft.penID, farmID: farmID, context: context)
+            _ = try required(draft.legacySourceKey, label: "历史投喂来源")
+            guard !draft.lines.isEmpty else { throw FarmCommandError.missingRequiredValue("投喂明细") }
+            for line in draft.lines {
+                try assertIngredient(line.ingredientID, farmID: farmID, context: context)
+                try positiveDecimal(line.kilogramsText, label: "投喂数量")
+            }
+            if let remaining = draft.remainingKilogramsText, !remaining.isEmpty { try nonNegativeDecimal(remaining, label: "剩料") }
+            if let discarded = draft.discardedKilogramsText, !discarded.isEmpty { try nonNegativeDecimal(discarded, label: "清出报废") }
+        case .recordHealth(let sheepID, let penID, _, let itemName, let occurredAt, _, let inventoryLotID, let quantityText):
             guard sheepID != nil || penID != nil else { throw FarmCommandError.missingRequiredValue("羊只或圈舍") }
             if let sheepID { try assertSheep(sheepID, farmID: farmID, context: context) }
-            if let penID { try assertPen(penID, farmID: farmID, context: context) }
+            if let penID {
+                try assertPen(penID, farmID: farmID, context: context, includeInactive: true)
+                try assertPenOccupied(penID, at: occurredAt, farmID: farmID, context: context)
+            }
             _ = try required(itemName, label: "药品或疫苗名称")
             if let quantityText, !quantityText.isEmpty { try positiveDecimal(quantityText, label: "用量") }
             if let inventoryLotID {
@@ -2337,10 +2871,13 @@ final class FarmCommandService {
             } else if !offspring.isEmpty {
                 throw FarmCommandError.invalidReproductionRecord
             }
-        case .addNote(let sheepID, let penID, let text, _):
+        case .addNote(let sheepID, let penID, let text, let occurredAt):
             guard sheepID != nil || penID != nil else { throw FarmCommandError.missingRequiredValue("羊只或圈舍") }
             if let sheepID { try assertSheep(sheepID, farmID: farmID, context: context) }
-            if let penID { try assertPen(penID, farmID: farmID, context: context) }
+            if let penID {
+                try assertPen(penID, farmID: farmID, context: context, includeInactive: true)
+                try assertPenOccupied(penID, at: occurredAt, farmID: farmID, context: context)
+            }
             _ = try required(text, label: "备注内容")
         case .tombstoneEntity(let entityType, let entityID, let reason):
             _ = try required(reason, label: "删除原因")
@@ -2772,6 +3309,190 @@ final class FarmCommandService {
             }
             let payload = try FarmCommandCloudPayloadEncoder.encode(command, resolvedFeedLines: resolvedCloudLines)
             return appliedResult(.feed, feed.id, payload: payload)
+        case .saveFeedIngredient(let draft):
+            let record: FeedIngredientRecord
+            let baseRevision: Int
+            if let id = draft.id,
+               let existing = try context.fetch(FetchDescriptor<FeedIngredientRecord>()).first(where: { $0.id == id && $0.farmID == farm.farmID && $0.deletedAt == nil }) {
+                record = existing
+                baseRevision = try latestRevision(entityType: .feedIngredient, entityID: id, farmID: farm.farmID, context: context)
+            } else {
+                record = FeedIngredientRecord(id: draft.id ?? UUID(), farmID: farm.farmID, name: draft.name, unit: draft.unit, dryMatterText: draft.dryMatterText, category: draft.category, nutrientSnapshotJSON: draft.nutrientSnapshotJSON, kind: draft.kind, sourceTemplateID: draft.sourceTemplateID, sourceTemplateCode: draft.sourceTemplateCode, mixtureComponentsJSON: draft.mixtureComponentsJSON, note: draft.note)
+                context.insert(record)
+                baseRevision = 0
+            }
+            record.name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.unit = draft.unit.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.category = draft.category.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.dryMatterText = draft.dryMatterText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }
+            record.nutrientSnapshotJSON = draft.nutrientSnapshotJSON.isEmpty ? "{}" : draft.nutrientSnapshotJSON
+            record.kindRawValue = draft.kind.rawValue
+            record.sourceTemplateID = draft.sourceTemplateID
+            record.sourceTemplateCode = draft.sourceTemplateCode
+            record.mixtureComponentsJSON = draft.mixtureComponentsJSON
+            record.note = draft.note.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.updatedAt = .now
+            return appliedResult(.feedIngredient, record.id, baseRevision: baseRevision, revision: baseRevision + 1)
+        case .saveFeedBatch(let draft):
+            let record: FeedIngredientBatchRecord
+            let baseRevision: Int
+            if let id = draft.id,
+               let existing = try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first(where: { $0.id == id && $0.farmID == farm.farmID && $0.deletedAt == nil }) {
+                record = existing
+                baseRevision = try latestRevision(entityType: .feedIngredientBatch, entityID: id, farmID: farm.farmID, context: context)
+            } else {
+                record = FeedIngredientBatchRecord(id: draft.id ?? UUID(), farmID: farm.farmID, ingredientID: draft.ingredientID, batchName: draft.batchName, purchaseDate: draft.purchaseDate, supplier: draft.supplier, storageLocation: draft.storageLocation, pricePerKilogramText: normalizedDecimal(draft.pricePerKilogramText), purchasedKilogramsText: draft.purchasedKilogramsText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }, packagingKind: draft.packagingKind, packageCountText: draft.packageCountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }, nominalPackageKilogramsText: draft.nominalPackageKilogramsText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }, stockWeightConfirmed: draft.stockWeightConfirmed, initialKilogramsText: draft.initialKilogramsText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }, remainingKilogramsText: draft.remainingKilogramsText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }, note: draft.note, isActive: draft.isActive)
+                context.insert(record)
+                baseRevision = 0
+            }
+            record.ingredientID = draft.ingredientID
+            record.batchName = draft.batchName.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.purchaseDate = draft.purchaseDate
+            record.supplier = draft.supplier.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.storageLocation = draft.storageLocation.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.pricePerKilogramText = normalizedDecimal(draft.pricePerKilogramText)
+            record.purchasedKilogramsText = draft.purchasedKilogramsText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }
+            record.packagingKindRawValue = draft.packagingKind.rawValue
+            record.packageCountText = draft.packageCountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }
+            record.nominalPackageKilogramsText = draft.nominalPackageKilogramsText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }
+            record.stockWeightConfirmed = draft.stockWeightConfirmed
+            record.initialKilogramsText = draft.initialKilogramsText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }
+            record.remainingKilogramsText = draft.remainingKilogramsText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) }
+            record.note = draft.note.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.isActive = draft.isActive
+            record.updatedAt = .now
+            record.revision = max(record.revision + 1, baseRevision + 1)
+            return appliedResult(.feedIngredientBatch, record.id, baseRevision: baseRevision, revision: record.revision)
+        case .adjustFeedStock(let batchID, let kind, let quantityText, let occurredAt, let note):
+            let transaction = FeedStockTransactionRecord(farmID: farm.farmID, ingredientBatchID: batchID, kind: kind, quantityText: normalizedDecimal(quantityText), occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
+            context.insert(transaction)
+            return appliedResult(.feedStockTransaction, transaction.id)
+        case .countFeedStock(let countID, let batchID, let actualKilogramsText, let method, let occurredAt, let note):
+            guard let batch = try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first(where: { $0.id == batchID && $0.farmID == farm.farmID && $0.isActive && $0.deletedAt == nil }), let bookBalance = try FeedStockLedger.balance(for: batch, context: context) else {
+                throw FarmCommandError.feedIngredientBatchNotFound
+            }
+            let actual = actualKilogramsText.flatMap(Decimal.stable)
+            let difference = actual.map { $0 - bookBalance }
+            let adjustmentID = difference.map { _ in StableCloudUUID.derived(namespace: countID, name: "feed-stock-count-adjustment") }
+            let count = FeedStockCountRecord(id: countID, farmID: farm.farmID, ingredientBatchID: batchID, bookBalanceText: bookBalance.stableText, actualKilogramsText: actual?.stableText, differenceText: difference?.stableText, method: method, occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines), adjustmentTransactionID: adjustmentID)
+            context.insert(count)
+            if let difference, let adjustmentID {
+                context.insert(FeedStockTransactionRecord(id: adjustmentID, farmID: farm.farmID, ingredientBatchID: batchID, kind: .adjustment, quantityText: difference.stableText, occurredAt: occurredAt, sourceRecordID: count.id, note: "盘库校正（\(method.displayName)）"))
+            }
+            return appliedResult(.feedStockCount, count.id)
+        case .saveFeedRecipe(let draft):
+            let recipe: FeedRecipeRecord
+            let baseRevision: Int
+            if let id = draft.id,
+               let existing = try context.fetch(FetchDescriptor<FeedRecipeRecord>()).first(where: { $0.id == id && $0.farmID == farm.farmID && $0.deletedAt == nil }) {
+                recipe = existing
+                baseRevision = try latestRevision(entityType: .feedRecipe, entityID: id, farmID: farm.farmID, context: context)
+            } else {
+                recipe = FeedRecipeRecord(id: draft.id ?? UUID(), farmID: farm.farmID, name: draft.name, note: draft.note, targetPenName: draft.targetPenName, targetPenID: draft.targetPenID, stageRawValue: draft.stage.rawValue, headCount: draft.headCount)
+                context.insert(recipe)
+                baseRevision = 0
+            }
+            recipe.name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            recipe.targetPenID = draft.targetPenID
+            recipe.targetPenName = draft.targetPenName
+            recipe.stageRawValue = draft.stage.rawValue
+            recipe.headCount = draft.headCount
+            recipe.note = draft.note.trimmingCharacters(in: .whitespacesAndNewlines)
+            recipe.updatedAt = .now
+            let oldComponents = try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()).filter { $0.farmID == farm.farmID && $0.recipeID == recipe.id && $0.deletedAt == nil }
+            let incomingIDs = Set(draft.components.map(\.id))
+            for old in oldComponents where !incomingIDs.contains(old.id) { old.deletedAt = .now }
+            for component in draft.components {
+                let value: FeedRecipeComponentRecord
+                if let existing = oldComponents.first(where: { $0.id == component.id }) {
+                    value = existing
+                } else {
+                    value = FeedRecipeComponentRecord(id: component.id, farmID: farm.farmID, recipeID: recipe.id, ingredientID: component.ingredientID, kilogramsText: normalizedDecimal(component.kilogramsText), ingredientBatchID: component.ingredientBatchID, pricePerKilogramText: component.pricePerKilogramText.flatMap { normalizedDecimal($0) }, nutrientSnapshotJSON: component.nutrientSnapshotJSON)
+                    context.insert(value)
+                }
+                value.ingredientID = component.ingredientID
+                value.ingredientBatchID = component.ingredientBatchID
+                value.kilogramsText = normalizedDecimal(component.kilogramsText)
+                value.pricePerKilogramText = component.pricePerKilogramText.flatMap { normalizedDecimal($0) }
+                value.nutrientSnapshotJSON = component.nutrientSnapshotJSON
+                value.updatedAt = .now
+                value.deletedAt = nil
+            }
+            let payload = try FarmCommandCloudPayloadEncoder.encode(command)
+            return appliedResult(.feedRecipe, recipe.id, baseRevision: baseRevision, revision: baseRevision + 1, payload: payload)
+        case .recordFeedV2(let draft):
+            let feed = FeedRecord(id: draft.id, farmID: farm.farmID, penID: draft.penID, recipeID: draft.recipeID, mode: draft.mode, occurredAt: draft.occurredAt, note: draft.note.trimmingCharacters(in: .whitespacesAndNewlines), mealName: draft.mealName.trimmingCharacters(in: .whitespacesAndNewlines), feederName: draft.feederName.trimmingCharacters(in: .whitespacesAndNewlines), remainingKilogramsText: draft.remainingKilogramsText.flatMap { normalizedDecimal($0) }, discardedKilogramsText: draft.discardedKilogramsText.flatMap { normalizedDecimal($0) }, recipeHeadCountSnapshot: draft.recipeHeadCountSnapshot, actualHeadCountSnapshot: draft.actualHeadCountSnapshot, scaleFactorText: draft.scaleFactorText.flatMap { normalizedDecimal($0) }, remainingCompositionJSON: draft.remainingCompositionJSON, excludedSheepIDs: draft.excludedSheepIDs)
+            context.insert(feed)
+            let recipeComponents = try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>())
+            var resolvedCloudLines: [FarmCommandCloudPayload.FeedLine] = []
+            for line in draft.lines {
+                let ingredient = try ingredientRecord(line.ingredientID, farmID: farm.farmID, context: context)
+                let ingredientBatch = try line.ingredientBatchID.map { try feedIngredientBatchRecord($0, ingredientID: ingredient.id, farmID: farm.farmID, context: context) }
+                let recipeComponent = draft.recipeID.flatMap { recipeID in recipeComponents.first { $0.farmID == farm.farmID && $0.recipeID == recipeID && $0.ingredientID == ingredient.id && $0.deletedAt == nil } }
+                let nutrientSnapshot = (recipeComponent?.nutrientSnapshotJSON.isEmpty == false ? recipeComponent?.nutrientSnapshotJSON : nil) ?? ingredient.nutrientSnapshotJSON
+                let priceSnapshot = ingredientBatch?.pricePerKilogramText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? ingredientBatch?.pricePerKilogramText : recipeComponent?.pricePerKilogramText
+                let quantityText = normalizedDecimal(line.kilogramsText)
+                let record = FeedRecordLine(id: line.id, farmID: farm.farmID, feedRecordID: feed.id, ingredientID: ingredient.id, kilogramsText: quantityText, stockQuantityText: quantityText, ingredientNameSnapshot: ingredient.name, ingredientBatchID: ingredientBatch?.id, ingredientBatchNameSnapshot: ingredientBatch?.batchName, pricePerKilogramTextSnapshot: priceSnapshot, nutrientSnapshotJSON: nutrientSnapshot, unitSnapshot: ingredient.unit, dryMatterTextSnapshot: ingredient.dryMatterText ?? ingredient.nutrients.dryMatter.map { String($0) })
+                context.insert(record)
+                FeedStockLedger.insertConsumption(feedID: feed.id, lineID: record.id, batchID: ingredientBatch!.id, quantityText: quantityText, occurredAt: draft.occurredAt, farmID: farm.farmID, context: context)
+                resolvedCloudLines.append(.init(id: record.id, ingredientID: record.ingredientID, kilogramsText: record.kilogramsText, ingredientBatchID: record.ingredientBatchID, ingredientNameSnapshot: record.ingredientNameSnapshot, ingredientBatchNameSnapshot: record.ingredientBatchNameSnapshot, pricePerKilogramTextSnapshot: record.pricePerKilogramTextSnapshot, nutrientSnapshotJSON: record.nutrientSnapshotJSON, unitSnapshot: record.unitSnapshot, dryMatterTextSnapshot: record.dryMatterTextSnapshot))
+            }
+            let payload = try FarmCommandCloudPayloadEncoder.encode(command, resolvedFeedLines: resolvedCloudLines)
+            return appliedResult(.feed, feed.id, payload: payload)
+        case .recordFeedTroughObservation(let draft):
+            let observation = FeedTroughObservationRecord(
+                id: draft.id,
+                farmID: farm.farmID,
+                penID: draft.penID,
+                relatedFeedRecordID: draft.relatedFeedRecordID,
+                feederName: draft.feederName.trimmingCharacters(in: .whitespacesAndNewlines),
+                observedAt: draft.observedAt,
+                actualRemainingKilogramsText: normalizedDecimal(draft.actualRemainingKilogramsText),
+                discardedKilogramsText: draft.discardedKilogramsText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) },
+                measurementMethod: draft.measurementMethod,
+                compositionSnapshotJSON: draft.compositionSnapshotJSON,
+                note: draft.note.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            context.insert(observation)
+            return appliedResult(.feedTroughObservation, observation.id)
+        case .importHistoricalFeed(let draft):
+            if let existing = try context.fetch(FetchDescriptor<FeedRecord>()).first(where: {
+                $0.id == draft.id && $0.farmID == farm.farmID && $0.deletedAt == nil
+            }) {
+                return appliedResult(.feed, existing.id, baseRevision: existing.revision, revision: existing.revision)
+            }
+            let feed = FeedRecord(
+                id: draft.id,
+                farmID: farm.farmID,
+                penID: draft.penID,
+                mode: draft.mode,
+                occurredAt: draft.occurredAt,
+                note: draft.note.trimmingCharacters(in: .whitespacesAndNewlines),
+                mealName: draft.mealName,
+                feederName: draft.feederName,
+                remainingKilogramsText: draft.remainingKilogramsText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) },
+                discardedKilogramsText: draft.discardedKilogramsText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) },
+                remainingCompositionJSON: draft.remainingCompositionJSON,
+                legacySourceKey: draft.legacySourceKey
+            )
+            context.insert(feed)
+            for line in draft.lines {
+                context.insert(FeedRecordLine(
+                    id: line.id,
+                    farmID: farm.farmID,
+                    feedRecordID: feed.id,
+                    ingredientID: line.ingredientID,
+                    kilogramsText: normalizedDecimal(line.kilogramsText),
+                    ingredientNameSnapshot: line.ingredientNameSnapshot,
+                    ingredientBatchNameSnapshot: line.ingredientBatchNameSnapshot,
+                    pricePerKilogramTextSnapshot: line.pricePerKilogramTextSnapshot,
+                    nutrientSnapshotJSON: line.nutrientSnapshotJSON,
+                    unitSnapshot: line.unitSnapshot,
+                    dryMatterTextSnapshot: line.dryMatterTextSnapshot
+                ))
+            }
+            let payload = try FarmCommandCloudPayloadEncoder.encode(command)
+            return appliedResult(.feed, feed.id, payload: payload)
         case .recordHealth(let sheepID, let penID, let kind, let itemName, let occurredAt, let note, let inventoryLotID, let quantityText):
             let health = HealthRecord(farmID: farm.farmID, sheepID: sheepID, penID: penID, kind: kind, itemNameSnapshot: itemName.trimmingCharacters(in: .whitespacesAndNewlines), occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines), inventoryLotID: inventoryLotID, quantityText: quantityText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) })
             context.insert(health)
@@ -2910,6 +3631,10 @@ final class FarmCommandService {
             try context.fetch(FetchDescriptor<FeedRecord>()).first {
                 $0.id == entityID && $0.farmID == farmID
             }?.revision
+        case .feedTroughObservation:
+            try context.fetch(FetchDescriptor<FeedTroughObservationRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
         case .reproduction:
             try context.fetch(FetchDescriptor<ReproductionRecord>()).first {
                 $0.id == entityID && $0.farmID == farmID
@@ -2938,10 +3663,14 @@ final class FarmCommandService {
             try context.fetch(FetchDescriptor<CareReminderRecord>()).first {
                 $0.id == entityID && $0.farmID == farmID
             }?.revision
+        case .alertDeferral:
+            try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
         case .farm, .productionBatch, .batchMembership, .feedIngredient,
              .feedRecipe, .feedRecipeComponent, .feedLine, .inventoryLot,
              .inventoryTransaction, .health, .pedigreeChange, .photoAsset,
-             .feedIngredientBatch, .healthCatalogItem, .healthSubjectLink,
+             .feedIngredientBatch, .feedStockTransaction, .feedStockCount, .healthCatalogItem, .healthSubjectLink,
              .careBatch, .semenTransaction:
             nil
         }
@@ -2964,6 +3693,9 @@ final class FarmCommandService {
         case .feedRecipeComponent: return try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .feed: return try context.fetch(FetchDescriptor<FeedRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .feedLine: return try context.fetch(FetchDescriptor<FeedRecordLine>()).contains { $0.id == id && $0.farmID == farmID }
+        case .feedTroughObservation: return try context.fetch(FetchDescriptor<FeedTroughObservationRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .feedStockTransaction: return try context.fetch(FetchDescriptor<FeedStockTransactionRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .feedStockCount: return try context.fetch(FetchDescriptor<FeedStockCountRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .inventoryLot: return try context.fetch(FetchDescriptor<InventoryLotRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .inventoryTransaction: return try context.fetch(FetchDescriptor<InventoryTransactionRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .health: return try context.fetch(FetchDescriptor<HealthRecord>()).contains { $0.id == id && $0.farmID == farmID }
@@ -2982,6 +3714,7 @@ final class FarmCommandService {
         case .semenTransaction: return try context.fetch(FetchDescriptor<SemenTransactionRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .careRule: return try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .careReminder: return try context.fetch(FetchDescriptor<CareReminderRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .alertDeferral: return try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).contains { $0.id == id && $0.farmID == farmID }
         }
     }
 
@@ -2993,6 +3726,12 @@ final class FarmCommandService {
 
     private func positiveDecimal(_ text: String, label: String) throws {
         guard let value = Decimal.stable(text.trimmingCharacters(in: .whitespacesAndNewlines)), value > 0 else {
+            throw FarmCommandError.invalidNumber(label)
+        }
+    }
+
+    private func nonNegativeDecimal(_ text: String, label: String) throws {
+        guard let value = Decimal.stable(text.trimmingCharacters(in: .whitespacesAndNewlines)), value >= 0 else {
             throw FarmCommandError.invalidNumber(label)
         }
     }
@@ -3009,6 +3748,40 @@ final class FarmCommandService {
         guard pens.contains(where: {
             includeInactive || $0.isActive
         }) else { throw FarmCommandError.penNotFound }
+    }
+    private func assertPenHasSheep(_ id: UUID, on date: Date, farmID: UUID, context: ModelContext) throws {
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let removals = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        guard FeedPenEligibility.headCounts(on: date, sheep: sheep, transfers: transfers, removals: removals)[id, default: 0] > 0 else {
+            throw FarmCommandError.feedPenHasNoSheepOnDate
+        }
+    }
+    private func assertPenOccupied(_ id: UUID, at instant: Date, farmID: UUID, context: ModelContext) throws {
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let removals = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let occupancy = FarmPenOccupancyIndex.make(
+            farmID: farmID,
+            sheep: sheep,
+            transfers: transfers,
+            removals: removals
+        )
+        guard occupancy.occupiedPenIDs(at: instant).contains(id) else {
+            throw FarmCommandError.penHasNoSheepAtTime
+        }
     }
     private func assertIngredient(_ id: UUID, farmID: UUID, context: ModelContext) throws { _ = try ingredientRecord(id, farmID: farmID, context: context) }
 

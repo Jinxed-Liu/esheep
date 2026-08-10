@@ -31,7 +31,7 @@ struct FarmRecordsView: View {
             }
             Section("补充") {
                 NavigationLink { NoteEntryView(account: account, farm: farm) } label: { Label("备注", systemImage: "note.text") }
-                NavigationLink { MigrationWorkspaceView() } label: { Label("从 eSheep+ 导入", systemImage: "square.and.arrow.down") }
+                NavigationLink { LegacyFeedMergeView(account: account, farm: farm) } label: { Label("合并 eSheep+ 投喂", systemImage: "square.and.arrow.down") }
             }
         }
         .navigationTitle("录入")
@@ -178,6 +178,12 @@ struct WeaningEntryView: View {
     @State private var includesBirthDate = false
     @State private var note = ""
     @State private var errorMessage: String?
+
+    init(account: AccountProfile, farm: FarmRecord, initialSheepID: UUID? = nil) {
+        self.account = account
+        self.farm = farm
+        _sheepID = State(initialValue: initialSheepID)
+    }
 
     private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active } }
     private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
@@ -439,6 +445,12 @@ struct TransferEntryView: View {
     @State private var note = ""
     @State private var errorMessage: String?
 
+    init(account: AccountProfile, farm: FarmRecord, initialSheepID: UUID? = nil) {
+        self.account = account
+        self.farm = farm
+        _sheepID = State(initialValue: initialSheepID)
+    }
+
     private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active } }
     private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
     private var sheepCandidates: [SheepEarTagSearchCandidate] { farmSheep.map { .init(sheep: $0) } }
@@ -489,9 +501,27 @@ struct NoteEntryView: View {
     @State private var text = ""
     @State private var occurredAt = Date.now
     @State private var errorMessage: String?
+    @State private var sheepIDsByPenAtOccurrence: [UUID: Set<UUID>] = [:]
 
-    private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
-    private var sheepCandidates: [SheepEarTagSearchCandidate] { farmSheep.map { .init(sheep: $0) } }
+    init(account: AccountProfile, farm: FarmRecord) {
+        self.account = account
+        self.farm = farm
+        let farmID = farm.id
+        _sheep = Query(
+            filter: #Predicate<SheepRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \SheepRecord.earTag
+        )
+        _pens = Query(
+            filter: #Predicate<PenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \PenRecord.name
+        )
+    }
+
+    private var sheepCandidates: [SheepEarTagSearchCandidate] { sheep.map { .init(sheep: $0) } }
+    private var eligiblePenIDs: Set<UUID> { Set(sheepIDsByPenAtOccurrence.keys) }
+    private var farmPens: [PenRecord] {
+        pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && eligiblePenIDs.contains($0.id) }
+    }
 
     var body: some View {
         Form {
@@ -502,7 +532,13 @@ struct NoteEntryView: View {
                     emptySelectionText: "未关联羊只"
                 )
             }
-            Picker("圈舍", selection: $penID) { Text("不指定").tag(UUID?.none); ForEach(pens.filter { $0.farmID == farm.id && $0.deletedAt == nil }, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }
+            Picker("圈舍", selection: $penID) {
+                Text("不指定").tag(UUID?.none)
+                ForEach(farmPens, id: \.id) { pen in
+                    Text("\(pen.name)（\(sheepIDsByPenAtOccurrence[pen.id, default: []].count)只）")
+                        .tag(UUID?.some(pen.id))
+                }
+            }
             DatePicker("发生时间", selection: $occurredAt)
             TextField("备注内容", text: $text, axis: .vertical).lineLimit(4...8)
         }
@@ -510,6 +546,25 @@ struct NoteEntryView: View {
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["备注"])
+        .task(id: occurredAt) { await refreshPenOccupancy() }
+        .onChange(of: eligiblePenIDs) { _, validIDs in
+            if let penID, !validIDs.contains(penID) { self.penID = nil }
+        }
+    }
+
+    @MainActor
+    private func refreshPenOccupancy() async {
+        do {
+            let resolved = try await FarmPenOccupancyReadActor(container: modelContext.container)
+                .sheepIDsByPen(farmID: farm.id, at: occurredAt)
+            try Task.checkCancellation()
+            sheepIDsByPenAtOccurrence = resolved
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled else { return }
+            errorMessage = "读取该时间的圈舍存栏失败：\(error.localizedDescription)"
+        }
     }
 
     private func save() {

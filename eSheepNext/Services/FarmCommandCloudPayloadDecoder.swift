@@ -245,6 +245,141 @@ enum FarmCommandCloudPayloadDecoder {
                 },
                 note: try string("note", in: payload)
             )
+        case .saveFeedIngredient:
+            return .saveFeedIngredient(FeedIngredientDraft(
+                id: optionalIdentifier("ingredientID", in: payload),
+                name: try string("name", in: payload),
+                unit: try string("unit", in: payload),
+                category: payload.strings["category"] ?? "",
+                dryMatterText: optionalString("dryMatterText", in: payload),
+                nutrientSnapshotJSON: payload.strings["nutrientSnapshotJSON"] ?? "{}",
+                kind: try rawValue(FeedIngredientKind.self, field: "kind", value: payload.strings["kind"] ?? FeedIngredientKind.legacy.rawValue),
+                sourceTemplateID: optionalString("sourceTemplateID", in: payload),
+                sourceTemplateCode: optionalString("sourceTemplateCode", in: payload),
+                mixtureComponentsJSON: optionalString("mixtureComponentsJSON", in: payload),
+                note: payload.strings["note"] ?? ""
+            ))
+        case .saveFeedBatch:
+            return .saveFeedBatch(FeedBatchDraft(
+                id: optionalIdentifier("batchID", in: payload),
+                ingredientID: try identifier("ingredientID", in: payload),
+                batchName: try string("batchName", in: payload),
+                purchaseDate: optionalDate("purchaseDate", in: payload),
+                supplier: payload.strings["supplier"] ?? "",
+                storageLocation: payload.strings["storageLocation"] ?? "",
+                pricePerKilogramText: try string("pricePerKilogramText", in: payload),
+                purchasedKilogramsText: optionalString("purchasedKilogramsText", in: payload),
+                packagingKind: try rawValue(FeedPackagingKind.self, field: "packagingKind", value: payload.strings["packagingKind"] ?? FeedPackagingKind.bulk.rawValue),
+                packageCountText: optionalString("packageCountText", in: payload),
+                nominalPackageKilogramsText: optionalString("nominalPackageKilogramsText", in: payload),
+                stockWeightConfirmed: (payload.strings["stockWeightConfirmed"] ?? "0") == "1",
+                initialKilogramsText: optionalString("initialKilogramsText", in: payload),
+                remainingKilogramsText: optionalString("remainingKilogramsText", in: payload),
+                note: payload.strings["note"] ?? "",
+                isActive: (payload.strings["isActive"] ?? "1") != "0"
+            ))
+        case .adjustFeedStock:
+            return .adjustFeedStock(
+                batchID: try identifier("batchID", in: payload),
+                kind: try rawValue(FeedStockTransactionKind.self, field: "kind", value: try string("kind", in: payload)),
+                quantityText: try string("quantityText", in: payload),
+                occurredAt: try date("occurredAt", in: payload),
+                note: payload.strings["note"] ?? ""
+            )
+        case .countFeedStock:
+            return .countFeedStock(
+                countID: try identifier("countID", in: payload),
+                batchID: try identifier("batchID", in: payload),
+                actualKilogramsText: optionalString("actualKilogramsText", in: payload),
+                method: try rawValue(FeedStockCountMethod.self, field: "method", value: payload.strings["method"] ?? FeedStockCountMethod.notMeasured.rawValue),
+                occurredAt: try date("occurredAt", in: payload),
+                note: payload.strings["note"] ?? ""
+            )
+        case .saveFeedRecipe:
+            return .saveFeedRecipe(FeedRecipeDraft(
+                id: optionalIdentifier("recipeID", in: payload),
+                name: try string("name", in: payload),
+                targetPenID: optionalIdentifier("targetPenID", in: payload),
+                targetPenName: optionalString("targetPenName", in: payload),
+                stage: try rawValue(FeedRecipeStage.self, field: "stage", value: payload.strings["stage"] ?? FeedRecipeStage.custom.rawValue),
+                headCount: payload.integers["headCount"],
+                components: payload.recipeComponents.map {
+                    FeedRecipeComponentDraft(
+                        id: $0.id,
+                        ingredientID: $0.ingredientID,
+                        ingredientBatchID: $0.ingredientBatchID,
+                        kilogramsText: $0.kilogramsText,
+                        pricePerKilogramText: $0.pricePerKilogramText,
+                        nutrientSnapshotJSON: $0.nutrientSnapshotJSON
+                    )
+                },
+                note: payload.strings["note"] ?? ""
+            ))
+        case .recordFeedV2:
+            return .recordFeedV2(FeedEntryDraft(
+                id: try identifier("feedID", in: payload),
+                penID: try identifier("penID", in: payload),
+                recipeID: optionalIdentifier("recipeID", in: payload),
+                mode: try rawValue(FeedMode.self, field: "mode", value: try string("mode", in: payload)),
+                occurredAt: try date("occurredAt", in: payload),
+                mealName: payload.strings["mealName"] ?? "",
+                feederName: payload.strings["feederName"] ?? "",
+                remainingKilogramsText: optionalString("remainingKilogramsText", in: payload),
+                discardedKilogramsText: optionalString("discardedKilogramsText", in: payload),
+                remainingCompositionJSON: optionalString("remainingCompositionJSON", in: payload),
+                recipeHeadCountSnapshot: payload.integers["recipeHeadCountSnapshot"],
+                actualHeadCountSnapshot: payload.integers["actualHeadCountSnapshot"],
+                scaleFactorText: optionalString("scaleFactorText", in: payload),
+                excludedSheepIDs: FeedExcludedSheepCodec.decode(optionalString("excludedSheepIDsJSON", in: payload)),
+                lines: payload.feedLines.map {
+                    FeedLineDraft(id: $0.id, ingredientID: $0.ingredientID, ingredientBatchID: $0.ingredientBatchID, kilogramsText: $0.kilogramsText)
+                },
+                note: payload.strings["note"] ?? ""
+            ))
+        case .recordFeedTroughObservation:
+            return .recordFeedTroughObservation(FeedTroughObservationDraft(
+                id: try identifier("observationID", in: payload),
+                penID: try identifier("penID", in: payload),
+                relatedFeedRecordID: optionalIdentifier("relatedFeedRecordID", in: payload),
+                feederName: try string("feederName", in: payload),
+                observedAt: try date("observedAt", in: payload),
+                actualRemainingKilogramsText: try string("actualRemainingKilogramsText", in: payload),
+                discardedKilogramsText: optionalString("discardedKilogramsText", in: payload),
+                measurementMethod: try rawValue(
+                    FeedTroughMeasurementMethod.self,
+                    field: "measurementMethod",
+                    value: try string("measurementMethod", in: payload)
+                ),
+                compositionSnapshotJSON: optionalString("compositionSnapshotJSON", in: payload),
+                note: payload.strings["note"] ?? ""
+            ))
+        case .importHistoricalFeed:
+            return .importHistoricalFeed(HistoricalFeedEntryDraft(
+                id: try identifier("feedID", in: payload),
+                legacySourceKey: try string("legacySourceKey", in: payload),
+                penID: try identifier("penID", in: payload),
+                mode: try rawValue(FeedMode.self, field: "mode", value: try string("mode", in: payload)),
+                occurredAt: try date("occurredAt", in: payload),
+                mealName: payload.strings["mealName"] ?? "",
+                feederName: payload.strings["feederName"] ?? "",
+                remainingKilogramsText: optionalString("remainingKilogramsText", in: payload),
+                discardedKilogramsText: optionalString("discardedKilogramsText", in: payload),
+                remainingCompositionJSON: optionalString("remainingCompositionJSON", in: payload),
+                lines: payload.feedLines.map {
+                    HistoricalFeedLineDraft(
+                        id: $0.id,
+                        ingredientID: $0.ingredientID,
+                        kilogramsText: $0.kilogramsText,
+                        ingredientNameSnapshot: $0.ingredientNameSnapshot ?? "",
+                        ingredientBatchNameSnapshot: $0.ingredientBatchNameSnapshot,
+                        pricePerKilogramTextSnapshot: $0.pricePerKilogramTextSnapshot,
+                        nutrientSnapshotJSON: $0.nutrientSnapshotJSON ?? "{}",
+                        unitSnapshot: $0.unitSnapshot ?? "千克",
+                        dryMatterTextSnapshot: $0.dryMatterTextSnapshot
+                    )
+                },
+                note: payload.strings["note"] ?? ""
+            ))
         case .recordHealth:
             return .recordHealth(
                 sheepID: optionalIdentifier("sheepID", in: payload),

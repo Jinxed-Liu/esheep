@@ -179,18 +179,30 @@ final class FeedIngredientBatchRecord {
     var supplier: String
     var storageLocation: String
     var pricePerKilogramText: String
+    var purchasedKilogramsText: String?
+    var packagingKindRawValue: String = FeedPackagingKind.bulk.rawValue
+    var packageCountText: String?
+    var nominalPackageKilogramsText: String?
+    var stockWeightConfirmed: Bool = false
     var initialKilogramsText: String?
     var remainingKilogramsText: String?
     var note: String
     var isActive: Bool
     var createdAt: Date
+    var updatedAt: Date = Date.now
+    var revision: Int = 1
+    var deletedAt: Date?
 
-    init(id: UUID = UUID(), farmID: UUID, ingredientID: UUID, legacySourceKey: String, batchName: String, purchaseDate: Date?, supplier: String, storageLocation: String, pricePerKilogramText: String, initialKilogramsText: String?, remainingKilogramsText: String?, note: String, isActive: Bool) {
+    init(id: UUID = UUID(), farmID: UUID, ingredientID: UUID, legacySourceKey: String = "", batchName: String, purchaseDate: Date? = nil, supplier: String = "", storageLocation: String = "", pricePerKilogramText: String = "0", purchasedKilogramsText: String? = nil, packagingKind: FeedPackagingKind = .bulk, packageCountText: String? = nil, nominalPackageKilogramsText: String? = nil, stockWeightConfirmed: Bool? = nil, initialKilogramsText: String? = nil, remainingKilogramsText: String? = nil, note: String = "", isActive: Bool = true) {
         self.id = id; self.farmID = farmID; self.ingredientID = ingredientID; self.legacySourceKey = legacySourceKey
         self.batchName = batchName; self.purchaseDate = purchaseDate; self.supplier = supplier; self.storageLocation = storageLocation
-        self.pricePerKilogramText = pricePerKilogramText; self.initialKilogramsText = initialKilogramsText; self.remainingKilogramsText = remainingKilogramsText
-        self.note = note; self.isActive = isActive; self.createdAt = .now
+        self.pricePerKilogramText = pricePerKilogramText; self.purchasedKilogramsText = purchasedKilogramsText; self.packagingKindRawValue = packagingKind.rawValue; self.packageCountText = packageCountText; self.nominalPackageKilogramsText = nominalPackageKilogramsText
+        self.stockWeightConfirmed = stockWeightConfirmed ?? (initialKilogramsText != nil || remainingKilogramsText != nil)
+        self.initialKilogramsText = initialKilogramsText; self.remainingKilogramsText = remainingKilogramsText
+        self.note = note; self.isActive = isActive; self.createdAt = .now; self.updatedAt = self.createdAt; self.deletedAt = nil
     }
+
+    var packagingKind: FeedPackagingKind { FeedPackagingKind(rawValue: packagingKindRawValue) ?? .bulk }
 }
 
 @Model

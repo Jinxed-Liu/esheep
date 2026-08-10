@@ -74,10 +74,28 @@ enum SheepSharePosterTemplate: String, CaseIterable, Identifiable, Sendable {
     static func recommended(for image: UIImage?) -> Self {
         guard let image else { return .landscapeLight }
         let displayedSize: CGSize
-        switch image.imageOrientation {
-        case .left, .leftMirrored, .right, .rightMirrored:
-            displayedSize = CGSize(width: image.size.height, height: image.size.width)
-        default:
+        if let cgImage = image.cgImage {
+            let sourceSize = CGSize(
+                width: CGFloat(cgImage.width) / image.scale,
+                height: CGFloat(cgImage.height) / image.scale
+            )
+            switch image.imageOrientation {
+            case .left, .leftMirrored, .right, .rightMirrored:
+                displayedSize = CGSize(width: sourceSize.height, height: sourceSize.width)
+            default:
+                displayedSize = sourceSize
+            }
+        } else if let ciImage = image.ciImage {
+            let sourceSize = ciImage.extent.size
+            switch image.imageOrientation {
+            case .left, .leftMirrored, .right, .rightMirrored:
+                displayedSize = CGSize(width: sourceSize.height, height: sourceSize.width)
+            default:
+                displayedSize = sourceSize
+            }
+        } else {
+            // UIKit already reports a display-oriented size when the raw
+            // backing image is unavailable, so do not rotate it a second time.
             displayedSize = image.size
         }
         return displayedSize.width >= displayedSize.height ? .landscapeLight : .portraitLight

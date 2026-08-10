@@ -210,6 +210,7 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == first.id })?.sheep.map(\.farmID), [first.id])
         XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == second.id })?.pens.map(\.farmID), [second.id])
         XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == first.id })?.activePenCount, 1)
+        XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == first.id })?.pens.map(\.name), ["一号圈"])
         XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == first.id })?.pendingOperationCount, 1)
     }
 
@@ -1003,6 +1004,77 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(report.counts.sheep, 1)
         XCTAssertEqual(report.counts.pens, 1)
         XCTAssertEqual(report.counts.photos, 1)
+    }
+
+    func testPlusHistoricalFeedWithoutFeedLibraryKeepsRecordAndLine() throws {
+        let payload = """
+        {
+          "schemaVersion": 3,
+          "herd": {"sheep":[],"customPens":["育肥舍"],"transfers":[],"removals":[],"weighRecords":[],"productionBatches":[],"batchMemberships":[]},
+          "reproduction": {"lambing":[],"semenRecords":[]},
+          "feeding": {
+            "feedRecords":[{
+              "id":"old-feed-1","mode":"restricted","pen":"育肥舍","date":"2025-05-02","time":"07:15",
+              "ingredients":[{"name":"青贮玉米","amount":"126.5"}],"note":"旧版记录"
+            }]
+          }
+        }
+        """.data(using: .utf8)!
+
+        let session = try LegacyMigrationImporter.preview(source: payload)
+        XCTAssertEqual(session.inspectorReport.counts.feedRecords, 1)
+        let temporary = try LegacyMigrationImporter.buildTemporaryFarm(sessionID: session.id)
+        XCTAssertTrue(temporary.reconciliation.blockingDiscrepancies.isEmpty)
+        let context = ModelContext(temporary.container)
+        let feed = try XCTUnwrap(try context.fetch(FetchDescriptor<FeedRecord>()).first)
+        let line = try XCTUnwrap(try context.fetch(FetchDescriptor<FeedRecordLine>()).first)
+        let ingredient = try XCTUnwrap(try context.fetch(FetchDescriptor<FeedIngredientRecord>()).first)
+
+        XCTAssertEqual(feed.mode, .limited)
+        XCTAssertEqual(line.kilogramsText, "126.5")
+        XCTAssertEqual(line.ingredientNameSnapshot, "青贮玉米")
+        XCTAssertEqual(line.ingredientID, ingredient.id)
+        XCTAssertEqual(ingredient.category, "历史投喂")
+    }
+
+    func testRecommittingSamePlusBackupRepairsMissingFeedHistoryWithoutStockDeduction() throws {
+        let payload = """
+        {
+          "schemaVersion": 3,
+          "herd": {"sheep":[],"customPens":["一舍"],"transfers":[],"removals":[],"weighRecords":[],"productionBatches":[],"batchMemberships":[]},
+          "reproduction": {"lambing":[],"semenRecords":[]},
+          "feeding": {
+            "feedLibrary":[{"id":"corn","name":"玉米","category":"能量","defaultNutrients":{"dryMatter":86},"batches":[]}],
+            "feedRecords":[{"id":"feed-1","mode":"freeChoice","pen":"一舍","date":"2025-06-01","time":"08:00","ingredients":[{"ingredientId":"corn","name":"玉米","amount":"80"}],"note":"补料"}]
+          }
+        }
+        """.data(using: .utf8)!
+        let session = try LegacyMigrationImporter.preview(source: payload)
+        _ = try LegacyMigrationImporter.buildTemporaryFarm(sessionID: session.id)
+        let destination = try AppSchema.makeContainer(name: "feed-repair-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(destination)
+        let account = AccountProfile(appleUserIdentifier: "feed-repair-owner", displayName: "场主")
+        context.insert(account)
+        try context.save()
+
+        let first = try MigrationCommitService().commit(sessionID: session.id, account: account, destinationContext: context)
+        for line in try context.fetch(FetchDescriptor<FeedRecordLine>()).filter({ $0.farmID == first.farmID }) {
+            context.delete(line)
+        }
+        for feed in try context.fetch(FetchDescriptor<FeedRecord>()).filter({ $0.farmID == first.farmID }) {
+            context.delete(feed)
+        }
+        try context.save()
+
+        // Re-exporting the same Plus farm creates a new migration session, but
+        // the source checksum still identifies the already-created Next farm.
+        let repairSession = try LegacyMigrationImporter.preview(source: payload)
+        _ = try LegacyMigrationImporter.buildTemporaryFarm(sessionID: repairSession.id)
+        let repaired = try MigrationCommitService().commit(sessionID: repairSession.id, account: account, destinationContext: context)
+        XCTAssertTrue(repaired.wasAlreadyCommitted)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<FeedRecord>()).filter { $0.farmID == first.farmID }.count, 1)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<FeedRecordLine>()).filter { $0.farmID == first.farmID }.count, 1)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<FeedStockTransactionRecord>()).filter { $0.farmID == first.farmID }.count, 0)
     }
 
     func testRemovalCanBeRestoredThroughTheSameCommandPipeline() throws {
@@ -1875,6 +1947,14 @@ final class FarmDomainTests: XCTestCase {
         let account = AccountProfile(appleUserIdentifier: "feed-snapshot-owner", displayName: "场主")
         let farm = FarmRecord(ownerAccountID: account.id, name: "饲喂快照测试场")
         let pen = PenRecord(farmID: farm.id, name: "育肥舍")
+        let sheep = SheepRecord(
+            farmID: farm.id,
+            earTag: "FEED-SNAPSHOT-001",
+            breed: "测试羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: Date(timeIntervalSince1970: 1_735_603_200)
+        )
         let ingredient = FeedIngredientRecord(
             farmID: farm.id,
             name: "玉米",
@@ -1899,6 +1979,7 @@ final class FarmDomainTests: XCTestCase {
         context.insert(account)
         context.insert(farm)
         context.insert(pen)
+        context.insert(sheep)
         context.insert(ingredient)
         context.insert(ingredientBatch)
         try context.save()

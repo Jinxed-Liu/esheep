@@ -154,6 +154,310 @@ enum AppSchemaV6: VersionedSchema {
 
 enum AppSchemaV7: VersionedSchema {
     static let versionIdentifier = Schema.Version(7, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.preV8ModelTypes }
+
+    // Freeze the feed domain exactly as it existed before the rebuild.  These
+    // are schema-only types; runtime code continues to use the V8 models
+    // below.  Keeping the old shape here is what makes V7 -> V8 a real
+    // additive migration instead of silently redefining the old store.
+    @Model
+    final class FeedIngredientRecord {
+        var id: UUID
+        var farmID: UUID
+        var name: String
+        var category: String
+        var legacySourceKey: String?
+        var nutrientSnapshotJSON: String
+        var unit: String
+        var dryMatterText: String?
+        var isActive: Bool
+        var createdAt: Date
+        var updatedAt: Date
+        var deletedAt: Date?
+
+        init(id: UUID = UUID(), farmID: UUID, name: String, unit: String = "千克", dryMatterText: String? = nil, category: String = "", legacySourceKey: String? = nil, nutrientSnapshotJSON: String = "{}") {
+            self.id = id; self.farmID = farmID; self.name = name; self.category = category
+            self.legacySourceKey = legacySourceKey; self.nutrientSnapshotJSON = nutrientSnapshotJSON
+            self.unit = unit; self.dryMatterText = dryMatterText; self.isActive = true
+            self.createdAt = .now; self.updatedAt = .now; self.deletedAt = nil
+        }
+    }
+
+    @Model
+    final class FeedRecipeRecord {
+        var id: UUID
+        var farmID: UUID
+        var name: String
+        var targetPenName: String?
+        var stageRawValue: String
+        var headCount: Int?
+        var legacySourceKey: String?
+        var note: String
+        var isActive: Bool
+        var createdAt: Date
+        var updatedAt: Date
+        var deletedAt: Date?
+
+        init(id: UUID = UUID(), farmID: UUID, name: String, note: String = "", targetPenName: String? = nil, stageRawValue: String = "", headCount: Int? = nil, legacySourceKey: String? = nil) {
+            self.id = id; self.farmID = farmID; self.name = name; self.targetPenName = targetPenName
+            self.stageRawValue = stageRawValue; self.headCount = headCount; self.legacySourceKey = legacySourceKey
+            self.note = note; self.isActive = true; self.createdAt = .now; self.updatedAt = .now; self.deletedAt = nil
+        }
+    }
+
+    @Model
+    final class FeedRecipeComponentRecord {
+        var id: UUID
+        var farmID: UUID
+        var recipeID: UUID
+        var ingredientID: UUID
+        var kilogramsText: String
+        var legacyBatchID: String?
+        var pricePerKilogramText: String?
+        var nutrientSnapshotJSON: String
+        var createdAt: Date
+        var updatedAt: Date
+        var deletedAt: Date?
+
+        init(id: UUID = UUID(), farmID: UUID, recipeID: UUID, ingredientID: UUID, kilogramsText: String, legacyBatchID: String? = nil, pricePerKilogramText: String? = nil, nutrientSnapshotJSON: String = "{}") {
+            self.id = id; self.farmID = farmID; self.recipeID = recipeID; self.ingredientID = ingredientID
+            self.kilogramsText = kilogramsText; self.legacyBatchID = legacyBatchID
+            self.pricePerKilogramText = pricePerKilogramText; self.nutrientSnapshotJSON = nutrientSnapshotJSON
+            self.createdAt = .now; self.updatedAt = .now; self.deletedAt = nil
+        }
+    }
+
+    @Model
+    final class FeedRecord {
+        var id: UUID
+        var farmID: UUID
+        var penID: UUID
+        var recipeID: UUID?
+        var modeRawValue: String
+        var occurredAt: Date
+        var recordedAt: Date
+        var note: String
+        var mealName: String
+        var feederName: String
+        var remainingKilogramsText: String?
+        var discardedKilogramsText: String?
+        var legacySourceKey: String?
+        var revision: Int
+        var deletedAt: Date?
+
+        init(id: UUID = UUID(), farmID: UUID, penID: UUID, recipeID: UUID? = nil, mode: FeedMode, occurredAt: Date, note: String = "", mealName: String = "", feederName: String = "", remainingKilogramsText: String? = nil, discardedKilogramsText: String? = nil, legacySourceKey: String? = nil) {
+            self.id = id; self.farmID = farmID; self.penID = penID; self.recipeID = recipeID
+            self.modeRawValue = mode.rawValue; self.occurredAt = occurredAt; self.recordedAt = .now
+            self.note = note; self.mealName = mealName; self.feederName = feederName
+            self.remainingKilogramsText = remainingKilogramsText; self.discardedKilogramsText = discardedKilogramsText
+            self.legacySourceKey = legacySourceKey; self.revision = 1; self.deletedAt = nil
+        }
+    }
+
+    @Model
+    final class FeedRecordLine {
+        var id: UUID
+        var farmID: UUID
+        var feedRecordID: UUID
+        var ingredientID: UUID
+        var kilogramsText: String
+        var ingredientNameSnapshot: String
+        var ingredientBatchID: UUID?
+        var ingredientBatchNameSnapshot: String?
+        var pricePerKilogramTextSnapshot: String?
+        var nutrientSnapshotJSON: String?
+        var unitSnapshot: String?
+        var dryMatterTextSnapshot: String?
+        var createdAt: Date
+        var deletedAt: Date?
+
+        init(id: UUID = UUID(), farmID: UUID, feedRecordID: UUID, ingredientID: UUID, kilogramsText: String, ingredientNameSnapshot: String, ingredientBatchID: UUID? = nil, ingredientBatchNameSnapshot: String? = nil, pricePerKilogramTextSnapshot: String? = nil, nutrientSnapshotJSON: String? = nil, unitSnapshot: String? = nil, dryMatterTextSnapshot: String? = nil) {
+            self.id = id; self.farmID = farmID; self.feedRecordID = feedRecordID; self.ingredientID = ingredientID
+            self.kilogramsText = kilogramsText; self.ingredientNameSnapshot = ingredientNameSnapshot
+            self.ingredientBatchID = ingredientBatchID; self.ingredientBatchNameSnapshot = ingredientBatchNameSnapshot
+            self.pricePerKilogramTextSnapshot = pricePerKilogramTextSnapshot; self.nutrientSnapshotJSON = nutrientSnapshotJSON
+            self.unitSnapshot = unitSnapshot; self.dryMatterTextSnapshot = dryMatterTextSnapshot
+            self.createdAt = .now; self.deletedAt = nil
+        }
+    }
+
+    @Model
+    final class FeedIngredientBatchRecord {
+        var id: UUID
+        var farmID: UUID
+        var ingredientID: UUID
+        var legacySourceKey: String
+        var batchName: String
+        var purchaseDate: Date?
+        var supplier: String
+        var storageLocation: String
+        var pricePerKilogramText: String
+        var initialKilogramsText: String?
+        var remainingKilogramsText: String?
+        var note: String
+        var isActive: Bool
+        var createdAt: Date
+
+        init(id: UUID = UUID(), farmID: UUID, ingredientID: UUID, legacySourceKey: String = "", batchName: String, purchaseDate: Date? = nil, supplier: String = "", storageLocation: String = "", pricePerKilogramText: String = "0", initialKilogramsText: String? = nil, remainingKilogramsText: String? = nil, note: String = "", isActive: Bool = true) {
+            self.id = id; self.farmID = farmID; self.ingredientID = ingredientID; self.legacySourceKey = legacySourceKey
+            self.batchName = batchName; self.purchaseDate = purchaseDate; self.supplier = supplier; self.storageLocation = storageLocation
+            self.pricePerKilogramText = pricePerKilogramText; self.initialKilogramsText = initialKilogramsText; self.remainingKilogramsText = remainingKilogramsText
+            self.note = note; self.isActive = isActive; self.createdAt = .now
+        }
+    }
+}
+
+enum AppSchemaV8: VersionedSchema {
+    static let versionIdentifier = Schema.Version(8, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.preV9ModelTypes }
+
+    /// Freeze the V8 care-rule shape before V9 adds operational-alert fields.
+    /// Existing V8 stores must be recognized without treating the live V9
+    /// model as if it had already shipped.
+    @Model
+    final class FarmCareRuleRecord {
+        var id: UUID
+        var farmID: UUID
+        var pregnancyCheckDays: Int
+        var gestationDays: Int
+        var createdAt: Date
+        var updatedAt: Date
+        var revision: Int
+
+        init(
+            id: UUID = UUID(),
+            farmID: UUID,
+            pregnancyCheckDays: Int = 45,
+            gestationDays: Int = 150
+        ) {
+            self.id = id
+            self.farmID = farmID
+            self.pregnancyCheckDays = pregnancyCheckDays
+            self.gestationDays = gestationDays
+            self.createdAt = .now
+            self.updatedAt = .now
+            self.revision = 1
+        }
+    }
+}
+
+/// Freeze the first V9 shape that has already been installed on development
+/// devices. V9.1 adds only the configurable early-warning lead time.
+enum AppSchemaV9_0: VersionedSchema {
+    static let versionIdentifier = Schema.Version(9, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.preV9_1ModelTypes }
+
+    @Model
+    final class FarmCareRuleRecord {
+        var id: UUID
+        var farmID: UUID
+        var pregnancyCheckDays: Int
+        var gestationDays: Int
+        var weaningAgeDays: Int?
+        var operationalAlertsConfiguredAt: Date?
+        var alertDigestEnabled: Bool = false
+        var alertDigestMinuteOfDay: Int = 480
+        var createdAt: Date
+        var updatedAt: Date
+        var revision: Int
+
+        init(
+            id: UUID = UUID(),
+            farmID: UUID,
+            pregnancyCheckDays: Int = 45,
+            gestationDays: Int = 150,
+            weaningAgeDays: Int? = nil,
+            operationalAlertsConfiguredAt: Date? = nil,
+            alertDigestEnabled: Bool = false,
+            alertDigestMinuteOfDay: Int = 480
+        ) {
+            self.id = id
+            self.farmID = farmID
+            self.pregnancyCheckDays = pregnancyCheckDays
+            self.gestationDays = gestationDays
+            self.weaningAgeDays = weaningAgeDays
+            self.operationalAlertsConfiguredAt = operationalAlertsConfiguredAt
+            self.alertDigestEnabled = alertDigestEnabled
+            self.alertDigestMinuteOfDay = alertDigestMinuteOfDay
+            self.createdAt = .now
+            self.updatedAt = .now
+            self.revision = 1
+        }
+    }
+}
+
+enum AppSchemaV9: VersionedSchema {
+    static let versionIdentifier = Schema.Version(9, 1, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.preV10ModelTypes }
+
+    /// Freeze the V9 feed shape. V10 persists explicit excluded sheep UUIDs;
+    /// keeping this schema-only type prevents an installed V9 store from
+    /// being silently reinterpreted as if that field had always existed.
+    @Model
+    final class FeedRecord {
+        var id: UUID
+        var farmID: UUID
+        var penID: UUID
+        var recipeID: UUID?
+        var modeRawValue: String
+        var occurredAt: Date
+        var recordedAt: Date
+        var note: String
+        var mealName: String
+        var feederName: String
+        var remainingKilogramsText: String?
+        var discardedKilogramsText: String?
+        var recipeHeadCountSnapshot: Int?
+        var actualHeadCountSnapshot: Int?
+        var scaleFactorText: String?
+        var remainingCompositionJSON: String?
+        var legacySourceKey: String?
+        var revision: Int
+        var deletedAt: Date?
+
+        init(
+            id: UUID = UUID(),
+            farmID: UUID,
+            penID: UUID,
+            recipeID: UUID? = nil,
+            mode: FeedMode,
+            occurredAt: Date,
+            note: String = "",
+            mealName: String = "",
+            feederName: String = "",
+            remainingKilogramsText: String? = nil,
+            discardedKilogramsText: String? = nil,
+            recipeHeadCountSnapshot: Int? = nil,
+            actualHeadCountSnapshot: Int? = nil,
+            scaleFactorText: String? = nil,
+            remainingCompositionJSON: String? = nil,
+            legacySourceKey: String? = nil
+        ) {
+            self.id = id
+            self.farmID = farmID
+            self.penID = penID
+            self.recipeID = recipeID
+            self.modeRawValue = mode.rawValue
+            self.occurredAt = occurredAt
+            self.recordedAt = .now
+            self.note = note
+            self.mealName = mealName
+            self.feederName = feederName
+            self.remainingKilogramsText = remainingKilogramsText
+            self.discardedKilogramsText = discardedKilogramsText
+            self.recipeHeadCountSnapshot = recipeHeadCountSnapshot
+            self.actualHeadCountSnapshot = actualHeadCountSnapshot
+            self.scaleFactorText = scaleFactorText
+            self.remainingCompositionJSON = remainingCompositionJSON
+            self.legacySourceKey = legacySourceKey
+            self.revision = 1
+            self.deletedAt = nil
+        }
+    }
+}
+
+enum AppSchemaV10: VersionedSchema {
+    static let versionIdentifier = Schema.Version(10, 0, 0)
     static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
 }
 
@@ -167,6 +471,10 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             AppSchemaV5.self,
             AppSchemaV6.self,
             AppSchemaV7.self,
+            AppSchemaV8.self,
+            AppSchemaV9_0.self,
+            AppSchemaV9.self,
+            AppSchemaV10.self,
         ]
     }
 
@@ -252,12 +560,16 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self),
             .lightweight(fromVersion: AppSchemaV5.self, toVersion: AppSchemaV6.self),
             .lightweight(fromVersion: AppSchemaV6.self, toVersion: AppSchemaV7.self),
+            .lightweight(fromVersion: AppSchemaV7.self, toVersion: AppSchemaV8.self),
+            .lightweight(fromVersion: AppSchemaV8.self, toVersion: AppSchemaV9_0.self),
+            .lightweight(fromVersion: AppSchemaV9_0.self, toVersion: AppSchemaV9.self),
+            .lightweight(fromVersion: AppSchemaV9.self, toVersion: AppSchemaV10.self),
         ]
     }
 }
 
 enum AppSchema {
-    static let currentVersion = "7.0.0"
+    static let currentVersion = "10.0.0"
 
     static func defaultStoreURL(name: String = "eSheepNext") -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -285,6 +597,9 @@ enum AppSchema {
             FeedRecipeComponentRecord.self,
             FeedRecord.self,
             FeedRecordLine.self,
+            FeedTroughObservationRecord.self,
+            FeedStockTransactionRecord.self,
+            FeedStockCountRecord.self,
             InventoryLotRecord.self,
             InventoryTransactionRecord.self,
             HealthRecord.self,
@@ -308,6 +623,7 @@ enum AppSchema {
             SemenTransactionRecord.self,
             FarmCareRuleRecord.self,
             CareReminderRecord.self,
+            FarmAlertDeferralRecord.self,
             CloudFarmBinding.self,
             CloudZoneState.self,
             FarmMembershipBinding.self,
@@ -369,9 +685,66 @@ enum AppSchema {
     }
 
     fileprivate static var preV7BusinessModelTypes: [any PersistentModel.Type] {
-        businessModelTypes.filter {
+        preV8BusinessModelTypes.filter {
             ObjectIdentifier($0) != ObjectIdentifier(SheepAvatarRecord.self)
         }
+    }
+
+    /// The store currently shipping as V7 contains SheepAvatarRecord and the
+    /// old feed entities, but not the V8 stock ledger/count entities. Keep
+    /// this exact entity set for V7 recognition; older schemas intentionally
+    /// remove SheepAvatarRecord below.
+    fileprivate static var preV8BusinessModelTypes: [any PersistentModel.Type] {
+        businessModelTypes.filter {
+            ObjectIdentifier($0) != ObjectIdentifier(FeedStockTransactionRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedStockCountRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedIngredientRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedRecipeRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedRecipeComponentRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedRecordLine.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedIngredientBatchRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedTroughObservationRecord.self)
+        } + [
+            AppSchemaV7.FeedIngredientRecord.self,
+            AppSchemaV7.FeedRecipeRecord.self,
+            AppSchemaV7.FeedRecipeComponentRecord.self,
+            AppSchemaV7.FeedRecord.self,
+            AppSchemaV7.FeedRecordLine.self,
+            AppSchemaV7.FeedIngredientBatchRecord.self,
+        ]
+    }
+
+    fileprivate static var preV9BusinessModelTypes: [any PersistentModel.Type] {
+        businessModelTypes.filter {
+            ObjectIdentifier($0) != ObjectIdentifier(FarmCareRuleRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FarmAlertDeferralRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedTroughObservationRecord.self)
+        } + [
+            AppSchemaV8.FarmCareRuleRecord.self,
+            AppSchemaV9.FeedRecord.self,
+        ]
+    }
+
+    fileprivate static var preV9_1BusinessModelTypes: [any PersistentModel.Type] {
+        businessModelTypes.filter {
+            ObjectIdentifier($0) != ObjectIdentifier(FarmCareRuleRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedTroughObservationRecord.self)
+        } + [
+            AppSchemaV9_0.FarmCareRuleRecord.self,
+            AppSchemaV9.FeedRecord.self,
+        ]
+    }
+
+    fileprivate static var preV10BusinessModelTypes: [any PersistentModel.Type] {
+        businessModelTypes.filter {
+            ObjectIdentifier($0) != ObjectIdentifier(FeedRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FeedTroughObservationRecord.self)
+        } + [
+            AppSchemaV9.FeedRecord.self,
+        ]
     }
 
     fileprivate static var insightModelTypes: [any PersistentModel.Type] {
@@ -405,8 +778,24 @@ enum AppSchema {
         preV7BusinessModelTypes + insightModelTypes
     }
 
+    fileprivate static var preV8ModelTypes: [any PersistentModel.Type] {
+        preV8BusinessModelTypes + insightModelTypes
+    }
+
+    fileprivate static var preV9ModelTypes: [any PersistentModel.Type] {
+        preV9BusinessModelTypes + insightModelTypes
+    }
+
+    fileprivate static var preV9_1ModelTypes: [any PersistentModel.Type] {
+        preV9_1BusinessModelTypes + insightModelTypes
+    }
+
+    fileprivate static var preV10ModelTypes: [any PersistentModel.Type] {
+        preV10BusinessModelTypes + insightModelTypes
+    }
+
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV7.self)
+        Schema(versionedSchema: AppSchemaV10.self)
     }
 
     static func makeConfiguration(

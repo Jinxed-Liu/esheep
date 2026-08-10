@@ -216,11 +216,17 @@ struct HerdManagementView: View {
                 farmID: farmID,
                 context: modelContext
             )
-            sourceSheep = sheep.map {
+            let rows = sheep.map {
                 HerdSheepRow($0, avatarPhoto: avatarPhotos[$0.id])
             }
-            penOptions = pens.map { HerdPenOption(id: $0.id, name: $0.name) }
+            sourceSheep = rows
+            let occupiedPenIDs = Set(rows.lazy.compactMap { item in
+                item.isCurrentlyPresent ? item.currentPenID : nil
+            })
+            penOptions = pens.filter { occupiedPenIDs.contains($0.id) }
+                .map { HerdPenOption(id: $0.id, name: $0.name) }
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            if let penFilter, !occupiedPenIDs.contains(penFilter) { self.penFilter = nil }
             presentSheepCount = sourceSheep.lazy.filter(\.isCurrentlyPresent).count
             removedSheepCount = sheep.lazy.filter { !$0.isCurrentlyPresent && !$0.isHistoricalArchive }.count
             hasBuiltSheepSnapshot = false

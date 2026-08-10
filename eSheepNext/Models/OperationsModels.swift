@@ -25,6 +25,14 @@ enum DomainOperationKind: String, Codable, Sendable, Hashable {
     case createRecipe
     case addRecipeComponent
     case recordFeed
+    case saveFeedIngredient
+    case saveFeedBatch
+    case adjustFeedStock
+    case countFeedStock
+    case saveFeedRecipe
+    case recordFeedV2
+    case recordFeedTroughObservation
+    case importHistoricalFeed
     case recordHealth
     case receiveInventory
     case addSemen

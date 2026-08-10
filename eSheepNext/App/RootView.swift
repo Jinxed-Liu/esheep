@@ -2,6 +2,10 @@ import SwiftData
 import SwiftUI
 
 #if DEBUG
+import UIKit
+#endif
+
+#if DEBUG
 private enum DevelopmentLocalAccountRecoveryError: LocalizedError {
     case supabaseDevelopmentDisabled
     case farmNotFound
@@ -38,6 +42,7 @@ struct RootView: View {
     @Environment(CloudCollaborationStore.self) private var collaboration
     @Environment(SubscriptionService.self) private var subscription
     @Environment(AppPreferences.self) private var preferences
+    @Environment(FarmNotificationService.self) private var notifications
     @Environment(\.scenePhase) private var scenePhase
     @Query private var accounts: [AccountProfile]
     @Query(sort: \FarmRecord.updatedAt, order: .reverse) private var farms: [FarmRecord]
@@ -49,6 +54,7 @@ struct RootView: View {
     @Query(sort: \CloudRebuildSessionRecord.updatedAt, order: .reverse)
     private var cloudRebuildSessions: [CloudRebuildSessionRecord]
     @State private var systemSnapshotRevision = 0
+    @State private var operationalAlertDigestRevision = 0
 
     var body: some View {
         @Bindable var session = session
@@ -93,6 +99,11 @@ struct RootView: View {
             session.consumeSystemNavigationTarget()
         }
         .onChange(of: scenePhase) { _, phase in
+#if DEBUG
+            // Keep the debug device awake while the farm workflow is being
+            // exercised; backgrounding the app restores normal system lock.
+            UIApplication.shared.isIdleTimerDisabled = phase == .active
+#endif
             if phase == .active {
                 preferences.refreshSystemPowerState()
                 session.consumePendingNavigationRequest()
@@ -101,6 +112,11 @@ struct RootView: View {
                 FarmBackgroundRefresh.schedule()
             }
         }
+#if DEBUG
+        .onAppear {
+            UIApplication.shared.isIdleTimerDisabled = scenePhase == .active
+        }
+#endif
         .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
             preferences.refreshSystemPowerState()
         }
@@ -108,11 +124,18 @@ struct RootView: View {
             guard let farmID = CloudRuntimeNotification.farmID(from: notification),
                   visibleFarms.contains(where: { $0.id == farmID }) else { return }
             systemSnapshotRevision &+= 1
+            operationalAlertDigestRevision &+= 1
         }
         .onReceive(NotificationCenter.default.publisher(for: CloudRuntimeNotification.recoveryRequired)) { notification in
             guard let farmID = CloudRuntimeNotification.farmID(from: notification),
                   visibleFarms.contains(where: { $0.id == farmID }) else { return }
             systemSnapshotRevision &+= 1
+            operationalAlertDigestRevision &+= 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: FarmOperationalAlertRuntimeNotification.refreshRequested)) { notification in
+            guard let farmID = FarmOperationalAlertRuntimeNotification.farmID(from: notification),
+                  visibleFarms.contains(where: { $0.id == farmID }) else { return }
+            operationalAlertDigestRevision &+= 1
         }
         .onOpenURL { url in
             if let invitation = PendingFarmInvitation(url: url) {
@@ -126,6 +149,9 @@ struct RootView: View {
         }
         .task(id: systemSnapshotTaskID) {
             await refreshSystemSnapshotAfterLaunch()
+        }
+        .task(id: operationalAlertDigestTaskID) {
+            await refreshOperationalAlertDigests()
         }
         .task(id: authenticationTaskID) {
             await verifyActiveAccount()
@@ -669,6 +695,41 @@ struct RootView: View {
     private var systemSnapshotTaskID: String {
         let farmPart = visibleFarms.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
         return "\(scenePhase)|\(farmPart)|\(session.selectedFarmID?.uuidString ?? "none")|\(systemSnapshotRevision)"
+    }
+
+    private var operationalAlertDigestTaskID: String {
+        let farmPart = visibleFarms.map(\.id).sorted { $0.uuidString < $1.uuidString }
+            .map(\.uuidString)
+            .joined(separator: ",")
+        return "\(scenePhase)|\(farmPart)|\(operationalAlertDigestRevision)"
+    }
+
+    @MainActor
+    private func refreshOperationalAlertDigests() async {
+        guard scenePhase == .active, !visibleFarms.isEmpty else { return }
+        do {
+            // Keep alert calculation behind the first interactive frame.
+            try await Task.sleep(for: .milliseconds(900))
+            let actor = FarmOperationalAlertSnapshotActor(container: modelContext.container)
+            for farm in visibleFarms {
+                try Task.checkCancellation()
+                do {
+                    let snapshot = try await actor.load(farmID: farm.id)
+                    try Task.checkCancellation()
+                    await notifications.rescheduleOperationalAlertDigest(snapshot)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    #if DEBUG
+                    print("[OperationalAlertDigest] \(farm.id): \(error)")
+                    #endif
+                }
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            return
+        }
     }
 
     @MainActor

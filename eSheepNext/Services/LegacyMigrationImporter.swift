@@ -34,7 +34,23 @@ struct MigrationSession: Codable, Sendable, Identifiable, Equatable {
 struct LegacySourceDocument { let root: [String: Any] }
 enum LegacySourceDecoder {
     static func decode(_ data: Data) throws -> LegacySourceDocument {
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw MigrationError.invalidSource }
+        let object = try JSONSerialization.jsonObject(with: data)
+        let rawRoot: [String: Any]?
+        if let root = object as? [String: Any] {
+            rawRoot = root
+        } else if let row = (object as? [[String: Any]])?.first {
+            rawRoot = row
+        } else {
+            rawRoot = nil
+        }
+        guard var root = rawRoot else { throw MigrationError.invalidSource }
+        // Supabase exports wrap the actual FarmData JSON in a `data` column.
+        // Accept that shape as well as the direct eSheep+ backup file.
+        if root["herd"] == nil,
+           root["sheep"] == nil,
+           let wrapped = root["data"] as? [String: Any] {
+            root = wrapped
+        }
         guard root["herd"] == nil else { return LegacySourceDocument(root: root) }
         var normalized = root
         normalized["herd"] = ["sheep": root["sheep"] ?? [], "removals": root["removals"] ?? [], "transfers": root["transfers"] ?? [], "events": root["events"] ?? [], "weanRecords": root["weanRecords"] ?? [], "abortionRecords": root["abortionRecords"] ?? [], "weighRecords": root["weighRecords"] ?? [], "customPens": root["customPens"] ?? [], "pens": root["pens"] ?? [], "productionBatches": root["productionBatches"] ?? [], "batchMemberships": root["batchMemberships"] ?? []]
@@ -271,6 +287,40 @@ enum LegacyMigrationImporter {
                 audit(context, session, batchKey, "feedIngredientBatch", batch, [batchRecord.id])
             }
             audit(context, session, sourceKey, "feedIngredient", item, [record.id])
+        }
+        // Early eSheep+ feeding records predate the farm feed library. Their
+        // ingredient name/amount is still an authoritative historical snapshot,
+        // so create a non-stock historical ingredient instead of dropping the
+        // feed line merely because ingredientId cannot be resolved.
+        for (feedIndex, feed) in records(feeding["feedRecords"]).enumerated() {
+            for (lineIndex, line) in records(feed["ingredients"]).enumerated() {
+                let legacyID = string(line["ingredientId"])
+                let legacyName = string(line["name"]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if (!legacyID.isEmpty && mapping.ingredients[legacyID] != nil)
+                    || (!legacyName.isEmpty && mapping.ingredients[legacyName] != nil) {
+                    continue
+                }
+                guard !legacyName.isEmpty else { continue }
+                let sourceKey = "feeding.feedRecords[\(feedIndex)].ingredients[\(lineIndex)].historicalIngredient"
+                let nutrientsJSON = json(line["nutrientsSnapshot"])
+                let historical = FeedIngredientRecord(
+                    id: stable(sourceKey),
+                    farmID: farm.id,
+                    name: legacyName,
+                    unit: string(line["unit"]).isEmpty ? "千克" : string(line["unit"]),
+                    dryMatterText: number(line["dryMatterSnapshot"])?.stableText
+                        ?? number(path(line, ["nutrientsSnapshot", "dryMatter"]))?.stableText,
+                    category: "历史投喂",
+                    legacySourceKey: sourceKey,
+                    nutrientSnapshotJSON: nutrientsJSON,
+                    kind: .custom,
+                    note: "由 eSheep+ 历史投喂明细补建；不建立库存基线。"
+                )
+                context.insert(historical)
+                if !legacyID.isEmpty { mapping.ingredients[legacyID] = historical.id }
+                mapping.ingredients[legacyName] = historical.id
+                audit(context, session, sourceKey, "feedIngredient", line, [historical.id], resolution: "synthesizedFromHistoricalFeedLine")
+            }
         }
         for (i, item) in records(feeding["feedRecipes"]).enumerated() { let sourceKey = "feeding.feedRecipes[\(i)]"; let recipe = FeedRecipeRecord(id: stable(sourceKey), farmID: farm.id, name: string(item["name"]), note: string(item["note"]), targetPenName: string(item["targetPen"]).isEmpty ? nil : string(item["targetPen"]), stageRawValue: string(item["stage"]), headCount: number(item["headCount"]).map { NSDecimalNumber(decimal: $0).intValue }, legacySourceKey: sourceKey); context.insert(recipe); mapping.recipes[string(item["id"])] = recipe.id; for (componentIndex, component) in records(item["components"]).enumerated() { guard let ingredientID = mapping.ingredients[string(component["ingredientId"])] else { continue }; context.insert(FeedRecipeComponentRecord(id: stable("\(sourceKey).components[\(componentIndex)]"), farmID: farm.id, recipeID: recipe.id, ingredientID: ingredientID, kilogramsText: number(component["asFedKgPerDay"])?.stableText ?? "0", legacyBatchID: string(component["batchId"]).isEmpty ? nil : string(component["batchId"]), pricePerKilogramText: number(component["pricePerKgSnapshot"])?.stableText, nutrientSnapshotJSON: json(component["nutrientsSnapshot"]))) }; audit(context, session, sourceKey, "feedRecipe", item, [recipe.id]) }
         for (i, item) in records(feeding["feedRecords"]).enumerated() {
@@ -881,7 +931,12 @@ enum MigrationReconciliationService {
         baseline?.expectedCounts.forEach { expected[$0.key] = $0.value }
         var discrepancies: [MigrationDiscrepancy] = []
         func add(_ severity: MigrationDiscrepancySeverity, _ category: String, _ reason: String, _ sourceKey: String? = nil, _ ids: [UUID] = []) { discrepancies.append(MigrationDiscrepancy(id: "\(severity.rawValue)|\(category)|\(sourceKey ?? reason)|\(ids.map(\.uuidString).joined(separator: ","))", severity: severity, category: category, sourceKey: sourceKey, targetRecordIDs: ids, reason: reason)) }
-        for key in expected.keys.sorted() where converted[key] != expected[key] { add(key == "圈舍" ? .warning : .blocking, key, "来源 \(expected[key] ?? 0) 条，临时库转换 \(converted[key] ?? 0) 条。") }
+        for key in expected.keys.sorted() where converted[key] != expected[key] {
+            // Historical feed lines may legitimately synthesize ingredients
+            // that were never present in Plus's later feed library.
+            if key == "原料", (converted[key] ?? 0) >= (expected[key] ?? 0) { continue }
+            add(key == "圈舍" ? .warning : .blocking, key, "来源 \(expected[key] ?? 0) 条，临时库转换 \(converted[key] ?? 0) 条。")
+        }
         let sheepIDs = Set(sheep.map(\.id)); let penIDs = Set(pens.map(\.id)); let ingredientIDs = Set(ingredients.map(\.id)); let recipeIDs = Set(recipes.map(\.id)); let batchIDs = Set(batches.map(\.id)); let lotIDs = Set(lots.map(\.id)); let healthIDs = Set(health.map(\.id)); let reproductionIDs = Set(reproduction.map(\.id))
         for record in sheep where (record.damID != nil && !sheepIDs.contains(record.damID!)) || (record.sireID != nil && !sheepIDs.contains(record.sireID!)) {
             add(.blocking, "系谱引用", "羊只系谱引用不存在的父本或母本。", record.legacySourceKey, [record.id])

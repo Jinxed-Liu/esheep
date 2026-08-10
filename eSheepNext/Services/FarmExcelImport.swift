@@ -77,7 +77,7 @@ private struct FarmExcelSheetSchema {
 
 @MainActor
 enum FarmExcelImportService {
-    static let templateVersion = 5
+    static let templateVersion = 7
 
     /// Template columns may evolve, but an import key is documented as a
     /// long-lived business identity. Keep the original v3 namespace so the
@@ -110,7 +110,7 @@ enum FarmExcelImportService {
         .init(name: "系谱关系", capability: .editHistoricalFacts, columns: ["导入键", "羊只耳号", "母本耳号", "父本来源", "种公羊耳号", "供体登记号", "修改原因"], required: ["导入键", "羊只耳号", "父本来源", "修改原因"], example: ["示例-pedigree-01", "L001", "E001", "种公羊", "R001", "", "核对产羔本后确认"]),
         .init(name: "配种方案", capability: .manageCatalogs, columns: ["导入键", "方案名称", "创建日期", "步骤"], required: ["导入键", "方案名称", "创建日期", "步骤"], example: ["示例-program-01", "同期发情方案", "2026-07-19", "0|放栓;12|撤栓;14|配种"]),
         .init(name: "备注", capability: .recordProduction, columns: ["导入键", "耳号", "圈舍", "内容", "发生日期"], required: ["导入键", "内容", "发生日期"], example: ["示例-note-01", "A001", "", "观察采食情况", "2026-07-19"]),
-        .init(name: "提醒规则", capability: .manageCatalogs, columns: ["导入键", "孕检间隔天", "妊娠周期天"], required: ["导入键", "孕检间隔天", "妊娠周期天"], example: ["示例-rule-01", "45", "150"])
+        .init(name: "提醒规则", capability: .manageCatalogs, columns: ["导入键", "孕检间隔天", "妊娠周期天", "断奶日龄", "提前预警天数", "每日汇总时间"], required: ["导入键", "孕检间隔天", "妊娠周期天"], example: ["示例-rule-01", "45", "150", "60", "3", "08:00"])
     ]
 
     private static let legacyColumnAliases: [String: [String: [String]]] = [
@@ -124,6 +124,7 @@ enum FarmExcelImportService {
     /// blank default (0) for a newly imported ewe.
     private static let backwardCompatibleOptionalColumns: [String: Set<String>] = [
         "新建羊只": ["当前胎次"],
+        "提醒规则": ["断奶日龄", "提前预警天数", "每日汇总时间"],
     ]
 
     static func templateData() throws -> Data {
@@ -222,6 +223,23 @@ enum FarmExcelImportService {
         if row.sheet == "繁殖记录", !["配种", "孕检", "流产"].contains(row["类型"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "类型", message: "只能填写配种、孕检或流产；产羔请使用产羔表。", severity: .error)) }
         if row.sheet == "冻精供体", !row["状态"].isEmpty, !["在用", "停用"].contains(row["状态"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "状态", message: "只能填写在用或停用。", severity: .error)) }
         if row.sheet == "系谱关系", !["未知", "种公羊", "冻精供体"].contains(row["父本来源"]) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "父本来源", message: "只能填写未知、种公羊或冻精供体。", severity: .error)) }
+        if row.sheet == "提醒规则" {
+            let hasWeaningAge = !row["断奶日龄"].isEmpty
+            let hasWarningLead = !row["提前预警天数"].isEmpty
+            let hasDigestTime = !row["每日汇总时间"].isEmpty
+            if hasWeaningAge != hasDigestTime || (hasWarningLead && !hasWeaningAge) {
+                issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "待办与异常", message: "断奶日龄与每日汇总时间需同时填写；提前预警天数只能随这两项一起填写。三项都留空时只更新旧提醒规则。", severity: .error))
+            }
+            if hasWeaningAge, Int(row["断奶日龄"]).map({ (1...365).contains($0) }) != true {
+                issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "断奶日龄", message: "必须是 1 至 365 的整数。", severity: .error))
+            }
+            if hasDigestTime, parseMinuteOfDay(row["每日汇总时间"]) == nil {
+                issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "每日汇总时间", message: "请使用 HH:mm，例如 08:00。", severity: .error))
+            }
+            if hasWarningLead, Int(row["提前预警天数"]).map({ (0...30).contains($0) }) != true {
+                issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "提前预警天数", message: "必须是 0 至 30 的整数。", severity: .error))
+            }
+        }
     }
 
     private static func validateReferences(_ rows: [FarmExcelRow], farmID: UUID, context: ModelContext, issues: inout [FarmExcelIssue]) throws {
@@ -454,7 +472,24 @@ enum FarmExcelImportService {
         case "系谱关系": let child = try sheep(row["羊只耳号"]); let source = row["父本来源"]; return .care(.updateSheepPedigree(.init(id: id, sheepID: child.id, damID: try row["母本耳号"].nilIfEmpty.map { try sheep($0).id }, sireID: source == "种公羊" ? try sheep(row["种公羊耳号"]).id : nil, semenDonorID: source == "冻精供体" ? try donor(row["供体登记号"]).id : nil, reason: row["修改原因"], expectedRevision: child.revision)))
         case "配种方案": return .createBreedingProgram(name: row["方案名称"], createdAt: parseDate(row["创建日期"])!, steps: try parsePairs(row["步骤"]).map { guard let day = Int($0.0) else { throw FarmDataInterchangeError.malformedFile("配种方案步骤天数无效。") }; return BreedingProgramStepDraft(dayOffset: day, action: $0.1) })
         case "备注": return .addNote(sheepID: try row["耳号"].nilIfEmpty.map { try sheep($0).id }, penID: try optionalPen(row["圈舍"], pen: pen)?.id, text: row["内容"], occurredAt: parseDate(row["发生日期"])!)
-        case "提醒规则": let existingID = try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first { $0.farmID == farmID }?.id; return .care(.updateRules(id: existingID ?? id, pregnancyCheckDays: Int(row["孕检间隔天"]) ?? 0, gestationDays: Int(row["妊娠周期天"]) ?? 0))
+        case "提醒规则":
+            let existingID = try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first { $0.farmID == farmID }?.id
+            let ruleID = existingID ?? id
+            let pregnancyCheckDays = Int(row["孕检间隔天"]) ?? 0
+            let gestationDays = Int(row["妊娠周期天"]) ?? 0
+            if let weaningAgeDays = Int(row["断奶日龄"]),
+               let digestMinuteOfDay = parseMinuteOfDay(row["每日汇总时间"]) {
+                return .care(.updateOperationalAlertRules(.init(
+                    id: ruleID,
+                    pregnancyCheckDays: pregnancyCheckDays,
+                    gestationDays: gestationDays,
+                    weaningAgeDays: weaningAgeDays,
+                    warningLeadDays: Int(row["提前预警天数"]) ?? 0,
+                    digestEnabled: true,
+                    digestMinuteOfDay: digestMinuteOfDay
+                )))
+            }
+            return .care(.updateRules(id: ruleID, pregnancyCheckDays: pregnancyCheckDays, gestationDays: gestationDays))
         default: throw FarmDataInterchangeError.malformedFile("不支持的工作表 \(row.sheet)。")
         }
     }
@@ -568,6 +603,21 @@ enum FarmExcelImportService {
         }
     }
     private static func parseDate(_ value: String) -> Date? { guard !value.isEmpty else { return nil }; let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.calendar = Calendar(identifier: .gregorian); formatter.timeZone = TimeZone(secondsFromGMT: 0); formatter.isLenient = false; formatter.dateFormat = "yyyy-MM-dd"; if let date = formatter.date(from: value), formatter.string(from: date) == value { return date }; guard let serial = Double(value), serial >= 1, serial < 2_958_466 else { return nil }; var components = DateComponents(); components.calendar = Calendar(identifier: .gregorian); components.timeZone = TimeZone(secondsFromGMT: 0); components.year = 1899; components.month = 12; components.day = 30; return components.date?.addingTimeInterval(serial * 86_400) }
+
+    private static func parseMinuteOfDay(_ value: String) -> Int? {
+        let trimmed = value.trimmed
+        guard !trimmed.isEmpty else { return nil }
+        let parts = trimmed.split(separator: ":", omittingEmptySubsequences: false)
+        if parts.count == 2,
+           let hour = Int(parts[0]), let minute = Int(parts[1]),
+           (0...23).contains(hour), (0...59).contains(minute) {
+            return hour * 60 + minute
+        }
+        if let excelFraction = Double(trimmed), excelFraction >= 0, excelFraction < 1 {
+            return Int((excelFraction * 1_440).rounded()) % 1_440
+        }
+        return nil
+    }
     private static func sheepSex(_ value: String) -> SheepSex { value == "母羊" ? .ewe : (value == "公羊" ? .ram : .unknown) }
     private static func healthKind(_ value: String) -> HealthRecordKind { value == "疫苗" ? .vaccination : .treatment }
     private static func reproductionKind(_ value: String) -> ReproductionRecordKind { value == "孕检" ? .pregnancyCheck : (value == "流产" ? .abortion : .breeding) }

@@ -6,10 +6,10 @@ import XCTest
 @MainActor
 final class AppSchemaMigrationTests: XCTestCase {
     func testVersionedSchemaContainsEveryCurrentModel() {
-        let versioned = Schema(versionedSchema: AppSchemaV7.self)
+        let versioned = Schema(versionedSchema: AppSchemaV10.self)
         let current = AppSchema.makeSchema()
 
-        XCTAssertEqual(AppSchema.currentVersion, "7.0.0")
+        XCTAssertEqual(AppSchema.currentVersion, "10.0.0")
         XCTAssertEqual(versioned.entities.map(\.name).sorted(), current.entities.map(\.name).sorted())
         XCTAssertEqual(
             AppSchemaMigrationPlan.schemas.map { Schema(versionedSchema: $0).version },
@@ -21,9 +21,217 @@ final class AppSchemaMigrationTests: XCTestCase {
                 Schema.Version(5, 0, 0),
                 Schema.Version(6, 0, 0),
                 Schema.Version(7, 0, 0),
+                Schema.Version(8, 0, 0),
+                Schema.Version(9, 0, 0),
+                Schema.Version(9, 1, 0),
+                Schema.Version(10, 0, 0),
             ]
         )
-        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 6)
+        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 10)
+    }
+
+    func testInstalledV9FeedMigratesToV10WithoutChangingSnapshotsOrCreatingOperations() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "AppSchemaInstalledV9Feed-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "V9Feed.store")
+        let accountID = UUID()
+        let farmID = UUID()
+        let penID = UUID()
+        let feedID = UUID()
+        let occurredAt = Date(timeIntervalSince1970: 1_775_260_800)
+
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV9.self)
+            let configuration = ModelConfiguration(
+                "V9Feed",
+                schema: schema,
+                url: storeURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+            context.insert(AccountProfile(
+                id: accountID,
+                appleUserIdentifier: "installed-v9-feed",
+                displayName: "V9 投喂迁移"
+            ))
+            context.insert(FarmRecord(id: farmID, ownerAccountID: accountID, name: "V9 投喂场"))
+            context.insert(PenRecord(id: penID, farmID: farmID, name: "育肥一圈"))
+            context.insert(AppSchemaV9.FeedRecord(
+                id: feedID,
+                farmID: farmID,
+                penID: penID,
+                mode: .limited,
+                occurredAt: occurredAt,
+                note: "保留旧投喂",
+                mealName: "早饲",
+                feederName: "迁移测试",
+                remainingKilogramsText: "1.25",
+                discardedKilogramsText: "0.2",
+                recipeHeadCountSnapshot: 20,
+                actualHeadCountSnapshot: 18,
+                scaleFactorText: "0.9",
+                remainingCompositionJSON: "[{\"ingredientName\":\"玉米\",\"kilograms\":1.25}]",
+                legacySourceKey: "v9-feed"
+            ))
+            try context.save()
+        }
+
+        let reopened = try AppSchema.makeContainer(name: "V9Feed", url: storeURL)
+        let context = ModelContext(reopened)
+        let feed = try XCTUnwrap(try context.fetch(FetchDescriptor<FeedRecord>()).first)
+        XCTAssertEqual(feed.id, feedID)
+        XCTAssertEqual(feed.occurredAt, occurredAt)
+        XCTAssertEqual(feed.note, "保留旧投喂")
+        XCTAssertEqual(feed.remainingKilogramsText, "1.25")
+        XCTAssertEqual(feed.discardedKilogramsText, "0.2")
+        XCTAssertEqual(feed.actualHeadCountSnapshot, 18)
+        XCTAssertEqual(feed.scaleFactorText, "0.9")
+        XCTAssertEqual(feed.remainingCompositionJSON, "[{\"ingredientName\":\"玉米\",\"kilograms\":1.25}]")
+        XCTAssertEqual(feed.excludedSheepIDs, [])
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<FeedTroughObservationRecord>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<OutboxItem>()), 0)
+    }
+
+    func testInstalledV8CareRulesRemainUnconfiguredAfterV9Migration() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "AppSchemaInstalledV8Alerts-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "V8.store")
+        let accountID = UUID()
+        let farmID = UUID()
+        let ruleID = UUID()
+
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV8.self)
+            let configuration = ModelConfiguration("V8Alerts", schema: schema, url: storeURL, allowsSave: true, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+            context.insert(AccountProfile(id: accountID, appleUserIdentifier: "installed-v8-alerts", displayName: "V8 提醒迁移"))
+            context.insert(FarmRecord(id: farmID, ownerAccountID: accountID, name: "V8 牧场"))
+            context.insert(AppSchemaV8.FarmCareRuleRecord(
+                id: ruleID,
+                farmID: farmID,
+                pregnancyCheckDays: 52,
+                gestationDays: 148
+            ))
+            try context.save()
+        }
+
+        let reopened = try AppSchema.makeContainer(name: "V8Alerts", url: storeURL)
+        let context = ModelContext(reopened)
+        let rule = try XCTUnwrap(try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first)
+        XCTAssertEqual(rule.id, ruleID)
+        XCTAssertEqual(rule.pregnancyCheckDays, 52)
+        XCTAssertEqual(rule.gestationDays, 148)
+        XCTAssertNil(rule.weaningAgeDays)
+        XCTAssertEqual(rule.warningLeadDays, 0)
+        XCTAssertNil(rule.operationalAlertsConfiguredAt)
+        XCTAssertFalse(rule.alertDigestEnabled)
+        XCTAssertEqual(rule.alertDigestMinuteOfDay, 480)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<FarmAlertDeferralRecord>()), 0)
+    }
+
+    func testInstalledV9PointZeroRulesGainDisabledEarlyWarningWithoutLosingConfiguration() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "AppSchemaInstalledV9PointZeroAlerts-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "V9PointZero.store")
+        let accountID = UUID()
+        let farmID = UUID()
+        let ruleID = UUID()
+        let configuredAt = Date(timeIntervalSince1970: 1_754_006_400)
+
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV9_0.self)
+            let configuration = ModelConfiguration("V9PointZeroAlerts", schema: schema, url: storeURL, allowsSave: true, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+            context.insert(AccountProfile(id: accountID, appleUserIdentifier: "installed-v9-point-zero-alerts", displayName: "V9.0 提醒迁移"))
+            context.insert(FarmRecord(id: farmID, ownerAccountID: accountID, name: "V9.0 牧场"))
+            context.insert(AppSchemaV9_0.FarmCareRuleRecord(
+                id: ruleID,
+                farmID: farmID,
+                pregnancyCheckDays: 42,
+                gestationDays: 151,
+                weaningAgeDays: 35,
+                operationalAlertsConfiguredAt: configuredAt,
+                alertDigestEnabled: true,
+                alertDigestMinuteOfDay: 510
+            ))
+            try context.save()
+        }
+
+        let reopened = try AppSchema.makeContainer(name: "V9PointZeroAlerts", url: storeURL)
+        let context = ModelContext(reopened)
+        let rule = try XCTUnwrap(try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first)
+        XCTAssertEqual(rule.id, ruleID)
+        XCTAssertEqual(rule.weaningAgeDays, 35)
+        XCTAssertEqual(rule.warningLeadDays, 0)
+        XCTAssertEqual(rule.operationalAlertsConfiguredAt, configuredAt)
+        XCTAssertTrue(rule.alertDigestEnabled)
+        XCTAssertEqual(rule.alertDigestMinuteOfDay, 510)
+    }
+
+    func testInstalledV7PreservesFeedSnapshotsAndAddsEmptyStockLedger() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "AppSchemaInstalledV7Feed-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "V7.store")
+        let accountID = UUID()
+        let farmID = UUID()
+        let penID = UUID()
+        let ingredientID = UUID()
+        let batchID = UUID()
+        let recipeID = UUID()
+        let componentID = UUID()
+        let feedID = UUID()
+        let lineID = UUID()
+
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV7.self)
+            let configuration = ModelConfiguration("V7Feed", schema: schema, url: storeURL, allowsSave: true, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+            context.insert(AccountProfile(id: accountID, appleUserIdentifier: "installed-v7-feed", displayName: "V7 原料迁移"))
+            context.insert(FarmRecord(id: farmID, ownerAccountID: accountID, name: "V7 投喂场"))
+            context.insert(PenRecord(id: penID, farmID: farmID, name: "一圈"))
+            context.insert(AppSchemaV7.FeedIngredientRecord(id: ingredientID, farmID: farmID, name: "旧玉米", unit: "千克", dryMatterText: "86", category: "能量", nutrientSnapshotJSON: "{\"dryMatter\":86,\"crudeProtein\":9}"))
+            context.insert(AppSchemaV7.FeedIngredientBatchRecord(id: batchID, farmID: farmID, ingredientID: ingredientID, batchName: "旧批次", pricePerKilogramText: "2.2", initialKilogramsText: "100", remainingKilogramsText: "70", note: "旧库存", isActive: true))
+            context.insert(AppSchemaV7.FeedRecipeRecord(id: recipeID, farmID: farmID, name: "旧配方", note: "旧配方", targetPenName: "一圈", stageRawValue: "育肥羊", headCount: 20))
+            context.insert(AppSchemaV7.FeedRecipeComponentRecord(id: componentID, farmID: farmID, recipeID: recipeID, ingredientID: ingredientID, kilogramsText: "10", pricePerKilogramText: "2.2", nutrientSnapshotJSON: "{\"dryMatter\":86}"))
+            context.insert(AppSchemaV7.FeedRecord(id: feedID, farmID: farmID, penID: penID, recipeID: recipeID, mode: .limited, occurredAt: .now, note: "旧投喂", remainingKilogramsText: "1.5", discardedKilogramsText: "0.2"))
+            context.insert(AppSchemaV7.FeedRecordLine(id: lineID, farmID: farmID, feedRecordID: feedID, ingredientID: ingredientID, kilogramsText: "10", ingredientNameSnapshot: "旧玉米", ingredientBatchID: batchID, ingredientBatchNameSnapshot: "旧批次", pricePerKilogramTextSnapshot: "2.2", nutrientSnapshotJSON: "{\"dryMatter\":86}", unitSnapshot: "千克", dryMatterTextSnapshot: "86"))
+            try context.save()
+        }
+
+        let reopened = try AppSchema.makeContainer(name: "V7Feed", url: storeURL)
+        let context = ModelContext(reopened)
+        let ingredient = try XCTUnwrap(try context.fetch(FetchDescriptor<FeedIngredientRecord>()).first)
+        let batch = try XCTUnwrap(try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first)
+        let recipe = try XCTUnwrap(try context.fetch(FetchDescriptor<FeedRecipeRecord>()).first)
+        let component = try XCTUnwrap(try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()).first)
+        let feed = try XCTUnwrap(try context.fetch(FetchDescriptor<FeedRecord>()).first)
+        let line = try XCTUnwrap(try context.fetch(FetchDescriptor<FeedRecordLine>()).first)
+        XCTAssertEqual(ingredient.nutrientSnapshotJSON, "{\"dryMatter\":86,\"crudeProtein\":9}")
+        XCTAssertEqual(batch.remainingKilogramsText, "70")
+        XCTAssertNil(batch.purchasedKilogramsText)
+        XCTAssertNil(recipe.targetPenID)
+        XCTAssertNil(component.ingredientBatchID)
+        XCTAssertNil(feed.recipeHeadCountSnapshot)
+        XCTAssertNil(feed.scaleFactorText)
+        XCTAssertNil(line.stockQuantityText)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<FeedStockTransactionRecord>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<FeedStockCountRecord>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<OutboxItem>()), 0)
     }
 
     func testInstalledV6MigratesToV7WithoutChangingSheepOrPhotos() throws {

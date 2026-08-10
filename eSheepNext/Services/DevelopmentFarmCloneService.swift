@@ -444,7 +444,12 @@ enum DevelopmentFarmCloneService {
                     dryMatterText: value.dryMatterText,
                     category: value.category,
                     legacySourceKey: value.legacySourceKey,
-                    nutrientSnapshotJSON: value.nutrientSnapshotJSON
+                    nutrientSnapshotJSON: value.nutrientSnapshotJSON,
+                    kind: value.kind,
+                    sourceTemplateID: value.sourceTemplateID,
+                    sourceTemplateCode: value.sourceTemplateCode,
+                    mixtureComponentsJSON: value.mixtureComponentsJSON,
+                    note: value.note
                 )
                 record.isActive = value.isActive
                 record.createdAt = value.createdAt
@@ -461,6 +466,7 @@ enum DevelopmentFarmCloneService {
                     name: value.name,
                     note: value.note,
                     targetPenName: value.targetPenName,
+                    targetPenID: map.optional(value.targetPenID),
                     stageRawValue: value.stageRawValue,
                     headCount: value.headCount,
                     legacySourceKey: value.legacySourceKey
@@ -480,6 +486,7 @@ enum DevelopmentFarmCloneService {
                     recipeID: map.id(value.recipeID),
                     ingredientID: map.id(value.ingredientID),
                     kilogramsText: value.kilogramsText,
+                    ingredientBatchID: map.optional(value.ingredientBatchID),
                     legacyBatchID: value.legacyBatchID,
                     pricePerKilogramText: value.pricePerKilogramText,
                     nutrientSnapshotJSON: value.nutrientSnapshotJSON
@@ -502,6 +509,11 @@ enum DevelopmentFarmCloneService {
                     supplier: value.supplier,
                     storageLocation: value.storageLocation,
                     pricePerKilogramText: value.pricePerKilogramText,
+                    purchasedKilogramsText: value.purchasedKilogramsText,
+                    packagingKind: value.packagingKind,
+                    packageCountText: value.packageCountText,
+                    nominalPackageKilogramsText: value.nominalPackageKilogramsText,
+                    stockWeightConfirmed: value.stockWeightConfirmed,
                     initialKilogramsText: value.initialKilogramsText,
                     remainingKilogramsText: value.remainingKilogramsText,
                     note: value.note,
@@ -525,6 +537,11 @@ enum DevelopmentFarmCloneService {
                     feederName: value.feederName,
                     remainingKilogramsText: value.remainingKilogramsText,
                     discardedKilogramsText: value.discardedKilogramsText,
+                    recipeHeadCountSnapshot: value.recipeHeadCountSnapshot,
+                    actualHeadCountSnapshot: value.actualHeadCountSnapshot,
+                    scaleFactorText: value.scaleFactorText,
+                    remainingCompositionJSON: value.remainingCompositionJSON,
+                    excludedSheepIDs: value.excludedSheepIDs.map(map.id),
                     legacySourceKey: value.legacySourceKey
                 )
                 record.recordedAt = value.recordedAt
@@ -541,6 +558,7 @@ enum DevelopmentFarmCloneService {
                     feedRecordID: map.id(value.feedRecordID),
                     ingredientID: map.id(value.ingredientID),
                     kilogramsText: value.kilogramsText,
+                    stockQuantityText: value.stockQuantityText,
                     ingredientNameSnapshot: value.ingredientNameSnapshot,
                     ingredientBatchID: map.optional(value.ingredientBatchID),
                     ingredientBatchNameSnapshot: value.ingredientBatchNameSnapshot,
@@ -548,6 +566,75 @@ enum DevelopmentFarmCloneService {
                     nutrientSnapshotJSON: value.nutrientSnapshotJSON,
                     unitSnapshot: value.unitSnapshot,
                     dryMatterTextSnapshot: value.dryMatterTextSnapshot
+                )
+                record.createdAt = value.createdAt
+                record.deletedAt = value.deletedAt
+                context.insert(record)
+                clonedBusinessRecordCount += 1
+            }
+
+            for value in try farmRecords(FeedTroughObservationRecord.self, farmID: sourceFarmID, context: context) {
+                let mappedComposition = value.composition.map {
+                    FeedTroughCompositionComponent(
+                        id: map.id($0.id),
+                        ingredientID: $0.ingredientID.map(map.id),
+                        ingredientBatchID: $0.ingredientBatchID.map(map.id),
+                        ingredientNameSnapshot: $0.ingredientNameSnapshot,
+                        kilogramsText: $0.kilogramsText,
+                        nutrientSnapshotJSON: $0.nutrientSnapshotJSON,
+                        dryMatterTextSnapshot: $0.dryMatterTextSnapshot
+                    )
+                }
+                let record = FeedTroughObservationRecord(
+                    id: map.id(value.id),
+                    farmID: targetFarmID,
+                    penID: map.id(value.penID),
+                    relatedFeedRecordID: value.relatedFeedRecordID.map(map.id),
+                    feederName: value.feederName,
+                    observedAt: value.observedAt,
+                    actualRemainingKilogramsText: value.actualRemainingKilogramsText,
+                    discardedKilogramsText: value.discardedKilogramsText,
+                    measurementMethod: value.measurementMethod,
+                    compositionSnapshotJSON: mappedComposition.isEmpty ? nil : FeedTroughCompositionCodec.encode(mappedComposition),
+                    note: value.note
+                )
+                record.recordedAt = value.recordedAt
+                record.revision = value.revision
+                record.deletedAt = value.deletedAt
+                context.insert(record)
+                clonedBusinessRecordCount += 1
+            }
+
+            for value in try farmRecords(FeedStockTransactionRecord.self, farmID: sourceFarmID, context: context) {
+                let record = FeedStockTransactionRecord(
+                    id: map.id(value.id),
+                    farmID: targetFarmID,
+                    ingredientBatchID: map.id(value.ingredientBatchID),
+                    kind: value.kind,
+                    quantityText: value.quantityText,
+                    occurredAt: value.occurredAt,
+                    sourceRecordID: map.optional(value.sourceRecordID),
+                    sourceLineID: map.optional(value.sourceLineID),
+                    note: value.note
+                )
+                record.createdAt = value.createdAt
+                record.deletedAt = value.deletedAt
+                context.insert(record)
+                clonedBusinessRecordCount += 1
+            }
+
+            for value in try farmRecords(FeedStockCountRecord.self, farmID: sourceFarmID, context: context) {
+                let record = FeedStockCountRecord(
+                    id: map.id(value.id),
+                    farmID: targetFarmID,
+                    ingredientBatchID: map.id(value.ingredientBatchID),
+                    bookBalanceText: value.bookBalanceText,
+                    actualKilogramsText: value.actualKilogramsText,
+                    differenceText: value.differenceText,
+                    method: value.method,
+                    occurredAt: value.occurredAt,
+                    note: value.note,
+                    adjustmentTransactionID: map.optional(value.adjustmentTransactionID)
                 )
                 record.createdAt = value.createdAt
                 record.deletedAt = value.deletedAt
@@ -802,7 +889,12 @@ enum DevelopmentFarmCloneService {
                     id: map.id(value.id),
                     farmID: targetFarmID,
                     pregnancyCheckDays: value.pregnancyCheckDays,
-                    gestationDays: value.gestationDays
+                    gestationDays: value.gestationDays,
+                    weaningAgeDays: value.weaningAgeDays,
+                    warningLeadDays: value.warningLeadDays,
+                    operationalAlertsConfiguredAt: value.operationalAlertsConfiguredAt,
+                    alertDigestEnabled: value.alertDigestEnabled,
+                    alertDigestMinuteOfDay: value.alertDigestMinuteOfDay
                 )
                 record.createdAt = value.createdAt
                 record.updatedAt = value.updatedAt
@@ -827,6 +919,41 @@ enum DevelopmentFarmCloneService {
                 record.createdAt = value.createdAt
                 record.completedAt = value.completedAt
                 record.deletedAt = value.deletedAt
+                record.revision = value.revision
+                context.insert(record)
+                clonedBusinessRecordCount += 1
+            }
+
+            for value in try farmRecords(FarmAlertDeferralRecord.self, farmID: sourceFarmID, context: context) {
+                let clonedSubjectID = map.optional(value.subjectID)
+                let clonedSourceID = map.optional(value.sourceEntityID)
+                let clonedFingerprint = map.remappingEmbeddedUUIDs(in: value.conditionFingerprint)
+                let clonedAlertID: UUID
+                if let clonedSubjectID {
+                    let alertName = [
+                        "operational-alert",
+                        value.alertKindRawValue,
+                        clonedSubjectID.uuidString.lowercased(),
+                        clonedSourceID?.uuidString.lowercased() ?? "none",
+                        clonedFingerprint,
+                    ].joined(separator: ":")
+                    clonedAlertID = StableCloudUUID.derived(namespace: targetFarmID, name: alertName)
+                } else {
+                    clonedAlertID = map.id(value.alertID)
+                }
+                let record = FarmAlertDeferralRecord(
+                    id: clonedAlertID,
+                    farmID: targetFarmID,
+                    alertID: clonedAlertID,
+                    alertKindRawValue: value.alertKindRawValue,
+                    subjectID: clonedSubjectID,
+                    sourceEntityID: clonedSourceID,
+                    conditionFingerprint: clonedFingerprint,
+                    deferredUntil: value.deferredUntil,
+                    deferredByAccountID: value.deferredByAccountID,
+                    createdAt: value.createdAt
+                )
+                record.updatedAt = value.updatedAt
                 record.revision = value.revision
                 context.insert(record)
                 clonedBusinessRecordCount += 1
@@ -1423,6 +1550,9 @@ enum DevelopmentFarmCloneService {
             case let value as FeedIngredientBatchRecord: value.farmID == farmID
             case let value as FeedRecord: value.farmID == farmID
             case let value as FeedRecordLine: value.farmID == farmID
+            case let value as FeedTroughObservationRecord: value.farmID == farmID
+            case let value as FeedStockTransactionRecord: value.farmID == farmID
+            case let value as FeedStockCountRecord: value.farmID == farmID
             case let value as HealthCatalogItemRecord: value.farmID == farmID
             case let value as InventoryLotRecord: value.farmID == farmID
             case let value as InventoryTransactionRecord: value.farmID == farmID
@@ -1438,6 +1568,7 @@ enum DevelopmentFarmCloneService {
             case let value as NoteRecord: value.farmID == farmID
             case let value as FarmCareRuleRecord: value.farmID == farmID
             case let value as CareReminderRecord: value.farmID == farmID
+            case let value as FarmAlertDeferralRecord: value.farmID == farmID
             case let value as PhotoAssetRecord: value.farmID == farmID
             case let value as SheepAvatarRecord: value.farmID == farmID
             case let value as InsightConversationRecord: value.farmID == farmID
@@ -1474,6 +1605,9 @@ enum DevelopmentFarmCloneService {
             + farmRecords(FeedIngredientBatchRecord.self, farmID: farmID, context: context).count
             + farmRecords(FeedRecord.self, farmID: farmID, context: context).count
             + farmRecords(FeedRecordLine.self, farmID: farmID, context: context).count
+            + farmRecords(FeedTroughObservationRecord.self, farmID: farmID, context: context).count
+            + farmRecords(FeedStockTransactionRecord.self, farmID: farmID, context: context).count
+            + farmRecords(FeedStockCountRecord.self, farmID: farmID, context: context).count
             + farmRecords(HealthCatalogItemRecord.self, farmID: farmID, context: context).count
             + farmRecords(InventoryLotRecord.self, farmID: farmID, context: context).count
             + farmRecords(InventoryTransactionRecord.self, farmID: farmID, context: context).count
@@ -1489,6 +1623,7 @@ enum DevelopmentFarmCloneService {
             + farmRecords(NoteRecord.self, farmID: farmID, context: context).count
             + farmRecords(FarmCareRuleRecord.self, farmID: farmID, context: context).count
             + farmRecords(CareReminderRecord.self, farmID: farmID, context: context).count
+            + farmRecords(FarmAlertDeferralRecord.self, farmID: farmID, context: context).count
             + farmRecords(PhotoAssetRecord.self, farmID: farmID, context: context).count
             + farmRecords(SheepAvatarRecord.self, farmID: farmID, context: context).count
             + farmRecords(InsightConversationRecord.self, farmID: farmID, context: context).count
@@ -1512,6 +1647,21 @@ private struct CloneIDMap {
             sessionID: targetFarmID,
             sourceKey: "development-farm-clone:\(sourceID.uuidString.lowercased())"
         )
+    }
+
+    func remappingEmbeddedUUIDs(in value: String) -> String {
+        var result = value
+        let tokens = value.split { character in
+            character == ":" || character == ","
+        }
+        for token in tokens {
+            guard let identifier = UUID(uuidString: String(token)) else { continue }
+            result = result.replacingOccurrences(
+                of: identifier.uuidString.lowercased(),
+                with: id(identifier).uuidString.lowercased()
+            )
+        }
+        return result
     }
 
     func optional(_ sourceID: UUID?) -> UUID? {

@@ -21,7 +21,7 @@ struct MigrationWorkspaceView: View {
     var body: some View {
         List {
             Section {
-                Text("先读取 eSheep+ 导出的 JSON，在独立临时数据库中转换、修复和对账。确认正式建场前不会修改当前牧场、旧版数据或 iCloud。")
+                Text("此入口仅用于尚未建立 Next 牧场的首次完整迁移。已有牧场请从“录入 → 合并 eSheep+ 投喂”进入，只追加缺失投喂，不得用完整备份覆盖当前牧场。")
                     .font(.footnote).foregroundStyle(.secondary)
                 Button("选择 eSheep+ 导出文件") { isImporting = true }
             }
@@ -95,12 +95,12 @@ struct MigrationWorkspaceView: View {
                         LabeledContent("阻断项／警告项", value: "\(result.blockingDiscrepancies.count)／\(result.discrepancies.filter { $0.severity == .warning }.count)")
                         NavigationLink("打开迁移验收中心") { MigrationReviewCenterView(farmID: temporaryFarm!.farmID, report: result).modelContainer(temporaryFarm!.container) }
                         if result.blockingDiscrepancies.isEmpty {
-                            Button(isCommittingMigration ? "正在创建正式牧场" : "创建正式牧场") {
+                            Button(isCommittingMigration ? commitProgressTitle : commitActionTitle) {
                                 isCommitConfirmationPresented = true
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(isCommittingMigration || activeAccount == nil)
-                            Text("创建后即可离线使用。Development 会在登录与 iCloud 可用时自动上传；失败不会影响本机录入。")
+                            Text(commitHelpText)
                                 .font(.footnote).foregroundStyle(.secondary)
                         } else {
                             Text("对账阻断项清零后才能创建正式牧场。")
@@ -131,14 +131,14 @@ struct MigrationWorkspaceView: View {
             } catch { errorMessage = error.localizedDescription }
         }
         .confirmationDialog(
-            "确认创建正式牧场",
+            commitConfirmationTitle,
             isPresented: $isCommitConfirmationPresented,
             titleVisibility: .visible
         ) {
             Button("确认创建") { commitMigration() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("系统会将已对账数据和云端基线原子写入当前账号。旧版 eSheep+ 不会被修改，iCloud 上传将在建场成功后自动进行。")
+            Text(commitConfirmationMessage)
         }
         .alert(
             "迁移完成",
@@ -153,7 +153,9 @@ struct MigrationWorkspaceView: View {
             }
         } message: {
             if let result = commitResult {
-                Text("\(result.farmName) 已创建，共导入 \(result.committedRecordCount) 条记录和 \(result.photoCount) 张照片。\(cloudStatusText(for: result.farmID))")
+                Text(result.wasAlreadyCommitted
+                    ? "\(result.farmName) 已补齐缺失的 eSheep+ 历史数据。当前共核对 \(result.committedRecordCount) 条记录。\(cloudStatusText(for: result.farmID))"
+                    : "\(result.farmName) 已创建，共导入 \(result.committedRecordCount) 条记录和 \(result.photoCount) 张照片。\(cloudStatusText(for: result.farmID))")
             }
         }
         .alert("迁移操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(errorMessage ?? "") }
@@ -166,6 +168,29 @@ struct MigrationWorkspaceView: View {
     private var activeAccount: AccountProfile? {
         guard let profileID = appSession.activeAccountProfileID else { return nil }
         return accounts.first(where: { $0.id == profileID })
+    }
+
+    private var isRepairingExistingMigration: Bool {
+        guard let session, let account = activeAccount else { return false }
+        return migrationCommits.contains {
+            $0.sourceChecksum == session.manifest.sourceChecksum
+                && $0.ownerAccountID == account.effectiveAccountID
+                && $0.status == .completed
+        }
+    }
+
+    private var commitActionTitle: String { isRepairingExistingMigration ? "补齐已迁移数据" : "创建正式牧场" }
+    private var commitProgressTitle: String { isRepairingExistingMigration ? "正在补齐历史数据" : "正在创建正式牧场" }
+    private var commitConfirmationTitle: String { isRepairingExistingMigration ? "确认补齐历史数据" : "确认创建正式牧场" }
+    private var commitHelpText: String {
+        isRepairingExistingMigration
+            ? "只补入这份 eSheep+ 备份中尚未进入 Next 的历史记录；不会重复羊只，也不会追溯扣减饲料库存。"
+            : "创建后即可离线使用。Development 会在登录与 iCloud 可用时自动上传；失败不会影响本机录入。"
+    }
+    private var commitConfirmationMessage: String {
+        isRepairingExistingMigration
+            ? "系统会按来源校验补齐缺失的投喂及明细，并刷新云端基线。已有业务记录不会重复，eSheep+ 不会被修改。"
+            : "系统会将已对账数据和云端基线原子写入当前账号。旧版 eSheep+ 不会被修改，iCloud 上传将在建场成功后自动进行。"
     }
 
     private func buildTemporaryFarm() {

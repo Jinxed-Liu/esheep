@@ -2476,6 +2476,7 @@ final class InsightToolRegistry {
         result.formUnion(try context.fetch(FetchDescriptor<CareBatchRecord>()).filter { $0.farmID == farmID }.map(\.id))
         result.formUnion(try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).filter { $0.farmID == farmID }.map(\.id))
         result.formUnion(try context.fetch(FetchDescriptor<CareReminderRecord>()).filter { $0.farmID == farmID }.map(\.id))
+        result.formUnion(try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).filter { $0.farmID == farmID }.map(\.id))
         result.formUnion(try context.fetch(FetchDescriptor<TombstoneRecord>()).filter { $0.farmID == farmID }.map(\.id))
         return result
     }
@@ -2552,6 +2553,9 @@ final class InsightToolRegistry {
         if let value = try context.fetch(FetchDescriptor<CareReminderRecord>()).first(where: {
             $0.id == id && $0.farmID == farmID
         }) { return value.revision }
+        if let value = try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).first(where: {
+            $0.id == id && $0.farmID == farmID
+        }) { return value.revision }
         if let value = try context.fetch(FetchDescriptor<TombstoneRecord>()).first(where: {
             $0.id == id && $0.farmID == farmID
         }) { return value.revision }
@@ -2619,6 +2623,8 @@ final class InsightToolRegistry {
         if unresolved.isEmpty { return revisions }
         capture(try context.fetch(FetchDescriptor<CareReminderRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
         if unresolved.isEmpty { return revisions }
+        capture(try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
+        if unresolved.isEmpty { return revisions }
         capture(try context.fetch(FetchDescriptor<TombstoneRecord>()), id: \.id, farmID: \.farmID, revision: \.revision)
         return revisions
     }
@@ -2648,7 +2654,7 @@ final class InsightToolRegistry {
             add(draft.penID)
         }
         switch command {
-        case .upsertHealthCatalog, .updateRules:
+        case .upsertHealthCatalog, .updateRules, .updateOperationalAlertRules:
             break
         case .recordHealth(let draft):
             addHealth(draft)
@@ -2693,6 +2699,9 @@ final class InsightToolRegistry {
             addLambing(replacement)
         case .revokeLambing(let recordID, _), .restoreLambing(let recordID):
             result.insert(recordID)
+        case .deferOperationalAlert(let draft):
+            add(draft.subjectID)
+            add(draft.sourceEntityID)
         case .setReminderStatus(let reminderID, _):
             result.insert(reminderID)
         }

@@ -89,6 +89,7 @@ final class AppSession {
     var pendingSearchQuery: String?
     var pendingSheepID: UUID?
     var pendingCareReminderID: UUID?
+    var pendingOperationalAlertsRequestID: UUID?
     var pendingFarmInvitation: PendingFarmInvitation?
 
     init(
@@ -164,6 +165,9 @@ final class AppSession {
         case .openCareReminder:
             pendingCareReminderID = target.entityID
             selectedTab = .records
+        case .openOperationalAlerts:
+            pendingOperationalAlertsRequestID = UUID()
+            selectedTab = .home
         }
     }
 

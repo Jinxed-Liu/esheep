@@ -371,7 +371,7 @@ enum MigrationBaselineV2EvidenceContract {
                 return draft.linkedRamID == nil ? "5" : "25"
             }
             return "5"
-        case .pen, .breedingProgram, .productionBatch, .feedIngredient, .feedRecipe, .inventoryLot, .semen:
+        case .pen, .breedingProgram, .productionBatch, .feedIngredient, .feedRecipe, .inventoryLot, .semen, .careRule:
             return "10"
         case .sheep, .feedRecipeComponent:
             return "20"
@@ -379,6 +379,8 @@ enum MigrationBaselineV2EvidenceContract {
             return "30"
         case .pedigreeChange:
             return "35"
+        case .alertDeferral:
+            return "40"
         default:
             return "revision-\(snapshot.sourceRevision)"
         }
@@ -856,22 +858,201 @@ struct MigrationCloudBootstrapService {
             payload.optionalStrings["leaveReason"] = value.leaveReason
             values.append((.batchMembership, value.id, value.leftAt == nil ? 1 : 2, try JSONEncoder.cloud.encode(payload), 30))
         }
-        for value in try context.fetch(FetchDescriptor<FeedIngredientRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
-            var payload = try decodePayload(FarmCommandCloudPayloadEncoder.encode(.addIngredient(name: value.name, unit: value.unit, dryMatterText: value.dryMatterText)))
-            payload.strings["category"] = value.category
-            payload.strings["nutrientSnapshotJSON"] = value.nutrientSnapshotJSON
+        let feedIngredients = try context.fetch(FetchDescriptor<FeedIngredientRecord>()).filter {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }
+        let feedIngredientIDs = Set(feedIngredients.map(\.id))
+        for value in feedIngredients {
+            var payload = try decodePayload(FarmCommandCloudPayloadEncoder.encode(.saveFeedIngredient(FeedIngredientDraft(
+                id: value.id,
+                name: value.name,
+                unit: value.unit,
+                category: value.category,
+                dryMatterText: value.dryMatterText,
+                nutrientSnapshotJSON: value.nutrientSnapshotJSON,
+                kind: value.kind,
+                sourceTemplateID: value.sourceTemplateID,
+                sourceTemplateCode: value.sourceTemplateCode,
+                mixtureComponentsJSON: value.mixtureComponentsJSON,
+                note: value.note
+            ))))
+            payload.strings["isActive"] = value.isActive ? "1" : "0"
             values.append((.feedIngredient, value.id, 1, try JSONEncoder.cloud.encode(payload), 10))
         }
-        for value in try context.fetch(FetchDescriptor<FeedRecipeRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
-            values.append((.feedRecipe, value.id, 1, try FarmCommandCloudPayloadEncoder.encode(.createRecipe(name: value.name, note: value.note)), 10))
+
+        let feedBatches = try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).filter {
+            $0.farmID == farmID && $0.deletedAt == nil && feedIngredientIDs.contains($0.ingredientID)
         }
-        for value in try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
-            values.append((.feedRecipeComponent, value.id, 1, try FarmCommandCloudPayloadEncoder.encode(.addRecipeComponent(recipeID: value.recipeID, ingredientID: value.ingredientID, kilogramsText: value.kilogramsText)), 20))
+        let feedBatchIDs = Set(feedBatches.map(\.id))
+        for value in feedBatches {
+            let command = FarmCommand.saveFeedBatch(FeedBatchDraft(
+                id: value.id,
+                ingredientID: value.ingredientID,
+                batchName: value.batchName,
+                purchaseDate: value.purchaseDate,
+                supplier: value.supplier,
+                storageLocation: value.storageLocation,
+                pricePerKilogramText: value.pricePerKilogramText,
+                purchasedKilogramsText: value.purchasedKilogramsText,
+                packagingKind: value.packagingKind,
+                packageCountText: value.packageCountText,
+                nominalPackageKilogramsText: value.nominalPackageKilogramsText,
+                stockWeightConfirmed: value.stockWeightConfirmed,
+                initialKilogramsText: value.initialKilogramsText,
+                remainingKilogramsText: value.remainingKilogramsText,
+                note: value.note,
+                isActive: value.isActive
+            ))
+            values.append((.feedIngredientBatch, value.id, value.revision, try FarmCommandCloudPayloadEncoder.encode(command), 12))
+        }
+
+        // recordFeedV2 deterministically recreates its own consumption rows.
+        // Baseline stock snapshots therefore carry every other authoritative
+        // ledger row, but deliberately omit feed consumption/reversal rows so
+        // a clean-device replay cannot deduct the same delivery twice.
+        let allFeedRecords = try context.fetch(FetchDescriptor<FeedRecord>()).filter { $0.farmID == farmID }
+        let allFeedRecordIDs = Set(allFeedRecords.map(\.id))
+        let allFeedRecordLines = try context.fetch(FetchDescriptor<FeedRecordLine>()).filter { $0.farmID == farmID }
+        var deterministicFeedTransactionIDs = Set(allFeedRecordLines.map { FeedStockLedger.consumptionID(for: $0.id) })
+        deterministicFeedTransactionIDs.formUnion(deterministicFeedTransactionIDs.map(FeedStockLedger.reversalID(for:)))
+        let stockTransactions = try context.fetch(FetchDescriptor<FeedStockTransactionRecord>()).filter {
+            guard $0.farmID == farmID, $0.deletedAt == nil, feedBatchIDs.contains($0.ingredientBatchID) else { return false }
+            let hasFeedSource = $0.sourceRecordID.map(allFeedRecordIDs.contains) == true
+            let isFeedGenerated = ($0.kind == .consumption || $0.kind == .reversal) &&
+                (hasFeedSource || deterministicFeedTransactionIDs.contains($0.id))
+            return !isFeedGenerated
+        }
+        for value in stockTransactions {
+            var payload = try decodePayload(FarmCommandCloudPayloadEncoder.encode(.adjustFeedStock(
+                batchID: value.ingredientBatchID,
+                kind: value.kind,
+                quantityText: value.quantityText,
+                occurredAt: value.occurredAt,
+                note: value.note
+            )))
+            payload.strings["baselineProjection"] = "1"
+            payload.optionalIdentifiers = [
+                "sourceRecordID": value.sourceRecordID,
+                "sourceLineID": value.sourceLineID,
+            ]
+            values.append((.feedStockTransaction, value.id, 1, try JSONEncoder.cloud.encode(payload), 14))
+        }
+
+        for value in try context.fetch(FetchDescriptor<FeedStockCountRecord>()).filter({
+            $0.farmID == farmID && $0.deletedAt == nil && feedBatchIDs.contains($0.ingredientBatchID)
+        }) {
+            var payload = try decodePayload(FarmCommandCloudPayloadEncoder.encode(.countFeedStock(
+                countID: value.id,
+                batchID: value.ingredientBatchID,
+                actualKilogramsText: value.actualKilogramsText,
+                method: value.method,
+                occurredAt: value.occurredAt,
+                note: value.note
+            )))
+            payload.strings["baselineProjection"] = "1"
+            payload.strings["bookBalanceText"] = value.bookBalanceText
+            payload.optionalStrings["differenceText"] = value.differenceText
+            payload.optionalIdentifiers["adjustmentTransactionID"] = value.adjustmentTransactionID
+            values.append((.feedStockCount, value.id, 1, try JSONEncoder.cloud.encode(payload), 15))
+        }
+
+        let recipeComponents = try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()).filter {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }
+        for value in try context.fetch(FetchDescriptor<FeedRecipeRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
+            let components = recipeComponents.filter { $0.recipeID == value.id }.map {
+                FeedRecipeComponentDraft(
+                    id: $0.id,
+                    ingredientID: $0.ingredientID,
+                    ingredientBatchID: $0.ingredientBatchID,
+                    kilogramsText: $0.kilogramsText,
+                    pricePerKilogramText: $0.pricePerKilogramText,
+                    nutrientSnapshotJSON: $0.nutrientSnapshotJSON
+                )
+            }
+            var payload = try decodePayload(FarmCommandCloudPayloadEncoder.encode(.saveFeedRecipe(FeedRecipeDraft(
+                id: value.id,
+                name: value.name,
+                targetPenID: value.targetPenID,
+                targetPenName: value.targetPenName,
+                stage: value.stage,
+                headCount: value.headCount,
+                components: components,
+                note: value.note
+            ))))
+            payload.strings["isActive"] = value.isActive ? "1" : "0"
+            values.append((.feedRecipe, value.id, 1, try JSONEncoder.cloud.encode(payload), 18))
         }
         let feedLines = try context.fetch(FetchDescriptor<FeedRecordLine>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
         for value in try context.fetch(FetchDescriptor<FeedRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
-            let lines = feedLines.filter { $0.feedRecordID == value.id }.map { FarmCommandCloudPayload.FeedLine(id: $0.id, ingredientID: $0.ingredientID, kilogramsText: $0.kilogramsText, ingredientBatchID: $0.ingredientBatchID, ingredientNameSnapshot: $0.ingredientNameSnapshot, ingredientBatchNameSnapshot: $0.ingredientBatchNameSnapshot, pricePerKilogramTextSnapshot: $0.pricePerKilogramTextSnapshot, nutrientSnapshotJSON: $0.nutrientSnapshotJSON, unitSnapshot: $0.unitSnapshot, dryMatterTextSnapshot: $0.dryMatterTextSnapshot) }
-            values.append((.feed, value.id, value.revision, try FarmCommandCloudPayloadEncoder.encode(.recordFeed(penID: value.penID, recipeID: value.recipeID, mode: value.mode, occurredAt: value.occurredAt, lines: [], note: value.note), resolvedFeedLines: lines), 30))
+            let records = feedLines.filter { $0.feedRecordID == value.id }
+            let lines = records.map { FarmCommandCloudPayload.FeedLine(id: $0.id, ingredientID: $0.ingredientID, kilogramsText: $0.kilogramsText, ingredientBatchID: $0.ingredientBatchID, ingredientNameSnapshot: $0.ingredientNameSnapshot, ingredientBatchNameSnapshot: $0.ingredientBatchNameSnapshot, pricePerKilogramTextSnapshot: $0.pricePerKilogramTextSnapshot, nutrientSnapshotJSON: $0.nutrientSnapshotJSON, unitSnapshot: $0.unitSnapshot, dryMatterTextSnapshot: $0.dryMatterTextSnapshot) }
+            let payload: Data
+            if value.legacySourceKey != nil || records.contains(where: { $0.ingredientBatchID == nil }) {
+                payload = try FarmCommandCloudPayloadEncoder.encode(.importHistoricalFeed(HistoricalFeedEntryDraft(
+                    id: value.id,
+                    legacySourceKey: value.legacySourceKey ?? "baseline:\(value.id.uuidString.lowercased())",
+                    penID: value.penID,
+                    mode: value.mode,
+                    occurredAt: value.occurredAt,
+                    mealName: value.mealName,
+                    feederName: value.feederName,
+                    remainingKilogramsText: value.remainingKilogramsText,
+                    discardedKilogramsText: value.discardedKilogramsText,
+                    remainingCompositionJSON: value.remainingCompositionJSON,
+                    lines: records.map {
+                        HistoricalFeedLineDraft(
+                            id: $0.id,
+                            ingredientID: $0.ingredientID,
+                            kilogramsText: $0.kilogramsText,
+                            ingredientNameSnapshot: $0.ingredientNameSnapshot,
+                            ingredientBatchNameSnapshot: $0.ingredientBatchNameSnapshot,
+                            pricePerKilogramTextSnapshot: $0.pricePerKilogramTextSnapshot,
+                            nutrientSnapshotJSON: $0.nutrientSnapshotJSON ?? "{}",
+                            unitSnapshot: $0.unitSnapshot ?? "千克",
+                            dryMatterTextSnapshot: $0.dryMatterTextSnapshot
+                        )
+                    },
+                    note: value.note
+                )))
+            } else {
+                payload = try FarmCommandCloudPayloadEncoder.encode(.recordFeedV2(FeedEntryDraft(
+                    id: value.id,
+                    penID: value.penID,
+                    recipeID: value.recipeID,
+                    mode: value.mode,
+                    occurredAt: value.occurredAt,
+                    mealName: value.mealName,
+                    feederName: value.feederName,
+                    remainingKilogramsText: value.remainingKilogramsText,
+                    discardedKilogramsText: value.discardedKilogramsText,
+                    remainingCompositionJSON: value.remainingCompositionJSON,
+                    recipeHeadCountSnapshot: value.recipeHeadCountSnapshot,
+                    actualHeadCountSnapshot: value.actualHeadCountSnapshot,
+                    scaleFactorText: value.scaleFactorText,
+                    excludedSheepIDs: value.excludedSheepIDs,
+                    lines: records.map {
+                        FeedLineDraft(id: $0.id, ingredientID: $0.ingredientID, ingredientBatchID: $0.ingredientBatchID, kilogramsText: $0.kilogramsText)
+                    },
+                    note: value.note
+                )), resolvedFeedLines: lines)
+            }
+            values.append((.feed, value.id, value.revision, payload, 30))
+        }
+        for value in try context.fetch(FetchDescriptor<FeedTroughObservationRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
+            let payload = try FarmCommandCloudPayloadEncoder.encode(.recordFeedTroughObservation(FeedTroughObservationDraft(
+                id: value.id,
+                penID: value.penID,
+                relatedFeedRecordID: value.relatedFeedRecordID,
+                feederName: value.feederName,
+                observedAt: value.observedAt,
+                actualRemainingKilogramsText: value.actualRemainingKilogramsText,
+                discardedKilogramsText: value.discardedKilogramsText,
+                measurementMethod: value.measurementMethod,
+                compositionSnapshotJSON: value.compositionSnapshotJSON,
+                note: value.note
+            )))
+            values.append((.feedTroughObservation, value.id, value.revision, payload, 35))
         }
         for value in try context.fetch(FetchDescriptor<InventoryLotRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
             values.append((.inventoryLot, value.id, 1, try FarmCommandCloudPayloadEncoder.encode(.receiveInventory(catalogName: value.catalogName, kind: HealthRecordKind(rawValue: value.kindRawValue) ?? .treatment, expiresAt: value.expiresAt, quantityText: value.startingQuantityText, occurredAt: value.receivedAt ?? value.createdAt, note: "旧版迁移库存")), 10))
@@ -906,6 +1087,40 @@ struct MigrationCloudBootstrapService {
         }
         for value in try context.fetch(FetchDescriptor<NoteRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
             values.append((.note, value.id, value.revision, try FarmCommandCloudPayloadEncoder.encode(.addNote(sheepID: value.sheepID, penID: value.penID, text: value.text, occurredAt: value.occurredAt)), 30))
+        }
+        for value in try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).filter({ $0.farmID == farmID }) {
+            let command: CareCommand
+            if let weaningAgeDays = value.weaningAgeDays,
+               value.operationalAlertsConfiguredAt != nil {
+                command = .updateOperationalAlertRules(.init(
+                    id: value.id,
+                    pregnancyCheckDays: value.pregnancyCheckDays,
+                    gestationDays: value.gestationDays,
+                    weaningAgeDays: weaningAgeDays,
+                    warningLeadDays: value.warningLeadDays,
+                    digestEnabled: value.alertDigestEnabled,
+                    digestMinuteOfDay: value.alertDigestMinuteOfDay
+                ))
+            } else {
+                command = .updateRules(
+                    id: value.id,
+                    pregnancyCheckDays: value.pregnancyCheckDays,
+                    gestationDays: value.gestationDays
+                )
+            }
+            values.append((.careRule, value.id, value.revision, try FarmCommandCloudPayloadEncoder.encode(.care(command)), 10))
+        }
+        for value in try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).filter({ $0.farmID == farmID }) {
+            let draft = FarmAlertDeferralDraft(
+                id: value.id,
+                alertID: value.alertID,
+                alertKindRawValue: value.alertKindRawValue,
+                subjectID: value.subjectID,
+                sourceEntityID: value.sourceEntityID,
+                conditionFingerprint: value.conditionFingerprint,
+                deferredUntil: value.deferredUntil
+            )
+            values.append((.alertDeferral, value.id, value.revision, try FarmCommandCloudPayloadEncoder.encode(.care(.deferOperationalAlert(draft))), 40))
         }
     }
 

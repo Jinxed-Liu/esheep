@@ -1372,7 +1372,8 @@ private extension SyncConflictRecord {
              CloudEntityType.healthSubjectLink.rawValue,
              CloudEntityType.careBatch.rawValue,
              CloudEntityType.careRule.rawValue,
-             CloudEntityType.careReminder.rawValue: "健康与照护"
+             CloudEntityType.careReminder.rawValue,
+             CloudEntityType.alertDeferral.rawValue: "健康与照护"
         case CloudEntityType.reproduction.rawValue,
              CloudEntityType.semen.rawValue,
              CloudEntityType.semenDonor.rawValue,

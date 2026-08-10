@@ -10,6 +10,7 @@ enum FarmSystemNavigationKind: String, Codable, Sendable {
     case recordWeight
     case recordFeed
     case openCareReminder
+    case openOperationalAlerts
 }
 
 struct FarmSystemNavigationTarget: Codable, Sendable, Equatable {
@@ -46,12 +47,12 @@ enum FarmSystemIntegrationService {
     ) -> FarmWidgetSnapshot {
         let startOfToday = Calendar.current.startOfDay(for: .now)
         let farmSnapshots = farms.filter { $0.deletedAt == nil }.map { farm in
-            let occupiedPenCount = CurrentFarmOccupancy.occupiedPens(farmID: farm.id, sheep: sheep, pens: pens).count
+            let occupiedPens = CurrentFarmOccupancy.occupiedPens(farmID: farm.id, sheep: sheep, pens: pens)
             return FarmWidgetSnapshot.Farm(
                 farmID: farm.id,
                 name: farm.name,
                 activeSheepCount: sheep.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent },
-                activePenCount: occupiedPenCount,
+                activePenCount: occupiedPens.count,
                 todayFeedCount: feeds.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.occurredAt >= startOfToday },
                 pendingOperationCount: pendingOperationCounts[farm.id, default: 0],
                 sheep: sheep.filter {
@@ -59,9 +60,7 @@ enum FarmSystemIntegrationService {
                 }.map {
                     .init(farmID: farm.id, sheepID: $0.id, earTag: $0.earTag, breed: $0.breed)
                 },
-                pens: pens.filter {
-                    $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive
-                }.map {
+                pens: occupiedPens.map {
                     .init(farmID: farm.id, penID: $0.id, name: $0.name)
                 }
             )

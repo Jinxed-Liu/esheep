@@ -1906,7 +1906,7 @@ actor CloudRebuildActor {
                 return draft.linkedRamID == nil ? "5" : "25"
             }
             return "5"
-        case .pen, .breedingProgram, .productionBatch, .feedIngredient, .feedRecipe, .inventoryLot, .semen:
+        case .pen, .breedingProgram, .productionBatch, .feedIngredient, .feedRecipe, .inventoryLot, .semen, .careRule:
             return "10"
         case .sheep, .feedRecipeComponent:
             return "20"
@@ -1914,6 +1914,8 @@ actor CloudRebuildActor {
             return "30"
         case .pedigreeChange:
             return "35"
+        case .alertDeferral:
+            return "40"
         default:
             return "revision-\(snapshot.sourceRevision)"
         }
@@ -1941,7 +1943,11 @@ actor CloudRebuildActor {
         return switch payload.kind {
         case .createFarm: 0
         case .updateFarmLocation: 5
-        case .createPen, .addIngredient, .createRecipe, .receiveInventory, .addSemen, .createBatch, .createBreedingProgram: 10
+        case .createPen, .addIngredient, .createRecipe, .receiveInventory, .addSemen, .createBatch, .createBreedingProgram, .saveFeedIngredient: 10
+        case .saveFeedBatch: 11
+        case .adjustFeedStock: 12
+        case .countFeedStock: 13
+        case .saveFeedRecipe: 14
         case .updatePen, .setPenActive, .addSheep, .updateSheepProfile, .addRecipeComponent: 20
         case .care:
             switch payload.careCommand {
@@ -1950,9 +1956,12 @@ actor CloudRebuildActor {
             case .updateSheepPedigree: 25
             case .setBreedingRam: 20
             case .restorePedigreeAudit: 35
+            case .updateRules, .updateOperationalAlertRules: 10
+            case .deferOperationalAlert: 40
             default: 30
             }
-        case .recordWeight, .correctWeight, .recordWeaning, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep, .recordFeed, .recordHealth, .recordReproduction, .addNote, .addPhoto, .assignBatchMembership, .leaveBatchMembership: 30
+        case .recordWeight, .correctWeight, .recordWeaning, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep, .recordFeed, .recordFeedV2, .importHistoricalFeed, .recordHealth, .recordReproduction, .addNote, .addPhoto, .assignBatchMembership, .leaveBatchMembership: 30
+        case .recordFeedTroughObservation: 31
         case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: 40
         }
     }

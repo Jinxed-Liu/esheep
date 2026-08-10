@@ -1,6 +1,7 @@
 import BackgroundTasks
 import Foundation
 import Observation
+import SwiftData
 import UserNotifications
 
 struct FarmNotificationRoute: Codable, Equatable, Sendable {
@@ -94,13 +95,95 @@ final class FarmNotificationService {
             try? await center.add(request)
         }
     }
+
+    func rescheduleOperationalAlertDigest(
+        _ snapshot: FarmOperationalAlertSnapshot,
+        now: Date = .now
+    ) async {
+        let center = UNUserNotificationCenter.current()
+        authorizationStatus = await center.notificationSettings().authorizationStatus
+        let identifier = FarmOperationalAlertDigestPlan.identifier(farmID: snapshot.farmID)
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+
+        guard snapshot.isConfigured,
+              snapshot.rule?.digestEnabled == true,
+              snapshot.totalPendingCount > 0,
+              authorizationStatus == .authorized ||
+                authorizationStatus == .provisional ||
+                authorizationStatus == .ephemeral,
+              let rule = snapshot.rule,
+              let deliveryDate = FarmOperationalAlertDigestPlan.nextDeliveryDate(
+                now: now,
+                timeZoneIdentifier: snapshot.timeZoneIdentifier,
+                minuteOfDay: rule.digestMinuteOfDay
+              ) else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "eSheepNext 待办提醒"
+        content.body = FarmOperationalAlertDigestPlan.body(count: snapshot.totalPendingCount)
+        content.sound = .default
+        content.userInfo = FarmNotificationRoute(
+            farmID: snapshot.farmID,
+            kind: .openOperationalAlerts
+        ).userInfo
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: snapshot.timeZoneIdentifier) ?? .current
+        var components = calendar.dateComponents(
+            [.year, .month, .day, .hour, .minute],
+            from: deliveryDate
+        )
+        components.timeZone = calendar.timeZone
+        let request = UNNotificationRequest(
+            identifier: identifier,
+            content: content,
+            trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+        )
+        do {
+            try await center.add(request)
+            lastErrorMessage = nil
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+}
+
+enum FarmOperationalAlertDigestPlan {
+    static func identifier(farmID: UUID) -> String {
+        "operational-alert:\(farmID.uuidString.lowercased())"
+    }
+
+    static func body(count: Int) -> String {
+        "有 \(max(0, count)) 项待处理事项，打开应用查看详情。"
+    }
+
+    static func nextDeliveryDate(
+        now: Date,
+        timeZoneIdentifier: String,
+        minuteOfDay: Int
+    ) -> Date? {
+        guard (0...1_439).contains(minuteOfDay),
+              let timeZone = TimeZone(identifier: timeZoneIdentifier) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let hour = minuteOfDay / 60
+        let minute = minuteOfDay % 60
+        guard let today = calendar.date(
+            bySettingHour: hour,
+            minute: minute,
+            second: 0,
+            of: now
+        ) else { return nil }
+        if today > now { return today }
+        return calendar.date(byAdding: .day, value: 1, to: today)
+    }
 }
 
 enum FarmBackgroundRefresh {
     static let identifier = "com.sheepfarm.esheepnext.refresh"
 
     @MainActor
-    static func register(collaboration: CloudCollaborationStore) {
+    static func register(collaboration: CloudCollaborationStore, modelContainer: ModelContainer) {
         BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in
             guard let refreshTask = task as? BGAppRefreshTask else {
                 task.setTaskCompleted(success: false)
@@ -113,7 +196,24 @@ enum FarmBackgroundRefresh {
             schedule()
             let work = Task { @MainActor in
                 await collaboration.synchronizeNow()
-                refreshTask.setTaskCompleted(success: collaboration.lastErrorMessage == nil)
+                var alertsScheduled = true
+                do {
+                    let actor = FarmOperationalAlertSnapshotActor(container: modelContainer)
+                    let farmIDs = try await actor.availableFarmIDs()
+                    let notifications = FarmNotificationService()
+                    for farmID in farmIDs {
+                        try Task.checkCancellation()
+                        let snapshot = try await actor.load(farmID: farmID)
+                        await notifications.rescheduleOperationalAlertDigest(snapshot)
+                    }
+                } catch is CancellationError {
+                    alertsScheduled = false
+                } catch {
+                    alertsScheduled = false
+                }
+                refreshTask.setTaskCompleted(
+                    success: collaboration.lastErrorMessage == nil && alertsScheduled
+                )
             }
             refreshTask.expirationHandler = { work.cancel() }
         }

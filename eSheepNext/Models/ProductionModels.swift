@@ -110,6 +110,15 @@ enum InventoryTransactionKind: String, CaseIterable, Codable, Sendable {
     case adjustment
 }
 
+enum FeedStockTransactionKind: String, CaseIterable, Codable, Sendable {
+    case openingBalance
+    case receipt
+    case consumption
+    case adjustment
+    case reversal
+    case conflict
+}
+
 @Model
 final class PenRecord {
     var id: UUID
@@ -539,6 +548,11 @@ final class FeedIngredientRecord {
     var name: String
     var category: String
     var legacySourceKey: String?
+    var kindRawValue: String = FeedIngredientKind.legacy.rawValue
+    var sourceTemplateID: String?
+    var sourceTemplateCode: String?
+    var mixtureComponentsJSON: String?
+    var note: String = ""
     var nutrientSnapshotJSON: String
     var unit: String
     var dryMatterText: String?
@@ -547,12 +561,17 @@ final class FeedIngredientRecord {
     var updatedAt: Date
     var deletedAt: Date?
 
-    init(id: UUID = UUID(), farmID: UUID, name: String, unit: String = "千克", dryMatterText: String? = nil, category: String = "", legacySourceKey: String? = nil, nutrientSnapshotJSON: String = "{}") {
+    init(id: UUID = UUID(), farmID: UUID, name: String, unit: String = "千克", dryMatterText: String? = nil, category: String = "", legacySourceKey: String? = nil, nutrientSnapshotJSON: String = "{}", kind: FeedIngredientKind = .legacy, sourceTemplateID: String? = nil, sourceTemplateCode: String? = nil, mixtureComponentsJSON: String? = nil, note: String = "") {
         self.id = id
         self.farmID = farmID
         self.name = name
         self.category = category
         self.legacySourceKey = legacySourceKey
+        self.kindRawValue = kind.rawValue
+        self.sourceTemplateID = sourceTemplateID
+        self.sourceTemplateCode = sourceTemplateCode
+        self.mixtureComponentsJSON = mixtureComponentsJSON
+        self.note = note
         self.nutrientSnapshotJSON = nutrientSnapshotJSON
         self.unit = unit
         self.dryMatterText = dryMatterText
@@ -560,6 +579,9 @@ final class FeedIngredientRecord {
         self.createdAt = .now
         self.updatedAt = .now
     }
+
+    var kind: FeedIngredientKind { FeedIngredientKind(rawValue: kindRawValue) ?? .legacy }
+    var nutrients: FeedNutrients { FeedNutritionCodec.decode(nutrientSnapshotJSON) }
 }
 
 @Model
@@ -567,6 +589,7 @@ final class FeedRecipeRecord {
     var id: UUID
     var farmID: UUID
     var name: String
+    var targetPenID: UUID?
     var targetPenName: String?
     var stageRawValue: String
     var headCount: Int?
@@ -577,10 +600,11 @@ final class FeedRecipeRecord {
     var updatedAt: Date
     var deletedAt: Date?
 
-    init(id: UUID = UUID(), farmID: UUID, name: String, note: String = "", targetPenName: String? = nil, stageRawValue: String = "", headCount: Int? = nil, legacySourceKey: String? = nil) {
+    init(id: UUID = UUID(), farmID: UUID, name: String, note: String = "", targetPenName: String? = nil, targetPenID: UUID? = nil, stageRawValue: String = "", headCount: Int? = nil, legacySourceKey: String? = nil) {
         self.id = id
         self.farmID = farmID
         self.name = name
+        self.targetPenID = targetPenID
         self.targetPenName = targetPenName
         self.stageRawValue = stageRawValue
         self.headCount = headCount
@@ -590,6 +614,8 @@ final class FeedRecipeRecord {
         self.createdAt = .now
         self.updatedAt = .now
     }
+
+    var stage: FeedRecipeStage { FeedRecipeStage(rawValue: stageRawValue) ?? .custom }
 }
 
 @Model
@@ -598,6 +624,7 @@ final class FeedRecipeComponentRecord {
     var farmID: UUID
     var recipeID: UUID
     var ingredientID: UUID
+    var ingredientBatchID: UUID?
     var kilogramsText: String
     var legacyBatchID: String?
     var pricePerKilogramText: String?
@@ -606,11 +633,12 @@ final class FeedRecipeComponentRecord {
     var updatedAt: Date
     var deletedAt: Date?
 
-    init(id: UUID = UUID(), farmID: UUID, recipeID: UUID, ingredientID: UUID, kilogramsText: String, legacyBatchID: String? = nil, pricePerKilogramText: String? = nil, nutrientSnapshotJSON: String = "{}") {
+    init(id: UUID = UUID(), farmID: UUID, recipeID: UUID, ingredientID: UUID, kilogramsText: String, ingredientBatchID: UUID? = nil, legacyBatchID: String? = nil, pricePerKilogramText: String? = nil, nutrientSnapshotJSON: String = "{}") {
         self.id = id
         self.farmID = farmID
         self.recipeID = recipeID
         self.ingredientID = ingredientID
+        self.ingredientBatchID = ingredientBatchID
         self.kilogramsText = kilogramsText
         self.legacyBatchID = legacyBatchID
         self.pricePerKilogramText = pricePerKilogramText
@@ -634,11 +662,16 @@ final class FeedRecord {
     var feederName: String
     var remainingKilogramsText: String?
     var discardedKilogramsText: String?
+    var recipeHeadCountSnapshot: Int?
+    var actualHeadCountSnapshot: Int?
+    var scaleFactorText: String?
+    var remainingCompositionJSON: String?
+    var excludedSheepIDsJSON: String = "[]"
     var legacySourceKey: String?
     var revision: Int
     var deletedAt: Date?
 
-    init(id: UUID = UUID(), farmID: UUID, penID: UUID, recipeID: UUID? = nil, mode: FeedMode, occurredAt: Date, note: String = "", mealName: String = "", feederName: String = "", remainingKilogramsText: String? = nil, discardedKilogramsText: String? = nil, legacySourceKey: String? = nil) {
+    init(id: UUID = UUID(), farmID: UUID, penID: UUID, recipeID: UUID? = nil, mode: FeedMode, occurredAt: Date, note: String = "", mealName: String = "", feederName: String = "", remainingKilogramsText: String? = nil, discardedKilogramsText: String? = nil, recipeHeadCountSnapshot: Int? = nil, actualHeadCountSnapshot: Int? = nil, scaleFactorText: String? = nil, remainingCompositionJSON: String? = nil, excludedSheepIDs: [UUID] = [], legacySourceKey: String? = nil) {
         self.id = id
         self.farmID = farmID
         self.penID = penID
@@ -651,11 +684,17 @@ final class FeedRecord {
         self.feederName = feederName
         self.remainingKilogramsText = remainingKilogramsText
         self.discardedKilogramsText = discardedKilogramsText
+        self.recipeHeadCountSnapshot = recipeHeadCountSnapshot
+        self.actualHeadCountSnapshot = actualHeadCountSnapshot
+        self.scaleFactorText = scaleFactorText
+        self.remainingCompositionJSON = remainingCompositionJSON
+        self.excludedSheepIDsJSON = FeedExcludedSheepCodec.encode(excludedSheepIDs)
         self.legacySourceKey = legacySourceKey
         self.revision = 1
     }
 
     var mode: FeedMode { FeedMode(rawValue: modeRawValue) ?? .limited }
+    var excludedSheepIDs: [UUID] { FeedExcludedSheepCodec.decode(excludedSheepIDsJSON) }
 }
 
 @Model
@@ -665,6 +704,7 @@ final class FeedRecordLine {
     var feedRecordID: UUID
     var ingredientID: UUID
     var kilogramsText: String
+    var stockQuantityText: String?
     var ingredientNameSnapshot: String
     var ingredientBatchID: UUID?
     var ingredientBatchNameSnapshot: String?
@@ -681,6 +721,7 @@ final class FeedRecordLine {
         feedRecordID: UUID,
         ingredientID: UUID,
         kilogramsText: String,
+        stockQuantityText: String? = nil,
         ingredientNameSnapshot: String,
         ingredientBatchID: UUID? = nil,
         ingredientBatchNameSnapshot: String? = nil,
@@ -694,6 +735,7 @@ final class FeedRecordLine {
         self.feedRecordID = feedRecordID
         self.ingredientID = ingredientID
         self.kilogramsText = kilogramsText
+        self.stockQuantityText = stockQuantityText
         self.ingredientNameSnapshot = ingredientNameSnapshot
         self.ingredientBatchID = ingredientBatchID
         self.ingredientBatchNameSnapshot = ingredientBatchNameSnapshot
@@ -705,6 +747,134 @@ final class FeedRecordLine {
     }
 
     var kilograms: Decimal { Decimal.stable(kilogramsText) ?? 0 }
+}
+
+@Model
+final class FeedTroughObservationRecord {
+    var id: UUID
+    var farmID: UUID
+    var penID: UUID
+    var relatedFeedRecordID: UUID?
+    var feederName: String
+    var observedAt: Date
+    var actualRemainingKilogramsText: String
+    var discardedKilogramsText: String?
+    var measurementMethodRawValue: String
+    var compositionSnapshotJSON: String?
+    var note: String
+    var recordedAt: Date
+    var revision: Int
+    var deletedAt: Date?
+
+    init(
+        id: UUID = UUID(),
+        farmID: UUID,
+        penID: UUID,
+        relatedFeedRecordID: UUID? = nil,
+        feederName: String,
+        observedAt: Date,
+        actualRemainingKilogramsText: String,
+        discardedKilogramsText: String? = nil,
+        measurementMethod: FeedTroughMeasurementMethod,
+        compositionSnapshotJSON: String? = nil,
+        note: String = ""
+    ) {
+        self.id = id
+        self.farmID = farmID
+        self.penID = penID
+        self.relatedFeedRecordID = relatedFeedRecordID
+        self.feederName = feederName
+        self.observedAt = observedAt
+        self.actualRemainingKilogramsText = actualRemainingKilogramsText
+        self.discardedKilogramsText = discardedKilogramsText
+        self.measurementMethodRawValue = measurementMethod.rawValue
+        self.compositionSnapshotJSON = compositionSnapshotJSON
+        self.note = note
+        self.recordedAt = .now
+        self.revision = 1
+        self.deletedAt = nil
+    }
+
+    var actualRemainingKilograms: Decimal { Decimal.stable(actualRemainingKilogramsText) ?? 0 }
+    var discardedKilograms: Decimal { Decimal.stable(discardedKilogramsText ?? "") ?? 0 }
+    var measurementMethod: FeedTroughMeasurementMethod {
+        FeedTroughMeasurementMethod(rawValue: measurementMethodRawValue) ?? .visualEstimate
+    }
+    var composition: [FeedTroughCompositionComponent] {
+        FeedTroughCompositionCodec.decode(compositionSnapshotJSON)
+    }
+}
+
+@Model
+final class FeedStockTransactionRecord {
+    var id: UUID
+    var farmID: UUID
+    var ingredientBatchID: UUID
+    var kindRawValue: String
+    var quantityText: String
+    var occurredAt: Date
+    var sourceRecordID: UUID?
+    var sourceLineID: UUID?
+    var note: String
+    var createdAt: Date
+    var deletedAt: Date?
+
+    init(id: UUID = UUID(), farmID: UUID, ingredientBatchID: UUID, kind: FeedStockTransactionKind, quantityText: String, occurredAt: Date, sourceRecordID: UUID? = nil, sourceLineID: UUID? = nil, note: String = "") {
+        self.id = id
+        self.farmID = farmID
+        self.ingredientBatchID = ingredientBatchID
+        self.kindRawValue = kind.rawValue
+        self.quantityText = quantityText
+        self.occurredAt = occurredAt
+        self.sourceRecordID = sourceRecordID
+        self.sourceLineID = sourceLineID
+        self.note = note
+        self.createdAt = .now
+        self.deletedAt = nil
+    }
+
+    var kind: FeedStockTransactionKind { FeedStockTransactionKind(rawValue: kindRawValue) ?? .adjustment }
+    var quantity: Decimal { Decimal.stable(quantityText) ?? 0 }
+    var signedQuantity: Decimal {
+        switch kind {
+        case .consumption: -quantity
+        case .openingBalance, .receipt, .adjustment, .reversal: quantity
+        case .conflict: 0
+        }
+    }
+}
+
+@Model
+final class FeedStockCountRecord {
+    var id: UUID
+    var farmID: UUID
+    var ingredientBatchID: UUID
+    var bookBalanceText: String
+    var actualKilogramsText: String?
+    var differenceText: String?
+    var methodRawValue: String
+    var occurredAt: Date
+    var note: String
+    var adjustmentTransactionID: UUID?
+    var createdAt: Date
+    var deletedAt: Date?
+
+    init(id: UUID = UUID(), farmID: UUID, ingredientBatchID: UUID, bookBalanceText: String, actualKilogramsText: String? = nil, differenceText: String? = nil, method: FeedStockCountMethod = .notMeasured, occurredAt: Date, note: String = "", adjustmentTransactionID: UUID? = nil) {
+        self.id = id
+        self.farmID = farmID
+        self.ingredientBatchID = ingredientBatchID
+        self.bookBalanceText = bookBalanceText
+        self.actualKilogramsText = actualKilogramsText
+        self.differenceText = differenceText
+        self.methodRawValue = method.rawValue
+        self.occurredAt = occurredAt
+        self.note = note
+        self.adjustmentTransactionID = adjustmentTransactionID
+        self.createdAt = .now
+        self.deletedAt = nil
+    }
+
+    var method: FeedStockCountMethod { FeedStockCountMethod(rawValue: methodRawValue) ?? .notMeasured }
 }
 
 @Model

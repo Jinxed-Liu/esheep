@@ -45,6 +45,16 @@ struct FarmCommandCloudPayload: Codable, Sendable, Equatable {
         }
     }
 
+    struct FeedRecipeComponent: Codable, Sendable, Equatable {
+        let id: UUID
+        let ingredientID: UUID
+        let ingredientBatchID: UUID?
+        let kilogramsText: String
+        let legacyBatchID: String?
+        let pricePerKilogramText: String?
+        let nutrientSnapshotJSON: String
+    }
+
     struct LambingOffspring: Codable, Sendable, Equatable {
         let id: UUID
         let sheepID: UUID?
@@ -70,6 +80,7 @@ struct FarmCommandCloudPayload: Codable, Sendable, Equatable {
     var integers: [String: Int] = [:]
     var dataValues: [String: Data] = [:]
     var feedLines: [FeedLine] = []
+    var recipeComponents: [FeedRecipeComponent] = []
     var breedingProgramSteps: [BreedingProgramStep] = []
     var lambingOffspring: [LambingOffspring] = []
     var careCommand: CareCommand?
@@ -195,6 +206,109 @@ enum FarmCommandCloudPayloadEncoder {
             payload.dates = ["occurredAt": occurredAt]
             payload.feedLines = resolvedFeedLines ?? lines.map {
                 .init(id: $0.id, ingredientID: $0.ingredientID, kilogramsText: $0.kilogramsText, ingredientBatchID: $0.ingredientBatchID)
+            }
+        case .saveFeedIngredient(let draft):
+            if let id = draft.id { payload.identifiers["ingredientID"] = id }
+            payload.strings = [
+                "name": draft.name,
+                "unit": draft.unit,
+                "category": draft.category,
+                "kind": draft.kind.rawValue,
+                "nutrientSnapshotJSON": draft.nutrientSnapshotJSON,
+                "note": draft.note,
+            ]
+            payload.optionalStrings = [
+                "dryMatterText": draft.dryMatterText,
+                "sourceTemplateID": draft.sourceTemplateID,
+                "sourceTemplateCode": draft.sourceTemplateCode,
+                "mixtureComponentsJSON": draft.mixtureComponentsJSON,
+            ]
+        case .saveFeedBatch(let draft):
+            if let id = draft.id { payload.identifiers["batchID"] = id }
+            payload.identifiers["ingredientID"] = draft.ingredientID
+            payload.strings = [
+                "batchName": draft.batchName,
+                "supplier": draft.supplier,
+                "storageLocation": draft.storageLocation,
+                "pricePerKilogramText": draft.pricePerKilogramText,
+                "packagingKind": draft.packagingKind.rawValue,
+                "stockWeightConfirmed": draft.stockWeightConfirmed ? "1" : "0",
+                "note": draft.note,
+                "isActive": draft.isActive ? "1" : "0",
+            ]
+            payload.optionalStrings = [
+                "purchasedKilogramsText": draft.purchasedKilogramsText,
+                "initialKilogramsText": draft.initialKilogramsText,
+                "remainingKilogramsText": draft.remainingKilogramsText,
+                "packageCountText": draft.packageCountText,
+                "nominalPackageKilogramsText": draft.nominalPackageKilogramsText,
+            ]
+            payload.optionalDates = ["purchaseDate": draft.purchaseDate]
+        case .adjustFeedStock(let batchID, let kind, let quantityText, let occurredAt, let note):
+            payload.identifiers = ["batchID": batchID]
+            payload.strings = ["kind": kind.rawValue, "quantityText": quantityText, "note": note]
+            payload.dates = ["occurredAt": occurredAt]
+        case .countFeedStock(let countID, let batchID, let actualKilogramsText, let method, let occurredAt, let note):
+            payload.identifiers = ["countID": countID, "batchID": batchID]
+            payload.strings = ["method": method.rawValue, "note": note]
+            payload.optionalStrings = ["actualKilogramsText": actualKilogramsText]
+            payload.dates = ["occurredAt": occurredAt]
+        case .saveFeedRecipe(let draft):
+            if let id = draft.id { payload.identifiers["recipeID"] = id }
+            payload.optionalIdentifiers = ["targetPenID": draft.targetPenID]
+            payload.strings = [
+                "name": draft.name,
+                "stage": draft.stage.rawValue,
+                "note": draft.note,
+            ]
+            payload.optionalStrings = ["targetPenName": draft.targetPenName]
+            if let headCount = draft.headCount { payload.integers["headCount"] = headCount }
+            payload.recipeComponents = draft.components.map {
+                .init(id: $0.id, ingredientID: $0.ingredientID, ingredientBatchID: $0.ingredientBatchID, kilogramsText: $0.kilogramsText, legacyBatchID: nil, pricePerKilogramText: $0.pricePerKilogramText, nutrientSnapshotJSON: $0.nutrientSnapshotJSON)
+            }
+        case .recordFeedV2(let draft):
+            payload.identifiers = ["feedID": draft.id, "penID": draft.penID]
+            payload.optionalIdentifiers = ["recipeID": draft.recipeID]
+            payload.strings = [
+                "mode": draft.mode.rawValue,
+                "mealName": draft.mealName,
+                "feederName": draft.feederName,
+                "note": draft.note,
+            ]
+            payload.optionalStrings = [
+                "remainingKilogramsText": draft.remainingKilogramsText,
+                "discardedKilogramsText": draft.discardedKilogramsText,
+                "remainingCompositionJSON": draft.remainingCompositionJSON,
+                "scaleFactorText": draft.scaleFactorText,
+                "excludedSheepIDsJSON": FeedExcludedSheepCodec.encode(draft.excludedSheepIDs),
+            ]
+            payload.dates = ["occurredAt": draft.occurredAt]
+            if let value = draft.recipeHeadCountSnapshot { payload.integers["recipeHeadCountSnapshot"] = value }
+            if let value = draft.actualHeadCountSnapshot { payload.integers["actualHeadCountSnapshot"] = value }
+            payload.feedLines = resolvedFeedLines ?? draft.lines.map {
+                .init(id: $0.id, ingredientID: $0.ingredientID, kilogramsText: $0.kilogramsText, ingredientBatchID: $0.ingredientBatchID)
+            }
+        case .recordFeedTroughObservation(let draft):
+            payload.identifiers = ["observationID": draft.id, "penID": draft.penID]
+            payload.optionalIdentifiers = ["relatedFeedRecordID": draft.relatedFeedRecordID]
+            payload.strings = [
+                "feederName": draft.feederName,
+                "actualRemainingKilogramsText": draft.actualRemainingKilogramsText,
+                "measurementMethod": draft.measurementMethod.rawValue,
+                "note": draft.note,
+            ]
+            payload.optionalStrings = [
+                "discardedKilogramsText": draft.discardedKilogramsText,
+                "compositionSnapshotJSON": draft.compositionSnapshotJSON,
+            ]
+            payload.dates = ["observedAt": draft.observedAt]
+        case .importHistoricalFeed(let draft):
+            payload.identifiers = ["feedID": draft.id, "penID": draft.penID]
+            payload.strings = ["mode": draft.mode.rawValue, "mealName": draft.mealName, "feederName": draft.feederName, "legacySourceKey": draft.legacySourceKey, "note": draft.note]
+            payload.optionalStrings = ["remainingKilogramsText": draft.remainingKilogramsText, "discardedKilogramsText": draft.discardedKilogramsText, "remainingCompositionJSON": draft.remainingCompositionJSON]
+            payload.dates = ["occurredAt": draft.occurredAt]
+            payload.feedLines = draft.lines.map {
+                .init(id: $0.id, ingredientID: $0.ingredientID, kilogramsText: $0.kilogramsText, ingredientNameSnapshot: $0.ingredientNameSnapshot, ingredientBatchNameSnapshot: $0.ingredientBatchNameSnapshot, pricePerKilogramTextSnapshot: $0.pricePerKilogramTextSnapshot, nutrientSnapshotJSON: $0.nutrientSnapshotJSON, unitSnapshot: $0.unitSnapshot, dryMatterTextSnapshot: $0.dryMatterTextSnapshot)
             }
         case .recordHealth(let sheepID, let penID, let kind, let itemName, let occurredAt, let note, let inventoryLotID, let quantityText):
             payload.optionalIdentifiers = ["sheepID": sheepID, "penID": penID, "inventoryLotID": inventoryLotID]

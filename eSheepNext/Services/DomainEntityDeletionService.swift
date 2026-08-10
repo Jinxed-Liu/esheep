@@ -27,13 +27,42 @@ enum DomainEntityDeletionService {
         case .feedRecipe: try context.fetch(FetchDescriptor<FeedRecipeRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .feedRecipeComponent: try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .feed:
-            try context.fetch(FetchDescriptor<FeedRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
+            guard let feed = try context.fetch(FetchDescriptor<FeedRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first else { return }
+            let wasDeleted = feed.deletedAt != nil
+            feed.deletedAt = date
             for line in try context.fetch(FetchDescriptor<FeedRecordLine>(predicate: #Predicate {
                 $0.farmID == farmID && $0.feedRecordID == id
             })) {
                 line.deletedAt = date
             }
+            let transactions = try context.fetch(FetchDescriptor<FeedStockTransactionRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.sourceRecordID == id
+            }))
+            let reversals = transactions.filter { $0.kind == .reversal }
+            if date == nil {
+                for reversal in reversals where reversal.deletedAt == nil { reversal.deletedAt = .now }
+            } else if !wasDeleted {
+                for consumption in transactions where consumption.kind == .consumption && consumption.deletedAt == nil {
+                    let reversed = reversals.contains { $0.id == FeedStockLedger.reversalID(for: consumption.id) && $0.deletedAt == nil }
+                    if !reversed {
+                        FeedStockLedger.insertReversal(for: consumption, at: date ?? .now, context: context)
+                    }
+                }
+            }
         case .feedLine: try context.fetch(FetchDescriptor<FeedRecordLine>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
+        case .feedTroughObservation:
+            try context.fetch(FetchDescriptor<FeedTroughObservationRecord>(predicate: #Predicate {
+                $0.id == id && $0.farmID == farmID
+            })).first?.deletedAt = date
+        case .feedStockTransaction: try context.fetch(FetchDescriptor<FeedStockTransactionRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
+        case .feedStockCount:
+            guard let count = try context.fetch(FetchDescriptor<FeedStockCountRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first else { return }
+            count.deletedAt = date
+            if let adjustmentID = count.adjustmentTransactionID {
+                try context.fetch(FetchDescriptor<FeedStockTransactionRecord>(predicate: #Predicate {
+                    $0.id == adjustmentID && $0.farmID == farmID
+                })).first?.deletedAt = date
+            }
         case .inventoryLot: try context.fetch(FetchDescriptor<InventoryLotRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .inventoryTransaction: try context.fetch(FetchDescriptor<InventoryTransactionRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .health:
@@ -54,7 +83,10 @@ enum DomainEntityDeletionService {
             }
         case .breedingProgramStep: try context.fetch(FetchDescriptor<BreedingProgramStepRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .feedIngredientBatch:
-            if date != nil, let value = try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
+            if let value = try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) {
+                value.deletedAt = date
+                value.updatedAt = .now
+            }
         case .healthCatalogItem:
             if date != nil, let value = try context.fetch(FetchDescriptor<HealthCatalogItemRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
         case .healthSubjectLink:
@@ -66,6 +98,8 @@ enum DomainEntityDeletionService {
         case .careRule:
             if date != nil, let value = try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
         case .careReminder: try context.fetch(FetchDescriptor<CareReminderRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
+        case .alertDeferral:
+            if date != nil, let value = try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
         }
     }
 

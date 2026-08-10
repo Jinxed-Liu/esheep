@@ -198,6 +198,271 @@ final class CloudBaselineV2Tests: XCTestCase {
         )
     }
 
+    func testVersion2FeedBaselineRoundTripRestoresBatchLedgerCountRecipeFeedAndTroughWithoutDoubleConsumption() throws {
+        let sourceContainer = try AppSchema.makeContainer(
+            name: "baseline-v2-feed-source-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let source = ModelContext(sourceContainer)
+        let ownerID = UUID()
+        let farm = FarmRecord(ownerAccountID: ownerID, name: "投喂重建牧场")
+        farm.isLocalOnlyMigration = true
+        let pen = PenRecord(farmID: farm.id, name: "育肥一舍")
+        let sheep = SheepRecord(
+            farmID: farm.id,
+            earTag: "FEED-001",
+            breed: "杜泊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: Date(timeIntervalSince1970: 1_730_000_000)
+        )
+        let currentNutrients = FeedNutritionCodec.encode(FeedNutrients(
+            dryMatter: 90,
+            crudeProtein: 10,
+            me: 2.9
+        ))
+        let deliveredNutrients = FeedNutritionCodec.encode(FeedNutrients(
+            dryMatter: 86,
+            crudeProtein: 9,
+            me: 2.8
+        ))
+        let ingredient = FeedIngredientRecord(
+            farmID: farm.id,
+            name: "散装玉米",
+            unit: "千克",
+            dryMatterText: "90",
+            category: "能量饲料",
+            nutrientSnapshotJSON: currentNutrients,
+            kind: .custom,
+            note: "当前营养已修正"
+        )
+        let batch = FeedIngredientBatchRecord(
+            farmID: farm.id,
+            ingredientID: ingredient.id,
+            batchName: "一号散料仓",
+            purchaseDate: Date(timeIntervalSince1970: 1_740_000_000),
+            supplier: "本地粮商",
+            storageLocation: "东仓",
+            pricePerKilogramText: "2.5",
+            purchasedKilogramsText: "120",
+            packagingKind: .bulk,
+            stockWeightConfirmed: true,
+            initialKilogramsText: "100",
+            remainingKilogramsText: "100",
+            note: "散货入库"
+        )
+        let recipe = FeedRecipeRecord(
+            farmID: farm.id,
+            name: "育肥日粮",
+            note: "全舍总量",
+            targetPenName: pen.name,
+            targetPenID: pen.id,
+            stageRawValue: FeedRecipeStage.fattening.rawValue,
+            headCount: 1
+        )
+        let component = FeedRecipeComponentRecord(
+            farmID: farm.id,
+            recipeID: recipe.id,
+            ingredientID: ingredient.id,
+            kilogramsText: "12",
+            ingredientBatchID: batch.id,
+            pricePerKilogramText: "2.3",
+            nutrientSnapshotJSON: deliveredNutrients
+        )
+        let feedAt = Date(timeIntervalSince1970: 1_750_000_000)
+        let feed = FeedRecord(
+            farmID: farm.id,
+            penID: pen.id,
+            recipeID: recipe.id,
+            mode: .limited,
+            occurredAt: feedAt,
+            note: "基线投喂",
+            mealName: "早料",
+            feederName: "一号槽",
+            recipeHeadCountSnapshot: 1,
+            actualHeadCountSnapshot: 0,
+            scaleFactorText: "1",
+            excludedSheepIDs: [sheep.id]
+        )
+        let feedLine = FeedRecordLine(
+            farmID: farm.id,
+            feedRecordID: feed.id,
+            ingredientID: ingredient.id,
+            kilogramsText: "12",
+            stockQuantityText: "12",
+            ingredientNameSnapshot: ingredient.name,
+            ingredientBatchID: batch.id,
+            ingredientBatchNameSnapshot: batch.batchName,
+            pricePerKilogramTextSnapshot: "2.3",
+            nutrientSnapshotJSON: deliveredNutrients,
+            unitSnapshot: "千克",
+            dryMatterTextSnapshot: "86"
+        )
+        let receipt = FeedStockTransactionRecord(
+            farmID: farm.id,
+            ingredientBatchID: batch.id,
+            kind: .receipt,
+            quantityText: "20",
+            occurredAt: feedAt.addingTimeInterval(-7_200),
+            note: "追加购入"
+        )
+        let countID = UUID()
+        let adjustmentID = StableCloudUUID.derived(namespace: countID, name: "feed-stock-count-adjustment")
+        let count = FeedStockCountRecord(
+            id: countID,
+            farmID: farm.id,
+            ingredientBatchID: batch.id,
+            bookBalanceText: "120",
+            actualKilogramsText: "112",
+            differenceText: "-8",
+            method: .weighed,
+            occurredAt: feedAt.addingTimeInterval(-3_600),
+            note: "地磅盘库",
+            adjustmentTransactionID: adjustmentID
+        )
+        let countAdjustment = FeedStockTransactionRecord(
+            id: adjustmentID,
+            farmID: farm.id,
+            ingredientBatchID: batch.id,
+            kind: .adjustment,
+            quantityText: "-8",
+            occurredAt: count.occurredAt,
+            sourceRecordID: count.id,
+            note: "盘库校正（实称）"
+        )
+        let consumption = FeedStockTransactionRecord(
+            id: FeedStockLedger.consumptionID(for: feedLine.id),
+            farmID: farm.id,
+            ingredientBatchID: batch.id,
+            kind: .consumption,
+            quantityText: "12",
+            occurredAt: feedAt,
+            sourceRecordID: feed.id,
+            sourceLineID: feedLine.id,
+            note: "投喂扣减"
+        )
+        let troughComposition = FeedTroughCompositionCodec.encode([
+            FeedTroughCompositionComponent(
+                ingredientID: ingredient.id,
+                ingredientBatchID: batch.id,
+                ingredientNameSnapshot: ingredient.name,
+                kilogramsText: "2",
+                nutrientSnapshotJSON: deliveredNutrients,
+                dryMatterTextSnapshot: "86"
+            )
+        ])
+        let trough = FeedTroughObservationRecord(
+            farmID: farm.id,
+            penID: pen.id,
+            relatedFeedRecordID: feed.id,
+            feederName: "一号槽",
+            observedAt: feedAt.addingTimeInterval(3_600),
+            actualRemainingKilogramsText: "2",
+            discardedKilogramsText: "0.5",
+            measurementMethod: .weighed,
+            compositionSnapshotJSON: troughComposition,
+            note: "独立盘槽"
+        )
+        let commit = MigrationCommitRecord(
+            sessionID: UUID(),
+            sourceChecksum: "verified-feed-source",
+            farmID: farm.id,
+            ownerAccountID: ownerID,
+            recordCountsJSON: "{}",
+            assetsRelativeDirectory: ""
+        )
+        source.insert(farm)
+        source.insert(pen)
+        source.insert(sheep)
+        source.insert(ingredient)
+        source.insert(batch)
+        source.insert(recipe)
+        source.insert(component)
+        source.insert(feed)
+        source.insert(feedLine)
+        source.insert(receipt)
+        source.insert(count)
+        source.insert(countAdjustment)
+        source.insert(consumption)
+        source.insert(trough)
+        source.insert(commit)
+        try source.save()
+        XCTAssertEqual(try XCTUnwrap(try FeedStockLedger.balance(for: batch, context: source)), 100)
+
+        _ = try MigrationCloudBootstrapService().prepare(
+            commit: commit,
+            farm: farm,
+            accountID: ownerID,
+            context: source
+        )
+        try source.save()
+        let operations = CloudRebuildActor.sortedOperations(
+            try source.fetch(FetchDescriptor<DomainOperation>())
+                .filter { $0.farmID == farm.id }
+                .map(makeEnvelope(from:))
+        )
+        try CloudRebuildBundleValidator.validateReferences(operations: operations, assets: [])
+
+        let recoveryContainer = try AppSchema.makeContainer(
+            name: "baseline-v2-feed-recovery-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let recovery = ModelContext(recoveryContainer)
+        let replay = RemoteDomainApplyService(replayAssumesEmptyBusinessStore: true)
+        for (index, operation) in operations.enumerated() {
+            do {
+                _ = try replay.apply(operation, context: recovery)
+            } catch {
+                let diagnosticDecoder = JSONDecoder()
+                diagnosticDecoder.dateDecodingStrategy = .iso8601
+                let wrapper = try diagnosticDecoder.decode(FarmCommandCloudPayload.self, from: operation.payload)
+                let sourceKind: DomainOperationKind
+                if wrapper.kind == .bootstrapEntity,
+                   let snapshotData = wrapper.dataValues["snapshot"],
+                   let snapshot = try? diagnosticDecoder.decode(BootstrapEntityEnvelopeV1.self, from: snapshotData),
+                   let source = try? diagnosticDecoder.decode(FarmCommandCloudPayload.self, from: snapshot.sourcePayload) {
+                    sourceKind = source.kind
+                } else {
+                    sourceKind = wrapper.kind
+                }
+                let visibleBatchIDs = try recovery.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).map(\.id)
+                XCTFail("重建第 \(index) 项 \(sourceKind.rawValue)/\(operation.entityType)/\(operation.entityID) 失败：\(error)；当前批次 \(visibleBatchIDs)")
+                return
+            }
+        }
+        try recovery.save()
+
+        let recoveredBatch = try XCTUnwrap(try recovery.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first { $0.id == batch.id })
+        XCTAssertEqual(recoveredBatch.packagingKind, .bulk)
+        XCTAssertEqual(recoveredBatch.purchasedKilogramsText, "120")
+        XCTAssertEqual(recoveredBatch.storageLocation, "东仓")
+        let recoveredCount = try XCTUnwrap(try recovery.fetch(FetchDescriptor<FeedStockCountRecord>()).first { $0.id == count.id })
+        XCTAssertEqual(recoveredCount.bookBalanceText, "120")
+        XCTAssertEqual(recoveredCount.actualKilogramsText, "112")
+        XCTAssertEqual(recoveredCount.differenceText, "-8")
+        XCTAssertEqual(recoveredCount.adjustmentTransactionID, adjustmentID)
+        let recoveredTransactions = try recovery.fetch(FetchDescriptor<FeedStockTransactionRecord>())
+        XCTAssertEqual(recoveredTransactions.count, 3)
+        XCTAssertEqual(recoveredTransactions.filter { $0.kind == .consumption }.count, 1)
+        XCTAssertEqual(try XCTUnwrap(try FeedStockLedger.balance(for: recoveredBatch, context: recovery)), 100)
+
+        let recoveredRecipe = try XCTUnwrap(try recovery.fetch(FetchDescriptor<FeedRecipeRecord>()).first { $0.id == recipe.id })
+        XCTAssertEqual(recoveredRecipe.targetPenID, pen.id)
+        XCTAssertEqual(recoveredRecipe.stage, .fattening)
+        XCTAssertEqual(recoveredRecipe.headCount, 1)
+        let recoveredComponent = try XCTUnwrap(try recovery.fetch(FetchDescriptor<FeedRecipeComponentRecord>()).first { $0.id == component.id })
+        XCTAssertEqual(recoveredComponent.ingredientBatchID, batch.id)
+        XCTAssertEqual(recoveredComponent.nutrientSnapshotJSON, deliveredNutrients)
+        let recoveredFeed = try XCTUnwrap(try recovery.fetch(FetchDescriptor<FeedRecord>()).first { $0.id == feed.id })
+        XCTAssertEqual(recoveredFeed.excludedSheepIDs, [sheep.id])
+        let recoveredLine = try XCTUnwrap(try recovery.fetch(FetchDescriptor<FeedRecordLine>()).first { $0.id == feedLine.id })
+        XCTAssertEqual(recoveredLine.nutrientSnapshotJSON, deliveredNutrients)
+        XCTAssertNotEqual(recoveredLine.nutrientSnapshotJSON, currentNutrients)
+        let recoveredTrough = try XCTUnwrap(try recovery.fetch(FetchDescriptor<FeedTroughObservationRecord>()).first { $0.id == trough.id })
+        XCTAssertEqual(recoveredTrough.relatedFeedRecordID, feed.id)
+        XCTAssertEqual(recoveredTrough.composition.first?.kilogramsText, "2")
+    }
+
     func testBaselineCanonicalizationReusesUnchangedV1ReplacesChangedSlotWithV2AndHonorsCutoffTombstone() throws {
         let farmID = UUID()
         let cutoff = Date(timeIntervalSince1970: 1_735_689_600)

@@ -108,6 +108,7 @@ enum RemoteDomainAuditProjection {
     static func insertSupersededCorrectionTombstoneIfNeeded(
         envelope: CloudOperationEnvelope,
         payload: FarmCommandCloudPayload,
+        knownAuthoritativeDeletionIDs: Set<UUID> = [],
         context: ModelContext
     ) throws -> Bool {
         guard [.correctWeight, .correctTransfer, .correctRemoval]
@@ -122,12 +123,18 @@ enum RemoteDomainAuditProjection {
             }
         )
         operationDescriptor.fetchLimit = 1
-        guard try context.fetch(operationDescriptor).first == nil else {
+        let pendingTombstones = context.insertedModelsArray.compactMap {
+            $0 as? TombstoneRecord
+        }
+        guard try context.fetch(operationDescriptor).first == nil,
+              !pendingTombstones.contains(where: {
+                  $0.operationID == operationID
+              }) else {
             return false
         }
         let farmID = envelope.farmID
         let resultID = envelope.entityID
-        let tombstones = try context.fetch(
+        let persistedTombstones = try context.fetch(
             FetchDescriptor<TombstoneRecord>(
                 predicate: #Predicate<TombstoneRecord> {
                     $0.farmID == farmID &&
@@ -135,8 +142,18 @@ enum RemoteDomainAuditProjection {
                 }
             )
         )
-        guard tombstones.contains(where: { $0.entityID == originalID }),
-              tombstones.contains(where: { $0.entityID == resultID }) else {
+        // During a clean replay the source/result deletion facts can still be
+        // pending inserts. SwiftData fetches do not expose those consistently,
+        // so audit projection must inspect the current transaction as well.
+        let tombstones = persistedTombstones + pendingTombstones.filter {
+            $0.farmID == farmID &&
+                ($0.entityID == originalID || $0.entityID == resultID)
+        }
+        let originalIsDeleted = knownAuthoritativeDeletionIDs.contains(originalID) ||
+            tombstones.contains(where: { $0.entityID == originalID })
+        let resultIsDeleted = knownAuthoritativeDeletionIDs.contains(resultID) ||
+            tombstones.contains(where: { $0.entityID == resultID })
+        guard originalIsDeleted, resultIsDeleted else {
             return false
         }
         let tombstone = TombstoneRecord(
@@ -279,10 +296,17 @@ enum RemoteDomainReplayExecutor {
                     context: context
                 )
                 if let payload {
+                    let authoritativeDeletionIDs = Set(facts.tombstones.lazy
+                        .filter {
+                            $0.farmID == envelope.farmID &&
+                                $0.entityType == envelope.entityType
+                        }
+                        .map(\.entityID))
                     _ = try RemoteDomainAuditProjection
                         .insertSupersededCorrectionTombstoneIfNeeded(
                             envelope: envelope,
                             payload: payload,
+                            knownAuthoritativeDeletionIDs: authoritativeDeletionIDs,
                             context: context
                         )
                 }
@@ -513,6 +537,18 @@ private final class RemoteDomainReplayIndex {
             where value.farmID == farmID {
             register(value)
         }
+        for value in try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<FeedStockTransactionRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<FeedStockCountRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
         for value in try context.fetch(FetchDescriptor<FeedRecipeRecord>())
             where value.farmID == farmID {
             register(value)
@@ -523,6 +559,14 @@ private final class RemoteDomainReplayIndex {
             register(value)
         }
         for value in try context.fetch(FetchDescriptor<FeedRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<FeedRecordLine>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<FeedTroughObservationRecord>())
             where value.farmID == farmID {
             register(value)
         }
@@ -566,6 +610,10 @@ private final class RemoteDomainReplayIndex {
         entities[ObjectIdentifier(type)]?[id] as? T
     }
 
+    func values<T: PersistentModel>(_ type: T.Type) -> [T] where T: AnyObject {
+        entities[ObjectIdentifier(type)]?.values.compactMap { $0 as? T } ?? []
+    }
+
     func transfers(farmID: UUID, sheepID: UUID) -> [TransferRecord] {
         transfersBySheep[FarmSheepKey(farmID: farmID, sheepID: sheepID)] ?? []
     }
@@ -607,9 +655,14 @@ private final class RemoteDomainReplayIndex {
         case let value as ProductionBatchRecord: register(value, id: value.id)
         case let value as BatchMembershipRecord: register(value, id: value.id)
         case let value as FeedIngredientRecord: register(value, id: value.id)
+        case let value as FeedIngredientBatchRecord: register(value, id: value.id)
+        case let value as FeedStockTransactionRecord: register(value, id: value.id)
+        case let value as FeedStockCountRecord: register(value, id: value.id)
         case let value as FeedRecipeRecord: register(value, id: value.id)
         case let value as FeedRecipeComponentRecord: register(value, id: value.id)
         case let value as FeedRecord: register(value, id: value.id)
+        case let value as FeedRecordLine: register(value, id: value.id)
+        case let value as FeedTroughObservationRecord: register(value, id: value.id)
         case let value as InventoryLotRecord: register(value, id: value.id)
         case let value as HealthRecord: register(value, id: value.id)
         case let value as ReproductionRecord: register(value, id: value.id)
@@ -655,7 +708,8 @@ struct RemoteDomainApplyService {
         try applyDecoded(
             envelope,
             context: context,
-            preservesLegacySnapshotAuthority: false
+            preservesLegacySnapshotAuthority: false,
+            allowsBaselineProjection: false
         )
     }
 
@@ -667,7 +721,8 @@ struct RemoteDomainApplyService {
         try applyDecoded(
             envelope,
             context: context,
-            preservesLegacySnapshotAuthority: preservesLegacySnapshotAuthority
+            preservesLegacySnapshotAuthority: preservesLegacySnapshotAuthority,
+            allowsBaselineProjection: false
         )
     }
 
@@ -678,14 +733,16 @@ struct RemoteDomainApplyService {
         try applyDecoded(
             envelope,
             context: context,
-            preservesLegacySnapshotAuthority: true
+            preservesLegacySnapshotAuthority: true,
+            allowsBaselineProjection: true
         )
     }
 
     private func applyDecoded(
         _ envelope: CloudOperationEnvelope,
         context: ModelContext,
-        preservesLegacySnapshotAuthority: Bool
+        preservesLegacySnapshotAuthority: Bool,
+        allowsBaselineProjection: Bool
     ) throws -> RemoteApplyOutcome {
         let payload = try decoder.decode(FarmCommandCloudPayload.self, from: envelope.payload)
         if let expected = expectedEntityType(for: payload.kind), expected.rawValue != envelope.entityType {
@@ -706,7 +763,12 @@ struct RemoteDomainApplyService {
                 ) {
                 return .applied(rebuildHistoryFrom: command.rebuildHistoryFrom)
             }
-            if try FarmCareCommandHandler.isApplied(command, farmID: envelope.farmID, context: context) { return .duplicate }
+            if try FarmCareCommandHandler.isApplied(command, farmID: envelope.farmID, context: context) {
+                if try alignCareProjectionRevision(for: envelope, context: context) {
+                    return .applied(rebuildHistoryFrom: command.rebuildHistoryFrom)
+                }
+                return .duplicate
+            }
             let result = try FarmCareCommandHandler.validateAndApply(
                 command,
                 farmID: envelope.farmID,
@@ -716,6 +778,7 @@ struct RemoteDomainApplyService {
             )
             replayIndex?.rebuildFromPendingInserts(in: context)
             guard result.entityType.rawValue == envelope.entityType, result.entityID == envelope.entityID else { throw RemoteDomainApplyError.invalidPayload("careCommand.target") }
+            _ = try alignCareProjectionRevision(for: envelope, context: context)
             return .applied(rebuildHistoryFrom: command.rebuildHistoryFrom)
         case .createFarm:
             return .duplicate
@@ -1152,6 +1215,336 @@ struct RemoteDomainApplyService {
                 ))
             }
             return .applied(rebuildHistoryFrom: nil)
+        case .saveFeedIngredient:
+            let record: FeedIngredientRecord
+            if let existing = try fetch(FeedIngredientRecord.self, id: envelope.entityID, context: context) {
+                record = existing
+            } else {
+                record = FeedIngredientRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), unit: payload.strings["unit"] ?? "千克", category: payload.strings["category"] ?? "", nutrientSnapshotJSON: payload.strings["nutrientSnapshotJSON"] ?? "{}", kind: FeedIngredientKind(rawValue: payload.strings["kind"] ?? "legacy") ?? .legacy, sourceTemplateID: payload.optionalStrings["sourceTemplateID"] ?? nil, sourceTemplateCode: payload.optionalStrings["sourceTemplateCode"] ?? nil, mixtureComponentsJSON: payload.optionalStrings["mixtureComponentsJSON"] ?? nil, note: payload.strings["note"] ?? "")
+                insertIndexed(record, context: context)
+            }
+            record.name = try string("name", payload)
+            record.unit = payload.strings["unit"] ?? "千克"
+            record.category = payload.strings["category"] ?? ""
+            record.kindRawValue = payload.strings["kind"] ?? FeedIngredientKind.legacy.rawValue
+            record.sourceTemplateID = payload.optionalStrings["sourceTemplateID"] ?? nil
+            record.sourceTemplateCode = payload.optionalStrings["sourceTemplateCode"] ?? nil
+            record.mixtureComponentsJSON = payload.optionalStrings["mixtureComponentsJSON"] ?? nil
+            record.nutrientSnapshotJSON = payload.strings["nutrientSnapshotJSON"] ?? "{}"
+            record.dryMatterText = payload.optionalStrings["dryMatterText"] ?? nil
+            record.note = payload.strings["note"] ?? ""
+            if let isActive = payload.strings["isActive"] {
+                record.isActive = isActive != "0"
+            }
+            record.updatedAt = envelope.modifiedAt
+            return .applied(rebuildHistoryFrom: nil)
+        case .saveFeedBatch:
+            guard let ingredient = try fetch(FeedIngredientRecord.self, id: try identifier("ingredientID", payload), context: context), ingredient.farmID == envelope.farmID else {
+                throw RemoteDomainApplyError.missingReference("ingredientID")
+            }
+            let record: FeedIngredientBatchRecord
+            if let existing = try fetch(FeedIngredientBatchRecord.self, id: envelope.entityID, context: context) {
+                record = existing
+            } else {
+                record = FeedIngredientBatchRecord(id: envelope.entityID, farmID: envelope.farmID, ingredientID: ingredient.id, batchName: payload.strings["batchName"] ?? "", purchaseDate: optionalDate("purchaseDate", payload), supplier: payload.strings["supplier"] ?? "", storageLocation: payload.strings["storageLocation"] ?? "", pricePerKilogramText: payload.strings["pricePerKilogramText"] ?? "0", purchasedKilogramsText: payload.optionalStrings["purchasedKilogramsText"] ?? nil, packagingKind: FeedPackagingKind(rawValue: payload.strings["packagingKind"] ?? FeedPackagingKind.bulk.rawValue) ?? .bulk, packageCountText: payload.optionalStrings["packageCountText"] ?? nil, nominalPackageKilogramsText: payload.optionalStrings["nominalPackageKilogramsText"] ?? nil, stockWeightConfirmed: (payload.strings["stockWeightConfirmed"] ?? "0") == "1", initialKilogramsText: payload.optionalStrings["initialKilogramsText"] ?? nil, remainingKilogramsText: payload.optionalStrings["remainingKilogramsText"] ?? nil, note: payload.strings["note"] ?? "", isActive: (payload.strings["isActive"] ?? "1") != "0")
+                insertIndexed(record, context: context)
+            }
+            record.ingredientID = ingredient.id
+            record.batchName = payload.strings["batchName"] ?? ""
+            record.purchaseDate = optionalDate("purchaseDate", payload)
+            record.supplier = payload.strings["supplier"] ?? ""
+            record.storageLocation = payload.strings["storageLocation"] ?? ""
+            record.pricePerKilogramText = payload.strings["pricePerKilogramText"] ?? "0"
+            record.purchasedKilogramsText = payload.optionalStrings["purchasedKilogramsText"] ?? nil
+            record.packagingKindRawValue = payload.strings["packagingKind"] ?? FeedPackagingKind.bulk.rawValue
+            record.packageCountText = payload.optionalStrings["packageCountText"] ?? nil
+            record.nominalPackageKilogramsText = payload.optionalStrings["nominalPackageKilogramsText"] ?? nil
+            record.stockWeightConfirmed = (payload.strings["stockWeightConfirmed"] ?? "0") == "1"
+            record.initialKilogramsText = payload.optionalStrings["initialKilogramsText"] ?? nil
+            record.remainingKilogramsText = payload.optionalStrings["remainingKilogramsText"] ?? nil
+            record.note = payload.strings["note"] ?? ""
+            record.isActive = (payload.strings["isActive"] ?? "1") != "0"
+            record.updatedAt = envelope.modifiedAt
+            record.revision = envelope.revision
+            return .applied(rebuildHistoryFrom: nil)
+        case .adjustFeedStock:
+            guard let batch = try fetch(FeedIngredientBatchRecord.self, id: try identifier("batchID", payload), context: context), batch.farmID == envelope.farmID else {
+                throw RemoteDomainApplyError.missingReference("batchID")
+            }
+            if try exists(FeedStockTransactionRecord.self, id: envelope.entityID, context: context) { return .duplicate }
+            guard let kind = FeedStockTransactionKind(rawValue: try string("kind", payload)),
+                  let quantity = Decimal.stable(try string("quantityText", payload)) else {
+                throw RemoteDomainApplyError.invalidPayload("stockTransaction")
+            }
+            let quantityText = try string("quantityText", payload)
+            let isBaselineProjection = payload.strings["baselineProjection"] == "1"
+            if isBaselineProjection {
+                guard allowsBaselineProjection else {
+                    throw RemoteDomainApplyError.invalidPayload("baselineProjection")
+                }
+                switch kind {
+                case .openingBalance, .receipt, .consumption, .reversal, .conflict:
+                    guard quantity >= 0 else { throw RemoteDomainApplyError.invalidPayload("quantityText") }
+                case .adjustment:
+                    break
+                }
+            } else {
+                switch kind {
+                case .receipt:
+                    guard quantity > 0 else { throw RemoteDomainApplyError.invalidPayload("quantityText") }
+                case .adjustment:
+                    guard quantity != 0 else { throw RemoteDomainApplyError.invalidPayload("quantityText") }
+                    if let balance = try FeedStockLedger.balance(for: batch, context: context), balance + quantity < 0 {
+                        return .conflict(localRevision: envelope.baseRevision)
+                    }
+                case .openingBalance, .consumption, .reversal, .conflict:
+                    throw RemoteDomainApplyError.invalidPayload("kind")
+                }
+            }
+            insertIndexed(FeedStockTransactionRecord(
+                id: envelope.entityID,
+                farmID: envelope.farmID,
+                ingredientBatchID: batch.id,
+                kind: kind,
+                quantityText: quantityText,
+                occurredAt: try date("occurredAt", payload),
+                sourceRecordID: isBaselineProjection ? optionalID("sourceRecordID", payload) : nil,
+                sourceLineID: isBaselineProjection ? optionalID("sourceLineID", payload) : nil,
+                note: payload.strings["note"] ?? ""
+            ), context: context)
+            return .applied(rebuildHistoryFrom: nil)
+        case .countFeedStock:
+            let countID = envelope.entityID
+            guard payload.identifiers["countID"] == countID else { throw RemoteDomainApplyError.invalidPayload("countID") }
+            if try exists(FeedStockCountRecord.self, id: countID, context: context) { return .duplicate }
+            let isBaselineProjection = payload.strings["baselineProjection"] == "1"
+            guard !isBaselineProjection || allowsBaselineProjection else {
+                throw RemoteDomainApplyError.invalidPayload("baselineProjection")
+            }
+            guard let batch = try fetch(FeedIngredientBatchRecord.self, id: try identifier("batchID", payload), context: context),
+                  batch.farmID == envelope.farmID,
+                  batch.deletedAt == nil,
+                  isBaselineProjection || batch.isActive else {
+                throw RemoteDomainApplyError.missingReference("batchID")
+            }
+            let method = FeedStockCountMethod(rawValue: payload.strings["method"] ?? FeedStockCountMethod.notMeasured.rawValue) ?? .notMeasured
+            let actualText = optionalString("actualKilogramsText", payload)
+            if method == .notMeasured, actualText != nil {
+                throw RemoteDomainApplyError.invalidPayload("actualKilogramsText")
+            }
+            if actualText == nil, method != .notMeasured {
+                throw RemoteDomainApplyError.invalidPayload("actualKilogramsText")
+            }
+            if let actualText, let actual = Decimal.stable(actualText), actual < 0 {
+                throw RemoteDomainApplyError.invalidPayload("actualKilogramsText")
+            } else if actualText != nil, Decimal.stable(actualText!) == nil {
+                throw RemoteDomainApplyError.invalidPayload("actualKilogramsText")
+            }
+            if isBaselineProjection {
+                guard let bookBalanceText = payload.strings["bookBalanceText"],
+                      let bookBalance = Decimal.stable(bookBalanceText),
+                      bookBalance >= 0 else {
+                    throw RemoteDomainApplyError.invalidPayload("bookBalanceText")
+                }
+                let actual = actualText.flatMap(Decimal.stable)
+                let differenceText = optionalString("differenceText", payload)
+                let difference = differenceText.flatMap(Decimal.stable)
+                let adjustmentID = optionalID("adjustmentTransactionID", payload)
+                if let actual {
+                    guard let difference,
+                          difference == actual - bookBalance,
+                          adjustmentID != nil else {
+                        throw RemoteDomainApplyError.invalidPayload("differenceText")
+                    }
+                } else if differenceText != nil || adjustmentID != nil {
+                    throw RemoteDomainApplyError.invalidPayload("differenceText")
+                }
+                insertIndexed(FeedStockCountRecord(
+                    id: countID,
+                    farmID: envelope.farmID,
+                    ingredientBatchID: batch.id,
+                    bookBalanceText: bookBalanceText,
+                    actualKilogramsText: actualText,
+                    differenceText: differenceText,
+                    method: method,
+                    occurredAt: try date("occurredAt", payload),
+                    note: payload.strings["note"] ?? "",
+                    adjustmentTransactionID: adjustmentID
+                ), context: context)
+                return .applied(rebuildHistoryFrom: nil)
+            }
+            guard let bookBalance = try FeedStockLedger.balance(for: batch, context: context) else {
+                throw RemoteDomainApplyError.missingReference("stockBaseline")
+            }
+            let actual = actualText.flatMap(Decimal.stable)
+            let difference = actual.map { $0 - bookBalance }
+            let adjustmentID = difference.map { _ in StableCloudUUID.derived(namespace: countID, name: "feed-stock-count-adjustment") }
+            insertIndexed(FeedStockCountRecord(id: countID, farmID: envelope.farmID, ingredientBatchID: batch.id, bookBalanceText: bookBalance.stableText, actualKilogramsText: actual?.stableText, differenceText: difference?.stableText, method: method, occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? "", adjustmentTransactionID: adjustmentID), context: context)
+            if let difference, let adjustmentID {
+                insertIndexed(FeedStockTransactionRecord(id: adjustmentID, farmID: envelope.farmID, ingredientBatchID: batch.id, kind: .adjustment, quantityText: difference.stableText, occurredAt: try date("occurredAt", payload), sourceRecordID: countID, note: "盘库校正（\(method.displayName)）"), context: context)
+            }
+            return .applied(rebuildHistoryFrom: nil)
+        case .saveFeedRecipe:
+            let recipe: FeedRecipeRecord
+            if let existing = try fetch(FeedRecipeRecord.self, id: envelope.entityID, context: context) {
+                recipe = existing
+            } else {
+                recipe = FeedRecipeRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), note: payload.strings["note"] ?? "", targetPenName: payload.optionalStrings["targetPenName"] ?? nil, targetPenID: optionalID("targetPenID", payload), stageRawValue: payload.strings["stage"] ?? FeedRecipeStage.custom.rawValue, headCount: payload.integers["headCount"])
+                insertIndexed(recipe, context: context)
+            }
+            recipe.name = try string("name", payload)
+            recipe.targetPenID = optionalID("targetPenID", payload)
+            recipe.targetPenName = payload.optionalStrings["targetPenName"] ?? nil
+            recipe.stageRawValue = payload.strings["stage"] ?? FeedRecipeStage.custom.rawValue
+            recipe.headCount = payload.integers["headCount"]
+            recipe.note = payload.strings["note"] ?? ""
+            if let isActive = payload.strings["isActive"] {
+                recipe.isActive = isActive != "0"
+            }
+            recipe.updatedAt = envelope.modifiedAt
+            recipe.deletedAt = nil
+            let existingComponents = try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()).filter { $0.farmID == envelope.farmID && $0.recipeID == recipe.id && $0.deletedAt == nil }
+            let incomingIDs = Set(payload.recipeComponents.map(\.id))
+            for component in existingComponents where !incomingIDs.contains(component.id) { component.deletedAt = envelope.modifiedAt }
+            for item in payload.recipeComponents {
+                guard let ingredient = try fetch(FeedIngredientRecord.self, id: item.ingredientID, context: context) else { throw RemoteDomainApplyError.missingReference("ingredientID") }
+                if let batchID = item.ingredientBatchID {
+                    guard let batch = try fetch(FeedIngredientBatchRecord.self, id: batchID, context: context), batch.ingredientID == ingredient.id else { throw RemoteDomainApplyError.missingReference("ingredientBatchID") }
+                }
+                let component = existingComponents.first(where: { $0.id == item.id }) ?? FeedRecipeComponentRecord(id: item.id, farmID: envelope.farmID, recipeID: recipe.id, ingredientID: ingredient.id, kilogramsText: item.kilogramsText, ingredientBatchID: item.ingredientBatchID, pricePerKilogramText: item.pricePerKilogramText, nutrientSnapshotJSON: item.nutrientSnapshotJSON)
+                if existingComponents.first(where: { $0.id == item.id }) == nil { context.insert(component) }
+                component.ingredientID = ingredient.id
+                component.ingredientBatchID = item.ingredientBatchID
+                component.kilogramsText = item.kilogramsText
+                component.pricePerKilogramText = item.pricePerKilogramText
+                component.nutrientSnapshotJSON = item.nutrientSnapshotJSON
+                component.updatedAt = envelope.modifiedAt
+                component.deletedAt = nil
+            }
+            return .applied(rebuildHistoryFrom: nil)
+        case .recordFeedV2:
+            if try exists(FeedRecord.self, id: envelope.entityID, context: context) { return .duplicate }
+            let lines = payload.feedLines.map { FeedLineDraft(id: $0.id, ingredientID: $0.ingredientID, ingredientBatchID: $0.ingredientBatchID, kilogramsText: $0.kilogramsText) }
+            do {
+                if let replayIndex {
+                    try FeedStockLedger.validateConsumption(
+                        lines: lines,
+                        farmID: envelope.farmID,
+                        batches: replayIndex.values(FeedIngredientBatchRecord.self),
+                        transactions: replayIndex.values(FeedStockTransactionRecord.self)
+                    )
+                } else {
+                    try FeedStockLedger.validateConsumption(lines: lines, farmID: envelope.farmID, context: context)
+                }
+            } catch FeedStockLedgerError.insufficient {
+                // Two offline devices may both have seen the same balance. Do
+                // not clamp or overwrite the ledger; surface the feed command
+                // as a deterministic sync conflict for user reconciliation.
+                return .conflict(localRevision: envelope.baseRevision)
+            }
+            let feed = FeedRecord(id: envelope.entityID, farmID: envelope.farmID, penID: try identifier("penID", payload), recipeID: optionalID("recipeID", payload), mode: FeedMode(rawValue: try string("mode", payload)) ?? .limited, occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? "", mealName: payload.strings["mealName"] ?? "", feederName: payload.strings["feederName"] ?? "", remainingKilogramsText: payload.optionalStrings["remainingKilogramsText"] ?? nil, discardedKilogramsText: payload.optionalStrings["discardedKilogramsText"] ?? nil, recipeHeadCountSnapshot: payload.integers["recipeHeadCountSnapshot"], actualHeadCountSnapshot: payload.integers["actualHeadCountSnapshot"], scaleFactorText: payload.optionalStrings["scaleFactorText"] ?? nil, remainingCompositionJSON: payload.optionalStrings["remainingCompositionJSON"] ?? nil, excludedSheepIDs: FeedExcludedSheepCodec.decode(optionalString("excludedSheepIDsJSON", payload)))
+            feed.recordedAt = envelope.modifiedAt
+            feed.revision = envelope.revision
+            insertIndexed(feed, context: context)
+            for line in payload.feedLines {
+                guard let ingredient = try fetch(FeedIngredientRecord.self, id: line.ingredientID, context: context) else { throw RemoteDomainApplyError.missingReference("ingredientID") }
+                guard let batchID = line.ingredientBatchID,
+                      let batch = try fetch(FeedIngredientBatchRecord.self, id: batchID, context: context), batch.ingredientID == ingredient.id else { throw RemoteDomainApplyError.missingReference("ingredientBatchID") }
+                let lineRecord = FeedRecordLine(id: line.id, farmID: envelope.farmID, feedRecordID: feed.id, ingredientID: ingredient.id, kilogramsText: line.kilogramsText, stockQuantityText: line.kilogramsText, ingredientNameSnapshot: line.ingredientNameSnapshot ?? ingredient.name, ingredientBatchID: batch.id, ingredientBatchNameSnapshot: line.ingredientBatchNameSnapshot ?? batch.batchName, pricePerKilogramTextSnapshot: line.pricePerKilogramTextSnapshot ?? batch.pricePerKilogramText, nutrientSnapshotJSON: line.nutrientSnapshotJSON ?? ingredient.nutrientSnapshotJSON, unitSnapshot: line.unitSnapshot ?? ingredient.unit, dryMatterTextSnapshot: line.dryMatterTextSnapshot ?? ingredient.dryMatterText)
+                insertIndexed(lineRecord, context: context)
+                insertIndexed(FeedStockTransactionRecord(id: FeedStockLedger.consumptionID(for: line.id), farmID: envelope.farmID, ingredientBatchID: batch.id, kind: .consumption, quantityText: line.kilogramsText, occurredAt: feed.occurredAt, sourceRecordID: feed.id, sourceLineID: line.id, note: "投喂扣减"), context: context)
+            }
+            return .applied(rebuildHistoryFrom: nil)
+        case .recordFeedTroughObservation:
+            let observationID = envelope.entityID
+            guard payload.identifiers["observationID"] == observationID else {
+                throw RemoteDomainApplyError.invalidPayload("observationID")
+            }
+            if try exists(FeedTroughObservationRecord.self, id: observationID, context: context) {
+                return .duplicate
+            }
+            let penID = try identifier("penID", payload)
+            guard let pen = try fetch(PenRecord.self, id: penID, context: context),
+                  pen.farmID == envelope.farmID else {
+                throw RemoteDomainApplyError.missingReference("penID")
+            }
+            let feederName = try string("feederName", payload).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !feederName.isEmpty,
+                  let actual = Decimal.stable(try string("actualRemainingKilogramsText", payload)),
+                  actual >= 0 else {
+                throw RemoteDomainApplyError.invalidPayload("actualRemainingKilogramsText")
+            }
+            let discardedText = optionalString("discardedKilogramsText", payload)
+            if let discardedText {
+                guard let discarded = Decimal.stable(discardedText), discarded >= 0, discarded <= actual else {
+                    throw RemoteDomainApplyError.invalidPayload("discardedKilogramsText")
+                }
+            }
+            let relatedFeedRecordID = optionalID("relatedFeedRecordID", payload)
+            if let relatedFeedRecordID {
+                guard let feed = try fetch(FeedRecord.self, id: relatedFeedRecordID, context: context),
+                      feed.farmID == envelope.farmID,
+                      feed.penID == penID else {
+                    throw RemoteDomainApplyError.missingReference("relatedFeedRecordID")
+                }
+            }
+            let methodText = try string("measurementMethod", payload)
+            guard let method = FeedTroughMeasurementMethod(rawValue: methodText) else {
+                throw RemoteDomainApplyError.invalidPayload("measurementMethod")
+            }
+            let compositionJSON = optionalString("compositionSnapshotJSON", payload)
+            if let compositionJSON {
+                guard let data = compositionJSON.data(using: .utf8),
+                      let components = try? JSONDecoder().decode([FeedTroughCompositionComponent].self, from: data),
+                      !components.isEmpty,
+                      components.allSatisfy({ (Decimal.stable($0.kilogramsText) ?? -1) >= 0 }),
+                      abs(NSDecimalNumber(decimal: components.reduce(Decimal.zero) { $0 + ($1.kilograms) } - actual).doubleValue) <= 0.001 else {
+                    throw RemoteDomainApplyError.invalidPayload("compositionSnapshotJSON")
+                }
+            }
+            let observation = FeedTroughObservationRecord(
+                id: observationID,
+                farmID: envelope.farmID,
+                penID: penID,
+                relatedFeedRecordID: relatedFeedRecordID,
+                feederName: feederName,
+                observedAt: try date("observedAt", payload),
+                actualRemainingKilogramsText: actual.stableText,
+                discardedKilogramsText: discardedText.flatMap(Decimal.stable)?.stableText,
+                measurementMethod: method,
+                compositionSnapshotJSON: compositionJSON,
+                note: payload.strings["note"] ?? ""
+            )
+            observation.recordedAt = envelope.modifiedAt
+            observation.revision = envelope.revision
+            insertIndexed(observation, context: context)
+            return .applied(rebuildHistoryFrom: nil)
+        case .importHistoricalFeed:
+            if try exists(FeedRecord.self, id: envelope.entityID, context: context) { return .duplicate }
+            let feed = FeedRecord(
+                id: envelope.entityID,
+                farmID: envelope.farmID,
+                penID: try identifier("penID", payload),
+                mode: FeedMode(rawValue: try string("mode", payload)) ?? .limited,
+                occurredAt: try date("occurredAt", payload),
+                note: payload.strings["note"] ?? "",
+                mealName: payload.strings["mealName"] ?? "",
+                feederName: payload.strings["feederName"] ?? "",
+                remainingKilogramsText: optionalString("remainingKilogramsText", payload),
+                discardedKilogramsText: optionalString("discardedKilogramsText", payload),
+                remainingCompositionJSON: optionalString("remainingCompositionJSON", payload),
+                legacySourceKey: payload.strings["legacySourceKey"]
+            )
+            feed.recordedAt = envelope.modifiedAt
+            feed.revision = envelope.revision
+            insertIndexed(feed, context: context)
+            for line in payload.feedLines {
+                guard let ingredient = try fetch(FeedIngredientRecord.self, id: line.ingredientID, context: context), ingredient.farmID == envelope.farmID else {
+                    throw RemoteDomainApplyError.missingReference("ingredientID")
+                }
+                context.insert(FeedRecordLine(id: line.id, farmID: envelope.farmID, feedRecordID: feed.id, ingredientID: ingredient.id, kilogramsText: line.kilogramsText, ingredientNameSnapshot: line.ingredientNameSnapshot ?? ingredient.name, ingredientBatchNameSnapshot: line.ingredientBatchNameSnapshot, pricePerKilogramTextSnapshot: line.pricePerKilogramTextSnapshot, nutrientSnapshotJSON: line.nutrientSnapshotJSON ?? ingredient.nutrientSnapshotJSON, unitSnapshot: line.unitSnapshot ?? ingredient.unit, dryMatterTextSnapshot: line.dryMatterTextSnapshot ?? ingredient.dryMatterText))
+            }
+            return .applied(rebuildHistoryFrom: nil)
         case .recordHealth:
             if try exists(HealthRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let record = HealthRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: optionalID("sheepID", payload), penID: optionalID("penID", payload), kind: HealthRecordKind(rawValue: try string("kind", payload)) ?? .treatment, itemNameSnapshot: try string("itemName", payload), occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? "", inventoryLotID: optionalID("inventoryLotID", payload), quantityText: optionalString("quantityText", payload))
@@ -1364,7 +1757,8 @@ struct RemoteDomainApplyService {
             return try applyDecoded(
                 sourceEnvelope,
                 context: context,
-                preservesLegacySnapshotAuthority: preservesLegacySnapshotAuthority
+                preservesLegacySnapshotAuthority: preservesLegacySnapshotAuthority,
+                allowsBaselineProjection: allowsBaselineProjection
             )
         case .bootstrapEntity:
             guard let snapshotData = payload.dataValues["snapshot"] else {
@@ -1392,7 +1786,8 @@ struct RemoteDomainApplyService {
             return try applyDecoded(
                 sourceEnvelope,
                 context: context,
-                preservesLegacySnapshotAuthority: true
+                preservesLegacySnapshotAuthority: true,
+                allowsBaselineProjection: true
             )
         }
     }
@@ -1414,6 +1809,13 @@ struct RemoteDomainApplyService {
         case .createRecipe: .feedRecipe
         case .addRecipeComponent: .feedRecipeComponent
         case .recordFeed: .feed
+        case .saveFeedIngredient: .feedIngredient
+        case .saveFeedBatch: .feedIngredientBatch
+        case .adjustFeedStock: .feedStockTransaction
+        case .countFeedStock: .feedStockCount
+        case .saveFeedRecipe: .feedRecipe
+        case .recordFeedV2, .importHistoricalFeed: .feed
+        case .recordFeedTroughObservation: .feedTroughObservation
         case .recordHealth: .health
         case .receiveInventory: .inventoryLot
         case .addSemen: .semen
@@ -1427,6 +1829,32 @@ struct RemoteDomainApplyService {
     private func releaseLegacyHistoryProjectionAuthority(for sheep: SheepRecord) {
         sheep.legacyStatusSnapshotIsAuthoritative = false
         sheep.legacyPenSnapshotIsAuthoritative = false
+    }
+
+    /// Care commands predate baseline snapshots and normally advance their
+    /// projection by one local revision. A compact/migration baseline can
+    /// represent a later authoritative revision in a single command, so keep
+    /// the two revisioned alert entities aligned with the envelope.
+    private func alignCareProjectionRevision(
+        for envelope: CloudOperationEnvelope,
+        context: ModelContext
+    ) throws -> Bool {
+        switch CloudEntityType(rawValue: envelope.entityType) {
+        case .careRule:
+            guard let record = try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first(where: {
+                $0.id == envelope.entityID && $0.farmID == envelope.farmID
+            }), record.revision < envelope.revision else { return false }
+            record.revision = envelope.revision
+            return true
+        case .alertDeferral:
+            guard let record = try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).first(where: {
+                $0.id == envelope.entityID && $0.farmID == envelope.farmID
+            }), record.revision < envelope.revision else { return false }
+            record.revision = envelope.revision
+            return true
+        default:
+            return false
+        }
     }
 
     private func releaseLegacyHistoryProjectionAuthority(
@@ -1518,12 +1946,22 @@ struct RemoteDomainApplyService {
             try fetchFirst(FetchDescriptor<BatchMembershipRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
         case is FeedIngredientRecord.Type:
             try fetchFirst(FetchDescriptor<FeedIngredientRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is FeedIngredientBatchRecord.Type:
+            try fetchFirst(FetchDescriptor<FeedIngredientBatchRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is FeedStockTransactionRecord.Type:
+            try fetchFirst(FetchDescriptor<FeedStockTransactionRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is FeedStockCountRecord.Type:
+            try fetchFirst(FetchDescriptor<FeedStockCountRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
         case is FeedRecipeRecord.Type:
             try fetchFirst(FetchDescriptor<FeedRecipeRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
         case is FeedRecipeComponentRecord.Type:
             try fetchFirst(FetchDescriptor<FeedRecipeComponentRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
         case is FeedRecord.Type:
             try fetchFirst(FetchDescriptor<FeedRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is FeedRecordLine.Type:
+            try fetchFirst(FetchDescriptor<FeedRecordLine>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is FeedTroughObservationRecord.Type:
+            try fetchFirst(FetchDescriptor<FeedTroughObservationRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
         case is InventoryLotRecord.Type:
             try fetchFirst(FetchDescriptor<InventoryLotRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
         case is HealthRecord.Type:

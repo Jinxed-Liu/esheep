@@ -187,6 +187,24 @@ enum FarmCareCommandHandler {
             return try context.fetch(FetchDescriptor<ReproductionRecord>()).contains { $0.id == recordID && $0.farmID == farmID && $0.deletedAt == nil && $0.revision > 1 }
         case .updateRules(let id, let checkDays, let gestationDays):
             return try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).contains { $0.id == id && $0.farmID == farmID && $0.pregnancyCheckDays == checkDays && $0.gestationDays == gestationDays }
+        case .updateOperationalAlertRules(let draft):
+            return try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).contains {
+                $0.id == draft.id && $0.farmID == farmID &&
+                $0.pregnancyCheckDays == draft.pregnancyCheckDays &&
+                $0.gestationDays == draft.gestationDays &&
+                $0.weaningAgeDays == draft.weaningAgeDays &&
+                $0.warningLeadDays == draft.effectiveWarningLeadDays &&
+                $0.alertDigestEnabled == draft.digestEnabled &&
+                $0.alertDigestMinuteOfDay == draft.digestMinuteOfDay &&
+                $0.operationalAlertsConfiguredAt != nil
+            }
+        case .deferOperationalAlert(let draft):
+            return try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).contains {
+                $0.id == draft.id && $0.farmID == farmID &&
+                $0.alertID == draft.alertID &&
+                $0.conditionFingerprint == draft.conditionFingerprint &&
+                $0.deferredUntil == draft.deferredUntil
+            }
         case .setReminderStatus(let reminderID, let status):
             return try context.fetch(FetchDescriptor<CareReminderRecord>()).contains { $0.id == reminderID && $0.farmID == farmID && $0.statusRawValue == status.rawValue }
         }
@@ -295,6 +313,21 @@ enum FarmCareCommandHandler {
 
         case .updateRules(_, let checkDays, let gestationDays):
             guard (1...365).contains(checkDays), (100...220).contains(gestationDays) else { throw FarmCommandError.invalidNumber("提醒间隔") }
+
+        case .updateOperationalAlertRules(let draft):
+            guard (1...365).contains(draft.pregnancyCheckDays),
+                  (100...220).contains(draft.gestationDays),
+                  (1...365).contains(draft.weaningAgeDays),
+                  (0...30).contains(draft.effectiveWarningLeadDays),
+                  (0...1_439).contains(draft.digestMinuteOfDay) else {
+                throw FarmCommandError.invalidNumber("待办与异常规则")
+            }
+
+        case .deferOperationalAlert(let draft):
+            guard FarmOperationalAlertKind(rawValue: draft.alertKindRawValue) != nil,
+                  !draft.conditionFingerprint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw FarmCommandError.missingRequiredValue("异常提醒")
+            }
 
         case .setReminderStatus(let reminderID, _):
             guard try context.fetch(FetchDescriptor<CareReminderRecord>()).contains(where: { $0.id == reminderID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sourceRecordNotFound }
@@ -590,6 +623,64 @@ enum FarmCareCommandHandler {
             context.insert(FarmCareRuleRecord(id: id, farmID: farmID, pregnancyCheckDays: pregnancyCheckDays, gestationDays: gestationDays))
             return .init(entityType: .careRule, entityID: id, baseRevision: 0, resultingRevision: 1)
 
+        case .updateOperationalAlertRules(let draft):
+            let rules = try context.fetch(FetchDescriptor<FarmCareRuleRecord>())
+            if let record = rules.first(where: { $0.farmID == farmID }) {
+                let base = record.revision
+                record.pregnancyCheckDays = draft.pregnancyCheckDays
+                record.gestationDays = draft.gestationDays
+                record.weaningAgeDays = draft.weaningAgeDays
+                record.warningLeadDays = draft.effectiveWarningLeadDays
+                record.operationalAlertsConfiguredAt = record.operationalAlertsConfiguredAt ?? modifiedAt
+                record.alertDigestEnabled = draft.digestEnabled
+                record.alertDigestMinuteOfDay = draft.digestMinuteOfDay
+                record.updatedAt = modifiedAt
+                record.revision += 1
+                return .init(entityType: .careRule, entityID: record.id, baseRevision: base, resultingRevision: record.revision)
+            }
+            context.insert(FarmCareRuleRecord(
+                id: draft.id,
+                farmID: farmID,
+                pregnancyCheckDays: draft.pregnancyCheckDays,
+                gestationDays: draft.gestationDays,
+                weaningAgeDays: draft.weaningAgeDays,
+                warningLeadDays: draft.effectiveWarningLeadDays,
+                operationalAlertsConfiguredAt: modifiedAt,
+                alertDigestEnabled: draft.digestEnabled,
+                alertDigestMinuteOfDay: draft.digestMinuteOfDay
+            ))
+            return .init(entityType: .careRule, entityID: draft.id, baseRevision: 0, resultingRevision: 1)
+
+        case .deferOperationalAlert(let draft):
+            if let record = try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).first(where: {
+                $0.id == draft.id && $0.farmID == farmID
+            }) {
+                let base = record.revision
+                record.alertID = draft.alertID
+                record.alertKindRawValue = draft.alertKindRawValue
+                record.subjectID = draft.subjectID
+                record.sourceEntityID = draft.sourceEntityID
+                record.conditionFingerprint = draft.conditionFingerprint
+                record.deferredUntil = draft.deferredUntil
+                record.deferredByAccountID = accountID
+                record.updatedAt = modifiedAt
+                record.revision += 1
+                return .init(entityType: .alertDeferral, entityID: record.id, baseRevision: base, resultingRevision: record.revision)
+            }
+            context.insert(FarmAlertDeferralRecord(
+                id: draft.id,
+                farmID: farmID,
+                alertID: draft.alertID,
+                alertKindRawValue: draft.alertKindRawValue,
+                subjectID: draft.subjectID,
+                sourceEntityID: draft.sourceEntityID,
+                conditionFingerprint: draft.conditionFingerprint,
+                deferredUntil: draft.deferredUntil,
+                deferredByAccountID: accountID,
+                createdAt: modifiedAt
+            ))
+            return .init(entityType: .alertDeferral, entityID: draft.id, baseRevision: 0, resultingRevision: 1)
+
         case .setReminderStatus(let reminderID, let status):
             guard let reminder = try context.fetch(FetchDescriptor<CareReminderRecord>()).first(where: { $0.id == reminderID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sourceRecordNotFound }
             let base = reminder.revision
@@ -771,17 +862,19 @@ enum FarmCareCommandHandler {
         let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
         }))
-        let transfersBySheepID = Dictionary(grouping: transfers, by: \.sheepID)
+        let removals = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let selectedIDs = FarmPenOccupancyIndex.make(
+            farmID: farmID,
+            sheep: sheep,
+            transfers: transfers,
+            removals: removals
+        ).sheepIDs(in: penID, at: draft.occurredAt)
         let selected = sheep.filter { record in
-            record.enteredAt <= draft.occurredAt &&
-                (record.removedAt == nil || record.removedAt! > draft.occurredAt) &&
-                FarmHistoryTimeline.pen(
-                    for: record,
-                    at: draft.occurredAt,
-                    transfers: transfersBySheepID[record.id] ?? []
-                ) == penID
+            selectedIDs.contains(record.id)
         }
-        guard !selected.isEmpty else { throw FarmCommandError.missingRequiredValue("圈舍历史羊只") }
+        guard !selected.isEmpty else { throw FarmCommandError.penHasNoSheepAtTime }
         return selected.sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }
     }
 

@@ -196,7 +196,10 @@ final class AppBootstrapController {
         modelContainer = prepared.container
         self.collaboration = collaboration
         failure = nil
-        FarmBackgroundRefresh.register(collaboration: collaboration)
+        FarmBackgroundRefresh.register(
+            collaboration: collaboration,
+            modelContainer: prepared.container
+        )
     }
 }
 

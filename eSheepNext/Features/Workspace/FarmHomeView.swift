@@ -6,11 +6,11 @@ struct FarmHomeView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
     @Environment(CloudCollaborationStore.self) private var collaboration
+    @Environment(FarmNotificationService.self) private var notifications
     @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
     @Query(sort: \FeedRecord.occurredAt, order: .reverse) private var feedRecords: [FeedRecord]
     @Query(sort: \HealthRecord.occurredAt, order: .reverse) private var healthRecords: [HealthRecord]
-    @Query(sort: \CareReminderRecord.dueAt) private var careReminders: [CareReminderRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -20,6 +20,9 @@ struct FarmHomeView: View {
     @State private var pendingOutboxCount = 0
     @State private var selectedMetric: HomeMetricDestination?
     @State private var isEventExportPresented = false
+    @State private var operationalAlertState: FarmOperationalAlertLoadState = .loading
+    @State private var operationalAlertRefreshRevision = 0
+    @State private var isOperationalAlertCenterPresented = false
     @Namespace private var metricTransition
 
     init(
@@ -59,15 +62,15 @@ struct FarmHomeView: View {
             sort: \.occurredAt,
             order: .reverse
         )
-        _careReminders = Query(
-            filter: #Predicate<CareReminderRecord> { $0.farmID == farmID },
-            sort: \.dueAt
-        )
     }
 
     private var farmSheep: [SheepRecord] { sheep.filter(\.isCurrentlyPresent) }
     private var farmPens: [PenRecord] { CurrentFarmOccupancy.occupiedPens(farmID: farm.id, sheep: sheep, pens: pens) }
     private var canExport: Bool { CapabilitySet(role: farm.role).allows(.exportFarm) }
+    private var canManageAlertRules: Bool { CapabilitySet(role: farm.role).allows(.manageCatalogs) }
+    private var operationalAlertTaskID: String {
+        "\(farm.id.uuidString.lowercased()):\(operationalAlertRefreshRevision)"
+    }
     private var todayFeedCount: Int {
         let start = Calendar.current.startOfDay(for: .now)
         return feedRecords.count { $0.occurredAt >= start }
@@ -77,8 +80,8 @@ struct FarmHomeView: View {
             VStack(alignment: .leading, spacing: 18) {
                 hero
                 metrics
+                operationalAlertCard
                 shortcuts
-                careReminderStatus
                 productionStatus
             }
             .padding(.horizontal, 16)
@@ -94,6 +97,10 @@ struct FarmHomeView: View {
                     in: metricTransition,
                     spec: metricTransitionSpec
                 )
+                .toolbarVisibility(.hidden, for: .tabBar)
+        }
+        .navigationDestination(isPresented: $isOperationalAlertCenterPresented) {
+            FarmOperationalAlertCenterView(account: account, farm: farm)
                 .toolbarVisibility(.hidden, for: .tabBar)
         }
         .onChange(of: selectedMetric) { _, destination in
@@ -116,6 +123,22 @@ struct FarmHomeView: View {
                 $0.farmID == farmID && ($0.statusRawValue == pending || $0.statusRawValue == retryable)
             })
             pendingOutboxCount = (try? modelContext.fetchCount(descriptor)) ?? 0
+        }
+        .task(id: operationalAlertTaskID) {
+            await loadOperationalAlerts()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: FarmOperationalAlertRuntimeNotification.refreshRequested)) { notification in
+            guard FarmOperationalAlertRuntimeNotification.farmID(from: notification) == farm.id else { return }
+            operationalAlertRefreshRevision &+= 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: CloudRuntimeNotification.syncWake)) { notification in
+            guard CloudRuntimeNotification.farmID(from: notification) == farm.id else { return }
+            operationalAlertRefreshRevision &+= 1
+        }
+        .onChange(of: session.pendingOperationalAlertsRequestID, initial: true) { _, requestID in
+            guard requestID != nil else { return }
+            session.pendingOperationalAlertsRequestID = nil
+            isOperationalAlertCenterPresented = true
         }
     }
 
@@ -203,6 +226,15 @@ struct FarmHomeView: View {
         }
     }
 
+    private var operationalAlertCard: some View {
+        FarmOperationalAlertHomeCard(
+            state: operationalAlertState,
+            canManageRules: canManageAlertRules,
+            onOpen: { isOperationalAlertCenterPresented = true },
+            onRetry: { operationalAlertRefreshRevision &+= 1 }
+        )
+    }
+
     private var productionStatus: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("生产状态").font(.headline)
@@ -219,18 +251,23 @@ struct FarmHomeView: View {
         }
     }
 
-    private var careReminderStatus: some View {
-        let start = Calendar.current.startOfDay(for: .now)
-        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: start) ?? .distantFuture
-        let end = Calendar.current.date(byAdding: .day, value: 8, to: start) ?? .distantFuture
-        let pending = careReminders.filter { $0.deletedAt == nil && $0.status == .pending && $0.dueAt < end }
-        let overdue = pending.count { $0.dueAt < start }
-        let today = pending.count { $0.dueAt >= start && $0.dueAt < tomorrow }
-        return VStack(alignment: .leading, spacing: 10) {
-            Text("关键提醒").font(.headline)
-            NavigationLink { CareReminderCenterView(account: account, farm: farm, focusedReminderID: nil) } label: {
-                StatusRow(title: "今日、逾期与未来七日", detail: "逾期 \(overdue) · 今日 \(today) · 七日内 \(pending.count)", symbol: overdue > 0 ? "bell.badge.fill" : "bell")
-            }
+    @MainActor
+    private func loadOperationalAlerts() async {
+        if case .loaded = operationalAlertState {
+            // Keep the last valid snapshot visible while a refresh is running.
+        } else {
+            operationalAlertState = .loading
+        }
+        do {
+            let actor = FarmOperationalAlertSnapshotActor(container: modelContext.container)
+            let snapshot = try await actor.load(farmID: farm.id)
+            try Task.checkCancellation()
+            operationalAlertState = .loaded(snapshot)
+            await notifications.rescheduleOperationalAlertDigest(snapshot)
+        } catch is CancellationError {
+            return
+        } catch {
+            operationalAlertState = .failed(error.localizedDescription)
         }
     }
 }
@@ -362,7 +399,7 @@ private struct HomeShortcut: View {
     }
 }
 
-private struct StatusRow: View {
+struct StatusRow: View {
     let title: String
     let detail: String
     let symbol: String

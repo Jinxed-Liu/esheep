@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftData
 
 struct FarmAnalyticsSnapshot: Sendable {
     struct Sheep: Sendable, Hashable {
@@ -109,6 +110,163 @@ struct FarmAnalyticsSnapshot: Sendable {
                 return Feed(penID: feed.penID, ingredientName: line.ingredientNameSnapshot, kilograms: NSDecimalNumber(decimal: line.kilograms).doubleValue, mode: feed.mode, occurredAt: feed.occurredAt)
             }
         )
+    }
+}
+
+struct FarmAnalyticsBatchSnapshot: Identifiable, Sendable, Hashable {
+    let id: UUID
+    let name: String
+}
+
+struct FarmDeepAnalyticsPayload: Sendable {
+    let snapshot: FarmAnalyticsSnapshot
+    let batches: [FarmAnalyticsBatchSnapshot]
+    let eligibleWeightPenIDs: Set<UUID>
+    let weightCutoff: Date
+    let activeSheepCount: Int
+    let activePenCount: Int
+    let currentMonthFeedCount: Int
+    let latestActivityDate: Date?
+}
+
+/// Reads every table used by the deep-analysis cards on a private actor and
+/// returns one immutable value snapshot. SwiftUI never observes or scans the
+/// large SwiftData collections while a navigation transition is being built.
+actor FarmDeepAnalyticsSnapshotActor {
+    private let container: ModelContainer
+
+    init(container: ModelContainer) {
+        self.container = container
+    }
+
+    func load(farmID: UUID, now: Date = .now) throws -> FarmDeepAnalyticsPayload {
+        try Task.checkCancellation()
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        try Task.checkCancellation()
+        let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let weights = try context.fetch(FetchDescriptor<WeightRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let weanings = try context.fetch(FetchDescriptor<WeaningRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        try Task.checkCancellation()
+        let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let offspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        let removals = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        try Task.checkCancellation()
+        let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let memberships = try context.fetch(FetchDescriptor<BatchMembershipRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let feeds = try context.fetch(FetchDescriptor<FeedRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        try Task.checkCancellation()
+        let feedLines = try context.fetch(FetchDescriptor<FeedRecordLine>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let batchRecords = try context.fetch(FetchDescriptor<ProductionBatchRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        try Task.checkCancellation()
+
+        let snapshot = FarmAnalyticsSnapshot.make(
+            farmID: farmID,
+            sheep: sheep,
+            pens: pens,
+            weights: weights,
+            weanings: weanings,
+            reproduction: reproduction,
+            offspring: offspring,
+            removals: removals,
+            transfers: transfers,
+            memberships: memberships,
+            feeds: feeds,
+            feedLines: feedLines
+        )
+        let weightCutoff = weights.map(\.occurredAt).max() ?? now
+        let occupancy = FarmPenOccupancyIndex.make(
+            farmID: farmID,
+            sheep: sheep,
+            transfers: transfers,
+            removals: removals
+        )
+        let eligibleWeightPenIDs = occupancy.occupiedPenIDs(at: weightCutoff)
+        let activeSheep = sheep.filter(\.isCurrentlyPresent)
+        let activePenIDs = Set(activeSheep.compactMap(\.currentPenID))
+        let currentMonth = Calendar.current.dateInterval(of: .month, for: now)
+        let latestActivityDate = [
+            weights.map(\.occurredAt).max(),
+            reproduction.map(\.occurredAt).max(),
+            feeds.map(\.occurredAt).max(),
+        ].compactMap { $0 }.max()
+        let batches = batchRecords
+            .filter { $0.sourceRawValue == ProductionBatchSource.manual.rawValue }
+            .map { FarmAnalyticsBatchSnapshot(id: $0.id, name: $0.name) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+
+        try Task.checkCancellation()
+        return FarmDeepAnalyticsPayload(
+            snapshot: snapshot,
+            batches: batches,
+            eligibleWeightPenIDs: eligibleWeightPenIDs,
+            weightCutoff: weightCutoff,
+            activeSheepCount: activeSheep.count,
+            activePenCount: pens.count { activePenIDs.contains($0.id) },
+            currentMonthFeedCount: feeds.count { currentMonth?.contains($0.occurredAt) == true },
+            latestActivityDate: latestActivityDate
+        )
+    }
+}
+
+@MainActor
+@Observable
+final class FarmDeepAnalyticsStore {
+    private(set) var payload: FarmDeepAnalyticsPayload?
+    private(set) var isLoading = false
+    private(set) var errorMessage: String?
+    private(set) var revision = UUID()
+
+    private var loadedFarmID: UUID?
+    private var loadRevision = UUID()
+
+    func load(container: ModelContainer, farmID: UUID, force: Bool = false) async {
+        if !force, loadedFarmID == farmID, payload != nil { return }
+        let requestRevision = UUID()
+        loadRevision = requestRevision
+        isLoading = true
+        errorMessage = nil
+        do {
+            let loaded = try await FarmDeepAnalyticsSnapshotActor(container: container).load(farmID: farmID)
+            try Task.checkCancellation()
+            guard loadRevision == requestRevision else { return }
+            payload = loaded
+            loadedFarmID = farmID
+            revision = UUID()
+            isLoading = false
+        } catch is CancellationError {
+            return
+        } catch {
+            guard loadRevision == requestRevision else { return }
+            errorMessage = error.localizedDescription
+            isLoading = false
+        }
     }
 }
 

@@ -73,8 +73,65 @@ enum CloudRebuildBundleValidator {
             case .care:
                 guard let command = payload.careCommand else { throw RemoteDomainApplyError.invalidPayload("careCommand") }
                 try validateCare(command, entitiesByType: entitiesByType)
-            case .createFarm, .updateFarmLocation, .createPen, .addIngredient, .createRecipe, .receiveInventory, .createBatch:
+            case .createFarm, .updateFarmLocation, .createPen, .addIngredient, .createRecipe, .receiveInventory, .createBatch, .saveFeedIngredient:
                 break
+            case .saveFeedBatch:
+                try require(identifier("ingredientID", payload), in: entitiesByType[.feedIngredient], field: "batch.ingredientID")
+            case .adjustFeedStock:
+                try require(identifier("batchID", payload), in: entitiesByType[.feedIngredientBatch], field: "stock.batchID")
+                guard let kind = FeedStockTransactionKind(rawValue: payload.strings["kind"] ?? ""),
+                      let quantityText = payload.strings["quantityText"],
+                      let quantity = Decimal.stable(quantityText) else {
+                    throw RemoteDomainApplyError.invalidPayload("stock.transaction")
+                }
+                if payload.strings["baselineProjection"] == "1" {
+                    switch kind {
+                    case .openingBalance, .receipt, .consumption, .reversal, .conflict:
+                        guard quantity >= 0 else { throw RemoteDomainApplyError.invalidPayload("stock.quantityText") }
+                    case .adjustment:
+                        break
+                    }
+                } else {
+                    switch kind {
+                    case .receipt:
+                        guard quantity > 0 else { throw RemoteDomainApplyError.invalidPayload("stock.quantityText") }
+                    case .adjustment:
+                        guard quantity != 0 else { throw RemoteDomainApplyError.invalidPayload("stock.quantityText") }
+                    case .openingBalance, .consumption, .reversal, .conflict:
+                        throw RemoteDomainApplyError.invalidPayload("stock.kind")
+                    }
+                }
+            case .countFeedStock:
+                try require(identifier("batchID", payload), in: entitiesByType[.feedIngredientBatch], field: "stockCount.batchID")
+                guard let method = FeedStockCountMethod(rawValue: payload.strings["method"] ?? FeedStockCountMethod.notMeasured.rawValue) else { throw RemoteDomainApplyError.invalidPayload("stockCount.method") }
+                let actual = payload.optionalStrings["actualKilogramsText"] ?? nil
+                if method == .notMeasured, actual != nil { throw RemoteDomainApplyError.invalidPayload("stockCount.actualKilogramsText") }
+                if method != .notMeasured, actual == nil { throw RemoteDomainApplyError.invalidPayload("stockCount.actualKilogramsText") }
+                if let actual, Decimal.stable(actual).map({ $0 >= 0 }) != true { throw RemoteDomainApplyError.invalidPayload("stockCount.actualKilogramsText") }
+                if payload.strings["baselineProjection"] == "1" {
+                    guard let bookText = payload.strings["bookBalanceText"],
+                          let book = Decimal.stable(bookText), book >= 0 else {
+                        throw RemoteDomainApplyError.invalidPayload("stockCount.bookBalanceText")
+                    }
+                    let differenceText = payload.optionalStrings["differenceText"] ?? nil
+                    let adjustmentID = optionalID("adjustmentTransactionID", payload)
+                    if let actual, let actualValue = Decimal.stable(actual) {
+                        guard let differenceText,
+                              let difference = Decimal.stable(differenceText),
+                              difference == actualValue - book,
+                              adjustmentID != nil else {
+                            throw RemoteDomainApplyError.invalidPayload("stockCount.differenceText")
+                        }
+                    } else if differenceText != nil || adjustmentID != nil {
+                        throw RemoteDomainApplyError.invalidPayload("stockCount.differenceText")
+                    }
+                }
+            case .saveFeedRecipe:
+                if let targetPenID = optionalID("targetPenID", payload) { try require(targetPenID, in: entitiesByType[.pen], field: "recipe.targetPenID") }
+                for component in payload.recipeComponents {
+                    try require(component.ingredientID, in: entitiesByType[.feedIngredient], field: "recipe.ingredientID")
+                    if let batchID = component.ingredientBatchID { try require(batchID, in: entitiesByType[.feedIngredientBatch], field: "recipe.ingredientBatchID") }
+                }
             case .updatePen, .setPenActive:
                 try require(identifier("penID", payload), in: entitiesByType[.pen], field: "pen.penID")
             case .createBreedingProgram:
@@ -140,6 +197,46 @@ enum CloudRebuildBundleValidator {
                 try require(identifier("penID", payload), in: entitiesByType[.pen], field: "feed.penID")
                 if let recipeID = optionalID("recipeID", payload) { try require(recipeID, in: entitiesByType[.feedRecipe], field: "feed.recipeID") }
                 for line in payload.feedLines { try require(line.ingredientID, in: entitiesByType[.feedIngredient], field: "feed.ingredientID") }
+            case .recordFeedV2, .importHistoricalFeed:
+                try require(identifier("penID", payload), in: entitiesByType[.pen], field: "feed.penID")
+                if let recipeID = optionalID("recipeID", payload) { try require(recipeID, in: entitiesByType[.feedRecipe], field: "feed.recipeID") }
+                for line in payload.feedLines {
+                    try require(line.ingredientID, in: entitiesByType[.feedIngredient], field: "feed.ingredientID")
+                    if let batchID = line.ingredientBatchID { try require(batchID, in: entitiesByType[.feedIngredientBatch], field: "feed.ingredientBatchID") }
+                }
+                if payload.kind == .recordFeedV2 {
+                    for sheepID in FeedExcludedSheepCodec.decode(payload.optionalStrings["excludedSheepIDsJSON"] ?? nil) {
+                        try require(sheepID, in: entitiesByType[.sheep], field: "feed.excludedSheepID")
+                    }
+                }
+            case .recordFeedTroughObservation:
+                guard try identifier("observationID", payload) == operation.entityID else {
+                    throw RemoteDomainApplyError.invalidPayload("trough.observationID")
+                }
+                try require(identifier("penID", payload), in: entitiesByType[.pen], field: "trough.penID")
+                if let feedID = optionalID("relatedFeedRecordID", payload) {
+                    try require(feedID, in: entitiesByType[.feed], field: "trough.relatedFeedRecordID")
+                }
+                guard payload.strings["feederName"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+                      let actualText = payload.strings["actualRemainingKilogramsText"],
+                      let actual = Decimal.stable(actualText), actual >= 0,
+                      FeedTroughMeasurementMethod(rawValue: payload.strings["measurementMethod"] ?? "") != nil else {
+                    throw RemoteDomainApplyError.invalidPayload("trough")
+                }
+                if let discardedText = payload.optionalStrings["discardedKilogramsText"] ?? nil {
+                    guard let discarded = Decimal.stable(discardedText), discarded >= 0, discarded <= actual else {
+                        throw RemoteDomainApplyError.invalidPayload("trough.discardedKilogramsText")
+                    }
+                }
+                if let compositionJSON = payload.optionalStrings["compositionSnapshotJSON"] ?? nil {
+                    guard let data = compositionJSON.data(using: .utf8),
+                          let components = try? JSONDecoder().decode([FeedTroughCompositionComponent].self, from: data),
+                          !components.isEmpty,
+                          components.allSatisfy({ (Decimal.stable($0.kilogramsText) ?? -1) >= 0 }),
+                          abs(NSDecimalNumber(decimal: components.reduce(Decimal.zero) { $0 + $1.kilograms } - actual).doubleValue) <= 0.001 else {
+                        throw RemoteDomainApplyError.invalidPayload("trough.compositionSnapshotJSON")
+                    }
+                }
             case .recordHealth:
                 if let sheepID = optionalID("sheepID", payload) { try require(sheepID, in: entitiesByType[.sheep], field: "health.sheepID") }
                 if let penID = optionalID("penID", payload) { try require(penID, in: entitiesByType[.pen], field: "health.penID") }
@@ -263,8 +360,12 @@ enum CloudRebuildBundleValidator {
             if let relatedID = draft.relatedBreedingRecordID { try require(relatedID, in: entitiesByType[.reproduction], field: "care.lambing.relatedBreedingRecordID") }
         case .revokeLambing(let id, _), .restoreLambing(let id):
             try require(id, in: entitiesByType[.reproduction], field: "care.lambing.recordID")
-        case .updateRules:
+        case .updateRules, .updateOperationalAlertRules:
             break
+        case .deferOperationalAlert(let draft):
+            if let subjectID = draft.subjectID {
+                try require(subjectID, in: entitiesByType[.sheep], field: "care.alertDeferral.subjectID")
+            }
         case .setReminderStatus(let id, _):
             try require(id, in: entitiesByType[.careReminder], field: "care.reminderID")
         }

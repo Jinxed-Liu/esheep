@@ -31,10 +31,28 @@ struct FeedSnapshot: Sendable, Hashable {
     let kilograms: Decimal
     let mode: FeedMode
     let occurredAt: Date
+    let feederName: String
+    let remainingKilograms: Decimal?
+    let discardedKilograms: Decimal?
+
+    init(feedID: UUID, penID: UUID, ingredientID: UUID, ingredientName: String, kilograms: Decimal, mode: FeedMode, occurredAt: Date, feederName: String = "", remainingKilograms: Decimal? = nil, discardedKilograms: Decimal? = nil) {
+        self.feedID = feedID
+        self.penID = penID
+        self.ingredientID = ingredientID
+        self.ingredientName = ingredientName
+        self.kilograms = kilograms
+        self.mode = mode
+        self.occurredAt = occurredAt
+        self.feederName = feederName.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.remainingKilograms = remainingKilograms
+        self.discardedKilograms = discardedKilograms
+    }
 }
 
 struct IngredientIntakeResult: Sendable, Hashable, Identifiable {
-    var id: UUID { ingredientID }
+    var id: UUID { StableCloudUUID.derived(namespace: ingredientID, name: "(penID.uuidString.lowercased())|(feederName.lowercased())") }
+    let penID: UUID
+    let feederName: String
     let ingredientID: UUID
     let ingredientName: String
     let kilograms: Decimal
@@ -42,6 +60,7 @@ struct IngredientIntakeResult: Sendable, Hashable, Identifiable {
     let kilogramsPerSheepDay: Decimal?
     let completeIntervals: Int
     let hasMissingFinalBoundary: Bool
+    let isEstimated: Bool
 }
 
 enum FarmAnalytics {
@@ -100,7 +119,7 @@ enum FarmAnalytics {
         let presenceIndex = PenPresenceIndex(sheep: sheep, transfers: transfers)
         let freeFeeds = feeds.filter { $0.mode == .freeChoice }
         let groups = Dictionary(grouping: freeFeeds) { snapshot in
-            "\(snapshot.penID.uuidString)|\(snapshot.ingredientID.uuidString)"
+            "\(snapshot.penID.uuidString)|\(snapshot.feederName.lowercased())|\(snapshot.ingredientID.uuidString)"
         }
 
         return groups.values.compactMap { group in
@@ -112,23 +131,32 @@ enum FarmAnalytics {
             var kilograms = Decimal.zero
             var totalSheepDays = Decimal.zero
             var intervals = 0
+            var estimated = false
             for index in days.indices.dropLast() {
                 let day = days[index]
                 guard let nextDay = days[safe: index + 1] else { continue }
-                let dayQuantity = (byDay[day] ?? []).reduce(Decimal.zero) { $0 + $1.kilograms }
+                let daySnapshots = byDay[day] ?? []
+                let additions = daySnapshots.reduce(Decimal.zero) { $0 + $1.kilograms }
+                let hasMeasuredRemainder = daySnapshots.contains { $0.remainingKilograms != nil || $0.discardedKilograms != nil }
+                let measuredRemainder = daySnapshots.reduce(Decimal.zero) { $0 + ($1.remainingKilograms ?? 0) + ($1.discardedKilograms ?? 0) }
+                let dayQuantity = hasMeasuredRemainder ? max(Decimal.zero, additions - measuredRemainder) : additions
+                estimated = estimated || !hasMeasuredRemainder
                 kilograms += dayQuantity
                 totalSheepDays += presenceIndex.sheepDays(in: first.penID, from: day, to: nextDay)
                 intervals += 1
             }
             let isComplete = days.count > 1
             return IngredientIntakeResult(
+                penID: first.penID,
+                feederName: first.feederName.isEmpty ? "未指定料罐" : first.feederName,
                 ingredientID: first.ingredientID,
                 ingredientName: first.ingredientName,
                 kilograms: kilograms,
                 sheepDays: totalSheepDays,
                 kilogramsPerSheepDay: totalSheepDays > 0 ? kilograms / totalSheepDays : nil,
                 completeIntervals: intervals,
-                hasMissingFinalBoundary: !isComplete || days.count >= 1
+                hasMissingFinalBoundary: !isComplete || days.count >= 1,
+                isEstimated: estimated
             )
         }
         .sorted { $0.ingredientName.localizedStandardCompare($1.ingredientName) == .orderedAscending }
