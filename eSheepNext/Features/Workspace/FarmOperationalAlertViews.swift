@@ -73,7 +73,7 @@ struct FarmOperationalAlertHomeCard: View {
             switch state {
             case .loading:
                 HStack(spacing: 12) {
-                    ProgressView()
+                    SettingsIcon(systemImage: "hourglass", color: .blue)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("正在计算")
                             .foregroundStyle(.primary)
@@ -88,10 +88,12 @@ struct FarmOperationalAlertHomeCard: View {
 
             case .failed:
                 VStack(alignment: .leading, spacing: 10) {
-                    StatusRow(
+                    SettingsRowContent(
                         title: "暂时无法计算",
-                        detail: "未用 0 项掩盖错误，请重试。",
-                        symbol: "exclamationmark.arrow.triangle.2.circlepath"
+                        subtitle: "未用 0 项掩盖错误，请重试。",
+                        systemImage: "exclamationmark.arrow.triangle.2.circlepath",
+                        iconColor: .red,
+                        showsChevron: false
                     )
                     Button("重新计算", systemImage: "arrow.clockwise", action: onRetry)
                         .buttonStyle(.bordered)
@@ -110,16 +112,23 @@ struct FarmOperationalAlertHomeCard: View {
     @ViewBuilder
     private func loadedContent(_ snapshot: FarmOperationalAlertSnapshot) -> some View {
         if !snapshot.isConfigured {
-            StatusRow(
+            SettingsRowContent(
                 title: "尚未配置异常规则",
-                detail: canManageRules
+                subtitle: canManageRules
                     ? "需先设置断奶日龄、提前预警天数、孕检天数与每日汇总时间。"
                     : "等待牧场主或管理员完成设置。",
-                symbol: "gearshape.badge.exclamationmark"
+                systemImage: "gearshape.badge.exclamationmark",
+                iconColor: .orange
             )
         } else {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline) {
+                HStack(alignment: .center, spacing: 13) {
+                    SettingsIcon(
+                        systemImage: snapshot.totalPendingCount == 0
+                            ? "checkmark.circle.fill"
+                            : "exclamationmark.triangle.fill",
+                        color: snapshot.totalPendingCount == 0 ? .green : .orange
+                    )
                     VStack(alignment: .leading, spacing: 3) {
                         Text(snapshot.totalPendingCount == 0 ? "全部正常" : "\(snapshot.totalPendingCount) 项待处理")
                             .font(.title3.bold())
@@ -129,8 +138,6 @@ struct FarmOperationalAlertHomeCard: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Image(systemName: snapshot.totalPendingCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(snapshot.totalPendingCount == 0 ? .green : .orange)
                     Image(systemName: "chevron.right")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
@@ -138,10 +145,9 @@ struct FarmOperationalAlertHomeCard: View {
 
                 ForEach(Array(snapshot.previewItems.prefix(3))) { item in
                     Divider()
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: item.symbol)
-                            .foregroundStyle(AppTheme.brand)
-                            .frame(width: 22)
+                        .padding(.leading, 43)
+                    HStack(alignment: .center, spacing: 13) {
+                        SettingsIcon(systemImage: item.symbol, color: previewIconColor(for: item))
                         VStack(alignment: .leading, spacing: 2) {
                             Text(item.title)
                                 .font(.subheadline)
@@ -165,6 +171,13 @@ struct FarmOperationalAlertHomeCard: View {
         let pregnancyCount = snapshot.count(for: .pregnancyCheckDueSoon) + snapshot.count(for: .pregnancyCheckOverdue)
         return "断奶 \(weaningCount) · 孕检 \(pregnancyCount) · 圈舍 \(snapshot.count(for: .invalidPen)) · 日程 \(snapshot.overdueReminders.count)"
     }
+
+    private func previewIconColor(for item: FarmOperationalAlertPreviewItem) -> Color {
+        switch item.source {
+        case .operational: .orange
+        case .reminder: .red
+        }
+    }
 }
 
 struct FarmOperationalAlertCenterView: View {
@@ -186,6 +199,7 @@ struct FarmOperationalAlertCenterView: View {
 
     var body: some View {
         content
+        .background(AppTheme.pageBackground)
         .navigationTitle("待办与异常")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -243,26 +257,41 @@ struct FarmOperationalAlertCenterView: View {
     private var content: some View {
         switch loadState {
         case .loading:
-            List {
-                HStack(spacing: 12) {
-                    ProgressView()
-                    Text("正在后台计算待办与异常…")
-                        .foregroundStyle(.secondary)
+            ScrollView {
+                SettingsCard(title: "状态") {
+                    SettingsRowContent(
+                        title: "正在计算",
+                        subtitle: "正在后台核对业务事实与逾期日程。",
+                        systemImage: "hourglass",
+                        iconColor: .blue,
+                        showsChevron: false
+                    )
                 }
+                .padding(16)
             }
 
         case .failed(let message):
-            List {
-                Section {
-                    ContentUnavailableView(
-                        "暂时无法计算",
+            ScrollView {
+                SettingsCard(title: "状态") {
+                    SettingsRowContent(
+                        title: "暂时无法计算",
+                        subtitle: message,
                         systemImage: "exclamationmark.arrow.triangle.2.circlepath",
-                        description: Text(message)
+                        iconColor: .red,
+                        showsChevron: false
                     )
-                    Button("重新计算", systemImage: "arrow.clockwise") {
+                    SettingsCardDivider()
+                    SettingsActionRow(
+                        title: "重新计算",
+                        subtitle: "再次读取当前牧场数据",
+                        systemImage: "arrow.clockwise",
+                        iconColor: .blue,
+                        showsChevron: false
+                    ) {
                         refreshRevision &+= 1
                     }
                 }
+                .padding(16)
             }
 
         case .loaded(let snapshot):
@@ -275,86 +304,119 @@ struct FarmOperationalAlertCenterView: View {
     }
 
     private var unconfiguredContent: some View {
-        List {
-            Section {
-                ContentUnavailableView(
-                    canManageRules ? "需要先设置规则" : "等待规则设置",
+        ScrollView {
+            SettingsCard(title: "状态") {
+                SettingsRowContent(
+                    title: canManageRules ? "需要先设置规则" : "等待规则设置",
+                    subtitle: canManageRules
+                        ? "填写断奶日龄、提前预警天数，确认孕检天数和每日汇总时间后，系统才会开始计算。"
+                        : "等待牧场主或管理员完成提醒与异常规则设置。",
                     systemImage: "gearshape.badge.exclamationmark",
-                    description: Text(
-                        canManageRules
-                            ? "填写断奶日龄、提前预警天数，确认孕检天数和每日汇总时间后，系统才会开始计算。"
-                            : "等待牧场主或管理员完成提醒与异常规则设置。"
-                    )
+                    iconColor: .orange,
+                    showsChevron: false
                 )
                 if canManageRules {
-                    Button("开始设置", systemImage: "slider.horizontal.3") {
+                    SettingsCardDivider()
+                    SettingsActionRow(
+                        title: "开始设置",
+                        subtitle: "配置规则后启用待办计算",
+                        systemImage: "slider.horizontal.3",
+                        iconColor: .blue
+                    ) {
                         rulesPresentation = .initial
                     }
                 }
             }
+            .padding(16)
         }
     }
 
     private func configuredList(_ snapshot: FarmOperationalAlertSnapshot) -> some View {
-        List {
-            Section("业务预警与异常") {
-                if snapshot.operationalAlerts.isEmpty {
-                    Label("没有业务预警或异常", systemImage: "checkmark.circle")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(snapshot.operationalAlerts) { alert in
-                        NavigationLink {
-                            destination(for: alert)
-                        } label: {
-                            operationalAlertRow(alert, snapshot: snapshot)
-                        }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            if canDefer {
-                                Button("暂缓", systemImage: "clock.arrow.circlepath") {
-                                    selectedDeferralAlert = alert
+        ScrollView {
+            LazyVStack(spacing: 20) {
+                SettingsCard(title: "业务预警与异常") {
+                    if snapshot.operationalAlerts.isEmpty {
+                        SettingsRowContent(
+                            title: "没有业务预警或异常",
+                            subtitle: "当前业务事实均符合已设置的规则",
+                            systemImage: "checkmark.circle.fill",
+                            iconColor: .green,
+                            showsChevron: false
+                        )
+                    } else {
+                        ForEach(Array(snapshot.operationalAlerts.enumerated()), id: \.element.id) { index, alert in
+                            if index > 0 { SettingsCardDivider() }
+                            HStack(spacing: 0) {
+                                NavigationLink {
+                                    destination(for: alert)
+                                } label: {
+                                    operationalAlertRow(alert, snapshot: snapshot)
                                 }
-                                .tint(.orange)
+                                .buttonStyle(.plain)
+
+                                if canDefer {
+                                    Button {
+                                        selectedDeferralAlert = alert
+                                    } label: {
+                                        Image(systemName: "clock.arrow.circlepath")
+                                            .font(.body.weight(.medium))
+                                            .foregroundStyle(.orange)
+                                            .frame(width: 44, height: 48)
+                                            .contentShape(.rect)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("暂缓\(alert.title)")
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            Section("逾期日程") {
-                if snapshot.overdueReminders.isEmpty {
-                    Label("没有逾期日程", systemImage: "checkmark.circle")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(snapshot.overdueReminders) { reminder in
-                        NavigationLink {
-                            CareReminderCenterView(
-                                account: account,
-                                farm: farm,
-                                focusedReminderID: reminder.id
-                            )
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(reminder.title)
-                                Text(reminder.dueAt, format: .dateTime.year().month().day().hour().minute())
-                                    .font(.footnote)
-                                    .foregroundStyle(.red)
+                SettingsCard(title: "逾期日程") {
+                    if snapshot.overdueReminders.isEmpty {
+                        SettingsRowContent(
+                            title: "没有逾期日程",
+                            subtitle: "所有日程均已完成或尚未到期",
+                            systemImage: "checkmark.circle.fill",
+                            iconColor: .green,
+                            showsChevron: false
+                        )
+                    } else {
+                        ForEach(Array(snapshot.overdueReminders.enumerated()), id: \.element.id) { index, reminder in
+                            if index > 0 { SettingsCardDivider() }
+                            SettingsNavigationRow(
+                                title: reminder.title,
+                                subtitle: "到期：\(reminder.dueAt.formatted(.dateTime.year().month().day().hour().minute()))",
+                                systemImage: "calendar.badge.exclamationmark",
+                                iconColor: .red
+                            ) {
+                                CareReminderCenterView(
+                                    account: account,
+                                    farm: farm,
+                                    focusedReminderID: reminder.id
+                                )
                             }
                         }
                     }
                 }
-            }
 
-            if snapshot.missingBirthDateCount > 0 {
-                Section("覆盖说明") {
-                    Label(
-                        "有 \(snapshot.missingBirthDateCount) 只在场羊缺少出生日期，无法参与日龄判断。",
-                        systemImage: "info.circle"
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                if snapshot.missingBirthDateCount > 0 {
+                    SettingsCard(title: "覆盖说明") {
+                        SettingsRowContent(
+                            title: "有 \(snapshot.missingBirthDateCount) 只羊缺少出生日期",
+                            subtitle: "这些羊只不会参与断奶日龄判断，也不会被误报为异常。",
+                            systemImage: "info.circle.fill",
+                            iconColor: .blue,
+                            showsChevron: false
+                        )
+                    }
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .safeAreaPadding(.bottom, 32)
         }
+        .scrollIndicators(.hidden)
         .refreshable { await loadSnapshot() }
     }
 
@@ -362,22 +424,29 @@ struct FarmOperationalAlertCenterView: View {
         _ alert: FarmOperationalAlert,
         snapshot: FarmOperationalAlertSnapshot
     ) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: alert.kind.symbol)
-                .foregroundStyle(.orange)
-                .frame(width: 24)
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 13) {
+            SettingsIcon(systemImage: alert.kind.symbol, color: .orange)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(alert.title)
                     .font(.headline)
+                    .foregroundStyle(.primary)
                 Text(alert.detail)
-                    .font(.subheadline)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
                 Text(deadlineText(alert, snapshot: snapshot))
                     .font(.caption)
                     .foregroundStyle(alert.kind.isDueSoon ? Color.orange : Color.red)
             }
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.caption.bold())
+                .foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 2)
+        .frame(minHeight: 56)
+        .padding(.leading, 14)
+        .padding(.vertical, 6)
+        .contentShape(.rect)
     }
 
     private func deadlineText(

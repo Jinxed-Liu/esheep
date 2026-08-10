@@ -9,31 +9,115 @@ struct FarmRecordsView: View {
     @State private var careReminderDestination: PendingCareReminderDestination?
 
     var body: some View {
-        List {
-            Section("事件") {
-                NavigationLink {
-                    FarmEventHistoryView(account: account, farm: farm)
-                } label: {
-                    Label("事件记录与导出", systemImage: "clock.arrow.circlepath")
+        ScrollView {
+            LazyVStack(spacing: 20) {
+                SettingsCard(title: "日常生产") {
+                    SettingsNavigationRow(
+                        title: "新建羊只",
+                        subtitle: "建立档案并记录入场信息",
+                        systemImage: "plus",
+                        iconColor: .green
+                    ) { AddSheepView(account: account, farm: farm) }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "称重",
+                        subtitle: "按耳号记录体重和发生时间",
+                        systemImage: "scalemass.fill",
+                        iconColor: .blue
+                    ) { WeightEntryView(account: account, farm: farm) }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "转群",
+                        subtitle: "将羊只调入目标圈舍",
+                        systemImage: "arrow.left.arrow.right",
+                        iconColor: .indigo
+                    ) { TransferEntryView(account: account, farm: farm) }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "断奶",
+                        subtitle: "记录断奶重并完成断奶后调舍",
+                        systemImage: "arrow.down.to.line.compact",
+                        iconColor: .mint
+                    ) { WeaningEntryView(account: account, farm: farm) }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "出售、淘汰或死亡",
+                        subtitle: "记录羊只离场及相关金额",
+                        systemImage: "person.crop.circle.badge.minus",
+                        iconColor: .orange
+                    ) { RemovalEntryView(account: account, farm: farm) }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "备注",
+                        subtitle: "补充羊只、圈舍或牧场事件说明",
+                        systemImage: "note.text",
+                        iconColor: .gray
+                    ) { NoteEntryView(account: account, farm: farm) }
+                }
+
+                SettingsCard(title: "健康与繁殖") {
+                    SettingsNavigationRow(
+                        title: "治疗或疫苗",
+                        subtitle: "支持单羊、多选或按圈舍录入",
+                        systemImage: "cross.case.fill",
+                        iconColor: .red
+                    ) { HealthBatchEntryView(account: account, farm: farm) }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "配种或孕检",
+                        subtitle: "批量记录繁殖事件",
+                        systemImage: "heart.text.square.fill",
+                        iconColor: .pink
+                    ) { ReproductionBatchEntryView(account: account, farm: farm) }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "产羔",
+                        subtitle: "记录产羔事实并建立羔羊档案",
+                        systemImage: "birthday.cake.fill",
+                        iconColor: .purple
+                    ) { CareLambingEntryView(account: account, farm: farm) }
+                }
+
+                SettingsCard(title: "投喂与记录") {
+                    SettingsActionRow(
+                        title: "投喂录入",
+                        subtitle: "进入投喂工作台记录原料和用量",
+                        systemImage: "leaf.fill",
+                        iconColor: .green
+                    ) {
+                        session.selectedTab = .feeding
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "事件记录与导出",
+                        subtitle: "查看、筛选和导出牧场历史",
+                        systemImage: "clock.arrow.circlepath",
+                        iconColor: .blue
+                    ) { FarmEventHistoryView(account: account, farm: farm) }
+                }
+
+                SettingsCard(title: "业务管理") {
+                    SettingsNavigationRow(
+                        title: "羊群与圈舍",
+                        subtitle: "档案、圈舍和生产批次",
+                        systemImage: "list.bullet.rectangle.fill",
+                        iconColor: .teal
+                    ) { HerdRecordCenterView(account: account, farm: farm) }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "健康与繁殖管理",
+                        subtitle: "目录、库存、方案、提醒与历史",
+                        systemImage: "heart.text.square",
+                        iconColor: .pink
+                    ) { CareManagementView(account: account, farm: farm) }
                 }
             }
-            Section("业务录入") {
-                NavigationLink {
-                    HerdRecordCenterView(account: account, farm: farm)
-                } label: {
-                    Label("羊群与圈舍", systemImage: "list.bullet.rectangle")
-                }
-                NavigationLink {
-                    CareManagementView(account: account, farm: farm)
-                } label: {
-                    Label("健康与繁殖", systemImage: "cross.case.fill")
-                }
-            }
-            Section("补充") {
-                NavigationLink { NoteEntryView(account: account, farm: farm) } label: { Label("备注", systemImage: "note.text") }
-                NavigationLink { LegacyFeedMergeView(account: account, farm: farm) } label: { Label("合并 eSheep+ 投喂", systemImage: "square.and.arrow.down") }
-            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .safeAreaPadding(.bottom, 96)
         }
+        .scrollIndicators(.hidden)
+        .background(AppTheme.pageBackground)
         .navigationTitle("录入")
         .sheet(item: $presentedEntry) { entry in
             NavigationStack {
@@ -83,36 +167,49 @@ private struct HerdRecordCenterView: View {
     let farm: FarmRecord
 
     var body: some View {
-        List {
-            Section("快捷录入") {
-                NavigationLink { AddSheepView(account: account, farm: farm) } label: {
-                    Label("新建羊只", systemImage: "plus.circle")
+        ScrollView {
+            LazyVStack(spacing: 20) {
+                SettingsCard(title: "羊只录入") {
+                    SettingsNavigationRow(title: "新建羊只", subtitle: "建立羊只档案", systemImage: "plus", iconColor: .green) {
+                        AddSheepView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(title: "称重", subtitle: "记录体重和发生时间", systemImage: "scalemass.fill", iconColor: .blue) {
+                        WeightEntryView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(title: "断奶", subtitle: "记录断奶重并调舍", systemImage: "arrow.down.to.line.compact", iconColor: .mint) {
+                        WeaningEntryView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(title: "转群", subtitle: "变更羊只所在圈舍", systemImage: "arrow.left.arrow.right", iconColor: .indigo) {
+                        TransferEntryView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(title: "出售、淘汰或死亡", subtitle: "记录羊只离场", systemImage: "person.crop.circle.badge.minus", iconColor: .orange) {
+                        RemovalEntryView(account: account, farm: farm)
+                    }
                 }
-                NavigationLink { WeightEntryView(account: account, farm: farm) } label: {
-                    Label("称重", systemImage: "scalemass")
-                }
-                NavigationLink { WeaningEntryView(account: account, farm: farm) } label: {
-                    Label("断奶", systemImage: "arrow.down.to.line.compact")
-                }
-                NavigationLink { TransferEntryView(account: account, farm: farm) } label: {
-                    Label("转群", systemImage: "arrow.left.arrow.right")
-                }
-                NavigationLink { RemovalEntryView(account: account, farm: farm) } label: {
-                    Label("出售、淘汰或死亡", systemImage: "person.crop.circle.badge.minus")
+
+                SettingsCard(title: "档案与批次") {
+                    SettingsNavigationRow(title: "生产批次", subtitle: "管理育肥、实验等批次", systemImage: "square.3.layers.3d", iconColor: .purple) {
+                        ProductionBatchListView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(title: "羊只档案", subtitle: "查看全部在场与历史羊只", systemImage: "list.bullet", iconColor: .blue) {
+                        HerdManagementView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(title: "圈舍管理", subtitle: "维护圈舍和当前存栏", systemImage: "building.2.fill", iconColor: .teal) {
+                        PenManagementView(account: account, farm: farm)
+                    }
                 }
             }
-            Section("档案与管理") {
-                NavigationLink { ProductionBatchListView(account: account, farm: farm) } label: {
-                    Label("生产批次", systemImage: "square.3.layers.3d")
-                }
-                NavigationLink { HerdManagementView(account: account, farm: farm) } label: {
-                    Label("羊只档案", systemImage: "list.bullet")
-                }
-                NavigationLink { PenManagementView(account: account, farm: farm) } label: {
-                    Label("圈舍管理", systemImage: "building.2")
-                }
-            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
+        .scrollIndicators(.hidden)
+        .background(AppTheme.pageBackground)
         .navigationTitle("羊群与圈舍")
     }
 }

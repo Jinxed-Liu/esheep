@@ -424,69 +424,6 @@ final class FeedRebuildTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(try FeedStockLedger.balance(for: fixture.batch, context: fixture.context)), 10)
     }
 
-    func testPlusFeedMergeOnlyAddsMissingFeedsAndNeverTouchesStockOrOtherFacts() throws {
-        let fixture = try makeFixture(initialKilograms: "100")
-        let health = HealthRecord(farmID: fixture.farmContext.farmID, sheepID: fixture.sheep.id, penID: nil, kind: .treatment, itemNameSnapshot: "保留记录", occurredAt: Date(timeIntervalSince1970: 1_700_000_100))
-        fixture.context.insert(health)
-        try fixture.context.save()
-        let beforeBalance = try XCTUnwrap(try FeedStockLedger.balance(for: fixture.batch, context: fixture.context))
-        let source = try plusFeedJSON(records: [
-            plusFeed(id: "plus-feed-1", date: "2026-08-01", time: "08:00", amount: 12),
-            plusFeed(id: "plus-feed-2", date: "2026-08-01", time: "17:00", amount: 9),
-        ])
-
-        let preview = try LegacyFeedIncrementalImportService.preview(source: source, sourceFileName: "latest.json", sourceFileDate: .now, farmID: fixture.farmContext.farmID, context: fixture.context)
-        XCTAssertEqual(preview.newFeeds.count, 2)
-        XCTAssertEqual(preview.newIngredientCount, 0)
-        let farm = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<FarmRecord>()).first)
-        let account = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<AccountProfile>()).first)
-        let result = try LegacyFeedIncrementalImportService.commit(preview, account: account, farm: farm, context: fixture.context)
-
-        XCTAssertEqual(result.importedFeedCount, 2)
-        XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<FeedRecord>()).count, 2)
-        XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<FeedRecordLine>()).count, 2)
-        XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<SheepRecord>()).count, 1)
-        XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<HealthRecord>()).count, 1)
-        XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<FeedStockTransactionRecord>()).count, 0)
-        XCTAssertEqual(try XCTUnwrap(try FeedStockLedger.balance(for: fixture.batch, context: fixture.context)), beforeBalance)
-        XCTAssertEqual(Set(try fixture.context.fetch(FetchDescriptor<FeedRecordLine>()).map(\.kilogramsText)), ["12", "9"])
-
-        let repeated = try LegacyFeedIncrementalImportService.preview(source: source, sourceFileName: "latest.json", sourceFileDate: .now, farmID: fixture.farmContext.farmID, context: fixture.context)
-        XCTAssertEqual(repeated.newFeeds.count, 0)
-        XCTAssertEqual(repeated.duplicateCount, 2)
-    }
-
-    func testPlusFeedMergeBlocksUnmatchedPenWithoutWriting() throws {
-        let fixture = try makeFixture(initialKilograms: "100")
-        var record = plusFeed(id: "missing-pen", date: "2026-08-02", time: "08:00", amount: 6)
-        record["pen"] = "不存在的圈舍"
-        let source = try plusFeedJSON(records: [record])
-        let preview = try LegacyFeedIncrementalImportService.preview(source: source, sourceFileName: "latest.json", sourceFileDate: nil, farmID: fixture.farmContext.farmID, context: fixture.context)
-        XCTAssertFalse(preview.canCommit)
-        XCTAssertEqual(preview.unmatchedPenNames, ["不存在的圈舍"])
-        XCTAssertTrue(try fixture.context.fetch(FetchDescriptor<FeedRecord>()).isEmpty)
-    }
-
-    private func plusFeed(id: String, date: String, time: String, amount: Double) -> [String: Any] {
-        [
-            "id": id,
-            "mode": "limited",
-            "pen": "育肥一圈",
-            "date": date,
-            "time": time,
-            "mealName": "日粮",
-            "feederName": "测试员",
-            "ingredients": [["name": "散装玉米", "amount": amount, "pricePerKgSnapshot": 2.3, "nutrientsSnapshot": ["dm": 86, "cp": 9]]],
-            "remainingKg": 0,
-            "discardedKg": 0,
-            "note": "全舍总量",
-        ]
-    }
-
-    private func plusFeedJSON(records: [[String: Any]]) throws -> Data {
-        try JSONSerialization.data(withJSONObject: ["herd": ["sheep": []], "feeding": ["feedRecords": records, "feedLibrary": []]])
-    }
-
     private func cloudPayload(from data: Data) throws -> FarmCommandCloudPayload {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601

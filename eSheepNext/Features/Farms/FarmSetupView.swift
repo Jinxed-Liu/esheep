@@ -5,7 +5,6 @@ struct FarmSetupView: View {
     @Environment(AppSession.self) private var session
 
     let account: AccountProfile
-    @State private var isMigrationPresented = false
 
     var body: some View {
         ZStack {
@@ -26,22 +25,7 @@ struct FarmSetupView: View {
                 }
                 .buttonStyle(.glass)
 
-                Button("从 eSheep+ 导入") {
-                    isMigrationPresented = true
-                }
-                .buttonStyle(.glass)
-
-                Text("导入会先检查并预览全部数据；确认后再创建牧场，联网时会自动同步。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-
                 AccountSignOutButton()
-            }
-        }
-        .sheet(isPresented: $isMigrationPresented) {
-            NavigationStack {
-                MigrationWorkspaceView()
             }
         }
     }

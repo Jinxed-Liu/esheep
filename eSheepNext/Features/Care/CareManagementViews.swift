@@ -16,36 +16,75 @@ struct CareManagementView: View {
     private var reminderRevisionSignature: [String] { reminders.filter { $0.farmID == farm.id }.map { "\($0.id.uuidString):\($0.revision):\($0.dueAt.timeIntervalSinceReferenceDate):\($0.deletedAt?.timeIntervalSinceReferenceDate ?? 0)" }.sorted() }
 
     var body: some View {
-        List {
-            Section("快捷录入") {
-                NavigationLink { HealthBatchEntryView(account: account, farm: farm) } label: {
-                    Label("治疗或疫苗", systemImage: "cross.case")
+        ScrollView {
+            LazyVStack(spacing: 20) {
+                SettingsCard(title: "快捷录入") {
+                    SettingsNavigationRow(title: "治疗或疫苗", subtitle: "按羊只或圈舍批量记录", systemImage: "cross.case.fill", iconColor: .red) {
+                        HealthBatchEntryView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(title: "配种或孕检", subtitle: "记录繁殖事件和检查结果", systemImage: "heart.text.square.fill", iconColor: .pink) {
+                        ReproductionBatchEntryView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(title: "产羔", subtitle: "记录产羔并建立羔羊档案", systemImage: "birthday.cake.fill", iconColor: .purple) {
+                        CareLambingEntryView(account: account, farm: farm)
+                    }
                 }
-                NavigationLink { ReproductionBatchEntryView(account: account, farm: farm) } label: {
-                    Label("批量配种或孕检", systemImage: "heart.text.square")
+
+                SettingsCard(title: "健康管理") {
+                    SettingsNavigationRow(title: "药品与疫苗目录", subtitle: "维护常用名称、剂量和单位", systemImage: "books.vertical.fill", iconColor: .blue) {
+                        HealthCatalogManagementView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(title: "药品与疫苗库存", subtitle: "查看批次、余量和有效期", systemImage: "shippingbox.fill", iconColor: .teal) {
+                        CareInventoryView(account: account, farm: farm)
+                    }
                 }
-                NavigationLink { CareLambingEntryView(account: account, farm: farm) } label: {
-                    Label("产羔并建立羔羊档案", systemImage: "birthday.cake")
+
+                SettingsCard(title: "繁殖管理") {
+                    SettingsNavigationRow(title: "配种方案", subtitle: "维护可复用的繁殖流程", systemImage: "list.number", iconColor: .indigo) {
+                        BreedingProgramListView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(title: "冻精库存", subtitle: "维护冻精与公羊来源", systemImage: "snowflake", iconColor: .cyan) {
+                        CareSemenView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(title: "全场系谱检查", subtitle: "发现重复、缺失或冲突关系", systemImage: "point.3.connected.trianglepath.dotted", iconColor: .orange) {
+                        PedigreeCheckView(account: account, farm: farm)
+                    }
+                }
+
+                SettingsCard(title: "提醒与历史") {
+                    SettingsNavigationRow(title: "待办与异常", subtitle: "查看到期待办和业务异常", systemImage: "exclamationmark.bubble.fill", iconColor: .orange) {
+                        FarmOperationalAlertCenterView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(title: "提醒与异常规则", subtitle: "设置断奶、孕检和每日汇总", systemImage: "calendar.badge.clock", iconColor: .blue) {
+                        CareRulesView(account: account, farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "健康记录",
+                        subtitle: "\(health.count { $0.farmID == farm.id && $0.deletedAt == nil }) 条有效记录",
+                        systemImage: "clock.arrow.circlepath",
+                        iconColor: .red
+                    ) { HealthHistoryView(account: account, farm: farm) }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "繁殖记录",
+                        subtitle: "\(reproduction.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.kind != .parityBaseline }) 条有效记录",
+                        systemImage: "clock.badge.checkmark.fill",
+                        iconColor: .pink
+                    ) { ReproductionHistoryView(account: account, farm: farm) }
                 }
             }
-            Section("健康管理") {
-                NavigationLink { HealthCatalogManagementView(account: account, farm: farm) } label: { Label("药品与疫苗目录", systemImage: "books.vertical") }
-                NavigationLink { CareInventoryView(account: account, farm: farm) } label: { Label("药品与疫苗库存", systemImage: "shippingbox") }
-            }
-            Section("繁殖管理") {
-                NavigationLink { BreedingProgramListView(account: account, farm: farm) } label: { Label("配种方案", systemImage: "list.number") }
-                NavigationLink { CareSemenView(account: account, farm: farm) } label: { Label("冻精库存", systemImage: "snowflake") }
-                NavigationLink { PedigreeCheckView(account: account, farm: farm) } label: { Label("全场系谱检查", systemImage: "point.3.connected.trianglepath.dotted") }
-            }
-            Section("提醒与历史") {
-                NavigationLink { FarmOperationalAlertCenterView(account: account, farm: farm) } label: {
-                    Label("待办与异常", systemImage: "exclamationmark.bubble")
-                }
-                NavigationLink { CareRulesView(account: account, farm: farm) } label: { Label("提醒与异常规则", systemImage: "calendar.badge.clock") }
-                NavigationLink { HealthHistoryView(account: account, farm: farm) } label: { LabeledContent("健康记录", value: "\(health.count { $0.farmID == farm.id && $0.deletedAt == nil })") }
-                NavigationLink { ReproductionHistoryView(account: account, farm: farm) } label: { LabeledContent("繁殖记录", value: "\(reproduction.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.kind != .parityBaseline })") }
-            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
+        .scrollIndicators(.hidden)
+        .background(AppTheme.pageBackground)
         .navigationTitle("健康与繁殖")
         .task { await notifications.rescheduleCareReminders(reminders, farmID: farm.id) }
         .onChange(of: reminderRevisionSignature) { _, _ in
