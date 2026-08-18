@@ -87,6 +87,18 @@ struct SupabaseOwnedFarmDiscoveryService {
         }
     }
 
+    private struct MemberRow: Decodable, Sendable {
+        let userID: UUID
+        let appAccountID: UUID
+        let role: String
+
+        enum CodingKeys: String, CodingKey {
+            case userID = "user_id"
+            case appAccountID = "app_account_id"
+            case role
+        }
+    }
+
     private let client: SupabaseClient
     private let transport: SupabaseFarmTransport
 
@@ -133,6 +145,9 @@ struct SupabaseOwnedFarmDiscoveryService {
             let restoreRecord = try prepareRestoreRecord(
                 row: row,
                 accountID: accountID,
+                ownerAccountID: accountID,
+                memberRole: .owner,
+                memberUserID: row.ownerUserID,
                 pendingRecords: pendingRecords,
                 context: context
             )
@@ -140,6 +155,7 @@ struct SupabaseOwnedFarmDiscoveryService {
                 try await restore(
                     row: row,
                     accountID: accountID,
+                    ownerAccountID: accountID,
                     record: restoreRecord,
                     context: context
                 )
@@ -156,15 +172,111 @@ struct SupabaseOwnedFarmDiscoveryService {
         return restored
     }
 
+    @discardableResult
+    func restoreRedeemedFarm(
+        farmID: UUID,
+        authorityGeneration: Int,
+        accountID: UUID,
+        context: ModelContext
+    ) async throws -> FarmRecord {
+        let session = try await client.auth.session
+        let registryRows: [RegistryRow] = try await client
+            .from("farm_registry")
+            .select(
+                "farm_id,owner_user_id,provider,status," +
+                    "authority_generation,current_revision"
+            )
+            .eq("farm_id", value: farmID)
+            .eq("provider", value: "supabase")
+            .eq("status", value: "active")
+            .limit(1)
+            .execute()
+            .value
+        guard let row = registryRows.first,
+              row.authorityGeneration == authorityGeneration else {
+            throw SupabaseOwnedFarmDiscoveryError.invalidCheckpoint
+        }
+
+        let memberRows: [MemberRow] = try await client
+            .from("farm_members")
+            .select("user_id,app_account_id,role")
+            .eq("farm_id", value: farmID)
+            .eq("status", value: "active")
+            .execute()
+            .value
+        guard let owner = memberRows.first(where: {
+            $0.userID == row.ownerUserID && $0.role == FarmRole.owner.rawValue
+        }),
+        let member = memberRows.first(where: { $0.userID == session.user.id }),
+        let memberRole = FarmRole(rawValue: member.role) else {
+            throw SupabaseOwnedFarmDiscoveryError.accountMismatch
+        }
+
+        if let existing = try context.fetch(FetchDescriptor<FarmRecord>())
+            .first(where: { $0.id == farmID }),
+           try context.fetch(FetchDescriptor<FarmRemoteBinding>())
+            .contains(where: {
+                $0.farmID == farmID &&
+                    $0.provider == .supabase &&
+                    $0.state == .active
+            }) {
+            existing.roleRawValue = memberRole.rawValue
+            existing.membershipStatusRawValue =
+                FarmMembershipStatus.active.rawValue
+            try context.save()
+            return existing
+        }
+
+        let pendingRecords = try context.fetch(
+            FetchDescriptor<FarmRemoteRestoreRecord>()
+        ).filter {
+            $0.accountID == accountID &&
+                $0.farmID == farmID &&
+                $0.state != .completed
+        }
+        let restoreRecord = try prepareRestoreRecord(
+            row: row,
+            accountID: accountID,
+            ownerAccountID: owner.appAccountID,
+            memberRole: memberRole,
+            memberUserID: session.user.id,
+            pendingRecords: pendingRecords,
+            context: context
+        )
+        do {
+            try await restore(
+                row: row,
+                accountID: accountID,
+                ownerAccountID: owner.appAccountID,
+                record: restoreRecord,
+                context: context
+            )
+        } catch {
+            restoreRecord.stateRawValue = FarmRemoteRestoreState.failed.rawValue
+            restoreRecord.lastErrorCode = Self.errorCode(error)
+            restoreRecord.updatedAt = .now
+            try? context.save()
+            throw error
+        }
+        guard let farm = try context.fetch(FetchDescriptor<FarmRecord>())
+            .first(where: { $0.id == farmID }) else {
+            throw SupabaseOwnedFarmDiscoveryError.invalidCheckpoint
+        }
+        return farm
+    }
+
     private func prepareRestoreRecord(
         row: RegistryRow,
         accountID: UUID,
+        ownerAccountID: UUID,
+        memberRole: FarmRole,
+        memberUserID: UUID,
         pendingRecords: [FarmRemoteRestoreRecord],
         context: ModelContext
     ) throws -> FarmRemoteRestoreRecord {
         let serverMembershipID = Self.serverMembershipID(
             farmID: row.farmID,
-            userID: row.ownerUserID
+            userID: memberUserID
         )
         let record: FarmRemoteRestoreRecord
         if let existing = Self.preferredRestoreRecord(pendingRecords) {
@@ -180,15 +292,15 @@ struct SupabaseOwnedFarmDiscoveryService {
                 accountID: accountID,
                 farmID: row.farmID,
                 authorityGeneration: row.authorityGeneration,
-                ownerAccountID: accountID,
-                memberRole: .owner,
+                ownerAccountID: ownerAccountID,
+                memberRole: memberRole,
                 serverMembershipID: serverMembershipID,
                 targetCursorRevision: row.currentRevision
             )
             context.insert(record)
         }
-        record.ownerAccountID = accountID
-        record.memberRoleRawValue = FarmRole.owner.rawValue
+        record.ownerAccountID = ownerAccountID
+        record.memberRoleRawValue = memberRole.rawValue
         record.serverMembershipID = serverMembershipID
         record.targetCursorRevision = max(
             record.targetCursorRevision,
@@ -239,9 +351,14 @@ struct SupabaseOwnedFarmDiscoveryService {
     private func restore(
         row: RegistryRow,
         accountID: UUID,
+        ownerAccountID: UUID,
         record: FarmRemoteRestoreRecord,
         context: ModelContext
     ) async throws {
+        guard let memberRole = record.memberRole else {
+            throw SupabaseOwnedFarmDiscoveryError.restoreRecordMismatch
+        }
+        let session = try await client.auth.session
         record.advance(to: .downloadingCheckpoint)
         try context.save()
         await DevelopmentSupabaseRestoreGate.pauseIfArmed(
@@ -260,7 +377,7 @@ struct SupabaseOwnedFarmDiscoveryService {
             checkpoint: checkpoint,
             package: package,
             row: row,
-            accountID: accountID
+            ownerAccountID: ownerAccountID
         )
         record.checkpointID = checkpoint.checkpointID
         record.checkpointMigrationID = checkpoint.migrationID
@@ -275,12 +392,14 @@ struct SupabaseOwnedFarmDiscoveryService {
                 farmID: row.farmID,
                 migrationID: checkpoint.migrationID,
                 packageDigest: checkpoint.archiveDigest,
-                ownerAccountID: accountID,
+                ownerAccountID: ownerAccountID,
+                membershipAccountID: accountID,
+                memberRole: memberRole,
                 authorityGeneration: row.authorityGeneration,
                 serverMembershipID: record.serverMembershipID ??
                     Self.serverMembershipID(
                         farmID: row.farmID,
-                        userID: row.ownerUserID
+                        userID: session.user.id
                     ),
                 checkpointCursor: checkpoint.throughRevision,
                 restoreCursor: record.currentCursorRevision,
@@ -304,7 +423,8 @@ struct SupabaseOwnedFarmDiscoveryService {
             )
             try await rebuildService.activatePreparedRestoredFarm(
                 farmID: row.farmID,
-                ownerAccountID: accountID,
+                ownerAccountID: ownerAccountID,
+                memberRole: memberRole,
                 authorityGeneration: row.authorityGeneration,
                 container: context.container
             )
@@ -353,7 +473,7 @@ struct SupabaseOwnedFarmDiscoveryService {
 
         if let existingFarm = try context.fetch(FetchDescriptor<FarmRecord>())
             .first(where: { $0.id == row.farmID }) {
-            guard existingFarm.ownerAccountID == accountID else {
+            guard existingFarm.ownerAccountID == ownerAccountID else {
                 throw SupabaseOwnedFarmDiscoveryError.accountMismatch
             }
             let markerPrefix = "compact-discovery:" +
@@ -379,7 +499,7 @@ struct SupabaseOwnedFarmDiscoveryService {
         try await rebuildService.restoreAuthoritativeCache(
                 package: package,
                 packageDigest: checkpoint.archiveDigest,
-                ownerAccountID: accountID,
+                ownerAccountID: ownerAccountID,
                 cursor: checkpoint.throughRevision,
                 activate: false,
                 container: context.container
@@ -391,9 +511,11 @@ struct SupabaseOwnedFarmDiscoveryService {
         )
         try await rebuildService.finalizeRestoredFarm(
             package: package,
-            ownerAccountID: accountID,
+            ownerAccountID: ownerAccountID,
             cursor: checkpoint.throughRevision,
             serverMembershipID: record.serverMembershipID,
+            membershipAccountID: accountID,
+            memberRole: memberRole,
             activate: false,
             container: context.container
         )
@@ -413,7 +535,8 @@ struct SupabaseOwnedFarmDiscoveryService {
         )
         try await rebuildService.activatePreparedRestoredFarm(
             farmID: row.farmID,
-            ownerAccountID: accountID,
+            ownerAccountID: ownerAccountID,
+            memberRole: memberRole,
             authorityGeneration: row.authorityGeneration,
             container: context.container
         )
@@ -487,10 +610,10 @@ struct SupabaseOwnedFarmDiscoveryService {
         checkpoint: FarmCompactRemoteCheckpoint,
         package: FarmCompactBaselinePackageV1,
         row: RegistryRow,
-        accountID: UUID
+        ownerAccountID: UUID
     ) throws {
         guard package.manifest.farmID == row.farmID,
-              package.farm.ownerAccountID == accountID,
+              package.farm.ownerAccountID == ownerAccountID,
               package.manifest.authorityGeneration ==
                 row.authorityGeneration,
               package.manifest.migrationID == checkpoint.migrationID,

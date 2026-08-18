@@ -178,6 +178,101 @@ final class FarmRemoteRestoreAndStorageTests: XCTestCase {
         )
     }
 
+    func testActivatedRestoreResumePreservesInvitedWorkerIdentity() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "InvitedWorkerSupabaseRestoreResumeTests",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let ownerAccountID = UUID()
+        let workerAccountID = UUID()
+        let migrationID = UUID()
+        let packageDigest = String(repeating: "b", count: 64)
+        let serverMembershipID =
+            "supabase:\(farmID.uuidString.lowercased()):worker-user"
+        let farm = FarmRecord(
+            id: farmID,
+            ownerAccountID: ownerAccountID,
+            name: "受邀恢复牧场",
+            role: .owner
+        )
+        context.insert(farm)
+        context.insert(FarmStorageProfile(
+            farmID: farmID,
+            mode: .supabase,
+            authorityGeneration: 1
+        ))
+        let binding = FarmRemoteBinding(
+            farmID: farmID,
+            ownerAccountID: ownerAccountID,
+            provider: .supabase,
+            state: .preparing,
+            authorityGeneration: 1,
+            remoteFarmID: farmID.uuidString.lowercased()
+        )
+        context.insert(binding)
+        context.insert(CloudOperationReceipt(
+            farmID: farmID,
+            operationID: UUID(),
+            recordName:
+                "compact-discovery:\(migrationID.uuidString.lowercased()):root",
+            serverChangeTag: packageDigest,
+            databaseScope: .privateDatabase
+        ))
+        try context.save()
+
+        let resumedCursor = try await FarmCompactBaselineRebuildService()
+            .resumeActivatedFarmIfPossible(
+                farmID: farmID,
+                migrationID: migrationID,
+                packageDigest: packageDigest,
+                ownerAccountID: ownerAccountID,
+                membershipAccountID: workerAccountID,
+                memberRole: .worker,
+                authorityGeneration: 1,
+                serverMembershipID: serverMembershipID,
+                checkpointCursor: 20,
+                restoreCursor: 20,
+                container: container
+            )
+
+        XCTAssertEqual(resumedCursor, 20)
+        let verification = ModelContext(container)
+        let restoredFarm = try XCTUnwrap(
+            verification.fetch(FetchDescriptor<FarmRecord>())
+                .first { $0.id == farmID }
+        )
+        let membership = try XCTUnwrap(
+            verification.fetch(FetchDescriptor<FarmMembershipBinding>())
+                .first {
+                    $0.farmID == farmID &&
+                        $0.accountID == workerAccountID
+                }
+        )
+        XCTAssertEqual(restoredFarm.ownerAccountID, ownerAccountID)
+        XCTAssertEqual(restoredFarm.role, .worker)
+        XCTAssertEqual(membership.accountID, workerAccountID)
+        XCTAssertEqual(membership.role, .worker)
+        XCTAssertEqual(membership.status, .active)
+        XCTAssertEqual(membership.serverMembershipID, serverMembershipID)
+
+        try await FarmCompactBaselineRebuildService()
+            .activatePreparedRestoredFarm(
+                farmID: farmID,
+                ownerAccountID: ownerAccountID,
+                memberRole: .worker,
+                authorityGeneration: 1,
+                container: container
+            )
+        let activatedContext = ModelContext(container)
+        XCTAssertEqual(
+            try activatedContext.fetch(FetchDescriptor<FarmRecord>())
+                .first { $0.id == farmID }?.role,
+            .worker
+        )
+    }
+
     func testRevokedMembershipOutboxStatusRemainsTerminal() {
         XCTAssertTrue(
             OutboxStatus.quarantinedMembershipRevoked.isTerminalDelivery

@@ -496,6 +496,8 @@ actor FarmCompactBaselineRebuildService {
         ownerAccountID: UUID,
         cursor: Int,
         serverMembershipID: String? = nil,
+        membershipAccountID: UUID? = nil,
+        memberRole: FarmRole = .owner,
         activate: Bool = true,
         container: ModelContainer
     ) throws {
@@ -535,12 +537,19 @@ actor FarmCompactBaselineRebuildService {
             existingBinding.updatedAt = .now
             existingBinding.ownerAccountID = ownerAccountID
             existingBinding.lastErrorCode = nil
-            try ensureOwnerMembership(
+            try ensureMembership(
                 farmID: package.manifest.farmID,
-                ownerAccountID: ownerAccountID,
+                accountID: membershipAccountID ?? ownerAccountID,
+                role: memberRole,
                 serverMembershipID: serverMembershipID,
                 context: context
             )
+            if let farm = try context.fetch(FetchDescriptor<FarmRecord>())
+                .first(where: { $0.id == package.manifest.farmID }) {
+                farm.roleRawValue = memberRole.rawValue
+                farm.membershipStatusRawValue =
+                    FarmMembershipStatus.active.rawValue
+            }
             try context.save()
             return
         }
@@ -552,6 +561,8 @@ actor FarmCompactBaselineRebuildService {
             ownerAccountID: ownerAccountID,
             cursor: cursor,
             serverMembershipID: serverMembershipID,
+            membershipAccountID: membershipAccountID ?? ownerAccountID,
+            memberRole: memberRole,
             state: activate ? .active : .preparing,
             context: context
         )
@@ -569,6 +580,8 @@ actor FarmCompactBaselineRebuildService {
         migrationID: UUID,
         packageDigest: String,
         ownerAccountID: UUID,
+        membershipAccountID: UUID? = nil,
+        memberRole: FarmRole = .owner,
         authorityGeneration: Int,
         serverMembershipID: String,
         checkpointCursor: Int,
@@ -613,7 +626,7 @@ actor FarmCompactBaselineRebuildService {
             restoreRevision: restoreCursor,
             bindingRevision: binding.lastPulledRevision
         )
-        farm.roleRawValue = FarmRole.owner.rawValue
+        farm.roleRawValue = memberRole.rawValue
         farm.membershipStatusRawValue = FarmMembershipStatus.active.rawValue
         profile.transitionStateRawValue =
             FarmStorageTransitionState.idle.rawValue
@@ -624,9 +637,10 @@ actor FarmCompactBaselineRebuildService {
         binding.lastSuccessfulSyncAt = .now
         binding.lastErrorCode = nil
         binding.updatedAt = .now
-        try ensureOwnerMembership(
+        try ensureMembership(
             farmID: farmID,
-            ownerAccountID: ownerAccountID,
+            accountID: membershipAccountID ?? ownerAccountID,
+            role: memberRole,
             serverMembershipID: serverMembershipID,
             context: context
         )
@@ -639,6 +653,7 @@ actor FarmCompactBaselineRebuildService {
     func activatePreparedRestoredFarm(
         farmID: UUID,
         ownerAccountID: UUID,
+        memberRole: FarmRole = .owner,
         authorityGeneration: Int,
         container: ModelContainer
     ) throws {
@@ -666,7 +681,7 @@ actor FarmCompactBaselineRebuildService {
               }) else {
             throw FarmCompactBaselineRebuildError.markerMismatch
         }
-        farm.roleRawValue = FarmRole.owner.rawValue
+        farm.roleRawValue = memberRole.rawValue
         farm.membershipStatusRawValue = FarmMembershipStatus.active.rawValue
         farm.updatedAt = .now
         profile.transitionStateRawValue =
@@ -782,6 +797,8 @@ actor FarmCompactBaselineRebuildService {
         ownerAccountID: UUID,
         cursor: Int,
         serverMembershipID: String? = nil,
+        membershipAccountID: UUID? = nil,
+        memberRole: FarmRole = .owner,
         state: FarmRemoteBindingState = .active,
         context: ModelContext
     ) throws {
@@ -810,34 +827,41 @@ actor FarmCompactBaselineRebuildService {
         binding.lastPulledRevision = max(0, cursor)
         binding.lastSuccessfulSyncAt = .now
         context.insert(binding)
-        try ensureOwnerMembership(
+        try ensureMembership(
             farmID: farmID,
-            ownerAccountID: ownerAccountID,
+            accountID: membershipAccountID ?? ownerAccountID,
+            role: memberRole,
             serverMembershipID: serverMembershipID,
             context: context
         )
+        if let farm = try context.fetch(FetchDescriptor<FarmRecord>())
+            .first(where: { $0.id == farmID }) {
+            farm.roleRawValue = memberRole.rawValue
+            farm.membershipStatusRawValue = FarmMembershipStatus.active.rawValue
+        }
     }
 
-    private func ensureOwnerMembership(
+    private func ensureMembership(
         farmID: UUID,
-        ownerAccountID: UUID,
+        accountID: UUID,
+        role: FarmRole,
         serverMembershipID: String?,
         context: ModelContext
     ) throws {
         let resolvedServerMembershipID = serverMembershipID ??
             "supabase:\(farmID.uuidString.lowercased()):" +
-            ownerAccountID.uuidString.lowercased()
+            accountID.uuidString.lowercased()
         let candidates = try context.fetch(
             FetchDescriptor<FarmMembershipBinding>()
         ).filter {
-            $0.farmID == farmID && $0.accountID == ownerAccountID
+            $0.farmID == farmID && $0.accountID == accountID
         }
         let membership = candidates.first {
             $0.serverMembershipID == resolvedServerMembershipID
         } ?? candidates.first
         if let membership {
             membership.serverMembershipID = resolvedServerMembershipID
-            membership.roleRawValue = FarmRole.owner.rawValue
+            membership.roleRawValue = role.rawValue
             membership.statusRawValue = FarmMembershipStatus.active.rawValue
             membership.updatedAt = .now
             for duplicate in candidates where duplicate.id != membership.id {
@@ -847,8 +871,8 @@ actor FarmCompactBaselineRebuildService {
             context.insert(FarmMembershipBinding(
                 serverMembershipID: resolvedServerMembershipID,
                 farmID: farmID,
-                accountID: ownerAccountID,
-                role: .owner,
+                accountID: accountID,
+                role: role,
                 status: .active
             ))
         }

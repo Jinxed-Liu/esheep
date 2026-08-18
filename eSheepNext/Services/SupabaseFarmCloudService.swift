@@ -271,24 +271,6 @@ actor SupabaseFarmInviteClient {
 
 @MainActor
 final class SupabaseFarmJoinService {
-    private struct FarmEntityRow: Decodable {
-        let payloadBase64: String
-        let payloadDigest: String
-
-        enum CodingKeys: String, CodingKey {
-            case payloadBase64 = "payload_base64"
-            case payloadDigest = "payload_digest"
-        }
-    }
-
-    private struct OwnerRow: Decodable {
-        let appAccountID: UUID
-
-        enum CodingKeys: String, CodingKey {
-            case appAccountID = "app_account_id"
-        }
-    }
-
     private let client: SupabaseClient
 
     init(client: SupabaseClient) {
@@ -302,72 +284,13 @@ final class SupabaseFarmJoinService {
     ) async throws -> FarmRecord {
         let redemption = try await SupabaseFarmInviteClient(client: client)
             .redeem(code: code)
-        let entities: [FarmEntityRow] = try await client
-            .from("farm_entities")
-            .select("payload_base64,payload_digest")
-            .eq("farm_id", value: redemption.farmID)
-            .eq("entity_type", value: CloudEntityType.farm.rawValue)
-            .limit(1)
-            .execute()
-            .value
-        guard let entity = entities.first,
-              let payloadData = Data(base64Encoded: entity.payloadBase64),
-              CloudPayloadDigest.hex(for: payloadData) == entity.payloadDigest,
-              let payload = try? JSONDecoder().decode(
-                  FarmCommandCloudPayload.self,
-                  from: payloadData
-              ),
-              payload.kind == .createFarm,
-              let farmName = payload.strings["name"],
-              !farmName.isEmpty else {
-            throw SupabaseFarmCloudError.malformedResponse
-        }
-        let owners: [OwnerRow] = try await client
-            .from("farm_members")
-            .select("app_account_id")
-            .eq("farm_id", value: redemption.farmID)
-            .eq("role", value: FarmRole.owner.rawValue)
-            .eq("status", value: "active")
-            .limit(1)
-            .execute()
-            .value
-        guard let owner = owners.first else {
-            throw SupabaseFarmCloudError.malformedResponse
-        }
-
-        if let existing = try context.fetch(FetchDescriptor<FarmRecord>())
-            .first(where: { $0.id == redemption.farmID }) {
-            return existing
-        }
-        let farm = FarmRecord(
-            id: redemption.farmID,
-            ownerAccountID: owner.appAccountID,
-            name: farmName,
-            role: redemption.role
-        )
-        context.insert(farm)
-        context.insert(FarmStorageProfile(
-            farmID: farm.id,
-            mode: .supabase,
-            authorityGeneration: redemption.authorityGeneration
-        ))
-        let binding = FarmRemoteBinding(
-            farmID: farm.id,
-            ownerAccountID: owner.appAccountID,
-            provider: .supabase,
-            state: .active,
-            authorityGeneration: redemption.authorityGeneration,
-            remoteFarmID: farm.id.uuidString.lowercased()
-        )
-        context.insert(binding)
-        context.insert(FarmMembershipBinding(
-            serverMembershipID: "supabase:\(farm.id.uuidString):\(accountID.uuidString)",
-            farmID: farm.id,
-            accountID: accountID,
-            role: redemption.role,
-            status: .active
-        ))
-        try context.save()
+        let farm = try await SupabaseOwnedFarmDiscoveryService(client: client)
+            .restoreRedeemedFarm(
+                farmID: redemption.farmID,
+                authorityGeneration: redemption.authorityGeneration,
+                accountID: accountID,
+                context: context
+            )
         CloudRuntimeNotification.postSyncWake(farmID: farm.id)
         return farm
     }
