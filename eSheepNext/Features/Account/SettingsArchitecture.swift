@@ -250,6 +250,7 @@ struct JoinFarmView: View {
     @State private var isQRCodeScannerPresented = false
     @State private var shareURL: URL?
     @State private var isSupabaseJoinPresented = false
+    @State private var supabaseJoinedFarmID: UUID?
 
     private var normalizedCode: String {
         code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -362,7 +363,16 @@ struct JoinFarmView: View {
             }
         }
         .sheet(isPresented: $isSupabaseJoinPresented) {
-            SupabaseJoinFarmView(account: account)
+            SupabaseJoinFarmView(account: account) { farm in
+                supabaseJoinedFarmID = farm.id
+            }
+        }
+        .onChange(of: isSupabaseJoinPresented) { _, isPresented in
+            guard !isPresented,
+                  let farmID = supabaseJoinedFarmID else { return }
+            supabaseJoinedFarmID = nil
+            session.selectedFarmID = farmID
+            dismiss()
         }
     }
 

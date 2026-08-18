@@ -152,6 +152,7 @@ struct SupabaseJoinFarmView: View {
     @Environment(\.modelContext) private var modelContext
 
     let account: AccountProfile
+    let onJoined: @MainActor (FarmRecord) -> Void
 
     @State private var code = ""
     @State private var isWorking = false
@@ -172,6 +173,11 @@ struct SupabaseJoinFarmView: View {
                         isWorking ||
                         code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     )
+                    if isWorking {
+                        Label("正在验证成员资格并恢复牧场资料…", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .navigationTitle("加入 Supabase 牧场")
@@ -201,11 +207,12 @@ struct SupabaseJoinFarmView: View {
         Task { @MainActor in
             defer { isWorking = false }
             do {
-                _ = try await SupabaseFarmJoinService(client: client).redeemAndInstall(
+                let farm = try await SupabaseFarmJoinService(client: client).redeemAndInstall(
                     code: code,
                     accountID: account.effectiveAccountID,
                     context: modelContext
                 )
+                onJoined(farm)
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription
