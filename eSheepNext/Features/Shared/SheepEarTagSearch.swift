@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import SwiftUI
 
 struct SheepEarTagSearchCandidate: Identifiable, Hashable, Sendable {
@@ -6,12 +7,14 @@ struct SheepEarTagSearchCandidate: Identifiable, Hashable, Sendable {
     let earTag: String
     let detail: String
     let normalizedEarTag: String
+    let birthAt: Date?
 
-    init(id: UUID, earTag: String, detail: String = "") {
+    init(id: UUID, earTag: String, detail: String = "", birthAt: Date? = nil) {
         self.id = id
         self.earTag = earTag
         self.detail = detail
         self.normalizedEarTag = EarTag.normalized(earTag)
+        self.birthAt = birthAt
     }
 
     init(sheep: SheepRecord, detail: String? = nil) {
@@ -21,6 +24,56 @@ struct SheepEarTagSearchCandidate: Identifiable, Hashable, Sendable {
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
         self.normalizedEarTag = EarTag.normalized(sheep.earTag)
+        self.birthAt = sheep.birthAt
+    }
+}
+
+enum SheepEarTagCandidateScope: Sendable {
+    case active
+    case allNonDeleted
+}
+
+/// Produces the lightweight values used by form ear-tag search without
+/// making the form hold a live, farm-wide @Query collection on the main
+/// actor. The command still saves through the regular ModelContext and only
+/// the selected UUID crosses back to the form.
+actor SheepEarTagCandidateSnapshotActor {
+    private let container: ModelContainer
+
+    init(container: ModelContainer) {
+        self.container = container
+    }
+
+    func load(
+        farmID: UUID,
+        scope: SheepEarTagCandidateScope
+    ) throws -> [SheepEarTagSearchCandidate] {
+        try Task.checkCancellation()
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let records: [SheepRecord]
+        switch scope {
+        case .active:
+            let activeStatus = SheepStatus.active.rawValue
+            records = try context.fetch(FetchDescriptor<SheepRecord>(
+                predicate: #Predicate {
+                    $0.farmID == farmID &&
+                        $0.deletedAt == nil &&
+                        $0.statusRawValue == activeStatus &&
+                        $0.isHistoricalArchive == false
+                },
+                sortBy: [SortDescriptor(\.earTag)]
+            ))
+        case .allNonDeleted:
+            records = try context.fetch(FetchDescriptor<SheepRecord>(
+                predicate: #Predicate {
+                    $0.farmID == farmID && $0.deletedAt == nil
+                },
+                sortBy: [SortDescriptor(\.earTag)]
+            ))
+        }
+        try Task.checkCancellation()
+        return records.map { SheepEarTagSearchCandidate(sheep: $0) }
     }
 }
 

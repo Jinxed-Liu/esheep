@@ -649,6 +649,8 @@ select is(
     join pg_namespace namespace on namespace.oid = function.pronamespace
     where namespace.nspname = 'public'
       and function.prosecdef
+      and function.oid <>
+        'public.get_account_deletion_status(uuid)'::regprocedure
       and has_function_privilege(
         'anon',
         function.oid,
@@ -656,7 +658,7 @@ select is(
       )
   ),
   0,
-  'anon cannot execute any public SECURITY DEFINER function'
+  'anon cannot execute public SECURITY DEFINER functions except the opaque deletion status lookup'
 );
 
 select is(

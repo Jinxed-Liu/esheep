@@ -31,6 +31,19 @@ enum CloudEntityType: String, CaseIterable, Codable, Sendable {
     case feedTroughObservation
     case feedStockTransaction
     case feedStockCount
+    case tmrFormula
+    case tmrFeedingPlan
+    case tmrFeedingPlanPen
+    case tmrBatch
+    case tmrBatchIngredient
+    case tmrBatchLoadLine
+    case tmrBatchMovement
+    case tmrFeedingRun
+    case tmrFeedingAllocation
+    case tmrMealCompletion
+    case tmrDeviationAcknowledgement
+    case tmrMonitoringRule
+    case tmrBaseline
     case inventoryLot
     case inventoryTransaction
     case health

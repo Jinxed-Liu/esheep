@@ -451,6 +451,16 @@ enum FarmCommandCloudPayloadDecoder {
                 throw FarmCommandCloudPayloadDecodingError.missingValue("careCommand")
             }
             return .care(careCommand)
+        case .saveTMRFormula, .saveTMRMonitoringRule, .saveTMRFeedingPlan,
+             .produceTMRBatch, .recordTMRFeeding, .correctTMRFeedingRun,
+             .reverseTMRFeedingRun, .completeTMRMeal, .reopenTMRMeal,
+             .adjustTMRBatch, .closeTMRBatch, .deleteUnusedTMRBatch,
+             .acknowledgeTMRDeviation:
+            guard let tmrCommand = payload.tmrCommand,
+                  tmrCommand.operationKind == payload.kind else {
+                throw FarmCommandCloudPayloadDecodingError.missingValue("tmrCommand")
+            }
+            return .tmr(tmrCommand)
         case .addNote:
             return .addNote(
                 sheepID: optionalIdentifier("sheepID", in: payload),
@@ -472,7 +482,7 @@ enum FarmCommandCloudPayloadDecoder {
             return .restoreTombstonedEntity(
                 tombstoneID: try identifier("tombstoneID", in: payload)
             )
-        case .createFarm, .addPhoto, .resolveConflict, .recoverEntity, .bootstrapEntity:
+        case .createFarm, .addPhoto, .restoreTMRBaseline, .resolveConflict, .recoverEntity, .bootstrapEntity:
             throw FarmCommandCloudPayloadDecodingError.unsupportedKind(payload.kind)
         }
     }

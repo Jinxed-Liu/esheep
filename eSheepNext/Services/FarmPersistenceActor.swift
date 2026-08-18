@@ -985,7 +985,7 @@ actor FarmPersistenceActor {
         case .pending, .uploading, .awaitingConfirmation, .retryableFailure:
             return true
         case .confirmed, .rejectedPermission, .blockedConflict, .notRequiredLocalOnly,
-             .supersededRemoteAuthority:
+             .quarantinedMembershipRevoked, .supersededRemoteAuthority:
             return false
         }
     }

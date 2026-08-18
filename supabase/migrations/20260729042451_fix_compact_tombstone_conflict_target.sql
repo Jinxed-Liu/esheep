@@ -66,21 +66,6 @@ begin
     raise exception using errcode = '42501',
       message = 'compact_projection_staging_denied';
   end if;
-  if not exists (
-    select 1
-    from public.entitlements entitlement
-    where entitlement.owner_user_id = v_user_id
-      and entitlement.state in ('active', 'grace_period', 'billing_retry')
-      and (
-        entitlement.valid_until is null
-        or entitlement.valid_until > now()
-        or entitlement.grace_until > now()
-      )
-  ) then
-    raise exception using errcode = '42501',
-      message = 'owner_supabase_entitlement_required';
-  end if;
-
   update public.authority_transitions
   set state = 'uploading_baseline', updated_at = now()
   where authority_transitions.migration_id = p_migration_id

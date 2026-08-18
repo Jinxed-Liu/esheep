@@ -61,7 +61,7 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertTrue(SubscriptionCapabilityPolicy.canCreateFarm(existingOwnedFarmCount: 1, entitlement: pro, subscriptionsEnabled: true))
     }
 
-    func testSupabaseCloudRequiresOwnerAndServerEligibleSubscriptionState() {
+    func testFreeReleaseSupabaseCloudRequiresOwnerRoleOnly() {
         let accountID = UUID()
         let active = AccountEntitlement(
             accountID: accountID,
@@ -81,9 +81,9 @@ final class FarmDomainTests: XCTestCase {
 
         XCTAssertTrue(SubscriptionCapabilityPolicy.canEnableSupabaseCloud(role: .owner, entitlement: active, subscriptionsEnabled: true))
         XCTAssertTrue(SubscriptionCapabilityPolicy.canEnableSupabaseCloud(role: .owner, entitlement: grace, subscriptionsEnabled: true))
-        XCTAssertFalse(SubscriptionCapabilityPolicy.canEnableSupabaseCloud(role: .owner, entitlement: expired, subscriptionsEnabled: true))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canEnableSupabaseCloud(role: .owner, entitlement: expired, subscriptionsEnabled: true))
         XCTAssertFalse(SubscriptionCapabilityPolicy.canEnableSupabaseCloud(role: .worker, entitlement: active, subscriptionsEnabled: true))
-        XCTAssertFalse(SubscriptionCapabilityPolicy.canEnableSupabaseCloud(role: .owner, entitlement: active, subscriptionsEnabled: false))
+        XCTAssertTrue(SubscriptionCapabilityPolicy.canEnableSupabaseCloud(role: .owner, entitlement: active, subscriptionsEnabled: false))
     }
 
     func testNonEmptySupabaseBaselineCannotBypassVerifiedStaging() {

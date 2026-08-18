@@ -5,23 +5,19 @@ import SwiftUI
 struct FarmHomeView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
-    @Environment(CloudCollaborationStore.self) private var collaboration
     @Environment(FarmNotificationService.self) private var notifications
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
-    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
-    @Query(sort: \FeedRecord.occurredAt, order: .reverse) private var feedRecords: [FeedRecord]
-    @Query(sort: \HealthRecord.occurredAt, order: .reverse) private var healthRecords: [HealthRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
     @Binding var isWeatherDetailPresented: Bool
     @Binding var isMetricDetailPresented: Bool
     let sharedFarmAdmissionStatus: SharedFarmAdmissionStatus?
-    @State private var pendingOutboxCount = 0
     @State private var selectedMetric: HomeMetricDestination?
     @State private var isEventExportPresented = false
     @State private var operationalAlertState: FarmOperationalAlertLoadState = .loading
     @State private var operationalAlertRefreshRevision = 0
+    @State private var homeSnapshot = FarmHomeSnapshot.empty
+    @State private var homeSnapshotRefreshRevision = 0
     @State private var isOperationalAlertCenterPresented = false
     @Namespace private var metricTransition
 
@@ -37,43 +33,15 @@ struct FarmHomeView: View {
         _isWeatherDetailPresented = isWeatherDetailPresented
         _isMetricDetailPresented = isMetricDetailPresented
         self.sharedFarmAdmissionStatus = sharedFarmAdmissionStatus
-        let farmID = farm.id
-        _sheep = Query(
-            filter: #Predicate<SheepRecord> {
-                $0.farmID == farmID && $0.deletedAt == nil
-            },
-            sort: \.earTag
-        )
-        _pens = Query(
-            filter: #Predicate<PenRecord> {
-                $0.farmID == farmID && $0.deletedAt == nil
-            },
-            sort: \.name
-        )
-        _feedRecords = Query(
-            filter: #Predicate<FeedRecord> {
-                $0.farmID == farmID && $0.deletedAt == nil
-            },
-            sort: \.occurredAt,
-            order: .reverse
-        )
-        _healthRecords = Query(
-            filter: #Predicate<HealthRecord> { $0.farmID == farmID },
-            sort: \.occurredAt,
-            order: .reverse
-        )
     }
 
-    private var farmSheep: [SheepRecord] { sheep.filter(\.isCurrentlyPresent) }
-    private var farmPens: [PenRecord] { CurrentFarmOccupancy.occupiedPens(farmID: farm.id, sheep: sheep, pens: pens) }
     private var canExport: Bool { CapabilitySet(role: farm.role).allows(.exportFarm) }
     private var canManageAlertRules: Bool { CapabilitySet(role: farm.role).allows(.manageCatalogs) }
+    private var homeSnapshotTaskID: String {
+        "\(farm.id.uuidString.lowercased()):\(homeSnapshotRefreshRevision)"
+    }
     private var operationalAlertTaskID: String {
         "\(farm.id.uuidString.lowercased()):\(operationalAlertRefreshRevision)"
-    }
-    private var todayFeedCount: Int {
-        let start = Calendar.current.startOfDay(for: .now)
-        return feedRecords.count { $0.occurredAt >= start }
     }
     var body: some View {
         ScrollView {
@@ -115,24 +83,20 @@ struct FarmHomeView: View {
             FarmEventExportLauncher(farmID: farm.id, farmName: farm.name)
                 .presentationDetents([.large])
         }
-        .task(id: farm.id) {
-            let farmID = farm.id
-            let pending = OutboxStatus.pending.rawValue
-            let retryable = OutboxStatus.retryableFailure.rawValue
-            let descriptor = FetchDescriptor<OutboxItem>(predicate: #Predicate {
-                $0.farmID == farmID && ($0.statusRawValue == pending || $0.statusRawValue == retryable)
-            })
-            pendingOutboxCount = (try? modelContext.fetchCount(descriptor)) ?? 0
+        .task(id: homeSnapshotTaskID) {
+            await loadHomeSnapshot()
         }
         .task(id: operationalAlertTaskID) {
             await loadOperationalAlerts()
         }
         .onReceive(NotificationCenter.default.publisher(for: FarmOperationalAlertRuntimeNotification.refreshRequested)) { notification in
             guard FarmOperationalAlertRuntimeNotification.farmID(from: notification) == farm.id else { return }
+            homeSnapshotRefreshRevision &+= 1
             operationalAlertRefreshRevision &+= 1
         }
         .onReceive(NotificationCenter.default.publisher(for: CloudRuntimeNotification.syncWake)) { notification in
             guard CloudRuntimeNotification.farmID(from: notification) == farm.id else { return }
+            homeSnapshotRefreshRevision &+= 1
             operationalAlertRefreshRevision &+= 1
         }
         .onChange(of: session.pendingOperationalAlertsRequestID, initial: true) { _, requestID in
@@ -146,13 +110,13 @@ struct FarmHomeView: View {
         FarmWeatherHero(
             farm: farm,
             syncSymbol: sharedFarmAdmissionStatus == nil
-                ? (pendingOutboxCount == 0 ? "checkmark.icloud" : "arrow.triangle.2.circlepath.icloud")
+                ? (homeSnapshot.pendingOutboxCount == 0 ? "checkmark.icloud" : "arrow.triangle.2.circlepath.icloud")
                 : "person.2.badge.gearshape",
             syncText: sharedFarmAdmissionStatus.map {
                 "正在加入共享牧场 · \($0.detailText)"
             } ?? (
                 CloudFeatureConfiguration.isEnabled
-                    ? (pendingOutboxCount == 0 ? "本地记录已排队处理" : "有 \(pendingOutboxCount) 条本地记录等待同步")
+                    ? (homeSnapshot.pendingOutboxCount == 0 ? "本地记录已排队处理" : "有 \(homeSnapshot.pendingOutboxCount) 条本地记录等待同步")
                     : "业务数据已保存在本机"
             ),
             isDetailPresented: $isWeatherDetailPresented
@@ -161,9 +125,9 @@ struct FarmHomeView: View {
 
     private var metrics: some View {
         HStack(spacing: 12) {
-            metricButton(.sheep, value: farmSheep.count)
-            metricButton(.pens, value: farmPens.count)
-            metricButton(.feeding, value: todayFeedCount)
+            metricButton(.sheep, value: homeSnapshot.activeSheepCount)
+            metricButton(.pens, value: homeSnapshot.occupiedPenCount)
+            metricButton(.feeding, value: homeSnapshot.todayFeedCount)
         }
     }
 
@@ -242,23 +206,45 @@ struct FarmHomeView: View {
                 StatusRow(title: "羊只档案", detail: "查看羊只档案、体重与时间线", symbol: "list.bullet")
             }
             NavigationLink { PenManagementView(account: account, farm: farm) } label: {
-                StatusRow(title: "圈舍管理", detail: "当前 \(farmPens.count) 个圈舍有在场羊", symbol: "building.2")
+                StatusRow(title: "圈舍管理", detail: "当前 \(homeSnapshot.occupiedPenCount) 个圈舍有在场羊", symbol: "building.2")
             }
-            let activeHealthRecordCount = healthRecords.count { $0.deletedAt == nil }
-            if activeHealthRecordCount > 0 {
-                StatusRow(title: "健康记录", detail: "已有 \(activeHealthRecordCount) 条记录", symbol: "cross.case")
+            if homeSnapshot.activeHealthRecordCount > 0 {
+                StatusRow(title: "健康记录", detail: "已有 \(homeSnapshot.activeHealthRecordCount) 条记录", symbol: "cross.case")
             }
         }
     }
 
     @MainActor
+    private func loadHomeSnapshot() async {
+        do {
+            let snapshot = try await FarmHomeSnapshotActor(container: modelContext.container)
+                .load(farmID: farm.id)
+            try Task.checkCancellation()
+            homeSnapshot = snapshot
+        } catch is CancellationError {
+            return
+        } catch {
+            // Keep the last valid counters visible. A retry is triggered by
+            // the next local command or cloud-sync notification.
+        }
+    }
+
+    @MainActor
     private func loadOperationalAlerts() async {
+        let isInitialLoad: Bool
         if case .loaded = operationalAlertState {
             // Keep the last valid snapshot visible while a refresh is running.
+            isInitialLoad = false
         } else {
             operationalAlertState = .loading
+            isInitialLoad = true
         }
         do {
+            // The alert snapshot spans several historical record types. Let
+            // navigation and the lightweight home counters settle first.
+            if isInitialLoad {
+                try await Task.sleep(for: .milliseconds(1_200))
+            }
             let actor = FarmOperationalAlertSnapshotActor(container: modelContext.container)
             let snapshot = try await actor.load(farmID: farm.id)
             try Task.checkCancellation()
@@ -315,36 +301,26 @@ private struct HomeMetric: View {
 }
 
 private struct TodayFeedDetailView: View {
-    @Query(sort: \FeedRecord.occurredAt, order: .reverse) private var feedRecords: [FeedRecord]
-    @Query private var feedLines: [FeedRecordLine]
-    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
+    @Environment(\.modelContext) private var modelContext
 
     let farm: FarmRecord
-
-    private var todayFeedRecords: [FeedRecord] {
-        let start = Calendar.current.startOfDay(for: .now)
-        return feedRecords.filter {
-            $0.farmID == farm.id && $0.deletedAt == nil && $0.occurredAt >= start
-        }
-    }
-
-    private var penNames: [UUID: String] {
-        Dictionary(uniqueKeysWithValues: pens.lazy.filter { $0.farmID == farm.id }.map { ($0.id, $0.name) })
-    }
+    @State private var rows: [TodayFeedRowSnapshot] = []
+    @State private var isLoading = true
+    @State private var loadError: String?
 
     var body: some View {
         List {
-            ForEach(todayFeedRecords, id: \.id) { feed in
+            ForEach(rows) { feed in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Text(penNames[feed.penID] ?? "已删除圈舍")
+                        Text(feed.penName)
                             .font(.headline)
                         Spacer()
                         Text(feed.occurredAt, format: .dateTime.hour().minute())
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
-                    Text(feedSummary(feed))
+                    Text(feed.summary)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     if !feed.note.isEmpty {
@@ -357,7 +333,11 @@ private struct TodayFeedDetailView: View {
             }
         }
         .overlay {
-            if todayFeedRecords.isEmpty {
+            if isLoading {
+                ProgressView("正在整理今日投喂")
+            } else if let loadError {
+                ContentUnavailableView("读取失败", systemImage: "exclamationmark.triangle", description: Text(loadError))
+            } else if rows.isEmpty {
                 ContentUnavailableView(
                     "今日暂无投喂",
                     systemImage: "leaf",
@@ -367,15 +347,26 @@ private struct TodayFeedDetailView: View {
         }
         .navigationTitle("今日投喂")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: farm.id) { await loadRows() }
     }
 
-    private func feedSummary(_ feed: FeedRecord) -> String {
-        let lineCount = feedLines.lazy.filter {
-            $0.farmID == farm.id && $0.feedRecordID == feed.id && $0.deletedAt == nil
-        }.count
-        let meal = feed.mealName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefix = meal.isEmpty ? feed.mode.displayName : meal
-        return "\(prefix) · \(lineCount) 种原料"
+    @MainActor
+    private func loadRows() async {
+        isLoading = true
+        loadError = nil
+        do {
+            let updatedRows = try await TodayFeedSnapshotActor(container: modelContext.container)
+                .load(farmID: farm.id)
+            try Task.checkCancellation()
+            rows = updatedRows
+            isLoading = false
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled else { return }
+            loadError = error.localizedDescription
+            isLoading = false
+        }
     }
 }
 

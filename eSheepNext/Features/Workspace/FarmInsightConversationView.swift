@@ -989,7 +989,7 @@ private struct InsightMessageBubble: View {
                     if isVoiceMessage {
                         voiceMessage
                     }
-                    if !message.text.isEmpty && message.text != "🎙️ 语音消息" {
+                    if !message.text.isEmpty && message.text != "语音消息" {
                         InsightMarkdownView(
                             message.text,
                             foregroundColor: isUser ? .white : .primary,

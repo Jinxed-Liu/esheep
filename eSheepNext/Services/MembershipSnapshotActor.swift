@@ -161,7 +161,14 @@ actor MembershipSnapshotActor {
             generation: snapshot.generation,
             issuedAt: Date(timeIntervalSince1970: TimeInterval(snapshot.issuedAt)),
             members: snapshot.members.map { .init(membershipID: $0.membershipID, accountID: $0.accountID, role: $0.role, status: $0.status, shareParticipantRecordName: $0.shareParticipantRecordName) },
-            devices: snapshot.devices.map { .init(deviceID: $0.deviceID, accountID: $0.accountID, publicKeyJWK: $0.publicKeyJWK) },
+            devices: snapshot.devices.map {
+                .init(
+                    deviceID: $0.deviceID,
+                    accountID: $0.accountID,
+                    publicKeyJWK: $0.publicKeyJWK,
+                    tmrDataProtocolVersion: $0.tmrDataProtocolVersion
+                )
+            },
             revokedCertificates: snapshot.revokedCertificates.map { .init(certificateID: $0.certificateID, revokedAt: $0.revokedAt) }
         )
     }

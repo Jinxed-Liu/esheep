@@ -458,6 +458,11 @@ enum AppSchemaV9: VersionedSchema {
 
 enum AppSchemaV10: VersionedSchema {
     static let versionIdentifier = Schema.Version(10, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.preV11ModelTypes }
+}
+
+enum AppSchemaV11: VersionedSchema {
+    static let versionIdentifier = Schema.Version(11, 0, 0)
     static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
 }
 
@@ -475,6 +480,7 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             AppSchemaV9_0.self,
             AppSchemaV9.self,
             AppSchemaV10.self,
+            AppSchemaV11.self,
         ]
     }
 
@@ -564,12 +570,52 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: AppSchemaV8.self, toVersion: AppSchemaV9_0.self),
             .lightweight(fromVersion: AppSchemaV9_0.self, toVersion: AppSchemaV9.self),
             .lightweight(fromVersion: AppSchemaV9.self, toVersion: AppSchemaV10.self),
+            .custom(
+                fromVersion: AppSchemaV10.self,
+                toVersion: AppSchemaV11.self,
+                willMigrate: nil,
+                didMigrate: { context in
+                    let recipes = try context.fetch(FetchDescriptor<FeedRecipeRecord>())
+                    let existingRecipeIDs = Set(
+                        try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>()).map(\.recipeID)
+                    )
+                    for recipe in recipes where !existingRecipeIDs.contains(recipe.id) {
+                        let referenceHeadCount = recipe.headCount.flatMap { $0 > 0 ? $0 : nil }
+                        let profile = TMRFormulaProfileRecord(
+                            id: recipe.id,
+                            farmID: recipe.farmID,
+                            recipeID: recipe.id,
+                            quantityBasis: .wholeGroupDaily,
+                            referenceHeadCount: referenceHeadCount,
+                            defaultScaleMode: .scaledByHeadCount,
+                            formulaRevision: 1,
+                            needsReview: referenceHeadCount == nil,
+                            createdAt: recipe.createdAt
+                        )
+                        profile.updatedAt = recipe.updatedAt
+                        profile.deletedAt = recipe.deletedAt
+                        context.insert(profile)
+                    }
+                    // A TMR formula identifies ingredient varieties only. Older
+                    // feed recipes could pin a stock lot; preserve that identifier
+                    // as legacy context, then release the live dependency so the
+                    // operator chooses real lots while producing each batch.
+                    for component in try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()) {
+                        guard let ingredientBatchID = component.ingredientBatchID else { continue }
+                        if component.legacyBatchID?.isEmpty != false {
+                            component.legacyBatchID = ingredientBatchID.uuidString.lowercased()
+                        }
+                        component.ingredientBatchID = nil
+                    }
+                    try context.save()
+                }
+            ),
         ]
     }
 }
 
 enum AppSchema {
-    static let currentVersion = "10.0.0"
+    static let currentVersion = "11.0.0"
 
     static func defaultStoreURL(name: String = "eSheepNext") -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -577,6 +623,94 @@ enum AppSchema {
     }
 
     static var businessModelTypes: [any PersistentModel.Type] {
+        [
+            AccountProfile.self,
+            FarmRecord.self,
+            FarmActivity.self,
+            PenRecord.self,
+            SheepRecord.self,
+            WeightRecord.self,
+            WeaningRecord.self,
+            BreedingProgramRecord.self,
+            BreedingProgramStepRecord.self,
+            TransferRecord.self,
+            RemovalRecord.self,
+            ProductionBatchRecord.self,
+            BatchMembershipRecord.self,
+            DailyPenCountRecord.self,
+            FeedIngredientRecord.self,
+            FeedRecipeRecord.self,
+            FeedRecipeComponentRecord.self,
+            FeedRecord.self,
+            FeedRecordLine.self,
+            FeedTroughObservationRecord.self,
+            FeedStockTransactionRecord.self,
+            FeedStockCountRecord.self,
+            InventoryLotRecord.self,
+            InventoryTransactionRecord.self,
+            HealthRecord.self,
+            ReproductionRecord.self,
+            SemenRecord.self,
+            SemenDonorRecord.self,
+            PedigreeChangeRecord.self,
+            NoteRecord.self,
+            DomainOperation.self,
+            OutboxItem.self,
+            TombstoneRecord.self,
+            MigrationCommitRecord.self,
+            MigrationAuditRecord.self,
+            PhotoAssetRecord.self,
+            SheepAvatarRecord.self,
+            HealthSubjectLink.self,
+            LambingOffspringRecord.self,
+            FeedIngredientBatchRecord.self,
+            HealthCatalogItemRecord.self,
+            CareBatchRecord.self,
+            SemenTransactionRecord.self,
+            FarmCareRuleRecord.self,
+            CareReminderRecord.self,
+            FarmAlertDeferralRecord.self,
+            CloudFarmBinding.self,
+            CloudZoneState.self,
+            FarmMembershipBinding.self,
+            DeviceIdentityRecord.self,
+            CapabilityCertificateRecord.self,
+            RevokedCapabilityCertificateRecord.self,
+            SyncConflictRecord.self,
+            CloudOperationReceipt.self,
+            CloudAssetTransfer.self,
+            FarmMembershipSnapshotRecord.self,
+            FarmCheckpointRecord.self,
+            FarmRecoveryAssetRecord.self,
+            SecurityIncidentRecord.self,
+            CloudRebuildSessionRecord.self,
+            CloudRebuildIssueRecord.self,
+            CloudSyncDiagnosticSnapshotRecord.self,
+            FarmStorageProfile.self,
+            FarmRemoteBinding.self,
+            FarmOperationSequenceCounter.self,
+            FarmOperationSequenceRecord.self,
+            FarmBaselineMigrationRecord.self,
+            FarmRemoteRestoreRecord.self,
+            TMRFormulaProfileRecord.self,
+            TMRFeedingPlanRecord.self,
+            TMRFeedingPlanPenRecord.self,
+            TMRBatchRecord.self,
+            TMRBatchIngredientRecord.self,
+            TMRBatchLoadLineRecord.self,
+            TMRBatchMovementRecord.self,
+            TMRFeedingRunRecord.self,
+            TMRFeedingAllocationRecord.self,
+            TMRMealCompletionRecord.self,
+            TMRDeviationAcknowledgementRecord.self,
+            TMRMonitoringRuleRecord.self,
+        ]
+    }
+
+    /// V10 was the last schema before TMR. Historical schemas must derive from
+    /// this frozen business entity set, never from `businessModelTypes`, or a
+    /// newly added current model would silently change every older schema hash.
+    fileprivate static var preV11BusinessModelTypes: [any PersistentModel.Type] {
         [
             AccountProfile.self,
             FarmRecord.self,
@@ -695,7 +829,9 @@ enum AppSchema {
     /// this exact entity set for V7 recognition; older schemas intentionally
     /// remove SheepAvatarRecord below.
     fileprivate static var preV8BusinessModelTypes: [any PersistentModel.Type] {
-        businessModelTypes.filter {
+        preV11BusinessModelTypes.filter {
+            ObjectIdentifier($0) != ObjectIdentifier(FarmCareRuleRecord.self) &&
+            ObjectIdentifier($0) != ObjectIdentifier(FarmAlertDeferralRecord.self) &&
             ObjectIdentifier($0) != ObjectIdentifier(FeedStockTransactionRecord.self) &&
             ObjectIdentifier($0) != ObjectIdentifier(FeedStockCountRecord.self) &&
             ObjectIdentifier($0) != ObjectIdentifier(FeedIngredientRecord.self) &&
@@ -712,11 +848,12 @@ enum AppSchema {
             AppSchemaV7.FeedRecord.self,
             AppSchemaV7.FeedRecordLine.self,
             AppSchemaV7.FeedIngredientBatchRecord.self,
+            AppSchemaV8.FarmCareRuleRecord.self,
         ]
     }
 
     fileprivate static var preV9BusinessModelTypes: [any PersistentModel.Type] {
-        businessModelTypes.filter {
+        preV11BusinessModelTypes.filter {
             ObjectIdentifier($0) != ObjectIdentifier(FarmCareRuleRecord.self) &&
             ObjectIdentifier($0) != ObjectIdentifier(FarmAlertDeferralRecord.self) &&
             ObjectIdentifier($0) != ObjectIdentifier(FeedRecord.self) &&
@@ -728,7 +865,7 @@ enum AppSchema {
     }
 
     fileprivate static var preV9_1BusinessModelTypes: [any PersistentModel.Type] {
-        businessModelTypes.filter {
+        preV11BusinessModelTypes.filter {
             ObjectIdentifier($0) != ObjectIdentifier(FarmCareRuleRecord.self) &&
             ObjectIdentifier($0) != ObjectIdentifier(FeedRecord.self) &&
             ObjectIdentifier($0) != ObjectIdentifier(FeedTroughObservationRecord.self)
@@ -739,7 +876,7 @@ enum AppSchema {
     }
 
     fileprivate static var preV10BusinessModelTypes: [any PersistentModel.Type] {
-        businessModelTypes.filter {
+        preV11BusinessModelTypes.filter {
             ObjectIdentifier($0) != ObjectIdentifier(FeedRecord.self) &&
             ObjectIdentifier($0) != ObjectIdentifier(FeedTroughObservationRecord.self)
         } + [
@@ -794,8 +931,12 @@ enum AppSchema {
         preV10BusinessModelTypes + insightModelTypes
     }
 
+    fileprivate static var preV11ModelTypes: [any PersistentModel.Type] {
+        preV11BusinessModelTypes + insightModelTypes
+    }
+
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV10.self)
+        Schema(versionedSchema: AppSchemaV11.self)
     }
 
     static func makeConfiguration(

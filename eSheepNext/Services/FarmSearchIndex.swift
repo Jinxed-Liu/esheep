@@ -108,17 +108,46 @@ enum FarmSearchEngine {
         let boundedLimit = max(0, limit)
 
         return FarmSearchResultSet(
-            sheep: sheepMatches
-                .sorted(by: compareSheepMatches)
-                .prefix(boundedLimit)
-                .map(\.0),
-            pens: penMatches
-                .sorted(by: comparePenMatches)
-                .prefix(boundedLimit)
-                .map(\.0),
+            sheep: topSheepMatches(sheepMatches, limit: boundedLimit),
+            pens: topPenMatches(penMatches, limit: boundedLimit),
             totalSheepCount: sheepMatches.count,
             totalPenCount: penMatches.count
         )
+    }
+
+    /// Keep only the rows that can be rendered. A full sort of every matching
+    /// sheep was unnecessary once the result limit was capped at 50 and made
+    /// typing in a large farm search O(n log n) on every debounced query.
+    private static func topSheepMatches(
+        _ matches: [(FarmSearchSheepEntry, Int)],
+        limit: Int
+    ) -> [FarmSearchSheepEntry] {
+        guard limit > 0 else { return [] }
+        var top: [(FarmSearchSheepEntry, Int)] = []
+        top.reserveCapacity(min(limit, matches.count))
+        for match in matches {
+            let insertionIndex = top.firstIndex { compareSheepMatches(match, $0) } ?? top.endIndex
+            guard insertionIndex < limit else { continue }
+            top.insert(match, at: insertionIndex)
+            if top.count > limit { top.removeLast() }
+        }
+        return top.map(\.0)
+    }
+
+    private static func topPenMatches(
+        _ matches: [(FarmSearchPenEntry, Int)],
+        limit: Int
+    ) -> [FarmSearchPenEntry] {
+        guard limit > 0 else { return [] }
+        var top: [(FarmSearchPenEntry, Int)] = []
+        top.reserveCapacity(min(limit, matches.count))
+        for match in matches {
+            let insertionIndex = top.firstIndex { comparePenMatches(match, $0) } ?? top.endIndex
+            guard insertionIndex < limit else { continue }
+            top.insert(match, at: insertionIndex)
+            if top.count > limit { top.removeLast() }
+        }
+        return top.map(\.0)
     }
 
     private static func compareSheepMatches(

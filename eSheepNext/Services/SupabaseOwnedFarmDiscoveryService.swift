@@ -114,14 +114,14 @@ struct SupabaseOwnedFarmDiscoveryService {
             .value
         var restored: [UUID] = []
         for row in rows {
-            let restoreRecord = try context.fetch(
+            let pendingRecords = try context.fetch(
                 FetchDescriptor<FarmRemoteRestoreRecord>()
-            ).first {
+            ).filter {
                 $0.accountID == accountID &&
                     $0.farmID == row.farmID &&
                     $0.state != .completed
             }
-            if restoreRecord == nil,
+            if pendingRecords.isEmpty,
                try context.fetch(FetchDescriptor<FarmRemoteBinding>())
                 .contains(where: {
                     $0.farmID == row.farmID &&
@@ -130,57 +130,118 @@ struct SupabaseOwnedFarmDiscoveryService {
                 }) {
                 continue
             }
+            let restoreRecord = try prepareRestoreRecord(
+                row: row,
+                accountID: accountID,
+                pendingRecords: pendingRecords,
+                context: context
+            )
             do {
                 try await restore(
                     row: row,
                     accountID: accountID,
-                    existingRecord: restoreRecord,
+                    record: restoreRecord,
                     context: context
                 )
                 restored.append(row.farmID)
             } catch {
-                if let record = try context.fetch(
-                    FetchDescriptor<FarmRemoteRestoreRecord>()
-                ).first(where: {
-                    $0.accountID == accountID && $0.farmID == row.farmID
-                }) {
-                    record.stateRawValue = FarmRemoteRestoreState.failed.rawValue
-                    record.lastErrorCode = Self.errorCode(error)
-                    record.updatedAt = .now
-                    try? context.save()
-                }
+                restoreRecord.stateRawValue =
+                    FarmRemoteRestoreState.failed.rawValue
+                restoreRecord.lastErrorCode = Self.errorCode(error)
+                restoreRecord.updatedAt = .now
+                try? context.save()
                 throw error
             }
         }
         return restored
     }
 
-    private func restore(
+    private func prepareRestoreRecord(
         row: RegistryRow,
         accountID: UUID,
-        existingRecord: FarmRemoteRestoreRecord?,
+        pendingRecords: [FarmRemoteRestoreRecord],
         context: ModelContext
-    ) async throws {
+    ) throws -> FarmRemoteRestoreRecord {
+        let serverMembershipID = Self.serverMembershipID(
+            farmID: row.farmID,
+            userID: row.ownerUserID
+        )
         let record: FarmRemoteRestoreRecord
-        if let existingRecord {
-            guard existingRecord.authorityGeneration ==
-                    row.authorityGeneration else {
+        if let existing = Self.preferredRestoreRecord(pendingRecords) {
+            guard existing.authorityGeneration == row.authorityGeneration else {
                 throw SupabaseOwnedFarmDiscoveryError.restoreRecordMismatch
             }
-            record = existingRecord
-            record.targetCursorRevision = max(
-                record.targetCursorRevision,
-                row.currentRevision
-            )
+            record = existing
+            for duplicate in pendingRecords where duplicate.id != existing.id {
+                context.delete(duplicate)
+            }
         } else {
             record = FarmRemoteRestoreRecord(
                 accountID: accountID,
                 farmID: row.farmID,
                 authorityGeneration: row.authorityGeneration,
+                ownerAccountID: accountID,
+                memberRole: .owner,
+                serverMembershipID: serverMembershipID,
                 targetCursorRevision: row.currentRevision
             )
             context.insert(record)
         }
+        record.ownerAccountID = accountID
+        record.memberRoleRawValue = FarmRole.owner.rawValue
+        record.serverMembershipID = serverMembershipID
+        record.targetCursorRevision = max(
+            record.targetCursorRevision,
+            row.currentRevision
+        )
+        record.updatedAt = .now
+        try context.save()
+        return record
+    }
+
+    static func preferredRestoreRecord(
+        _ records: [FarmRemoteRestoreRecord]
+    ) -> FarmRemoteRestoreRecord? {
+        records.max { lhs, rhs in
+            let lhsProgress = (
+                lhs.currentCursorRevision,
+                lhs.promotedAssetCount,
+                lhs.downloadedAssetCount,
+                lhs.restoredEntityCount,
+                lhs.checkpointRelativePath == nil ? 0 : 1
+            )
+            let rhsProgress = (
+                rhs.currentCursorRevision,
+                rhs.promotedAssetCount,
+                rhs.downloadedAssetCount,
+                rhs.restoredEntityCount,
+                rhs.checkpointRelativePath == nil ? 0 : 1
+            )
+            if lhsProgress.0 != rhsProgress.0 {
+                return lhsProgress.0 < rhsProgress.0
+            }
+            if lhsProgress.1 != rhsProgress.1 {
+                return lhsProgress.1 < rhsProgress.1
+            }
+            if lhsProgress.2 != rhsProgress.2 {
+                return lhsProgress.2 < rhsProgress.2
+            }
+            if lhsProgress.3 != rhsProgress.3 {
+                return lhsProgress.3 < rhsProgress.3
+            }
+            if lhsProgress.4 != rhsProgress.4 {
+                return lhsProgress.4 < rhsProgress.4
+            }
+            return lhs.updatedAt < rhs.updatedAt
+        }
+    }
+
+    private func restore(
+        row: RegistryRow,
+        accountID: UUID,
+        record: FarmRemoteRestoreRecord,
+        context: ModelContext
+    ) async throws {
         record.advance(to: .downloadingCheckpoint)
         try context.save()
         await DevelopmentSupabaseRestoreGate.pauseIfArmed(
@@ -207,6 +268,51 @@ struct SupabaseOwnedFarmDiscoveryService {
         record.checkpointRevision = checkpoint.throughRevision
         record.totalEntityCount = checkpoint.projectionCount
         record.totalAssetCount = checkpoint.assetCount
+
+        let rebuildService = FarmCompactBaselineRebuildService()
+        if let resumeCursor = try await rebuildService
+            .resumeActivatedFarmIfPossible(
+                farmID: row.farmID,
+                migrationID: checkpoint.migrationID,
+                packageDigest: checkpoint.archiveDigest,
+                ownerAccountID: accountID,
+                authorityGeneration: row.authorityGeneration,
+                serverMembershipID: record.serverMembershipID ??
+                    Self.serverMembershipID(
+                        farmID: row.farmID,
+                        userID: row.ownerUserID
+                    ),
+                checkpointCursor: checkpoint.throughRevision,
+                restoreCursor: record.currentCursorRevision,
+                container: context.container
+            ) {
+            record.restoredEntityCount = checkpoint.projectionCount
+            record.downloadedAssetCount = checkpoint.assetCount
+            record.promotedAssetCount = checkpoint.assetCount
+            record.currentCursorRevision = resumeCursor
+            record.advance(to: .catchingUp)
+            try context.save()
+            await DevelopmentSupabaseRestoreGate.pauseIfArmed(at: .catchingUp)
+            let syncResult = try await FarmRemoteSyncCoordinator(
+                container: context.container,
+                transport: transport
+            ).catchUpRestoredFarm(farmID: row.farmID)
+            record.currentCursorRevision = syncResult.cursorRevision
+            record.targetCursorRevision = max(
+                record.targetCursorRevision,
+                syncResult.cursorRevision
+            )
+            try await rebuildService.activatePreparedRestoredFarm(
+                farmID: row.farmID,
+                ownerAccountID: accountID,
+                authorityGeneration: row.authorityGeneration,
+                container: context.container
+            )
+            record.advance(to: .completed)
+            try context.save()
+            return
+        }
+
         record.advance(to: .rebuildingStaging)
         try context.save()
         await DevelopmentSupabaseRestoreGate.pauseIfArmed(
@@ -224,7 +330,7 @@ struct SupabaseOwnedFarmDiscoveryService {
             },
             activePhotos: package.assets.count
         )
-        try await FarmCompactBaselineRebuildService().verify(
+        try await rebuildService.verify(
             package: package,
             packageDigest: checkpoint.archiveDigest,
             sourceCounts: sourceCounts
@@ -270,8 +376,7 @@ struct SupabaseOwnedFarmDiscoveryService {
             }
         }
 
-        try await FarmCompactBaselineRebuildService()
-            .restoreAuthoritativeCache(
+        try await rebuildService.restoreAuthoritativeCache(
                 package: package,
                 packageDigest: checkpoint.archiveDigest,
                 ownerAccountID: accountID,
@@ -284,24 +389,33 @@ struct SupabaseOwnedFarmDiscoveryService {
             record: record,
             context: context
         )
-        try await FarmCompactBaselineRebuildService().finalizeRestoredFarm(
+        try await rebuildService.finalizeRestoredFarm(
             package: package,
             ownerAccountID: accountID,
             cursor: checkpoint.throughRevision,
+            serverMembershipID: record.serverMembershipID,
+            activate: false,
             container: context.container
         )
 
+        record.currentCursorRevision = checkpoint.throughRevision
         record.advance(to: .catchingUp)
         try context.save()
         await DevelopmentSupabaseRestoreGate.pauseIfArmed(at: .catchingUp)
         let syncResult = try await FarmRemoteSyncCoordinator(
             container: context.container,
             transport: transport
-        ).synchronize(farmID: row.farmID)
+        ).catchUpRestoredFarm(farmID: row.farmID)
         record.currentCursorRevision = syncResult.cursorRevision
         record.targetCursorRevision = max(
             record.targetCursorRevision,
             syncResult.cursorRevision
+        )
+        try await rebuildService.activatePreparedRestoredFarm(
+            farmID: row.farmID,
+            ownerAccountID: accountID,
+            authorityGeneration: row.authorityGeneration,
+            container: context.container
         )
         record.advance(to: .completed)
         try context.save()
@@ -550,6 +664,15 @@ struct SupabaseOwnedFarmDiscoveryService {
 
     private static func errorCode(_ error: Error) -> String {
         let value = error as NSError
-        return "\(value.domain):\(value.code)"
+        return "\(value.domain):\(value.code):" +
+            String(error.localizedDescription.prefix(320))
+    }
+
+    private static func serverMembershipID(
+        farmID: UUID,
+        userID: UUID
+    ) -> String {
+        "supabase:\(farmID.uuidString.lowercased()):" +
+            userID.uuidString.lowercased()
     }
 }

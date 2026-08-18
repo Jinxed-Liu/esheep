@@ -1912,6 +1912,8 @@ actor CloudRebuildActor {
             return "20"
         case .weight, .weaning, .transfer, .removal, .batchMembership, .feed, .health, .reproduction, .note:
             return "30"
+        case .tmrBaseline:
+            return "32"
         case .pedigreeChange:
             return "35"
         case .alertDeferral:
@@ -1948,7 +1950,10 @@ actor CloudRebuildActor {
         case .adjustFeedStock: 12
         case .countFeedStock: 13
         case .saveFeedRecipe: 14
+        case .saveTMRFormula, .saveTMRMonitoringRule: 15
+        case .saveTMRFeedingPlan: 16
         case .updatePen, .setPenActive, .addSheep, .updateSheepProfile, .addRecipeComponent: 20
+        case .produceTMRBatch: 25
         case .care:
             switch payload.careCommand {
             case .upsertSemenDonor(let draft): draft.linkedRamID == nil ? 5 : 25
@@ -1962,6 +1967,10 @@ actor CloudRebuildActor {
             }
         case .recordWeight, .correctWeight, .recordWeaning, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep, .recordFeed, .recordFeedV2, .importHistoricalFeed, .recordHealth, .recordReproduction, .addNote, .addPhoto, .assignBatchMembership, .leaveBatchMembership: 30
         case .recordFeedTroughObservation: 31
+        case .restoreTMRBaseline: 32
+        case .recordTMRFeeding, .correctTMRFeedingRun, .reverseTMRFeedingRun,
+             .completeTMRMeal, .reopenTMRMeal, .adjustTMRBatch, .closeTMRBatch,
+             .deleteUnusedTMRBatch, .acknowledgeTMRDeviation: 33
         case .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: 40
         }
     }

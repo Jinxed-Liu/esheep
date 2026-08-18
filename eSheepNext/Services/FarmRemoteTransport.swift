@@ -155,6 +155,7 @@ enum FarmRemoteTransportError: LocalizedError {
     case invalidAssetDigest
     case baselineStagingRequired
     case unsupportedICloudBridgeOperation
+    case tmrClientUpgradeRequired
 
     var errorDescription: String? {
         switch self {
@@ -168,6 +169,8 @@ enum FarmRemoteTransportError: LocalizedError {
             "非空牧场必须先完成可验证的暂存基线，不能直接激活 Supabase 权威。"
         case .unsupportedICloudBridgeOperation:
             "该 iCloud 操作尚未接入通用传输桥。"
+        case .tmrClientUpgradeRequired:
+            "牧场仍有未支持当前 TMR 数据协议的活跃设备，请先在这些设备上升级并重新打开 App，再重试同步。"
         }
     }
 }
@@ -1380,28 +1383,34 @@ actor SupabaseFarmTransport: FarmRemoteTransport {
         var receipts: [FarmRemoteOperationReceipt] = []
         receipts.reserveCapacity(operations.count)
         for operation in operations {
-            let rows: [OperationReceiptRow] = try await client.rpc(
-                "apply_farm_operation",
-                params: ApplyOperationParameters(
-                    p_farm_id: operation.farmID,
-                    p_operation_id: operation.operationID,
-                    p_authority_generation: authorityGeneration,
-                    p_entity_type: operation.entityType,
-                    p_entity_id: operation.entityID,
-                    p_base_revision: operation.baseRevision,
-                    p_resulting_revision: operation.revision,
-                    p_schema_version: operation.schemaVersion,
-                    p_payload_base64: operation.payload.base64EncodedString(),
-                    p_payload_digest: operation.payloadDigest,
-                    p_modified_by_account_id: operation.modifiedByAccountID,
-                    p_modified_by_device_id: operation.modifiedByDeviceID,
-                    p_capability_certificate: operation.capabilityCertificate,
-                    p_operation_signature: operation.operationSignature.base64EncodedString(),
-                    p_occurred_at: CloudDateText.string(from: operation.modifiedAt),
-                    p_modified_at: CloudDateText.string(from: operation.modifiedAt),
-                    p_deleted_at: operation.deletedAt.map(CloudDateText.string(from:))
-                )
-            ).execute().value
+            let rows: [OperationReceiptRow]
+            do {
+                rows = try await client.rpc(
+                    "apply_farm_operation",
+                    params: ApplyOperationParameters(
+                        p_farm_id: operation.farmID,
+                        p_operation_id: operation.operationID,
+                        p_authority_generation: authorityGeneration,
+                        p_entity_type: operation.entityType,
+                        p_entity_id: operation.entityID,
+                        p_base_revision: operation.baseRevision,
+                        p_resulting_revision: operation.revision,
+                        p_schema_version: operation.schemaVersion,
+                        p_payload_base64: operation.payload.base64EncodedString(),
+                        p_payload_digest: operation.payloadDigest,
+                        p_modified_by_account_id: operation.modifiedByAccountID,
+                        p_modified_by_device_id: operation.modifiedByDeviceID,
+                        p_capability_certificate: operation.capabilityCertificate,
+                        p_operation_signature: operation.operationSignature.base64EncodedString(),
+                        p_occurred_at: CloudDateText.string(from: operation.modifiedAt),
+                        p_modified_at: CloudDateText.string(from: operation.modifiedAt),
+                        p_deleted_at: operation.deletedAt.map(CloudDateText.string(from:))
+                    )
+                ).execute().value
+            } catch let error as PostgrestError
+                where error.message == "tmr_client_upgrade_required" {
+                throw FarmRemoteTransportError.tmrClientUpgradeRequired
+            }
             guard let row = rows.first else { throw FarmRemoteTransportError.malformedResponse }
             receipts.append(FarmRemoteOperationReceipt(
                 operationID: row.operationID,
@@ -1426,14 +1435,20 @@ actor SupabaseFarmTransport: FarmRemoteTransport {
         let payloads = operations.sorted {
             $0.clientSequence < $1.clientSequence
         }.map(Self.batchPayload(from:))
-        let rows: [BatchOperationResultRow] = try await client.rpc(
-            "apply_farm_operations_batch",
-            params: BatchApplyParameters(
-                p_farm_id: farmID,
-                p_authority_generation: authorityGeneration,
-                p_operations: payloads
-            )
-        ).execute().value
+        let rows: [BatchOperationResultRow]
+        do {
+            rows = try await client.rpc(
+                "apply_farm_operations_batch",
+                params: BatchApplyParameters(
+                    p_farm_id: farmID,
+                    p_authority_generation: authorityGeneration,
+                    p_operations: payloads
+                )
+            ).execute().value
+        } catch let error as PostgrestError
+            where error.message == "tmr_client_upgrade_required" {
+            throw FarmRemoteTransportError.tmrClientUpgradeRequired
+        }
 
         return try Self.pushResult(from: rows)
     }

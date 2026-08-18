@@ -28,6 +28,15 @@ enum DomainEntityDeletionService {
         case .feedRecipeComponent: try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .feed:
             guard let feed = try context.fetch(FetchDescriptor<FeedRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first else { return }
+            let belongsToTMRRun = try context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>()).contains {
+                $0.farmID == farmID && $0.feedRecordID == id
+            }
+            guard !belongsToTMRRun else {
+                // A TMR FeedRecord is only the per-pen projection of one atomic
+                // feeding run. Generic deletion would strand the finished-goods
+                // ledger, so it must be reversed through TMRCommandHandler.
+                throw TMRCommandApplyError.runNotFound
+            }
             let wasDeleted = feed.deletedAt != nil
             feed.deletedAt = date
             for line in try context.fetch(FetchDescriptor<FeedRecordLine>(predicate: #Predicate {
@@ -63,6 +72,14 @@ enum DomainEntityDeletionService {
                     $0.id == adjustmentID && $0.farmID == farmID
                 })).first?.deletedAt = date
             }
+        case .tmrFormula, .tmrFeedingPlan, .tmrFeedingPlanPen, .tmrBatch,
+             .tmrBatchIngredient, .tmrBatchLoadLine, .tmrBatchMovement,
+             .tmrFeedingRun, .tmrFeedingAllocation, .tmrMealCompletion,
+             .tmrDeviationAcknowledgement, .tmrMonitoringRule, .tmrBaseline:
+            // TMR facts have ledger, snapshot, and completion invariants. They
+            // must be changed through TMRCommandHandler so stock and batch
+            // balances are reversed atomically instead of generic tombstoning.
+            throw FarmPermissionError.denied(.deleteProtectedFacts)
         case .inventoryLot: try context.fetch(FetchDescriptor<InventoryLotRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .inventoryTransaction: try context.fetch(FetchDescriptor<InventoryTransactionRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .health:

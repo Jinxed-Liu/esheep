@@ -780,6 +780,81 @@ struct RemoteDomainApplyService {
             guard result.entityType.rawValue == envelope.entityType, result.entityID == envelope.entityID else { throw RemoteDomainApplyError.invalidPayload("careCommand.target") }
             _ = try alignCareProjectionRevision(for: envelope, context: context)
             return .applied(rebuildHistoryFrom: command.rebuildHistoryFrom)
+        case .restoreTMRBaseline:
+            guard allowsBaselineProjection else {
+                throw RemoteDomainApplyError.unsupportedOperation(payload.kind.rawValue)
+            }
+            guard TMRCloudDataProtocol.isSupported(by: payload),
+                  let snapshot = payload.tmrBaselineSnapshot else {
+                throw RemoteDomainApplyError.invalidPayload("tmrBaselineSnapshot")
+            }
+            if try matchesExistingTMRBaseline(snapshot, farmID: envelope.farmID, context: context) {
+                return .duplicate
+            }
+            guard try !Self.containsAnyTMRProjection(farmID: envelope.farmID, context: context) else {
+                throw RemoteDomainApplyError.invalidPayload("tmrBaseline.partialProjection")
+            }
+            let recipes = Set(try context.fetch(FetchDescriptor<FeedRecipeRecord>())
+                .filter { $0.farmID == envelope.farmID }.map(\.id))
+            let ingredients = Set(try context.fetch(FetchDescriptor<FeedIngredientRecord>())
+                .filter { $0.farmID == envelope.farmID }.map(\.id))
+            let ingredientBatches = Set(try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>())
+                .filter { $0.farmID == envelope.farmID }.map(\.id))
+            let feeds = Set(try context.fetch(FetchDescriptor<FeedRecord>())
+                .filter { $0.farmID == envelope.farmID }.map(\.id))
+            let pens = Set(try context.fetch(FetchDescriptor<PenRecord>())
+                .filter { $0.farmID == envelope.farmID }.map(\.id))
+            try snapshot.validate(
+                recipeIDs: recipes,
+                ingredientIDs: ingredients,
+                ingredientBatchIDs: ingredientBatches,
+                feedRecordIDs: feeds,
+                penIDs: pens
+            )
+            snapshot.insert(farmID: envelope.farmID, context: context)
+            replayIndex?.rebuildFromPendingInserts(in: context)
+            return .applied(rebuildHistoryFrom: nil)
+        case .saveTMRFormula, .saveTMRMonitoringRule, .saveTMRFeedingPlan,
+             .produceTMRBatch, .recordTMRFeeding, .correctTMRFeedingRun,
+             .reverseTMRFeedingRun, .completeTMRMeal, .reopenTMRMeal,
+             .adjustTMRBatch, .closeTMRBatch, .deleteUnusedTMRBatch,
+             .acknowledgeTMRDeviation:
+            guard let command = payload.tmrCommand,
+                  command.operationKind == payload.kind,
+                  TMRCloudDataProtocol.isSupported(by: payload) else {
+                throw RemoteDomainApplyError.invalidPayload("tmrCommand")
+            }
+            if let localRevision = try Self.tmrLocalRevision(
+                entityType: envelope.entityType,
+                entityID: envelope.entityID,
+                farmID: envelope.farmID,
+                context: context
+            ) {
+                if localRevision == envelope.revision { return .duplicate }
+                guard localRevision == envelope.baseRevision else {
+                    return .conflict(localRevision: localRevision)
+                }
+            } else if envelope.baseRevision != 0 {
+                return .conflict(localRevision: 0)
+            }
+            do {
+                let result = try TMRCommandHandler.validateAndApply(
+                    command,
+                    farmID: envelope.farmID,
+                    accountID: envelope.modifiedByAccountID,
+                    context: context,
+                    modifiedAt: envelope.modifiedAt
+                )
+                guard result.entityType.rawValue == envelope.entityType,
+                      result.entityID == envelope.entityID,
+                      result.baseRevision == envelope.baseRevision,
+                      result.resultingRevision == envelope.revision else {
+                    throw RemoteDomainApplyError.invalidPayload("tmrCommand.target")
+                }
+                return .applied(rebuildHistoryFrom: nil)
+            } catch TMRCommandApplyError.revisionConflict(let current) {
+                return .conflict(localRevision: current)
+            }
         case .createFarm:
             return .duplicate
         case .updateFarmLocation:
@@ -1468,9 +1543,8 @@ struct RemoteDomainApplyService {
                   pen.farmID == envelope.farmID else {
                 throw RemoteDomainApplyError.missingReference("penID")
             }
-            let feederName = try string("feederName", payload).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !feederName.isEmpty,
-                  let actual = Decimal.stable(try string("actualRemainingKilogramsText", payload)),
+            let feederName = (payload.strings["feederName"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let actual = Decimal.stable(try string("actualRemainingKilogramsText", payload)),
                   actual >= 0 else {
                 throw RemoteDomainApplyError.invalidPayload("actualRemainingKilogramsText")
             }
@@ -1816,6 +1890,15 @@ struct RemoteDomainApplyService {
         case .saveFeedRecipe: .feedRecipe
         case .recordFeedV2, .importHistoricalFeed: .feed
         case .recordFeedTroughObservation: .feedTroughObservation
+        case .restoreTMRBaseline: .tmrBaseline
+        case .saveTMRFormula: .tmrFormula
+        case .saveTMRMonitoringRule: .tmrMonitoringRule
+        case .saveTMRFeedingPlan: .tmrFeedingPlan
+        case .produceTMRBatch, .recordTMRFeeding, .correctTMRFeedingRun,
+             .reverseTMRFeedingRun, .adjustTMRBatch, .closeTMRBatch,
+             .deleteUnusedTMRBatch: .tmrBatch
+        case .completeTMRMeal, .reopenTMRMeal: .tmrMealCompletion
+        case .acknowledgeTMRDeviation: .tmrDeviationAcknowledgement
         case .recordHealth: .health
         case .receiveInventory: .inventoryLot
         case .addSemen: .semen
@@ -1824,6 +1907,107 @@ struct RemoteDomainApplyService {
         case .addPhoto: .photoAsset
         case .care, .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: nil
         }
+    }
+
+    static func tmrLocalRevision(
+        entityType: String,
+        entityID: UUID,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> Int? {
+        switch CloudEntityType(rawValue: entityType) {
+        case .tmrFormula:
+            return try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.formulaRevision
+        case .tmrMonitoringRule:
+            return try context.fetch(FetchDescriptor<TMRMonitoringRuleRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .tmrFeedingPlan:
+            return try context.fetch(FetchDescriptor<TMRFeedingPlanRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .tmrBatch:
+            return try context.fetch(FetchDescriptor<TMRBatchRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .tmrMealCompletion:
+            return try context.fetch(FetchDescriptor<TMRMealCompletionRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .tmrDeviationAcknowledgement:
+            return try context.fetch(FetchDescriptor<TMRDeviationAcknowledgementRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .tmrBaseline:
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    static func containsAnyTMRProjection(farmID: UUID, context: ModelContext) throws -> Bool {
+        try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRFeedingPlanRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRFeedingPlanPenRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRBatchRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRBatchIngredientRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRBatchLoadLineRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRBatchMovementRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRFeedingRunRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRMealCompletionRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRDeviationAcknowledgementRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRMonitoringRuleRecord>()).contains { $0.farmID == farmID }
+    }
+
+    private func matchesExistingTMRBaseline(
+        _ snapshot: FarmTMRBackupPayload,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> Bool {
+        let profileIDs = Set(try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>())
+            .filter { $0.farmID == farmID }.map(\.id))
+        let planIDs = Set(try context.fetch(FetchDescriptor<TMRFeedingPlanRecord>())
+            .filter { $0.farmID == farmID }.map(\.id))
+        let planPenIDs = Set(try context.fetch(FetchDescriptor<TMRFeedingPlanPenRecord>())
+            .filter { $0.farmID == farmID }.map(\.id))
+        let batchIDs = Set(try context.fetch(FetchDescriptor<TMRBatchRecord>())
+            .filter { $0.farmID == farmID }.map(\.id))
+        let batchIngredientIDs = Set(try context.fetch(FetchDescriptor<TMRBatchIngredientRecord>())
+            .filter { $0.farmID == farmID }.map(\.id))
+        let loadLineIDs = Set(try context.fetch(FetchDescriptor<TMRBatchLoadLineRecord>())
+            .filter { $0.farmID == farmID }.map(\.id))
+        let movementIDs = Set(try context.fetch(FetchDescriptor<TMRBatchMovementRecord>())
+            .filter { $0.farmID == farmID }.map(\.id))
+        let runIDs = Set(try context.fetch(FetchDescriptor<TMRFeedingRunRecord>())
+            .filter { $0.farmID == farmID }.map(\.id))
+        let allocationIDs = Set(try context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>())
+            .filter { $0.farmID == farmID }.map(\.id))
+        let completionIDs = Set(try context.fetch(FetchDescriptor<TMRMealCompletionRecord>())
+            .filter { $0.farmID == farmID }.map(\.id))
+        let acknowledgementIDs = Set(try context.fetch(FetchDescriptor<TMRDeviationAcknowledgementRecord>())
+            .filter { $0.farmID == farmID }.map(\.id))
+        let ruleIDs = Set(try context.fetch(FetchDescriptor<TMRMonitoringRuleRecord>())
+            .filter { $0.farmID == farmID }.map(\.id))
+        let hasAny = !profileIDs.isEmpty || !planIDs.isEmpty || !planPenIDs.isEmpty ||
+            !batchIDs.isEmpty || !batchIngredientIDs.isEmpty || !loadLineIDs.isEmpty ||
+            !movementIDs.isEmpty || !runIDs.isEmpty || !allocationIDs.isEmpty ||
+            !completionIDs.isEmpty || !acknowledgementIDs.isEmpty || !ruleIDs.isEmpty
+        guard hasAny else { return false }
+        return profileIDs == Set(snapshot.formulaProfiles.map(\.id)) &&
+            planIDs == Set(snapshot.plans.map(\.id)) &&
+            planPenIDs == Set(snapshot.planPens.map(\.id)) &&
+            batchIDs == Set(snapshot.batches.map(\.id)) &&
+            batchIngredientIDs == Set(snapshot.batchIngredients.map(\.id)) &&
+            loadLineIDs == Set(snapshot.loadLines.map(\.id)) &&
+            movementIDs == Set(snapshot.movements.map(\.id)) &&
+            runIDs == Set(snapshot.feedingRuns.map(\.id)) &&
+            allocationIDs == Set(snapshot.feedingAllocations.map(\.id)) &&
+            completionIDs == Set(snapshot.mealCompletions.map(\.id)) &&
+            acknowledgementIDs == Set(snapshot.deviationAcknowledgements.map(\.id)) &&
+            ruleIDs == Set(snapshot.monitoringRules.map(\.id))
     }
 
     private func releaseLegacyHistoryProjectionAuthority(for sheep: SheepRecord) {

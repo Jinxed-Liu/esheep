@@ -178,6 +178,27 @@ actor SupabaseAccountIdentityClient: AccountIdentityClient {
         let deviceID: UUID
         let publicKeyJWK: [String: String]
         let displayName: String
+        let tmrDataProtocolVersion: Int
+
+        enum CodingKeys: String, CodingKey {
+            case deviceID = "p_device_id"
+            case publicKeyJWK = "p_public_key_jwk"
+            case displayName = "p_display_name"
+            case tmrDataProtocolVersion = "p_tmr_data_protocol_version"
+        }
+    }
+
+    /// Compatibility payload for farms whose Supabase migration has not yet
+    /// added the TMR protocol-version argument to `register_device`.
+    ///
+    /// Registering the device is still required for ordinary account access.
+    /// Omitting the version deliberately leaves that device ineligible for TMR
+    /// cloud writes until the server migration is deployed and a later
+    /// registration records the supported protocol version.
+    private struct LegacyDeviceRegistrationParameters: Encodable, Sendable {
+        let deviceID: UUID
+        let publicKeyJWK: [String: String]
+        let displayName: String
 
         enum CodingKeys: String, CodingKey {
             case deviceID = "p_device_id"
@@ -330,21 +351,43 @@ actor SupabaseAccountIdentityClient: AccountIdentityClient {
         publicKeyJWK: [String: String],
         displayName: String
     ) async throws -> WorkerDeviceResponse {
-        let rows: [DeviceRegistrationRow] = try await supabase
-            .rpc(
-                "register_device",
-                params: DeviceRegistrationParameters(
-                    deviceID: deviceID,
-                    publicKeyJWK: publicKeyJWK,
-                    displayName: displayName
+        let rows: [DeviceRegistrationRow]
+        do {
+            rows = try await supabase
+                .rpc(
+                    "register_device",
+                    params: DeviceRegistrationParameters(
+                        deviceID: deviceID,
+                        publicKeyJWK: publicKeyJWK,
+                        displayName: displayName,
+                        tmrDataProtocolVersion: TMRCloudDataProtocol.currentVersion
+                    )
                 )
-            )
-            .execute()
-            .value
+                .execute()
+                .value
+        } catch let error as PostgrestError where Self.shouldRetryLegacyDeviceRegistration(
+            code: error.code
+        ) {
+            rows = try await supabase
+                .rpc(
+                    "register_device",
+                    params: LegacyDeviceRegistrationParameters(
+                        deviceID: deviceID,
+                        publicKeyJWK: publicKeyJWK,
+                        displayName: displayName
+                    )
+                )
+                .execute()
+                .value
+        }
         guard let row = rows.first else {
             throw AccountIdentityClientError.invalidProfile
         }
         return WorkerDeviceResponse(deviceID: row.deviceID, registeredAt: row.registeredAt)
+    }
+
+    nonisolated static func shouldRetryLegacyDeviceRegistration(code: String?) -> Bool {
+        code == "PGRST202"
     }
 
     func claimLegacyAccount(_ claim: LegacyAccountClaim) async throws -> UUID {

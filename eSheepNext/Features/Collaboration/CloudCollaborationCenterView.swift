@@ -890,12 +890,18 @@ struct CloudCollaborationCenterView: View {
 
     private func deleteAccount() {
         runTask {
+            guard session.accountAccessStatus.allowsCloudOperations else {
+                await MainActor.run { session.isReauthenticationPresented = true }
+                throw AccountDeletionAuthorizationError.freshSignInRequired
+            }
+            _ = try await AccountIdentityClients.active().refreshSession()
+            try await AccountDeletionAuthorization.confirmBiometrics()
             let deletion = try await AccountIdentityClients.active().deleteAccount()
             await MainActor.run {
                 modelContext.delete(account)
                 try? modelContext.save()
                 session.authenticationDidSignOut(
-                    warning: "账户删除已完成（任务 \(deletion.deletionJobID)）。身份服务会话、设备与本机登录资料均已撤销。"
+                    warning: "删除申请已提交（任务 \(deletion.deletionJobID)）。服务器将在完成检查后处理；请保存任务编号。"
                 )
             }
         }

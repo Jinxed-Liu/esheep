@@ -209,11 +209,9 @@ struct SettingsHomeView: View {
                     SettingsActionContainer {
                         AccountSignOutButton()
                     }
-                    if AccountIdentityClients.activeProvider != .supabase {
-                        SettingsCardDivider(leading: 16)
-                        SettingsActionContainer {
-                            AccountDeletionButton(account: account)
-                        }
+                    SettingsCardDivider(leading: 16)
+                    SettingsActionContainer {
+                        AccountDeletionButton(account: account)
                     }
                 }
             }

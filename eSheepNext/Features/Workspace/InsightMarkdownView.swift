@@ -712,21 +712,21 @@ private struct InsightMarkdownTableView: View {
         let normalized = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        if normalized.contains("✅")
+        if normalized.contains("\u{2705}")
             || ["已执行", "已完成", "成功", "正常", "通过", "已确认"].contains(normalized) {
             return .success
         }
-        if normalized.contains("⏳")
+        if normalized.contains("\u{23F3}")
             || normalized.contains("待确认")
             || normalized.contains("待处理") {
             return .pending
         }
-        if normalized.contains("⚠")
+        if normalized.contains("\u{26A0}")
             || normalized.contains("注意")
             || normalized.contains("模糊") {
             return .warning
         }
-        if normalized.contains("❌")
+        if normalized.contains("\u{274C}")
             || normalized.contains("失败")
             || normalized.contains("异常")
             || normalized.contains("未录入") {
@@ -737,11 +737,11 @@ private struct InsightMarkdownTableView: View {
 
     private func statusLabel(from text: String) -> String? {
         let label = text
-            .replacingOccurrences(of: "✅", with: "")
-            .replacingOccurrences(of: "⏳", with: "")
-            .replacingOccurrences(of: "⚠️", with: "")
-            .replacingOccurrences(of: "⚠", with: "")
-            .replacingOccurrences(of: "❌", with: "")
+            .replacingOccurrences(of: "\u{2705}", with: "")
+            .replacingOccurrences(of: "\u{23F3}", with: "")
+            .replacingOccurrences(of: "\u{26A0}\u{FE0F}", with: "")
+            .replacingOccurrences(of: "\u{26A0}", with: "")
+            .replacingOccurrences(of: "\u{274C}", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return label.isEmpty ? nil : label
     }

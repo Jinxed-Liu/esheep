@@ -178,7 +178,7 @@ struct WelcomeView: View {
                         .disabled(isBindingAccount || !passwordFormIsReady || !identityIsConfigured)
 
                     if !identityIsConfigured {
-                        Text("账号注册、密码登录和 Apple 登录需要配置 Supabase，或在旧账号迁移期配置 CloudBase 身份服务。")
+                        Text("账号注册、密码登录和 Apple 登录需要配置 Supabase。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)

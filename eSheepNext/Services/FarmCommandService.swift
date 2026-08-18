@@ -49,6 +49,7 @@ enum FarmCommandError: LocalizedError {
     case protectedSheepReferences
     case parityBaselineManagedInProfile
     case sourceRecordNotFound
+    case tmrCloudProtocolUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -99,6 +100,7 @@ enum FarmCommandError: LocalizedError {
         case .protectedSheepReferences: "该羊只已有生产历史或亲缘关系，不能直接删除建档事件；请删除或修正关联事实。"
         case .parityBaselineManagedInProfile: "胎次确认由母羊档案管理，不能作为普通繁殖记录修正或删除。"
         case .sourceRecordNotFound: "未找到可修正的原始记录。"
+        case .tmrCloudProtocolUnavailable(let detail): "TMR 云端写入暂不可用：\(detail)"
         }
     }
 }
@@ -533,6 +535,7 @@ enum FarmCommand: Sendable {
     case addSemen(code: String, breed: String, source: String, batchNumber: String, quantityText: String)
     case recordReproduction(eweID: UUID, kind: ReproductionRecordKind, occurredAt: Date, sireID: UUID?, semenName: String?, result: String, lambCount: Int, parity: Int?, birthDeadCount: Int?, offspring: [LambingOffspringDraft], note: String)
     case care(CareCommand)
+    case tmr(TMRCommand)
     case addNote(sheepID: UUID?, penID: UUID?, text: String, occurredAt: Date)
     case tombstoneEntity(entityType: CloudEntityType, entityID: UUID, reason: String)
     case restoreTombstonedEntity(tombstoneID: UUID)
@@ -548,6 +551,8 @@ enum FarmCommand: Sendable {
         case .addIngredient, .createRecipe, .addRecipeComponent, .saveFeedIngredient, .saveFeedBatch, .adjustFeedStock, .countFeedStock, .saveFeedRecipe, .createBreedingProgram:
             .manageCatalogs
         case .care(let command):
+            command.requiredCapability
+        case .tmr(let command):
             command.requiredCapability
         default:
             .recordProduction
@@ -591,6 +596,7 @@ enum FarmCommand: Sendable {
         case .addSemen: .addSemen
         case .recordReproduction: .recordReproduction
         case .care: .care
+        case .tmr(let command): command.operationKind
         case .addNote: .addNote
         case .tombstoneEntity: .tombstoneEntity
         case .restoreTombstonedEntity: .restoreTombstonedEntity
@@ -634,6 +640,7 @@ enum FarmCommand: Sendable {
         case .addSemen(let code, _, _, _, _): "新增冻精：\(code)"
         case .recordReproduction(_, let kind, _, _, _, _, _, _, _, _, _): "记录\(kind.displayName)"
         case .care(let command): command.summary
+        case .tmr(let command): command.summary
         case .addNote: "添加备注"
         case .tombstoneEntity: "删除权威记录"
         case .restoreTombstonedEntity: "恢复已删除记录"
@@ -1599,6 +1606,11 @@ final class FarmCommandService {
         batchState: BatchExecutionState? = nil
     ) throws -> StagedCommandResult {
         let farmID = farm.farmID
+        try validateTMRCloudDataProtocol(
+            for: command,
+            farmID: farmID,
+            context: context
+        )
         guard farm.capabilities.allows(command.requiredCapability) else {
             throw FarmPermissionError.denied(command.requiredCapability)
         }
@@ -1723,6 +1735,47 @@ final class FarmCommandService {
             historyImpact: projectedHistoryImpact,
             operation: operation
         )
+    }
+
+    private func validateTMRCloudDataProtocol(
+        for command: FarmCommand,
+        farmID: UUID,
+        context: ModelContext
+    ) throws {
+        guard case .tmr = command else { return }
+        let route = try FarmStorageRouter.route(farmID: farmID, context: context)
+        guard route.mode == .iCloud else { return }
+        let snapshots = try context.fetch(FetchDescriptor<FarmMembershipSnapshotRecord>())
+            .filter { $0.farmID == farmID && $0.validatedAt != nil }
+        guard let latest = snapshots.max(by: {
+            if $0.generation != $1.generation { return $0.generation < $1.generation }
+            return $0.issuedAt < $1.issuedAt
+        }),
+        let envelope = try? JSONDecoder.tmrMembership.decode(
+            FarmMembershipSnapshotEnvelope.self,
+            from: latest.payload
+        ),
+        envelope.farmID == farmID,
+        envelope.generation == latest.generation else {
+            throw FarmCommandError.tmrCloudProtocolUnavailable(
+                "请先联网刷新协作安全目录，确认所有活跃设备均已升级。"
+            )
+        }
+        let activeAccountIDs = Set(envelope.members.lazy
+            .filter { $0.status == "active" }
+            .map(\.accountID))
+        let activeDevices = envelope.devices.filter { activeAccountIDs.contains($0.accountID) }
+        guard !activeDevices.isEmpty else {
+            throw FarmCommandError.tmrCloudProtocolUnavailable(
+                "安全目录中没有可验证的活跃设备，请先刷新协作安全目录。"
+            )
+        }
+        let incompatible = TMRCloudDataProtocol.incompatibleActiveDeviceIDs(in: envelope)
+        guard incompatible.isEmpty else {
+            throw FarmCommandError.tmrCloudProtocolUnavailable(
+                "仍有 \(incompatible.count) 台活跃设备未声明支持当前 TMR 数据协议，请先在这些设备上升级并重新打开 App。"
+            )
+        }
     }
 
     /// Older clients encoded lambing and its automatically created lamb/weight
@@ -2446,6 +2499,8 @@ final class FarmCommandService {
         switch command {
         case .care:
             break
+        case .tmr:
+            break
         case .updateFarmLocation(let displayName, let latitude, let longitude, _, let timeZoneIdentifier, _, let accuracy):
             _ = try required(displayName, label: "牧场地点名称")
             guard (-90...90).contains(latitude), (-180...180).contains(longitude) else { throw FarmCommandError.invalidFarmCoordinate }
@@ -2761,7 +2816,6 @@ final class FarmCommandService {
             guard draft.observedAt <= Date.now else { throw FarmCommandError.futureFactDate("盘槽时间") }
             try assertPen(draft.penID, farmID: farmID, context: context, includeInactive: true)
             try assertPenOccupied(draft.penID, at: draft.observedAt, farmID: farmID, context: context)
-            _ = try required(draft.feederName, label: "料罐或投喂点")
             try nonNegativeDecimal(draft.actualRemainingKilogramsText, label: "实际剩余量")
             let actual = Decimal.stable(draft.actualRemainingKilogramsText) ?? 0
             if let discardedText = draft.discardedKilogramsText, !discardedText.isEmpty {
@@ -2965,6 +3019,21 @@ final class FarmCommandService {
                 pedigreeSheepByID: pedigreeSheepByID
             )
             return AppliedCommandResult(entityType: result.entityType.rawValue, entityID: result.entityID, baseRevision: result.baseRevision, resultingRevision: result.resultingRevision, payload: defaultPayload)
+        case .tmr(let tmrCommand):
+            let result = try TMRCommandHandler.validateAndApply(
+                tmrCommand,
+                farmID: farm.farmID,
+                accountID: farm.accountID,
+                context: context
+            )
+            let payload = try FarmCommandCloudPayloadEncoder.encode(.tmr(result.payloadCommand))
+            return AppliedCommandResult(
+                entityType: result.entityType.rawValue,
+                entityID: result.entityID,
+                baseRevision: result.baseRevision,
+                resultingRevision: result.resultingRevision,
+                payload: payload
+            )
         case .updateFarmLocation(let displayName, let latitude, let longitude, let addressSnapshot, let timeZoneIdentifier, let source, let accuracy):
             let farms = try context.fetch(FetchDescriptor<FarmRecord>())
             guard let record = farms.first(where: { $0.id == farm.farmID && $0.deletedAt == nil }) else {
@@ -3635,6 +3704,38 @@ final class FarmCommandService {
             try context.fetch(FetchDescriptor<FeedTroughObservationRecord>()).first {
                 $0.id == entityID && $0.farmID == farmID
             }?.revision
+        case .tmrFormula:
+            try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.formulaRevision
+        case .tmrFeedingPlan:
+            try context.fetch(FetchDescriptor<TMRFeedingPlanRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .tmrFeedingPlanPen:
+            try context.fetch(FetchDescriptor<TMRFeedingPlanPenRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .tmrBatch:
+            try context.fetch(FetchDescriptor<TMRBatchRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .tmrFeedingRun:
+            try context.fetch(FetchDescriptor<TMRFeedingRunRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .tmrMealCompletion:
+            try context.fetch(FetchDescriptor<TMRMealCompletionRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .tmrDeviationAcknowledgement:
+            try context.fetch(FetchDescriptor<TMRDeviationAcknowledgementRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .tmrMonitoringRule:
+            try context.fetch(FetchDescriptor<TMRMonitoringRuleRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
         case .reproduction:
             try context.fetch(FetchDescriptor<ReproductionRecord>()).first {
                 $0.id == entityID && $0.farmID == farmID
@@ -3671,7 +3772,9 @@ final class FarmCommandService {
              .feedRecipe, .feedRecipeComponent, .feedLine, .inventoryLot,
              .inventoryTransaction, .health, .pedigreeChange, .photoAsset,
              .feedIngredientBatch, .feedStockTransaction, .feedStockCount, .healthCatalogItem, .healthSubjectLink,
-             .careBatch, .semenTransaction:
+             .careBatch, .semenTransaction, .tmrBatchIngredient,
+             .tmrBatchLoadLine, .tmrBatchMovement, .tmrFeedingAllocation,
+             .tmrBaseline:
             nil
         }
     }
@@ -3696,6 +3799,19 @@ final class FarmCommandService {
         case .feedTroughObservation: return try context.fetch(FetchDescriptor<FeedTroughObservationRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .feedStockTransaction: return try context.fetch(FetchDescriptor<FeedStockTransactionRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .feedStockCount: return try context.fetch(FetchDescriptor<FeedStockCountRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrFormula: return try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrFeedingPlan: return try context.fetch(FetchDescriptor<TMRFeedingPlanRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrFeedingPlanPen: return try context.fetch(FetchDescriptor<TMRFeedingPlanPenRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrBatch: return try context.fetch(FetchDescriptor<TMRBatchRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrBatchIngredient: return try context.fetch(FetchDescriptor<TMRBatchIngredientRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrBatchLoadLine: return try context.fetch(FetchDescriptor<TMRBatchLoadLineRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrBatchMovement: return try context.fetch(FetchDescriptor<TMRBatchMovementRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrFeedingRun: return try context.fetch(FetchDescriptor<TMRFeedingRunRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrFeedingAllocation: return try context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrMealCompletion: return try context.fetch(FetchDescriptor<TMRMealCompletionRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrDeviationAcknowledgement: return try context.fetch(FetchDescriptor<TMRDeviationAcknowledgementRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrMonitoringRule: return try context.fetch(FetchDescriptor<TMRMonitoringRuleRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .tmrBaseline: return false
         case .inventoryLot: return try context.fetch(FetchDescriptor<InventoryLotRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .inventoryTransaction: return try context.fetch(FetchDescriptor<InventoryTransactionRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .health: return try context.fetch(FetchDescriptor<HealthRecord>()).contains { $0.id == id && $0.farmID == farmID }
@@ -3880,6 +3996,14 @@ final class FarmCommandService {
         case .receipt, .adjustment: transaction.quantity
         case .consumption: -transaction.quantity
         }
+    }
+}
+
+private extension JSONDecoder {
+    static var tmrMembership: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }
 }
 

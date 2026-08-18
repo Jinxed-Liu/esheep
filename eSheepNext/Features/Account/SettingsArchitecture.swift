@@ -1,4 +1,5 @@
 import SwiftData
+import LocalAuthentication
 import SwiftUI
 import VisionKit
 
@@ -186,13 +187,49 @@ struct AccountDeletionButton: View {
         Task {
             defer { isWorking = false }
             do {
-                _ = try await AccountIdentityClients.active().deleteAccount()
+                guard session.accountAccessStatus.allowsCloudOperations else {
+                    session.isReauthenticationPresented = true
+                    throw AccountDeletionAuthorizationError.freshSignInRequired
+                }
+                _ = try await AccountIdentityClients.active().refreshSession()
+                try await AccountDeletionAuthorization.confirmBiometrics()
+                let deletion = try await AccountIdentityClients.active().deleteAccount()
                 modelContext.delete(account)
                 try modelContext.save()
-                session.authenticationDidSignOut(warning: "账户已删除。")
+                session.authenticationDidSignOut(
+                    warning: "删除申请已提交（任务 \(deletion.deletionJobID)）。服务器将在完成检查后处理；请保存任务编号。"
+                )
             } catch {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+}
+
+enum AccountDeletionAuthorizationError: LocalizedError {
+    case freshSignInRequired
+
+    var errorDescription: String? {
+        "删除账号前必须先完成一次有效登录，然后重新确认。"
+    }
+}
+
+enum AccountDeletionAuthorization {
+    static func confirmBiometrics() async throws {
+        let context = LAContext()
+        var evaluationError: NSError?
+        guard context.canEvaluatePolicy(
+            .deviceOwnerAuthentication,
+            error: &evaluationError
+        ) else {
+            throw evaluationError ?? AccountDeletionAuthorizationError.freshSignInRequired
+        }
+        let approved = try await context.evaluatePolicy(
+            .deviceOwnerAuthentication,
+            localizedReason: "确认提交 eSheep+ 账号删除申请"
+        )
+        guard approved else {
+            throw AccountDeletionAuthorizationError.freshSignInRequired
         }
     }
 }

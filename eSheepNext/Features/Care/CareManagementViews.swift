@@ -6,32 +6,29 @@ private struct HealthCatalogEditorDestination: Identifiable {
 }
 
 struct CareManagementView: View {
+    @Environment(\.modelContext) private var modelContext
     @Environment(FarmNotificationService.self) private var notifications
     @Query(sort: \CareReminderRecord.dueAt) private var reminders: [CareReminderRecord]
-    @Query(sort: \HealthRecord.occurredAt, order: .reverse) private var health: [HealthRecord]
-    @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproduction: [ReproductionRecord]
     let account: AccountProfile
     let farm: FarmRecord
+    @State private var summary = CareManagementSummarySnapshot.empty
+    @State private var summaryRefreshRevision = 0
 
-    private var reminderRevisionSignature: [String] { reminders.filter { $0.farmID == farm.id }.map { "\($0.id.uuidString):\($0.revision):\($0.dueAt.timeIntervalSinceReferenceDate):\($0.deletedAt?.timeIntervalSinceReferenceDate ?? 0)" }.sorted() }
+    init(account: AccountProfile, farm: FarmRecord) {
+        self.account = account
+        self.farm = farm
+        let farmID = farm.id
+        _reminders = Query(
+            filter: #Predicate<CareReminderRecord> { $0.farmID == farmID },
+            sort: \CareReminderRecord.dueAt
+        )
+    }
+
+    private var reminderRevisionSignature: [String] { reminders.map { "\($0.id.uuidString):\($0.revision):\($0.dueAt.timeIntervalSinceReferenceDate):\($0.deletedAt?.timeIntervalSinceReferenceDate ?? 0)" }.sorted() }
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 20) {
-                SettingsCard(title: "快捷录入") {
-                    SettingsNavigationRow(title: "治疗或疫苗", subtitle: "按羊只或圈舍批量记录", systemImage: "cross.case.fill", iconColor: .red) {
-                        HealthBatchEntryView(account: account, farm: farm)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(title: "配种或孕检", subtitle: "记录繁殖事件和检查结果", systemImage: "heart.text.square.fill", iconColor: .pink) {
-                        ReproductionBatchEntryView(account: account, farm: farm)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(title: "产羔", subtitle: "记录产羔并建立羔羊档案", systemImage: "birthday.cake.fill", iconColor: .purple) {
-                        CareLambingEntryView(account: account, farm: farm)
-                    }
-                }
-
                 SettingsCard(title: "健康管理") {
                     SettingsNavigationRow(title: "药品与疫苗目录", subtitle: "维护常用名称、剂量和单位", systemImage: "books.vertical.fill", iconColor: .blue) {
                         HealthCatalogManagementView(account: account, farm: farm)
@@ -67,14 +64,14 @@ struct CareManagementView: View {
                     SettingsCardDivider()
                     SettingsNavigationRow(
                         title: "健康记录",
-                        subtitle: "\(health.count { $0.farmID == farm.id && $0.deletedAt == nil }) 条有效记录",
+                        subtitle: "\(summary.healthRecordCount) 条有效记录",
                         systemImage: "clock.arrow.circlepath",
                         iconColor: .red
                     ) { HealthHistoryView(account: account, farm: farm) }
                     SettingsCardDivider()
                     SettingsNavigationRow(
                         title: "繁殖记录",
-                        subtitle: "\(reproduction.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.kind != .parityBaseline }) 条有效记录",
+                        subtitle: "\(summary.reproductionRecordCount) 条有效记录",
                         systemImage: "clock.badge.checkmark.fill",
                         iconColor: .pink
                     ) { ReproductionHistoryView(account: account, farm: farm) }
@@ -85,10 +82,33 @@ struct CareManagementView: View {
         }
         .scrollIndicators(.hidden)
         .background(AppTheme.pageBackground)
-        .navigationTitle("健康与繁殖")
+        .navigationTitle("健康与繁殖管理")
+        .task(id: summaryRefreshRevision) { await loadSummary() }
         .task { await notifications.rescheduleCareReminders(reminders, farmID: farm.id) }
         .onChange(of: reminderRevisionSignature) { _, _ in
             Task { await notifications.rescheduleCareReminders(reminders, farmID: farm.id) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: FarmOperationalAlertRuntimeNotification.refreshRequested)) { notification in
+            guard FarmOperationalAlertRuntimeNotification.farmID(from: notification) == farm.id else { return }
+            summaryRefreshRevision &+= 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: CloudRuntimeNotification.syncWake)) { notification in
+            guard CloudRuntimeNotification.farmID(from: notification) == farm.id else { return }
+            summaryRefreshRevision &+= 1
+        }
+    }
+
+    @MainActor
+    private func loadSummary() async {
+        do {
+            let loaded = try await CareManagementSummarySnapshotActor(container: modelContext.container)
+                .load(farmID: farm.id)
+            try Task.checkCancellation()
+            summary = loaded
+        } catch is CancellationError {
+            return
+        } catch {
+            // Preserve the last valid counts until the next local/cloud refresh.
         }
     }
 }
@@ -150,7 +170,6 @@ struct HealthBatchEntryView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(FarmNotificationService.self) private var notifications
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
     @Query(sort: \HealthCatalogItemRecord.name) private var catalogs: [HealthCatalogItemRecord]
     @Query private var lots: [InventoryLotRecord]
@@ -158,6 +177,7 @@ struct HealthBatchEntryView: View {
     let account: AccountProfile
     let farm: FarmRecord
     private let commandService = FarmCommandService()
+    @State private var sheepCandidates: [SheepEarTagSearchCandidate] = []
     @State private var mode = HealthSubjectMode.single
     @State private var selectedIDs = Set<UUID>()
     @State private var penID: UUID?
@@ -179,10 +199,6 @@ struct HealthBatchEntryView: View {
         self.account = account
         self.farm = farm
         let farmID = farm.id
-        _sheep = Query(
-            filter: #Predicate<SheepRecord> { $0.farmID == farmID && $0.deletedAt == nil },
-            sort: \SheepRecord.earTag
-        )
         _pens = Query(
             filter: #Predicate<PenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
             sort: \PenRecord.name
@@ -195,15 +211,12 @@ struct HealthBatchEntryView: View {
         _reminders = Query(filter: #Predicate<CareReminderRecord> { $0.farmID == farmID })
     }
 
-    private var farmSheep: [SheepRecord] { sheep.filter(\.isCurrentlyPresent) }
     private var eligiblePenIDs: Set<UUID> { Set(sheepIDsByPenAtOccurrence.keys) }
     private var farmPens: [PenRecord] {
         pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && eligiblePenIDs.contains($0.id) }
     }
     private var matchingCatalogs: [HealthCatalogItemRecord] { catalogs.filter { $0.farmID == farm.id && $0.isActive && catalogMatches($0, kind: kind) } }
     private var matchingLots: [InventoryLotRecord] { lots.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive && $0.kindRawValue == kind.rawValue } }
-    private var sheepCandidates: [SheepEarTagSearchCandidate] { farmSheep.map { .init(sheep: $0) } }
-
     var body: some View {
         Form {
             Picker("类型", selection: $kind) { ForEach(HealthRecordKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }
@@ -252,6 +265,7 @@ struct HealthBatchEntryView: View {
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["健康记录"])
+        .task(id: farm.id) { await loadSheepCandidates() }
         .onChange(of: mode) { _, _ in selectedIDs.removeAll(); penID = nil }
         .onChange(of: kind) { _, _ in catalogID = nil; inventoryLotID = nil }
         .onChange(of: catalogID) { _, id in applyCatalog(id) }
@@ -280,6 +294,18 @@ struct HealthBatchEntryView: View {
         guard let item = matchingCatalogs.first(where: { $0.id == id }) else { return }
         itemName = item.name; unit = item.unit; dose = item.defaultDoseText ?? ""; route = item.defaultRoute
         if let days = item.reminderIntervalDays, let date = Calendar.current.date(byAdding: .day, value: days, to: occurredAt) { hasReminder = true; reminderAt = date }
+    }
+
+    @MainActor
+    private func loadSheepCandidates() async {
+        do {
+            sheepCandidates = try await SheepEarTagCandidateSnapshotActor(container: modelContext.container)
+                .load(farmID: farm.id, scope: .active)
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = "读取健康记录羊只失败：\(error.localizedDescription)"
+        }
     }
 
     private func save() {
@@ -444,6 +470,22 @@ struct ReproductionBatchEntryView: View {
     ) {
         self.account = account
         self.farm = farm
+        let farmID = farm.id
+        _sheep = Query(
+            filter: #Predicate<SheepRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \SheepRecord.earTag
+        )
+        _semen = Query(
+            filter: #Predicate<SemenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \SemenRecord.code
+        )
+        _reproduction = Query(
+            filter: #Predicate<ReproductionRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \ReproductionRecord.occurredAt,
+            order: .reverse
+        )
+        _rules = Query(filter: #Predicate<FarmCareRuleRecord> { $0.farmID == farmID })
+        _reminders = Query(filter: #Predicate<CareReminderRecord> { $0.farmID == farmID })
         _kind = State(initialValue: initialKind)
         _selected = State(initialValue: initialEweID.map { Set([$0]) } ?? Set())
         if let initialEweID, let initialRelatedBreedingID {
@@ -673,6 +715,30 @@ struct CareLambingEntryView: View {
     @State private var candidates: [PedigreeSireCandidate] = []
     @State private var candidateWasPreselected = false
     @State private var errorMessage: String?
+
+    init(account: AccountProfile, farm: FarmRecord) {
+        self.account = account
+        self.farm = farm
+        let farmID = farm.id
+        _sheep = Query(
+            filter: #Predicate<SheepRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \SheepRecord.earTag
+        )
+        _pens = Query(
+            filter: #Predicate<PenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \PenRecord.name
+        )
+        _semen = Query(
+            filter: #Predicate<SemenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \SemenRecord.code
+        )
+        _reproduction = Query(
+            filter: #Predicate<ReproductionRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \ReproductionRecord.occurredAt,
+            order: .reverse
+        )
+        _rules = Query(filter: #Predicate<FarmCareRuleRecord> { $0.farmID == farmID })
+    }
 
     private var ewes: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ewe } }
     private var breedingRams: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent && $0.sex == .ram && $0.isBreedingRam } }
@@ -1085,6 +1151,32 @@ struct LambingCorrectionView: View {
     @State private var note = ""
     @State private var reason = ""
     @State private var errorMessage: String?
+
+    init(account: AccountProfile, farm: FarmRecord, record: ReproductionRecord) {
+        self.account = account
+        self.farm = farm
+        self.record = record
+        let farmID = farm.id
+        _sheep = Query(
+            filter: #Predicate<SheepRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \SheepRecord.earTag
+        )
+        _semen = Query(
+            filter: #Predicate<SemenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \SemenRecord.code
+        )
+        _pens = Query(
+            filter: #Predicate<PenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \PenRecord.name
+        )
+        _reproduction = Query(
+            filter: #Predicate<ReproductionRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \ReproductionRecord.occurredAt,
+            order: .reverse
+        )
+        _offspringRecords = Query(filter: #Predicate<LambingOffspringRecord> { $0.farmID == farmID })
+        _weightRecords = Query(filter: #Predicate<WeightRecord> { $0.farmID == farmID && $0.deletedAt == nil })
+    }
 
     private var breedingRams: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.sex == .ram && $0.isBreedingRam } }
     private var farmSemen: [SemenRecord] { semen.filter { $0.farmID == farm.id && $0.deletedAt == nil } }

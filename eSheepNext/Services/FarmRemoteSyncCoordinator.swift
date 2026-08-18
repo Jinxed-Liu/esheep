@@ -70,6 +70,9 @@ actor FarmRemoteSyncCoordinator {
     private let transport: any FarmRemoteTransport
     private let deviceIdentity: DeviceIdentityActor
 
+    private static let tmrHistoricalBackfillMarkerPrefix =
+        "eSheepNext.tmrHistoricalBackfill.v1"
+
     init(
         container: ModelContainer,
         transport: any FarmRemoteTransport,
@@ -86,6 +89,11 @@ actor FarmRemoteSyncCoordinator {
     ) async throws -> FarmRemoteSyncResult {
         try await repairLocalDeliveryFacts(farmID: farmID)
         let binding = try bindingSnapshot(farmID: farmID)
+        let repairedTMRCount = try await repairMissingTMRHistoryIfNeeded(
+            farmID: farmID,
+            generation: binding.generation,
+            startingCursor: binding.cursorRevision
+        )
         let prepared = try await preparePendingBatch(
             farmID: farmID,
             generation: binding.generation,
@@ -123,8 +131,36 @@ actor FarmRemoteSyncCoordinator {
         conflictCount += pull.conflictCount
         return FarmRemoteSyncResult(
             uploadedOperationCount: uploadedCount,
-            downloadedOperationCount: pull.operationCount,
+            downloadedOperationCount: repairedTMRCount + pull.operationCount,
             conflictCount: conflictCount,
+            cursorRevision: pull.cursorRevision
+        )
+    }
+
+    /// Restoring an authoritative cache is a download-only operation. It must
+    /// not repair or upload local Outbox facts before the checkpoint has
+    /// caught up and the binding has been activated for normal synchronization.
+    func catchUpRestoredFarm(
+        farmID: UUID
+    ) async throws -> FarmRemoteSyncResult {
+        let binding = try bindingSnapshot(
+            farmID: farmID,
+            allowedStates: [.preparing, .active]
+        )
+        let repairedTMRCount = try await repairMissingTMRHistoryIfNeeded(
+            farmID: farmID,
+            generation: binding.generation,
+            startingCursor: binding.cursorRevision
+        )
+        let pull = try await pullUntilCurrent(
+            farmID: farmID,
+            generation: binding.generation,
+            startingCursor: binding.cursorRevision
+        )
+        return FarmRemoteSyncResult(
+            uploadedOperationCount: 0,
+            downloadedOperationCount: repairedTMRCount + pull.operationCount,
+            conflictCount: pull.conflictCount,
             cursorRevision: pull.cursorRevision
         )
     }
@@ -160,14 +196,17 @@ actor FarmRemoteSyncCoordinator {
         }
     }
 
-    private func bindingSnapshot(farmID: UUID) throws -> BindingSnapshot {
+    private func bindingSnapshot(
+        farmID: UUID,
+        allowedStates: [FarmRemoteBindingState] = [.active]
+    ) throws -> BindingSnapshot {
         let context = ModelContext(container)
         guard let binding = try context.fetch(FetchDescriptor<FarmRemoteBinding>()).first(where: {
             $0.farmID == farmID && $0.provider == .supabase
         }) else {
             throw FarmRemoteSyncError.bindingMissing
         }
-        guard binding.state == .active else {
+        guard allowedStates.contains(binding.state) else {
             throw FarmRemoteSyncError.bindingNotActive
         }
         return BindingSnapshot(
@@ -182,6 +221,10 @@ actor FarmRemoteSyncCoordinator {
         limit: Int
     ) async throws -> PreparedBatch {
         let context = ModelContext(container)
+        try quarantineRevokedMembershipDeliveries(
+            farmID: farmID,
+            context: context
+        )
         let now = Date.now
         let provider = FarmRemoteProvider.supabase.rawValue
         var sequenceByOperationID = try FarmStorageRouter.operationSequences(
@@ -332,6 +375,43 @@ actor FarmRemoteSyncCoordinator {
         }
         try context.save()
         return PreparedBatch(operations: pending, outboxIDs: outboxIDs)
+    }
+
+    /// A compact restore may contain terminal Outbox rows authored by a
+    /// collaborator whose membership was later revoked. Older builds stored a
+    /// dedicated quarantine status; retrying that operation under the current
+    /// owner's authenticated session violates the immutable actor identity.
+    private func quarantineRevokedMembershipDeliveries(
+        farmID: UUID,
+        context: ModelContext
+    ) throws {
+        let memberships = try context.fetch(
+            FetchDescriptor<FarmMembershipBinding>()
+        ).filter { $0.farmID == farmID }
+        let activeAccountIDs = Set(memberships.compactMap {
+            $0.status == .active ? $0.accountID : nil
+        })
+        let revokedAccountIDs = Set(memberships.compactMap {
+            $0.status == .revoked && !activeAccountIDs.contains($0.accountID)
+                ? $0.accountID
+                : nil
+        })
+        guard !revokedAccountIDs.isEmpty else { return }
+
+        let items = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.farmID == farmID &&
+                $0.deliveryProvider == .supabase &&
+                revokedAccountIDs.contains($0.accountID) &&
+                !$0.status.isTerminalDelivery
+        }
+        guard !items.isEmpty else { return }
+        for item in items {
+            item.statusRawValue =
+                OutboxStatus.quarantinedMembershipRevoked.rawValue
+            item.errorMessage = "membership_revoked"
+            item.nextRetryAt = nil
+        }
+        try context.save()
     }
 
     private func finalizePush(
@@ -526,6 +606,126 @@ actor FarmRemoteSyncCoordinator {
         }
     }
 
+    /// Repairs a device that advanced its durable cursor before the TMR
+    /// projection was available (for example, an older client saw the
+    /// operation but did not know how to materialize it). The normal cursor
+    /// cannot discover those operations again, so scan the authoritative
+    /// history once and replay only TMR operations without changing the
+    /// normal cursor. Non-TMR history is intentionally left untouched.
+    private func repairMissingTMRHistoryIfNeeded(
+        farmID: UUID,
+        generation: Int,
+        startingCursor: Int
+    ) async throws -> Int {
+        guard startingCursor > 0 else { return 0 }
+
+        let localContext = ModelContext(container)
+        guard try !RemoteDomainApplyService.containsAnyTMRProjection(
+            farmID: farmID,
+            context: localContext
+        ) else {
+            return 0
+        }
+
+        let markerKey = Self.tmrHistoricalBackfillMarkerKey(
+            farmID: farmID,
+            generation: generation,
+            cursor: startingCursor
+        )
+        guard !UserDefaults.standard.bool(forKey: markerKey) else {
+            return 0
+        }
+
+        var cursor = 0
+        var pageLimit = 200
+        var replayedCount = 0
+        while true {
+            try Task.checkCancellation()
+            let page = try await transport.pullOperations(
+                farmID: farmID,
+                authorityGeneration: generation,
+                after: cursor,
+                limit: pageLimit
+            )
+            guard !page.operations.isEmpty else { break }
+
+            let tmrOperations = try tmrBackfillCandidates(
+                page.operations,
+                farmID: farmID
+            )
+            if !tmrOperations.isEmpty {
+                _ = try applyPulledPage(
+                    tmrOperations,
+                    farmID: farmID,
+                    cursorRevision: startingCursor,
+                    advancesCursor: false
+                )
+                replayedCount += tmrOperations.count
+            }
+
+            let nextCursor = max(cursor, page.cursorRevision)
+            guard page.hasMore, nextCursor > cursor else { break }
+            cursor = nextCursor
+            pageLimit = min(200, pageLimit * 2)
+        }
+
+        // A marker is written only after every historical page has either
+        // been replayed or proven not to contain a TMR operation. If replay
+        // throws, the next sync retries instead of hiding the failure.
+        UserDefaults.standard.set(true, forKey: markerKey)
+        return replayedCount
+    }
+
+    private func tmrBackfillCandidates(
+        _ envelopes: [CloudOperationEnvelope],
+        farmID: UUID
+    ) throws -> [CloudOperationEnvelope] {
+        var candidates: [CloudOperationEnvelope] = []
+        candidates.reserveCapacity(envelopes.count)
+        let context = ModelContext(container)
+        for envelope in envelopes.sorted(by: { $0.revision < $1.revision }) {
+            guard envelope.farmID == farmID,
+                  Self.isTMRHistoryOperation(envelope) else {
+                continue
+            }
+
+            // If a newer local projection already exists, replaying an older
+            // operation would manufacture a false conflict. Equal revisions
+            // are retained so a missing DomainOperation receipt can still be
+            // repaired even when the projection itself is already present.
+            if let localRevision = try RemoteDomainApplyService.tmrLocalRevision(
+                entityType: envelope.entityType,
+                entityID: envelope.entityID,
+                farmID: farmID,
+                context: context
+            ), localRevision > envelope.revision {
+                continue
+            }
+            candidates.append(envelope)
+        }
+        return candidates
+    }
+
+    private static func isTMRHistoryOperation(
+        _ envelope: CloudOperationEnvelope
+    ) -> Bool {
+        switch CloudEntityType(rawValue: envelope.entityType) {
+        case .tmrFormula, .tmrMonitoringRule, .tmrFeedingPlan, .tmrBatch,
+             .tmrMealCompletion, .tmrDeviationAcknowledgement:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func tmrHistoricalBackfillMarkerKey(
+        farmID: UUID,
+        generation: Int,
+        cursor: Int
+    ) -> String {
+        "\(tmrHistoricalBackfillMarkerPrefix):\(farmID.uuidString.lowercased()):\(generation):\(cursor)"
+    }
+
     private func markSuccessfulNoOpPull(
         farmID: UUID,
         generation: Int,
@@ -537,7 +737,7 @@ actor FarmRemoteSyncCoordinator {
         ).first(where: {
             $0.farmID == farmID &&
                 $0.provider == .supabase &&
-                $0.state == .active &&
+                [.preparing, .active].contains($0.state) &&
                 $0.authorityGeneration == generation
         }) else {
             throw FarmRemoteSyncError.bindingMissing
@@ -555,7 +755,8 @@ actor FarmRemoteSyncCoordinator {
     private func applyPulledPage(
         _ envelopes: [CloudOperationEnvelope],
         farmID: UUID,
-        cursorRevision: Int
+        cursorRevision: Int,
+        advancesCursor: Bool = true
     ) throws -> Int {
         let context = ModelContext(container)
         let service = RemoteDomainApplyService()
@@ -652,15 +853,17 @@ actor FarmRemoteSyncCoordinator {
                 from: rebuildFrom
             )
         }
-        guard let binding = try context.fetch(FetchDescriptor<FarmRemoteBinding>()).first(where: {
-            $0.farmID == farmID && $0.provider == .supabase
-        }) else {
-            throw FarmRemoteSyncError.bindingMissing
+        if advancesCursor {
+            guard let binding = try context.fetch(FetchDescriptor<FarmRemoteBinding>()).first(where: {
+                $0.farmID == farmID && $0.provider == .supabase
+            }) else {
+                throw FarmRemoteSyncError.bindingMissing
+            }
+            binding.lastPulledRevision = cursorRevision
+            binding.lastSuccessfulSyncAt = .now
+            binding.lastErrorCode = nil
+            binding.updatedAt = .now
         }
-        binding.lastPulledRevision = cursorRevision
-        binding.lastSuccessfulSyncAt = .now
-        binding.lastErrorCode = nil
-        binding.updatedAt = .now
         try context.save()
         return conflictCount
     }

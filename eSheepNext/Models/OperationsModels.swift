@@ -33,6 +33,20 @@ enum DomainOperationKind: String, Codable, Sendable, Hashable {
     case recordFeedV2
     case recordFeedTroughObservation
     case importHistoricalFeed
+    case saveTMRFormula
+    case saveTMRMonitoringRule
+    case saveTMRFeedingPlan
+    case produceTMRBatch
+    case recordTMRFeeding
+    case correctTMRFeedingRun
+    case reverseTMRFeedingRun
+    case completeTMRMeal
+    case reopenTMRMeal
+    case adjustTMRBatch
+    case closeTMRBatch
+    case deleteUnusedTMRBatch
+    case acknowledgeTMRDeviation
+    case restoreTMRBaseline
     case recordHealth
     case receiveInventory
     case addSemen
@@ -56,6 +70,10 @@ enum OutboxStatus: String, Codable, Sendable {
     case retryableFailure
     case blockedConflict
     case rejectedPermission
+    /// The server has authoritatively revoked this operation author's farm
+    /// membership. Keep the immutable operation for audit, but never retry it
+    /// under a different signed-in identity.
+    case quarantinedMembershipRevoked
     /// CloudKit already contains a different, fully verified immutable
     /// deletion fact for the same entity. The local operation is retained for
     /// audit, but it is no longer eligible for delivery or blocking metrics.
@@ -63,7 +81,8 @@ enum OutboxStatus: String, Codable, Sendable {
 
     var isTerminalDelivery: Bool {
         switch self {
-        case .confirmed, .notRequiredLocalOnly, .supersededRemoteAuthority:
+        case .confirmed, .notRequiredLocalOnly, .supersededRemoteAuthority,
+             .quarantinedMembershipRevoked:
             true
         case .pending, .uploading, .awaitingConfirmation, .retryableFailure,
              .blockedConflict, .rejectedPermission:

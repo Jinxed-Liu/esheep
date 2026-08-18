@@ -5,9 +5,6 @@ alter table public.farm_checkpoints
 create index if not exists farm_checkpoints_latest_generation_idx
   on public.farm_checkpoints (farm_id, authority_generation, created_at desc);
 
-revoke insert, update, delete, truncate
-  on realtime.messages from authenticated, anon;
-
 create or replace function public.stage_farm_baseline_batch(
   p_farm_id uuid,
   p_migration_id uuid,
@@ -76,21 +73,6 @@ begin
     raise exception using errcode = '42501', message = 'baseline_staging_denied';
   end if;
 
-  if not exists (
-    select 1
-    from public.entitlements entitlement
-    where entitlement.owner_user_id = v_user_id
-      and entitlement.state in ('active', 'grace_period', 'billing_retry')
-      and (
-        entitlement.valid_until is null
-        or entitlement.valid_until > now()
-        or entitlement.grace_until > now()
-      )
-  ) then
-    raise exception using errcode = '42501',
-      message = 'owner_supabase_entitlement_required';
-  end if;
-
   select profile.app_account_id into v_account_id
   from public.profiles profile
   where profile.user_id = v_user_id;
@@ -156,6 +138,19 @@ begin
     then
       raise exception using errcode = '42501',
         message = 'baseline_operation_identity_mismatch';
+    end if;
+    if v_item->>'entity_type' like 'tmr%'
+      and not exists (
+        select 1
+        from public.devices device
+        where device.device_id = (v_item->>'modified_by_device_id')::uuid
+          and device.user_id = v_user_id
+          and device.status = 'active'
+          and coalesce(device.tmr_data_protocol_version, 0) >= 1
+      )
+    then
+      raise exception using errcode = '55000',
+        message = 'tmr_client_upgrade_required';
     end if;
 
     select * into v_existing

@@ -56,8 +56,7 @@ struct FarmCloudStorageSettingsView: View {
         outboxItems.count {
             $0.farmID == farm.id
                 && $0.deliveryProvider == .supabase
-                && $0.status != .confirmed
-                && $0.status != .notRequiredLocalOnly
+                && !$0.status.isTerminalDelivery
         }
     }
 

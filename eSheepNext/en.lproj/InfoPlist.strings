@@ -1,0 +1,9 @@
+"CFBundleDisplayName" = "eSheep+";
+"NSCalendarsWriteOnlyAccessUsageDescription" = "Adds farm schedules to Calendar only after you confirm an AI draft.";
+"NSCameraUsageDescription" = "Takes photos of sheep, symptoms, ear tags, and farm records, or scans ear tags, documents, and farm invitation QR codes.";
+"NSFaceIDUsageDescription" = "Confirms sensitive data exports, farm governance actions, and deletion requests.";
+"NSLocalNetworkUsageDescription" = "Finds another nearby phone running eSheep+ and securely transfers a one-time farm invitation only when you open Nearby Invite.";
+"NSLocationWhenInUseUsageDescription" = "Uses the current location you choose to confirm farm coordinates and retrieve local weather. You can also search or select a location on the map.";
+"NSMicrophoneUsageDescription" = "Records audio you explicitly start and sends it to the configured multimodal service only after you confirm.";
+"NSNearbyInteractionUsageDescription" = "Confirms that two phones are physically nearby during Nearby Invite so the farm invitation is not sent to the wrong device.";
+"NSRemindersFullAccessUsageDescription" = "Creates reminders only after you confirm an AI draft.";

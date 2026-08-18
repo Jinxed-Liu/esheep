@@ -181,6 +181,7 @@ struct FarmMembershipSnapshotEnvelope: Codable, Sendable, Equatable {
         let deviceID: UUID
         let accountID: UUID
         let publicKeyJWK: String
+        var tmrDataProtocolVersion: Int? = nil
     }
 
     struct RevokedCertificate: Codable, Sendable, Equatable {

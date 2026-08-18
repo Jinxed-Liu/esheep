@@ -5,6 +5,186 @@ import XCTest
 
 @MainActor
 final class FarmRemoteRestoreAndStorageTests: XCTestCase {
+    func testRestoreRetryKeepsTheMostAdvancedDuplicateRecord() {
+        let accountID = UUID()
+        let farmID = UUID()
+        let advanced = FarmRemoteRestoreRecord(
+            accountID: accountID,
+            farmID: farmID,
+            authorityGeneration: 1,
+            state: .failed,
+            targetCursorRevision: 847
+        )
+        advanced.currentCursorRevision = 842
+        advanced.restoredEntityCount = 21_479
+        advanced.downloadedAssetCount = 7
+        advanced.promotedAssetCount = 7
+
+        let newerButEarlier = FarmRemoteRestoreRecord(
+            accountID: accountID,
+            farmID: farmID,
+            authorityGeneration: 1,
+            state: .promoting,
+            targetCursorRevision: 847
+        )
+        newerButEarlier.restoredEntityCount = 21_479
+        newerButEarlier.updatedAt = advanced.updatedAt.addingTimeInterval(60)
+
+        XCTAssertEqual(
+            SupabaseOwnedFarmDiscoveryService.preferredRestoreRecord([
+                newerButEarlier,
+                advanced,
+            ])?.id,
+            advanced.id
+        )
+    }
+
+    func testActivatedRestoreResumeUsesConservativeCursor() {
+        XCTAssertEqual(
+            FarmCompactBaselineRebuildService.conservativeResumeCursor(
+                checkpointRevision: 0,
+                restoreRevision: 842,
+                bindingRevision: 845
+            ),
+            842
+        )
+        XCTAssertEqual(
+            FarmCompactBaselineRebuildService.conservativeResumeCursor(
+                checkpointRevision: 0,
+                restoreRevision: 0,
+                bindingRevision: 845
+            ),
+            0
+        )
+        XCTAssertEqual(
+            FarmCompactBaselineRebuildService.conservativeResumeCursor(
+                checkpointRevision: 100,
+                restoreRevision: 120,
+                bindingRevision: 110
+            ),
+            110
+        )
+    }
+
+    func testActivatedRestoreResumePreparesOwnerUntilCatchUpCompletes() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "ActivatedSupabaseRestoreResumeTests",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let ownerAccountID = UUID()
+        let migrationID = UUID()
+        let packageDigest = String(repeating: "a", count: 64)
+        let serverMembershipID =
+            "supabase:\(farmID.uuidString.lowercased()):\(UUID().uuidString.lowercased())"
+        let farm = FarmRecord(
+            id: farmID,
+            ownerAccountID: ownerAccountID,
+            name: "恢复牧场",
+            role: .worker
+        )
+        farm.membershipStatusRawValue = FarmMembershipStatus.revoked.rawValue
+        context.insert(farm)
+        context.insert(FarmStorageProfile(
+            farmID: farmID,
+            mode: .supabase,
+            authorityGeneration: 1
+        ))
+        let binding = FarmRemoteBinding(
+            farmID: farmID,
+            ownerAccountID: ownerAccountID,
+            provider: .supabase,
+            state: .accessRevoked,
+            authorityGeneration: 1,
+            remoteFarmID: farmID.uuidString.lowercased()
+        )
+        binding.lastPulledRevision = 845
+        binding.lastErrorCode = "membership_revoked"
+        context.insert(binding)
+        context.insert(FarmMembershipBinding(
+            serverMembershipID: serverMembershipID,
+            farmID: farmID,
+            accountID: ownerAccountID,
+            role: .owner,
+            status: .revoked
+        ))
+        context.insert(CloudOperationReceipt(
+            farmID: farmID,
+            operationID: UUID(),
+            recordName:
+                "compact-discovery:\(migrationID.uuidString.lowercased()):root",
+            serverChangeTag: packageDigest,
+            databaseScope: .privateDatabase
+        ))
+        try context.save()
+
+        let resumedCursor = try await FarmCompactBaselineRebuildService()
+            .resumeActivatedFarmIfPossible(
+                farmID: farmID,
+                migrationID: migrationID,
+                packageDigest: packageDigest,
+                ownerAccountID: ownerAccountID,
+                authorityGeneration: 1,
+                serverMembershipID: serverMembershipID,
+                checkpointCursor: 0,
+                restoreCursor: 842,
+                container: container
+            )
+
+        XCTAssertEqual(resumedCursor, 842)
+        let verification = ModelContext(container)
+        let resumedFarm = try XCTUnwrap(
+            verification.fetch(FetchDescriptor<FarmRecord>())
+                .first { $0.id == farmID }
+        )
+        let resumedBinding = try XCTUnwrap(
+            verification.fetch(FetchDescriptor<FarmRemoteBinding>())
+                .first { $0.farmID == farmID }
+        )
+        let resumedMembership = try XCTUnwrap(
+            verification.fetch(FetchDescriptor<FarmMembershipBinding>())
+                .first {
+                    $0.farmID == farmID && $0.accountID == ownerAccountID
+                }
+        )
+        XCTAssertEqual(resumedFarm.role, .owner)
+        XCTAssertEqual(
+            resumedFarm.membershipStatusRawValue,
+            FarmMembershipStatus.active.rawValue
+        )
+        XCTAssertEqual(resumedBinding.state, .preparing)
+        XCTAssertEqual(resumedBinding.lastPulledRevision, 842)
+        XCTAssertNil(resumedBinding.lastErrorCode)
+        XCTAssertEqual(resumedMembership.status, .active)
+        XCTAssertEqual(resumedMembership.role, .owner)
+        XCTAssertEqual(
+            resumedMembership.serverMembershipID,
+            serverMembershipID
+        )
+
+        try await FarmCompactBaselineRebuildService()
+            .activatePreparedRestoredFarm(
+                farmID: farmID,
+                ownerAccountID: ownerAccountID,
+                authorityGeneration: 1,
+                container: container
+            )
+        let activatedContext = ModelContext(container)
+        XCTAssertEqual(
+            try activatedContext.fetch(FetchDescriptor<FarmRemoteBinding>())
+                .first { $0.farmID == farmID }?.state,
+            .active
+        )
+    }
+
+    func testRevokedMembershipOutboxStatusRemainsTerminal() {
+        XCTAssertTrue(
+            OutboxStatus.quarantinedMembershipRevoked.isTerminalDelivery
+        )
+        XCTAssertFalse(OutboxStatus.retryableFailure.isTerminalDelivery)
+    }
+
     @MainActor
     func testDevelopmentRestorePausePointIsConsumedOnce() {
         let suiteName = "DevelopmentSupabaseRestoreGateTests.\(UUID())"

@@ -186,7 +186,7 @@ enum InsightAssistantResponseGuard {
         let successClaims = ["已生成", "已经生成", "生成成功", "已创建", "已提交", "全部提交", "请确认", "逐条确认"]
         return (actionObjects.contains(where: text.localizedCaseInsensitiveContains) &&
                 successClaims.contains(where: text.localizedCaseInsensitiveContains)) ||
-            text.localizedCaseInsensitiveContains("✅ 已提交") ||
+            text.localizedCaseInsensitiveContains("\u{2705} 已提交") ||
             text.localizedCaseInsensitiveContains("全部提交")
     }
 
@@ -877,7 +877,7 @@ final class InsightConversationController {
                 accountID: account.effectiveAccountID,
                 farmID: farm.id,
                 role: .user,
-                text: text.isEmpty && audio != nil ? "🎙️ 语音消息" : text,
+                text: text.isEmpty && audio != nil ? "语音消息" : text,
                 toolName: audio == nil ? nil : "audio_input"
             )
             modelContext.insert(userMessage)

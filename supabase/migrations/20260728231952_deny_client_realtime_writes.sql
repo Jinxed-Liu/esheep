@@ -1,2 +1,3 @@
-revoke insert, update, delete, truncate
-  on realtime.messages from public, authenticated, anon;
+-- Intentionally empty. Supabase locked the managed `realtime` schema against
+-- SQL migration changes in 2026. Client send/receive authorization is managed
+-- by the supported Realtime Dashboard/API workflow; see REALTIME_SETUP.md.

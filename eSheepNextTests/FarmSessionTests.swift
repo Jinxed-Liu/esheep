@@ -80,6 +80,24 @@ final class FarmSessionTests: XCTestCase {
         XCTAssertEqual(SupabaseAccountIdentityClient.signOutScope.rawValue, "local")
     }
 
+    func testMissingVersionedDeviceRPCFallsBackToLegacyRegistration() {
+        XCTAssertTrue(
+            SupabaseAccountIdentityClient.shouldRetryLegacyDeviceRegistration(
+                code: "PGRST202"
+            )
+        )
+        XCTAssertFalse(
+            SupabaseAccountIdentityClient.shouldRetryLegacyDeviceRegistration(
+                code: "42501"
+            )
+        )
+        XCTAssertFalse(
+            SupabaseAccountIdentityClient.shouldRetryLegacyDeviceRegistration(
+                code: nil
+            )
+        )
+    }
+
     func testAccountAvatarPersistsWithTheLocalProfile() throws {
         let container = try makeContainer()
         let context = ModelContext(container)

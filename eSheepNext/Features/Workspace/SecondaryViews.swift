@@ -91,7 +91,6 @@ struct FarmInsightsView: View {
 struct FarmSearchView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
-    @Environment(CloudCollaborationStore.self) private var collaboration
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -178,8 +177,8 @@ struct FarmSearchView: View {
             placement: .navigationBarDrawer(displayMode: .always),
             prompt: "耳号、品种或圈舍"
         )
-        .onAppear {
-            Task { await reloadSource() }
+        .task(id: farm.id) {
+            await reloadSource()
         }
         .task(id: FarmSearchRequest(query: query, sourceRevision: sourceRevision)) {
             await updateResults()
@@ -208,26 +207,6 @@ struct FarmSearchView: View {
     private func reloadSource() async {
         isLoadingSource = source == .empty
         do {
-            let commandService = FarmCommandService()
-            let repairAssetIDs = try commandService
-                .legacyPhotoFilenameRepairAssetIDs(
-                    farmID: farm.id,
-                    context: modelContext
-                )
-            for assetID in repairAssetIDs {
-                _ = try? await collaboration.loadPhotoData(assetID: assetID)
-            }
-            let repair = try commandService.repairLegacyPhotoFilenameSheep(
-                in: FarmContext(
-                    accountID: account.effectiveAccountID,
-                    farmID: farm.id,
-                    role: farm.role
-                ),
-                context: modelContext
-            )
-            if repair.repairedSheepCount > 0 {
-                await collaboration.synchronizeNow()
-            }
             let updatedSource = try await FarmSearchIndexActor(
                 container: modelContext.container
             ).load(farmID: farm.id)

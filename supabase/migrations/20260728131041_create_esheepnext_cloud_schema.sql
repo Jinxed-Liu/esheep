@@ -614,20 +614,6 @@ begin
     raise exception using errcode = '23503', message = 'profile_missing';
   end if;
 
-  if p_provider = 'supabase' and not exists (
-    select 1
-    from public.entitlements entitlement
-    where entitlement.owner_user_id = v_user_id
-      and entitlement.state in ('active', 'grace_period', 'billing_retry')
-      and (
-        entitlement.valid_until is null
-        or entitlement.valid_until > now()
-        or entitlement.grace_until > now()
-      )
-  ) then
-    raise exception using errcode = '42501', message = 'owner_supabase_entitlement_required';
-  end if;
-
   select *
   into v_existing
   from public.farm_registry registry
@@ -726,20 +712,6 @@ begin
     or v_registry.authority_generation <> p_expected_generation
   then
     raise exception using errcode = '42501', message = 'farm_activation_denied';
-  end if;
-
-  if v_registry.provider = 'supabase' and not exists (
-    select 1
-    from public.entitlements entitlement
-    where entitlement.owner_user_id = v_user_id
-      and entitlement.state in ('active', 'grace_period', 'billing_retry')
-      and (
-        entitlement.valid_until is null
-        or entitlement.valid_until > now()
-        or entitlement.grace_until > now()
-      )
-  ) then
-    raise exception using errcode = '42501', message = 'owner_supabase_entitlement_required';
   end if;
 
   select count(*), coalesce(max(operation.revision), 0)
@@ -895,20 +867,6 @@ begin
     raise exception using errcode = '40001', message = 'authority_generation_mismatch';
   end if;
 
-  if not exists (
-    select 1
-    from public.entitlements entitlement
-    where entitlement.owner_user_id = v_registry.owner_user_id
-      and entitlement.state in ('active', 'grace_period', 'billing_retry')
-      and (
-        entitlement.valid_until is null
-        or entitlement.valid_until > now()
-        or entitlement.grace_until > now()
-      )
-  ) then
-    raise exception using errcode = '42501', message = 'owner_supabase_entitlement_required';
-  end if;
-
   select existing.revision, existing.server_received_at
   into v_next_revision, v_received_at
   from public.farm_operations existing
@@ -970,6 +928,19 @@ begin
       and device.status = 'active'
   ) then
     raise exception using errcode = '42501', message = 'operation_identity_mismatch';
+  end if;
+  if p_entity_type like 'tmr%'
+    and not exists (
+      select 1
+      from public.devices device
+      where device.device_id = p_modified_by_device_id
+        and device.user_id = v_user_id
+        and device.status = 'active'
+        and coalesce(device.tmr_data_protocol_version, 0) >= 1
+    )
+  then
+    raise exception using errcode = '55000',
+      message = 'tmr_client_upgrade_required';
   end if;
 
   v_next_revision := v_registry.current_revision + 1;
@@ -1289,20 +1260,6 @@ begin
     raise exception using errcode = '23503', message = 'profile_missing';
   end if;
 
-  if not exists (
-    select 1
-    from public.entitlements entitlement
-    where entitlement.owner_user_id = v_user_id
-      and entitlement.state in ('active', 'grace_period', 'billing_retry')
-      and (
-        entitlement.valid_until is null
-        or entitlement.valid_until > now()
-        or entitlement.grace_until > now()
-      )
-  ) then
-    raise exception using errcode = '42501', message = 'owner_supabase_entitlement_required';
-  end if;
-
   select *
   into v_registry
   from public.farm_registry registry
@@ -1600,20 +1557,6 @@ begin
     )
   then
     raise exception using errcode = '42501', message = 'farm_activation_denied';
-  end if;
-
-  if not exists (
-    select 1
-    from public.entitlements entitlement
-    where entitlement.owner_user_id = v_user_id
-      and entitlement.state in ('active', 'grace_period', 'billing_retry')
-      and (
-        entitlement.valid_until is null
-        or entitlement.valid_until > now()
-        or entitlement.grace_until > now()
-      )
-  ) then
-    raise exception using errcode = '42501', message = 'owner_supabase_entitlement_required';
   end if;
 
   if (
@@ -2267,19 +2210,6 @@ using (
   )
 );
 
-do $$
-begin
-  if to_regclass('realtime.messages') is not null then
-    execute $policy$
-      create policy farm_realtime_receive_member
-      on realtime.messages for select to authenticated
-      using (
-        realtime.messages.extension = 'broadcast'
-        and esheep_private.is_active_farm_member(
-          esheep_private.realtime_farm_id(realtime.topic())
-        )
-      )
-    $policy$;
-  end if;
-end;
-$$;
+-- Supabase locked the managed `realtime` schema against SQL migration changes
+-- in 2026. Broadcast authorization is configured after project creation via
+-- the supported Realtime Dashboard/API workflow; see REALTIME_SETUP.md.

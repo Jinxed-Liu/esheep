@@ -11,20 +11,36 @@ struct FarmRecordsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 20) {
-                SettingsCard(title: "日常生产") {
+                SettingsCard(title: "日常记录") {
+                    SettingsNavigationRow(
+                        title: "称重",
+                        subtitle: "记录羊只体重和发生时间",
+                        systemImage: "scalemass.fill",
+                        iconColor: .blue
+                    ) { WeightEntryView(account: account, farm: farm) }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "治疗或疫苗",
+                        subtitle: "按羊只、多选或圈舍记录健康事件",
+                        systemImage: "cross.case.fill",
+                        iconColor: .red
+                    ) { HealthBatchEntryView(account: account, farm: farm) }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "备注",
+                        subtitle: "补充羊只、圈舍或牧场事件说明",
+                        systemImage: "note.text",
+                        iconColor: .gray
+                    ) { NoteEntryView(account: account, farm: farm) }
+                }
+
+                SettingsCard(title: "羊只流转") {
                     SettingsNavigationRow(
                         title: "新建羊只",
                         subtitle: "建立档案并记录入场信息",
                         systemImage: "plus",
                         iconColor: .green
                     ) { AddSheepView(account: account, farm: farm) }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "称重",
-                        subtitle: "按耳号记录体重和发生时间",
-                        systemImage: "scalemass.fill",
-                        iconColor: .blue
-                    ) { WeightEntryView(account: account, farm: farm) }
                     SettingsCardDivider()
                     SettingsNavigationRow(
                         title: "转群",
@@ -36,7 +52,7 @@ struct FarmRecordsView: View {
                     SettingsNavigationRow(
                         title: "断奶",
                         subtitle: "记录断奶重并完成断奶后调舍",
-                        systemImage: "arrow.down.to.line.compact",
+                        systemImage: "leaf.circle.fill",
                         iconColor: .mint
                     ) { WeaningEntryView(account: account, farm: farm) }
                     SettingsCardDivider()
@@ -46,26 +62,12 @@ struct FarmRecordsView: View {
                         systemImage: "person.crop.circle.badge.minus",
                         iconColor: .orange
                     ) { RemovalEntryView(account: account, farm: farm) }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "备注",
-                        subtitle: "补充羊只、圈舍或牧场事件说明",
-                        systemImage: "note.text",
-                        iconColor: .gray
-                    ) { NoteEntryView(account: account, farm: farm) }
                 }
 
-                SettingsCard(title: "健康与繁殖") {
-                    SettingsNavigationRow(
-                        title: "治疗或疫苗",
-                        subtitle: "支持单羊、多选或按圈舍录入",
-                        systemImage: "cross.case.fill",
-                        iconColor: .red
-                    ) { HealthBatchEntryView(account: account, farm: farm) }
-                    SettingsCardDivider()
+                SettingsCard(title: "繁殖记录") {
                     SettingsNavigationRow(
                         title: "配种或孕检",
-                        subtitle: "批量记录繁殖事件",
+                        subtitle: "记录配种、孕检和繁殖状态",
                         systemImage: "heart.text.square.fill",
                         iconColor: .pink
                     ) { ReproductionBatchEntryView(account: account, farm: farm) }
@@ -73,20 +75,25 @@ struct FarmRecordsView: View {
                     SettingsNavigationRow(
                         title: "产羔",
                         subtitle: "记录产羔事实并建立羔羊档案",
-                        systemImage: "birthday.cake.fill",
+                        systemImage: "plus.circle.fill",
                         iconColor: .purple
                     ) { CareLambingEntryView(account: account, farm: farm) }
                 }
 
-                SettingsCard(title: "投喂与记录") {
-                    SettingsActionRow(
-                        title: "投喂录入",
-                        subtitle: "进入投喂工作台记录原料和用量",
-                        systemImage: "leaf.fill",
-                        iconColor: .green
-                    ) {
-                        session.selectedTab = .feeding
-                    }
+                SettingsCard(title: "管理与查阅") {
+                    SettingsNavigationRow(
+                        title: "生产批次",
+                        subtitle: "管理育肥、实验等生产批次",
+                        systemImage: "square.3.layers.3d",
+                        iconColor: .purple
+                    ) { ProductionBatchListView(account: account, farm: farm) }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
+                        title: "健康与繁殖管理",
+                        subtitle: "维护目录、库存、方案、提醒与历史",
+                        systemImage: "heart.text.square",
+                        iconColor: .pink
+                    ) { CareManagementView(account: account, farm: farm) }
                     SettingsCardDivider()
                     SettingsNavigationRow(
                         title: "事件记录与导出",
@@ -94,22 +101,6 @@ struct FarmRecordsView: View {
                         systemImage: "clock.arrow.circlepath",
                         iconColor: .blue
                     ) { FarmEventHistoryView(account: account, farm: farm) }
-                }
-
-                SettingsCard(title: "业务管理") {
-                    SettingsNavigationRow(
-                        title: "羊群与圈舍",
-                        subtitle: "档案、圈舍和生产批次",
-                        systemImage: "list.bullet.rectangle.fill",
-                        iconColor: .teal
-                    ) { HerdRecordCenterView(account: account, farm: farm) }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "健康与繁殖管理",
-                        subtitle: "目录、库存、方案、提醒与历史",
-                        systemImage: "heart.text.square",
-                        iconColor: .pink
-                    ) { CareManagementView(account: account, farm: farm) }
                 }
             }
             .padding(.horizontal, 16)
@@ -162,73 +153,18 @@ private struct PendingCareReminderDestination: Identifiable, Hashable {
     let id: UUID
 }
 
-private struct HerdRecordCenterView: View {
-    let account: AccountProfile
-    let farm: FarmRecord
-
-    var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 20) {
-                SettingsCard(title: "羊只录入") {
-                    SettingsNavigationRow(title: "新建羊只", subtitle: "建立羊只档案", systemImage: "plus", iconColor: .green) {
-                        AddSheepView(account: account, farm: farm)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(title: "称重", subtitle: "记录体重和发生时间", systemImage: "scalemass.fill", iconColor: .blue) {
-                        WeightEntryView(account: account, farm: farm)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(title: "断奶", subtitle: "记录断奶重并调舍", systemImage: "arrow.down.to.line.compact", iconColor: .mint) {
-                        WeaningEntryView(account: account, farm: farm)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(title: "转群", subtitle: "变更羊只所在圈舍", systemImage: "arrow.left.arrow.right", iconColor: .indigo) {
-                        TransferEntryView(account: account, farm: farm)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(title: "出售、淘汰或死亡", subtitle: "记录羊只离场", systemImage: "person.crop.circle.badge.minus", iconColor: .orange) {
-                        RemovalEntryView(account: account, farm: farm)
-                    }
-                }
-
-                SettingsCard(title: "档案与批次") {
-                    SettingsNavigationRow(title: "生产批次", subtitle: "管理育肥、实验等批次", systemImage: "square.3.layers.3d", iconColor: .purple) {
-                        ProductionBatchListView(account: account, farm: farm)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(title: "羊只档案", subtitle: "查看全部在场与历史羊只", systemImage: "list.bullet", iconColor: .blue) {
-                        HerdManagementView(account: account, farm: farm)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(title: "圈舍管理", subtitle: "维护圈舍和当前存栏", systemImage: "building.2.fill", iconColor: .teal) {
-                        PenManagementView(account: account, farm: farm)
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-        }
-        .scrollIndicators(.hidden)
-        .background(AppTheme.pageBackground)
-        .navigationTitle("羊群与圈舍")
-    }
-}
-
 struct WeightEntryView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
     let account: AccountProfile
     let farm: FarmRecord
     private let commandService = FarmCommandService()
+    @State private var sheepCandidates: [SheepEarTagSearchCandidate] = []
     @State private var sheepID: UUID?
     @State private var kilograms = ""
     @State private var occurredAt = Date.now
     @State private var note = ""
     @State private var errorMessage: String?
-
-    private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active } }
-    private var sheepCandidates: [SheepEarTagSearchCandidate] { farmSheep.map { .init(sheep: $0) } }
 
     var body: some View {
         Form {
@@ -245,6 +181,7 @@ struct WeightEntryView: View {
         }
         .navigationTitle("称重")
         .toolbar { EntrySaveToolbar(action: save) }
+        .task(id: farm.id) { await loadSheepCandidates() }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["称重"])
     }
@@ -256,17 +193,29 @@ struct WeightEntryView: View {
             dismiss()
         } catch { errorMessage = error.localizedDescription }
     }
+
+    @MainActor
+    private func loadSheepCandidates() async {
+        do {
+            sheepCandidates = try await SheepEarTagCandidateSnapshotActor(container: modelContext.container)
+                .load(farmID: farm.id, scope: .active)
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = "读取称重羊只失败：\(error.localizedDescription)"
+        }
+    }
 }
 
 struct WeaningEntryView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
-    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
-    @Query(sort: \WeightRecord.occurredAt) private var weights: [WeightRecord]
     let account: AccountProfile
     let farm: FarmRecord
     private let commandService = FarmCommandService()
+    @State private var sheepCandidates: [SheepEarTagSearchCandidate] = []
+    @State private var penOptions: [WeaningPenOption] = []
+    @State private var gainSamples: [WeaningGainSample] = []
     @State private var sheepID: UUID?
     @State private var targetPenID: UUID?
     @State private var weanWeight = ""
@@ -282,12 +231,8 @@ struct WeaningEntryView: View {
         _sheepID = State(initialValue: initialSheepID)
     }
 
-    private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active } }
-    private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
-    private var sheepCandidates: [SheepEarTagSearchCandidate] { farmSheep.map { .init(sheep: $0) } }
-    private var selectedSheep: SheepRecord? { farmSheep.first { $0.id == sheepID } }
+    private var selectedSheep: SheepEarTagSearchCandidate? { sheepCandidates.first { $0.id == sheepID } }
     private var effectiveBirthAt: Date? { selectedSheep?.birthAt ?? (includesBirthDate ? birthAt : nil) }
-    private var gainSamples: [WeaningGainSample] { WeaningGainSemantics.samples(from: weights, farmID: farm.id) }
     private var parsedWeanWeight: Double? {
         Decimal.stable(weanWeight.trimmingCharacters(in: .whitespacesAndNewlines))
             .map { NSDecimalNumber(decimal: $0).doubleValue }
@@ -332,7 +277,7 @@ struct WeaningEntryView: View {
             Section("断奶后调舍") {
                 Picker("转入圈舍", selection: $targetPenID) {
                     Text("请选择目标圈舍").tag(UUID?.none)
-                    ForEach(farmPens, id: \.id) { pen in
+                    ForEach(penOptions) { pen in
                         Text(pen.name).tag(UUID?.some(pen.id))
                     }
                 }
@@ -374,6 +319,7 @@ struct WeaningEntryView: View {
         }
         .navigationTitle("断奶记录")
         .toolbar { EntrySaveToolbar(action: save) }
+        .task(id: farm.id) { await loadReferenceData() }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["断奶"])
         .onChange(of: sheepID) { _, _ in
@@ -424,6 +370,31 @@ struct WeaningEntryView: View {
 
     private func gainText(_ value: Double) -> String {
         value.formatted(.number.precision(.fractionLength(0...1)))
+    }
+
+    @MainActor
+    private func loadReferenceData() async {
+        do {
+            // Copy the immutable, Sendable inputs while still on the main
+            // actor. Referencing the SwiftData context or model from an
+            // `async let` initializer would send those non-Sendable values
+            // across the actor boundary under Swift 6 strict concurrency.
+            let container = modelContext.container
+            let farmID = farm.id
+            async let candidateLoad = SheepEarTagCandidateSnapshotActor(container: container)
+                .load(farmID: farmID, scope: .active)
+            async let referenceLoad = WeaningEntryReferenceSnapshotActor(container: container)
+                .load(farmID: farmID)
+            let (candidates, reference) = try await (candidateLoad, referenceLoad)
+            try Task.checkCancellation()
+            sheepCandidates = candidates
+            penOptions = reference.pens
+            gainSamples = reference.gainSamples
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = "读取断奶羊只失败：\(error.localizedDescription)"
+        }
     }
 }
 
@@ -531,11 +502,11 @@ struct BreedingProgramEntryView: View {
 struct TransferEntryView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
     let account: AccountProfile
     let farm: FarmRecord
     private let commandService = FarmCommandService()
+    @State private var sheepCandidates: [SheepEarTagSearchCandidate] = []
     @State private var sheepID: UUID?
     @State private var penID: UUID?
     @State private var occurredAt = Date.now
@@ -548,10 +519,7 @@ struct TransferEntryView: View {
         _sheepID = State(initialValue: initialSheepID)
     }
 
-    private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.status == .active } }
     private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
-    private var sheepCandidates: [SheepEarTagSearchCandidate] { farmSheep.map { .init(sheep: $0) } }
-
     var body: some View {
         Form {
             Section("转群羊只") {
@@ -572,6 +540,7 @@ struct TransferEntryView: View {
         }
         .navigationTitle("转群")
         .toolbar { EntrySaveToolbar(action: save) }
+        .task(id: farm.id) { await loadSheepCandidates() }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["转群"])
     }
@@ -583,16 +552,28 @@ struct TransferEntryView: View {
             dismiss()
         } catch { errorMessage = error.localizedDescription }
     }
+
+    @MainActor
+    private func loadSheepCandidates() async {
+        do {
+            sheepCandidates = try await SheepEarTagCandidateSnapshotActor(container: modelContext.container)
+                .load(farmID: farm.id, scope: .active)
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = "读取转群羊只失败：\(error.localizedDescription)"
+        }
+    }
 }
 
 struct NoteEntryView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
     let account: AccountProfile
     let farm: FarmRecord
     private let commandService = FarmCommandService()
+    @State private var sheepCandidates: [SheepEarTagSearchCandidate] = []
     @State private var sheepID: UUID?
     @State private var penID: UUID?
     @State private var text = ""
@@ -604,17 +585,12 @@ struct NoteEntryView: View {
         self.account = account
         self.farm = farm
         let farmID = farm.id
-        _sheep = Query(
-            filter: #Predicate<SheepRecord> { $0.farmID == farmID && $0.deletedAt == nil },
-            sort: \SheepRecord.earTag
-        )
         _pens = Query(
             filter: #Predicate<PenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
             sort: \PenRecord.name
         )
     }
 
-    private var sheepCandidates: [SheepEarTagSearchCandidate] { sheep.map { .init(sheep: $0) } }
     private var eligiblePenIDs: Set<UUID> { Set(sheepIDsByPenAtOccurrence.keys) }
     private var farmPens: [PenRecord] {
         pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && eligiblePenIDs.contains($0.id) }
@@ -643,6 +619,7 @@ struct NoteEntryView: View {
         .toolbar { EntrySaveToolbar(action: save) }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["备注"])
+        .task(id: farm.id) { await loadSheepCandidates() }
         .task(id: occurredAt) { await refreshPenOccupancy() }
         .onChange(of: eligiblePenIDs) { _, validIDs in
             if let penID, !validIDs.contains(penID) { self.penID = nil }
@@ -669,6 +646,18 @@ struct NoteEntryView: View {
             try commandService.execute(.addNote(sheepID: sheepID, penID: penID, text: text, occurredAt: occurredAt), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
             dismiss()
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    @MainActor
+    private func loadSheepCandidates() async {
+        do {
+            sheepCandidates = try await SheepEarTagCandidateSnapshotActor(container: modelContext.container)
+                .load(farmID: farm.id, scope: .allNonDeleted)
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = "读取备注关联羊只失败：\(error.localizedDescription)"
+        }
     }
 }
 

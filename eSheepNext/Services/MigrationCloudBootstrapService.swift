@@ -377,6 +377,8 @@ enum MigrationBaselineV2EvidenceContract {
             return "20"
         case .weight, .weaning, .transfer, .removal, .batchMembership, .feed, .health, .reproduction, .note:
             return "30"
+        case .tmrBaseline:
+            return "32"
         case .pedigreeChange:
             return "35"
         case .alertDeferral:
@@ -1038,6 +1040,24 @@ struct MigrationCloudBootstrapService {
                 )), resolvedFeedLines: lines)
             }
             values.append((.feed, value.id, value.revision, payload, 30))
+        }
+        // Raw ingredients, stock ledgers, recipes, and projected FeedRecord
+        // facts are restored by the generic feeding baseline above. Restore the
+        // relational TMR projection and finished-product ledger only after those
+        // dependencies exist so production consumption is never deducted twice.
+        let tmrSnapshot = try FarmTMRBackupPayload.capture(farmID: farmID, context: context)
+        if !tmrSnapshot.isEmpty {
+            let baselineID = StableCloudUUID.derived(
+                namespace: farmID,
+                name: "tmr-baseline-projection"
+            )
+            values.append((
+                .tmrBaseline,
+                baselineID,
+                1,
+                try FarmCommandCloudPayloadEncoder.encodeTMRBaseline(tmrSnapshot),
+                32
+            ))
         }
         for value in try context.fetch(FetchDescriptor<FeedTroughObservationRecord>()).filter({ $0.farmID == farmID && $0.deletedAt == nil }) {
             let payload = try FarmCommandCloudPayloadEncoder.encode(.recordFeedTroughObservation(FeedTroughObservationDraft(

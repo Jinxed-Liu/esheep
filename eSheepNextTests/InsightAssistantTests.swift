@@ -362,7 +362,7 @@ final class InsightAssistantTests: XCTestCase {
         let fakeSuccess = """
         全部 18 张断奶卡片已生成，请前往 App 逐条确认：
         | 耳号 | 状态 |
-        | DH057 | ✅ 已提交 |
+        | DH057 | \u{2705} 已提交 |
         """
         XCTAssertEqual(
             InsightAssistantResponseGuard.issue(

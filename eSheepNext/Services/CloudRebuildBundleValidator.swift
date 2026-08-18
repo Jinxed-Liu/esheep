@@ -57,6 +57,16 @@ enum CloudRebuildBundleValidator {
             default:
                 break
             }
+            if let command = payload.tmrCommand {
+                guard command.operationKind == payload.kind else {
+                    throw RemoteDomainApplyError.invalidPayload("tmrCommand.kind")
+                }
+                registerTMRChildren(command, entitiesByType: &entitiesByType)
+            }
+            if payload.kind == .restoreTMRBaseline,
+               let snapshot = payload.tmrBaselineSnapshot {
+                registerTMRBaseline(snapshot, entitiesByType: &entitiesByType)
+            }
         }
         let assetIDs = assets.map { $0.envelope.assetID }
         guard Set(assetIDs).count == assetIDs.count else {
@@ -73,6 +83,28 @@ enum CloudRebuildBundleValidator {
             case .care:
                 guard let command = payload.careCommand else { throw RemoteDomainApplyError.invalidPayload("careCommand") }
                 try validateCare(command, entitiesByType: entitiesByType)
+            case .saveTMRFormula, .saveTMRMonitoringRule, .saveTMRFeedingPlan,
+                 .produceTMRBatch, .recordTMRFeeding, .correctTMRFeedingRun,
+                 .reverseTMRFeedingRun, .completeTMRMeal, .reopenTMRMeal,
+                 .adjustTMRBatch, .closeTMRBatch, .deleteUnusedTMRBatch,
+                 .acknowledgeTMRDeviation:
+                guard let command = payload.tmrCommand,
+                      command.operationKind == payload.kind else {
+                    throw RemoteDomainApplyError.invalidPayload("tmrCommand")
+                }
+                try validateTMR(command, entitiesByType: entitiesByType)
+            case .restoreTMRBaseline:
+                guard TMRCloudDataProtocol.isSupported(by: payload),
+                      let snapshot = payload.tmrBaselineSnapshot else {
+                    throw RemoteDomainApplyError.invalidPayload("tmrBaselineSnapshot")
+                }
+                try snapshot.validate(
+                    recipeIDs: entitiesByType[.feedRecipe] ?? [],
+                    ingredientIDs: entitiesByType[.feedIngredient] ?? [],
+                    ingredientBatchIDs: entitiesByType[.feedIngredientBatch] ?? [],
+                    feedRecordIDs: entitiesByType[.feed] ?? [],
+                    penIDs: entitiesByType[.pen] ?? []
+                )
             case .createFarm, .updateFarmLocation, .createPen, .addIngredient, .createRecipe, .receiveInventory, .createBatch, .saveFeedIngredient:
                 break
             case .saveFeedBatch:
@@ -217,8 +249,7 @@ enum CloudRebuildBundleValidator {
                 if let feedID = optionalID("relatedFeedRecordID", payload) {
                     try require(feedID, in: entitiesByType[.feed], field: "trough.relatedFeedRecordID")
                 }
-                guard payload.strings["feederName"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
-                      let actualText = payload.strings["actualRemainingKilogramsText"],
+                guard let actualText = payload.strings["actualRemainingKilogramsText"],
                       let actual = Decimal.stable(actualText), actual >= 0,
                       FeedTroughMeasurementMethod(rawValue: payload.strings["measurementMethod"] ?? "") != nil else {
                     throw RemoteDomainApplyError.invalidPayload("trough")
@@ -273,6 +304,206 @@ enum CloudRebuildBundleValidator {
         for asset in assets {
             if let entityID = asset.envelope.entityID, !allEntities.contains(entityID) {
                 throw RemoteDomainApplyError.missingReference("photo.entityID")
+            }
+        }
+    }
+
+    private static func registerTMRChildren(
+        _ command: TMRCommand,
+        entitiesByType: inout [CloudEntityType: Set<UUID>]
+    ) {
+        switch command {
+        case .saveFormula(let draft):
+            entitiesByType[.tmrFormula, default: []].insert(draft.id)
+            entitiesByType[.feedRecipe, default: []].insert(draft.id)
+            for component in draft.components {
+                entitiesByType[.feedRecipeComponent, default: []].insert(component.id)
+            }
+        case .saveMonitoringRule(let draft):
+            entitiesByType[.tmrMonitoringRule, default: []].insert(draft.id)
+        case .saveFeedingPlan(let draft):
+            entitiesByType[.tmrFeedingPlan, default: []].insert(draft.id)
+            for pen in draft.pens {
+                entitiesByType[.tmrFeedingPlanPen, default: []].insert(pen.id)
+            }
+        case .produceBatch(let draft):
+            entitiesByType[.tmrBatch, default: []].insert(draft.id)
+            entitiesByType[.tmrBatchMovement, default: []].insert(
+                StableCloudUUID.derived(namespace: draft.id, name: "tmr-production-movement")
+            )
+            for ingredient in draft.ingredients {
+                entitiesByType[.tmrBatchIngredient, default: []].insert(ingredient.id)
+                for load in ingredient.loadLines {
+                    entitiesByType[.tmrBatchLoadLine, default: []].insert(load.id)
+                    entitiesByType[.feedStockTransaction, default: []].insert(
+                        TMRStockLedgerIdentity.consumptionID(loadLineID: load.id)
+                    )
+                }
+            }
+        case .recordFeeding(let draft):
+            registerTMRFeedingRun(
+                runID: draft.id,
+                allocations: draft.allocations,
+                entitiesByType: &entitiesByType
+            )
+        case .correctFeedingRun(let draft):
+            registerTMRFeedingRun(
+                runID: draft.id,
+                allocations: draft.allocations,
+                entitiesByType: &entitiesByType
+            )
+            entitiesByType[.tmrBatchMovement, default: []].insert(
+                StableCloudUUID.derived(namespace: draft.id, name: "tmr-correction-reversal")
+            )
+        case .reverseFeedingRun(let draft):
+            entitiesByType[.tmrBatchMovement, default: []].insert(draft.id)
+        case .completeMeal(let draft):
+            entitiesByType[.tmrMealCompletion, default: []].insert(draft.id)
+        case .reopenMeal(let draft):
+            entitiesByType[.tmrMealCompletion, default: []].insert(draft.completionID)
+        case .adjustBatch(let draft):
+            entitiesByType[.tmrBatchMovement, default: []].insert(draft.id)
+        case .closeBatch(let draft):
+            entitiesByType[.tmrBatchMovement, default: []].insert(draft.id)
+        case .deleteUnusedBatch:
+            break
+        case .acknowledgeDeviation(let draft):
+            entitiesByType[.tmrDeviationAcknowledgement, default: []].insert(draft.id)
+        }
+    }
+
+    private static func registerTMRBaseline(
+        _ snapshot: FarmTMRBackupPayload,
+        entitiesByType: inout [CloudEntityType: Set<UUID>]
+    ) {
+        entitiesByType[.tmrFormula, default: []].formUnion(snapshot.formulaProfiles.map(\.id))
+        entitiesByType[.tmrFeedingPlan, default: []].formUnion(snapshot.plans.map(\.id))
+        entitiesByType[.tmrFeedingPlanPen, default: []].formUnion(snapshot.planPens.map(\.id))
+        entitiesByType[.tmrBatch, default: []].formUnion(snapshot.batches.map(\.id))
+        entitiesByType[.tmrBatchIngredient, default: []].formUnion(snapshot.batchIngredients.map(\.id))
+        entitiesByType[.tmrBatchLoadLine, default: []].formUnion(snapshot.loadLines.map(\.id))
+        entitiesByType[.tmrBatchMovement, default: []].formUnion(snapshot.movements.map(\.id))
+        entitiesByType[.tmrFeedingRun, default: []].formUnion(snapshot.feedingRuns.map(\.id))
+        entitiesByType[.tmrFeedingAllocation, default: []].formUnion(snapshot.feedingAllocations.map(\.id))
+        entitiesByType[.tmrMealCompletion, default: []].formUnion(snapshot.mealCompletions.map(\.id))
+        entitiesByType[.tmrDeviationAcknowledgement, default: []].formUnion(snapshot.deviationAcknowledgements.map(\.id))
+        entitiesByType[.tmrMonitoringRule, default: []].formUnion(snapshot.monitoringRules.map(\.id))
+    }
+
+    private static func registerTMRFeedingRun(
+        runID: UUID,
+        allocations: [TMRFeedingAllocationDraft],
+        entitiesByType: inout [CloudEntityType: Set<UUID>]
+    ) {
+        entitiesByType[.tmrFeedingRun, default: []].insert(runID)
+        entitiesByType[.tmrBatchMovement, default: []].insert(
+            StableCloudUUID.derived(namespace: runID, name: "tmr-feeding-movement")
+        )
+        for allocation in allocations {
+            entitiesByType[.tmrFeedingAllocation, default: []].insert(allocation.id)
+            entitiesByType[.feed, default: []].insert(allocation.feedRecordID)
+        }
+    }
+
+    private static func validateTMR(
+        _ command: TMRCommand,
+        entitiesByType: [CloudEntityType: Set<UUID>]
+    ) throws {
+        switch command {
+        case .saveFormula(let draft):
+            guard !draft.components.isEmpty else {
+                throw RemoteDomainApplyError.invalidPayload("tmrFormula.components")
+            }
+            for component in draft.components {
+                try require(component.ingredientID, in: entitiesByType[.feedIngredient], field: "tmrFormula.ingredientID")
+            }
+        case .saveMonitoringRule:
+            break
+        case .saveFeedingPlan(let draft):
+            try require(draft.formulaID, in: entitiesByType[.tmrFormula], field: "tmrPlan.formulaID")
+            guard !draft.pens.isEmpty else {
+                throw RemoteDomainApplyError.invalidPayload("tmrPlan.pens")
+            }
+            for pen in draft.pens {
+                try require(pen.penID, in: entitiesByType[.pen], field: "tmrPlan.penID")
+            }
+        case .produceBatch(let draft):
+            try require(draft.formulaID, in: entitiesByType[.tmrFormula], field: "tmrBatch.formulaID")
+            if let planID = draft.sourcePlanID {
+                try require(planID, in: entitiesByType[.tmrFeedingPlan], field: "tmrBatch.sourcePlanID")
+                guard draft.sourcePlanRevision != nil,
+                      draft.sourcePlanDate != nil,
+                      draft.sourceMeals?.isEmpty == false else {
+                    throw RemoteDomainApplyError.invalidPayload("tmrBatch.sourcePlan")
+                }
+            } else if draft.sourcePlanRevision != nil || draft.sourcePlanDate != nil || draft.sourceMeals != nil {
+                throw RemoteDomainApplyError.invalidPayload("tmrBatch.sourcePlan")
+            }
+            guard !draft.ingredients.isEmpty else {
+                throw RemoteDomainApplyError.invalidPayload("tmrBatch.ingredients")
+            }
+            for ingredient in draft.ingredients {
+                try require(ingredient.ingredientID, in: entitiesByType[.feedIngredient], field: "tmrBatch.ingredientID")
+                guard !ingredient.loadLines.isEmpty else {
+                    throw RemoteDomainApplyError.invalidPayload("tmrBatch.loadLines")
+                }
+                for load in ingredient.loadLines {
+                    try require(load.ingredientBatchID, in: entitiesByType[.feedIngredientBatch], field: "tmrBatch.ingredientBatchID")
+                }
+            }
+        case .recordFeeding(let draft):
+            try validateTMRFeedingReferences(
+                batchID: draft.batchID,
+                allocations: draft.allocations,
+                entitiesByType: entitiesByType
+            )
+            for reopen in draft.reopenCompletions ?? [] {
+                try require(
+                    reopen.completionID,
+                    in: entitiesByType[.tmrMealCompletion],
+                    field: "tmrFeeding.reopenCompletionID"
+                )
+            }
+        case .correctFeedingRun(let draft):
+            try require(draft.originalRunID, in: entitiesByType[.tmrFeedingRun], field: "tmrFeeding.originalRunID")
+            try validateTMRFeedingReferences(
+                batchID: draft.batchID,
+                allocations: draft.allocations,
+                entitiesByType: entitiesByType
+            )
+        case .reverseFeedingRun(let draft):
+            try require(draft.batchID, in: entitiesByType[.tmrBatch], field: "tmrFeeding.batchID")
+            try require(draft.runID, in: entitiesByType[.tmrFeedingRun], field: "tmrFeeding.runID")
+        case .completeMeal(let draft):
+            try require(draft.planID, in: entitiesByType[.tmrFeedingPlan], field: "tmrMeal.planID")
+            try require(draft.penID, in: entitiesByType[.pen], field: "tmrMeal.penID")
+        case .reopenMeal(let draft):
+            try require(draft.completionID, in: entitiesByType[.tmrMealCompletion], field: "tmrMeal.completionID")
+        case .adjustBatch(let draft):
+            try require(draft.batchID, in: entitiesByType[.tmrBatch], field: "tmrBatch.batchID")
+        case .closeBatch(let draft):
+            try require(draft.batchID, in: entitiesByType[.tmrBatch], field: "tmrBatch.batchID")
+        case .deleteUnusedBatch(let draft):
+            try require(draft.batchID, in: entitiesByType[.tmrBatch], field: "tmrBatch.batchID")
+        case .acknowledgeDeviation(let draft):
+            try require(draft.planID, in: entitiesByType[.tmrFeedingPlan], field: "tmrDeviation.planID")
+            try require(draft.penID, in: entitiesByType[.pen], field: "tmrDeviation.penID")
+        }
+    }
+
+    private static func validateTMRFeedingReferences(
+        batchID: UUID,
+        allocations: [TMRFeedingAllocationDraft],
+        entitiesByType: [CloudEntityType: Set<UUID>]
+    ) throws {
+        try require(batchID, in: entitiesByType[.tmrBatch], field: "tmrFeeding.batchID")
+        guard !allocations.isEmpty else {
+            throw RemoteDomainApplyError.invalidPayload("tmrFeeding.allocations")
+        }
+        for allocation in allocations {
+            try require(allocation.penID, in: entitiesByType[.pen], field: "tmrFeeding.penID")
+            if let planID = allocation.planID {
+                try require(planID, in: entitiesByType[.tmrFeedingPlan], field: "tmrFeeding.planID")
             }
         }
     }

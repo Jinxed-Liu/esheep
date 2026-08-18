@@ -358,6 +358,7 @@
 				APPLE_AUTH_BROKER_URL = "";
 				APP_ENVIRONMENT = development;
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.dev;
+				APS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.com.sheepfarm.next.dev;
 				CLOUD_COLLABORATION_ENABLED = YES;
@@ -398,7 +399,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.0.0;
+				MARKETING_VERSION = 3.1.0;
 				MIMO_INSIGHTS_ENABLED = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.dev;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -420,6 +421,7 @@
 				APPLE_AUTH_BROKER_URL = "";
 				APP_ENVIRONMENT = production;
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm;
+				APS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.com.sheepfarm.ios;
 				CLOUD_COLLABORATION_ENABLED = NO;
@@ -459,7 +461,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.0.0;
+				MARKETING_VERSION = 3.1.0;
 				MIMO_INSIGHTS_ENABLED = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -529,6 +531,7 @@
 			buildSettings = {
 				APP_ENVIRONMENT = staging;
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.staging;
+				APS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLOUDKIT_CONTAINER_IDENTIFIER = iCloud.com.sheepfarm.next.staging;
 				CLOUD_COLLABORATION_ENABLED = NO;
@@ -568,7 +571,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.0.0;
+				MARKETING_VERSION = 3.1.0;
 				MIMO_INSIGHTS_ENABLED = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -621,7 +624,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 3.0.0;
+				MARKETING_VERSION = 3.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.dev.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -653,7 +656,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 3.0.0;
+				MARKETING_VERSION = 3.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -685,7 +688,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 3.0.0;
+				MARKETING_VERSION = 3.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;

@@ -5,12 +5,12 @@ import UniformTypeIdentifiers
 struct RemovalEntryView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @Query private var sheep: [SheepRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
     private let commandService = FarmCommandService()
 
+    @State private var sheepCandidates: [SheepEarTagSearchCandidate] = []
     @State private var sheepID: UUID?
     @State private var kind = RemovalKind.sold
     @State private var reason = ""
@@ -23,20 +23,7 @@ struct RemovalEntryView: View {
     init(account: AccountProfile, farm: FarmRecord) {
         self.account = account
         self.farm = farm
-        let farmID = farm.id
-        let activeStatus = SheepStatus.active.rawValue
-        _sheep = Query(
-            filter: #Predicate<SheepRecord> {
-                $0.farmID == farmID &&
-                    $0.deletedAt == nil &&
-                    $0.statusRawValue == activeStatus &&
-                    $0.isHistoricalArchive == false
-            },
-            sort: \SheepRecord.earTag
-        )
     }
-
-    private var sheepCandidates: [SheepEarTagSearchCandidate] { sheep.map { .init(sheep: $0) } }
 
     var body: some View {
         Form {
@@ -63,6 +50,7 @@ struct RemovalEntryView: View {
         .overlay { if isSaving { ProgressView("正在保存离场记录") } }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["离场"])
+        .task(id: farm.id) { await loadSheepCandidates() }
     }
 
     @MainActor
@@ -79,6 +67,18 @@ struct RemovalEntryView: View {
                 isSaving = false
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    @MainActor
+    private func loadSheepCandidates() async {
+        do {
+            sheepCandidates = try await SheepEarTagCandidateSnapshotActor(container: modelContext.container)
+                .load(farmID: farm.id, scope: .active)
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = "读取离场羊只失败：\(error.localizedDescription)"
         }
     }
 }

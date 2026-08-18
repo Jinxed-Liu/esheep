@@ -99,6 +99,8 @@ extension FarmEventSnapshot {
             .recordProduction
         case .weight, .transfer, .removal, .health, .reproduction:
             .editHistoricalFacts
+        case .feed where title == "TMR 投喂":
+            .editHistoricalFacts
         default:
             nil
         }
@@ -306,9 +308,27 @@ actor FarmEventHistoryActor {
         let feeds = try context.fetch(FetchDescriptor<FeedRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
         }))
+        let tmrAllocations = try context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let tmrAllocationByFeedID = Dictionary(grouping: tmrAllocations, by: \.feedRecordID)
+            .compactMapValues { values in
+                values.max {
+                    if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+            }
+        let tmrRunIDs = Set(tmrAllocations.map(\.runID))
+        let currentFarmID = farmID
+        let tmrRuns = try context.fetch(FetchDescriptor<TMRFeedingRunRecord>(predicate: #Predicate {
+            $0.farmID == currentFarmID && $0.deletedAt == nil
+        })).filter { tmrRunIDs.contains($0.id) }
+        let tmrRunByID = Dictionary(uniqueKeysWithValues: tmrRuns.map { ($0.id, $0) })
         events.append(contentsOf: feeds.map { record in
             let location = penName[record.penID] ?? "未知圈舍"
             let meal = record.mealName.isEmpty ? record.mode.displayName : record.mealName
+            let tmrAllocation = tmrAllocationByFeedID[record.id]
+            let tmrRun = tmrAllocation.flatMap { tmrRunByID[$0.runID] }
             let lines = (feedLinesByRecordID[record.id] ?? [])
                 .sorted { $0.ingredientNameSnapshot.localizedStandardCompare($1.ingredientNameSnapshot) == .orderedAscending }
                 .map {
@@ -316,19 +336,29 @@ actor FarmEventHistoryActor {
                     return "\($0.ingredientNameSnapshot) \($0.kilogramsText) \(unit)"
                 }
                 .joined(separator: "；")
+            var fields = [
+                FarmEventField(label: "圈舍", value: location),
+                .init(label: "来源", value: tmrRun == nil ? "直接投喂" : "TMR 投喂"),
+                .init(label: "方式", value: record.mode.displayName),
+                .init(label: "顿次", value: record.mealName.isEmpty ? "未填写" : record.mealName),
+                .init(label: "原料明细", value: lines),
+                .init(label: "剩料kg", value: record.remainingKilogramsText ?? ""),
+                .init(label: "废弃kg", value: record.discardedKilogramsText ?? "")
+            ]
+            if let tmrRun, let tmrAllocation {
+                fields.append(.init(label: "TMR批次", value: tmrRun.batchCodeSnapshot))
+                fields.append(.init(label: "TMR配方", value: "\(tmrRun.formulaNameSnapshot) v\(tmrRun.formulaRevision)"))
+                fields.append(.init(label: "实际TMR kg", value: tmrAllocation.actualKilogramsText))
+                fields.append(.init(label: "目标TMR kg", value: tmrAllocation.targetKilogramsTextSnapshot ?? ""))
+            } else {
+                fields.append(.init(label: "旧位置备注", value: record.feederName.isEmpty ? "无" : record.feederName))
+            }
             return FarmEventSnapshot(
                 id: record.id, entityType: .feed, category: .feeding,
                 occurredAt: record.occurredAt, recordedAt: record.recordedAt,
-                title: "投喂", subject: location, detail: meal, note: record.note,
-                fields: [
-                    .init(label: "圈舍", value: location),
-                    .init(label: "方式", value: record.mode.displayName),
-                    .init(label: "班次", value: record.mealName.isEmpty ? "未填写" : record.mealName),
-                    .init(label: "饲喂员", value: record.feederName.isEmpty ? "未填写" : record.feederName),
-                    .init(label: "原料明细", value: lines),
-                    .init(label: "剩料kg", value: record.remainingKilogramsText ?? ""),
-                    .init(label: "废弃kg", value: record.discardedKilogramsText ?? "")
-                ]
+                title: tmrRun == nil ? "直接投喂" : "TMR 投喂",
+                subject: location, detail: meal, note: record.note,
+                fields: fields
             )
         })
 
@@ -723,6 +753,17 @@ struct FarmEventHistoryView: View {
                 })).first else { throw FarmEventEditError.recordUnavailable }
                 guard record.kind != .parityBaseline else { throw FarmEventEditError.unsupported }
                 pendingEditor = .reproduction(record)
+            case .feed where event.title == "TMR 投喂":
+                let allocations = try modelContext.fetch(FetchDescriptor<TMRFeedingAllocationRecord>(predicate: #Predicate {
+                    $0.feedRecordID == entityID && $0.farmID == farmID && $0.deletedAt == nil
+                }))
+                guard let allocation = allocations.first else { throw FarmEventEditError.recordUnavailable }
+                let runID = allocation.runID
+                guard let run = try modelContext.fetch(FetchDescriptor<TMRFeedingRunRecord>(predicate: #Predicate {
+                    $0.id == runID && $0.farmID == farmID && $0.deletedAt == nil
+                })).first
+                else { throw FarmEventEditError.recordUnavailable }
+                pendingEditor = .tmrFeedingRun(runID: run.id)
             default:
                 throw FarmEventEditError.unsupported
             }
@@ -887,6 +928,7 @@ private enum FarmEventEditDestination: Identifiable {
     case removal(RemovalRecord)
     case health(HealthRecord)
     case reproduction(ReproductionRecord)
+    case tmrFeedingRun(runID: UUID)
 
     var id: FarmEventRowIdentity {
         switch self {
@@ -902,6 +944,8 @@ private enum FarmEventEditDestination: Identifiable {
             FarmEventRowIdentity(entityType: CloudEntityType.health.rawValue, entityID: record.id)
         case .reproduction(let record):
             FarmEventRowIdentity(entityType: CloudEntityType.reproduction.rawValue, entityID: record.id)
+        case .tmrFeedingRun(let runID):
+            FarmEventRowIdentity(entityType: CloudEntityType.tmrFeedingRun.rawValue, entityID: runID)
         }
     }
 }
@@ -944,6 +988,8 @@ private struct FarmEventEditSheet: View {
                 } else {
                     ReproductionCorrectionView(account: account, farm: farm, record: record)
                 }
+            case .tmrFeedingRun(let runID):
+                TMRFeedingCorrectionView(account: account, farm: farm, runID: runID)
             }
         }
     }
@@ -975,7 +1021,11 @@ private struct FarmEventDeletionSheet: View {
                 } header: {
                     Text("删除原因")
                 } footer: {
-                    Text("删除会撤销底层权威事实并同步重算关联历史；健康、繁殖事件还会反冲库存并重建提醒。审计记录不会被抹除。")
+                    if event.entityType == .feed && event.title == "TMR 投喂" {
+                        Text("删除会撤销所属的整次出锅投喂；若该次包含多个圈舍，将一起撤销并恢复 TMR 批次余额，原料库存不会变化。审计记录不会被抹除。")
+                    } else {
+                        Text("删除会撤销底层权威事实并同步重算关联历史；健康、繁殖事件还会反冲库存并重建提醒。审计记录不会被抹除。")
+                    }
                 }
             }
             .navigationTitle("删除事件")
@@ -1032,6 +1082,33 @@ enum FarmEventDeletionCommandResolver {
         context: ModelContext
     ) throws -> FarmCommand {
         let normalizedReason = "事件记录删除：" + reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        if event.entityType == .feed {
+            let feedRecordID = event.id
+            let allocation = try context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.feedRecordID == feedRecordID
+            })).first
+            if let allocation {
+                let runID = allocation.runID
+                guard allocation.deletedAt == nil,
+                      let run = try context.fetch(FetchDescriptor<TMRFeedingRunRecord>(predicate: #Predicate {
+                          $0.id == runID && $0.farmID == farmID && $0.deletedAt == nil
+                      })).first else {
+                    throw TMRCommandApplyError.runNotFound
+                }
+                let batchID = run.batchID
+                guard let batch = try context.fetch(FetchDescriptor<TMRBatchRecord>(predicate: #Predicate {
+                    $0.id == batchID && $0.farmID == farmID && $0.deletedAt == nil
+                })).first else {
+                    throw TMRCommandApplyError.runNotFound
+                }
+                return .tmr(.reverseFeedingRun(TMRFeedingReversalDraft(
+                    runID: run.id,
+                    batchID: batch.id,
+                    expectedBatchRevision: batch.revision,
+                    reason: normalizedReason
+                )))
+            }
+        }
         guard event.entityType == .reproduction else {
             return .tombstoneEntity(
                 entityType: event.entityType,

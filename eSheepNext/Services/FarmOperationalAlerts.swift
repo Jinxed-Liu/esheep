@@ -24,6 +24,9 @@ enum FarmOperationalAlertKind: String, Codable, CaseIterable, Sendable, Hashable
     case pregnancyCheckDueSoon
     case pregnancyCheckOverdue
     case invalidPen
+    case tmrNotFed
+    case tmrLow
+    case tmrHigh
 
     var displayName: String {
         switch self {
@@ -32,19 +35,29 @@ enum FarmOperationalAlertKind: String, Codable, CaseIterable, Sendable, Hashable
         case .pregnancyCheckDueSoon: "孕检即将到期"
         case .pregnancyCheckOverdue: "逾期未孕检"
         case .invalidPen: "圈舍异常"
+        case .tmrNotFed: "TMR 未投喂"
+        case .tmrLow: "TMR 投喂偏低"
+        case .tmrHigh: "TMR 投喂偏高"
         }
     }
 
     var symbol: String {
         switch self {
-        case .weaningDueSoon, .weaningOverdue: "arrow.down.to.line.compact"
+        case .weaningDueSoon, .weaningOverdue: "leaf.circle.fill"
         case .pregnancyCheckDueSoon, .pregnancyCheckOverdue: "heart.text.square"
         case .invalidPen: "building.2.crop.circle"
+        case .tmrNotFed: "fork.knife.circle"
+        case .tmrLow: "arrow.down.circle"
+        case .tmrHigh: "arrow.up.circle"
         }
     }
 
     var isDueSoon: Bool {
         self == .weaningDueSoon || self == .pregnancyCheckDueSoon
+    }
+
+    var isTMR: Bool {
+        self == .tmrNotFed || self == .tmrLow || self == .tmrHigh
     }
 }
 
@@ -108,8 +121,9 @@ struct FarmOperationalAlertSnapshot: Sendable, Hashable {
     let operationalAlerts: [FarmOperationalAlert]
     let overdueReminders: [FarmScheduledReminderSnapshot]
     let missingBirthDateCount: Int
+    var tmrMonitoringConfigured: Bool = false
 
-    var isConfigured: Bool { rule?.isConfigured == true }
+    var isConfigured: Bool { rule?.isConfigured == true || tmrMonitoringConfigured }
     var totalPendingCount: Int { operationalAlerts.count + overdueReminders.count }
 }
 
@@ -607,7 +621,7 @@ actor FarmOperationalAlertSnapshotActor {
             )
         }
         try Task.checkCancellation()
-        return FarmOperationalAlertEngine.evaluate(
+        let base = FarmOperationalAlertEngine.evaluate(
             farmID: farmID,
             timeZoneIdentifier: farm.timeZoneIdentifier,
             now: now,
@@ -619,6 +633,28 @@ actor FarmOperationalAlertSnapshotActor {
             lambingOffspring: lambingOffspring,
             reminders: reminders,
             deferrals: deferrals
+        )
+        let tmrSnapshot = try TMRMonitoringEngine.load(
+            farmID: farmID,
+            localDay: now,
+            now: now,
+            context: context
+        )
+        let combinedAlerts = (base.operationalAlerts + TMRMonitoringAlertAdapter.alerts(from: tmrSnapshot))
+            .sorted {
+                if $0.dueAt != $1.dueAt { return $0.dueAt < $1.dueAt }
+                if $0.kind.rawValue != $1.kind.rawValue { return $0.kind.rawValue < $1.kind.rawValue }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+        return FarmOperationalAlertSnapshot(
+            farmID: base.farmID,
+            timeZoneIdentifier: base.timeZoneIdentifier,
+            generatedAt: base.generatedAt,
+            rule: base.rule,
+            operationalAlerts: combinedAlerts,
+            overdueReminders: base.overdueReminders,
+            missingBirthDateCount: base.missingBirthDateCount,
+            tmrMonitoringConfigured: tmrSnapshot.monitoringConfigured
         )
     }
 }

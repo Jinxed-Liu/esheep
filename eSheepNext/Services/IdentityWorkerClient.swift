@@ -250,6 +250,7 @@ struct WorkerFarmSecuritySnapshot: Codable, Sendable {
         let deviceID: UUID
         let accountID: UUID
         let publicKeyJWK: String
+        var tmrDataProtocolVersion: Int? = nil
     }
 
     struct RevokedCertificate: Codable, Sendable {
@@ -385,8 +386,22 @@ actor IdentityWorkerClient {
         )
     }
 
-    func registerDevice(deviceID: UUID, publicKeyJWK: [String: String], displayName: String) async throws -> WorkerDeviceResponse {
-        try await request(path: "/v1/devices/register", method: "POST", body: DeviceRegistrationBody(deviceID: deviceID, publicKeyJWK: publicKeyJWK, displayName: displayName))
+    func registerDevice(
+        deviceID: UUID,
+        publicKeyJWK: [String: String],
+        displayName: String,
+        tmrDataProtocolVersion: Int = TMRCloudDataProtocol.currentVersion
+    ) async throws -> WorkerDeviceResponse {
+        try await request(
+            path: "/v1/devices/register",
+            method: "POST",
+            body: DeviceRegistrationBody(
+                deviceID: deviceID,
+                publicKeyJWK: publicKeyJWK,
+                displayName: displayName,
+                tmrDataProtocolVersion: tmrDataProtocolVersion
+            )
+        )
     }
 
     func revokeDevice(deviceID: UUID) async throws {
@@ -747,7 +762,12 @@ actor IdentityWorkerClient {
     }
 }
 
-private struct DeviceRegistrationBody: Codable { let deviceID: UUID; let publicKeyJWK: [String: String]; let displayName: String }
+private struct DeviceRegistrationBody: Codable {
+    let deviceID: UUID
+    let publicKeyJWK: [String: String]
+    let displayName: String
+    var tmrDataProtocolVersion: Int? = nil
+}
 private struct InsightDeviceApprovalBody: Codable {
     let approverDeviceID: UUID
     let keyVersion: Int

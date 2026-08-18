@@ -148,7 +148,7 @@ enum FarmAnalytics {
             let isComplete = days.count > 1
             return IngredientIntakeResult(
                 penID: first.penID,
-                feederName: first.feederName.isEmpty ? "未指定料罐" : first.feederName,
+                feederName: first.feederName.isEmpty ? "圈舍整体" : first.feederName,
                 ingredientID: first.ingredientID,
                 ingredientName: first.ingredientName,
                 kilograms: kilograms,

@@ -84,6 +84,123 @@ struct FarmCommandCloudPayload: Codable, Sendable, Equatable {
     var breedingProgramSteps: [BreedingProgramStep] = []
     var lambingOffspring: [LambingOffspring] = []
     var careCommand: CareCommand?
+    var tmrCommand: TMRCommand?
+    var tmrBaselineSnapshot: FarmTMRBackupPayload? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case strings
+        case optionalStrings
+        case identifiers
+        case optionalIdentifiers
+        case dates
+        case optionalDates
+        case integers
+        case dataValues
+        case feedLines
+        case recipeComponents
+        case breedingProgramSteps
+        case lambingOffspring
+        case careCommand
+        case tmrCommand
+        case tmrBaselineSnapshot
+    }
+
+    init(kind: DomainOperationKind) {
+        self.kind = kind
+    }
+
+    /// Cloud operations are immutable and outlive individual app versions.
+    /// Collections added by later clients therefore decode as their original
+    /// empty defaults when an older operation did not encode those keys.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decode(DomainOperationKind.self, forKey: .kind)
+        strings = try container.decodeIfPresent(
+            [String: String].self,
+            forKey: .strings
+        ) ?? [:]
+        optionalStrings = try container.decodeIfPresent(
+            [String: String?].self,
+            forKey: .optionalStrings
+        ) ?? [:]
+        identifiers = try container.decodeIfPresent(
+            [String: UUID].self,
+            forKey: .identifiers
+        ) ?? [:]
+        optionalIdentifiers = try container.decodeIfPresent(
+            [String: UUID?].self,
+            forKey: .optionalIdentifiers
+        ) ?? [:]
+        dates = try container.decodeIfPresent(
+            [String: Date].self,
+            forKey: .dates
+        ) ?? [:]
+        optionalDates = try container.decodeIfPresent(
+            [String: Date?].self,
+            forKey: .optionalDates
+        ) ?? [:]
+        integers = try container.decodeIfPresent(
+            [String: Int].self,
+            forKey: .integers
+        ) ?? [:]
+        dataValues = try container.decodeIfPresent(
+            [String: Data].self,
+            forKey: .dataValues
+        ) ?? [:]
+        feedLines = try container.decodeIfPresent(
+            [FeedLine].self,
+            forKey: .feedLines
+        ) ?? []
+        recipeComponents = try container.decodeIfPresent(
+            [FeedRecipeComponent].self,
+            forKey: .recipeComponents
+        ) ?? []
+        breedingProgramSteps = try container.decodeIfPresent(
+            [BreedingProgramStep].self,
+            forKey: .breedingProgramSteps
+        ) ?? []
+        lambingOffspring = try container.decodeIfPresent(
+            [LambingOffspring].self,
+            forKey: .lambingOffspring
+        ) ?? []
+        careCommand = try container.decodeIfPresent(
+            CareCommand.self,
+            forKey: .careCommand
+        )
+        tmrCommand = try container.decodeIfPresent(
+            TMRCommand.self,
+            forKey: .tmrCommand
+        )
+        tmrBaselineSnapshot = try container.decodeIfPresent(
+            FarmTMRBackupPayload.self,
+            forKey: .tmrBaselineSnapshot
+        )
+    }
+}
+
+enum TMRCloudDataProtocol {
+    static let currentVersion = 1
+    static let field = "tmrDataProtocolVersion"
+
+    static func isSupported(by payload: FarmCommandCloudPayload) -> Bool {
+        payload.integers[field] == currentVersion
+    }
+
+    static func incompatibleActiveDeviceIDs(
+        in snapshot: FarmMembershipSnapshotEnvelope
+    ) -> [UUID] {
+        let activeAccountIDs = Set(snapshot.members.lazy
+            .filter { $0.status == "active" }
+            .map(\.accountID))
+        return snapshot.devices
+            .filter {
+                activeAccountIDs.contains($0.accountID) &&
+                    ($0.tmrDataProtocolVersion ?? 0) < currentVersion
+            }
+            .map(\.deviceID)
+            .sorted { $0.uuidString < $1.uuidString }
+    }
 }
 
 enum FarmCommandCloudPayloadEncoder {
@@ -96,6 +213,9 @@ enum FarmCommandCloudPayloadEncoder {
         switch command {
         case .care(let careCommand):
             payload.careCommand = careCommand
+        case .tmr(let tmrCommand):
+            payload.tmrCommand = tmrCommand
+            payload.integers[TMRCloudDataProtocol.field] = TMRCloudDataProtocol.currentVersion
         case .updateFarmLocation(let displayName, let latitude, let longitude, let addressSnapshot, let timeZoneIdentifier, let source, let horizontalAccuracyMeters):
             payload.strings = [
                 "displayName": displayName,
@@ -348,6 +468,16 @@ enum FarmCommandCloudPayloadEncoder {
            let sheepAvatarUpdate {
             SheepAvatarCloudPayload.write(sheepAvatarUpdate, to: &payload)
         }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(payload)
+    }
+
+    static func encodeTMRBaseline(_ snapshot: FarmTMRBackupPayload) throws -> Data {
+        var payload = FarmCommandCloudPayload(kind: .restoreTMRBaseline)
+        payload.tmrBaselineSnapshot = snapshot
+        payload.integers[TMRCloudDataProtocol.field] = TMRCloudDataProtocol.currentVersion
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys]

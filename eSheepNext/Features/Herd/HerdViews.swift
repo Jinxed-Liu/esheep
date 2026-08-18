@@ -30,6 +30,7 @@ struct HerdManagementView: View {
     @State private var presentSheepCount = 0
     @State private var removedSheepCount = 0
     @State private var hasBuiltSheepSnapshot = false
+    @State private var sheepSourceLoadRevision = 0
     @State private var sheepSourceRevision = 0
 
     private var penNames: [UUID: String] {
@@ -75,7 +76,9 @@ struct HerdManagementView: View {
         }
         .navigationTitle("羊只")
         .searchable(text: $query, prompt: "耳号或品种")
-        .onAppear(perform: reloadSheepSource)
+        .task(id: HerdSourceLoadRequest(farmID: farm.id, revision: sheepSourceLoadRevision)) {
+            await reloadSheepSource()
+        }
         .task(id: HerdSearchRequest(
             query: SearchText.normalized(query),
             sexFilter: sexFilter,
@@ -138,14 +141,13 @@ struct HerdManagementView: View {
                     .accessibilityLabel("新建羊只")
             }
         }
-        .sheet(isPresented: $isAddingSheep, onDismiss: reloadSheepSource) {
+        .sheet(isPresented: $isAddingSheep, onDismiss: { sheepSourceLoadRevision &+= 1 }) {
             NavigationStack { AddSheepView(account: account, farm: farm) }
         }
-        .sheet(isPresented: $isBatchTransferring) {
+        .sheet(isPresented: $isBatchTransferring, onDismiss: { sheepSourceLoadRevision &+= 1 }) {
             NavigationStack {
                 BatchTransferSheepView(account: account, farm: farm, sheepIDs: selection) { count in
                     selection.removeAll()
-                    reloadSheepSource()
                     exportMessage = "已为 \(count) 只羊生成转群记录。"
                 }
             }
@@ -203,33 +205,20 @@ struct HerdManagementView: View {
         }
     }
 
-    private func reloadSheepSource() {
-        let farmID = farm.id
+    @MainActor
+    private func reloadSheepSource() async {
+        hasBuiltSheepSnapshot = false
         do {
-            let sheep = try modelContext.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
-                $0.farmID == farmID && $0.deletedAt == nil
-            }))
-            let pens = try modelContext.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
-                $0.farmID == farmID && $0.deletedAt == nil
-            }))
-            let avatarPhotos = try SheepAvatarSelectionStore.references(
-                farmID: farmID,
-                context: modelContext
-            )
-            let rows = sheep.map {
-                HerdSheepRow($0, avatarPhoto: avatarPhotos[$0.id])
+            let snapshot = try await HerdSnapshotActor(container: modelContext.container)
+                .load(farmID: farm.id)
+            try Task.checkCancellation()
+            sourceSheep = snapshot.sheep
+            penOptions = snapshot.penOptions
+            presentSheepCount = snapshot.presentSheepCount
+            removedSheepCount = snapshot.removedSheepCount
+            if let penFilter, !snapshot.occupiedPenIDs.contains(penFilter) {
+                self.penFilter = nil
             }
-            sourceSheep = rows
-            let occupiedPenIDs = Set(rows.lazy.compactMap { item in
-                item.isCurrentlyPresent ? item.currentPenID : nil
-            })
-            penOptions = pens.filter { occupiedPenIDs.contains($0.id) }
-                .map { HerdPenOption(id: $0.id, name: $0.name) }
-                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            if let penFilter, !occupiedPenIDs.contains(penFilter) { self.penFilter = nil }
-            presentSheepCount = sourceSheep.lazy.filter(\.isCurrentlyPresent).count
-            removedSheepCount = sheep.lazy.filter { !$0.isCurrentlyPresent && !$0.isHistoricalArchive }.count
-            hasBuiltSheepSnapshot = false
             sheepSourceRevision &+= 1
         } catch {
             sourceSheep = []
@@ -320,9 +309,65 @@ private struct HerdSheepRow: Identifiable, Sendable {
     }
 }
 
-private struct HerdPenOption: Identifiable {
+private struct HerdPenOption: Identifiable, Sendable {
     let id: UUID
     let name: String
+}
+
+private struct HerdSourceLoadRequest: Equatable, Sendable {
+    let farmID: UUID
+    let revision: Int
+}
+
+private struct HerdSourceSnapshot: Sendable {
+    let sheep: [HerdSheepRow]
+    let penOptions: [HerdPenOption]
+    let occupiedPenIDs: Set<UUID>
+    let presentSheepCount: Int
+    let removedSheepCount: Int
+}
+
+/// Builds the immutable herd source away from the main actor. This includes
+/// the avatar projection, which is a second farm-wide read that used to run
+/// synchronously every time the herd page appeared.
+private actor HerdSnapshotActor {
+    private let container: ModelContainer
+
+    init(container: ModelContainer) {
+        self.container = container
+    }
+
+    func load(farmID: UUID) throws -> HerdSourceSnapshot {
+        try Task.checkCancellation()
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let avatarPhotos = try SheepAvatarSelectionStore.references(
+            farmID: farmID,
+            context: context
+        )
+        let rows = sheep.map { HerdSheepRow($0, avatarPhoto: avatarPhotos[$0.id]) }
+        let occupiedPenIDs = Set(rows.lazy.compactMap { item in
+            item.isCurrentlyPresent ? item.currentPenID : nil
+        })
+        let penOptions = pens
+            .filter { occupiedPenIDs.contains($0.id) }
+            .map { HerdPenOption(id: $0.id, name: $0.name) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        try Task.checkCancellation()
+        return HerdSourceSnapshot(
+            sheep: rows,
+            penOptions: penOptions,
+            occupiedPenIDs: occupiedPenIDs,
+            presentSheepCount: rows.count(where: \.isCurrentlyPresent),
+            removedSheepCount: sheep.count { !$0.isCurrentlyPresent && !$0.isHistoricalArchive }
+        )
+    }
 }
 
 private enum HerdSortOrder: String, CaseIterable, Identifiable, Sendable {

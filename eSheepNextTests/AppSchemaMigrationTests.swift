@@ -1,15 +1,45 @@
 import Foundation
+import CoreData
 import SwiftData
 import XCTest
 @testable import eSheepNext
 
 @MainActor
 final class AppSchemaMigrationTests: XCTestCase {
+    func testHistoricalSchemasDoNotAbsorbTMRModels() {
+        let historicalSchemas: [any VersionedSchema.Type] = [
+            AppSchemaV1.self,
+            AppSchemaV2.self,
+            AppSchemaV3.self,
+            AppSchemaV4.self,
+            AppSchemaV5.self,
+            AppSchemaV6.self,
+            AppSchemaV7.self,
+            AppSchemaV8.self,
+            AppSchemaV9_0.self,
+            AppSchemaV9.self,
+            AppSchemaV10.self,
+        ]
+
+        for versionedSchema in historicalSchemas {
+            let names = Schema(versionedSchema: versionedSchema).entities.map(\.name)
+            XCTAssertFalse(
+                names.contains(where: { $0.hasPrefix("TMR") }),
+                "Historical schema \(Schema(versionedSchema: versionedSchema).version) absorbed a current TMR model"
+            )
+        }
+
+        XCTAssertEqual(
+            Schema(versionedSchema: AppSchemaV11.self).entities.filter { $0.name.hasPrefix("TMR") }.count,
+            12
+        )
+    }
+
     func testVersionedSchemaContainsEveryCurrentModel() {
-        let versioned = Schema(versionedSchema: AppSchemaV10.self)
+        let versioned = Schema(versionedSchema: AppSchemaV11.self)
         let current = AppSchema.makeSchema()
 
-        XCTAssertEqual(AppSchema.currentVersion, "10.0.0")
+        XCTAssertEqual(AppSchema.currentVersion, "11.0.0")
         XCTAssertEqual(versioned.entities.map(\.name).sorted(), current.entities.map(\.name).sorted())
         XCTAssertEqual(
             AppSchemaMigrationPlan.schemas.map { Schema(versionedSchema: $0).version },
@@ -25,9 +55,69 @@ final class AppSchemaMigrationTests: XCTestCase {
                 Schema.Version(9, 0, 0),
                 Schema.Version(9, 1, 0),
                 Schema.Version(10, 0, 0),
+                Schema.Version(11, 0, 0),
             ]
         )
-        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 10)
+        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 11)
+    }
+
+    func testV10RecipesBecomeReviewableTMRProfilesWithoutInventingHistoricalBatchesOrPlans() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "AppSchemaV10TMR-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "V10TMR.store")
+        let accountID = UUID()
+        let farmID = UUID()
+        let recipeWithHeadCountID = UUID()
+        let recipeWithoutHeadCountID = UUID()
+        let ingredientID = UUID()
+        let ingredientBatchID = UUID()
+        let componentID = UUID()
+        let feedID = UUID()
+
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV10.self)
+            let configuration = ModelConfiguration(
+                "V10TMR",
+                schema: schema,
+                url: storeURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+            context.insert(AccountProfile(id: accountID, appleUserIdentifier: "v10-tmr", displayName: "V10 TMR"))
+            context.insert(FarmRecord(id: farmID, ownerAccountID: accountID, name: "V10 TMR 场"))
+            context.insert(FeedRecipeRecord(id: recipeWithHeadCountID, farmID: farmID, name: "有参考羊数", headCount: 100))
+            context.insert(FeedRecipeRecord(id: recipeWithoutHeadCountID, farmID: farmID, name: "缺参考羊数", headCount: nil))
+            context.insert(FeedIngredientRecord(id: ingredientID, farmID: farmID, name: "旧玉米", unit: "千克", nutrientSnapshotJSON: "{}", kind: .custom))
+            context.insert(FeedIngredientBatchRecord(id: ingredientBatchID, farmID: farmID, ingredientID: ingredientID, batchName: "旧库存批次", pricePerKilogramText: "2", stockWeightConfirmed: true, initialKilogramsText: "100", remainingKilogramsText: "100", note: "", isActive: true))
+            context.insert(FeedRecipeComponentRecord(id: componentID, farmID: farmID, recipeID: recipeWithHeadCountID, ingredientID: ingredientID, kilogramsText: "20", ingredientBatchID: ingredientBatchID))
+            context.insert(FeedRecord(id: feedID, farmID: farmID, penID: UUID(), mode: .limited, occurredAt: .now, mealName: "早"))
+            try context.save()
+        }
+
+        let reopened = try AppSchema.makeContainer(name: "V10TMR", url: storeURL)
+        let context = ModelContext(reopened)
+        let profiles = try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>())
+        XCTAssertEqual(profiles.count, 2)
+        let confirmed = try XCTUnwrap(profiles.first { $0.recipeID == recipeWithHeadCountID })
+        XCTAssertEqual(confirmed.quantityBasis, .wholeGroupDaily)
+        XCTAssertEqual(confirmed.referenceHeadCount, 100)
+        XCTAssertFalse(confirmed.needsReview)
+        let pending = try XCTUnwrap(profiles.first { $0.recipeID == recipeWithoutHeadCountID })
+        XCTAssertNil(pending.referenceHeadCount)
+        XCTAssertTrue(pending.needsReview)
+        let migratedComponent = try XCTUnwrap(
+            try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()).first { $0.id == componentID }
+        )
+        XCTAssertNil(migratedComponent.ingredientBatchID)
+        XCTAssertEqual(migratedComponent.legacyBatchID, ingredientBatchID.uuidString.lowercased())
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<FeedRecord>()), 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<TMRBatchRecord>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<TMRFeedingPlanRecord>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
     }
 
     func testInstalledV9FeedMigratesToV10WithoutChangingSnapshotsOrCreatingOperations() throws {
@@ -211,6 +301,16 @@ final class AppSchemaMigrationTests: XCTestCase {
             context.insert(AppSchemaV7.FeedRecordLine(id: lineID, farmID: farmID, feedRecordID: feedID, ingredientID: ingredientID, kilogramsText: "10", ingredientNameSnapshot: "旧玉米", ingredientBatchID: batchID, ingredientBatchNameSnapshot: "旧批次", pricePerKilogramTextSnapshot: "2.2", nutrientSnapshotJSON: "{\"dryMatter\":86}", unitSnapshot: "千克", dryMatterTextSnapshot: "86"))
             try context.save()
         }
+
+        let v7Metadata = try NSPersistentStoreCoordinator.metadataForPersistentStore(
+            type: .sqlite,
+            at: storeURL
+        )
+        XCTAssertEqual(
+            v7Metadata["NSStoreModelVersionChecksumKey"] as? String,
+            "Pan+FE5drgwNZfB0rqwiqDLK94frr7V2QkP0+WrDFE8=",
+            "AppSchemaV7 must remain byte-for-byte compatible with the V7 store shipped to devices"
+        )
 
         let reopened = try AppSchema.makeContainer(name: "V7Feed", url: storeURL)
         let context = ModelContext(reopened)

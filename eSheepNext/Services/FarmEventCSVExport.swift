@@ -39,7 +39,7 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
         case .all: "clock.arrow.circlepath"
         case .sheep: "tag"
         case .weight: "scalemass"
-        case .weaning: "arrow.down.to.line.compact"
+        case .weaning: "leaf.circle.fill"
         case .transfer: "arrow.left.arrow.right"
         case .removal: "arrowshape.turn.up.right.circle"
         case .feed: "leaf"

@@ -83,7 +83,9 @@ enum SubscriptionCapabilityPolicy {
         entitlement: AccountEntitlement,
         subscriptionsEnabled: Bool = SubscriptionFeatureConfiguration.isEnabled
     ) -> Bool {
-        role == .owner && subscriptionsEnabled && entitlement.allowsOwnerProFeatures
+        _ = entitlement
+        _ = subscriptionsEnabled
+        return role == .owner
     }
 
     static func canRecordProduction(role: FarmRole, entitlement: AccountEntitlement) -> Bool {
@@ -97,7 +99,7 @@ enum FarmCreationEntitlementError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .additionalFarmRequiresFarmPro:
-            "首个自有牧场可免费使用；创建额外牧场需要有效的牧场 Pro 订阅。已有牧场、受邀牧场和生产记录不会被锁定。"
+            "只有牧场主可以创建额外牧场。"
         }
     }
 }

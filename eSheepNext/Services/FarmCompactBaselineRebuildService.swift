@@ -495,6 +495,8 @@ actor FarmCompactBaselineRebuildService {
         package: FarmCompactBaselinePackageV1,
         ownerAccountID: UUID,
         cursor: Int,
+        serverMembershipID: String? = nil,
+        activate: Bool = true,
         container: ModelContainer
     ) throws {
         let context = ModelContext(container)
@@ -522,13 +524,23 @@ actor FarmCompactBaselineRebuildService {
                 FarmStorageTransitionState.idle.rawValue
             existingProfile.updatedAt = .now
             existingBinding.stateRawValue =
-                FarmRemoteBindingState.active.rawValue
+                (activate
+                    ? FarmRemoteBindingState.active
+                    : FarmRemoteBindingState.preparing).rawValue
             existingBinding.lastPulledRevision = max(
                 existingBinding.lastPulledRevision,
                 cursor
             )
             existingBinding.lastSuccessfulSyncAt = .now
             existingBinding.updatedAt = .now
+            existingBinding.ownerAccountID = ownerAccountID
+            existingBinding.lastErrorCode = nil
+            try ensureOwnerMembership(
+                farmID: package.manifest.farmID,
+                ownerAccountID: ownerAccountID,
+                serverMembershipID: serverMembershipID,
+                context: context
+            )
             try context.save()
             return
         }
@@ -539,9 +551,145 @@ actor FarmCompactBaselineRebuildService {
             package: package,
             ownerAccountID: ownerAccountID,
             cursor: cursor,
+            serverMembershipID: serverMembershipID,
+            state: activate ? .active : .preparing,
             context: context
         )
         try context.save()
+    }
+
+    /// Continues a restore that already activated this exact compact baseline.
+    /// A later incremental pull is allowed to add history, tombstones and
+    /// photos, so retrying the baseline's exact-count validation would reject
+    /// valid post-checkpoint data. The discovery sentinel, storage profile and
+    /// remote binding are the durable proof that only incremental catch-up is
+    /// required.
+    func resumeActivatedFarmIfPossible(
+        farmID: UUID,
+        migrationID: UUID,
+        packageDigest: String,
+        ownerAccountID: UUID,
+        authorityGeneration: Int,
+        serverMembershipID: String,
+        checkpointCursor: Int,
+        restoreCursor: Int,
+        container: ModelContainer
+    ) throws -> Int? {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        guard let farm = try context.fetch(FetchDescriptor<FarmRecord>())
+            .first(where: { $0.id == farmID }),
+              let profile = try context.fetch(
+                FetchDescriptor<FarmStorageProfile>()
+              ).first(where: { $0.farmID == farmID }),
+              let binding = try context.fetch(
+                FetchDescriptor<FarmRemoteBinding>()
+              ).first(where: {
+                $0.farmID == farmID && $0.provider == .supabase
+              }) else {
+            return nil
+        }
+        guard farm.ownerAccountID == ownerAccountID,
+              profile.mode == .supabase,
+              profile.authorityGeneration == authorityGeneration,
+              binding.authorityGeneration == authorityGeneration,
+              binding.ownerAccountID == ownerAccountID else {
+            throw FarmCompactBaselineRebuildError.markerMismatch
+        }
+        let sentinelName =
+            "\(Self.discoveryMarkerPrefix)" +
+            "\(migrationID.uuidString.lowercased()):root"
+        guard try context.fetch(FetchDescriptor<CloudOperationReceipt>())
+            .contains(where: {
+                $0.farmID == farmID &&
+                    $0.recordName == sentinelName &&
+                    $0.serverChangeTag == packageDigest
+            }) else {
+            return nil
+        }
+
+        let resumeCursor = Self.conservativeResumeCursor(
+            checkpointRevision: checkpointCursor,
+            restoreRevision: restoreCursor,
+            bindingRevision: binding.lastPulledRevision
+        )
+        farm.roleRawValue = FarmRole.owner.rawValue
+        farm.membershipStatusRawValue = FarmMembershipStatus.active.rawValue
+        profile.transitionStateRawValue =
+            FarmStorageTransitionState.idle.rawValue
+        profile.updatedAt = .now
+        binding.stateRawValue = FarmRemoteBindingState.preparing.rawValue
+        binding.ownerAccountID = ownerAccountID
+        binding.lastPulledRevision = resumeCursor
+        binding.lastSuccessfulSyncAt = .now
+        binding.lastErrorCode = nil
+        binding.updatedAt = .now
+        try ensureOwnerMembership(
+            farmID: farmID,
+            ownerAccountID: ownerAccountID,
+            serverMembershipID: serverMembershipID,
+            context: context
+        )
+        try context.save()
+        return resumeCursor
+    }
+
+    /// Makes the restored farm visible to normal foreground/background sync
+    /// only after its download-only incremental catch-up has completed.
+    func activatePreparedRestoredFarm(
+        farmID: UUID,
+        ownerAccountID: UUID,
+        authorityGeneration: Int,
+        container: ModelContainer
+    ) throws {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        guard let farm = try context.fetch(FetchDescriptor<FarmRecord>())
+            .first(where: {
+                $0.id == farmID && $0.ownerAccountID == ownerAccountID
+            }),
+              let profile = try context.fetch(
+                FetchDescriptor<FarmStorageProfile>()
+              ).first(where: {
+                $0.farmID == farmID &&
+                    $0.mode == .supabase &&
+                    $0.authorityGeneration == authorityGeneration
+              }),
+              let binding = try context.fetch(
+                FetchDescriptor<FarmRemoteBinding>()
+              ).first(where: {
+                $0.farmID == farmID &&
+                    $0.provider == .supabase &&
+                    $0.ownerAccountID == ownerAccountID &&
+                    $0.authorityGeneration == authorityGeneration &&
+                    [.preparing, .active].contains($0.state)
+              }) else {
+            throw FarmCompactBaselineRebuildError.markerMismatch
+        }
+        farm.roleRawValue = FarmRole.owner.rawValue
+        farm.membershipStatusRawValue = FarmMembershipStatus.active.rawValue
+        farm.updatedAt = .now
+        profile.transitionStateRawValue =
+            FarmStorageTransitionState.idle.rawValue
+        profile.updatedAt = .now
+        binding.stateRawValue = FarmRemoteBindingState.active.rawValue
+        binding.lastSuccessfulSyncAt = .now
+        binding.lastErrorCode = nil
+        binding.updatedAt = .now
+        try context.save()
+    }
+
+    nonisolated static func conservativeResumeCursor(
+        checkpointRevision: Int,
+        restoreRevision: Int,
+        bindingRevision: Int
+    ) -> Int {
+        let checkpoint = max(0, checkpointRevision)
+        guard restoreRevision > checkpoint else { return checkpoint }
+        return max(
+            checkpoint,
+            min(restoreRevision, max(checkpoint, bindingRevision))
+        )
     }
 
     private func ensureFarm(
@@ -633,6 +781,8 @@ actor FarmCompactBaselineRebuildService {
         package: FarmCompactBaselinePackageV1,
         ownerAccountID: UUID,
         cursor: Int,
+        serverMembershipID: String? = nil,
+        state: FarmRemoteBindingState = .active,
         context: ModelContext
     ) throws {
         let farmID = package.manifest.farmID
@@ -653,22 +803,55 @@ actor FarmCompactBaselineRebuildService {
             farmID: farmID,
             ownerAccountID: ownerAccountID,
             provider: .supabase,
-            state: .active,
+            state: state,
             authorityGeneration: package.manifest.authorityGeneration,
             remoteFarmID: farmID.uuidString.lowercased()
         )
         binding.lastPulledRevision = max(0, cursor)
         binding.lastSuccessfulSyncAt = .now
         context.insert(binding)
-        context.insert(FarmMembershipBinding(
-            serverMembershipID: "supabase:" +
-                "\(farmID.uuidString.lowercased()):" +
-                ownerAccountID.uuidString.lowercased(),
+        try ensureOwnerMembership(
             farmID: farmID,
-            accountID: ownerAccountID,
-            role: .owner,
-            status: .active
-        ))
+            ownerAccountID: ownerAccountID,
+            serverMembershipID: serverMembershipID,
+            context: context
+        )
+    }
+
+    private func ensureOwnerMembership(
+        farmID: UUID,
+        ownerAccountID: UUID,
+        serverMembershipID: String?,
+        context: ModelContext
+    ) throws {
+        let resolvedServerMembershipID = serverMembershipID ??
+            "supabase:\(farmID.uuidString.lowercased()):" +
+            ownerAccountID.uuidString.lowercased()
+        let candidates = try context.fetch(
+            FetchDescriptor<FarmMembershipBinding>()
+        ).filter {
+            $0.farmID == farmID && $0.accountID == ownerAccountID
+        }
+        let membership = candidates.first {
+            $0.serverMembershipID == resolvedServerMembershipID
+        } ?? candidates.first
+        if let membership {
+            membership.serverMembershipID = resolvedServerMembershipID
+            membership.roleRawValue = FarmRole.owner.rawValue
+            membership.statusRawValue = FarmMembershipStatus.active.rawValue
+            membership.updatedAt = .now
+            for duplicate in candidates where duplicate.id != membership.id {
+                context.delete(duplicate)
+            }
+        } else {
+            context.insert(FarmMembershipBinding(
+                serverMembershipID: resolvedServerMembershipID,
+                farmID: farmID,
+                accountID: ownerAccountID,
+                role: .owner,
+                status: .active
+            ))
+        }
     }
 
     private func replaceTombstoneHistory(

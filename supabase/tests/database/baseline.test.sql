@@ -30,6 +30,16 @@ insert into public.entitlements (
 );
 
 select set_config(
+  'esheep.test.account',
+  (
+    select app_account_id::text
+    from public.profiles
+    where user_id = current_setting('esheep.test.user')::uuid
+  ),
+  false
+);
+
+select set_config(
   'request.jwt.claims',
   json_build_object(
     'sub', current_setting('esheep.test.user'),
@@ -86,7 +96,7 @@ select lives_ok(
     current_setting('esheep.test.migration'),
     current_setting('esheep.test.operation'),
     current_setting('esheep.test.farm'),
-    current_setting('esheep.test.user'),
+    current_setting('esheep.test.account'),
     current_setting('esheep.test.device')
   ),
   'bootstrap operation preserves a source entity revision'
@@ -131,7 +141,7 @@ select lives_ok(
     current_setting('esheep.test.migration'),
     current_setting('esheep.test.operation'),
     current_setting('esheep.test.farm'),
-    current_setting('esheep.test.user'),
+    current_setting('esheep.test.account'),
     current_setting('esheep.test.device')
   ),
   'byte-identical operation retry is idempotent'
@@ -164,7 +174,7 @@ select throws_ok(
     current_setting('esheep.test.migration'),
     current_setting('esheep.test.operation'),
     current_setting('esheep.test.farm'),
-    current_setting('esheep.test.user'),
+    current_setting('esheep.test.account'),
     current_setting('esheep.test.device')
   ),
   '23505',

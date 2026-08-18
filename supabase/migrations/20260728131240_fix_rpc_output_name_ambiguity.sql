@@ -32,20 +32,6 @@ begin
     raise exception using errcode = '23503', message = 'profile_missing';
   end if;
 
-  if p_provider = 'supabase' and not exists (
-    select 1
-    from public.entitlements entitlement
-    where entitlement.owner_user_id = v_user_id
-      and entitlement.state in ('active', 'grace_period', 'billing_retry')
-      and (
-        entitlement.valid_until is null
-        or entitlement.valid_until > now()
-        or entitlement.grace_until > now()
-      )
-  ) then
-    raise exception using errcode = '42501', message = 'owner_supabase_entitlement_required';
-  end if;
-
   select *
   into v_existing
   from public.farm_registry registry

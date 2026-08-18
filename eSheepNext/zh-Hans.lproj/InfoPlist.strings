@@ -1,0 +1,9 @@
+"CFBundleDisplayName" = "eSheep+";
+"NSCalendarsWriteOnlyAccessUsageDescription" = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
+"NSCameraUsageDescription" = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号、文档与牧场邀请二维码。";
+"NSFaceIDUsageDescription" = "用于确认敏感数据导出、牧场治理和删除操作。";
+"NSLocalNetworkUsageDescription" = "用于在你主动打开靠近邀请时，发现附近另一台运行 eSheep+ 的手机并安全传送一次性牧场邀请。";
+"NSLocationWhenInUseUsageDescription" = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
+"NSMicrophoneUsageDescription" = "用于录制您主动发起的语音，并在发送前明确交给已配置的多模态服务理解。";
+"NSNearbyInteractionUsageDescription" = "用于在靠近邀请期间确认两台手机确实已靠近，避免把牧场邀请发送给远处或错误的设备。";
+"NSRemindersFullAccessUsageDescription" = "用于在您确认 AI 草案后创建系统提醒事项。";

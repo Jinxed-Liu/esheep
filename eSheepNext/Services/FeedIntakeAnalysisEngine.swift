@@ -1395,7 +1395,7 @@ enum FeedIntakeAnalysisEngine {
 
     private static func normalizedFeeder(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "未指定料罐" : trimmed.lowercased()
+        return trimmed.isEmpty ? "圈舍整体" : trimmed.lowercased()
     }
 
     private static func dateText(_ date: Date, calendar: Calendar) -> String {

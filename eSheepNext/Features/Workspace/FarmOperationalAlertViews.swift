@@ -7,19 +7,6 @@ enum FarmOperationalAlertLoadState: Equatable {
     case failed(String)
 }
 
-struct FarmOperationalAlertPreviewItem: Identifiable, Hashable {
-    enum Source: Hashable {
-        case operational(FarmOperationalAlert)
-        case reminder(FarmScheduledReminderSnapshot)
-    }
-
-    let id: String
-    let title: String
-    let symbol: String
-    let dueAt: Date
-    let source: Source
-}
-
 private enum FarmOperationalAlertRulesPresentation: String, Identifiable {
     case initial
     case settings
@@ -29,31 +16,6 @@ private enum FarmOperationalAlertRulesPresentation: String, Identifiable {
 }
 
 extension FarmOperationalAlertSnapshot {
-    var previewItems: [FarmOperationalAlertPreviewItem] {
-        let operational = operationalAlerts.map {
-            FarmOperationalAlertPreviewItem(
-                id: "operational:\($0.id.uuidString.lowercased())",
-                title: $0.title,
-                symbol: $0.kind.symbol,
-                dueAt: $0.dueAt,
-                source: .operational($0)
-            )
-        }
-        let reminders = overdueReminders.map {
-            FarmOperationalAlertPreviewItem(
-                id: "reminder:\($0.id.uuidString.lowercased())",
-                title: $0.title,
-                symbol: "calendar.badge.exclamationmark",
-                dueAt: $0.dueAt,
-                source: .reminder($0)
-            )
-        }
-        return (operational + reminders).sorted {
-            if $0.dueAt != $1.dueAt { return $0.dueAt < $1.dueAt }
-            return $0.id < $1.id
-        }
-    }
-
     func count(for kind: FarmOperationalAlertKind) -> Int {
         operationalAlerts.count { $0.kind == kind }
     }
@@ -73,7 +35,7 @@ struct FarmOperationalAlertHomeCard: View {
             switch state {
             case .loading:
                 HStack(spacing: 12) {
-                    SettingsIcon(systemImage: "hourglass", color: .blue)
+                    ProgressView()
                     VStack(alignment: .leading, spacing: 3) {
                         Text("正在计算")
                             .foregroundStyle(.primary)
@@ -88,12 +50,10 @@ struct FarmOperationalAlertHomeCard: View {
 
             case .failed:
                 VStack(alignment: .leading, spacing: 10) {
-                    SettingsRowContent(
+                    StatusRow(
                         title: "暂时无法计算",
-                        subtitle: "未用 0 项掩盖错误，请重试。",
-                        systemImage: "exclamationmark.arrow.triangle.2.circlepath",
-                        iconColor: .red,
-                        showsChevron: false
+                        detail: "未用 0 项掩盖错误，请重试。",
+                        symbol: "exclamationmark.arrow.triangle.2.circlepath"
                     )
                     Button("重新计算", systemImage: "arrow.clockwise", action: onRetry)
                         .buttonStyle(.bordered)
@@ -112,53 +72,29 @@ struct FarmOperationalAlertHomeCard: View {
     @ViewBuilder
     private func loadedContent(_ snapshot: FarmOperationalAlertSnapshot) -> some View {
         if !snapshot.isConfigured {
-            SettingsRowContent(
+            StatusRow(
                 title: "尚未配置异常规则",
-                subtitle: canManageRules
+                detail: canManageRules
                     ? "需先设置断奶日龄、提前预警天数、孕检天数与每日汇总时间。"
                     : "等待牧场主或管理员完成设置。",
-                systemImage: "gearshape.badge.exclamationmark",
-                iconColor: .orange
+                symbol: "gearshape.badge.exclamationmark"
             )
         } else {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .center, spacing: 13) {
-                    SettingsIcon(
-                        systemImage: snapshot.totalPendingCount == 0
-                            ? "checkmark.circle.fill"
-                            : "exclamationmark.triangle.fill",
-                        color: snapshot.totalPendingCount == 0 ? .green : .orange
-                    )
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(snapshot.totalPendingCount == 0 ? "全部正常" : "\(snapshot.totalPendingCount) 项待处理")
-                            .font(.title3.bold())
-                            .foregroundStyle(.primary)
-                        Text(categorySummary(snapshot))
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(snapshot.totalPendingCount == 0 ? "全部正常" : "\(snapshot.totalPendingCount) 项待处理")
+                        .font(.title3.bold())
+                        .foregroundStyle(.primary)
+                    Text(categorySummary(snapshot))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
-
-                ForEach(Array(snapshot.previewItems.prefix(3))) { item in
-                    Divider()
-                        .padding(.leading, 43)
-                    HStack(alignment: .center, spacing: 13) {
-                        SettingsIcon(systemImage: item.symbol, color: previewIconColor(for: item))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.title)
-                                .font(.subheadline)
-                                .foregroundStyle(.primary)
-                                .multilineTextAlignment(.leading)
-                            Text(item.dueAt, format: .dateTime.year().month().day())
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+                Spacer()
+                Image(systemName: snapshot.totalPendingCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(snapshot.totalPendingCount == 0 ? .green : .orange)
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -169,14 +105,8 @@ struct FarmOperationalAlertHomeCard: View {
     private func categorySummary(_ snapshot: FarmOperationalAlertSnapshot) -> String {
         let weaningCount = snapshot.count(for: .weaningDueSoon) + snapshot.count(for: .weaningOverdue)
         let pregnancyCount = snapshot.count(for: .pregnancyCheckDueSoon) + snapshot.count(for: .pregnancyCheckOverdue)
-        return "断奶 \(weaningCount) · 孕检 \(pregnancyCount) · 圈舍 \(snapshot.count(for: .invalidPen)) · 日程 \(snapshot.overdueReminders.count)"
-    }
-
-    private func previewIconColor(for item: FarmOperationalAlertPreviewItem) -> Color {
-        switch item.source {
-        case .operational: .orange
-        case .reminder: .red
-        }
+        let tmrCount = snapshot.count(for: .tmrNotFed) + snapshot.count(for: .tmrLow) + snapshot.count(for: .tmrHigh)
+        return "断奶 \(weaningCount) · 孕检 \(pregnancyCount) · TMR \(tmrCount) · 圈舍 \(snapshot.count(for: .invalidPen)) · 日程 \(snapshot.overdueReminders.count)"
     }
 }
 
@@ -354,7 +284,7 @@ struct FarmOperationalAlertCenterView: View {
                                 }
                                 .buttonStyle(.plain)
 
-                                if canDefer {
+                                if canDefer && !alert.kind.isTMR {
                                     Button {
                                         selectedDeferralAlert = alert
                                     } label: {
@@ -453,7 +383,7 @@ struct FarmOperationalAlertCenterView: View {
         _ alert: FarmOperationalAlert,
         snapshot: FarmOperationalAlertSnapshot
     ) -> String {
-        if alert.kind == .invalidPen { return "需立即处理" }
+        if alert.kind == .invalidPen || alert.kind.isTMR { return "需立即处理" }
         if alert.kind.isDueSoon {
             let days = alert.daysUntilDue(
                 now: snapshot.generatedAt,
@@ -483,6 +413,14 @@ struct FarmOperationalAlertCenterView: View {
             )
         case .invalidPen:
             TransferEntryView(account: account, farm: farm, initialSheepID: alert.subjectID)
+        case .tmrNotFed, .tmrLow, .tmrHigh:
+            TMRMonitoringView(
+                account: account,
+                farm: farm,
+                initialDate: alert.dueAt,
+                initialPlanID: alert.sourceEntityID,
+                initialPenID: alert.subjectID
+            )
         }
     }
 

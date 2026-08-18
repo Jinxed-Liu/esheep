@@ -6,11 +6,10 @@ import XCTest
 @MainActor
 final class FeedRebuildTests: XCTestCase {
     func testPlusSystemLibraryContainsExpectedTemplatesAndCategories() throws {
-        let sourceURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appending(path: "eSheepNext/Resources/FeedIngredientTemplates.json")
-        let templates = try FeedTemplateLibrary.load(from: sourceURL)
+        // Tests execute in an isolated XCTest device. Reading the source tree
+        // through #filePath makes the test depend on the host volume and can
+        // block indefinitely, so validate the same resource shipped in App.
+        let templates = try FeedTemplateLibrary.load()
 
         XCTAssertEqual(templates.count, 760)
         XCTAssertEqual(Set(templates.map(\.category)).count, 11)
