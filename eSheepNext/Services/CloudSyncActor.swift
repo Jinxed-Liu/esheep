@@ -1807,13 +1807,12 @@ enum FarmOwnerDiscoveryPolicy {
         cloudKitEnabled: Bool,
         supabaseConfigured: Bool
     ) -> Set<FarmOwnerDiscoveryTarget> {
-        guard environment == .development else { return [] }
         var targets = Set<FarmOwnerDiscoveryTarget>()
-        if cloudKitEnabled {
-            targets.insert(.iCloud)
-        }
         if supabaseConfigured {
             targets.insert(.supabase)
+        }
+        if environment == .development, cloudKitEnabled {
+            targets.insert(.iCloud)
         }
         return targets
     }

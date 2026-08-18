@@ -47,7 +47,7 @@ private final class CloudSyncHardDeadlineTestCounter: @unchecked Sendable {
 
 @MainActor
 final class CloudCollaborationTests: XCTestCase {
-    func testSupabaseOwnerDiscoveryDoesNotDependOnCloudKitBeingEnabled() {
+    func testSupabaseFarmDiscoveryRunsInEveryConfiguredEnvironment() {
         XCTAssertEqual(
             FarmOwnerDiscoveryPolicy.targets(
                 environment: .development,
@@ -64,13 +64,48 @@ final class CloudCollaborationTests: XCTestCase {
             ),
             [.iCloud, .supabase]
         )
-        XCTAssertTrue(
+        XCTAssertEqual(
             FarmOwnerDiscoveryPolicy.targets(
                 environment: .production,
                 cloudKitEnabled: true,
                 supabaseConfigured: true
+            ),
+            [.supabase]
+        )
+        XCTAssertEqual(
+            FarmOwnerDiscoveryPolicy.targets(
+                environment: .staging,
+                cloudKitEnabled: false,
+                supabaseConfigured: true
+            ),
+            [.supabase]
+        )
+        XCTAssertTrue(
+            FarmOwnerDiscoveryPolicy.targets(
+                environment: .production,
+                cloudKitEnabled: true,
+                supabaseConfigured: false
             ).isEmpty
         )
+    }
+
+    func testSupabaseFarmRequiresActiveBindingAndCurrentAccountMembership() {
+        XCTAssertTrue(SupabaseFarmVisibilityPolicy.isReadyForDisplay(
+            bindingState: .active,
+            membershipStatus: .active
+        ))
+        XCTAssertFalse(SupabaseFarmVisibilityPolicy.isReadyForDisplay(
+            bindingState: .active,
+            membershipStatus: .revoked
+        ))
+        XCTAssertFalse(SupabaseFarmVisibilityPolicy.isReadyForDisplay(
+            bindingState: .failed,
+            membershipStatus: .active
+        ))
+        XCTAssertFalse(SupabaseFarmVisibilityPolicy.isReadyForDisplay(
+            bindingState: nil,
+            membershipStatus: .active
+        ))
     }
 
     func testCloudSyncHardDeadlineReturnsWithoutWaitingForUncooperativeTask() async throws {

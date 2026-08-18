@@ -227,6 +227,13 @@ struct SupabaseOwnedFarmDiscoveryService {
             existing.roleRawValue = memberRole.rawValue
             existing.membershipStatusRawValue =
                 FarmMembershipStatus.active.rawValue
+            try ensureLocalMembership(
+                farmID: farmID,
+                accountID: accountID,
+                role: memberRole,
+                userID: session.user.id,
+                context: context
+            )
             try context.save()
             return existing
         }
@@ -801,5 +808,43 @@ struct SupabaseOwnedFarmDiscoveryService {
     ) -> String {
         "supabase:\(farmID.uuidString.lowercased()):" +
             userID.uuidString.lowercased()
+    }
+
+    private func ensureLocalMembership(
+        farmID: UUID,
+        accountID: UUID,
+        role: FarmRole,
+        userID: UUID,
+        context: ModelContext
+    ) throws {
+        let serverMembershipID = Self.serverMembershipID(
+            farmID: farmID,
+            userID: userID
+        )
+        let candidates = try context.fetch(
+            FetchDescriptor<FarmMembershipBinding>()
+        ).filter {
+            $0.farmID == farmID && $0.accountID == accountID
+        }
+        let membership = candidates.first {
+            $0.serverMembershipID == serverMembershipID
+        } ?? candidates.first
+        if let membership {
+            membership.serverMembershipID = serverMembershipID
+            membership.roleRawValue = role.rawValue
+            membership.statusRawValue = FarmMembershipStatus.active.rawValue
+            membership.updatedAt = .now
+            for duplicate in candidates where duplicate.id != membership.id {
+                context.delete(duplicate)
+            }
+        } else {
+            context.insert(FarmMembershipBinding(
+                serverMembershipID: serverMembershipID,
+                farmID: farmID,
+                accountID: accountID,
+                role: role,
+                status: .active
+            ))
+        }
     }
 }

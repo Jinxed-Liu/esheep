@@ -1,6 +1,15 @@
 import SwiftData
 import SwiftUI
 
+enum SupabaseFarmVisibilityPolicy {
+    static func isReadyForDisplay(
+        bindingState: FarmRemoteBindingState?,
+        membershipStatus: FarmMembershipStatus?
+    ) -> Bool {
+        bindingState == .active && membershipStatus == .active
+    }
+}
+
 #if DEBUG
 import UIKit
 #endif
@@ -539,6 +548,10 @@ struct RootView: View {
                 .map(\.farmID)
         )
         let bindingsByFarmID = Dictionary(grouping: cloudBindings, by: \.farmID)
+        let remoteBindingsByFarmID = Dictionary(
+            grouping: remoteBindings,
+            by: \.farmID
+        )
         let membershipsByFarmID = Dictionary(
             grouping: membershipBindings.filter {
                 $0.accountID == account.effectiveAccountID
@@ -548,6 +561,14 @@ struct RootView: View {
         return farms.filter { farm in
             guard !hiddenRestoringFarmIDs.contains(farm.id) else {
                 return false
+            }
+            if let supabaseBinding = remoteBindingsByFarmID[farm.id]?.first(where: {
+                $0.provider == .supabase
+            }) {
+                return SupabaseFarmVisibilityPolicy.isReadyForDisplay(
+                    bindingState: supabaseBinding.state,
+                    membershipStatus: membershipsByFarmID[farm.id]
+                )
             }
             let binding = bindingsByFarmID[farm.id]?.first
             if let sharedBinding = bindingsByFarmID[farm.id]?.first(where: {
