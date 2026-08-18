@@ -1142,6 +1142,55 @@ final class CloudCollaborationTests: XCTestCase {
         XCTAssertEqual(farm.locationUpdatedAt, modifiedAt)
     }
 
+    func testRemoteResolvedUpdatePenReplaysAfterCompactCheckpoint() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let penID = UUID()
+        let pen = PenRecord(
+            id: penID,
+            farmID: farmID,
+            name: "冲突前圈舍",
+            note: "checkpoint"
+        )
+        pen.revision = 2
+        context.insert(pen)
+        try context.save()
+
+        let resolvedPayload = try FarmCommandCloudPayloadEncoder.encode(
+            .updatePen(penID: penID, name: "DEV-CONFLICT-PEN", note: "DEV-CONFLICT-B")
+        )
+        var payload = FarmCommandCloudPayload(kind: .resolveConflict)
+        payload.strings = ["entityType": CloudEntityType.pen.rawValue]
+        payload.dataValues = ["resolvedPayload": resolvedPayload]
+        let encoded = try JSONEncoder.cloud.encode(payload)
+        let envelope = CloudOperationEnvelope(
+            farmID: farmID,
+            entityID: penID,
+            entityType: CloudEntityType.pen.rawValue,
+            schemaVersion: 2,
+            revision: 3,
+            baseRevision: 2,
+            operationID: UUID(),
+            modifiedAt: Date(timeIntervalSince1970: 1_754_147_759),
+            modifiedByAccountID: UUID(),
+            modifiedByDeviceID: UUID(),
+            payload: encoded,
+            payloadDigest: CloudPayloadDigest.hex(for: encoded),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+
+        XCTAssertEqual(
+            try RemoteDomainApplyService().apply(envelope, context: context),
+            .applied(rebuildHistoryFrom: nil)
+        )
+        XCTAssertEqual(pen.name, "DEV-CONFLICT-PEN")
+        XCTAssertEqual(pen.note, "DEV-CONFLICT-B")
+        XCTAssertEqual(pen.revision, 3)
+    }
+
     func testRemoteBreedingProgramApplyIsIdempotentAndKeepsOrderedSteps() throws {
         let container = try makeContainer()
         let context = ModelContext(container)

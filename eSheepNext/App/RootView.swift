@@ -238,35 +238,7 @@ struct RootView: View {
                   let account = activeAccount,
                   account.serverBindingState == .verified else { return }
             guard await waitForSecondaryLaunchWindow(.milliseconds(1_200)) else { return }
-            let accountID = account.effectiveAccountID
-            guard session.beginAutomaticCloudRecovery(accountID: accountID) else { return }
-            defer { session.finishAutomaticCloudRecovery(accountID: accountID) }
-
-            // The authoritative source device must be allowed to finish its
-            // immutable migration upload before any recovery root preflight.
-            // A slow CloudKit root read must never sit in front of the Outbox
-            // drain and make an in-progress migration appear stalled.
-            await collaboration.resumeAutomaticMigrationUploads(accountID: accountID)
-            guard !Task.isCancelled else { return }
-            do {
-                _ = try await OwnerFarmRecoveryCoordinator(
-                    modelContainer: modelContext.container
-                ).stageMismatchedActiveOwnerFarms(accountID: accountID)
-            } catch is CancellationError {
-                return
-            } catch {
-                // A transient root preflight failure must not prevent a farm
-                // already locked in rebuildingCache from resuming its staged
-                // recovery on this foreground pass.
-                collaboration.lastErrorMessage = error.localizedDescription
-            }
-            await collaboration.discoverAndRestoreOwnerFarms(accountID: accountID)
-            guard !Task.isCancelled else { return }
-            // Supabase discovery imports the recovered farm through an
-            // independent ModelContext. Force this root query/view boundary
-            // to reconcile immediately after the durable import completes
-            // instead of waiting for another scene transition or relaunch.
-            systemSnapshotRevision &+= 1
+            await recoverAccessibleFarms(accountID: account.effectiveAccountID)
         }
         .task(id: maintenanceTaskID) {
             guard session.accountAccessStatus.allowsCloudOperations,
@@ -381,6 +353,43 @@ struct RootView: View {
 
         await collaboration.refreshAccountAvailability()
         await subscription.activate(accountID: account.effectiveAccountID)
+
+        // A successful sign-in must deterministically start farm discovery.
+        // Relying only on a sibling SwiftUI task to be recreated when the
+        // access status changes can leave a clean install authenticated but
+        // showing no cloud farms until a later foreground transition.
+        await recoverAccessibleFarms(accountID: account.effectiveAccountID)
+    }
+
+    @MainActor
+    private func recoverAccessibleFarms(accountID: UUID) async {
+        guard session.beginAutomaticCloudRecovery(accountID: accountID) else { return }
+        defer { session.finishAutomaticCloudRecovery(accountID: accountID) }
+
+        // The authoritative source device must be allowed to finish its
+        // immutable migration upload before any recovery root preflight.
+        // A slow CloudKit root read must never sit in front of the Outbox
+        // drain and make an in-progress migration appear stalled.
+        await collaboration.resumeAutomaticMigrationUploads(accountID: accountID)
+        guard !Task.isCancelled else { return }
+        do {
+            _ = try await OwnerFarmRecoveryCoordinator(
+                modelContainer: modelContext.container
+            ).stageMismatchedActiveOwnerFarms(accountID: accountID)
+        } catch is CancellationError {
+            return
+        } catch {
+            // A transient root preflight failure must not prevent a farm
+            // already locked in rebuildingCache from resuming its staged
+            // recovery on this foreground pass.
+            collaboration.lastErrorMessage = error.localizedDescription
+        }
+        await collaboration.discoverAndRestoreOwnerFarms(accountID: accountID)
+        guard !Task.isCancelled else { return }
+        // Supabase discovery imports the recovered farm through an
+        // independent ModelContext. Force this root query/view boundary to
+        // reconcile immediately after the durable import completes.
+        systemSnapshotRevision &+= 1
     }
 
     #if DEBUG

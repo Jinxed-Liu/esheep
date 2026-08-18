@@ -99,6 +99,16 @@ struct SupabaseOwnedFarmDiscoveryService {
         }
     }
 
+    private struct AccessibleMembershipRow: Decodable, Sendable {
+        let farmID: UUID
+        let appAccountID: UUID
+
+        enum CodingKeys: String, CodingKey {
+            case farmID = "farm_id"
+            case appAccountID = "app_account_id"
+        }
+    }
+
     private let client: SupabaseClient
     private let transport: SupabaseFarmTransport
 
@@ -108,68 +118,62 @@ struct SupabaseOwnedFarmDiscoveryService {
     }
 
     @discardableResult
-    func discoverAndRestoreOwnedFarms(
+    func discoverAndRestoreAccessibleFarms(
         accountID: UUID,
         context: ModelContext
     ) async throws -> [UUID] {
         let session = try await client.auth.session
-        let rows: [RegistryRow] = try await client
-            .from("farm_registry")
-            .select(
-                "farm_id,owner_user_id,provider,status," +
-                    "authority_generation,current_revision"
-            )
-            .eq("owner_user_id", value: session.user.id)
-            .eq("provider", value: "supabase")
+        let memberships: [AccessibleMembershipRow] = try await client
+            .from("farm_members")
+            .select("farm_id,app_account_id")
+            .eq("user_id", value: session.user.id)
             .eq("status", value: "active")
             .execute()
             .value
         var restored: [UUID] = []
-        for row in rows {
-            let pendingRecords = try context.fetch(
-                FetchDescriptor<FarmRemoteRestoreRecord>()
-            ).filter {
-                $0.accountID == accountID &&
-                    $0.farmID == row.farmID &&
-                    $0.state != .completed
+        var visitedFarmIDs = Set<UUID>()
+        for membership in memberships {
+            guard membership.appAccountID == accountID else {
+                throw SupabaseOwnedFarmDiscoveryError.accountMismatch
             }
-            if pendingRecords.isEmpty,
-               try context.fetch(FetchDescriptor<FarmRemoteBinding>())
-                .contains(where: {
-                    $0.farmID == row.farmID &&
-                        $0.provider == .supabase &&
-                        $0.state == .active
-                }) {
+            guard visitedFarmIDs.insert(membership.farmID).inserted else {
                 continue
             }
-            let restoreRecord = try prepareRestoreRecord(
-                row: row,
+            let rows: [RegistryRow] = try await client
+                .from("farm_registry")
+                .select(
+                    "farm_id,owner_user_id,provider,status," +
+                        "authority_generation,current_revision"
+                )
+                .eq("farm_id", value: membership.farmID)
+                .eq("provider", value: "supabase")
+                .eq("status", value: "active")
+                .limit(1)
+                .execute()
+                .value
+            guard let row = rows.first else {
+                throw SupabaseOwnedFarmDiscoveryError.invalidCheckpoint
+            }
+            let farm = try await restoreRedeemedFarm(
+                farmID: row.farmID,
+                authorityGeneration: row.authorityGeneration,
                 accountID: accountID,
-                ownerAccountID: accountID,
-                memberRole: .owner,
-                memberUserID: row.ownerUserID,
-                pendingRecords: pendingRecords,
                 context: context
             )
-            do {
-                try await restore(
-                    row: row,
-                    accountID: accountID,
-                    ownerAccountID: accountID,
-                    record: restoreRecord,
-                    context: context
-                )
-                restored.append(row.farmID)
-            } catch {
-                restoreRecord.stateRawValue =
-                    FarmRemoteRestoreState.failed.rawValue
-                restoreRecord.lastErrorCode = Self.errorCode(error)
-                restoreRecord.updatedAt = .now
-                try? context.save()
-                throw error
-            }
+            restored.append(farm.id)
         }
         return restored
+    }
+
+    @discardableResult
+    func discoverAndRestoreOwnedFarms(
+        accountID: UUID,
+        context: ModelContext
+    ) async throws -> [UUID] {
+        try await discoverAndRestoreAccessibleFarms(
+            accountID: accountID,
+            context: context
+        )
     }
 
     @discardableResult

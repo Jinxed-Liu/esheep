@@ -1858,7 +1858,7 @@ final class CloudCollaborationStore {
     private var sharedAdmissionFarmIDs = Set<UUID>()
     private var supabaseCursorPollTask: Task<Void, Never>?
     private var supabaseRealtimeTasks: [UUID: Task<Void, Never>] = [:]
-    private var supabaseOwnerDiscoveryAccountIDs = Set<UUID>()
+    private var supabaseAccessibleFarmDiscoveryAccountIDs = Set<UUID>()
     private var photoDataLoadTasks: [UUID: Task<Data, any Error>] = [:]
 
     nonisolated static func prepareStartup(
@@ -2267,7 +2267,7 @@ final class CloudCollaborationStore {
         let context = ModelContext(modelContainer)
         if let accountID = try? context.fetch(FetchDescriptor<AccountProfile>())
             .first?.effectiveAccountID {
-            await discoverAndRestoreSupabaseOwnerFarms(
+            await discoverAndRestoreSupabaseAccessibleFarms(
                 accountID: accountID,
                 client: client
             )
@@ -2549,7 +2549,7 @@ final class CloudCollaborationStore {
         )
         if targets.contains(.supabase),
            let client = AccountIdentityClients.supabaseClient {
-            await discoverAndRestoreSupabaseOwnerFarms(
+            await discoverAndRestoreSupabaseAccessibleFarms(
                 accountID: accountID,
                 client: client
             )
@@ -2661,18 +2661,18 @@ final class CloudCollaborationStore {
         try await rebuildOwnerFarmAndUnlock(farmID: farmID)
     }
 
-    private func discoverAndRestoreSupabaseOwnerFarms(
+    private func discoverAndRestoreSupabaseAccessibleFarms(
         accountID: UUID,
         client: SupabaseClient
     ) async {
-        guard supabaseOwnerDiscoveryAccountIDs.insert(accountID).inserted else {
+        guard supabaseAccessibleFarmDiscoveryAccountIDs.insert(accountID).inserted else {
             return
         }
-        defer { supabaseOwnerDiscoveryAccountIDs.remove(accountID) }
+        defer { supabaseAccessibleFarmDiscoveryAccountIDs.remove(accountID) }
         do {
             let context = ModelContext(modelContainer)
             _ = try await SupabaseOwnedFarmDiscoveryService(client: client)
-                .discoverAndRestoreOwnedFarms(
+                .discoverAndRestoreAccessibleFarms(
                     accountID: accountID,
                     context: context
                 )

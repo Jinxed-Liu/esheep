@@ -34,6 +34,16 @@ enum ConflictDomainMergeService {
             value.revision = revision
             value.updatedAt = .now
             return nil
+        case .updatePen:
+            guard entityType == CloudEntityType.pen.rawValue,
+                  payload.identifiers["penID"] == entityID,
+                  let value = try context.fetch(FetchDescriptor<PenRecord>()).first(where: { $0.id == entityID && $0.farmID == farmID }),
+                  let name = payload.strings["name"]?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { throw ConflictResolutionError.invalidResolvedPayload }
+            value.name = name
+            value.note = payload.strings["note"] ?? ""
+            value.revision = revision
+            value.updatedAt = .now
+            return nil
         case .addSheep:
             guard entityType == CloudEntityType.sheep.rawValue,
                   let value = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == entityID && $0.farmID == farmID }),
