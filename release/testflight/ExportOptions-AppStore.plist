@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>destination</key>
+	<string>export</string>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>com.sheepfarm.ios</key>
+		<string>eSheep+ 3.1 App Store</string>
+		<key>com.sheepfarm.ios.widget</key>
+		<string>eSheep+ 3.1 Widget App Store</string>
+	</dict>
+	<key>signingCertificate</key>
+	<string>F582958AC7D4A8D376609D7AA89BB9C977D944EE</string>
+	<key>signingStyle</key>
+	<string>manual</string>
+	<key>teamID</key>
+	<string>7BBQMZ87SM</string>
+	<key>uploadSymbols</key>
+	<true/>
+</dict>
+</plist>
