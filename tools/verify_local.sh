@@ -97,6 +97,18 @@ fi
 
 local_derived_data="$(mktemp -d -t esheep-derived.XXXXXX)"
 for configuration in Debug Staging Release; do
+  settings_file="$(mktemp -t esheep-${configuration:l}-settings.XXXXXX)"
+  DEVELOPER_DIR="$developer_dir" xcodebuild -showBuildSettings \
+    -project "$repo_root/eSheepNext.xcodeproj" \
+    -scheme eSheepNext \
+    -configuration "$configuration" > "$settings_file"
+  if [[ "$configuration" != "Debug" ]]; then
+    resolved_supabase_url="$(awk -F ' = ' '/^[[:space:]]*SUPABASE_URL = / { print $2; exit }' "$settings_file")"
+    if [[ "$resolved_supabase_url" != https://*.* ]]; then
+      print -u2 -- "${configuration} 构建解析后的 SUPABASE_URL 无效：$resolved_supabase_url"
+      exit 1
+    fi
+  fi
   DEVELOPER_DIR="$developer_dir" xcodebuild build \
     -project "$repo_root/eSheepNext.xcodeproj" \
     -scheme eSheepNext \

@@ -139,13 +139,30 @@ enum SupabaseAccountConfiguration {
 
     static var credentials: Credentials? {
         guard isEnabled else { return nil }
-        guard let rawURL = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as? String,
-              let url = URL(string: rawURL.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let key = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_PUBLISHABLE_KEY") as? String,
-              key.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("sb_publishable_") else {
+        return validatedCredentials(
+            rawURL: Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as? String,
+            rawKey: Bundle.main.object(forInfoDictionaryKey: "SUPABASE_PUBLISHABLE_KEY") as? String
+        )
+    }
+
+    static func validatedCredentials(rawURL: String?, rawKey: String?) -> Credentials? {
+        guard let rawURL,
+              let rawKey else {
             return nil
         }
-        return Credentials(url: url, publishableKey: key)
+        let urlString = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let publishableKey = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: urlString),
+              components.scheme?.lowercased() == "https",
+              components.user == nil,
+              components.password == nil,
+              let host = components.host,
+              !host.isEmpty,
+              let url = components.url,
+              publishableKey.hasPrefix("sb_publishable_") else {
+            return nil
+        }
+        return Credentials(url: url, publishableKey: publishableKey)
     }
 
     static var isEnabled: Bool {

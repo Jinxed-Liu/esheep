@@ -41,6 +41,8 @@ rg -q 'APP_GROUP_IDENTIFIER = group\.com\.sheepfarm' "$settings_file" || fail "R
 rg -q 'APS_ENVIRONMENT = production' "$settings_file" || fail "Release APNs environment is not production"
 rg -q 'SUBSCRIPTIONS_ENABLED = NO' "$settings_file" || fail "subscriptions must remain disabled"
 rg -q 'SUPABASE_ENABLED = YES' "$settings_file" || fail "Supabase must be enabled in Release"
+resolved_supabase_url="$(awk -F ' = ' '/^[[:space:]]*SUPABASE_URL = / { print $2; exit }' "$settings_file")"
+[[ "$resolved_supabase_url" == https://*.* ]] || fail "resolved Release SUPABASE_URL is malformed: $resolved_supabase_url"
 
 DEVELOPER_DIR="$developer_dir" xcodebuild build \
   -project "$repo_root/eSheepNext.xcodeproj" \

@@ -21,6 +21,30 @@ final class FarmSessionTests: XCTestCase {
         }
     }
 
+    func testSupabaseConfigurationRejectsMalformedHTTPSURLBeforeClientInitialization() throws {
+        XCTAssertNil(
+            SupabaseAccountConfiguration.validatedCredentials(
+                rawURL: "https:project-ref.supabase.co",
+                rawKey: "sb_publishable_test"
+            )
+        )
+        XCTAssertNil(
+            SupabaseAccountConfiguration.validatedCredentials(
+                rawURL: "http://project-ref.supabase.co",
+                rawKey: "sb_publishable_test"
+            )
+        )
+
+        let credentials = try XCTUnwrap(
+            SupabaseAccountConfiguration.validatedCredentials(
+                rawURL: "https://project-ref.supabase.co",
+                rawKey: " sb_publishable_test "
+            )
+        )
+        XCTAssertEqual(credentials.url.absoluteString, "https://project-ref.supabase.co")
+        XCTAssertEqual(credentials.publishableKey, "sb_publishable_test")
+    }
+
     func testIdentityEndpointPreservesGatewayBasePath() throws {
         let baseURL = try XCTUnwrap(URL(string: "https://example.com/identity"))
 
