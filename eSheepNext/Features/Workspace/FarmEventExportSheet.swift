@@ -35,7 +35,7 @@ struct FarmEventExportLauncher: View {
                     ContentUnavailableView {
                         Label("无法读取记录", systemImage: "exclamationmark.triangle")
                     } description: {
-                        Text(message)
+                        Text(LocalizedStringKey(message))
                     } actions: {
                         Button("重试") { reloadGeneration += 1 }
                             .buttonStyle(.borderedProminent)
@@ -122,7 +122,7 @@ struct FarmEventExportSheet: View {
                 Section("记录类型") {
                     Picker("导出内容", selection: $scope) {
                         ForEach(FarmEventExportScope.allCases) { item in
-                            Label(item.displayName, systemImage: item.symbol).tag(item)
+                            Label(LocalizedStringKey(item.displayName), systemImage: item.symbol).tag(item)
                         }
                     }
                     .pickerStyle(.menu)
@@ -182,7 +182,7 @@ struct FarmEventExportSheet: View {
             )) {
                 Button("完成", role: .cancel) {}
             } message: {
-                Text(message ?? "")
+                Text(LocalizedStringKey(message ?? ""))
             }
         }
     }

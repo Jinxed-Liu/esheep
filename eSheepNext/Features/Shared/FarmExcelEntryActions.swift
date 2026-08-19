@@ -42,7 +42,7 @@ struct FarmExcelEntryActions: View {
         .alert("Excel 导入", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("完成", role: .cancel) {}
         } message: {
-            Text(message ?? "")
+            Text(LocalizedStringKey(message ?? ""))
         }
     }
 

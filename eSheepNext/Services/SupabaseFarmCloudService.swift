@@ -353,10 +353,8 @@ final class SupabaseFarmActivationService {
         if let reason = try eligibilityReason(farmID: farm.id, context: context) {
             throw SupabaseFarmCloudError.farmNotEligible(reason)
         }
-        let entitlement = try await SupabaseEntitlementClient(client: client).current()
-        guard entitlement?.allowsOwnerWrites == true else {
-            throw SupabaseFarmCloudError.entitlementRequired
-        }
+        // eSheep+ 3.1 is a free release. Cloud authority must not depend on a
+        // development entitlement or a StoreKit state.
         _ = try await deviceIdentity.registerWithActiveAccountProvider()
 
         var profile = try storageProfile(farmID: farm.id, context: context)
@@ -1137,8 +1135,13 @@ final class SupabaseFarmActivationService {
            !existing.isEmpty {
             return url
         }
-        let data = try FarmLocalBackupService.export(
+        let profile = try context.fetch(FetchDescriptor<FarmStorageProfile>())
+            .first(where: { $0.farmID == farmID })
+        let data = try FarmPortableBackupService.export(
             farmID: farmID,
+            sourceStorageMode: profile?.sourceMode ?? profile?.mode ?? .localOnly,
+            sourceAuthorityGeneration: profile?.authorityGeneration ?? 0,
+            sourceWasFullySynchronized: true,
             context: context
         )
         try data.write(to: url, options: [.atomic, .completeFileProtection])

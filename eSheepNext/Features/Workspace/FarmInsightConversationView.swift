@@ -192,7 +192,7 @@ struct FarmInsightConversationView: View {
                     Button("好", role: .cancel) {}
                 },
                 message: {
-                    Text(controller.errorMessage ?? "")
+                    Text(LocalizedStringKey(controller.errorMessage ?? ""))
                 }
             )
             .confirmationDialog(
@@ -724,7 +724,7 @@ private struct InsightGeneratedFileExportView: View {
                     }
                 }
             } message: {
-                Text(message ?? "")
+                Text(LocalizedStringKey(message ?? ""))
             }
         }
     }
@@ -737,10 +737,10 @@ private struct InsightAvailabilityNotice: View {
 
     var body: some View {
         VStack(spacing: 5) {
-            Label(title, systemImage: action == nil ? "exclamationmark.circle" : "key.fill")
+            Label(LocalizedStringKey(title), systemImage: action == nil ? "exclamationmark.circle" : "key.fill")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text(detail)
+            Text(LocalizedStringKey(detail))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
@@ -1010,9 +1010,9 @@ private struct InsightMessageBubble: View {
             if let statusText {
                 Group {
                     if message.status == .failed {
-                        Label(statusText, systemImage: "exclamationmark.circle")
+                        Label(LocalizedStringKey(statusText), systemImage: "exclamationmark.circle")
                     } else {
-                        Text(statusText)
+                        Text(LocalizedStringKey(statusText))
                     }
                 }
                 .font(.caption2)
@@ -1212,13 +1212,13 @@ private struct InsightActionDraftCard: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(AppTheme.brand)
                 Spacer()
-                Text(statusText)
+                Text(LocalizedStringKey(statusText))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text(draft.title)
+            Text(LocalizedStringKey(draft.title))
                 .font(.headline)
-            Text(draft.summary)
+            Text(LocalizedStringKey(draft.summary))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Label(farmName, systemImage: "building.2")
@@ -1263,13 +1263,13 @@ private struct InsightActionDraftCard: View {
                     .foregroundStyle(.orange)
             }
             if let error = draft.errorMessage {
-                Text(error)
+                Text(LocalizedStringKey(error))
                     .font(.caption)
                     .foregroundStyle(.red)
             }
             if draft.status == .proposed {
                 HStack {
-                    Button(primaryActionTitle, action: onReview)
+                    Button(LocalizedStringKey(primaryActionTitle), action: onReview)
                         .buttonStyle(.borderedProminent)
                         .disabled(!isOriginDevice)
                     Button("拒绝", role: .destructive, action: onReject)
@@ -1722,7 +1722,7 @@ private struct InsightConversationHistoryView: View {
                                 dismiss()
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(conversation.title)
+                                    Text(LocalizedStringKey(conversation.title))
                                         .foregroundStyle(.primary)
                                     Text(conversation.updatedAt, format: .dateTime.month().day().hour().minute())
                                         .font(.caption)
@@ -1776,7 +1776,7 @@ private struct InsightDraftConfirmationView: View {
                 Section("将要执行") {
                     LabeledContent("牧场", value: farmName)
                     LabeledContent("操作", value: draft.title)
-                    Text(draft.summary)
+                    Text(LocalizedStringKey(draft.summary))
                     LabeledContent("所需权限", value: draft.requiredCapabilityRawValue)
                 }
                 Section {
@@ -1814,7 +1814,7 @@ private struct InsightDraftConfirmationView: View {
             )) {
                 Button("好", role: .cancel) {}
             } message: {
-                Text(payloadError ?? "")
+                Text(LocalizedStringKey(payloadError ?? ""))
             }
         }
         .presentationDetents([.medium, .large])

@@ -117,7 +117,7 @@ private struct CareReminderRow: View {
     let reminder: CareReminderRecord
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(reminder.title)
+            Text(LocalizedStringKey(reminder.title))
             Text(reminder.dueAt, format: .dateTime.year().month().day().hour().minute())
                 .font(.footnote)
                 .foregroundStyle(reminder.dueAt < .now ? .red : .secondary)
@@ -219,8 +219,8 @@ struct HealthBatchEntryView: View {
     private var matchingLots: [InventoryLotRecord] { lots.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive && $0.kindRawValue == kind.rawValue } }
     var body: some View {
         Form {
-            Picker("类型", selection: $kind) { ForEach(HealthRecordKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }
-            Picker("对象", selection: $mode) { ForEach(HealthSubjectMode.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
+            Picker("类型", selection: $kind) { ForEach(HealthRecordKind.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) } }
+            Picker("对象", selection: $mode) { ForEach(HealthSubjectMode.allCases) { Text(LocalizedStringKey($0.rawValue)).tag($0) } }.pickerStyle(.segmented)
             Section("实际对象") {
                 if mode == .pen {
                     Picker("圈舍", selection: $penID) {
@@ -367,7 +367,7 @@ struct HealthCatalogEditorView: View {
 
     var body: some View {
         Form {
-            Picker("类型", selection: $kind) { ForEach(HealthRecordKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }
+            Picker("类型", selection: $kind) { ForEach(HealthRecordKind.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) } }
             TextField("名称", text: $name); TextField("类别", text: $category); TextField("单位", text: $unit)
             TextField("默认剂量", text: $dose).keyboardType(.decimalPad); TextField("默认给药途径", text: $route)
             TextField("默认复免间隔（天）", text: $reminderDays).keyboardType(.numberPad)
@@ -400,7 +400,7 @@ struct CareInventoryView: View {
         List {
             ForEach(lots.filter { $0.farmID == farm.id && $0.deletedAt == nil }, id: \.id) { lot in
                 NavigationLink { CareInventoryLotDetailView(account: account, farm: farm, lot: lot) } label: {
-                    VStack(alignment: .leading) { Text(lot.catalogName); Text(lot.isActive ? "使用中" : "已停用").font(.footnote).foregroundStyle(.secondary) }
+                    VStack(alignment: .leading) { Text(lot.catalogName); Text(lot.isActive ? LocalizedStringKey("使用中") : LocalizedStringKey("已停用")).font(.footnote).foregroundStyle(.secondary) }
                 }
             }
         }
@@ -419,7 +419,7 @@ private struct InventoryReceiveCareView: View {
     let account: AccountProfile; let farm: FarmRecord; private let service = FarmCommandService()
     private var farmCatalogs: [HealthCatalogItemRecord] { catalogs.filter { $0.farmID == farm.id && $0.isActive } }
     var body: some View {
-        Form { Picker("目录", selection: $catalogID) { Text("手工填写").tag(UUID?.none); ForEach(farmCatalogs, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }; TextField("名称", text: $name); Picker("类型", selection: $kind) { ForEach(HealthRecordKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }; TextField("批号", text: $batchNumber); TextField("供应商", text: $supplier); TextField("单位", text: $unit); TextField("数量", text: $quantity).keyboardType(.decimalPad); Toggle("记录有效期", isOn: $hasExpiry); if hasExpiry { DatePicker("有效期", selection: $expiry, displayedComponents: .date) }; TextField("备注", text: $note) }
+        Form { Picker("目录", selection: $catalogID) { Text("手工填写").tag(UUID?.none); ForEach(farmCatalogs, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }; TextField("名称", text: $name); Picker("类型", selection: $kind) { ForEach(HealthRecordKind.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) } }; TextField("批号", text: $batchNumber); TextField("供应商", text: $supplier); TextField("单位", text: $unit); TextField("数量", text: $quantity).keyboardType(.decimalPad); Toggle("记录有效期", isOn: $hasExpiry); if hasExpiry { DatePicker("有效期", selection: $expiry, displayedComponents: .date) }; TextField("备注", text: $note) }
             .navigationTitle("库存入库").toolbar { EntrySaveToolbar(action: save) }.recordErrorAlert($errorMessage)
             .farmExcelImport(account: account, farm: farm, sheets: ["库存入库"])
             .onChange(of: catalogID) { _, id in guard let item = farmCatalogs.first(where: { $0.id == id }) else { return }; name = item.name; kind = catalogHealthKind(item); unit = item.unit }
@@ -440,7 +440,7 @@ private struct CareInventoryLotDetailView: View {
             Section("批次") { LabeledContent("名称", value: lot.catalogName); LabeledContent("余量", value: balance.stableText); if let date = lot.expiresAt { LabeledContent("有效期", value: date.formatted(date: .abbreviated, time: .omitted)) } }
             Section("盘点调整") { TextField("增减数量，例如 -2 或 5", text: $delta).keyboardType(.numbersAndPunctuation); TextField("原因", text: $note); Button("保存调整", action: adjust) }
             Section("流水") { ForEach(farmTransactions.sorted { $0.occurredAt > $1.occurredAt }, id: \.id) { value in LabeledContent(value.note.isEmpty ? value.kindRawValue : value.note, value: value.quantityText) } }
-            Section { Button(lot.isActive ? "停用批次" : "重新启用") { setActive(!lot.isActive) } }
+            Section { Button(lot.isActive ? LocalizedStringKey("停用批次") : LocalizedStringKey("重新启用")) { setActive(!lot.isActive) } }
         }.navigationTitle("库存详情").recordErrorAlert($errorMessage)
             .farmExcelImport(account: account, farm: farm, sheets: ["库存调整"])
     }
@@ -514,9 +514,13 @@ struct ReproductionBatchEntryView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(ewe.earTag)
-                            Text("\(ewe.sex.displayName) · \(ewe.breed)")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
+                            HStack(spacing: 0) {
+                                Text(LocalizedStringKey(ewe.sex.displayName))
+                                Text(" · ")
+                                Text(verbatim: ewe.breed)
+                            }
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button {
@@ -684,7 +688,7 @@ private struct LambFormSection: View {
             Text("羔羊 \(number)")
         } footer: {
             if weightKind == .routine {
-                Text(row.createRecord ? "已超过出生 24 小时，将按实际时间保存为普通称重。" : "普通称重必须建立羊只档案后才能保存。")
+                Text(row.createRecord ? LocalizedStringKey("已超过出生 24 小时，将按实际时间保存为普通称重。") : LocalizedStringKey("普通称重必须建立羊只档案后才能保存。"))
             }
         }
     }
@@ -974,7 +978,7 @@ struct HealthHistoryView: View {
                 Picker("类型", selection: $kind) {
                     Text("全部").tag(HealthRecordKind?.none)
                     ForEach(HealthRecordKind.allCases, id: \.self) {
-                        Text($0.displayName).tag(HealthRecordKind?.some($0))
+                        Text(LocalizedStringKey($0.displayName)).tag(HealthRecordKind?.some($0))
                     }
                 }
             }
@@ -1055,7 +1059,7 @@ struct ReproductionHistoryView: View {
     @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var records: [ReproductionRecord]; @Query private var sheep: [SheepRecord]
     let account: AccountProfile; let farm: FarmRecord; @State private var kind: ReproductionRecordKind?
     private var filtered: [ReproductionRecord] { records.filter { $0.farmID == farm.id && $0.kind != .parityBaseline && (kind == nil || $0.kind == kind) } }
-    var body: some View { List { Section { Picker("类型", selection: $kind) { Text("全部").tag(ReproductionRecordKind?.none); ForEach(ReproductionRecordKind.allCases.filter { $0 != .parityBaseline }, id: \.self) { Text($0.displayName).tag(ReproductionRecordKind?.some($0)) } } }; ForEach(filtered, id: \.id) { record in NavigationLink { ReproductionRecordDetailView(account: account, farm: farm, record: record) } label: { VStack(alignment: .leading) { Text("\(earTag(record.eweID)) · \(record.kind.displayName)"); Text(record.occurredAt, format: .dateTime.year().month().day()).font(.footnote).foregroundStyle(.secondary); if record.deletedAt != nil { Text("已撤销").font(.caption).foregroundStyle(.red) } } } } }.navigationTitle("繁殖历史") }
+    var body: some View { List { Section { Picker("类型", selection: $kind) { Text("全部").tag(ReproductionRecordKind?.none); ForEach(ReproductionRecordKind.allCases.filter { $0 != .parityBaseline }, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag(ReproductionRecordKind?.some($0)) } } }; ForEach(filtered, id: \.id) { record in NavigationLink { ReproductionRecordDetailView(account: account, farm: farm, record: record) } label: { VStack(alignment: .leading) { Text("\(earTag(record.eweID)) · \(record.kind.displayName)"); Text(record.occurredAt, format: .dateTime.year().month().day()).font(.footnote).foregroundStyle(.secondary); if record.deletedAt != nil { Text("已撤销").font(.caption).foregroundStyle(.red) } } } } }.navigationTitle("繁殖历史") }
     private func earTag(_ id: UUID) -> String { sheep.first(where: { $0.id == id })?.earTag ?? "未知母羊" }
 }
 

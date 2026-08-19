@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import SwiftData
+import Supabase
 import UIKit
 
 protocol AccountAvatarRemoteClient: Sendable {
@@ -11,6 +12,148 @@ protocol AccountAvatarRemoteClient: Sendable {
 }
 
 extension IdentityWorkerClient: AccountAvatarRemoteClient {}
+
+actor SupabaseAccountAvatarRemoteClient: AccountAvatarRemoteClient {
+    private struct ProfileRow: Decodable, Sendable {
+        let appAccountID: UUID
+        let avatarDigest: String?
+        let avatarRevision: Int64
+
+        enum CodingKeys: String, CodingKey {
+            case appAccountID = "app_account_id"
+            case avatarDigest = "avatar_digest"
+            case avatarRevision = "avatar_revision"
+        }
+    }
+
+    private struct ProfileUpdate: Encodable, Sendable {
+        let avatarDigest: String?
+        let avatarRevision: Int64
+        let updatedAt: Date
+
+        enum CodingKeys: String, CodingKey {
+            case avatarDigest = "avatar_digest"
+            case avatarRevision = "avatar_revision"
+            case updatedAt = "updated_at"
+        }
+    }
+
+    private static let bucket = "account-avatars"
+    private let client: SupabaseClient
+
+    init(client: SupabaseClient) {
+        self.client = client
+    }
+
+    func accountAvatarMetadata() async throws -> WorkerAccountAvatarResponse {
+        let row = try await profile()
+        return response(row: row, data: nil)
+    }
+
+    func accountAvatarContent() async throws -> WorkerAccountAvatarResponse {
+        let (session, row) = try await sessionAndProfile()
+        guard row.avatarDigest != nil else {
+            return response(row: row, data: nil)
+        }
+        let data = try await client.storage
+            .from(Self.bucket)
+            .download(path: objectPath(userID: session.user.id))
+        return response(row: row, data: data)
+    }
+
+    func updateAccountAvatar(_ data: Data) async throws -> WorkerAccountAvatarResponse {
+        let (session, row) = try await sessionAndProfile()
+        let digest = AccountAvatarCloudSyncService.digest(data)
+        _ = try await client.storage
+            .from(Self.bucket)
+            .upload(
+                objectPath(userID: session.user.id),
+                data: data,
+                options: FileOptions(
+                    cacheControl: "3600",
+                    contentType: "image/jpeg",
+                    upsert: true
+                )
+            )
+        let updated = try await updateProfile(
+            userID: session.user.id,
+            accountID: row.appAccountID,
+            digest: digest,
+            revision: row.avatarRevision + 1
+        )
+        return response(row: updated, data: nil)
+    }
+
+    func removeAccountAvatar() async throws -> WorkerAccountAvatarResponse {
+        let (session, row) = try await sessionAndProfile()
+        if row.avatarDigest != nil {
+            _ = try await client.storage
+                .from(Self.bucket)
+                .remove(paths: [objectPath(userID: session.user.id)])
+        }
+        let updated = try await updateProfile(
+            userID: session.user.id,
+            accountID: row.appAccountID,
+            digest: nil,
+            revision: row.avatarRevision + 1
+        )
+        return response(row: updated, data: nil)
+    }
+
+    private func profile() async throws -> ProfileRow {
+        let session = try await client.auth.session
+        return try await profile(userID: session.user.id)
+    }
+
+    private func sessionAndProfile() async throws -> (Session, ProfileRow) {
+        let session = try await client.auth.session
+        return (session, try await profile(userID: session.user.id))
+    }
+
+    private func profile(userID: UUID) async throws -> ProfileRow {
+        try await client
+            .from("profiles")
+            .select("app_account_id,avatar_digest,avatar_revision")
+            .eq("user_id", value: userID)
+            .single()
+            .execute()
+            .value
+    }
+
+    private func updateProfile(
+        userID: UUID,
+        accountID: UUID,
+        digest: String?,
+        revision: Int64
+    ) async throws -> ProfileRow {
+        try await client
+            .from("profiles")
+            .update(ProfileUpdate(
+                avatarDigest: digest,
+                avatarRevision: revision,
+                updatedAt: .now
+            ))
+            .eq("user_id", value: userID)
+            .select("app_account_id,avatar_digest,avatar_revision")
+            .single()
+            .execute()
+            .value
+    }
+
+    private func objectPath(userID: UUID) -> String {
+        "\(userID.uuidString.lowercased())/avatar.jpg"
+    }
+
+    private func response(row: ProfileRow, data: Data?) -> WorkerAccountAvatarResponse {
+        WorkerAccountAvatarResponse(
+            accountID: row.appAccountID,
+            revision: row.avatarRevision,
+            digest: row.avatarDigest,
+            hasAvatar: row.avatarDigest != nil,
+            dataBase64: data?.base64EncodedString()
+        )
+    }
+}
 
 enum AccountAvatarCloudSyncError: LocalizedError, Equatable {
     case accountMismatch
@@ -30,14 +173,15 @@ enum AccountAvatarCloudSyncError: LocalizedError, Equatable {
 final class AccountAvatarCloudSyncService {
     static let shared = AccountAvatarCloudSyncService()
 
-    private let remote: any AccountAvatarRemoteClient
+    private let remoteOverride: (any AccountAvatarRemoteClient)?
     private var activeAccountIDs: Set<UUID> = []
 
-    init(remote: any AccountAvatarRemoteClient = IdentityWorkerClient.shared) {
-        self.remote = remote
+    init(remote: (any AccountAvatarRemoteClient)? = nil) {
+        remoteOverride = remote
     }
 
     func synchronize(account: AccountProfile, context: ModelContext) async throws {
+        let remote = try activeRemote()
         let accountID = account.effectiveAccountID
         guard activeAccountIDs.insert(accountID).inserted else { return }
         defer { activeAccountIDs.remove(accountID) }
@@ -47,7 +191,12 @@ final class AccountAvatarCloudSyncService {
 
         guard let remoteRevision = metadata.revision else {
             if let localData = account.avatarImageData {
-                try await uploadUnlocked(localData, account: account, context: context)
+                try await uploadUnlocked(
+                    localData,
+                    account: account,
+                    context: context,
+                    remote: remote
+                )
             }
             return
         }
@@ -84,13 +233,24 @@ final class AccountAvatarCloudSyncService {
     }
 
     func upload(_ data: Data, account: AccountProfile, context: ModelContext) async throws {
+        let remote = try activeRemote()
         let accountID = account.effectiveAccountID
         try await acquire(accountID)
         defer { activeAccountIDs.remove(accountID) }
-        try await uploadUnlocked(data, account: account, context: context)
+        try await uploadUnlocked(
+            data,
+            account: account,
+            context: context,
+            remote: remote
+        )
     }
 
-    private func uploadUnlocked(_ data: Data, account: AccountProfile, context: ModelContext) async throws {
+    private func uploadUnlocked(
+        _ data: Data,
+        account: AccountProfile,
+        context: ModelContext,
+        remote: any AccountAvatarRemoteClient
+    ) async throws {
         guard let cloudData = Self.cloudJPEGData(from: data) else {
             throw AccountAvatarCloudSyncError.malformedResponse
         }
@@ -109,6 +269,7 @@ final class AccountAvatarCloudSyncService {
     }
 
     func remove(account: AccountProfile, context: ModelContext) async throws {
+        let remote = try activeRemote()
         let accountID = account.effectiveAccountID
         try await acquire(accountID)
         defer { activeAccountIDs.remove(accountID) }
@@ -130,6 +291,17 @@ final class AccountAvatarCloudSyncService {
         }
     }
 
+    private func activeRemote() throws -> any AccountAvatarRemoteClient {
+        if let remoteOverride { return remoteOverride }
+        if AccountIdentityClients.activeProvider == .supabase {
+            guard let client = AccountIdentityClients.supabaseClient else {
+                throw AccountIdentityClientError.notConfigured
+            }
+            return SupabaseAccountAvatarRemoteClient(client: client)
+        }
+        return IdentityWorkerClient.shared
+    }
+
     private func acquire(_ accountID: UUID) async throws {
         while activeAccountIDs.contains(accountID) {
             try Task.checkCancellation()
@@ -138,7 +310,7 @@ final class AccountAvatarCloudSyncService {
         activeAccountIDs.insert(accountID)
     }
 
-    static func digest(_ data: Data) -> String {
+    nonisolated static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 

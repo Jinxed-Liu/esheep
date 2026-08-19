@@ -1,4 +1,5 @@
 "CFBundleDisplayName" = "eSheep+";
+"CFBundleName" = "eSheepNext";
 "NSCalendarsWriteOnlyAccessUsageDescription" = "Adds farm schedules to Calendar only after you confirm an AI draft.";
 "NSCameraUsageDescription" = "Takes photos of sheep, symptoms, ear tags, and farm records, or scans ear tags, documents, and farm invitation QR codes.";
 "NSFaceIDUsageDescription" = "Confirms sensitive data exports, farm governance actions, and deletion requests.";

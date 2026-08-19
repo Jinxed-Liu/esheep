@@ -1612,8 +1612,8 @@ final class CloudBaselineV2Tests: XCTestCase {
         let persistence = FarmPersistenceActor(container: container)
         let repairCount = try await persistence.repairMigrationCloudReadyEvidence(farmID: farm.id)
         XCTAssertEqual(repairCount, 1)
-        var verify = ModelContext(container)
-        var repaired = try XCTUnwrap(verify.fetch(FetchDescriptor<OutboxItem>()).first)
+        let verify = ModelContext(container)
+        let repaired = try XCTUnwrap(verify.fetch(FetchDescriptor<OutboxItem>()).first)
         XCTAssertEqual(repaired.status, .pending)
         do {
             _ = try await persistence.verifiedMigrationCloudBaselineForReady(farmID: farm.id)

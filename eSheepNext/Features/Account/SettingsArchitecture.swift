@@ -29,6 +29,7 @@ struct SettingsVisibilityPolicy: Equatable {
     let memberSharingEnabled: Bool
     let subscriptionEnabled: Bool
     let unresolvedConflictCount: Int
+    let storageMode: FarmStorageMode
 
     init(
         role: FarmRole,
@@ -36,7 +37,8 @@ struct SettingsVisibilityPolicy: Equatable {
         cloudEnabled: Bool,
         memberSharingEnabled: Bool = MemberSharingConfiguration.isEnabled,
         subscriptionEnabled: Bool,
-        unresolvedConflictCount: Int
+        unresolvedConflictCount: Int,
+        storageMode: FarmStorageMode = .localOnly
     ) {
         capabilities = CapabilitySet(
             role: role,
@@ -46,6 +48,7 @@ struct SettingsVisibilityPolicy: Equatable {
         self.memberSharingEnabled = memberSharingEnabled
         self.subscriptionEnabled = subscriptionEnabled
         self.unresolvedConflictCount = unresolvedConflictCount
+        self.storageMode = storageMode
     }
 
     var mainDestinations: [SettingsDestination] {
@@ -82,7 +85,7 @@ struct SettingsVisibilityPolicy: Equatable {
             destinations.insert(.exportData)
             destinations.insert(.localBackup)
         }
-        if cloudEnabled && capabilities.allows(.recoverFarm) {
+        if storageMode == .iCloud && capabilities.allows(.recoverFarm) {
             destinations.insert(.cloudRecovery)
         }
         if unresolvedConflictCount > 0 && capabilities.allows(.resolveConflicts) {
@@ -99,8 +102,8 @@ struct SettingsVisibilityPolicy: Equatable {
 }
 
 struct SettingsRowLabel: View {
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringKey
+    let subtitle: LocalizedStringKey
     let systemImage: String
 
     var body: some View {
@@ -140,7 +143,7 @@ struct PrivacyAndTermsSettingsView: View {
             NavigationLink {
                 LegalDocumentView(document: document)
             } label: {
-                Label(document.title, systemImage: document.systemImage)
+                Label(LocalizedStringKey(document.title), systemImage: document.systemImage)
             }
         }
         .navigationTitle("隐私与条款")
@@ -177,7 +180,7 @@ struct AccountDeletionButton: View {
         )) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text(errorMessage ?? "")
+            Text(LocalizedStringKey(errorMessage ?? ""))
         }
     }
 
@@ -309,7 +312,7 @@ struct JoinFarmView: View {
                         .autocorrectionDisabled()
                         .fontDesign(.monospaced)
 
-                    Button(isWorking ? "正在验证…" : "验证并申请加入") {
+                    Button(isWorking ? LocalizedStringKey("正在验证…") : LocalizedStringKey("验证并申请加入")) {
                         redeem()
                     }
                     .disabled(isWorking || normalizedCode.count != 8)
@@ -317,7 +320,9 @@ struct JoinFarmView: View {
 
                 if let result {
                     Section("申请已提交") {
-                        LabeledContent("成员角色", value: result.role.displayName)
+                        LabeledContent("成员角色") {
+                            Text(LocalizedStringKey(result.role.displayName))
+                        }
                         Text("牧场主确认后，牧场会自动出现在切换菜单中。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
@@ -333,7 +338,7 @@ struct JoinFarmView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(result == nil ? "取消" : "完成") {
+                    Button(result == nil ? LocalizedStringKey("取消") : LocalizedStringKey("完成")) {
                         dismiss()
                     }
                 }
@@ -344,7 +349,7 @@ struct JoinFarmView: View {
             )) {
                 Button("知道了", role: .cancel) {}
             } message: {
-                Text(errorMessage ?? "")
+                Text(LocalizedStringKey(errorMessage ?? ""))
             }
             .sheet(isPresented: $isProximityReceiverPresented) {
                 ProximityInvitationReceiverView(accountID: account.effectiveAccountID)

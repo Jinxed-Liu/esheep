@@ -109,7 +109,7 @@ struct FarmSearchView: View {
                 ContentUnavailableView {
                     Label("搜索牧场", systemImage: "magnifyingglass")
                 } description: {
-                    Text(isLoadingSource ? "正在准备当前牧场的搜索索引…" : "输入耳号、品种或圈舍名称开始搜索。")
+                    Text(isLoadingSource ? LocalizedStringKey("正在准备当前牧场的搜索索引…") : LocalizedStringKey("输入耳号、品种或圈舍名称开始搜索。"))
                 }
                 .frame(maxWidth: .infinity, minHeight: 360)
                 .listRowSeparator(.hidden)
@@ -140,9 +140,15 @@ struct FarmSearchView: View {
                                 SheepAvatarView(photo: item.avatarPhoto, size: 48)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(item.earTag).font(.headline)
-                                    Text("\(item.breed) · \(item.statusName)")
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
+                                    HStack(spacing: 0) {
+                                        Text(verbatim: item.breed)
+                                        if !item.breed.isEmpty {
+                                            Text(" · ")
+                                        }
+                                        Text(LocalizedStringKey(item.statusName))
+                                    }
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
                                 }
                             }
                         }
@@ -366,7 +372,7 @@ struct AccountDisplayNameEditor: View {
         )) {
             Button("好", role: .cancel) {}
         } message: {
-            Text(errorMessage ?? "未知错误")
+            Text(LocalizedStringKey(errorMessage ?? "未知错误"))
         }
         .onAppear { isNameFocused = true }
     }
@@ -378,11 +384,8 @@ struct AccountDisplayNameEditor: View {
         Task {
             defer { isSaving = false }
             do {
-                let response = try await IdentityWorkerClient.shared.updateAccountDisplayName(submittedName)
-                guard response.accountID == account.effectiveAccountID else {
-                    throw IdentityWorkerError.server(code: "account_mismatch", message: "当前登录会话与本机账户不一致，请退出后重新登录。")
-                }
-                account.displayName = response.displayName
+                account.displayName = try await AccountIdentityClients.active()
+                    .updateDisplayName(submittedName)
                 account.updatedAt = .now
                 try modelContext.save()
                 dismiss()

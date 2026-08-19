@@ -30,8 +30,13 @@ struct SettingsHomeView: View {
             cloudEnabled: CloudFeatureConfiguration.isEnabled ||
                 SupabaseAccountConfiguration.isConfigured,
             subscriptionEnabled: SubscriptionFeatureConfiguration.isEnabled,
-            unresolvedConflictCount: unresolvedConflictCount
+            unresolvedConflictCount: unresolvedConflictCount,
+            storageMode: storageMode
         )
+    }
+
+    private var storageMode: FarmStorageMode {
+        storageProfiles.first(where: { $0.farmID == farm.id })?.mode ?? .localOnly
     }
 
     private var collapseProgress: CGFloat {
@@ -149,7 +154,7 @@ struct SettingsHomeView: View {
                     SettingsNavigationRow(
                         title: "数据与存储",
                         subtitle: policy.shows(.dataConflicts)
-                            ? "\(unresolvedConflictCount) 项数据需要处理"
+                            ? "有待处理的数据冲突"
                             : "空间占用、导入导出与备份",
                         systemImage: "internaldrive.fill",
                         iconColor: .green
@@ -274,10 +279,10 @@ struct SettingsHomeView: View {
     }
 
     private var cloudStorageSubtitle: String {
-        switch storageProfiles.first(where: { $0.farmID == farm.id })?.mode ?? .localOnly {
-        case .localOnly: "仅本机，可选择 iCloud 或 Supabase"
+        switch storageMode {
+        case .localOnly: "仅保存在此设备"
         case .iCloud: "当前使用 iCloud"
-        case .supabase: "当前使用 Supabase 云"
+        case .supabase: "当前使用 eSheep 云"
         }
     }
 
@@ -309,10 +314,14 @@ struct SettingsHomeView: View {
                 Text(account.displayName)
                     .font(.title2.bold())
                     .lineLimit(1)
-                Text("\(farm.name) · \(farm.role.displayName)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 0) {
+                    Text(verbatim: farm.name)
+                    Text(" · ")
+                    Text(LocalizedStringKey(farm.role.displayName))
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             }
             .accessibilityElement(children: .combine)
         }

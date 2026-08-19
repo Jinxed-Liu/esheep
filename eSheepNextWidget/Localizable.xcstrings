@@ -1,33 +1,96 @@
 {
-  "sourceLanguage" : "zh-Hans",
-  "strings" : {
-    "%@" : {
-
+  "sourceLanguage": "zh-Hans",
+  "strings": {
+    "%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@"
+          }
+        }
+      }
     },
-    "%lld" : {
-
+    "%lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld"
+          }
+        }
+      }
     },
-    "%lld 项待同步" : {
-
+    "%lld 项待同步": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld items pending sync"
+          }
+        }
+      }
     },
-    "打开 eSheep+ 后配置小组件。" : {
-
+    "打开 eSheep+ 后配置小组件。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open eSheep+ to configure the widget."
+          }
+        }
+      }
     },
-    "查看所选牧场的羊只、圈舍、今日投喂和待同步数量。" : {
-
+    "查看所选牧场的羊只、圈舍、今日投喂和待同步数量。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View sheep, pens, today’s feedings, and pending sync items for the selected farm."
+          }
+        }
+      }
     },
-    "牧场" : {
-
+    "牧场": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Farm"
+          }
+        }
+      }
     },
-    "牧场概览" : {
-
+    "牧场概览": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Farm Overview"
+          }
+        }
+      }
     },
-    "选择牧场" : {
-
+    "选择牧场": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select Farm"
+          }
+        }
+      }
     },
-    "选择要在小组件中显示的牧场。" : {
-
+    "选择要在小组件中显示的牧场。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select the farm to display in the widget."
+          }
+        }
+      }
     }
   },
-  "version" : "1.0"
+  "version": "1.0"
 }

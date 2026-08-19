@@ -1379,11 +1379,31 @@ final class InsightToolRegistry {
             )
         case "backup":
             try require(.exportFarm, agent: agent)
+            let profile = try context.fetch(FetchDescriptor<FarmStorageProfile>())
+                .first(where: { $0.farmID == farmID })
+            let storageMode = profile?.mode ?? .localOnly
+            if let provider = storageMode.deliveryProvider {
+                let hasPendingCloudOperations = try context.fetch(
+                    FetchDescriptor<OutboxItem>()
+                ).contains {
+                    $0.farmID == farmID &&
+                        $0.deliveryProvider == provider &&
+                        !$0.status.isTerminalDelivery
+                }
+                guard !hasPendingCloudOperations else {
+                    throw InsightToolError.deviceActionUnavailable(
+                        "牧场仍有记录等待上传。请联网同步完成后再生成完整备份。"
+                    )
+                }
+            }
             generatedFile = InsightGeneratedFile(
-                fileName: "牧场完整备份_\(safeFarmName)_\(day).json",
+                fileName: "牧场完整备份_\(safeFarmName)_\(day).esheep-backup",
                 kind: .json,
-                data: try FarmLocalBackupService.export(
+                data: try FarmPortableBackupService.export(
                     farmID: farmID,
+                    sourceStorageMode: storageMode,
+                    sourceAuthorityGeneration: profile?.authorityGeneration ?? 0,
+                    sourceWasFullySynchronized: true,
                     context: context
                 )
             )

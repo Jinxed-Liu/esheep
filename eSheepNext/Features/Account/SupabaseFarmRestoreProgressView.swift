@@ -45,7 +45,9 @@ struct SupabaseFarmRestoreProgressView: View {
                 }
 
                 Section("恢复状态") {
-                    LabeledContent("阶段", value: record.state.displayName)
+                    LabeledContent("阶段") {
+                        Text(LocalizedStringKey(record.state.displayName))
+                    }
                     ProgressView(value: overallFraction)
                     LabeledContent(
                         "业务实体",
@@ -74,7 +76,7 @@ struct SupabaseFarmRestoreProgressView: View {
                     }
                 }
 
-                #if DEBUG
+                #if DEBUG && ESHEEP_INTERNAL_ACCEPTANCE_UI
                 if Bundle.main.bundleIdentifier == "com.sheepfarm.next.dev" {
                     Section("Development 强杀验收") {
                         Picker("下一暂停点", selection: $restorePausePoint) {
@@ -83,7 +85,7 @@ struct SupabaseFarmRestoreProgressView: View {
                                 DevelopmentSupabaseRestoreGate.pausePoints,
                                 id: \.rawValue
                             ) { state in
-                                Text(state.displayName).tag(state.rawValue)
+                                Text(LocalizedStringKey(state.displayName)).tag(state.rawValue)
                             }
                         }
                         if !lastRestorePausePoint.isEmpty {

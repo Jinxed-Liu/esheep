@@ -135,6 +135,7 @@ final class FarmDomainTests: XCTestCase {
             forKey: DevelopmentSupabaseActivationGate.pausePointKey
         )
 
+        #if DEBUG
         XCTAssertTrue(
             DevelopmentSupabaseActivationGate.consumePausePointIfArmed(
                 at: .verifying,
@@ -160,6 +161,22 @@ final class FarmDomainTests: XCTestCase {
                 bundleIdentifier: "com.sheepfarm.next.dev"
             )
         )
+        #else
+        XCTAssertFalse(
+            DevelopmentSupabaseActivationGate.consumePausePointIfArmed(
+                at: .verifying,
+                defaults: defaults,
+                bundleIdentifier: "com.sheepfarm.next.dev"
+            )
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: DevelopmentSupabaseActivationGate.pausePointKey),
+            FarmStorageTransitionState.verifying.rawValue
+        )
+        XCTAssertNil(
+            defaults.string(forKey: DevelopmentSupabaseActivationGate.lastPausedPointKey)
+        )
+        #endif
     }
 
     func testFreeReleaseAllowsMultipleOwnerFarmsWithoutStoreKitEntitlement() {

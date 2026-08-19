@@ -175,7 +175,7 @@ struct SheepPedigreeView: View {
     @ViewBuilder
     private func relationshipSection(_ title: String, records: [PedigreeRelatedSheep]) -> some View {
         if !records.isEmpty {
-            Section(title) {
+            Section(LocalizedStringKey(title)) {
                 ForEach(records) { related in
                     Button {
                         openRelatedSheep(related)
@@ -219,7 +219,7 @@ struct SheepPedigreeView: View {
                                 HStack {
                                     Text(candidate.earTag)
                                     Spacer()
-                                    Text(candidate.isConfirmedBreedingRam ? "已确认种公羊" : "旧档线索 · 待核实")
+                                    Text(candidate.isConfirmedBreedingRam ? LocalizedStringKey("已确认种公羊") : LocalizedStringKey("旧档线索 · 待核实"))
                                         .font(.caption)
                                         .foregroundStyle(candidate.isConfirmedBreedingRam ? .green : .orange)
                                 }
@@ -442,7 +442,7 @@ struct SheepPedigreeEditorView: View {
                 }
                 Section("父系") {
                     Picker("父本来源", selection: $paternalSelection) {
-                        ForEach(PedigreePaternalSelection.allCases) { Text($0.displayName).tag($0) }
+                        ForEach(PedigreePaternalSelection.allCases) { Text(LocalizedStringKey($0.displayName)).tag($0) }
                     }
                     if paternalSelection == .breedingRam {
                         Picker("种公羊", selection: $sireID) {
@@ -476,11 +476,11 @@ struct SheepPedigreeEditorView: View {
                                     HStack {
                                         Text(candidate.earTag)
                                         Spacer()
-                                        Text(candidate.isConfirmedBreedingRam ? "已确认种公羊" : "旧档线索 · 待核实")
+                                        Text(candidate.isConfirmedBreedingRam ? LocalizedStringKey("已确认种公羊") : LocalizedStringKey("旧档线索 · 待核实"))
                                             .font(.caption)
                                             .foregroundStyle(candidate.isConfirmedBreedingRam ? .green : .orange)
                                     }
-                                    Text(candidate.displayEvidence)
+                                    Text(LocalizedStringKey(candidate.displayEvidence))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -627,8 +627,8 @@ struct PedigreeCheckView: View {
                             SheepPedigreeView(account: account, farm: farm, sheepID: issue.sheepID)
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(issue.title)
-                                Text(issue.detail).font(.footnote).foregroundStyle(.secondary)
+                                Text(LocalizedStringKey(issue.title))
+                                Text(LocalizedStringKey(issue.detail)).font(.footnote).foregroundStyle(.secondary)
                                 if !issue.candidateRamIDs.isEmpty {
                                     Text(issue.candidateRamIDs.compactMap { earTagsByID[$0] }.joined(separator: "、"))
                                         .font(.caption)
@@ -758,12 +758,13 @@ private struct PedigreeBatchSireReviewView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack {
-                                    Text(group.ramEarTag)
+                                    // Ear tags are user-entered farm data, not localization keys.
+                                    Text(verbatim: group.ramEarTag)
                                     Spacer()
                                     Text("\(group.proposals.count) 只")
                                         .foregroundStyle(.secondary)
                                 }
-                                Text(group.isConfirmedBreedingRam ? "已确认种公羊" : "旧档种公羊线索 · 本批同时确认资格")
+                                Text(group.isConfirmedBreedingRam ? LocalizedStringKey("已确认种公羊") : LocalizedStringKey("旧档种公羊线索 · 本批同时确认资格"))
                                     .font(.caption)
                                     .foregroundStyle(group.isConfirmedBreedingRam ? .green : .orange)
                                 if group.prematurityMatchCount > 0 {
@@ -860,7 +861,7 @@ private struct PedigreeBatchSireConfirmationView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
-                            Text(proposal.candidate.displayEvidence)
+                            Text(LocalizedStringKey(proposal.candidate.displayEvidence))
                                 .font(.caption)
                                 .foregroundStyle(
                                     proposal.candidate.isPrematurityWindowMatch ? .orange : .secondary
@@ -984,7 +985,7 @@ private struct BreedingRamManagementView: View {
                     )) {
                         VStack(alignment: .leading) {
                             Text(ram.earTag)
-                            Text(ram.isBreedingRam ? "种公羊" : "普通公羊")
+                            Text(ram.isBreedingRam ? LocalizedStringKey("种公羊") : LocalizedStringKey("普通公羊"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

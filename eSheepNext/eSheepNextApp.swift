@@ -25,7 +25,6 @@ struct eSheepNextApp: App {
                             .environment(subscription)
                             .environment(notifications)
                             .environment(preferences)
-                            .environment(\.locale, preferences.language.locale)
                             .preferredColorScheme(preferences.appearance.preferredColorScheme)
                             .transaction {
                                 if preferences.shouldReduceMotion {
@@ -59,6 +58,7 @@ struct eSheepNextApp: App {
                     ProgressView("正在检查本地数据")
                 }
             }
+            .environment(\.locale, preferences.language.locale)
             .task { bootstrap.start() }
         }
     }

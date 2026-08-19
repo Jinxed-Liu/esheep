@@ -45,6 +45,7 @@ protocol AccountIdentityClient: Sendable {
     func authenticate(email: String, password: String) async throws -> WorkerSessionResponse
     func register(email: String, password: String, displayName: String) async throws -> AccountRegistrationResult
     func refreshSession() async throws -> WorkerSessionResponse
+    func updateDisplayName(_ displayName: String) async throws -> String
     func signOut() async throws -> WorkerSignOutResult
     func deleteAccount() async throws -> WorkerAccountDeletionResponse
     func registerDevice(
@@ -104,6 +105,10 @@ actor CloudBaseAccountIdentityClient: AccountIdentityClient {
             accountID: status.accountID,
             displayName: status.displayName
         )
+    }
+
+    func updateDisplayName(_ displayName: String) async throws -> String {
+        try await client.updateAccountDisplayName(displayName).displayName
     }
 
     func signOut() async throws -> WorkerSignOutResult {
@@ -333,6 +338,15 @@ actor SupabaseAccountIdentityClient: AccountIdentityClient {
 
     func refreshSession() async throws -> WorkerSessionResponse {
         try await workerSession(from: supabase.auth.refreshSession())
+    }
+
+    func updateDisplayName(_ displayName: String) async throws -> String {
+        guard let normalized = Self.normalizedDisplayName(displayName) else {
+            throw AccountIdentityClientError.invalidProfile
+        }
+        let session = try await supabase.auth.session
+        try await updateDisplayName(normalized, userID: session.user.id)
+        return normalized
     }
 
     func signOut() async throws -> WorkerSignOutResult {

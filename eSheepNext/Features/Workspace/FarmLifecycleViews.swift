@@ -35,7 +35,7 @@ struct RemovalEntryView: View {
                 )
             }
             Picker("类型", selection: $kind) {
-                ForEach(RemovalKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                ForEach(RemovalKind.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
             }
             TextField("原因", text: $reason)
             if kind == .sold || kind == .culled {
@@ -100,9 +100,15 @@ struct ProductionBatchListView: View {
                 NavigationLink { ProductionBatchDetailView(account: account, farm: farm, batch: batch) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(batch.name).font(.headline)
-                        Text("\(batch.purpose) · \(batch.status == .active ? "进行中" : "已结束")")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                        Group {
+                            if batch.status == .active {
+                                Text("\(batch.purpose) · 进行中")
+                            } else {
+                                Text("\(batch.purpose) · 已结束")
+                            }
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                         Text(batch.startedAt, format: .dateTime.year().month().day())
                             .font(.footnote)
                             .foregroundStyle(.tertiary)
@@ -262,7 +268,7 @@ private struct ProductionBatchDetailView: View {
                         HStack {
                             Text(sheepNames[membership.sheepID] ?? "已删除羊只")
                             Spacer()
-                            Text(membership.leftAt == nil ? "批次中" : "已脱离")
+                            Text(membership.leftAt == nil ? LocalizedStringKey("批次中") : LocalizedStringKey("已脱离"))
                                 .font(.footnote)
                                 .foregroundStyle(membership.leftAt == nil ? AppTheme.brand : .secondary)
                         }
@@ -343,7 +349,7 @@ struct LegacyMigrationCheckView: View {
         .alert("无法读取迁移包", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("知道了", role: .cancel) { }
         } message: {
-            Text(errorMessage ?? "")
+            Text(LocalizedStringKey(errorMessage ?? ""))
         }
     }
 }
@@ -365,9 +371,15 @@ struct InventoryManagementView: View {
             ForEach(farmLots, id: \.id) { lot in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(lot.catalogName).font(.headline)
-                    Text("余量：\(balance(for: lot).stableText) · \(lot.kindRawValue == HealthRecordKind.vaccination.rawValue ? "疫苗" : "药品")")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    Group {
+                        if lot.kindRawValue == HealthRecordKind.vaccination.rawValue {
+                            Text("余量：\(balance(for: lot).stableText) · 疫苗")
+                        } else {
+                            Text("余量：\(balance(for: lot).stableText) · 药品")
+                        }
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                     if let expiresAt = lot.expiresAt {
                         Text("有效期至 \(expiresAt, format: .dateTime.year().month().day())")
                             .font(.footnote)
@@ -421,7 +433,7 @@ private struct ReceiveInventoryView: View {
     var body: some View {
         Form {
             TextField("药品或疫苗名称", text: $catalogName)
-            Picker("类型", selection: $kind) { ForEach(HealthRecordKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }
+            Picker("类型", selection: $kind) { ForEach(HealthRecordKind.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) } }
             TextField("数量", text: $quantity).keyboardType(.decimalPad)
             Toggle("记录有效期", isOn: $hasExpiry)
             if hasExpiry { DatePicker("有效期", selection: $expiresAt, displayedComponents: .date) }

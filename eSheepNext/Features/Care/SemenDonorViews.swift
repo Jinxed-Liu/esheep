@@ -91,7 +91,7 @@ private struct SemenDonorEditorView: View {
                 TextField("登记号", text: $registrationNumber)
                 TextField("品种", text: $breed)
                 Picker("状态", selection: $status) {
-                    ForEach(SemenDonorStatus.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    ForEach(SemenDonorStatus.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
                 }
             }
             Section("本场关联") {

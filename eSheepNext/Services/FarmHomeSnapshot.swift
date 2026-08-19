@@ -76,7 +76,9 @@ struct TodayFeedRowSnapshot: Identifiable, Sendable, Hashable {
     let id: UUID
     let penName: String
     let occurredAt: Date
-    let summary: String
+    let mealName: String
+    let mode: FeedMode
+    let ingredientCount: Int
     let note: String
 }
 
@@ -124,12 +126,13 @@ actor TodayFeedSnapshotActor {
         let penNames = Dictionary(uniqueKeysWithValues: pens.map { ($0.id, $0.name) })
         return feeds.map { feed in
             let meal = feed.mealName.trimmingCharacters(in: .whitespacesAndNewlines)
-            let prefix = meal.isEmpty ? feed.mode.displayName : meal
             return TodayFeedRowSnapshot(
                 id: feed.id,
                 penName: penNames[feed.penID] ?? "已删除圈舍",
                 occurredAt: feed.occurredAt,
-                summary: "\(prefix) · \(lineCountByFeedID[feed.id, default: 0]) 种原料",
+                mealName: meal,
+                mode: feed.mode,
+                ingredientCount: lineCountByFeedID[feed.id, default: 0],
                 note: feed.note
             )
         }

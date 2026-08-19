@@ -91,6 +91,7 @@ final class AppSession {
     var pendingCareReminderID: UUID?
     var pendingOperationalAlertsRequestID: UUID?
     var pendingFarmInvitation: PendingFarmInvitation?
+    var pendingSupabaseInvitationCode: String?
 
     init(
         activeAccountProfileID: UUID? = SecureAccountStore.activeAccountProfileID(),

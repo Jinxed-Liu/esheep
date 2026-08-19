@@ -290,6 +290,7 @@ final class FarmRemoteRestoreAndStorageTests: XCTestCase {
             forKey: DevelopmentSupabaseRestoreGate.pausePointKey
         )
 
+        #if DEBUG
         XCTAssertTrue(
             DevelopmentSupabaseRestoreGate.consumePausePointIfArmed(
                 at: .downloadingAssets,
@@ -310,6 +311,22 @@ final class FarmRemoteRestoreAndStorageTests: XCTestCase {
             ),
             FarmRemoteRestoreState.downloadingAssets.rawValue
         )
+        #else
+        XCTAssertFalse(
+            DevelopmentSupabaseRestoreGate.consumePausePointIfArmed(
+                at: .downloadingAssets,
+                defaults: defaults,
+                bundleIdentifier: "com.sheepfarm.next.dev"
+            )
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: DevelopmentSupabaseRestoreGate.pausePointKey),
+            FarmRemoteRestoreState.downloadingAssets.rawValue
+        )
+        XCTAssertNil(
+            defaults.string(forKey: DevelopmentSupabaseRestoreGate.lastPausedPointKey)
+        )
+        #endif
     }
 
     func testRestoreRecordPersistsEveryRecoveryBoundary() throws {

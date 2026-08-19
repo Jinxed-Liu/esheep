@@ -5,7 +5,7 @@ import SwiftUI
 struct FarmWeatherHero: View {
     let farm: FarmRecord
     let syncSymbol: String
-    let syncText: String
+    let syncText: LocalizedStringKey
     @Binding var isDetailPresented: Bool
 
     @State private var weather: FarmWeatherSnapshot?
@@ -157,14 +157,13 @@ struct FarmWeatherHero: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(farm.name)
+                farmNameView
                     .font(.title3.weight(.semibold))
                     .lineLimit(1)
                 HStack(spacing: 5) {
                     Image(systemName: "location.fill")
                         .font(.caption2)
-                    Text(farm.locationSnapshot?.displayName ?? "尚未设置牧场位置")
-                        .lineLimit(1)
+                    locationNameView
                 }
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.78))
@@ -172,7 +171,7 @@ struct FarmWeatherHero: View {
 
             Spacer(minLength: 8)
 
-            Label(farm.role.displayName, systemImage: "person.crop.circle.fill")
+            Label(LocalizedStringKey(farm.role.displayName), systemImage: "person.crop.circle.fill")
                 .font(.caption.weight(.medium))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
@@ -182,16 +181,33 @@ struct FarmWeatherHero: View {
         .shadow(color: .black.opacity(0.30), radius: 3, y: 1)
     }
 
+    private var farmNameView: Text {
+        // This is an app-generated placeholder used while rebuilding an
+        // iCloud farm, not a name entered by the user. Keep real farm names
+        // verbatim while allowing the placeholder to follow the app locale.
+        if farm.name == "正在从 iCloud 恢复的牧场" {
+            return Text("正在从 iCloud 恢复的牧场")
+        }
+        return Text(verbatim: farm.name)
+    }
+
+    private var locationNameView: Text {
+        if let displayName = farm.locationSnapshot?.displayName {
+            return Text(verbatim: displayName)
+        }
+        return Text("尚未设置牧场位置")
+    }
+
     @ViewBuilder
     private var primaryWeather: some View {
         if let weather {
             HStack(alignment: .bottom, spacing: 14) {
                 VStack(alignment: .leading, spacing: -1) {
-                    Text(weather.temperatureText)
+                    Text(LocalizedStringKey(weather.temperatureText))
                         .font(.system(size: 50, weight: .ultraLight, design: .rounded))
                         .tracking(-2)
                         .contentTransition(.numericText())
-                    Text(weather.visualDescription)
+                    Text(LocalizedStringKey(weather.visualDescription))
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.white.opacity(0.86))
                 }
@@ -200,7 +216,7 @@ struct FarmWeatherHero: View {
                     Text("最高 / 最低")
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.62))
-                    Text(weather.highLowText)
+                    Text(LocalizedStringKey(weather.highLowText))
                         .font(.subheadline.weight(.semibold))
                     Text("湿度 \(weather.humidityText) · \(weather.windSpeedText)")
                         .font(.caption)
@@ -223,12 +239,18 @@ struct FarmWeatherHero: View {
                     systemImage: farm.locationSnapshot == nil ? "location.slash.fill" : "exclamationmark.icloud.fill"
                 )
                 .font(.headline)
+                #if DEBUG
                 if let weatherError {
-                    Text(weatherError)
+                    Text(LocalizedStringKey(weatherError))
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.68))
                         .lineLimit(2)
                 }
+                #else
+                Text("请稍后重试；牧场业务数据不受影响。")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.68))
+                #endif
             }
             .foregroundStyle(.white.opacity(0.88))
         }

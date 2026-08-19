@@ -59,12 +59,12 @@ struct LegalDocumentView: View {
                 Text("更新日期：2026 年 8 月 18 日")
             }
             ForEach(Array(document.sections.enumerated()), id: \.offset) { _, section in
-                Section(section.heading) {
-                    Text(section.body)
+                Section(LocalizedStringKey(section.heading)) {
+                    Text(LocalizedStringKey(section.body))
                 }
             }
         }
-        .navigationTitle(document.title)
+        .navigationTitle(LocalizedStringKey(document.title))
         .navigationBarTitleDisplayMode(.inline)
     }
 }

@@ -6,6 +6,10 @@ import zlib
 
 extension UTType {
     static let officeOpenXMLSpreadsheet = UTType(filenameExtension: "xlsx")!
+    static let eSheepPortableBackup = UTType(
+        exportedAs: "com.sheepfarm.ios.portable-backup",
+        conformingTo: .json
+    )
 }
 
 enum FarmImportFileKind: String, Codable, Sendable {
@@ -272,8 +276,17 @@ enum FarmDataInterchange {
 
 enum SecureImportFileLoader {
     static func load(from sourceURL: URL, maximumBytes: Int = 25 * 1024 * 1024) throws -> Data {
-        guard sourceURL.startAccessingSecurityScopedResource() else { throw CocoaError(.fileReadNoPermission) }
-        defer { sourceURL.stopAccessingSecurityScopedResource() }
+        // A document-picker URL can already be directly readable (for example
+        // a file in our temporary/container directory). In that case
+        // `startAccessingSecurityScopedResource()` legitimately returns false;
+        // treating that as a permission error made valid exported backups
+        // impossible to restore on some devices/providers.
+        let didStartSecurityScope = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartSecurityScope {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
         let coordinator = NSFileCoordinator()
         var coordinationError: NSError?
         var result: Result<Data, Error>?
@@ -330,7 +343,9 @@ enum FarmImportCommitService {
 }
 
 struct FarmInterchangeDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.officeOpenXMLSpreadsheet, .json, .commaSeparatedText] }
+    static var readableContentTypes: [UTType] {
+        [.officeOpenXMLSpreadsheet, .json, .commaSeparatedText, .eSheepPortableBackup]
+    }
     let data: Data
 
     init(data: Data) { self.data = data }

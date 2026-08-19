@@ -164,7 +164,7 @@ struct SheepRecordHistoryScreen: View {
 
     private func historyCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(title).font(.headline).padding(.horizontal, 16).padding(.vertical, 12)
+            Text(LocalizedStringKey(title)).font(.headline).padding(.horizontal, 16).padding(.vertical, 12)
             Divider()
             content().padding(.horizontal, 16)
         }
@@ -172,7 +172,7 @@ struct SheepRecordHistoryScreen: View {
     }
 
     private func emptyRow(_ text: String) -> some View {
-        Text(text).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 14)
+        Text(LocalizedStringKey(text)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 14)
     }
 
     private func historyRow<MenuContent: View>(
@@ -183,7 +183,7 @@ struct SheepRecordHistoryScreen: View {
     ) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
-                Text(title)
+                Text(LocalizedStringKey(title))
                 Text(date, format: .dateTime.year().month().day().hour().minute())
                     .font(.footnote).foregroundStyle(.secondary)
                 if !note.isEmpty { Text(note).font(.footnote).foregroundStyle(.secondary) }
@@ -374,7 +374,7 @@ private struct SnapshotCorrectRemovalView: View {
     var body: some View {
         Form {
             Section("替代记录") {
-                Picker("类型", selection: $kind) { ForEach(RemovalKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }
+                Picker("类型", selection: $kind) { ForEach(RemovalKind.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) } }
                 TextField("离场原因", text: $reason)
                 if record.removalBatchID != nil {
                     if record.kind == .sold {

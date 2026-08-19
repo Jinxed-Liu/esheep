@@ -163,6 +163,8 @@ private struct FarmNavigationToolbar: ToolbarContent {
 private struct FarmSwitcher: View {
     @Environment(AppSession.self) private var session
 
+    private let restoringFarmName = "正在从 iCloud 恢复的牧场"
+
     let farms: [FarmRecord]
     let activeFarm: FarmRecord
     let sharedFarmAdmissionStatus: SharedFarmAdmissionStatus?
@@ -183,9 +185,13 @@ private struct FarmSwitcher: View {
                     try? session.switchFarm(to: farm.id, availableFarms: farms)
                 } label: {
                     if farm.id == activeFarm.id {
-                        Label(farm.name, systemImage: "checkmark")
+                        Label {
+                            farmNameText(farm.name)
+                        } icon: {
+                            Image(systemName: "checkmark")
+                        }
                     } else {
-                        Text(farm.name)
+                        farmNameText(farm.name)
                     }
                 }
             }
@@ -201,7 +207,7 @@ private struct FarmSwitcher: View {
             }
         } label: {
             HStack(spacing: 6) {
-                Text(activeFarm.name)
+                farmNameText(activeFarm.name)
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
                     .font(.caption.weight(.semibold))
@@ -216,5 +222,14 @@ private struct FarmSwitcher: View {
                 ? "切换牧场，当前为\(activeFarm.name)"
                 : "切换牧场，当前为\(activeFarm.name)，正在加入共享牧场"
         )
+    }
+
+    @ViewBuilder
+    private func farmNameText(_ name: String) -> some View {
+        if name == restoringFarmName {
+            Text("正在从 iCloud 恢复的牧场")
+        } else {
+            Text(verbatim: name)
+        }
     }
 }

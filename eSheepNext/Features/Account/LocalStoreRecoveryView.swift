@@ -28,7 +28,7 @@ struct LocalStoreRecoveryView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         LabeledContent("Schema", value: AppSchema.currentVersion)
                         LabeledContent("错误代码", value: "\(failure.errorDomain) / \(failure.errorCode)")
-                        Text(failure.summary)
+                        Text(LocalizedStringKey(failure.summary))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)

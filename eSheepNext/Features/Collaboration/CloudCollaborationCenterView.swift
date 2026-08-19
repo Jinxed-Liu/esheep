@@ -141,7 +141,7 @@ struct CloudCollaborationCenterView: View {
             }
             if let error = collaboration.lastErrorMessage {
                 Section("需要处理") {
-                    Text(error)
+                    Text(LocalizedStringKey(error))
                         .font(.footnote)
                         .foregroundStyle(.red)
                     Button("重试") {
@@ -199,7 +199,7 @@ struct CloudCollaborationCenterView: View {
         )) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text(errorMessage ?? "")
+            Text(LocalizedStringKey(errorMessage ?? ""))
         }
         .alert("操作已完成", isPresented: Binding(
             get: { successMessage != nil },
@@ -207,15 +207,21 @@ struct CloudCollaborationCenterView: View {
         )) {
             Button("完成", role: .cancel) {}
         } message: {
-            Text(successMessage ?? "")
+            Text(LocalizedStringKey(successMessage ?? ""))
         }
     }
 
     private var identitySection: some View {
         Section("身份") {
-            LabeledContent("Apple 登录", value: account.serverBindingState == .verified ? "身份服务已验证" : "仅本机绑定")
-            LabeledContent("身份服务", value: IdentityWorkerConfiguration.baseURL == nil ? "未配置" : "已配置")
-            LabeledContent("iCloud", value: collaboration.accountAvailability.displayName)
+            LabeledContent("Apple 登录") {
+                Text(LocalizedStringKey(account.serverBindingState == .verified ? "身份服务已验证" : "仅本机绑定"))
+            }
+            LabeledContent("身份服务") {
+                Text(LocalizedStringKey(IdentityWorkerConfiguration.baseURL == nil ? "未配置" : "已配置"))
+            }
+            LabeledContent("iCloud") {
+                Text(LocalizedStringKey(collaboration.accountAvailability.displayName))
+            }
             if let health = collaboration.workerHealth {
                 LabeledContent("Development 服务", value: health.environment)
                 LabeledContent("服务版本", value: health.version)
@@ -256,9 +262,9 @@ struct CloudCollaborationCenterView: View {
                         .font(.title2)
                         .foregroundStyle(commit.cloudState == .failed ? .red : AppTheme.brand)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(snapshot.isComplete ? "迁移数据已上传" : "迁移数据上传")
+                        Text(snapshot.isComplete ? LocalizedStringKey("迁移数据已上传") : LocalizedStringKey("迁移数据上传"))
                             .font(.headline)
-                        Text(commit.cloudState.displayName)
+                        Text(LocalizedStringKey(commit.cloudState.displayName))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -316,7 +322,7 @@ struct CloudCollaborationCenterView: View {
                 }
 
                 if commit.cloudState != .synced, let error = commit.cloudLastError {
-                    Text(error)
+                    Text(LocalizedStringKey(error))
                         .font(.footnote)
                         .foregroundStyle(.red)
                 } else if commit.cloudState != .synced {
@@ -339,11 +345,21 @@ struct CloudCollaborationCenterView: View {
     private var cloudStatusSection: some View {
         Section("牧场云端状态") {
             LabeledContent("环境", value: AppEnvironment.current.rawValue.capitalized)
-            LabeledContent("本地存储", value: "SwiftData 离线工作库")
-            LabeledContent("Zone", value: binding?.zoneName ?? "尚未创建")
+            LabeledContent("本地存储") {
+                Text("SwiftData 离线工作库")
+            }
+            if let zoneName = binding?.zoneName {
+                LabeledContent("Zone", value: zoneName)
+            } else {
+                LabeledContent("Zone") {
+                    Text("尚未创建")
+                }
+            }
             LabeledContent("数据库", value: binding?.databaseScope == .sharedDatabase ? "Shared Database" : "Private Database")
-            LabeledContent("状态", value: bindingStateText)
-            Text(cloudAdmissionDescription)
+            LabeledContent("状态") {
+                Text(LocalizedStringKey(bindingStateText))
+            }
+            Text(LocalizedStringKey(cloudAdmissionDescription))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -373,7 +389,7 @@ struct CloudCollaborationCenterView: View {
                 LabeledContent("最近完成", value: last.formatted(date: .abbreviated, time: .shortened))
             }
             if let error = collaboration.lastErrorMessage {
-                Text(error).font(.footnote).foregroundStyle(.red)
+                Text(LocalizedStringKey(error)).font(.footnote).foregroundStyle(.red)
             }
             if let diagnostic = diagnosticSnapshots.first(where: { $0.farmID == farm.id }) {
                 LabeledContent("诊断实体", value: diagnostic.authoritativeEntityCount.formatted())
@@ -458,7 +474,9 @@ struct CloudCollaborationCenterView: View {
             Button("验证邀请码") { redeemInvite() }
                 .disabled(isWorking || redeemCode.trimmingCharacters(in: .whitespacesAndNewlines).count != 8)
             if let redeemedInvite {
-                LabeledContent("角色", value: redeemedInvite.role.displayName)
+                LabeledContent("角色") {
+                    Text(LocalizedStringKey(redeemedInvite.role.displayName))
+                }
                 LabeledContent("状态", value: "等待场主确认 CKShare 参与者")
             }
             Text("先输入邀请码提交本机 iCloud 身份；场主批准后，再打开 CKShare 链接接受共享。")
@@ -476,8 +494,8 @@ struct CloudCollaborationCenterView: View {
                 ForEach(farmMemberships, id: \.id) { member in
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(member.displayName ?? "牧场成员").font(.headline)
-                            Text(member.role.displayName).font(.subheadline).foregroundStyle(.secondary)
+                            Text(LocalizedStringKey(member.displayName ?? "牧场成员")).font(.headline)
+                            Text(LocalizedStringKey(member.role.displayName)).font(.subheadline).foregroundStyle(.secondary)
                         }
                         Spacer()
                         if farm.role == .owner && member.role != .owner {
@@ -969,7 +987,7 @@ private struct CloudRebuildCenterView: View {
             Section("开始重建") {
                 Picker("原因", selection: $selectedReason) {
                     ForEach(CloudRebuildReason.allCases, id: \.self) { reason in
-                        Text(reason.displayName).tag(reason)
+                        Text(LocalizedStringKey(reason.displayName)).tag(reason)
                     }
                 }
                 Button("建立新的 staging 重建") { start() }
@@ -981,8 +999,12 @@ private struct CloudRebuildCenterView: View {
 
             if let current {
                 Section("当前会话") {
-                    LabeledContent("状态", value: current.status.displayName)
-                    LabeledContent("原因", value: current.reason.displayName)
+                    LabeledContent("状态") {
+                        Text(LocalizedStringKey(current.status.displayName))
+                    }
+                    LabeledContent("原因") {
+                        Text(LocalizedStringKey(current.reason.displayName))
+                    }
                     ProgressView(value: current.progress)
                     LabeledContent("分页", value: current.pageCount.formatted())
                     LabeledContent("云端记录", value: current.fetchedRecordCount.formatted())
@@ -996,7 +1018,7 @@ private struct CloudRebuildCenterView: View {
                             .fontDesign(.monospaced)
                     }
                     if let error = current.lastErrorMessage {
-                        Text(error).font(.footnote).foregroundStyle(.red)
+                        Text(LocalizedStringKey(error)).font(.footnote).foregroundStyle(.red)
                     }
                     actionButtons(for: current)
                 }
@@ -1010,7 +1032,7 @@ private struct CloudRebuildCenterView: View {
                                 Label(issue.code, systemImage: issue.severity == .blocking ? "xmark.octagon" : "exclamationmark.triangle")
                                     .font(.headline)
                                     .foregroundStyle(issue.severity == .blocking ? .red : .orange)
-                                Text(issue.detail)
+                                Text(LocalizedStringKey(issue.detail))
                                 if let recordName = issue.recordName {
                                     Text(recordName).font(.caption.monospaced()).foregroundStyle(.secondary)
                                 }
@@ -1024,7 +1046,7 @@ private struct CloudRebuildCenterView: View {
                 Section("历史会话") {
                     ForEach(farmSessions.dropFirst(), id: \.id) { session in
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(session.status.displayName).font(.headline)
+                            Text(LocalizedStringKey(session.status.displayName)).font(.headline)
                             Text(session.createdAt, format: .dateTime.year().month().day().hour().minute())
                                 .font(.caption).foregroundStyle(.secondary)
                             Text(String(session.id.uuidString.lowercased().prefix(12)))
@@ -1039,7 +1061,7 @@ private struct CloudRebuildCenterView: View {
         .alert("重建中心", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("完成", role: .cancel) {}
         } message: {
-            Text(message ?? "")
+            Text(LocalizedStringKey(message ?? ""))
         }
     }
 
@@ -1142,7 +1164,7 @@ private struct CloudMetricRow: View {
 
     var body: some View {
         HStack {
-            Label(title, systemImage: systemImage)
+            Label(LocalizedStringKey(title), systemImage: systemImage)
             Spacer()
             Text(value, format: .number).foregroundStyle(.secondary)
         }
@@ -1216,8 +1238,8 @@ struct CloudConflictCenterView: View {
                     CloudConflictDetailView(account: account, farm: farm, conflict: conflict)
                 } label: {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(conflict.displayName).font(.headline)
-                        Text(conflict.businessTypeName).foregroundStyle(.secondary)
+                        Text(LocalizedStringKey(conflict.displayName)).font(.headline)
+                        Text(LocalizedStringKey(conflict.businessTypeName)).foregroundStyle(.secondary)
                         Text(conflict.detectedAt, format: .dateTime.year().month().day().hour().minute())
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -1237,7 +1259,7 @@ struct CloudConflictCenterView: View {
         )) {
             Button("完成", role: .cancel) {}
         } message: {
-            Text(reconciliationMessage ?? "")
+            Text(LocalizedStringKey(reconciliationMessage ?? ""))
         }
     }
 
@@ -1275,8 +1297,12 @@ private struct CloudConflictDetailView: View {
     var body: some View {
         List {
             Section("记录") {
-                LabeledContent("名称", value: conflict.displayName)
-                LabeledContent("业务类型", value: conflict.businessTypeName)
+                LabeledContent("名称") {
+                    Text(verbatim: conflict.displayName)
+                }
+                LabeledContent("业务类型") {
+                    Text(LocalizedStringKey(conflict.businessTypeName))
+                }
                 LabeledContent("发现时间") {
                     Text(conflict.detectedAt, format: .dateTime.year().month().day().hour().minute())
                 }
@@ -1312,7 +1338,7 @@ private struct CloudConflictDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .alert("处理结果", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("完成", role: .cancel) {}
-        } message: { Text(message ?? "") }
+        } message: { Text(LocalizedStringKey(message ?? "")) }
     }
 
     private var canResolve: Bool {
@@ -1459,7 +1485,7 @@ struct CloudRecoveryCenterView: View {
         }
         .alert("恢复中心", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("完成", role: .cancel) {}
-        } message: { Text(message ?? "") }
+        } message: { Text(LocalizedStringKey(message ?? "")) }
         .confirmationDialog("确认从恢复点重建", isPresented: Binding(get: { restoreCandidateID != nil }, set: { if !$0 { restoreCandidateID = nil } }), titleVisibility: .visible) {
             Button("开始恢复", role: .destructive) {
                 if let id = restoreCandidateID { restore(id) }
@@ -1563,8 +1589,8 @@ private struct CloudSecurityEventListView: View {
     var body: some View {
         List(incidents.filter { $0.farmID == farm.id || $0.farmID == nil }, id: \.id) { incident in
             VStack(alignment: .leading, spacing: 5) {
-                Text(incident.incidentType).font(.headline)
-                Text(incident.detail)
+                Text(LocalizedStringKey(incident.incidentType)).font(.headline)
+                Text(LocalizedStringKey(incident.detail))
                 Text(incident.detectedAt, format: .dateTime.year().month().day().hour().minute())
                     .font(.caption).foregroundStyle(.secondary)
             }

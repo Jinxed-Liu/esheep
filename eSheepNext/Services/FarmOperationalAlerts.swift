@@ -72,6 +72,44 @@ struct FarmOperationalAlert: Identifiable, Sendable, Hashable {
     let detail: String
     let dueAt: Date
     let earTag: String
+    // TMR alerts keep their typed values so the UI can compose localized text
+    // instead of treating a number-filled Chinese String as a localization key.
+    let tmrMeal: TMRMealPeriod?
+    let tmrTargetText: String?
+    let tmrActualText: String?
+    let tmrDifferenceText: String?
+
+    init(
+        id: UUID,
+        farmID: UUID,
+        kind: FarmOperationalAlertKind,
+        subjectID: UUID,
+        sourceEntityID: UUID?,
+        conditionFingerprint: String,
+        title: String,
+        detail: String,
+        dueAt: Date,
+        earTag: String,
+        tmrMeal: TMRMealPeriod? = nil,
+        tmrTargetText: String? = nil,
+        tmrActualText: String? = nil,
+        tmrDifferenceText: String? = nil
+    ) {
+        self.id = id
+        self.farmID = farmID
+        self.kind = kind
+        self.subjectID = subjectID
+        self.sourceEntityID = sourceEntityID
+        self.conditionFingerprint = conditionFingerprint
+        self.title = title
+        self.detail = detail
+        self.dueAt = dueAt
+        self.earTag = earTag
+        self.tmrMeal = tmrMeal
+        self.tmrTargetText = tmrTargetText
+        self.tmrActualText = tmrActualText
+        self.tmrDifferenceText = tmrDifferenceText
+    }
 
     func daysOverdue(now: Date, timeZoneIdentifier: String) -> Int {
         var calendar = Calendar(identifier: .gregorian)

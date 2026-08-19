@@ -91,7 +91,7 @@ struct AccountAvatarEditor: View {
         )) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text(errorMessage ?? "")
+            Text(LocalizedStringKey(errorMessage ?? ""))
         }
     }
 

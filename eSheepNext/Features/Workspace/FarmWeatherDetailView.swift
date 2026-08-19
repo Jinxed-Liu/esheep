@@ -112,11 +112,11 @@ struct FarmWeatherDetailView: View {
     private var currentSummary: some View {
         if let weather = currentWeather {
             VStack(spacing: 5) {
-                Text(weather.temperatureText)
+                Text(LocalizedStringKey(weather.temperatureText))
                     .font(.system(size: 76, weight: .ultraLight, design: .rounded))
                     .tracking(-4)
                     .contentTransition(.numericText())
-                Text(weather.visualDescription)
+                Text(LocalizedStringKey(weather.visualDescription))
                     .font(.title3.weight(.medium))
                 Text("体感 \(weather.apparentTemperatureText)  ·  最高/最低 \(weather.highLowText)")
                     .font(.subheadline.weight(.medium))
@@ -142,10 +142,10 @@ struct FarmWeatherDetailView: View {
                                 .symbolRenderingMode(.multicolor)
                                 .font(.title3)
                                 .frame(height: 28)
-                            Text(hour.temperatureText)
+                            Text(LocalizedStringKey(hour.temperatureText))
                                 .font(.subheadline.weight(.semibold))
                             if hour.precipitationChanceText != "0%" {
-                                Text(hour.precipitationChanceText)
+                                Text(LocalizedStringKey(hour.precipitationChanceText))
                                     .font(.caption2)
                                     .foregroundStyle(.cyan.opacity(0.90))
                             } else {
@@ -176,17 +176,17 @@ struct FarmWeatherDetailView: View {
                                 .frame(width: 28)
                             VStack(alignment: .leading, spacing: 5) {
                                 HStack(spacing: 7) {
-                                    Text(alert.severity.title)
+                                    Text(LocalizedStringKey(alert.severity.title))
                                         .font(.caption.weight(.bold))
                                         .foregroundStyle(alert.severity.tint)
                                     if let region = alert.region, !region.isEmpty {
-                                        Text(region)
+                                        Text(LocalizedStringKey(region))
                                             .font(.caption)
                                             .foregroundStyle(.white.opacity(0.58))
                                             .lineLimit(1)
                                     }
                                 }
-                                Text(alert.summary)
+                                Text(LocalizedStringKey(alert.summary))
                                     .font(.subheadline.weight(.semibold))
                                     .multilineTextAlignment(.leading)
                                 Text("发布：\(alert.source)")
@@ -232,7 +232,7 @@ struct FarmWeatherDetailView: View {
     private var chartMetricSelector: some View {
         Picker("24 小时趋势指标", selection: $selectedChartMetric) {
             ForEach(WeatherChartMetric.allCases) { metric in
-                Text(metric.title)
+                Text(LocalizedStringKey(metric.title))
                     .tag(metric)
             }
         }
@@ -331,7 +331,7 @@ struct FarmWeatherDetailView: View {
         HStack(spacing: 7) {
             Image(systemName: symbol)
                 .foregroundStyle(.white.opacity(0.60))
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.66))
             Spacer()
@@ -344,7 +344,7 @@ struct FarmWeatherDetailView: View {
         WeatherGlassSection(title: title, symbol: title.contains("过去") ? "clock.arrow.circlepath" : "calendar") {
             VStack(spacing: 0) {
                 HStack {
-                    Text(subtitle)
+                    Text(LocalizedStringKey(subtitle))
                     Spacer()
                     Text("降水 · 低温 / 高温")
                 }
@@ -363,12 +363,12 @@ struct FarmWeatherDetailView: View {
                         Image(systemName: day.symbolName)
                             .symbolRenderingMode(.multicolor)
                             .frame(width: 28)
-                        Text(day.precipitationChanceText)
+                        Text(LocalizedStringKey(day.precipitationChanceText))
                             .font(.caption)
                             .foregroundStyle(.cyan.opacity(0.90))
                             .frame(width: 38, alignment: .trailing)
                         Spacer(minLength: 4)
-                        Text(day.lowTemperatureText)
+                        Text(LocalizedStringKey(day.lowTemperatureText))
                             .foregroundStyle(.white.opacity(0.62))
                         Capsule()
                             .fill(
@@ -379,7 +379,7 @@ struct FarmWeatherDetailView: View {
                                 )
                             )
                             .frame(width: 52, height: 4)
-                        Text(day.highTemperatureText)
+                        Text(LocalizedStringKey(day.highTemperatureText))
                     }
                     .font(.subheadline)
                     .frame(minHeight: 54)
@@ -422,7 +422,7 @@ struct FarmWeatherDetailView: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(weather.windDirectionText)
+                        Text(LocalizedStringKey(weather.windDirectionText))
                             .font(.title2.weight(.semibold))
                         Text("当前风向")
                             .font(.caption)
@@ -442,7 +442,7 @@ struct FarmWeatherDetailView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(value)
                 .font(.subheadline.weight(.semibold))
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.54))
         }
@@ -492,7 +492,7 @@ struct FarmWeatherDetailView: View {
         secondaryValue: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.subheadline.weight(.semibold))
             HStack(spacing: 18) {
                 Text("\(primaryLabel) \(primaryValue)")
@@ -527,7 +527,7 @@ struct FarmWeatherDetailView: View {
     private func errorCard(_ message: String) -> some View {
         WeatherGlassSection(title: "天气暂时不可用", symbol: "exclamationmark.triangle") {
             VStack(spacing: 12) {
-                Text(message)
+                Text(LocalizedStringKey(message))
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.72))
                 Button("重新载入") {
@@ -634,7 +634,7 @@ private struct WeatherGlassSection<Content: View, HeaderAccessory: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                Label(title, systemImage: symbol)
+                Label(LocalizedStringKey(title), systemImage: symbol)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.66))
 
@@ -666,7 +666,7 @@ private struct ConditionMetric: View {
                 .foregroundStyle(.white.opacity(0.62))
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+                Text(LocalizedStringKey(title))
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.56))
                 Text(value)

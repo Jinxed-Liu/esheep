@@ -206,7 +206,11 @@ struct FarmHomeView: View {
                 StatusRow(title: "羊只档案", detail: "查看羊只档案、体重与时间线", symbol: "list.bullet")
             }
             NavigationLink { PenManagementView(account: account, farm: farm) } label: {
-                StatusRow(title: "圈舍管理", detail: "当前 \(homeSnapshot.occupiedPenCount) 个圈舍有在场羊", symbol: "building.2")
+                StatusRow(
+                    title: "圈舍管理",
+                    detail: "当前 \(homeSnapshot.occupiedPenCount) 个圈舍有在场羊",
+                    symbol: "building.2"
+                )
             }
             if homeSnapshot.activeHealthRecordCount > 0 {
                 StatusRow(title: "健康记录", detail: "已有 \(homeSnapshot.activeHealthRecordCount) 条记录", symbol: "cross.case")
@@ -291,7 +295,7 @@ private struct HomeMetric: View {
         VStack(alignment: .leading, spacing: 6) {
             Image(systemName: symbol).foregroundStyle(AppTheme.brand)
             Text(value).font(.title3.bold())
-            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(LocalizedStringKey(title)).font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64, alignment: .leading)
         .padding(20)
@@ -320,9 +324,18 @@ private struct TodayFeedDetailView: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
-                    Text(feed.summary)
+                    if feed.mealName.isEmpty {
+                        HStack(spacing: 0) {
+                            Text(LocalizedStringKey(feed.mode.displayName))
+                            Text(" · \(feed.ingredientCount) 种原料")
+                        }
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                    } else {
+                        Text("\(feed.mealName) · \(feed.ingredientCount) 种原料")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                     if !feed.note.isEmpty {
                         Text(feed.note)
                             .font(.footnote)
@@ -336,7 +349,7 @@ private struct TodayFeedDetailView: View {
             if isLoading {
                 ProgressView("正在整理今日投喂")
             } else if let loadError {
-                ContentUnavailableView("读取失败", systemImage: "exclamationmark.triangle", description: Text(loadError))
+                ContentUnavailableView("读取失败", systemImage: "exclamationmark.triangle", description: Text(LocalizedStringKey(loadError)))
             } else if rows.isEmpty {
                 ContentUnavailableView(
                     "今日暂无投喂",
@@ -379,7 +392,7 @@ private struct HomeShortcut: View {
         Button(action: action) {
             HStack {
                 Image(systemName: symbol)
-                Text(title)
+                Text(LocalizedStringKey(title))
                 Spacer()
             }
             .padding(14)
@@ -392,14 +405,14 @@ private struct HomeShortcut: View {
 
 struct StatusRow: View {
     let title: String
-    let detail: String
+    let detail: LocalizedStringKey
     let symbol: String
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: symbol).foregroundStyle(AppTheme.brand).frame(width: 26)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).foregroundStyle(.primary)
+                Text(LocalizedStringKey(title)).foregroundStyle(.primary)
                 Text(detail).font(.footnote).foregroundStyle(.secondary)
             }
             Spacer()

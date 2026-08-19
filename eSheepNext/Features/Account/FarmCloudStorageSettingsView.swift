@@ -12,12 +12,11 @@ struct FarmCloudStorageSettingsView: View {
     let account: AccountProfile
     let farm: FarmRecord
 
-    @State private var entitlement: SupabaseCloudEntitlement?
     @State private var eligibilityReason: String?
     @State private var isLoading = true
     @State private var isActivating = false
     @State private var isConfirmingActivation = false
-    @State private var statusMessage: String?
+    @State private var statusMessage: LocalizedStringKey?
     @State private var errorMessage: String?
     @State private var compactRebuildProgress:
         FarmCompactBaselineRebuildProgress?
@@ -42,9 +41,9 @@ struct FarmCloudStorageSettingsView: View {
 
     private var modeTitle: String {
         switch profile?.mode ?? .localOnly {
-        case .localOnly: "仅本机"
+        case .localOnly: "仅保存在此设备"
         case .iCloud: "iCloud"
-        case .supabase: "Supabase 云"
+        case .supabase: "eSheep 云"
         }
     }
 
@@ -78,52 +77,40 @@ struct FarmCloudStorageSettingsView: View {
 
     private var activationButtonTitle: String {
         if isActivating {
-            return "正在启用 Supabase 云…"
+            return "正在启用 eSheep 云…"
         }
         if profile?.transitionState == .failed {
-            return "继续启用 Supabase 云"
+            return "继续启用 eSheep 云"
         }
         if profile?.transitionState != .idle {
             return "正在自动恢复启云…"
         }
-        return "启用 Supabase 云"
+        return "启用 eSheep 云"
     }
 
     var body: some View {
         Form {
             Section("当前模式") {
-                LabeledContent("存储权威", value: modeTitle)
-                if let profile, profile.transitionState != .idle {
-                    LabeledContent("迁移状态", value: profile.transitionState.rawValue)
+                LabeledContent("数据保存在") {
+                    Text(LocalizedStringKey(modeTitle))
                 }
-                Text("三种模式只会有一个写入权威；本机 SwiftData 始终保留完整离线缓存。")
+                if let profile, profile.transitionState != .idle {
+                    LabeledContent("切换状态") {
+                        Text("正在安全迁移")
+                    }
+                }
+                Text("离线时仍可继续录入；恢复网络后会自动同步到当前云存储。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
             if profile?.mode == .localOnly {
-                Section("选择云端") {
-                    Label {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("iCloud")
-                            Text("免费；现有 iCloud 行为保持不变")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    } icon: {
-                        Image(systemName: "icloud.fill")
-                            .foregroundStyle(.blue)
-                    }
-
-                    Text("本阶段不改变现有 iCloud 启用流程。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-
+                Section("云端保存") {
                     Button {
                         isConfirmingActivation = true
                     } label: {
                         Label(
-                            activationButtonTitle,
+                            LocalizedStringKey(activationButtonTitle),
                             systemImage: "externaldrive.connected.to.line.below.fill"
                         )
                     }
@@ -132,27 +119,42 @@ struct FarmCloudStorageSettingsView: View {
                         isActivating ||
                         !canManuallyActivate ||
                         eligibilityReason != nil ||
-                        entitlement?.allowsOwnerWrites != true ||
                         AccountIdentityClients.supabaseClient == nil
                     )
 
                     if let eligibilityReason {
-                        Text(eligibilityReason)
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
-                    } else if entitlement?.allowsOwnerWrites != true {
-                        Text("需要服务端 Development 测试授权；客户端购买状态不能替代该授权。")
+                        eligibilityReasonView(eligibilityReason)
                             .font(.footnote)
                             .foregroundStyle(.orange)
                     }
                 }
             }
 
-            Section("启用说明") {
-                Label("开始前自动生成本地完整备份", systemImage: "externaldrive.badge.checkmark")
-                Label("星露谷的完整实体、历史、删除记录和照片会先在本机重建校验", systemImage: "checkmark.shield")
-                Label("权威提交后只续跑 Supabase，不自动回滚", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
-                Label("受邀成员无需购买或测试授权", systemImage: "person.2.badge.plus")
+            if profile?.mode == .localOnly {
+                Section("启用说明") {
+                    Label("开始前自动生成完整本地备份", systemImage: "externaldrive.badge.checkmark")
+                    Label("业务记录、历史、删除记录和照片会先完整校验", systemImage: "checkmark.shield")
+                    Label("校验完成后才会切换到 eSheep 云", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                    Label("当前版本免费使用", systemImage: "checkmark.seal")
+                }
+            } else if profile?.mode == .supabase {
+                Section("同步状态") {
+                    LabeledContent("待同步记录", value: pendingOutboxCount.formatted())
+                    LabeledContent(
+                        "已保存记录",
+                        value: (remoteStorageMetrics?.entityCount ?? 0).formatted()
+                    )
+                    LabeledContent(
+                        "照片占用空间",
+                        value: ByteCountFormatter.string(
+                            fromByteCount: remoteStorageMetrics?.storageObjectBytes ?? 0,
+                            countStyle: .file
+                        )
+                    )
+                    Text("同步中断不会丢失本机记录，恢复网络后会自动继续。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if let statusMessage {
@@ -162,7 +164,7 @@ struct FarmCloudStorageSettingsView: View {
                 }
             }
 
-            #if DEBUG
+            #if DEBUG && ESHEEP_INTERNAL_ACCEPTANCE_UI
             if Bundle.main.bundleIdentifier == "com.sheepfarm.next.dev" {
                 Section("Development 验收") {
                     LabeledContent("Mode", value: profile?.mode.rawValue ?? "localOnly")
@@ -296,7 +298,9 @@ struct FarmCloudStorageSettingsView: View {
                             VStack(alignment: .leading, spacing: 7) {
                                 HStack {
                                     Text(
-                                        compactRebuildProgress.phase.displayName
+                                        LocalizedStringKey(
+                                            compactRebuildProgress.phase.displayName
+                                        )
                                     )
                                     Spacer()
                                     Text(
@@ -375,7 +379,7 @@ struct FarmCloudStorageSettingsView: View {
                     }
                     .disabled(isRunningDevelopmentAcceptanceCommand)
                     if let developmentAcceptanceMessage {
-                        Text(developmentAcceptanceMessage)
+                        Text(verbatim: developmentAcceptanceMessage)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -386,7 +390,7 @@ struct FarmCloudStorageSettingsView: View {
                             DevelopmentSupabaseActivationGate.pausePoints,
                             id: \.rawValue
                         ) { point in
-                            Text(point.rawValue).tag(point.rawValue)
+                            Text(LocalizedStringKey(point.rawValue)).tag(point.rawValue)
                         }
                     }
                     if !developmentLastPausedPointRawValue.isEmpty {
@@ -419,7 +423,7 @@ struct FarmCloudStorageSettingsView: View {
             }
         }
         .confirmationDialog(
-            "启用 Supabase 云？",
+            "启用 eSheep 云？",
             isPresented: $isConfirmingActivation,
             titleVisibility: .visible
         ) {
@@ -428,7 +432,7 @@ struct FarmCloudStorageSettingsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("系统会先生成本地备份并验证远端暂存基线。权威提交后发生中断时，只会继续完成 Supabase 切换。")
+            Text("系统会先生成完整备份并校验全部记录与照片。切换过程中断后会从安全断点继续。")
         }
         .alert("无法完成启云", isPresented: Binding(
             get: { errorMessage != nil },
@@ -436,7 +440,7 @@ struct FarmCloudStorageSettingsView: View {
         )) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text(errorMessage ?? "")
+            Text(LocalizedStringKey(errorMessage ?? ""))
         }
     }
 
@@ -445,8 +449,8 @@ struct FarmCloudStorageSettingsView: View {
         defer { isLoading = false }
         guard let client = AccountIdentityClients.supabaseClient else {
             eligibilityReason = SupabaseAccountConfiguration.isEnabled
-                ? "Development Supabase secrets 尚未配置。"
-                : "Development Supabase 发布门禁尚未开启。"
+                ? "eSheep 云配置缺失。"
+                : "eSheep 云功能未开启。"
             return
         }
         do {
@@ -455,7 +459,6 @@ struct FarmCloudStorageSettingsView: View {
                 farmID: farm.id,
                 context: modelContext
             )
-            entitlement = try await SupabaseEntitlementClient(client: client).current()
             if profile?.mode == .supabase {
                 remoteStorageMetrics = try await
                     SupabaseFarmStorageMetricsClient(client: client)
@@ -479,6 +482,18 @@ struct FarmCloudStorageSettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private func eligibilityReasonView(_ reason: String) -> some View {
+        switch reason {
+        case "eSheep 云配置缺失。":
+            Text("eSheep 云配置缺失。")
+        case "eSheep 云功能未开启。":
+            Text("eSheep 云功能未开启。")
+        default:
+            Text(verbatim: reason)
+        }
+    }
+
     private func activate() {
         guard !isActivating,
               let client = AccountIdentityClients.supabaseClient else {
@@ -491,7 +506,7 @@ struct FarmCloudStorageSettingsView: View {
                 let backupURL = try await SupabaseFarmActivationService(
                     client: client
                 ).activate(farm: farm, context: modelContext)
-                statusMessage = "Supabase 已成为唯一云端权威。本地备份：\(backupURL.lastPathComponent)"
+                statusMessage = "已启用 eSheep 云。完整备份：\(backupURL.lastPathComponent)"
                 await refresh()
             } catch {
                 errorMessage = error.localizedDescription

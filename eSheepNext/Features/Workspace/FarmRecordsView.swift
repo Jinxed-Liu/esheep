@@ -301,12 +301,12 @@ struct WeaningEntryView: View {
                         LabeledContent("计算间隔", value: "\(gainResult.intervalDays) 天")
                         LabeledContent("断奶日增重", value: "\(gainText(gainResult.gramsPerDay)) 克/天")
                     } else {
-                        Text(calculationUnavailableMessage)
+                        Text(LocalizedStringKey(calculationUnavailableMessage))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text(calculationUnavailableMessage)
+                    Text(LocalizedStringKey(calculationUnavailableMessage))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -710,6 +710,6 @@ extension View {
     func recordErrorAlert(_ errorMessage: Binding<String?>) -> some View {
         alert("无法保存", isPresented: Binding(get: { errorMessage.wrappedValue != nil }, set: { if !$0 { errorMessage.wrappedValue = nil } })) {
             Button("知道了", role: .cancel) {}
-        } message: { Text(errorMessage.wrappedValue ?? "") }
+        } message: { Text(LocalizedStringKey(errorMessage.wrappedValue ?? "")) }
     }
 }

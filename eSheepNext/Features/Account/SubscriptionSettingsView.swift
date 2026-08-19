@@ -65,10 +65,10 @@ struct SubscriptionSettingsView: View {
             }
 
             if let message = subscription.lastMessage {
-                Section { Text(message).foregroundStyle(.secondary) }
+                Section { Text(LocalizedStringKey(message)).foregroundStyle(.secondary) }
             }
             if let error = subscription.lastErrorMessage {
-                Section { Text(error).foregroundStyle(.red) }
+                Section { Text(LocalizedStringKey(error)).foregroundStyle(.red) }
             }
         }
         .navigationTitle("订阅与购买")

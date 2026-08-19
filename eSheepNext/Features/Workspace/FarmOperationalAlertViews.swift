@@ -77,15 +77,15 @@ struct FarmOperationalAlertHomeCard: View {
                 detail: canManageRules
                     ? "需先设置断奶日龄、提前预警天数、孕检天数与每日汇总时间。"
                     : "等待牧场主或管理员完成设置。",
-                symbol: "gearshape.badge.exclamationmark"
+                symbol: "exclamationmark.triangle.fill"
             )
         } else {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(snapshot.totalPendingCount == 0 ? "全部正常" : "\(snapshot.totalPendingCount) 项待处理")
+                    Text(snapshot.totalPendingCount == 0 ? LocalizedStringKey("全部正常") : LocalizedStringKey("\(snapshot.totalPendingCount) 项待处理"))
                         .font(.title3.bold())
                         .foregroundStyle(.primary)
-                    Text(categorySummary(snapshot))
+                    categorySummary(snapshot)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -102,11 +102,11 @@ struct FarmOperationalAlertHomeCard: View {
         }
     }
 
-    private func categorySummary(_ snapshot: FarmOperationalAlertSnapshot) -> String {
+    private func categorySummary(_ snapshot: FarmOperationalAlertSnapshot) -> Text {
         let weaningCount = snapshot.count(for: .weaningDueSoon) + snapshot.count(for: .weaningOverdue)
         let pregnancyCount = snapshot.count(for: .pregnancyCheckDueSoon) + snapshot.count(for: .pregnancyCheckOverdue)
         let tmrCount = snapshot.count(for: .tmrNotFed) + snapshot.count(for: .tmrLow) + snapshot.count(for: .tmrHigh)
-        return "断奶 \(weaningCount) · 孕检 \(pregnancyCount) · TMR \(tmrCount) · 圈舍 \(snapshot.count(for: .invalidPen)) · 日程 \(snapshot.overdueReminders.count)"
+        return Text("断奶 \(weaningCount) · 孕检 \(pregnancyCount) · TMR \(tmrCount) · 圈舍 \(snapshot.count(for: .invalidPen)) · 日程 \(snapshot.overdueReminders.count)")
     }
 }
 
@@ -241,7 +241,7 @@ struct FarmOperationalAlertCenterView: View {
                     subtitle: canManageRules
                         ? "填写断奶日龄、提前预警天数，确认孕检天数和每日汇总时间后，系统才会开始计算。"
                         : "等待牧场主或管理员完成提醒与异常规则设置。",
-                    systemImage: "gearshape.badge.exclamationmark",
+                    systemImage: "exclamationmark.triangle.fill",
                     iconColor: .orange,
                     showsChevron: false
                 )
@@ -295,7 +295,7 @@ struct FarmOperationalAlertCenterView: View {
                                             .contentShape(.rect)
                                     }
                                     .buttonStyle(.plain)
-                                    .accessibilityLabel("暂缓\(alert.title)")
+                                    .accessibilityLabel("暂缓此异常")
                                 }
                             }
                         }
@@ -357,14 +357,14 @@ struct FarmOperationalAlertCenterView: View {
         HStack(alignment: .center, spacing: 13) {
             SettingsIcon(systemImage: alert.kind.symbol, color: .orange)
             VStack(alignment: .leading, spacing: 3) {
-                Text(alert.title)
+                alertTitleText(alert)
                     .font(.headline)
                     .foregroundStyle(.primary)
-                Text(alert.detail)
+                alertDetailText(alert, snapshot: snapshot)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                Text(deadlineText(alert, snapshot: snapshot))
+                deadlineText(alert, snapshot: snapshot)
                     .font(.caption)
                     .foregroundStyle(alert.kind.isDueSoon ? Color.orange : Color.red)
             }
@@ -379,23 +379,89 @@ struct FarmOperationalAlertCenterView: View {
         .contentShape(.rect)
     }
 
+    private func alertTitleText(_ alert: FarmOperationalAlert) -> Text {
+        switch alert.kind {
+        case .weaningDueSoon:
+            return Text("\(alert.earTag) · 断奶即将到期")
+        case .weaningOverdue:
+            return Text("\(alert.earTag) · 超龄未断奶")
+        case .pregnancyCheckDueSoon:
+            return Text("\(alert.earTag) · 孕检即将到期")
+        case .pregnancyCheckOverdue:
+            return Text("\(alert.earTag) · 配种后逾期未孕检")
+        case .invalidPen:
+            return Text("\(alert.earTag) · 未分有效圈舍")
+        case .tmrNotFed:
+            return Text("\(alert.earTag) · TMR 未投喂")
+        case .tmrLow:
+            return Text("\(alert.earTag) · TMR 投喂偏低")
+        case .tmrHigh:
+            return Text("\(alert.earTag) · TMR 投喂偏高")
+        }
+    }
+
+    private func alertDetailText(
+        _ alert: FarmOperationalAlert,
+        snapshot: FarmOperationalAlertSnapshot
+    ) -> Text {
+        switch alert.kind {
+        case .weaningOverdue:
+            return Text("已达到 \(snapshot.rule?.weaningAgeDays ?? 0) 日龄，尚无有效断奶记录。")
+        case .weaningDueSoon:
+            let days = alert.daysUntilDue(
+                now: snapshot.generatedAt,
+                timeZoneIdentifier: snapshot.timeZoneIdentifier
+            )
+            return Text("将在 \(days) 天后达到 \(snapshot.rule?.weaningAgeDays ?? 0) 日龄，尚无有效断奶记录。")
+        case .pregnancyCheckOverdue:
+            return Text("配种后已达到 \(snapshot.rule?.pregnancyCheckDays ?? 0) 天，尚无后续孕检、流产或产羔记录。")
+        case .pregnancyCheckDueSoon:
+            let days = alert.daysUntilDue(
+                now: snapshot.generatedAt,
+                timeZoneIdentifier: snapshot.timeZoneIdentifier
+            )
+            return Text("还有 \(days) 天到孕检期限，尚无后续孕检、流产或产羔记录。")
+        case .invalidPen:
+            if alert.detail == "当前在场羊只尚未分圈。" {
+                return Text("当前在场羊只尚未分圈。")
+            }
+            return Text("当前圈舍已停用、删除或引用失效。")
+        case .tmrNotFed, .tmrLow, .tmrHigh:
+            guard let meal = alert.tmrMeal,
+                  let target = alert.tmrTargetText else {
+                return Text(verbatim: alert.detail)
+            }
+            let mealName = String(localized: String.LocalizationValue(meal.displayName))
+            switch alert.kind {
+            case .tmrNotFed:
+                return Text(verbatim: mealName + String(localized: "顿目标 \(target) kg，截止后仍无有效投喂记录。"))
+            case .tmrLow, .tmrHigh:
+                let actual = alert.tmrActualText ?? "--"
+                let difference = alert.tmrDifferenceText ?? "--"
+                return Text(verbatim: mealName + String(localized: "顿目标 \(target) kg，实际 \(actual) kg，差值 \(difference) kg。"))
+            default:
+                return Text(verbatim: alert.detail)
+            }
+        }
+    }
+
     private func deadlineText(
         _ alert: FarmOperationalAlert,
         snapshot: FarmOperationalAlertSnapshot
-    ) -> String {
-        if alert.kind == .invalidPen || alert.kind.isTMR { return "需立即处理" }
+    ) -> Text {
+        if alert.kind == .invalidPen || alert.kind.isTMR { return Text("需立即处理") }
         if alert.kind.isDueSoon {
             let days = alert.daysUntilDue(
                 now: snapshot.generatedAt,
                 timeZoneIdentifier: snapshot.timeZoneIdentifier
             )
-            return "还有 \(days) 天到期"
+            return Text("还有 \(days) 天到期")
         }
         let days = alert.daysOverdue(
             now: snapshot.generatedAt,
             timeZoneIdentifier: snapshot.timeZoneIdentifier
         )
-        return days == 0 ? "今天到期" : "已逾期 \(days) 天"
+        return days == 0 ? Text("今天到期") : Text("已逾期 \(days) 天")
     }
 
     @ViewBuilder

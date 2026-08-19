@@ -73,14 +73,14 @@ struct WelcomeView: View {
 
                     VStack(spacing: 8) {
                         Text("eSheep+").font(.largeTitle.bold())
-                        Text(reauthenticationRequired ? "请重新登录账号" : "新一代牧场管理")
+                        Text(reauthenticationRequired ? LocalizedStringKey("请重新登录账号") : LocalizedStringKey("新一代牧场管理"))
                             .font(.title3)
                             .foregroundStyle(.secondary)
                     }
                 }
 
                 if let notice = session.authenticationNotice {
-                    Label(notice, systemImage: "person.crop.circle.badge.checkmark")
+                    Label(LocalizedStringKey(notice), systemImage: "person.crop.circle.badge.checkmark")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -91,7 +91,7 @@ struct WelcomeView: View {
                 VStack(spacing: 16) {
                     Picker("登录方式", selection: $credentialMode) {
                         ForEach(WelcomeCredentialMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
+                            Text(LocalizedStringKey(mode.title)).tag(mode)
                         }
                     }
                     .pickerStyle(.segmented)
@@ -134,7 +134,7 @@ struct WelcomeView: View {
                                     .keyboardType(.numberPad)
                                     .focused($focusedField, equals: .verificationCode)
                                     .textFieldStyle(.roundedBorder)
-                                Button(verificationCooldown > 0 ? "\(verificationCooldown) 秒" : "发送验证码", action: sendEmailVerification)
+                                Button(verificationCooldown > 0 ? LocalizedStringKey("\(verificationCooldown) 秒") : LocalizedStringKey("发送验证码"), action: sendEmailVerification)
                                     .buttonStyle(.bordered)
                                     .disabled(isSendingVerification || verificationCooldown > 0 || !emailLooksValid || !identityIsConfigured)
                             }
@@ -223,7 +223,7 @@ struct WelcomeView: View {
                         .foregroundStyle(.tertiary)
                     HStack(spacing: 14) {
                         ForEach(LegalDocument.allCases) { document in
-                            Button(document.title) { selectedLegalDocument = document }
+                            Button(LocalizedStringKey(document.title)) { selectedLegalDocument = document }
                                 .font(.footnote)
                         }
                     }
@@ -252,7 +252,7 @@ struct WelcomeView: View {
         )) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text(errorMessage ?? "")
+            Text(LocalizedStringKey(errorMessage ?? ""))
         }
     }
 
@@ -376,7 +376,7 @@ struct WelcomeView: View {
 
     @ViewBuilder
     private func credentialFieldLabel(_ title: String) -> some View {
-        Text(title)
+        Text(LocalizedStringKey(title))
             .font(.subheadline.weight(.semibold))
             .frame(maxWidth: .infinity, alignment: .leading)
     }

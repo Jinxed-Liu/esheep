@@ -114,7 +114,7 @@ struct PedigreeTreeDiagram: View {
             .scrollIndicators(.hidden)
             .id(profile.record.id)
 
-            Label(interactionHint, systemImage: "hand.draw")
+            Label(LocalizedStringKey(interactionHint), systemImage: "hand.draw")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 4)
@@ -429,19 +429,19 @@ private struct PedigreeTreeNodeView: View {
         VStack(spacing: 3) {
             HStack(spacing: 4) {
                 Image(systemName: node.systemImage)
-                Text(node.role)
+                Text(LocalizedStringKey(node.role))
             }
             .font(.caption2.weight(.medium))
             .foregroundStyle(node.tint)
 
-            Text(node.title)
+            Text(LocalizedStringKey(node.title))
                 .font(.caption.weight(node.emphasis == .subject ? .bold : .semibold))
                 .foregroundStyle(node.emphasis == .placeholder ? .secondary : .primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
 
             if let subtitle = node.subtitle {
-                Text(subtitle)
+                Text(LocalizedStringKey(subtitle))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

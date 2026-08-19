@@ -11,7 +11,9 @@ struct SystemServicesSettingsView: View {
     var body: some View {
         List {
             Section {
-                LabeledContent("系统权限", value: notificationStatusText)
+                LabeledContent("系统权限") {
+                    Text(LocalizedStringKey(notificationStatusText))
+                }
                 if notifications.authorizationStatus == .notDetermined {
                     Button("允许通知") {
                         Task { await notifications.requestAuthorization() }
@@ -25,7 +27,7 @@ struct SystemServicesSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 if let message = notifications.lastErrorMessage {
-                    Text(message).font(.footnote).foregroundStyle(.red)
+                    Text(LocalizedStringKey(message)).font(.footnote).foregroundStyle(.red)
                 }
             }
         }

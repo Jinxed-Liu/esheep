@@ -27,7 +27,11 @@ struct AppearanceSettingsView: View {
             Section("显示模式") {
                 Picker("外观", selection: $preferences.appearance) {
                     ForEach(AppAppearancePreference.allCases) { option in
-                        Label(option.displayName, systemImage: option.systemImage)
+                        Label {
+                            Text(LocalizedStringKey(option.displayName))
+                        } icon: {
+                            Image(systemName: option.systemImage)
+                        }
                             .tag(option)
                     }
                 }
@@ -96,7 +100,7 @@ struct LanguageSettingsView: View {
             Section("显示语言") {
                 Picker("语言", selection: $preferences.language) {
                     ForEach(AppLanguagePreference.allCases) { option in
-                        Text(option.displayName).tag(option)
+                        Text(LocalizedStringKey(option.displayName)).tag(option)
                     }
                 }
                 .pickerStyle(.inline)
@@ -104,9 +108,9 @@ struct LanguageSettingsView: View {
             }
 
             Section {
-                Label("当前版本的完整界面内容以简体中文提供。", systemImage: "info.circle")
+                Label("选择 English 后，本地化文案、日期、数字和系统组件会立即切换。", systemImage: "info.circle")
                     .foregroundStyle(.secondary)
-                Text("选择“跟随系统”时，日期、数字和系统组件会使用设备的地区格式；应用业务文案仍保持简体中文。")
+                Text("选择“跟随系统”时，日期、数字、系统组件和已本地化文案使用设备语言。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

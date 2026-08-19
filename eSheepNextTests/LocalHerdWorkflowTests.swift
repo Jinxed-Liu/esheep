@@ -4,6 +4,16 @@ import XCTest
 
 @MainActor
 final class LocalHerdWorkflowTests: XCTestCase {
+    func testSecureImportLoaderAcceptsDirectlyReadableNonScopedFile() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "esheep-direct-import-\(UUID().uuidString).json")
+        let expected = Data(#"{"schemaVersion":1}"#.utf8)
+        try expected.write(to: url, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertEqual(try SecureImportFileLoader.load(from: url), expected)
+    }
+
     func testPenAndSheepProfileUpdatesStayInsideCommandPipeline() throws {
         let fixture = try makeFixture()
         let secondPen = PenRecord(farmID: fixture.farm.id, name: "二号圈")
@@ -158,6 +168,9 @@ final class LocalHerdWorkflowTests: XCTestCase {
         let data = try FarmLocalBackupService.export(farmID: source.farm.id, context: source.context)
         let preview = try FarmLocalBackupService.preview(data: data)
         XCTAssertEqual(preview.envelope.payload.sheep.count, 1)
+        let portableLegacyPreview = try FarmPortableBackupService.preview(data: data)
+        XCTAssertNil(portableLegacyPreview.portableEnvelope)
+        XCTAssertEqual(portableLegacyPreview.sourceStorageMode, .localOnly)
 
         let destination = try makeFixture(farmName: "空牧场")
         let first = try FarmLocalBackupService.restore(preview, into: destination.farm, account: destination.account, context: destination.context)
@@ -177,6 +190,190 @@ final class LocalHerdWorkflowTests: XCTestCase {
         decoded = .init(schemaVersion: decoded.schemaVersion, payload: decoded.payload, checksum: "bad-checksum")
         let invalid = try JSONEncoder.iso8601.encode(decoded)
         XCTAssertThrowsError(try FarmLocalBackupService.preview(data: invalid))
+    }
+
+    func testPortableBackupRestoresSupplementAndPhotoIntoNewLocalFarm() throws {
+        let source = try makeFixture(farmName: "可携带备份源牧场")
+        let pen = PenRecord(farmID: source.farm.id, name: "恢复圈舍")
+        let sheep = SheepRecord(
+            farmID: source.farm.id,
+            earTag: "PORTABLE-001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: .now
+        )
+        let program = BreedingProgramRecord(farmID: source.farm.id, name: "同步程序")
+        let batch = ProductionBatchRecord(
+            farmID: source.farm.id,
+            name: "育成批次",
+            purpose: "育成",
+            startedAt: .now
+        )
+        let photoID = UUID()
+        let photoData = Data("portable-photo-bytes".utf8)
+        let photoDigest = CloudPayloadDigest.hex(for: photoData)
+        let sourcePhotoURL = try PhotoTransferActor.assetURL(
+            farmID: source.farm.id,
+            assetID: photoID,
+            fileExtension: "jpg"
+        )
+        try photoData.write(to: sourcePhotoURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: sourcePhotoURL) }
+
+        source.farm.locationDisplayName = "测试牧场位置"
+        source.context.insert(pen)
+        source.context.insert(sheep)
+        source.context.insert(FarmActivity(farmID: source.farm.id, title: "备份活动"))
+        source.context.insert(WeaningRecord(
+            farmID: source.farm.id,
+            sheepID: sheep.id,
+            occurredAt: .now,
+            weanWeightText: "23.5",
+            note: "备份断奶"
+        ))
+        source.context.insert(program)
+        source.context.insert(BreedingProgramStepRecord(
+            farmID: source.farm.id,
+            programID: program.id,
+            dayOffset: 1,
+            action: "执行测试步骤",
+            sortOrder: 0
+        ))
+        source.context.insert(batch)
+        source.context.insert(BatchMembershipRecord(
+            farmID: source.farm.id,
+            batchID: batch.id,
+            sheepID: sheep.id,
+            joinedAt: .now
+        ))
+        source.context.insert(DailyPenCountRecord(
+            farmID: source.farm.id,
+            penID: pen.id,
+            purpose: sheep.purpose,
+            date: Calendar.current.startOfDay(for: .now),
+            count: 1
+        ))
+        source.context.insert(NoteRecord(
+            farmID: source.farm.id,
+            sheepID: sheep.id,
+            text: "需随备份恢复的备注",
+            occurredAt: .now
+        ))
+        source.context.insert(PhotoAssetRecord(
+            id: photoID,
+            farmID: source.farm.id,
+            sheepID: sheep.id,
+            legacySourceKey: "portable-photo",
+            originalEarTag: sheep.earTag,
+            relativePath: PhotoTransferActor.relativePath(for: sourcePhotoURL),
+            sha256: photoDigest,
+            mimeType: "image/jpeg"
+        ))
+        source.context.insert(SheepAvatarRecord(
+            farmID: source.farm.id,
+            sheepID: sheep.id,
+            photoAssetID: photoID
+        ))
+        try source.context.save()
+
+        let data = try FarmPortableBackupService.export(
+            farmID: source.farm.id,
+            sourceStorageMode: .iCloud,
+            sourceAuthorityGeneration: 7,
+            sourceWasFullySynchronized: true,
+            context: source.context
+        )
+        let preview = try FarmPortableBackupService.preview(data: data)
+        XCTAssertEqual(preview.sourceStorageMode, .iCloud)
+        XCTAssertTrue(preview.sourceWasFullySynchronized)
+        XCTAssertEqual(preview.photoCount, 1)
+
+        let destinationContainer = try AppSchema.makeContainer(
+            name: UUID().uuidString,
+            isStoredInMemoryOnly: true
+        )
+        let destinationContext = ModelContext(destinationContainer)
+        let destinationAccount = AccountProfile(
+            appleUserIdentifier: UUID().uuidString,
+            displayName: "恢复账户"
+        )
+        destinationContext.insert(destinationAccount)
+        try destinationContext.save()
+
+        let result = try FarmPortableBackupService.restoreAsNewLocalFarm(
+            preview,
+            account: destinationAccount,
+            context: destinationContext
+        )
+        let restoredFarmID = result.farmID
+        let restoredPhoto = try XCTUnwrap(
+            try destinationContext.fetch(FetchDescriptor<PhotoAssetRecord>())
+                .first(where: { $0.farmID == restoredFarmID && $0.id == photoID })
+        )
+        let restoredPhotoURL = PhotoTransferActor.absoluteURL(for: restoredPhoto.relativePath)
+        defer { try? FileManager.default.removeItem(at: restoredPhotoURL) }
+
+        XCTAssertEqual(result.restoredPhotoCount, 1)
+        XCTAssertEqual(try Data(contentsOf: restoredPhotoURL), photoData)
+        XCTAssertEqual(
+            try destinationContext.fetch(FetchDescriptor<FarmStorageProfile>())
+                .first(where: { $0.farmID == restoredFarmID })?.mode,
+            .localOnly
+        )
+        XCTAssertNil(
+            try destinationContext.fetch(FetchDescriptor<FarmRemoteBinding>())
+                .first(where: { $0.farmID == restoredFarmID })
+        )
+        XCTAssertEqual(
+            try destinationContext.fetch(FetchDescriptor<WeaningRecord>())
+                .filter { $0.farmID == restoredFarmID }.first?.weanWeightText,
+            "23.5"
+        )
+        XCTAssertEqual(try destinationContext.fetch(FetchDescriptor<BreedingProgramStepRecord>()).filter { $0.farmID == restoredFarmID }.count, 1)
+        XCTAssertEqual(try destinationContext.fetch(FetchDescriptor<ProductionBatchRecord>()).filter { $0.farmID == restoredFarmID }.count, 1)
+        XCTAssertEqual(try destinationContext.fetch(FetchDescriptor<BatchMembershipRecord>()).filter { $0.farmID == restoredFarmID }.count, 1)
+        XCTAssertEqual(try destinationContext.fetch(FetchDescriptor<NoteRecord>()).filter { $0.farmID == restoredFarmID }.first?.text, "需随备份恢复的备注")
+        XCTAssertEqual(try destinationContext.fetch(FetchDescriptor<SheepAvatarRecord>()).filter { $0.farmID == restoredFarmID }.first?.photoAssetID, photoID)
+        XCTAssertEqual(
+            try destinationContext.fetch(FetchDescriptor<FarmRecord>())
+                .first(where: { $0.id == restoredFarmID })?.locationDisplayName,
+            "测试牧场位置"
+        )
+    }
+
+    func testFileBackupCannotOverwriteCloudAuthorityFarm() throws {
+        let source = try makeFixture()
+        source.context.insert(PenRecord(farmID: source.farm.id, name: "备份圈舍"))
+        try source.context.save()
+        let preview = try FarmLocalBackupService.preview(
+            data: FarmLocalBackupService.export(
+                farmID: source.farm.id,
+                context: source.context
+            )
+        )
+
+        for mode in [FarmStorageMode.iCloud, .supabase] {
+            let destination = try makeFixture(farmName: "云端目标")
+            destination.context.insert(FarmStorageProfile(
+                farmID: destination.farm.id,
+                mode: mode
+            ))
+            try destination.context.save()
+
+            XCTAssertThrowsError(
+                try FarmLocalBackupService.restore(
+                    preview,
+                    into: destination.farm,
+                    account: destination.account,
+                    context: destination.context
+                )
+            ) { error in
+                guard case FarmLocalBackupError.cloudTargetForbidden = error else {
+                    return XCTFail("应拒绝覆盖云端权威牧场，实际错误：\(error)")
+                }
+            }
+        }
     }
 
     private func makeFixture(farmName: String = "本地流程牧场") throws -> Fixture {

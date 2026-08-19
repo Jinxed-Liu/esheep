@@ -364,7 +364,7 @@
 				CLOUD_COLLABORATION_ENABLED = YES;
 				CODE_SIGN_ENTITLEMENTS = eSheepNext/eSheepNext.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -382,9 +382,9 @@
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
 				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号、文档与牧场邀请二维码。";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于在你主动打开靠近邀请时，发现附近另一台运行 eSheepNext 的手机并安全传送一次性牧场邀请。";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于在你主动打开靠近邀请时，发现附近另一台运行 eSheep+ 的手机并安全传送一次性牧场邀请。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录制您主动发起的语音，并在发送前明确交给 MiMo 多模态模型理解。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录制您主动发起的语音，并在发送前明确交给已配置的多模态服务理解。";
 				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "用于在靠近邀请期间确认两台手机确实已靠近，避免把牧场邀请发送给远处或错误的设备。";
 				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "用于在您确认 AI 草案后创建系统提醒事项。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -427,7 +427,7 @@
 				CLOUD_COLLABORATION_ENABLED = NO;
 				CODE_SIGN_ENTITLEMENTS = eSheepNext/eSheepNext.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = eSheepNext/Info.plist;
@@ -444,9 +444,9 @@
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
 				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号、文档与牧场邀请二维码。";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于在你主动打开靠近邀请时，发现附近另一台运行 eSheepNext 的手机并安全传送一次性牧场邀请。";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于在你主动打开靠近邀请时，发现附近另一台运行 eSheep+ 的手机并安全传送一次性牧场邀请。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录制您主动发起的语音，并在发送前明确交给 MiMo 多模态模型理解。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录制您主动发起的语音，并在发送前明确交给已配置的多模态服务理解。";
 				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "用于在靠近邀请期间确认两台手机确实已靠近，避免把牧场邀请发送给远处或错误的设备。";
 				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "用于在您确认 AI 草案后创建系统提醒事项。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -537,7 +537,7 @@
 				CLOUD_COLLABORATION_ENABLED = NO;
 				CODE_SIGN_ENTITLEMENTS = eSheepNext/eSheepNext.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = eSheepNext/Info.plist;
@@ -554,9 +554,9 @@
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
 				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号、文档与牧场邀请二维码。";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于在你主动打开靠近邀请时，发现附近另一台运行 eSheepNext 的手机并安全传送一次性牧场邀请。";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "用于在你主动打开靠近邀请时，发现附近另一台运行 eSheep+ 的手机并安全传送一次性牧场邀请。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取您主动选择的当前位置，帮助确认牧场坐标和查询当地天气。您也可以搜索地址或在地图上手动选点。";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录制您主动发起的语音，并在发送前明确交给 MiMo 多模态模型理解。";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录制您主动发起的语音，并在发送前明确交给已配置的多模态服务理解。";
 				INFOPLIST_KEY_NSNearbyInteractionUsageDescription = "用于在靠近邀请期间确认两台手机确实已靠近，避免把牧场邀请发送给远处或错误的设备。";
 				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "用于在您确认 AI 草案后创建系统提醒事项。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -611,7 +611,7 @@
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.dev;
 				CODE_SIGN_ENTITLEMENTS = eSheepNextWidget/eSheepNextWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = eSheepNextWidget/Info.plist;
@@ -643,7 +643,7 @@
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.staging;
 				CODE_SIGN_ENTITLEMENTS = eSheepNextWidget/eSheepNextWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = eSheepNextWidget/Info.plist;
@@ -675,7 +675,7 @@
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm;
 				CODE_SIGN_ENTITLEMENTS = eSheepNextWidget/eSheepNextWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = eSheepNextWidget/Info.plist;

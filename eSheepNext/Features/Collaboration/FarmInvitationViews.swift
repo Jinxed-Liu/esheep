@@ -97,7 +97,9 @@ struct FarmInvitationPanel: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(package.farmName)
                             .font(.title3.weight(.semibold))
-                        LabeledContent("成员角色", value: package.role.displayName)
+                        LabeledContent("成员角色") {
+                            Text(LocalizedStringKey(package.role.displayName))
+                        }
                         LabeledContent(
                             "有效期至",
                             value: package.expiresAt.formatted(date: .abbreviated, time: .shortened)
@@ -193,7 +195,7 @@ struct FarmInvitationPanel: View {
             )) {
                 Button("知道了", role: .cancel) {}
             } message: {
-                Text(errorMessage ?? "")
+                Text(LocalizedStringKey(errorMessage ?? ""))
             }
         }
     }
@@ -214,9 +216,9 @@ struct FarmInvitationPanel: View {
                     .background(tint, in: .rect(cornerRadius: 9))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
+                    Text(LocalizedStringKey(title))
                         .foregroundStyle(.primary)
-                    Text(subtitle)
+                    Text(LocalizedStringKey(subtitle))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -413,13 +415,13 @@ struct FarmInvitationQRCodeScannerView: View {
             )) {
                 Button("继续扫描", role: .cancel) {}
             } message: {
-                Text(errorMessage ?? "")
+                Text(LocalizedStringKey(errorMessage ?? ""))
             }
         }
     }
 }
 
-private struct FarmInvitationDataScanner: UIViewControllerRepresentable {
+struct FarmInvitationDataScanner: UIViewControllerRepresentable {
     let onValue: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -500,9 +502,9 @@ struct ProximityInvitationSenderView: View {
                 proximitySymbol
 
                 VStack(spacing: 8) {
-                    Text(controller.status.title)
+                    Text(LocalizedStringKey(controller.status.title))
                         .font(.title2.weight(.semibold))
-                    Text(statusDetail)
+                    Text(LocalizedStringKey(statusDetail))
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
                 }
@@ -511,7 +513,7 @@ struct ProximityInvitationSenderView: View {
                     Label("邀请已安全传送", systemImage: "checkmark.shield.fill")
                         .foregroundStyle(.green)
                 } else if case .failed(let message) = controller.status {
-                    Text(message)
+                    Text(LocalizedStringKey(message))
                         .font(.footnote)
                         .foregroundStyle(.red)
                         .multilineTextAlignment(.center)
@@ -633,7 +635,9 @@ struct ProximityInvitationReceiverView: View {
                     VStack(spacing: 12) {
                         Text("邀请加入\(payload.farmName)")
                             .font(.title2.weight(.semibold))
-                        LabeledContent("成员角色", value: payload.role.displayName)
+                        LabeledContent("成员角色") {
+                            Text(LocalizedStringKey(payload.role.displayName))
+                        }
                             .frame(maxWidth: 320)
                         Text("确认后会验证邀请码，并把本机 iCloud 身份提交给场主批准。")
                             .font(.footnote)
@@ -642,13 +646,19 @@ struct ProximityInvitationReceiverView: View {
                     }
 
                     if let accessStatusMessage {
-                        Text(accessStatusMessage)
+                        Text(LocalizedStringKey(accessStatusMessage))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                     }
 
-                    Button(isJoining ? "正在检查…" : (hasRedeemedCode ? "检查批准状态并加入" : "申请加入")) {
+                    Button(
+                        isJoining
+                            ? LocalizedStringKey("正在检查…")
+                            : (hasRedeemedCode
+                                ? LocalizedStringKey("检查批准状态并加入")
+                                : LocalizedStringKey("申请加入"))
+                    ) {
                         accept(payload)
                     }
                     .buttonStyle(.borderedProminent)
@@ -656,16 +666,16 @@ struct ProximityInvitationReceiverView: View {
                     .disabled(isJoining)
                 } else {
                     VStack(spacing: 8) {
-                        Text(controller.status.title)
+                        Text(LocalizedStringKey(controller.status.title))
                             .font(.title2.weight(.semibold))
-                        Text(statusDetail)
+                        Text(LocalizedStringKey(statusDetail))
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                     }
                 }
 
                 if case .failed(let message) = controller.status {
-                    Text(message)
+                    Text(LocalizedStringKey(message))
                         .font(.footnote)
                         .foregroundStyle(.red)
                         .multilineTextAlignment(.center)
@@ -696,7 +706,7 @@ struct ProximityInvitationReceiverView: View {
             )) {
                 Button("知道了", role: .cancel) {}
             } message: {
-                Text(errorMessage ?? "")
+                Text(LocalizedStringKey(errorMessage ?? ""))
             }
         }
     }

@@ -6,13 +6,27 @@ struct SheepEarTagSearchCandidate: Identifiable, Hashable, Sendable {
     let id: UUID
     let earTag: String
     let detail: String
+    /// The structured values used by the row renderer. Keeping these separate
+    /// prevents a localized sex label and a user-entered breed from being
+    /// flattened into one string and then treated as a localization key.
+    let sex: SheepSex?
+    let breed: String?
     let normalizedEarTag: String
     let birthAt: Date?
 
-    init(id: UUID, earTag: String, detail: String = "", birthAt: Date? = nil) {
+    init(
+        id: UUID,
+        earTag: String,
+        detail: String = "",
+        birthAt: Date? = nil,
+        sex: SheepSex? = nil,
+        breed: String? = nil
+    ) {
         self.id = id
         self.earTag = earTag
         self.detail = detail
+        self.sex = sex
+        self.breed = breed
         self.normalizedEarTag = EarTag.normalized(earTag)
         self.birthAt = birthAt
     }
@@ -23,6 +37,8 @@ struct SheepEarTagSearchCandidate: Identifiable, Hashable, Sendable {
         self.detail = detail ?? [sheep.sex.displayName, sheep.breed]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
+        self.sex = detail == nil ? sheep.sex : nil
+        self.breed = detail == nil ? sheep.breed : nil
         self.normalizedEarTag = EarTag.normalized(sheep.earTag)
         self.birthAt = sheep.birthAt
     }
@@ -175,7 +191,7 @@ struct SheepEarTagSingleSearchField: View {
             } else if selection != nil {
                 unavailableSelectionRow
             } else if !hasQuery {
-                Text(emptySelectionText)
+                Text(LocalizedStringKey(emptySelectionText))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -192,7 +208,10 @@ struct SheepEarTagSingleSearchField: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField(selection == nil ? prompt : "重新搜索耳号", text: $query)
+            TextField(
+                LocalizedStringKey(selection == nil ? prompt : "重新搜索耳号"),
+                text: $query
+            )
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
@@ -295,7 +314,7 @@ struct SheepEarTagMultiSearchField: View {
         Group {
             if showsSelectedCandidates {
                 if selectedCandidates.isEmpty, !hasQuery {
-                    Text(emptySelectionText)
+                    Text(LocalizedStringKey(emptySelectionText))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
@@ -317,7 +336,7 @@ struct SheepEarTagMultiSearchField: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField(prompt, text: $query)
+            TextField(LocalizedStringKey(prompt), text: $query)
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
@@ -395,8 +414,18 @@ private struct SheepEarTagSearchCandidateRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(candidate.earTag)
                     .foregroundStyle(.primary)
-                if !candidate.detail.isEmpty {
-                    Text(candidate.detail)
+                if let sex = candidate.sex {
+                    HStack(spacing: 0) {
+                        Text(LocalizedStringKey(sex.displayName))
+                        if let breed = candidate.breed, !breed.isEmpty {
+                            Text(" · ")
+                            Text(verbatim: breed)
+                        }
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                } else if !candidate.detail.isEmpty {
+                    Text(verbatim: candidate.detail)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

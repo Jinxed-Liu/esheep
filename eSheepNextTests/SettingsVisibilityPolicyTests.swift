@@ -99,6 +99,12 @@ final class SettingsVisibilityPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shows(.dataConflicts))
     }
 
+    func testCloudRecoveryOnlyAppearsForICloudAuthority() {
+        XCTAssertTrue(makePolicy(role: .owner, storageMode: .iCloud).shows(.cloudRecovery))
+        XCTAssertFalse(makePolicy(role: .owner, storageMode: .localOnly).shows(.cloudRecovery))
+        XCTAssertFalse(makePolicy(role: .owner, storageMode: .supabase).shows(.cloudRecovery))
+    }
+
     func testConflictDestinationOnlyAppearsWhenActionIsRequired() {
         let withoutConflict = makePolicy(role: .owner, unresolvedConflictCount: 0)
         let withConflict = makePolicy(role: .owner, unresolvedConflictCount: 1)
@@ -112,14 +118,16 @@ final class SettingsVisibilityPolicyTests: XCTestCase {
         grantedWorkerCapabilities: Set<FarmCapability> = [],
         cloudEnabled: Bool = true,
         subscriptionEnabled: Bool = true,
-        unresolvedConflictCount: Int = 0
+        unresolvedConflictCount: Int = 0,
+        storageMode: FarmStorageMode = .iCloud
     ) -> SettingsVisibilityPolicy {
         SettingsVisibilityPolicy(
             role: role,
             grantedWorkerCapabilities: grantedWorkerCapabilities,
             cloudEnabled: cloudEnabled,
             subscriptionEnabled: subscriptionEnabled,
-            unresolvedConflictCount: unresolvedConflictCount
+            unresolvedConflictCount: unresolvedConflictCount,
+            storageMode: storageMode
         )
     }
 }

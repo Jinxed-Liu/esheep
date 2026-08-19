@@ -622,7 +622,7 @@ struct FarmLocationSettingsView: View {
                 TextField("IANA 时区", text: $timeZoneIdentifier)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                Button(isLocating ? "正在获取当前位置" : "使用当前位置") {
+                Button(isLocating ? LocalizedStringKey("正在获取当前位置") : LocalizedStringKey("使用当前位置")) {
                     useCurrentLocation()
                 }
                 .disabled(isLocating)
@@ -661,7 +661,7 @@ struct FarmLocationSettingsView: View {
         )) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text(errorMessage ?? "")
+            Text(LocalizedStringKey(errorMessage ?? ""))
         }
     }
 

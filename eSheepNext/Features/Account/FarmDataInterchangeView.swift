@@ -7,11 +7,71 @@ private enum FarmDataTask: Equatable {
     case exportData
     case localBackup
 
-    var title: String {
+    var title: LocalizedStringKey {
         switch self {
         case .importData: "导入数据"
         case .exportData: "导出牧场数据"
-        case .localBackup: "本地备份与恢复"
+        case .localBackup: "完整备份与恢复"
+        }
+    }
+}
+
+private enum FarmDataTaskMessage {
+    case importFailed(String)
+    case templateExportFailed(String)
+    case templateExported
+    case templateGenerationFailed(String)
+    case excelPreviewFailed(String)
+    case excelImported(Int)
+    case excelImportFailed(String)
+    case imported(imported: Int, skipped: Int)
+    case writeFailed(String)
+    case exportFailed(String)
+    case exported
+    case backupExportFailed(String)
+    case backupExported
+    case backupPending(Int)
+    case backupValidationFailed(String)
+    case restored(entityCount: Int, photoCount: Int)
+    case restoreFailed(String)
+
+    @ViewBuilder
+    var text: some View {
+        switch self {
+        case .importFailed(let error):
+            Text("导入失败：\(error)")
+        case .templateExportFailed(let error):
+            Text("模板导出失败：\(error)")
+        case .templateExported:
+            Text("全功能 Excel 模板已导出。填写后回到此页执行预检。")
+        case .templateGenerationFailed(let error):
+            Text("模板生成失败：\(error)")
+        case .excelPreviewFailed(let error):
+            Text("Excel 预检失败：\(error)")
+        case .excelImported(let count):
+            Text("已原子导入 \(count) 条录入数据，并生成对应审计和待同步记录。")
+        case .excelImportFailed(let error):
+            Text("整批未写入：\(error)")
+        case .imported(let imported, let skipped):
+            Text("已导入 \(imported) 条，跳过 \(skipped) 条。离线时操作会留在待同步队列。")
+        case .writeFailed(let error):
+            Text("写入失败：\(error)")
+        case .exportFailed(let error):
+            Text("导出失败：\(error)")
+        case .exported:
+            Text("已生成真实 XLSX 工作簿。")
+        case .backupExportFailed(let error):
+            Text("备份导出失败：\(error)")
+        case .backupExported:
+            Text("完整备份已导出。请把文件保存到另一台设备或独立存储位置。")
+        case .backupPending(let count):
+            Text("仍有 \(count) 条记录等待上传。请联网同步完成后再导出完整备份。")
+        case .backupValidationFailed(let error):
+            Text("备份校验失败：\(error)")
+        case .restored(let entityCount, let photoCount):
+            Text("已恢复为新的仅本机牧场：\(entityCount) 条业务记录、\(photoCount) 张照片。")
+        case .restoreFailed(let error):
+            Text("恢复失败：\(error)")
         }
     }
 }
@@ -19,6 +79,7 @@ private enum FarmDataTask: Equatable {
 struct FarmDataInterchangeView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SyncConflictRecord.detectedAt, order: .reverse) private var conflicts: [SyncConflictRecord]
+    @Query private var storageProfiles: [FarmStorageProfile]
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -28,7 +89,31 @@ struct FarmDataInterchangeView: View {
     @State private var isCleaningRebuilds = false
     @State private var isReviewingRebuildCleanup = false
     @State private var localInventory: LocalStorageInventory?
-    @State private var storageMessage: String?
+    @State private var storageMessage: StorageMessage?
+
+    private enum StorageMessage {
+        case released(String)
+        case nothingToClean
+        case inventoryFailed(String)
+        case cleaned(String, String)
+        case cleanupFailed(String)
+
+        @ViewBuilder
+        var text: some View {
+            switch self {
+            case .released(let amount):
+                Text("已释放 \(amount) 临时空间。")
+            case .nothingToClean:
+                Text("当前没有需要清理的临时文件。")
+            case .inventoryFailed(let error):
+                Text("存储盘点失败：\(error)")
+            case .cleaned(let amount, let path):
+                Text("已释放 \(amount)。小型诊断归档：\(path)")
+            case .cleanupFailed(let error):
+                Text("未清理：\(error)")
+            }
+        }
+    }
 
     private var unresolvedConflictCount: Int {
         conflicts.count {
@@ -43,7 +128,8 @@ struct FarmDataInterchangeView: View {
             role: farm.role,
             cloudEnabled: CloudFeatureConfiguration.isEnabled,
             subscriptionEnabled: SubscriptionFeatureConfiguration.isEnabled,
-            unresolvedConflictCount: unresolvedConflictCount
+            unresolvedConflictCount: unresolvedConflictCount,
+            storageMode: storageProfiles.first(where: { $0.farmID == farm.id })?.mode ?? .localOnly
         )
     }
 
@@ -60,7 +146,7 @@ struct FarmDataInterchangeView: View {
                     ProgressView("正在计算占用空间")
                 }
 
-                Button(isClearingTemporaryData ? "正在清理…" : "清理临时文件") {
+                Button(isClearingTemporaryData ? LocalizedStringKey("正在清理…") : LocalizedStringKey("清理临时文件")) {
                     clearTemporaryData()
                 }
                 .disabled(isClearingTemporaryData || storageSnapshot == nil)
@@ -70,6 +156,7 @@ struct FarmDataInterchangeView: View {
                     .foregroundStyle(.secondary)
             }
 
+            #if DEBUG && ESHEEP_INTERNAL_ACCEPTANCE_UI
             if let localInventory,
                !localInventory.cleanupCandidates.isEmpty {
                 Section("可重建旧副本") {
@@ -96,6 +183,7 @@ struct FarmDataInterchangeView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            #endif
 
             Section("牧场数据") {
                 if policy.shows(.importData) {
@@ -127,8 +215,8 @@ struct FarmDataInterchangeView: View {
                         FarmDataTaskView(account: account, farm: farm, task: .localBackup)
                     } label: {
                         SettingsRowLabel(
-                            title: "本地备份与恢复",
-                            subtitle: "导出备份或恢复到当前牧场",
+                            title: "完整备份与恢复",
+                            subtitle: "业务记录、历史与照片",
                             systemImage: "externaldrive"
                         )
                     }
@@ -139,8 +227,8 @@ struct FarmDataInterchangeView: View {
                         CloudRecoveryCenterView(account: account, farm: farm)
                     } label: {
                         SettingsRowLabel(
-                            title: "云端恢复",
-                            subtitle: "恢复包与恢复点",
+                            title: "iCloud 恢复",
+                            subtitle: "恢复密钥与云端恢复点",
                             systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90"
                         )
                     }
@@ -183,7 +271,9 @@ struct FarmDataInterchangeView: View {
         )) {
             Button("完成", role: .cancel) {}
         } message: {
-            Text(storageMessage ?? "")
+            if let storageMessage {
+                storageMessage.text
+            }
         }
     }
 
@@ -201,8 +291,8 @@ struct FarmDataInterchangeView: View {
             isClearingTemporaryData = false
             let released = max(before - updated.temporaryBytes, 0)
             storageMessage = released > 0
-                ? "已释放 \(formatted(released)) 临时空间。"
-                : "当前没有需要清理的临时文件。"
+                ? .released(formatted(released))
+                : .nothingToClean
         }
     }
 
@@ -213,7 +303,7 @@ struct FarmDataInterchangeView: View {
                 context: modelContext
             )
         } catch {
-            storageMessage = "存储盘点失败：\(error.localizedDescription)"
+            storageMessage = .inventoryFailed(error.localizedDescription)
         }
     }
 
@@ -231,11 +321,12 @@ struct FarmDataInterchangeView: View {
                     context: modelContext
                 )
                 await refreshStorage()
-                storageMessage =
-                    "已释放 \(formatted(receipt.reclaimedByteCount))。小型诊断归档：" +
+                storageMessage = .cleaned(
+                    formatted(receipt.reclaimedByteCount),
                     receipt.diagnosticRelativePath
+                )
             } catch {
-                storageMessage = "未清理：\(error.localizedDescription)"
+                storageMessage = .cleanupFailed(error.localizedDescription)
             }
         }
     }
@@ -267,7 +358,7 @@ private struct LocalStorageCleanupReviewView: View {
                 }
 
                 ForEach(candidates) { candidate in
-                    Section(candidate.kind.displayName) {
+                    Section(LocalizedStringKey(candidate.kind.displayName)) {
                         LabeledContent("状态", value: candidate.status)
                         LabeledContent(
                             "大小",
@@ -281,7 +372,7 @@ private struct LocalStorageCleanupReviewView: View {
                             .foregroundStyle(.secondary)
                         if let error = candidate.errorMessage,
                            !error.isEmpty {
-                            Text(error)
+                            Text(LocalizedStringKey(error))
                                 .font(.footnote)
                                 .foregroundStyle(.orange)
                         }
@@ -319,8 +410,12 @@ private struct LocalStorageCleanupReviewView: View {
 
 private struct FarmDataTaskView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(AppSession.self) private var session
+    @Environment(CloudCollaborationStore.self) private var collaboration
     @Query private var sheep: [SheepRecord]
     @Query private var pens: [PenRecord]
+    @Query private var storageProfiles: [FarmStorageProfile]
+    @Query private var outboxItems: [OutboxItem]
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -334,13 +429,31 @@ private struct FarmDataTaskView: View {
     @State private var excelTemplateDocument: FarmInterchangeDocument?
     @State private var isExporting = false
     @State private var exportDocument: FarmInterchangeDocument?
-    @State private var message: String?
+    @State private var message: FarmDataTaskMessage?
     @State private var isExportingBackup = false
     @State private var backupDocument: FarmInterchangeDocument?
     @State private var isRestoringBackup = false
-    @State private var backupPreview: FarmBackupPreview?
+    @State private var backupPreview: FarmPortableBackupPreview?
+    @State private var isPreparingBackup = false
 
     private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
+
+    private var storageProfile: FarmStorageProfile? {
+        storageProfiles.first { $0.farmID == farm.id }
+    }
+
+    private var storageMode: FarmStorageMode {
+        storageProfile?.mode ?? .localOnly
+    }
+
+    private var pendingCloudOperationCount: Int {
+        guard let provider = storageMode.deliveryProvider else { return 0 }
+        return outboxItems.count {
+            $0.farmID == farm.id &&
+                $0.deliveryProvider == provider &&
+                !$0.status.isTerminalDelivery
+        }
+    }
 
     var body: some View {
         List {
@@ -353,9 +466,15 @@ private struct FarmDataTaskView: View {
                 }
                 if let excelPreview {
                     Section("导入检查") {
-                        LabeledContent("待写入", value: "\(excelPreview.rows.count) 条")
-                        LabeledContent("需要修正", value: "\(excelPreview.errorCount) 条")
-                        LabeledContent("提醒", value: "\(excelPreview.warningCount) 条")
+                        LabeledContent("待写入") {
+                            Text("\(excelPreview.rows.count) 条")
+                        }
+                        LabeledContent("需要修正") {
+                            Text("\(excelPreview.errorCount) 条")
+                        }
+                        LabeledContent("提醒") {
+                            Text("\(excelPreview.warningCount) 条")
+                        }
                         ForEach(excelPreview.summaries) { item in
                             LabeledContent(item.name, value: "\(item.rowCount) 条")
                         }
@@ -376,9 +495,15 @@ private struct FarmDataTaskView: View {
                 }
                 if let preview {
                     Section("导入检查") {
-                        LabeledContent("可导入", value: "\(preview.acceptedRows.count) 条")
-                        LabeledContent("重复", value: "\(preview.duplicateRowNumbers.count) 条")
-                        LabeledContent("错误", value: "\(preview.errorCount) 条")
+                        LabeledContent("可导入") {
+                            Text("\(preview.acceptedRows.count) 条")
+                        }
+                        LabeledContent("重复") {
+                            Text("\(preview.duplicateRowNumbers.count) 条")
+                        }
+                        LabeledContent("错误") {
+                            Text("\(preview.errorCount) 条")
+                        }
                         ForEach(preview.issues.prefix(20)) { issue in
                             Label("第 \(issue.rowNumber) 行 · \(issue.message)", systemImage: issue.severity == .error ? "xmark.octagon" : "exclamationmark.triangle")
                                 .foregroundStyle(issue.severity == .error ? .red : .secondary)
@@ -406,22 +531,31 @@ private struct FarmDataTaskView: View {
             }
 
             if task == .localBackup {
-                Section("本地备份") {
+                Section("完整备份") {
                     if CapabilitySet(role: farm.role).allows(.exportFarm) {
-                        Button("导出完整备份", action: exportBackup)
+                        Button(
+                            isPreparingBackup ? "正在同步并生成备份…" : "导出完整备份",
+                            action: exportBackup
+                        )
+                        .disabled(isPreparingBackup)
                     }
                     if CapabilitySet(role: farm.role).allows(.recordProduction) {
                         Button("选择备份并检查") { isRestoringBackup = true }
                     }
-                    Text("完整备份用于恢复业务记录；Excel 文件仅用于查看，不可替代备份。")
+                    Text("备份包含生产记录、历史、删除记录、TMR 和照片。iCloud 或 eSheep 云牧场会先同步；仍有待上传记录时不会生成“已同步”备份。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 if let backupPreview {
                     Section("恢复检查") {
-                        LabeledContent("来源牧场", value: backupPreview.envelope.payload.farm.name)
-                        LabeledContent("备份时间") { Text(backupPreview.envelope.payload.exportedAt, format: .dateTime.year().month().day().hour().minute()) }
-                        Text(backupPreview.summary).font(.footnote).foregroundStyle(.secondary)
-                        Button("恢复到当前空牧场") { restoreBackup(backupPreview) }
+                        LabeledContent("来源牧场", value: backupPreview.legacyPreview.envelope.payload.farm.name)
+                        LabeledContent("备份时间") { Text(backupPreview.legacyPreview.envelope.payload.exportedAt, format: .dateTime.year().month().day().hour().minute()) }
+                        backupSummary(backupPreview)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Text("文件恢复只会建立新的仅本机牧场，不会覆盖当前 iCloud 或 eSheep 云牧场。恢复完成并核对后，可再从云存储页面显式迁移。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Button("恢复为新的仅本机牧场") { restoreBackup(backupPreview) }
                     }
                 }
             }
@@ -435,23 +569,38 @@ private struct FarmDataTaskView: View {
             importExcelTemplate(result)
         }
         .fileExporter(isPresented: $isExportingExcelTemplate, document: excelTemplateDocument, contentType: .officeOpenXMLSpreadsheet, defaultFilename: "eSheepNext全功能录入模板_v\(FarmExcelImportService.templateVersion).xlsx") { result in
-            if case .failure(let error) = result { message = "模板导出失败：\(error.localizedDescription)" }
-            else { message = "全功能 Excel 模板已导出。填写后回到此页执行预检。" }
+            if case .failure(let error) = result { message = .templateExportFailed(error.localizedDescription) }
+            else { message = .templateExported }
         }
         .fileExporter(isPresented: $isExporting, document: exportDocument, contentType: .officeOpenXMLSpreadsheet, defaultFilename: fileName()) { result in
-            if case .failure(let error) = result { message = "导出失败：\(error.localizedDescription)" }
-            else { message = "已生成真实 XLSX 工作簿。" }
+            if case .failure(let error) = result { message = .exportFailed(error.localizedDescription) }
+            else { message = .exported }
         }
-        .fileExporter(isPresented: $isExportingBackup, document: backupDocument, contentType: .json, defaultFilename: backupFileName()) { result in
-            if case .failure(let error) = result { message = "备份导出失败：\(error.localizedDescription)" }
-            else { message = "完整本地备份已导出。" }
+        .fileExporter(isPresented: $isExportingBackup, document: backupDocument, contentType: .eSheepPortableBackup, defaultFilename: backupFileName()) { result in
+            if case .failure(let error) = result { message = .backupExportFailed(error.localizedDescription) }
+            else { message = .backupExported }
         }
-        .fileImporter(isPresented: $isRestoringBackup, allowedContentTypes: [.json]) { result in
+        .fileImporter(isPresented: $isRestoringBackup, allowedContentTypes: [.eSheepPortableBackup, .json]) { result in
             previewBackup(result)
         }
         .alert("数据交换", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("完成", role: .cancel) {}
-        } message: { Text(message ?? "") }
+        } message: {
+            if let message {
+                message.text
+            }
+        }
+    }
+
+    private func backupSummary(_ preview: FarmPortableBackupPreview) -> Text {
+        switch preview.sourceStorageMode {
+        case .localOnly:
+            return Text("来源：仅本机 · 业务记录 \(preview.entityCount) · 照片 \(preview.photoCount)")
+        case .iCloud:
+            return Text("来源：iCloud · 业务记录 \(preview.entityCount) · 照片 \(preview.photoCount)")
+        case .supabase:
+            return Text("来源：eSheep 云 · 业务记录 \(preview.entityCount) · 照片 \(preview.photoCount)")
+        }
     }
 
     private func importFile(_ result: Result<URL, Error>) {
@@ -459,14 +608,14 @@ private struct FarmDataTaskView: View {
             let url = try result.get()
             let data = try SecureImportFileLoader.load(from: url)
             preview = try FarmDataInterchange.preview(data: data, fileExtension: url.pathExtension, existingEarTags: Set(farmSheep.map(\.earTag)))
-        } catch { message = "导入失败：\(error.localizedDescription)" }
+        } catch { message = .importFailed(error.localizedDescription) }
     }
 
     private func exportExcelTemplate() {
         do {
             excelTemplateDocument = FarmInterchangeDocument(data: try FarmExcelImportService.templateData())
             isExportingExcelTemplate = true
-        } catch { message = "模板生成失败：\(error.localizedDescription)" }
+        } catch { message = .templateGenerationFailed(error.localizedDescription) }
     }
 
     private func importExcelTemplate(_ result: Result<URL, Error>) {
@@ -474,30 +623,30 @@ private struct FarmDataTaskView: View {
             let url = try result.get()
             let data = try SecureImportFileLoader.load(from: url)
             excelPreview = try FarmExcelImportService.preview(data: data, farm: farm, context: modelContext)
-        } catch { message = "Excel 预检失败：\(error.localizedDescription)" }
+        } catch { message = .excelPreviewFailed(error.localizedDescription) }
     }
 
     private func commitExcel(_ preview: FarmExcelPreview) {
         do {
             let count = try FarmExcelImportService.commit(preview, account: account, farm: farm, context: modelContext)
             excelPreview = nil
-            message = "已原子导入 \(count) 条录入数据，并生成对应审计和待同步记录。"
-        } catch { message = "整批未写入：\(error.localizedDescription)" }
+            message = .excelImported(count)
+        } catch { message = .excelImportFailed(error.localizedDescription) }
     }
 
     private func commit(_ preview: FarmImportPreview) {
         do {
             let result = try FarmImportCommitService.commit(preview, account: account, farm: farm, context: modelContext)
             self.preview = nil
-            message = "已导入 \(result.importedCount) 条，跳过 \(result.skippedCount) 条。离线时操作会留在待同步队列。"
-        } catch { message = "写入失败：\(error.localizedDescription)" }
+            message = .imported(imported: result.importedCount, skipped: result.skippedCount)
+        } catch { message = .writeFailed(error.localizedDescription) }
     }
 
     private func exportXLSX() {
         do {
             exportDocument = FarmInterchangeDocument(data: try FarmDataInterchange.xlsxData(farmID: farm.id, sheep: sheep, pens: pens))
             isExporting = true
-        } catch { message = "导出失败：\(error.localizedDescription)" }
+        } catch { message = .exportFailed(error.localizedDescription) }
     }
 
     private func fileName() -> String {
@@ -506,30 +655,63 @@ private struct FarmDataTaskView: View {
     }
 
     private func exportBackup() {
-        do {
-            backupDocument = FarmInterchangeDocument(data: try FarmLocalBackupService.export(farmID: farm.id, context: modelContext))
-            isExportingBackup = true
-        } catch { message = "备份导出失败：\(error.localizedDescription)" }
+        guard !isPreparingBackup else { return }
+        isPreparingBackup = true
+        Task { @MainActor in
+            defer { isPreparingBackup = false }
+            if storageMode != .localOnly {
+                await collaboration.synchronizeNow()
+                guard pendingCloudOperationCount == 0 else {
+                    message = .backupPending(pendingCloudOperationCount)
+                    return
+                }
+            }
+            do {
+                let data = try FarmPortableBackupService.export(
+                    farmID: farm.id,
+                    sourceStorageMode: storageMode,
+                    sourceAuthorityGeneration: storageProfile?.authorityGeneration ?? 0,
+                    sourceWasFullySynchronized: storageMode == .localOnly || pendingCloudOperationCount == 0,
+                    context: modelContext
+                )
+                backupDocument = FarmInterchangeDocument(data: data)
+                isExportingBackup = true
+            } catch {
+                message = .backupExportFailed(error.localizedDescription)
+            }
+        }
     }
 
     private func previewBackup(_ result: Result<URL, Error>) {
         do {
             let url = try result.get()
-            let data = try SecureImportFileLoader.load(from: url)
-            backupPreview = try FarmLocalBackupService.preview(data: data)
-        } catch { message = "备份校验失败：\(error.localizedDescription)" }
+            let data = try SecureImportFileLoader.load(
+                from: url,
+                maximumBytes: 512 * 1_024 * 1_024
+            )
+            backupPreview = try FarmPortableBackupService.preview(data: data)
+        } catch { message = .backupValidationFailed(error.localizedDescription) }
     }
 
-    private func restoreBackup(_ preview: FarmBackupPreview) {
+    private func restoreBackup(_ preview: FarmPortableBackupPreview) {
         do {
-            let result = try FarmLocalBackupService.restore(preview, into: farm, account: account, context: modelContext)
+            let result = try FarmPortableBackupService.restoreAsNewLocalFarm(
+                preview,
+                account: account,
+                context: modelContext
+            )
             backupPreview = nil
-            message = result.alreadyRestored ? "该备份已经恢复过，没有重复写入。" : "已恢复 \(result.restoredCount) 条本地业务记录。"
-        } catch { message = "恢复失败：\(error.localizedDescription)" }
+            let farms = try modelContext.fetch(FetchDescriptor<FarmRecord>())
+            try session.switchFarm(to: result.farmID, availableFarms: farms)
+            message = .restored(
+                entityCount: result.restoredEntityCount,
+                photoCount: result.restoredPhotoCount
+            )
+        } catch { message = .restoreFailed(error.localizedDescription) }
     }
 
     private func backupFileName() -> String {
         let safe = farm.name.replacingOccurrences(of: "/", with: "-")
-        return "eSheep完整备份_\(safe)_\(Date.now.formatted(.iso8601.year().month().day())).json"
+        return "eSheep完整备份_\(safe)_\(Date.now.formatted(.iso8601.year().month().day())).esheep-backup"
     }
 }

@@ -4,11 +4,21 @@ import XCTest
 
 @MainActor
 final class FarmSessionTests: XCTestCase {
-    func testDevelopmentBuildActuallyEmbedsCloudKitRuntimeConfiguration() throws {
-        XCTAssertTrue(CloudFeatureConfiguration.isEnabled)
-        let container = try XCTUnwrap(Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String)
+    func testBuildEmbedsExpectedEnvironmentAndCloudKitRuntimeConfiguration() throws {
+        let container = try XCTUnwrap(
+            Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String
+        )
         XCTAssertFalse(container.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        #if DEBUG
+        XCTAssertTrue(CloudFeatureConfiguration.isEnabled)
+        XCTAssertEqual(AppEnvironment.current, .development)
         XCTAssertEqual(container, "iCloud.com.sheepfarm.next.dev")
+        #else
+        XCTAssertFalse(CloudFeatureConfiguration.isEnabled)
+        XCTAssertEqual(AppEnvironment.current, .production)
+        XCTAssertEqual(container, "iCloud.com.sheepfarm.ios")
+        #endif
     }
 
     func testDevelopmentSupabaseFeatureGateMatchesEmbeddedConfiguration() {
@@ -118,6 +128,32 @@ final class FarmSessionTests: XCTestCase {
         XCTAssertFalse(
             SupabaseAccountIdentityClient.shouldRetryLegacyDeviceRegistration(
                 code: nil
+            )
+        )
+    }
+
+    func testSupabaseInvitationLinkRoundTripsTheOpaqueCode() throws {
+        let code = String(repeating: "a1", count: 32)
+        let url = try XCTUnwrap(SupabaseFarmInvitationLink.url(code: code))
+
+        XCTAssertEqual(url.host, "supabase-invite")
+        XCTAssertEqual(SupabaseFarmInvitationLink.code(from: url), code)
+    }
+
+    func testSupabaseInvitationLinkRejectsLegacyAndUnrelatedURLs() throws {
+        XCTAssertNil(
+            SupabaseFarmInvitationLink.code(
+                from: try XCTUnwrap(URL(string: "https://example.com/?code=secret"))
+            )
+        )
+        XCTAssertNil(
+            SupabaseFarmInvitationLink.code(
+                from: try XCTUnwrap(URL(string: "esheep://join?code=legacy"))
+            )
+        )
+        XCTAssertNil(
+            SupabaseFarmInvitationLink.code(
+                from: try XCTUnwrap(URL(string: "esheep://supabase-invite?code=%20%20"))
             )
         )
     }

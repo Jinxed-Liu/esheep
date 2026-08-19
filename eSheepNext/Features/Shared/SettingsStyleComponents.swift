@@ -6,7 +6,7 @@ struct SettingsCard<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 12)
@@ -106,10 +106,10 @@ struct SettingsRowContent: View {
             SettingsIcon(systemImage: systemImage, color: iconColor)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
+                Text(LocalizedStringKey(title))
                     .foregroundStyle(.primary)
                 if let subtitle {
-                    Text(subtitle)
+                    Text(LocalizedStringKey(subtitle))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)

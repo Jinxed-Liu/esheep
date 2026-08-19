@@ -37,6 +37,7 @@ enum AppAppearancePreference: String, CaseIterable, Identifiable, Sendable {
 enum AppLanguagePreference: String, CaseIterable, Identifiable, Sendable {
     case system
     case simplifiedChinese
+    case english
 
     var id: String { rawValue }
 
@@ -44,6 +45,7 @@ enum AppLanguagePreference: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .system: "跟随系统"
         case .simplifiedChinese: "简体中文"
+        case .english: "English"
         }
     }
 
@@ -51,6 +53,7 @@ enum AppLanguagePreference: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .system: .autoupdatingCurrent
         case .simplifiedChinese: Locale(identifier: "zh-Hans-CN")
+        case .english: Locale(identifier: "en")
         }
     }
 }

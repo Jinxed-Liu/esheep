@@ -99,8 +99,13 @@ struct InsightAssistantSettingsView: View {
                         )
                     }
                 } else {
-                    Text(officialUsageMessage ?? "登录 MiMo 官方账户后可读取真实余额和 Token Plan 用量。")
-                        .foregroundStyle(.secondary)
+                    if let officialUsageMessage {
+                        Text(verbatim: officialUsageMessage)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("登录 MiMo 官方账户后可读取真实余额和 Token Plan 用量。")
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Button {
@@ -112,7 +117,7 @@ struct InsightAssistantSettingsView: View {
                             Text("正在查询官方额度")
                         }
                     } else {
-                        Text(officialUsage == nil ? "查询官方额度" : "刷新官方额度")
+                        Text(officialUsage == nil ? LocalizedStringKey("查询官方额度") : LocalizedStringKey("刷新官方额度"))
                     }
                 }
                 .disabled(isLoadingOfficialUsage)
@@ -164,7 +169,7 @@ struct InsightAssistantSettingsView: View {
                             Text("正在测试连接")
                         }
                     } else {
-                        Text(savedCredentialMask == nil ? "测试连接并保存" : "测试连接并替换")
+                        Text(savedCredentialMask == nil ? LocalizedStringKey("测试连接并保存") : LocalizedStringKey("测试连接并替换"))
                     }
                 }
                 .disabled(
@@ -230,14 +235,14 @@ struct InsightAssistantSettingsView: View {
                     Text("加密同步暂不可用：\(securityStatusMessage)\nMiMo Key 已安全保存在本机，不受影响。")
                         .foregroundStyle(.secondary)
                 } else if insightDevices.isEmpty {
-                    Text(isLoadingSecurity ? "正在读取设备…" : "暂无设备信息")
+                    Text(isLoadingSecurity ? LocalizedStringKey("正在读取设备…") : LocalizedStringKey("暂无设备信息"))
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(insightDevices) { device in
                         HStack {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(device.displayName)
-                                Text(deviceStatus(device))
+                                deviceStatusView(device)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -293,7 +298,7 @@ struct InsightAssistantSettingsView: View {
         )) {
             Button("好", role: .cancel) {}
         } message: {
-            Text(errorMessage ?? "")
+            Text(LocalizedStringKey(errorMessage ?? ""))
         }
         .confirmationDialog(
             "删除 MiMo API Key？",
@@ -453,17 +458,19 @@ struct InsightAssistantSettingsView: View {
         }
     }
 
-    private func deviceStatus(_ device: WorkerInsightDeviceList.Device) -> String {
+    @ViewBuilder
+    private func deviceStatusView(_ device: WorkerInsightDeviceList.Device) -> some View {
         if device.deviceID == currentDeviceID, device.status == "active" {
-            return "此设备 · 已授权"
-        }
-        switch device.status {
-        case "active":
-            return "已授权"
-        case "pending":
-            return "等待批准"
-        default:
-            return "已撤销"
+            Text("此设备 · 已授权")
+        } else {
+            switch device.status {
+            case "active":
+                Text("已授权")
+            case "pending":
+                Text("等待批准")
+            default:
+                Text("已撤销")
+            }
         }
     }
 
@@ -520,8 +527,8 @@ private struct InsightAssistantPrivacyRow: View {
     var body: some View {
         Label {
             VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                Text(detail)
+                Text(LocalizedStringKey(title))
+                Text(LocalizedStringKey(detail))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

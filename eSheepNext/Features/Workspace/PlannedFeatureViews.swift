@@ -21,14 +21,23 @@ struct FeedingStartView: View {
     var body: some View {
         List {
             Section("今日概览") {
-                LabeledContent("投喂次数", value: isLoadingOverview ? "—" : "\(overview.todayFeedCount)次")
-                LabeledContent("投料量", value: isLoadingOverview ? "—" : "\(FeedAnalysisNumberFormatter.total(overview.todayKilograms)) kg")
-                LabeledContent("待盘槽", value: isLoadingOverview ? "—" : "\(overview.pendingTroughCount)项")
+                LabeledContent("投喂次数") {
+                    if isLoadingOverview { Text("—") }
+                    else { Text("\(overview.todayFeedCount)次") }
+                }
+                LabeledContent("投料量") {
+                    if isLoadingOverview { Text("—") }
+                    else { Text("\(FeedAnalysisNumberFormatter.total(overview.todayKilograms)) kg") }
+                }
+                LabeledContent("待盘槽") {
+                    if isLoadingOverview { Text("—") }
+                    else { Text("\(overview.pendingTroughCount)项") }
+                }
                 if isLoadingOverview {
                     ProgressView("正在汇总投喂记录")
                         .font(.footnote)
                 } else if let overviewError {
-                    Text(overviewError)
+                    Text("汇总失败：\(overviewError)")
                         .font(.footnote)
                         .foregroundStyle(.orange)
                 }
@@ -124,10 +133,21 @@ struct IngredientLibraryView: View {
                             HStack {
                                 Text(ingredient.name).font(.headline)
                                 Spacer()
-                                Text(ingredient.kind.displayName).font(.caption).foregroundStyle(.secondary)
+                                Text(LocalizedStringKey(ingredient.kind.displayName)).font(.caption).foregroundStyle(.secondary)
                             }
-                            Text([ingredient.category, "单位：\(ingredient.unit)", ingredient.nutrients.dryMatter.map { "DM \(feedNumberText($0))%" }].compactMap { $0 }.joined(separator: " · "))
-                                .font(.footnote).foregroundStyle(.secondary)
+                            HStack(spacing: 0) {
+                                if !ingredient.category.isEmpty {
+                                    Text(verbatim: ingredient.category)
+                                }
+                                if !ingredient.category.isEmpty { Text(" · ") }
+                                Text("单位")
+                                Text(verbatim: "：\(ingredient.unit)")
+                                if let dryMatter = ingredient.nutrients.dryMatter {
+                                    Text(verbatim: " · DM \(feedNumberText(dryMatter))%")
+                                }
+                            }
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -428,7 +448,7 @@ struct IngredientDetailView: View {
                     } else {
                         ForEach(components) { component in
                             HStack {
-                                Text(component.ingredientName)
+                                Text(verbatim: component.ingredientName)
                                 Spacer()
                                 Text("\(feedNumberText(component.sharePercent))%")
                             }
@@ -497,7 +517,7 @@ private struct FeedBatchEditorView: View {
                 TextField("存放位置", text: $storageLocation)
             }
             Section("包装说明（不自动换算为库存）") {
-                Picker("形态", selection: $packaging) { ForEach(FeedPackagingKind.allCases, id: \.self) { Text($0.displayName).tag($0) } }
+                Picker("形态", selection: $packaging) { ForEach(FeedPackagingKind.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) } }
                 if packaging != .bulk {
                     TextField("包装/捆数量（说明）", text: $packageCount).keyboardType(.decimalPad)
                     TextField("标称每袋/捆重量 kg（说明）", text: $nominalPackageWeight).keyboardType(.decimalPad)
@@ -560,7 +580,7 @@ private struct FeedBatchDetailView: View {
                 if farmCounts.isEmpty { Text("还没有盘库记录。散装料不能称重时，可以记录“暂未称量”，不会伪造公斤差异。") .foregroundStyle(.secondary) }
                 ForEach(farmCounts, id: \.id) { count in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(count.method.displayName).font(.headline)
+                        Text(LocalizedStringKey(count.method.displayName)).font(.headline)
                         if let actual = count.actualKilogramsText {
                             Text("账面 \(count.bookBalanceText) kg → 盘点 \(actual) kg · 差异 \(count.differenceText ?? "—") kg")
                         } else {
@@ -670,7 +690,7 @@ private struct FeedStockCountView: View {
                 LabeledContent("账面库存", value: bookBalance.map { "\($0.stableText) kg" } ?? "待补录基线")
             }
             Section("盘库方式") {
-                Picker("方式", selection: $method) { ForEach(FeedStockCountMethod.allCases, id: \.self) { Text($0.displayName).tag($0) } }
+                Picker("方式", selection: $method) { ForEach(FeedStockCountMethod.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) } }
                 if method == .notMeasured {
                     Text("适用于散装玉米、草料等当前无法称重的库存。保存后只留下待核对记录，账面公斤数不变。")
                         .font(.footnote).foregroundStyle(.orange)
@@ -800,7 +820,7 @@ private struct FeedRecipeEditorView: View {
         Form {
             Section("配方信息") {
                 TextField("配方名称", text: $name)
-                Picker("生产阶段", selection: $stage) { ForEach(FeedRecipeStage.allCases, id: \.self) { Text($0.displayName).tag($0) } }
+                Picker("生产阶段", selection: $stage) { ForEach(FeedRecipeStage.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) } }
                 Picker("适用圈舍", selection: $targetPenID) { Text("不限定圈舍").tag(UUID?.none); ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }
                 TextField("设计羊数", text: $headCountText).keyboardType(.numberPad)
             }
@@ -952,7 +972,7 @@ private struct FeedPenSelectionView: View {
         .environment(\.editMode, .constant(.active))
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button(selection.count == pens.count ? "取消全选" : "全选") {
+                Button(selection.count == pens.count ? LocalizedStringKey("取消全选") : LocalizedStringKey("全选")) {
                     if selection.count == pens.count {
                         selection.removeAll()
                     } else {
@@ -989,7 +1009,7 @@ private enum FeedMealPeriod: String, CaseIterable, Identifiable {
 
 private struct FeedCountExclusionRow: View {
     let earTag: String
-    let detail: String?
+    let detail: Text?
     let isExcluded: Bool
 
     var body: some View {
@@ -998,7 +1018,7 @@ private struct FeedCountExclusionRow: View {
                 Text(earTag)
                     .foregroundStyle(.primary)
                 if let detail {
-                    Text(detail)
+                    detail
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1061,7 +1081,7 @@ private struct FeedCountExclusionView: View {
                             } label: {
                                 FeedCountExclusionRow(
                                     earTag: item.earTag,
-                                    detail: "\(pen.name) · 出生45日内且未断奶",
+                                    detail: Text(verbatim: pen.name + String(localized: " · 出生45日内且未断奶")),
                                     isExcluded: excludedSheepIDs.contains(item.id)
                                 )
                             }
@@ -1196,15 +1216,15 @@ struct FeedEntryView: View {
                     }
                 }
                 Picker("多圈舍用量", selection: $allocationMethod) {
-                    ForEach(FeedPenAllocationMethod.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(FeedPenAllocationMethod.allCases) { Text(LocalizedStringKey($0.rawValue)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 Picker("配方", selection: $recipeID) { Text("不关联配方").tag(UUID?.none); ForEach(farmRecipes, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }
-                Picker("方式", selection: $mode) { ForEach(FeedMode.allCases, id: \.self) { Text($0.displayName).tag($0) } }
+                Picker("方式", selection: $mode) { ForEach(FeedMode.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) } }
                 DatePicker("发生时间", selection: $occurredAt, in: ...Date.now)
                 Picker("顿次", selection: $mealPeriod) {
                     ForEach(FeedMealPeriod.allCases) { period in
-                        Text(period.rawValue).tag(FeedMealPeriod?.some(period))
+                        Text(LocalizedStringKey(period.rawValue)).tag(FeedMealPeriod?.some(period))
                     }
                 }
                 .pickerStyle(.segmented)
@@ -1241,7 +1261,7 @@ struct FeedEntryView: View {
                     Text("该原料没有可用于投喂的库存批次，请先建立批次并补录库存。")
                         .font(.footnote).foregroundStyle(.orange)
                 }
-                Button(averageLines.isEmpty ? "添加到本次投料" : "继续添加另一种原料") { addNewLine() }
+                Button(averageLines.isEmpty ? LocalizedStringKey("添加到本次投料") : LocalizedStringKey("继续添加另一种原料")) { addNewLine() }
                 LabeledContent("已添加原料", value: "\(averageLines.count) 种")
                 LabeledContent("本次直接投料总量", value: "\(mixtureCompositionKilograms.stableText) kg")
                 Text("此入口会直接扣减每种原料库存，不形成 TMR 成品批次。需要先制锅、再分顿或跨日投喂时，请使用 TMR 流程。")
@@ -1597,7 +1617,7 @@ struct FeedTroughObservationEntryView: View {
                     .keyboardType(.decimalPad)
                 Picker("测量方式", selection: $method) {
                     ForEach(FeedTroughMeasurementMethod.allCases, id: \.self) {
-                        Text($0.displayName).tag($0)
+                        Text(LocalizedStringKey($0.displayName)).tag($0)
                     }
                 }
                 Text("实际剩余量是盘槽当时槽内总量；清出量只影响下个区间的期初，不会在本区间重复扣减。")
@@ -1802,7 +1822,7 @@ struct FeedHistoryView: View {
             Section("投喂") {
                 ForEach(snapshot.feeds) { feed in
                     VStack(alignment: .leading, spacing: 4) {
-                        HStack { Text(feed.penName).font(.headline); Spacer(); Text(feed.modeName).font(.caption).foregroundStyle(.secondary) }
+                        HStack { Text(feed.penName).font(.headline); Spacer(); Text(LocalizedStringKey(feed.modeName)).font(.caption).foregroundStyle(.secondary) }
                         Text("\(feed.lineCount) 种原料 · \(feed.kilogramsText) kg")
                             .font(.subheadline).foregroundStyle(.secondary)
                         if !feed.feederName.isEmpty { Text("旧位置备注：\(feed.feederName)").font(.caption).foregroundStyle(.secondary) }
@@ -1835,7 +1855,7 @@ struct FeedHistoryView: View {
             if isLoading {
                 ProgressView("正在整理投喂历史")
             } else if let loadError {
-                ContentUnavailableView("读取失败", systemImage: "exclamationmark.triangle", description: Text(loadError))
+                ContentUnavailableView("读取失败", systemImage: "exclamationmark.triangle", description: Text(LocalizedStringKey(loadError)))
             } else if snapshot.feeds.isEmpty && snapshot.troughs.isEmpty {
                 ContentUnavailableView("还没有投喂或盘槽记录", systemImage: "clock.arrow.circlepath")
             }
@@ -1956,7 +1976,7 @@ struct FarmAnalyticsView: View {
         List {
             Section("分析范围") {
                 Picker("日期", selection: $preset) {
-                    ForEach(FeedAnalysisRangePreset.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(FeedAnalysisRangePreset.allCases) { Text(LocalizedStringKey($0.rawValue)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 if preset == .custom {
@@ -1966,7 +1986,13 @@ struct FarmAnalyticsView: View {
                 NavigationLink {
                     FeedAnalysisPenFilterView(pens: farmPens, selection: $selectedPenIDs)
                 } label: {
-                    LabeledContent("圈舍", value: selectedPenIDs.isEmpty ? "全部" : "已选 \(selectedPenIDs.count) 个")
+                    LabeledContent("圈舍") {
+                        if selectedPenIDs.isEmpty {
+                            Text("全部")
+                        } else {
+                            Text("已选 \(selectedPenIDs.count) 个")
+                        }
+                    }
                 }
                 Text("正式日均只计算截至昨天的完整自然日；晚补录转群、离场、投喂或盘槽后会按事实时间重新计算。")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -1976,7 +2002,9 @@ struct FarmAnalyticsView: View {
                 Section("全场概览") {
                     LabeledContent("分析期间", value: rangeText(result.start, result.end))
                     LabeledContent("真实投喂羊天", value: FeedAnalysisNumberFormatter.total(result.overview.feedingSheepDays))
-                    LabeledContent("有效圈舍", value: "\(result.overview.effectivePenCount)个")
+                    LabeledContent("有效圈舍") {
+                        Text("\(result.overview.effectivePenCount)个")
+                    }
                     LabeledContent("记录完整率", value: FeedAnalysisNumberFormatter.percent(result.overview.recordCompleteness))
                     LabeledContent("实测 / 估算", value: "\(FeedAnalysisNumberFormatter.percent(result.overview.measuredRatio)) / \(FeedAnalysisNumberFormatter.percent(result.overview.estimatedRatio))")
                     if result.overview.conflictCount > 0 {
@@ -2001,7 +2029,7 @@ struct FarmAnalyticsView: View {
                     ContentUnavailableView(
                         "无法读取采食分析",
                         systemImage: "exclamationmark.triangle",
-                        description: Text(errorMessage)
+                        description: Text(LocalizedStringKey(errorMessage))
                     )
                     Button("重新计算") {
                         Task { await loadAnalysis() }
@@ -2014,8 +2042,12 @@ struct FarmAnalyticsView: View {
             }
 
             Section("今日（进行中）") {
-                LabeledContent("已记录投喂", value: "\(screenSnapshot?.todayFeedCount ?? 0)次")
-                LabeledContent("已投料", value: "\(FeedAnalysisNumberFormatter.total(screenSnapshot?.todayKilograms)) kg")
+                LabeledContent("已记录投喂") {
+                    Text("\(screenSnapshot?.todayFeedCount ?? 0)次")
+                }
+                LabeledContent("已投料") {
+                    Text("\(FeedAnalysisNumberFormatter.total(screenSnapshot?.todayKilograms)) kg")
+                }
                 Text("今天尚未结束，不混入正式日均；盘槽闭合后会在下一完整日分析中体现。")
                     .font(.footnote).foregroundStyle(.orange)
             }
@@ -2067,16 +2099,16 @@ private struct FeedIntakePenSummaryRow: View {
             HStack {
                 Text(result.name).font(.headline)
                 Spacer()
-                Text(statusText).font(.caption).foregroundStyle(statusColor)
+                Text(LocalizedStringKey(statusText)).font(.caption).foregroundStyle(statusColor)
             }
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 4) {
                 GridRow {
-                    metric("鲜重", "\(FeedAnalysisNumberFormatter.total(result.freshKilograms)) kg")
-                    metric("DMI", "\(FeedAnalysisNumberFormatter.perHead(result.nutrition.dryMatterKilogramsPerSheepDay)) kg/羊天")
+                    metric("鲜重", Text("\(FeedAnalysisNumberFormatter.total(result.freshKilograms)) kg"))
+                    metric("DMI", Text("\(FeedAnalysisNumberFormatter.perHead(result.nutrition.dryMatterKilogramsPerSheepDay)) kg/羊天"))
                 }
                 GridRow {
-                    metric("ME", "\(FeedAnalysisNumberFormatter.total(result.nutrition.meMJPerSheepDay)) MJ/羊天")
-                    metric("支持日增重", growthText)
+                    metric("ME", Text("\(FeedAnalysisNumberFormatter.total(result.nutrition.meMJPerSheepDay)) MJ/羊天"))
+                    metric("支持日增重", growthTextView)
                 }
             }
         }
@@ -2084,19 +2116,19 @@ private struct FeedIntakePenSummaryRow: View {
     }
 
     @ViewBuilder
-    private func metric(_ title: String, _ value: String) -> some View {
+    private func metric(_ title: String, _ value: Text) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.subheadline.monospacedDigit())
+            Text(LocalizedStringKey(title)).font(.caption).foregroundStyle(.secondary)
+            value.font(.subheadline.monospacedDigit())
         }
     }
 
-    private var growthText: String {
+    private var growthTextView: Text {
         if let value = result.growth.calibratedExpectedADGKg ?? result.growth.nutritionPotentialADGKg {
-            return "\(FeedAnalysisNumberFormatter.integer(value * 1_000)) g/天"
+            return Text("\(FeedAnalysisNumberFormatter.integer(value * 1_000)) g/天")
         }
-        if result.growth.stage == .breedingEwe || result.growth.stage == .breedingRam { return "维持差额" }
-        return "数据不足"
+        if result.growth.stage == .breedingEwe || result.growth.stage == .breedingRam { return Text("维持差额") }
+        return Text("数据不足")
     }
 
     private var statusText: String {
@@ -2165,7 +2197,13 @@ private struct FeedIntakePenDetailView: View {
             }
 
             Section("生长支持") {
-                LabeledContent("阶段", value: result.growth.stage?.rawValue ?? "数据不足")
+                LabeledContent("阶段") {
+                    if let stage = result.growth.stage {
+                        Text(LocalizedStringKey(stage.rawValue))
+                    } else {
+                        Text("数据不足")
+                    }
+                }
                 LabeledContent("阶段占比", value: FeedAnalysisNumberFormatter.percent(result.growth.dominantStageRatio))
                 LabeledContent("平均体重", value: "\(FeedAnalysisNumberFormatter.total(result.growth.averageWeightKilograms)) kg")
                 LabeledContent("体重覆盖", value: "\(result.growth.weightSampleCount)/\(result.growth.requiredWeightSampleCount) · \(FeedAnalysisNumberFormatter.percent(result.growth.weightCoverage))")
@@ -2181,7 +2219,7 @@ private struct FeedIntakePenDetailView: View {
                 if let blocked = result.growth.blockedReason {
                     Text("停止预测：\(blocked)").font(.footnote).foregroundStyle(.orange)
                 }
-                Text(result.growth.modelDescription).font(.footnote).foregroundStyle(.secondary)
+                Text(LocalizedStringKey(result.growth.modelDescription)).font(.footnote).foregroundStyle(.secondary)
             }
 
             Section("每日趋势") {
@@ -2197,10 +2235,11 @@ private struct FeedIntakePenDetailView: View {
             Section("数据依据") {
                 Text("完整区间 \(result.completeIntervalCount) 个；未闭合或冲突区间 \(result.incompleteIntervalCount) 个。")
                 ForEach(result.evidence.map(\.rawValue).sorted(), id: \.self) { value in
-                    Label(value, systemImage: "checkmark.circle")
+                    Label { Text(LocalizedStringKey(value)) } icon: { Image(systemName: "checkmark.circle") }
                 }
                 ForEach(result.conflicts, id: \.self) { conflict in
-                    Label(conflict, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                    Label { Text(verbatim: conflict) } icon: { Image(systemName: "exclamationmark.triangle.fill") }
+                        .foregroundStyle(.red)
                 }
             }
         }

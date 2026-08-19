@@ -96,7 +96,13 @@ struct RootView: View {
         }
         .sheet(isPresented: $session.isJoinFarmPresented) {
             if let account = activeAccount {
-                JoinFarmView(account: account)
+                SupabaseJoinFarmView(
+                    account: account,
+                    initialCode: session.pendingSupabaseInvitationCode
+                ) { farm in
+                    session.pendingSupabaseInvitationCode = nil
+                    session.selectedFarmID = farm.id
+                }
             }
         }
         .sheet(isPresented: $session.isReauthenticationPresented) {
@@ -147,6 +153,12 @@ struct RootView: View {
             operationalAlertDigestRevision &+= 1
         }
         .onOpenURL { url in
+            if let code = SupabaseFarmInvitationLink.code(from: url),
+               SupabaseAccountConfiguration.isConfigured {
+                session.pendingSupabaseInvitationCode = code
+                session.isJoinFarmPresented = true
+                return
+            }
             if let invitation = PendingFarmInvitation(url: url) {
                 session.pendingFarmInvitation = invitation
                 session.isJoinFarmPresented = true
@@ -198,7 +210,8 @@ struct RootView: View {
                   session.accountAccessStatus.allowsCloudOperations,
                   let account = activeAccount,
                   account.serverBindingState == .verified,
-                  IdentityWorkerConfiguration.baseURL != nil else { return }
+                  SupabaseAccountConfiguration.isConfigured ||
+                    IdentityWorkerConfiguration.baseURL != nil else { return }
             guard await waitForSecondaryLaunchWindow(.seconds(2)) else { return }
             while !Task.isCancelled {
                 do {

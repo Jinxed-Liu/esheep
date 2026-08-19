@@ -15,7 +15,7 @@ struct AccountAccessSettingsRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("登录与安全")
-                Text(session.accountAccessStatus.subtitle(for: authenticationMethod))
+                session.accountAccessStatus.subtitleView(for: authenticationMethod)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -27,7 +27,7 @@ struct AccountAccessSettingsRow: View {
                 ProgressView()
                     .controlSize(.small)
             } else if let actionTitle = session.accountAccessStatus.actionTitle {
-                Button(actionTitle, action: performAction)
+                Button(LocalizedStringKey(actionTitle), action: performAction)
                     .font(.footnote.weight(.semibold))
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -62,9 +62,9 @@ struct AccountAccessNoticeCard: View {
                     .foregroundStyle(session.accountAccessStatus.tint)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(session.accountAccessStatus.title(for: authenticationMethod))
+                    session.accountAccessStatus.titleView(for: authenticationMethod)
                         .font(.headline)
-                    Text(session.accountAccessStatus.noticeMessage)
+                    session.accountAccessStatus.noticeMessageView
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -72,7 +72,7 @@ struct AccountAccessNoticeCard: View {
                 Spacer(minLength: 8)
 
                 if let actionTitle = session.accountAccessStatus.actionTitle {
-                    Button(actionTitle, action: performAction)
+                    Button(LocalizedStringKey(actionTitle), action: performAction)
                         .font(.footnote.weight(.semibold))
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -106,14 +106,14 @@ struct AccountAccessWorkspaceBanner: View {
                 Image(systemName: session.accountAccessStatus.systemImage)
                     .foregroundStyle(session.accountAccessStatus.tint)
 
-                Text(session.accountAccessStatus.workspaceMessage(for: authenticationMethod))
+                session.accountAccessStatus.workspaceMessageView(for: authenticationMethod)
                     .font(.footnote)
                     .lineLimit(2)
 
                 Spacer(minLength: 8)
 
                 if let actionTitle = session.accountAccessStatus.actionTitle {
-                    Button(actionTitle, action: performAction)
+                    Button(LocalizedStringKey(actionTitle), action: performAction)
                         .font(.footnote.weight(.semibold))
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -177,71 +177,75 @@ private extension AccountAccessStatus {
         }
     }
 
-    var noticeMessage: String {
+    @ViewBuilder
+    var noticeMessageView: some View {
         switch self {
         case .availableWithWarning(let message):
-            message
+            Text(verbatim: message)
         case .localOnly(let message):
-            "\(message) 本地记录可继续使用，云同步已暂停。"
+            Text(verbatim: message + " " + String(localized: "本地记录可继续使用，云同步已暂停。"))
         case .requiresSignIn(let message):
-            "\(message) 本地牧场与未同步记录仍然保留。"
+            Text(verbatim: message + " " + String(localized: "本地牧场与未同步记录仍然保留。"))
         case .checking:
-            "正在后台验证，不影响本地牧场使用。"
+            Text("正在后台验证，不影响本地牧场使用。")
         case .verified:
-            "账户与云端会话正常。"
+            Text("账户与云端会话正常。")
         case .transferred:
-            "Apple 账户已转移，当前会话仍然有效。"
+            Text("Apple 账户已转移，当前会话仍然有效。")
         }
     }
 
-    func title(for method: AccountAuthenticationMethod) -> String {
+    @ViewBuilder
+    func titleView(for method: AccountAuthenticationMethod) -> some View {
         switch self {
         case .checking:
-            "正在验证登录状态"
+            Text("正在验证登录状态")
         case .verified:
-            "\(method.displayName)已验证"
+            Text(verbatim: String(localized: String.LocalizationValue(method.displayName)) + String(localized: "已验证"))
         case .transferred:
-            "Apple 登录仍然有效"
+            Text("Apple 登录仍然有效")
         case .availableWithWarning:
-            "登录状态待确认"
+            Text("登录状态待确认")
         case .localOnly:
-            "当前离线使用"
+            Text("当前离线使用")
         case .requiresSignIn:
-            "账户需要重新登录"
+            Text("账户需要重新登录")
         }
     }
 
-    func subtitle(for method: AccountAuthenticationMethod) -> String {
+    @ViewBuilder
+    func subtitleView(for method: AccountAuthenticationMethod) -> some View {
         switch self {
         case .checking:
-            "\(method.displayName)正在后台验证"
+            Text(verbatim: String(localized: String.LocalizationValue(method.displayName)) + String(localized: "正在后台验证"))
         case .verified:
-            "\(method.displayName)与云端会话正常"
+            Text(verbatim: String(localized: String.LocalizationValue(method.displayName)) + String(localized: "与云端会话正常"))
         case .transferred:
-            "Apple 账户已转移，当前会话可用"
+            Text("Apple 账户已转移，当前会话可用")
         case .availableWithWarning:
-            "会话可用，Apple 状态稍后重试"
+            Text("会话可用，Apple 状态稍后重试")
         case .localOnly:
-            "本地可用，云同步已暂停"
+            Text("本地可用，云同步已暂停")
         case .requiresSignIn:
-            "本地记录已保留，重新登录后恢复同步"
+            Text("本地记录已保留，重新登录后恢复同步")
         }
     }
 
-    func workspaceMessage(for method: AccountAuthenticationMethod) -> String {
+    @ViewBuilder
+    func workspaceMessageView(for method: AccountAuthenticationMethod) -> some View {
         switch self {
         case .availableWithWarning:
-            "\(method.displayName)状态待确认，云端会话仍可用"
+            Text(verbatim: String(localized: String.LocalizationValue(method.displayName)) + String(localized: "状态待确认，云端会话仍可用"))
         case .localOnly:
-            "当前离线使用，本地记录正常，云同步已暂停"
+            Text("当前离线使用，本地记录正常，云同步已暂停")
         case .requiresSignIn:
-            "需要重新登录；本地记录仍可继续查看和录入"
+            Text("需要重新登录；本地记录仍可继续查看和录入")
         case .checking:
-            "正在后台验证登录状态"
+            Text("正在后台验证登录状态")
         case .verified:
-            "登录状态正常"
+            Text("登录状态正常")
         case .transferred:
-            "Apple 登录仍然有效"
+            Text("Apple 登录仍然有效")
         }
     }
 }

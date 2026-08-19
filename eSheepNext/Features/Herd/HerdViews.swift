@@ -61,7 +61,16 @@ struct HerdManagementView: View {
                             SheepAvatarView(photo: sheep.avatarPhoto, size: 48)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(sheep.earTag).font(.headline)
-                                Text([sheep.breed, sheep.sex.displayName, sheep.currentPenDisplayName(sheep.currentPenID.flatMap { penNames[$0] }), sheep.status.displayName].joined(separator: " · "))
+                                HStack(spacing: 4) {
+                                    if !sheep.breed.isEmpty {
+                                        Text(verbatim: sheep.breed)
+                                    }
+                                    Text(LocalizedStringKey(sheep.sex.displayName))
+                                    Text(" · ")
+                                    Text(verbatim: sheep.currentPenDisplayName(sheep.currentPenID.flatMap { penNames[$0] }))
+                                    Text(" · ")
+                                    Text(LocalizedStringKey(sheep.status.displayName))
+                                }
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
                             }
@@ -100,11 +109,11 @@ struct HerdManagementView: View {
                 Menu {
                     Picker("性别", selection: $sexFilter) {
                         Text("全部性别").tag(SheepSex?.none)
-                        ForEach(SheepSex.allCases, id: \.self) { Text($0.displayName).tag(SheepSex?.some($0)) }
+                        ForEach(SheepSex.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag(SheepSex?.some($0)) }
                     }
                     Picker("状态", selection: $statusFilter) {
                         Text("全部状态").tag(SheepStatus?.none)
-                        ForEach(SheepStatus.allCases, id: \.self) { Text($0.displayName).tag(SheepStatus?.some($0)) }
+                        ForEach(SheepStatus.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag(SheepStatus?.some($0)) }
                     }
                     Picker("圈舍", selection: $penFilter) {
                         Text("全部圈舍").tag(UUID?.none)
@@ -168,7 +177,7 @@ struct HerdManagementView: View {
         .alert("导出羊只", isPresented: Binding(get: { exportMessage != nil }, set: { if !$0 { exportMessage = nil } })) {
             Button("完成", role: .cancel) {}
         } message: {
-            Text(exportMessage ?? "")
+            Text(LocalizedStringKey(exportMessage ?? ""))
         }
     }
 
@@ -585,7 +594,7 @@ struct SheepDetailView: View {
                     ContentUnavailableView(
                         "读取生产记录失败",
                         systemImage: "exclamationmark.triangle",
-                        description: Text(detailLoadError)
+                        description: Text(LocalizedStringKey(detailLoadError))
                     )
                     Button("重新读取") { Task { await reloadDetailSnapshot() } }
                 }
@@ -593,13 +602,13 @@ struct SheepDetailView: View {
 
             Section("档案") {
                 LabeledContent("耳号", value: subject.earTag)
-                LabeledContent("品种", value: subject.breed)
-                LabeledContent("性别", value: subject.sex.displayName)
+                LabeledContent("品种") { Text(verbatim: subject.breed) }
+                LabeledContent("性别") { Text(LocalizedStringKey(subject.sex.displayName)) }
                 if subject.sex == .ewe {
-                    LabeledContent("当前胎次", value: currentParityDisplayName)
+                    LabeledContent("当前胎次") { Text(LocalizedStringKey(currentParityDisplayName)) }
                 }
-                LabeledContent("状态", value: subject.status.displayName)
-                LabeledContent("当前圈舍", value: subject.currentPenDisplayName(penName))
+                LabeledContent("状态") { Text(LocalizedStringKey(subject.status.displayName)) }
+                LabeledContent("当前圈舍") { Text(verbatim: subject.currentPenDisplayName(penName)) }
                 LabeledContent("入场时间") { Text(subject.enteredAt, format: .dateTime.year().month().day()) }
             }
             if !subject.note.isEmpty {
@@ -773,7 +782,7 @@ struct SheepDetailView: View {
         .task(id: subject.id) { await reloadDetailSnapshot() }
         .alert("照片", isPresented: Binding(get: { photoMessage != nil }, set: { if !$0 { photoMessage = nil } })) {
             Button("完成", role: .cancel) {}
-        } message: { Text(photoMessage ?? "") }
+        } message: { Text(LocalizedStringKey(photoMessage ?? "")) }
     }
 
     private var canEditPhotos: Bool {
@@ -834,16 +843,16 @@ struct SheepDetailView: View {
     @ViewBuilder
     private var analyticsSection: some View {
         if let lifecycleInsight = detailSnapshot?.lifecycleInsight {
-            Section(lifecycleInsight.title) {
-                Text(lifecycleInsight.summary)
+            Section(LocalizedStringKey(lifecycleInsight.title)) {
+                Text(LocalizedStringKey(lifecycleInsight.summary))
                 ForEach(lifecycleInsight.details, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
             }
         } else if isLoadingDetail {
             Section { ProgressView("正在计算羊只分析") }
         }
         if let reproductionInsight = detailSnapshot?.reproductionInsight, !reproductionInsight.details.isEmpty {
-            Section(reproductionInsight.title) {
-                Text(reproductionInsight.summary)
+            Section(LocalizedStringKey(reproductionInsight.title)) {
+                Text(LocalizedStringKey(reproductionInsight.summary))
                 ForEach(reproductionInsight.details, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
             }
         }
@@ -860,8 +869,8 @@ struct SheepDetailView: View {
             } else {
                 ForEach(entries, id: \.id) { entry in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(entry.title).font(.subheadline.weight(.medium))
-                        if !entry.detail.isEmpty { Text(entry.detail).font(.footnote).foregroundStyle(.secondary) }
+                        Text(LocalizedStringKey(entry.title)).font(.subheadline.weight(.medium))
+                        if !entry.detail.isEmpty { Text(LocalizedStringKey(entry.detail)).font(.footnote).foregroundStyle(.secondary) }
                         Text(entry.date, format: .dateTime.year().month().day().hour().minute())
                             .font(.caption).foregroundStyle(.tertiary)
                     }
@@ -1158,7 +1167,7 @@ private struct SheepProfileBanner: View {
                         .font(.title.bold())
                         .lineLimit(1)
                     Spacer(minLength: 12)
-                    Text(sheep.status.displayName)
+                    Text(LocalizedStringKey(sheep.status.displayName))
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 11)
                         .padding(.vertical, 5)
@@ -1166,7 +1175,7 @@ private struct SheepProfileBanner: View {
                 }
                 HStack(spacing: 14) {
                     Label(sheep.breed.isEmpty ? "未填写品种" : sheep.breed, systemImage: "leaf")
-                    Label(sheep.sex.displayName, systemImage: "sheep")
+                    Label(LocalizedStringKey(sheep.sex.displayName), systemImage: "sheep")
                     Label(sheep.currentPenDisplayName(penName), systemImage: "square.grid.2x2")
                     Label("\(photoCount)张", systemImage: "photo.stack")
                 }
@@ -1462,7 +1471,7 @@ struct PenManagementView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(pen.name).font(.headline)
                         let currentCount = sheepByPen[pen.id]?.count ?? 0
-                        Text(currentCount == 0 ? "已清圈 · 已归档" : "当前羊只 \(currentCount) 只")
+                        Text(currentCount == 0 ? LocalizedStringKey("已清圈 · 已归档") : LocalizedStringKey("当前羊只 \(currentCount) 只"))
                             .font(.subheadline).foregroundStyle(.secondary)
                     }
                 }
@@ -1473,7 +1482,7 @@ struct PenManagementView: View {
                 ContentUnavailableView(
                     displayScope.emptyTitle,
                     systemImage: "building.2",
-                    description: Text(displayScope.emptyDescription)
+                    description: Text(LocalizedStringKey(displayScope.emptyDescription))
                 )
             }
         }
@@ -1483,7 +1492,7 @@ struct PenManagementView: View {
                 Menu {
                     Picker("显示范围", selection: $displayScope) {
                         ForEach(PenDisplayScope.allCases) { scope in
-                            Text(scope.title).tag(scope)
+                            Text(LocalizedStringKey(scope.title)).tag(scope)
                         }
                     }
                 } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
@@ -1553,8 +1562,8 @@ struct PenDetailView: View {
     var body: some View {
         List {
             if !pen.note.isEmpty { Section("说明") { Text(pen.note) } }
-            Section(herdInsight.title) {
-                Text(herdInsight.summary)
+            Section(LocalizedStringKey(herdInsight.title)) {
+                Text(LocalizedStringKey(herdInsight.summary))
                 ForEach(herdInsight.details, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
             }
             Section("当前羊只") {
@@ -1621,7 +1630,7 @@ struct AddSheepView: View {
             Section("基础信息") {
                 TextField("耳号", text: $earTag)
                 TextField("品种", text: $breed)
-                Picker("性别", selection: $sex) { ForEach(SheepSex.allCases, id: \.self) { Text($0.displayName).tag($0) } }
+                Picker("性别", selection: $sex) { ForEach(SheepSex.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) } }
             }
             if sex == .ewe {
                 Section {
@@ -1651,7 +1660,7 @@ struct AddSheepView: View {
             ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
         }
-        .alert("无法保存", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(errorMessage ?? "") }
+        .alert("无法保存", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(LocalizedStringKey(errorMessage ?? "")) }
         .farmExcelImport(account: account, farm: farm, sheets: ["新建羊只"])
     }
 
@@ -1688,7 +1697,7 @@ struct AddPenView: View {
             ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
         }
-        .alert("无法保存", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(errorMessage ?? "") }
+        .alert("无法保存", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(LocalizedStringKey(errorMessage ?? "")) }
         .farmExcelImport(account: account, farm: farm, sheets: ["圈舍"])
     }
 

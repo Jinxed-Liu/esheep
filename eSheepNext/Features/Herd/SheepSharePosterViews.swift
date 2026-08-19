@@ -412,7 +412,7 @@ struct SheepSharePosterSelectionView: View {
                 ContentUnavailableView {
                     Label("无法准备海报", systemImage: "photo.badge.exclamationmark")
                 } description: {
-                    Text(message)
+                    Text(LocalizedStringKey(message))
                 } actions: {
                     Button("重新读取") { Task { await load() } }
                 }
@@ -443,7 +443,7 @@ struct SheepSharePosterSelectionView: View {
         )) {
             Button("完成", role: .cancel) {}
         } message: {
-            Text(errorMessage ?? "")
+            Text(LocalizedStringKey(errorMessage ?? ""))
         }
     }
 
@@ -514,7 +514,7 @@ struct SheepSharePosterSelectionView: View {
         image: UIImage?
     ) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.headline)
             LazyVGrid(columns: columns, spacing: 14) {
                 ForEach(templates) { template in
@@ -553,7 +553,7 @@ struct SheepSharePosterSelectionView: View {
                             .padding(7)
                     }
                 }
-                Text(template.displayName)
+                Text(LocalizedStringKey(template.displayName))
                     .font(.subheadline.weight(isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? AppTheme.brand : .primary)
             }
@@ -574,7 +574,7 @@ struct SheepSharePosterSelectionView: View {
         } label: {
             HStack(spacing: 8) {
                 if isRendering { ProgressView().tint(.white) }
-                Text(isRendering ? "正在生成" : "预览并分享")
+                Text(isRendering ? LocalizedStringKey("正在生成") : LocalizedStringKey("预览并分享"))
                     .font(.headline)
             }
             .foregroundStyle(.white)
@@ -930,7 +930,7 @@ private struct SheepSharePosterView: View {
                     .font(.system(size: 31, weight: .bold, design: .rounded))
                     .lineLimit(1)
                     .minimumScaleFactor(0.65)
-                Text(snapshot.roleTitle)
+                Text(LocalizedStringKey(snapshot.roleTitle))
                     .font(.system(size: 8, weight: .semibold))
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
@@ -947,7 +947,7 @@ private struct SheepSharePosterView: View {
 
     private var portraitIdentityHeader: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(snapshot.roleTitle)
+            Text(LocalizedStringKey(snapshot.roleTitle))
                 .font(.system(size: 19, weight: .semibold))
                 .lineLimit(1)
             Text(snapshot.subject.earTag)
@@ -1006,7 +1006,7 @@ private struct SheepSharePosterView: View {
             Image(systemName: symbol)
                 .font(.system(size: 10.5, weight: .semibold))
                 .foregroundStyle(palette.accent)
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.system(size: 6.5, weight: .medium))
                 .lineLimit(1)
                 .foregroundStyle(palette.accent)
@@ -1028,7 +1028,7 @@ private struct SheepSharePosterView: View {
         HStack(spacing: 10) {
             Rectangle()
                 .frame(width: 20, height: 0.7)
-            Text(generatedDateText)
+            Text(LocalizedStringKey(generatedDateText))
             Rectangle()
                 .frame(width: 20, height: 0.7)
         }
@@ -1166,7 +1166,7 @@ private struct SheepSharePosterPedigreeView: View {
         strong: Bool
     ) -> some View {
         VStack(spacing: 1) {
-            Text(label)
+            Text(LocalizedStringKey(label))
                 .font(.system(size: 6.4, weight: .medium))
                 .foregroundStyle(palette.secondaryForeground)
             Text(relative.map(relativeTitle) ?? "未确认")

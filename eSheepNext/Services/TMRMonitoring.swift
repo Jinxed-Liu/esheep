@@ -94,7 +94,11 @@ enum TMRMonitoringAlertAdapter {
                 title: "\(row.penName) · \(kind.displayName)",
                 detail: detail,
                 dueAt: row.status == .high ? snapshot.generatedAt : row.cutoffAt,
-                earTag: row.penName
+                earTag: row.penName,
+                tmrMeal: row.meal,
+                tmrTargetText: target,
+                tmrActualText: row.actualKilograms.stableText,
+                tmrDifferenceText: difference
             )
         }
     }

@@ -22,7 +22,7 @@ struct MigrationReviewCenterView: View {
                     .foregroundStyle(report.blockingDiscrepancies.isEmpty ? .green : .red)
                 LabeledContent("警告项", value: "\(report.discrepancies.filter { $0.severity == .warning }.count)")
                 LabeledContent("自动补建历史归档羊只", value: "\(report.archivalSheep)")
-                Text(report.blockingDiscrepancies.isEmpty ? "本临时迁移结果可进入人工验收。正式牧场、CloudKit 和旧版数据均未写入。" : "仍有阻断项，不能给出迁移演练通过结论。")
+                Text(report.blockingDiscrepancies.isEmpty ? LocalizedStringKey("本临时迁移结果可进入人工验收。正式牧场、CloudKit 和旧版数据均未写入。") : LocalizedStringKey("仍有阻断项，不能给出迁移演练通过结论。"))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -40,7 +40,7 @@ struct MigrationReviewCenterView: View {
                             MigrationDiscrepancyDetailView(item: item, audit: audit)
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(item.category).font(.headline)
+                                Text(LocalizedStringKey(item.category)).font(.headline)
                                 Text(item.reason).font(.footnote).foregroundStyle(item.severity == .blocking ? .red : .secondary)
                                 if let sourceKey = item.sourceKey { Text(sourceKey).font(.caption.monospaced()).foregroundStyle(.secondary) }
                             }

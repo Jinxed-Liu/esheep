@@ -1,7 +1,6 @@
 import XCTest
 @testable import eSheepNext
 
-@MainActor
 final class AppPreferencesTests: XCTestCase {
     private var defaults: UserDefaults!
     private var suiteName: String!
@@ -20,6 +19,7 @@ final class AppPreferencesTests: XCTestCase {
         super.tearDown()
     }
 
+    @MainActor
     func testDefaultsPreserveNormalAppBehavior() {
         let preferences = AppPreferences(defaults: defaults)
 
@@ -31,6 +31,7 @@ final class AppPreferencesTests: XCTestCase {
         XCTAssertTrue(preferences.avatarMotionEnabled)
     }
 
+    @MainActor
     func testPreferencesPersistWithoutChangingBusinessModels() {
         let preferences = AppPreferences(defaults: defaults)
         preferences.appearance = .dark
@@ -52,6 +53,7 @@ final class AppPreferencesTests: XCTestCase {
         XCTAssertEqual(restored.avatarSyncInterval, .seconds(60))
     }
 
+    @MainActor
     func testStorageSnapshotTotalOnlyCombinesUserFacingCategories() {
         let snapshot = AppStorageSnapshot(
             protectedDataBytes: 100,

@@ -582,7 +582,7 @@ struct FarmEventHistoryView: View {
                             recordScope = .all
                         }
                         ForEach(FarmEventCategory.allCases) { item in
-                            Button(item.displayName, systemImage: category == item ? "checkmark" : item.symbol) {
+                            Button(LocalizedStringKey(item.displayName), systemImage: category == item ? "checkmark" : item.symbol) {
                                 category = item
                                 recordScope = .all
                             }
@@ -590,7 +590,7 @@ struct FarmEventHistoryView: View {
                     }
                     Section("记录类型") {
                         ForEach(FarmEventExportScope.allCases.dropFirst()) { item in
-                            Button(item.displayName, systemImage: recordScope == item ? "checkmark" : item.symbol) {
+                            Button(LocalizedStringKey(item.displayName), systemImage: recordScope == item ? "checkmark" : item.symbol) {
                                 recordScope = item
                                 category = nil
                             }
@@ -824,10 +824,10 @@ private struct FarmEventRow: View {
                 .frame(width: 30, height: 30)
                 .background(AppTheme.brand.opacity(0.12), in: .circle)
             VStack(alignment: .leading, spacing: 2) {
-                Text(event.title).font(.subheadline.weight(.semibold))
-                Text(event.subject).font(.subheadline)
+                Text(LocalizedStringKey(event.title)).font(.subheadline.weight(.semibold))
+                Text(LocalizedStringKey(event.subject)).font(.subheadline)
                 if !event.detail.isEmpty {
-                    Text(event.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                    Text(LocalizedStringKey(event.detail)).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -909,7 +909,7 @@ private struct FarmEventDetailView: View {
         )) {
             Button("完成", role: .cancel) {}
         } message: {
-            Text(message ?? "")
+            Text(LocalizedStringKey(message ?? ""))
         }
     }
 

@@ -92,7 +92,7 @@ struct FarmAnalysisCenterView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("今天的牧场")
                     .font(.title3.bold())
-                Text(latestActivityText)
+                latestActivityView
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -101,11 +101,17 @@ struct FarmAnalysisCenterView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var latestActivityText: String {
-        if deepAnalytics.isLoading, deepAnalytics.payload == nil { return "正在后台准备分析数据…" }
-        if let errorMessage = deepAnalytics.errorMessage { return "分析数据暂时无法读取：\(errorMessage)" }
-        guard let latestActivityDate = deepAnalytics.payload?.latestActivityDate else { return "还没有可用于分析的生产记录" }
-        return "最近记录于 \(latestActivityDate.formatted(.relative(presentation: .named)))"
+    @ViewBuilder
+    private var latestActivityView: some View {
+        if deepAnalytics.isLoading, deepAnalytics.payload == nil {
+            Text("正在后台准备分析数据…")
+        } else if let errorMessage = deepAnalytics.errorMessage {
+            Text("分析数据暂时无法读取：\(errorMessage)")
+        } else if let latestActivityDate = deepAnalytics.payload?.latestActivityDate {
+            Text("最近记录于 \(latestActivityDate.formatted(.relative(presentation: .named)))")
+        } else {
+            Text("还没有可用于分析的生产记录")
+        }
     }
 
     private func metricText(_ keyPath: KeyPath<FarmDeepAnalyticsPayload, Int>) -> String {
@@ -163,7 +169,7 @@ private struct DashboardMetric: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -223,7 +229,7 @@ private struct WeightGainAnalysisView: View {
                     .analysisFilterChip()
                 }
                 if dataStore.errorMessage != nil, analytics.snapshot == nil {
-                    AnalysisNotice(text: "分析数据读取失败：\(dataStore.errorMessage ?? "未知错误")")
+                    AnalysisNotice(content: Text("分析数据读取失败：\(dataStore.errorMessage ?? "未知错误")"))
                 } else if analytics.isCalculating && analytics.weightCohort == nil || dataStore.isLoading && analytics.snapshot == nil {
                     AnalysisLoading(title: "正在计算增重数据")
                 } else {
@@ -353,7 +359,7 @@ private struct LambAnalysisView: View {
                 Text("聚焦每胎结构、断奶质量和缺失数据")
                     .analysisPageSubtitle()
                 Picker("分析内容", selection: $section) {
-                    ForEach(LambAnalysisSection.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(LambAnalysisSection.allCases) { Text(LocalizedStringKey($0.rawValue)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 AnalysisFilterBar {
@@ -368,7 +374,7 @@ private struct LambAnalysisView: View {
                         weaningContent(result)
                     }
                 } else if let errorMessage = dataStore.errorMessage, analytics.snapshot == nil {
-                    AnalysisNotice(text: "分析数据读取失败：\(errorMessage)")
+                    AnalysisNotice(content: Text("分析数据读取失败：\(errorMessage)"))
                 } else {
                     AnalysisLoading(title: "正在计算羔羊数据")
                 }
@@ -405,7 +411,9 @@ private struct LambAnalysisView: View {
 
     @ViewBuilder
     private func lambingContent(_ result: FarmLambAnalyticsResult) -> some View {
-        if result.incompleteLambingCount > 0 { AnalysisNotice(text: "有 \(result.incompleteLambingCount) 胎缺少胎次、死胎数或逐只羔羊明细，未纳入对应指标。") }
+        if result.incompleteLambingCount > 0 {
+            AnalysisNotice(content: Text("有 \(result.incompleteLambingCount) 胎缺少胎次、死胎数或逐只羔羊明细，未纳入对应指标。"))
+        }
         MetricGrid {
             AnalysisMetric(title: "产羔总数", value: "\(result.lambStats.totalLambs)", unit: "只", tint: .orange)
             AnalysisMetric(title: "出生死亡率", value: percent(result.lambStats.mortalityRate), unit: nil, tint: .red)
@@ -458,7 +466,7 @@ private struct LambingMonthRow: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(month.month).font(.subheadline.weight(.semibold))
+                    Text(LocalizedStringKey(month.month)).font(.subheadline.weight(.semibold))
                     Text("\(month.totalDams) 胎 · \(month.totalLambs) 羔 · 公/母 \(month.maleLambs)/\(month.femaleLambs) · 死胎 \(month.birthDead)")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -466,8 +474,8 @@ private struct LambingMonthRow: View {
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
             }
             AnalysisSexSummary(
-                male: "初生 \(sampleValue(month.maleWeightAverage, count: month.maleWeightCount, unit: "kg")) · ADG \(sampleValue(month.maleADGAverage, count: month.maleADGCount, unit: "g/d"))",
-                female: "初生 \(sampleValue(month.femaleWeightAverage, count: month.femaleWeightCount, unit: "kg")) · ADG \(sampleValue(month.femaleADGAverage, count: month.femaleADGCount, unit: "g/d"))"
+                male: Text("初生 \(sampleValue(month.maleWeightAverage, count: month.maleWeightCount, unit: "kg")) · ADG \(sampleValue(month.maleADGAverage, count: month.maleADGCount, unit: "g/d"))"),
+                female: Text("初生 \(sampleValue(month.femaleWeightAverage, count: month.femaleWeightCount, unit: "kg")) · ADG \(sampleValue(month.femaleADGAverage, count: month.femaleADGCount, unit: "g/d"))")
             )
         }
         .contentShape(.rect)
@@ -481,7 +489,7 @@ private struct WeaningMonthRow: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(month.month).font(.subheadline.weight(.semibold))
+                    Text(LocalizedStringKey(month.month)).font(.subheadline.weight(.semibold))
                     Text("\(month.totalCount) 条 · 公/母 \(month.maleCount)/\(month.femaleCount) · 异常 \(month.abnormalCount)")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -489,8 +497,8 @@ private struct WeaningMonthRow: View {
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
             }
             AnalysisSexSummary(
-                male: "断奶 \(sampleValue(month.maleAverageWeight, count: month.maleWeightCount, unit: "kg")) · ADG \(sampleValue(month.maleAverageADG, count: month.maleADGCount, unit: "g/d"))",
-                female: "断奶 \(sampleValue(month.femaleAverageWeight, count: month.femaleWeightCount, unit: "kg")) · ADG \(sampleValue(month.femaleAverageADG, count: month.femaleADGCount, unit: "g/d"))"
+                male: Text("断奶 \(sampleValue(month.maleAverageWeight, count: month.maleWeightCount, unit: "kg")) · ADG \(sampleValue(month.maleAverageADG, count: month.maleADGCount, unit: "g/d"))"),
+                female: Text("断奶 \(sampleValue(month.femaleAverageWeight, count: month.femaleWeightCount, unit: "kg")) · ADG \(sampleValue(month.femaleAverageADG, count: month.femaleADGCount, unit: "g/d"))")
             )
         }
         .contentShape(.rect)
@@ -498,13 +506,15 @@ private struct WeaningMonthRow: View {
 }
 
 private struct AnalysisSexSummary: View {
-    let male: String
-    let female: String
+    let male: Text
+    let female: Text
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Label(male, systemImage: "m.circle.fill").foregroundStyle(.blue)
-            Label(female, systemImage: "f.circle.fill").foregroundStyle(.pink)
+            Label { male } icon: { Image(systemName: "m.circle.fill") }
+                .foregroundStyle(.blue)
+            Label { female } icon: { Image(systemName: "f.circle.fill") }
+                .foregroundStyle(.pink)
         }
         .font(.caption2)
         .lineLimit(1)
@@ -773,13 +783,13 @@ private struct LambIndividualDetailCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Text(facts.earTag).font(.headline)
-                Text(facts.sex)
+                Text(LocalizedStringKey(facts.sex))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(facts.sex == "公" ? .blue : facts.sex == "母" ? .pink : .secondary)
                     .padding(.horizontal, 7).padding(.vertical, 3)
                     .background(.fill.quaternary, in: .capsule)
                 Spacer()
-                Text(facts.status).font(.caption).foregroundStyle(.secondary)
+                Text(LocalizedStringKey(facts.status)).font(.caption).foregroundStyle(.secondary)
             }
             HStack(spacing: 0) {
                 CompactLambMetric(title: "初生重", value: shortWeightText(facts.birthWeight))
@@ -795,24 +805,36 @@ private struct LambIndividualDetailCard: View {
                         DetailFact(label: "断奶日期", value: dateText(facts.weaning?.occurredAt))
                     }
                     GridRow {
-                        DetailFact(label: "日增重起点", value: gainBaselineText)
-                        DetailFact(label: "计算间隔", value: facts.weaningGain.map { "\($0.intervalDays) 天" } ?? "未计算")
+                        DetailFact(label: "日增重起点", value: gainBaselineTextView)
+                        DetailFact(
+                            label: "计算间隔",
+                            value: facts.weaningGain.map { Text("\($0.intervalDays) 天") } ?? Text("未计算")
+                        )
                     }
                     GridRow {
-                        DetailFact(label: "母羊", value: facts.dam ?? "未记录")
-                        DetailFact(label: "父羊/冻精", value: facts.sire ?? "未记录")
+                        DetailFact(label: "母羊", value: Text(verbatim: facts.dam ?? "未记录"))
+                        DetailFact(label: "父羊/冻精", value: Text(verbatim: facts.sire ?? "未记录"))
                     }
                     GridRow {
-                        DetailFact(label: "胎次", value: facts.parity.map { "第 \($0) 胎" } ?? "未记录")
-                        DetailFact(label: "同胎数", value: facts.litterSize.map { "\($0) 只" } ?? "未记录")
+                        DetailFact(
+                            label: "胎次",
+                            value: facts.parity.map { Text("第 \($0) 胎") } ?? Text("未记录")
+                        )
+                        DetailFact(
+                            label: "同胎数",
+                            value: facts.litterSize.map { Text("\($0) 只") } ?? Text("未记录")
+                        )
                     }
                     GridRow {
-                        DetailFact(label: "品种", value: nonempty(facts.breed))
-                        DetailFact(label: "当前圈舍", value: nonempty(facts.pen))
+                        DetailFact(label: "品种", value: Text(verbatim: nonempty(facts.breed)))
+                        DetailFact(label: "当前圈舍", value: Text(verbatim: nonempty(facts.pen)))
                     }
                     GridRow {
-                        DetailFact(label: "断奶日龄", value: facts.weaningAge.map { "\($0) 天" } ?? "未记录")
-                        DetailFact(label: "最近体重", value: latestWeightText)
+                        DetailFact(
+                            label: "断奶日龄",
+                            value: facts.weaningAge.map { Text("\($0) 天") } ?? Text("未记录")
+                        )
+                        DetailFact(label: "最近体重", value: latestWeightTextView)
                     }
                 }
                 .padding(.top, 8)
@@ -829,13 +851,13 @@ private struct LambIndividualDetailCard: View {
     private func weightText(_ value: Double?) -> String { value.map { "\(number($0)) 千克" } ?? "未记录" }
     private func shortWeightText(_ value: Double?) -> String { value.map { "\(number($0))kg" } ?? "—" }
     private func nonempty(_ value: String?) -> String { guard let value, !value.isEmpty else { return "未记录" }; return value }
-    private var latestWeightText: String {
-        guard let latest = facts.latestWeight else { return "未记录" }
-        return "\(number(latest.kilograms))kg · \(dateText(latest.occurredAt))"
+    private var latestWeightTextView: Text {
+        guard let latest = facts.latestWeight else { return Text("未记录") }
+        return Text("\(number(latest.kilograms))kg · \(dateText(latest.occurredAt))")
     }
-    private var gainBaselineText: String {
-        guard let baseline = facts.weaningGain?.baseline else { return "未记录" }
-        return "\(number(baseline.kilograms))kg · \(dateText(baseline.occurredAt))"
+    private var gainBaselineTextView: Text {
+        guard let baseline = facts.weaningGain?.baseline else { return Text("未记录") }
+        return Text("\(number(baseline.kilograms))kg · \(dateText(baseline.occurredAt))")
     }
 }
 
@@ -845,7 +867,7 @@ private struct CompactLambMetric: View {
 
     var body: some View {
         VStack(spacing: 2) {
-            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(LocalizedStringKey(title)).font(.caption2).foregroundStyle(.secondary)
             Text(value).font(.footnote.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.75)
         }
         .frame(maxWidth: .infinity)
@@ -853,13 +875,23 @@ private struct CompactLambMetric: View {
 }
 
 private struct DetailFact: View {
-    let label: String
-    let value: String
+    let label: LocalizedStringKey
+    let value: Text
+
+    init(label: LocalizedStringKey, value: String) {
+        self.label = label
+        self.value = Text(verbatim: value)
+    }
+
+    init(label: LocalizedStringKey, value: Text) {
+        self.label = label
+        self.value = value
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.footnote).lineLimit(2).minimumScaleFactor(0.8)
+            value.font(.footnote).lineLimit(2).minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -905,15 +937,15 @@ private struct ReproductionAnalysisView: View {
                 Text("从胎均、繁殖间隔到品种维度查看繁殖效率")
                     .analysisPageSubtitle()
                 AnalysisFilterBar {
-                    ReproductionFilterChip(symbol: "calendar", title: dateRangeText) {
+                    ReproductionFilterChip(symbol: "calendar", title: Text(verbatim: dateRangeText)) {
                         presentedSheet = .filters
                     }
                     .disabled(analytics.snapshot == nil)
-                    ReproductionFilterChip(symbol: "house", title: selectedPenText) {
+                    ReproductionFilterChip(symbol: "house", title: selectedPenView) {
                         presentedSheet = .filters
                     }
                     .disabled(analytics.snapshot == nil)
-                    ReproductionFilterChip(symbol: "pawprint", title: filter.breed ?? "全部品种") {
+                    ReproductionFilterChip(symbol: "pawprint", title: filter.breed.map { Text(verbatim: $0) } ?? Text("全部品种")) {
                         presentedSheet = .filters
                     }
                     .disabled(analytics.snapshot == nil)
@@ -923,7 +955,7 @@ private struct ReproductionAnalysisView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     if result.incompleteLambingCount > 0 {
-                        AnalysisNotice(text: "有 \(result.incompleteLambingCount) 胎缺少胎次、死胎数或逐只羔羊明细，仅不纳入需要这些字段的指标；胎间距和产后天数仍按产羔日期计算。")
+                    AnalysisNotice(content: Text("有 \(result.incompleteLambingCount) 胎缺少胎次、死胎数或逐只羔羊明细，仅不纳入需要这些字段的指标；胎间距和产后天数仍按产羔日期计算。"))
                     }
                     MetricGrid {
                         AnalysisMetric(title: "平均每胎", value: number(result.overview.averageTotal), unit: "羔", tint: .pink)
@@ -931,19 +963,23 @@ private struct ReproductionAnalysisView: View {
                         AnalysisMetric(title: "平均初生重", value: number(result.overview.averageBirthWeight), unit: "千克", tint: .orange)
                     }
                     Picker("分析维度", selection: $selectedSection) {
-                        ForEach(ReproductionAnalysisSection.allCases) { Text($0.rawValue).tag($0) }
+                        ForEach(ReproductionAnalysisSection.allCases) { Text(LocalizedStringKey($0.rawValue)).tag($0) }
                     }
                     .pickerStyle(.segmented)
                     selectedSectionContent(result)
                     AnalysisCard(title: "月度产羔") {
                         if result.monthly.isEmpty { AnalysisEmpty(text: "当前筛选范围没有完整的繁殖记录") }
                         ForEach(result.monthly) { item in
-                            AnalysisRow(title: item.month, detail: "\(item.lambings) 胎 · \(item.total) 羔", trailing: "公/母 \(item.male)/\(item.female)")
+                            AnalysisRow(
+                                title: Text(verbatim: item.month),
+                                detail: Text("\(item.lambings) 胎 · \(item.total) 羔"),
+                                trailing: Text("公/母 \(item.male)/\(item.female)")
+                            )
                             if item.id != result.monthly.last?.id { Divider() }
                         }
                     }
                 } else if let errorMessage = dataStore.errorMessage, analytics.snapshot == nil {
-                    AnalysisNotice(text: "分析数据读取失败：\(errorMessage)")
+                    AnalysisNotice(content: Text("分析数据读取失败：\(errorMessage)"))
                 } else {
                     AnalysisLoading(title: "正在计算繁殖数据")
                 }
@@ -1002,7 +1038,11 @@ private struct ReproductionAnalysisView: View {
             AnalysisCard(title: "胎间距合格率", caption: "每月取接近月中的群体截面，150–240 天为合格") {
                 if result.qualifiedRates.isEmpty { AnalysisEmpty(text: "当前切片的胎间距数据不足") }
                 ForEach(result.qualifiedRates) { item in
-                    AnalysisRow(title: item.month, detail: "合格 \(percent(item.qualified / 100))", trailing: "不合格 \(percent(item.unqualified / 100))")
+                    AnalysisRow(
+                        title: Text(verbatim: item.month),
+                        detail: Text("合格 \(percent(item.qualified / 100))"),
+                        trailing: Text("不合格 \(percent(item.unqualified / 100))")
+                    )
                     if item.id != result.qualifiedRates.last?.id { Divider() }
                 }
             }
@@ -1020,7 +1060,11 @@ private struct ReproductionAnalysisView: View {
             AnalysisCard(title: "品种分析", caption: "按当前品种主档，对比所选日期与羊舍切片内的繁殖表现") {
                 if result.breedRows.isEmpty { AnalysisEmpty(text: "当前切片的品种样本不足") }
                 ForEach(result.breedRows) { row in
-                    AnalysisRow(title: row.breed, detail: "\(row.sheepCount) 只 · \(row.lambingCount) 胎", trailing: "胎均 \(number(row.averageLambs))")
+                    AnalysisRow(
+                        title: Text(verbatim: row.breed),
+                        detail: Text("\(row.sheepCount) 只 · \(row.lambingCount) 胎"),
+                        trailing: Text("胎均 \(number(row.averageLambs))")
+                    )
                     if row.id != result.breedRows.last?.id { Divider() }
                 }
             }
@@ -1033,26 +1077,36 @@ private struct ReproductionAnalysisView: View {
         return "\(start)–\(end)"
     }
 
-    private var selectedPenText: String {
+    private var selectedPenView: Text {
         switch filter.penScope {
         case .all:
-            return "全部羊舍"
+            return Text("全部羊舍")
         case .pen(let penID):
-            return penNames[penID] ?? "历史羊舍"
+            return Text(verbatim: penNames[penID] ?? "历史羊舍")
         case .unassigned:
-            return "未分圈"
+            return Text("未分圈")
         }
     }
 }
 
 private struct ReproductionFilterChip: View {
     let symbol: String
-    let title: String
+    let title: Text
     let action: () -> Void
+
+    init(symbol: String, title: Text, action: @escaping () -> Void) {
+        self.symbol = symbol
+        self.title = title
+        self.action = action
+    }
+
+    init(symbol: String, title: LocalizedStringKey, action: @escaping () -> Void) {
+        self.init(symbol: symbol, title: Text(title), action: action)
+    }
 
     var body: some View {
         Button(action: action) {
-            Label(title, systemImage: symbol)
+            Label { title } icon: { Image(systemName: symbol) }
                 .font(.footnote.weight(.medium))
                 .lineLimit(1)
                 .padding(.horizontal, 12)
@@ -1276,10 +1330,10 @@ private struct AnalysisDestination<Destination: View>: View {
                     .frame(width: 34, height: 34)
                     .background(tint.opacity(0.10), in: .rect(cornerRadius: 11))
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
+                    Text(LocalizedStringKey(title))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
-                    Text(detail)
+                    Text(LocalizedStringKey(detail))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -1303,8 +1357,8 @@ private struct AnalysisCard<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.subheadline.weight(.semibold))
-                if let caption { Text(caption).font(.caption).foregroundStyle(.secondary) }
+                Text(LocalizedStringKey(title)).font(.subheadline.weight(.semibold))
+                if let caption { Text(LocalizedStringKey(caption)).font(.caption).foregroundStyle(.secondary) }
             }
             content()
         }
@@ -1332,13 +1386,13 @@ private struct AnalysisMetric: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             HStack(alignment: .lastTextBaseline, spacing: 2) {
                 Text(value).font(.headline).foregroundStyle(tint)
-                if let unit { Text(unit).font(.caption2).foregroundStyle(.secondary) }
+                if let unit { Text(LocalizedStringKey(unit)).font(.caption2).foregroundStyle(.secondary) }
             }
             .lineLimit(1)
             .minimumScaleFactor(0.7)
@@ -1349,26 +1403,35 @@ private struct AnalysisMetric: View {
 }
 
 private struct AnalysisRow: View {
-    let title: String
-    let detail: String
-    let trailing: String
+    let title: Text
+    let detail: Text
+    let trailing: Text
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.subheadline.weight(.semibold))
-                Text(detail).font(.footnote).foregroundStyle(.secondary)
+                title.font(.subheadline.weight(.semibold))
+                detail.font(.footnote).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            Text(trailing).font(.footnote.weight(.medium)).foregroundStyle(AppTheme.brand).multilineTextAlignment(.trailing)
+            trailing.font(.footnote.weight(.medium)).foregroundStyle(AppTheme.brand).multilineTextAlignment(.trailing)
         }
     }
 }
 
 private struct AnalysisNotice: View {
-    let text: String
+    let content: Text
+
+    init(text: LocalizedStringKey) {
+        content = Text(text)
+    }
+
+    init(content: Text) {
+        self.content = content
+    }
+
     var body: some View {
-        Label(text, systemImage: "exclamationmark.triangle.fill")
+        Label { content } icon: { Image(systemName: "exclamationmark.triangle.fill") }
             .font(.footnote)
             .foregroundStyle(.orange)
             .padding(14)
@@ -1378,7 +1441,7 @@ private struct AnalysisNotice: View {
 }
 
 private struct AnalysisLoading: View {
-    let title: String
+    let title: LocalizedStringKey
     var body: some View {
         ProgressView(title)
             .frame(maxWidth: .infinity, minHeight: 72)
@@ -1388,7 +1451,7 @@ private struct AnalysisLoading: View {
 
 private struct AnalysisEmpty: View {
     let text: String
-    var body: some View { Text(text).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
+    var body: some View { Text(LocalizedStringKey(text)).font(.footnote).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
 }
 
 private struct AnalysisFilterBar<Content: View>: View {

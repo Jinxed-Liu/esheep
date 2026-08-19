@@ -66,7 +66,7 @@ struct TMRFormulaLibraryView: View {
                                         .font(.caption.monospacedDigit())
                                         .foregroundStyle(.secondary)
                                 }
-                                Text(formulaSubtitle(profile))
+                                formulaSubtitleText(profile)
                                     .font(.footnote)
                                     .foregroundStyle(profile.needsReview ? Color.orange : Color.secondary)
                             }
@@ -92,10 +92,18 @@ struct TMRFormulaLibraryView: View {
 
     private func recipeName(_ id: UUID) -> String { recipe(id)?.name ?? "已停用配方" }
 
-    private func formulaSubtitle(_ profile: TMRFormulaProfileRecord) -> String {
-        if profile.needsReview { return "待确认参考羊数，暂不能按羊数缩放" }
-        let reference = profile.referenceHeadCount.map { " · 参考 \($0) 只" } ?? ""
-        return "\(profile.quantityBasis.displayName)\(reference) · \(profile.defaultScaleMode.displayName)"
+    @ViewBuilder
+    private func formulaSubtitleText(_ profile: TMRFormulaProfileRecord) -> some View {
+        if profile.needsReview {
+            Text("待确认参考羊数，暂不能按羊数缩放")
+        } else {
+            Text(LocalizedStringKey(profile.quantityBasis.displayName))
+            if let referenceHeadCount = profile.referenceHeadCount {
+                Text(" · 参考 \(referenceHeadCount) 只")
+            }
+            Text(" · ")
+            Text(LocalizedStringKey(profile.defaultScaleMode.displayName))
+        }
     }
 }
 
@@ -226,24 +234,28 @@ struct TMRFormulaEditorView: View {
             Section("基本信息") {
                 TextField("配方名称", text: $name)
                 Picker("适用阶段", selection: $stage) {
-                    ForEach(FeedRecipeStage.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    ForEach(FeedRecipeStage.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
                 }
                 TextField("参考羊数", text: $referenceHeadCountText)
                     .keyboardType(.numberPad)
-                Text(basis == .wholeGroupDaily
-                     ? "整群口径必须填写参考羊数；每只量由系统换算。"
-                     : "参考羊数只用于同时展示参考整群总量。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                Group {
+                    if basis == .wholeGroupDaily {
+                        Text("整群口径必须填写参考羊数；每只量由系统换算。")
+                    } else {
+                        Text("参考羊数只用于同时展示参考整群总量。")
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             }
 
             Section("用量口径") {
                 Picker("权威口径", selection: $basis) {
-                    ForEach(TMRFormulaQuantityBasis.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    ForEach(TMRFormulaQuantityBasis.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 Picker("默认应用方式", selection: $scaleMode) {
-                    ForEach(TMRFormulaScaleMode.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    ForEach(TMRFormulaScaleMode.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
                 }
             }
 
@@ -274,9 +286,23 @@ struct TMRFormulaEditorView: View {
             }
 
             Section("自动换算") {
-                LabeledContent("配方录入合计", value: "\(formulaTotal.stableText) kg/日")
-                LabeledContent("参考整群每日量", value: wholeGroupTotal.map { "\($0.stableText) kg" } ?? "需填写参考羊数")
-                LabeledContent("每只每日量", value: perHeadTotal.map { "\($0.stableText) kg" } ?? "需填写参考羊数")
+                LabeledContent("配方录入合计") {
+                    Text("\(formulaTotal.stableText) kg/日")
+                }
+                LabeledContent("参考整群每日量") {
+                    if let wholeGroupTotal {
+                        Text("\(wholeGroupTotal.stableText) kg")
+                    } else {
+                        Text("需填写参考羊数")
+                    }
+                }
+                LabeledContent("每只每日量") {
+                    if let perHeadTotal {
+                        Text("\(perHeadTotal.stableText) kg")
+                    } else {
+                        Text("需填写参考羊数")
+                    }
+                }
                 Text("非权威口径仅用于换算展示，保存时仍以所选口径为准。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -309,7 +335,9 @@ struct TMRFormulaEditorView: View {
                     TextField("%", text: $eveningPercent).keyboardType(.decimalPad).multilineTextAlignment(.trailing)
                     Text("%")
                 }
-                LabeledContent("比例合计", value: "\(mealPercentTotal.stableText)%")
+                LabeledContent("比例合计") {
+                    Text("\(mealPercentTotal.stableText)%")
+                }
                 Text("启用顿次的比例合计必须为 100%；全天汇总不是第四顿。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -364,12 +392,22 @@ struct TMRFormulaEditorView: View {
     @ViewBuilder
     private func nutritionBlock(_ title: String, summary: FeedRecipeNutritionSummary?) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.subheadline.weight(.semibold))
-            LabeledContent("鲜重", value: summary.map { "\(tmrNumberText($0.asFedKilograms)) kg" } ?? "—")
-            LabeledContent("干物质", value: summary?.dryMatterKilograms.map { "\(tmrNumberText($0)) kg" } ?? "—")
-            LabeledContent("粗蛋白", value: summary?.crudeProteinKilograms.map { "\(tmrNumberText($0)) kg" } ?? "—")
-            LabeledContent("NDF", value: summary?.ndfKilograms.map { "\(tmrNumberText($0)) kg" } ?? "—")
-            LabeledContent("代谢能", value: summary?.meMJ.map { "\(tmrNumberText($0)) MJ" } ?? "—")
+            Text(LocalizedStringKey(title)).font(.subheadline.weight(.semibold))
+            LabeledContent("鲜重") {
+                if let summary { Text("\(tmrNumberText(summary.asFedKilograms)) kg") } else { Text("—") }
+            }
+            LabeledContent("干物质") {
+                if let value = summary?.dryMatterKilograms { Text("\(tmrNumberText(value)) kg") } else { Text("—") }
+            }
+            LabeledContent("粗蛋白") {
+                if let value = summary?.crudeProteinKilograms { Text("\(tmrNumberText(value)) kg") } else { Text("—") }
+            }
+            LabeledContent("NDF") {
+                if let value = summary?.ndfKilograms { Text("\(tmrNumberText(value)) kg") } else { Text("—") }
+            }
+            LabeledContent("代谢能") {
+                if let value = summary?.meMJ { Text("\(tmrNumberText(value)) MJ") } else { Text("—") }
+            }
         }
     }
 
@@ -455,14 +493,14 @@ struct TMRFeedingPlanLibraryView: View {
                             HStack {
                                 Text(plan.formulaNameSnapshot).font(.headline)
                                 Spacer()
-                                Text(plan.scheduleKind.displayName)
+                                Text(LocalizedStringKey(plan.scheduleKind.displayName))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
-                            Text("\(penNames(plan.id)) · \(plan.granularity.displayName) · 计划 v\(plan.revision)")
+                            planSubtitleText(plan)
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
-                            Text(dateRange(plan))
+                            dateRangeText(plan)
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
@@ -481,18 +519,42 @@ struct TMRFeedingPlanLibraryView: View {
         }
     }
 
-    private func penNames(_ planID: UUID) -> String {
+    private func penNames(_ planID: UUID) -> [String] {
         let names = planPens.filter { $0.farmID == farm.id && $0.planID == planID && $0.deletedAt == nil }
             .sorted { $0.sortOrder < $1.sortOrder }
             .map(\.penNameSnapshot)
-        return names.isEmpty ? "未设置圈舍" : names.joined(separator: "、")
+        return names
     }
 
-    private func dateRange(_ plan: TMRFeedingPlanRecord) -> String {
+    @ViewBuilder
+    private func planSubtitleText(_ plan: TMRFeedingPlanRecord) -> some View {
+        let names = penNames(plan.id)
+        if names.isEmpty {
+            Text("未设置圈舍")
+        } else {
+            Text(verbatim: names.joined(separator: "、"))
+        }
+        Text(" · ")
+        Text(LocalizedStringKey(plan.granularity.displayName))
+        Text(" · 计划 v\(plan.revision)")
+    }
+
+    @ViewBuilder
+    private func dateRangeText(_ plan: TMRFeedingPlanRecord) -> some View {
         let start = plan.effectiveStartDate.formatted(date: .abbreviated, time: .omitted)
-        guard let end = plan.effectiveEndDate else { return "\(start) 起持续执行" }
-        let endText = end.formatted(date: .abbreviated, time: .omitted)
-        return start == endText ? start : "\(start) 至 \(endText)"
+        if let end = plan.effectiveEndDate {
+            let endText = end.formatted(date: .abbreviated, time: .omitted)
+            if start == endText {
+                Text(verbatim: start)
+            } else {
+                Text(verbatim: start)
+                Text(" 至 ")
+                Text(verbatim: endText)
+            }
+        } else {
+            Text(verbatim: start)
+            Text(" 起持续执行")
+        }
     }
 }
 
@@ -596,7 +658,7 @@ struct TMRFeedingPlanEditorView: View {
                     }
                 }
                 Picker("计划类型", selection: $scheduleKind) {
-                    ForEach(TMRPlanScheduleKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    ForEach(TMRPlanScheduleKind.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 DatePicker(scheduleKind == .oneTime ? "执行日期" : "开始日期", selection: $startDate, displayedComponents: .date)
@@ -608,10 +670,10 @@ struct TMRFeedingPlanEditorView: View {
 
             Section("目标量计算") {
                 Picker("整群应用方式", selection: $scaleMode) {
-                    ForEach(TMRFormulaScaleMode.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    ForEach(TMRFormulaScaleMode.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
                 }
                 Picker("多舍分配", selection: $allocationMode) {
-                    ForEach(TMRPenAllocationMode.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    ForEach(TMRPenAllocationMode.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
                 }
                 if selectedProfile?.needsReview == true && scaleMode == .scaledByHeadCount {
                     Text("该迁移配方缺少参考羊数，确认配方后才能按羊数缩放。")
@@ -636,16 +698,20 @@ struct TMRFeedingPlanEditorView: View {
                         }
                     }
                 }
-                Text(allocationMode == .dynamicHeadCount
-                     ? "每天按各顿截止时间的有效羊数动态分配。"
-                     : "所选圈舍的固定比例合计必须为 100%。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                Group {
+                    if allocationMode == .dynamicHeadCount {
+                        Text("每天按各顿截止时间的有效羊数动态分配。")
+                    } else {
+                        Text("所选圈舍的固定比例合计必须为 100%。")
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             }
 
             Section("监控粒度") {
                 Picker("记录方式", selection: $granularity) {
-                    ForEach(TMRMonitoringGranularity.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    ForEach(TMRMonitoringGranularity.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 if granularity == .perMeal {
@@ -696,7 +762,7 @@ struct TMRFeedingPlanEditorView: View {
     @ViewBuilder
     private func percentageRow(_ title: String, value: Binding<String>) -> some View {
         HStack {
-            Text(title)
+            Text(LocalizedStringKey(title))
             Spacer()
             TextField("%", text: value).keyboardType(.decimalPad).multilineTextAlignment(.trailing)
             Text("%")
@@ -929,7 +995,7 @@ struct TMRBatchProductionView: View {
             Section("本锅来源") {
                 Picker("计算方式", selection: $quantitySource) {
                     ForEach(TMRProductionQuantitySource.allCases) { source in
-                        Text(source.displayName).tag(source)
+                        Text(LocalizedStringKey(source.displayName)).tag(source)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -963,7 +1029,7 @@ struct TMRBatchProductionView: View {
                     }
                     Picker("录入方式", selection: $customInput) {
                         ForEach(TMRCustomProductionInput.allCases) { input in
-                            Text(input.displayName).tag(input)
+                            Text(LocalizedStringKey(input.displayName)).tag(input)
                         }
                     }
                     .pickerStyle(.segmented)
@@ -1001,19 +1067,25 @@ struct TMRBatchProductionView: View {
                     Picker("投喂计划", selection: $planID) {
                         Text("请选择").tag(UUID?.none)
                         ForEach(plansForSelectedDate, id: \.id) { plan in
-                            Text("\(plan.formulaNameSnapshot) · \(plan.granularity.displayName)")
-                                .tag(UUID?.some(plan.id))
+                            HStack(spacing: 0) {
+                                Text(verbatim: plan.formulaNameSnapshot)
+                                Text(" · ")
+                                Text(LocalizedStringKey(plan.granularity.displayName))
+                            }
+                            .tag(UUID?.some(plan.id))
                         }
                     }
                     .onChange(of: planID) { _, _ in configureSelectedPlan(preferCurrent: false) }
                     if let selectedPlan {
-                        LabeledContent("计划快照", value: "\(selectedPlan.formulaNameSnapshot) v\(selectedPlan.formulaRevision)")
+                        LabeledContent("计划快照") {
+                            Text("\(selectedPlan.formulaNameSnapshot) v\(selectedPlan.formulaRevision)")
+                        }
                         if selectedPlan.granularity == .dailySummary {
-                            LabeledContent("计算范围", value: "全天计划")
+                            LabeledContent("计算范围") { Text("全天计划") }
                         } else {
                             ForEach(enabledPlanMeals, id: \.self) { meal in
                                 Toggle(isOn: mealSelection(meal)) {
-                                    Text("\(meal.displayName)顿（\(tmrPercentDisplay(selectedPlan.share(for: meal).stableText))%）")
+                                    mealShareText(meal, plan: selectedPlan)
                                 }
                             }
                             Button("选择全部顿次", systemImage: "checkmark.circle") {
@@ -1022,10 +1094,14 @@ struct TMRBatchProductionView: View {
                             }
                         }
                         if let total = try? suggestedPlanTotal() {
-                            LabeledContent("本锅建议量", value: "\(total.stableText) kg")
-                            LabeledContent("计算倍率", value: "\(multiplierText) 倍")
-                            if !planHeadCountSummary.isEmpty {
-                                Text(planHeadCountSummary)
+                            LabeledContent("本锅建议量") {
+                                Text("\(total.stableText) kg")
+                            }
+                            LabeledContent("计算倍率") {
+                                Text("\(multiplierText) 倍")
+                            }
+                            if !selectedMeals.isEmpty {
+                                planHeadCountSummaryText
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -1048,7 +1124,9 @@ struct TMRBatchProductionView: View {
 
             ForEach($rows) { $row in
                 Section(row.ingredientName) {
-                    LabeledContent("计划装入", value: "\(row.plannedKilogramsText) kg")
+                    LabeledContent("计划装入") {
+                        Text("\(row.plannedKilogramsText) kg")
+                    }
                     ForEach($row.loads) { $load in
                         Picker("库存批次", selection: $load.stockBatchID) {
                             Text("请选择").tag(UUID?.none)
@@ -1080,8 +1158,12 @@ struct TMRBatchProductionView: View {
             }
 
             Section("成锅汇总") {
-                LabeledContent("计划装入合计", value: "\(plannedTotal.stableText) kg")
-                LabeledContent("实际成锅重量", value: "\(actualTotal.stableText) kg")
+                LabeledContent("计划装入合计") {
+                    Text("\(plannedTotal.stableText) kg")
+                }
+                LabeledContent("实际成锅重量") {
+                    Text("\(actualTotal.stableText) kg")
+                }
                 Text("成锅重量自动等于各原料实际装入量合计，无需再次填写成品过磅值。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -1208,19 +1290,32 @@ struct TMRBatchProductionView: View {
         return TMRDecimal.rounded(result)
     }
 
-    private var planHeadCountSummary: String {
-        guard let plan = selectedPlan else { return "" }
-        let selectedPens = planPens.filter {
-            $0.farmID == farm.id && $0.planID == plan.id && $0.deletedAt == nil
+    @ViewBuilder
+    private var planHeadCountSummaryText: some View {
+        if let plan = selectedPlan {
+            let selectedPens = planPens.filter {
+                $0.farmID == farm.id && $0.planID == plan.id && $0.deletedAt == nil
+            }
+            let occupancy = FarmPenOccupancyIndex.make(farmID: farm.id, sheep: sheep, transfers: transfers, removals: removals)
+            let day = TMRLocalDay.start(of: planDate, timeZone: farmTimeZone)
+            let summaries = selectedMeals.sorted { $0.sortOrder < $1.sortOrder }.map { meal in
+                let cutoff = TMRLocalDay.cutoff(for: day, minuteOfDay: plan.cutoffMinute(for: meal), timeZone: farmTimeZone)
+                let counts = occupancy.sheepIDsByPen(at: cutoff).mapValues(\.count)
+                let total = selectedPens.reduce(0) { $0 + counts[$1.penID, default: 0] }
+                return (meal: meal, count: total)
+            }
+            ForEach(Array(summaries.enumerated()), id: \.offset) { index, summary in
+                if index > 0 { Text("；") }
+                Text(LocalizedStringKey(summary.meal.displayName))
+                Text("顿按 \(summary.count) 只计算")
+            }
         }
-        let occupancy = FarmPenOccupancyIndex.make(farmID: farm.id, sheep: sheep, transfers: transfers, removals: removals)
-        let day = TMRLocalDay.start(of: planDate, timeZone: farmTimeZone)
-        return selectedMeals.sorted { $0.sortOrder < $1.sortOrder }.map { meal in
-            let cutoff = TMRLocalDay.cutoff(for: day, minuteOfDay: plan.cutoffMinute(for: meal), timeZone: farmTimeZone)
-            let counts = occupancy.sheepIDsByPen(at: cutoff).mapValues(\.count)
-            let total = selectedPens.reduce(0) { $0 + counts[$1.penID, default: 0] }
-            return "\(meal.displayName)顿按 \(total) 只计算"
-        }.joined(separator: "；")
+    }
+
+    @ViewBuilder
+    private func mealShareText(_ meal: TMRMealPeriod, plan: TMRFeedingPlanRecord) -> some View {
+        Text(LocalizedStringKey(meal.displayName))
+        Text("顿（\(tmrPercentDisplay(plan.share(for: meal).stableText))%）")
     }
 
     private func rebuildRows() {
@@ -1420,7 +1515,7 @@ struct TMRBatchLibraryView: View {
                             HStack {
                                 Text(batch.batchCode).font(.headline.monospacedDigit())
                                 Spacer()
-                                Text(batch.status.displayName)
+                                Text(LocalizedStringKey(batch.status.displayName))
                                     .font(.caption)
                                     .foregroundStyle(batch.status == .available ? Color.green : Color.secondary)
                             }
@@ -1484,21 +1579,35 @@ struct TMRBatchDetailView: View {
                     LabeledContent("批次号", value: batch.batchCode)
                     LabeledContent("配方", value: "\(batch.formulaNameSnapshot) v\(batch.formulaRevision)")
                     if batch.sourcePlanID != nil {
-                        LabeledContent("生产来源", value: "投喂计划 v\(batch.sourcePlanRevision ?? 0)")
+                        LabeledContent("生产来源") {
+                            Text("投喂计划 v\(batch.sourcePlanRevision ?? 0)")
+                        }
                         if let sourcePlanDate = batch.sourcePlanDate {
                             LabeledContent("计划日期", value: sourcePlanDate.formatted(date: .abbreviated, time: .omitted))
                         }
-                        LabeledContent(
-                            "计划顿次",
-                            value: batch.sourcePlanMeals.map(\.displayName).joined(separator: "、")
-                        )
+                        LabeledContent("计划顿次") {
+                            HStack(spacing: 4) {
+                                ForEach(Array(batch.sourcePlanMeals.enumerated()), id: \.offset) { index, meal in
+                                    if index > 0 { Text("、") }
+                                    Text(LocalizedStringKey(meal.displayName))
+                                }
+                            }
+                        }
                     } else {
-                        LabeledContent("生产来源", value: "自定义配方倍率")
+                        LabeledContent("生产来源") {
+                            Text("自定义配方倍率")
+                        }
                     }
                     LabeledContent("制作时间", value: batch.producedAt.formatted(date: .abbreviated, time: .shortened))
-                    LabeledContent("生产量", value: "\(batch.producedKilogramsText) kg")
-                    LabeledContent("当前余额", value: "\(balance.stableText) kg")
-                    LabeledContent("状态", value: batch.status.displayName)
+                    LabeledContent("生产量") {
+                        Text("\(batch.producedKilogramsText) kg")
+                    }
+                    LabeledContent("当前余额") {
+                        Text("\(balance.stableText) kg")
+                    }
+                    LabeledContent("状态") {
+                        Text(LocalizedStringKey(batch.status.displayName))
+                    }
                 }
                 Section("实际装料") {
                     ForEach(batchIngredients, id: \.id) { ingredient in
@@ -1508,9 +1617,15 @@ struct TMRBatchDetailView: View {
                                 Spacer()
                                 Text("\(ingredient.actualKilogramsText) kg")
                             }
-                            Text("计划 \(ingredient.plannedKilogramsText) kg" + loadDescription(ingredient.id))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            HStack(spacing: 0) {
+                                Text("计划 \(ingredient.plannedKilogramsText) kg")
+                                if let loadDescription = loadDescription(ingredient.id) {
+                                    Text(" · ")
+                                    Text(verbatim: loadDescription)
+                                }
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -1518,7 +1633,7 @@ struct TMRBatchDetailView: View {
                     ForEach(batchMovements, id: \.id) { movement in
                         HStack {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(movement.kind.displayName)
+                                Text(LocalizedStringKey(movement.kind.displayName))
                                 Text(movement.occurredAt.formatted(date: .abbreviated, time: .shortened))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -1569,10 +1684,10 @@ struct TMRBatchDetailView: View {
         .recordErrorAlert($errorMessage)
     }
 
-    private func loadDescription(_ batchIngredientID: UUID) -> String {
+    private func loadDescription(_ batchIngredientID: UUID) -> String? {
         let names = loads.filter { $0.batchIngredientID == batchIngredientID && $0.deletedAt == nil }
             .map { "\($0.ingredientBatchNameSnapshot) \($0.actualKilogramsText) kg" }
-        return names.isEmpty ? "" : " · " + names.joined(separator: "、")
+        return names.isEmpty ? nil : names.joined(separator: "、")
     }
 
     private func movementDeltaText(_ movement: TMRBatchMovementRecord) -> String {
@@ -1634,7 +1749,9 @@ private struct TMRBatchAdjustmentView: View {
     var body: some View {
         Form {
             Section("批次余额") {
-                LabeledContent("当前余额", value: "\(currentBalance.stableText) kg")
+                LabeledContent("当前余额") {
+                    Text("\(currentBalance.stableText) kg")
+                }
                 HStack {
                     Text("调整量")
                     Spacer()
@@ -1643,7 +1760,13 @@ private struct TMRBatchAdjustmentView: View {
                         .multilineTextAlignment(.trailing)
                     Text("kg")
                 }
-                LabeledContent("调整后余额", value: adjustedBalance.map { "\($0.stableText) kg" } ?? "—")
+                LabeledContent("调整后余额") {
+                    if let adjustedBalance {
+                        Text("\(adjustedBalance.stableText) kg")
+                    } else {
+                        Text("—")
+                    }
+                }
                 Text("正数增加、负数减少；余额不能小于 0。调整只影响 TMR 成品账，不改动原料库存。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -1754,7 +1877,7 @@ struct TMRFeedingEntryView: View {
                 }
                 DatePicker("投喂时间", selection: $occurredAt)
                 Picker("顿次", selection: $meal) {
-                    ForEach(TMRMealPeriod.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                    ForEach(TMRMealPeriod.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 if meal == .allDaySummary {
@@ -1828,9 +1951,23 @@ struct TMRFeedingEntryView: View {
             }
 
             Section("保存前核对") {
-                LabeledContent("批次当前余额", value: selectedBatch.map { "\(batchBalance($0.id).stableText) kg" } ?? "—")
-                LabeledContent("本次实际合计", value: "\(actualTotal.stableText) kg")
-                LabeledContent("投后余额", value: selectedBatch.map { "\(TMRDecimal.rounded(batchBalance($0.id) - actualTotal).stableText) kg" } ?? "—")
+                LabeledContent("批次当前余额") {
+                    if let selectedBatch {
+                        Text("\(batchBalance(selectedBatch.id).stableText) kg")
+                    } else {
+                        Text("—")
+                    }
+                }
+                LabeledContent("本次实际合计") {
+                    Text("\(actualTotal.stableText) kg")
+                }
+                LabeledContent("投后余额") {
+                    if let selectedBatch {
+                        Text("\(TMRDecimal.rounded(batchBalance(selectedBatch.id) - actualTotal).stableText) kg")
+                    } else {
+                        Text("—")
+                    }
+                }
                 TextField("投喂备注", text: $note, axis: .vertical).lineLimit(2...5)
             }
         }
@@ -2024,7 +2161,9 @@ struct TMRFeedingCorrectionView: View {
                 Section("原投喂运行") {
                     LabeledContent("TMR 批次", value: originalRun.batchCodeSnapshot)
                     LabeledContent("配方快照", value: "\(originalRun.formulaNameSnapshot) v\(originalRun.formulaRevision)")
-                    LabeledContent("批次当前余额", value: "\(batchBalance(batch.id).stableText) kg")
+                    LabeledContent("批次当前余额") {
+                        Text("\(batchBalance(batch.id).stableText) kg")
+                    }
                     Text("这是一次多舍原子事实；保存修正时会先冲回整次原记录，再以本表全部圈舍重新入账。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -2032,7 +2171,7 @@ struct TMRFeedingCorrectionView: View {
                 Section("发生时间与顿次") {
                     DatePicker("投喂时间", selection: $occurredAt)
                     Picker("顿次", selection: $meal) {
-                        ForEach(TMRMealPeriod.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                        ForEach(TMRMealPeriod.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
                     }
                     .pickerStyle(.segmented)
                 }
@@ -2058,7 +2197,9 @@ struct TMRFeedingCorrectionView: View {
                             }
                         }
                     }
-                    LabeledContent("修正后合计", value: "\(actualTotal.stableText) kg")
+                    LabeledContent("修正后合计") {
+                        Text("\(actualTotal.stableText) kg")
+                    }
                 }
                 Section("修正说明") {
                     TextField("必填修正原因", text: $reason, axis: .vertical).lineLimit(2...4)
@@ -2300,9 +2441,9 @@ struct TMRMonitoringView: View {
     private func monitoringRow(_ row: TMRMonitoringRow) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(row.meal.displayName).font(.headline)
+                Text(LocalizedStringKey(row.meal.displayName)).font(.headline)
                 Spacer()
-                Label(row.status.displayName, systemImage: statusSymbol(row.status))
+                Label(LocalizedStringKey(row.status.displayName), systemImage: statusSymbol(row.status))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(statusColor(row.status))
             }
@@ -2334,7 +2475,7 @@ struct TMRMonitoringView: View {
 
     private func metric(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(LocalizedStringKey(title)).font(.caption2).foregroundStyle(.secondary)
             Text(value).font(.subheadline.monospacedDigit())
         }
     }
@@ -2424,11 +2565,19 @@ private struct TMRDeviationAcknowledgementView: View {
     var body: some View {
         Form {
             Section("当前偏差") {
-                LabeledContent("圈舍", value: row.penName)
-                LabeledContent("顿次", value: row.meal.displayName)
-                LabeledContent("状态", value: row.status.displayName)
-                LabeledContent("目标", value: row.targetKilograms.map { "\($0.stableText) kg" } ?? "—")
-                LabeledContent("实际", value: "\(row.actualKilograms.stableText) kg")
+                LabeledContent("圈舍") { Text(verbatim: row.penName) }
+                LabeledContent("顿次") { Text(LocalizedStringKey(row.meal.displayName)) }
+                LabeledContent("状态") { Text(LocalizedStringKey(row.status.displayName)) }
+                LabeledContent("目标") {
+                    if let targetKilograms = row.targetKilograms {
+                        Text("\(targetKilograms.stableText) kg")
+                    } else {
+                        Text("—")
+                    }
+                }
+                LabeledContent("实际") {
+                    Text("\(row.actualKilograms.stableText) kg")
+                }
             }
             Section("确认说明") {
                 TextField("必填备注", text: $note, axis: .vertical).lineLimit(3...6)

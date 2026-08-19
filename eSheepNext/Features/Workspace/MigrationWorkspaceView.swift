@@ -34,7 +34,7 @@ struct MigrationWorkspaceView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(saved.manifest.importedAt, format: .dateTime.year().month().day().hour().minute())
-                                Text(saved.isReadyForTemporaryBuild ? "可建立临时牧场" : "仍有 \(saved.blockingIssues.count) 项待处理")
+                                Text(saved.isReadyForTemporaryBuild ? LocalizedStringKey("可建立临时牧场") : LocalizedStringKey("仍有 \(saved.blockingIssues.count) 项待处理"))
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                         }
@@ -72,14 +72,14 @@ struct MigrationWorkspaceView: View {
                     Section("迁移问题") {
                         ForEach(session.issues) { issue in
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(issue.title).font(.headline).foregroundStyle(issue.severity == .blocking ? .red : .secondary)
-                                Text(issue.detail).font(.footnote).foregroundStyle(.secondary)
+                                Text(LocalizedStringKey(issue.title)).font(.headline).foregroundStyle(issue.severity == .blocking ? .red : .secondary)
+                                Text(LocalizedStringKey(issue.detail)).font(.footnote).foregroundStyle(.secondary)
                             }
                         }
                     }
                 }
                 Section("临时转换") {
-                    Button(isBuildingTemporaryFarm ? "正在建立临时牧场" : "建立临时牧场", action: buildTemporaryFarm)
+                    Button(isBuildingTemporaryFarm ? LocalizedStringKey("正在建立临时牧场") : LocalizedStringKey("建立临时牧场"), action: buildTemporaryFarm)
                         .disabled(!session.isReadyForTemporaryBuild || isBuildingTemporaryFarm)
                     if isBuildingTemporaryFarm { ProgressView("正在转换、重建历史并对账") }
                     Button("导入只读统计基线") { isImportingBaseline = true }.disabled(isBuildingTemporaryFarm)
@@ -100,7 +100,7 @@ struct MigrationWorkspaceView: View {
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(isCommittingMigration || activeAccount == nil)
-                            Text(commitHelpText)
+                            Text(LocalizedStringKey(commitHelpText))
                                 .font(.footnote).foregroundStyle(.secondary)
                         } else {
                             Text("对账阻断项清零后才能创建正式牧场。")
@@ -138,7 +138,7 @@ struct MigrationWorkspaceView: View {
             Button("确认创建") { commitMigration() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text(commitConfirmationMessage)
+            Text(LocalizedStringKey(commitConfirmationMessage))
         }
         .alert(
             "迁移完成",
@@ -158,7 +158,7 @@ struct MigrationWorkspaceView: View {
                     : "\(result.farmName) 已创建，共导入 \(result.committedRecordCount) 条记录和 \(result.photoCount) 张照片。\(cloudStatusText(for: result.farmID))")
             }
         }
-        .alert("迁移操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(errorMessage ?? "") }
+        .alert("迁移操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(LocalizedStringKey(errorMessage ?? "")) }
     }
 
     private var requiredSessionBinding: Binding<MigrationSession> {
@@ -266,7 +266,7 @@ private struct MigrationDuplicateResolutionView: View {
         }
         .navigationTitle("重复耳号确认")
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) } }
-        .alert("无法保存", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(errorMessage ?? "") }
+        .alert("无法保存", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(LocalizedStringKey(errorMessage ?? "")) }
     }
 
     private func earTagBinding(_ sourceKey: String) -> Binding<String> {
@@ -306,7 +306,7 @@ private struct MigrationAssignmentResolutionView: View {
         }
         .navigationTitle("确认历史归属")
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("保存归属", action: assign).disabled(selectedSourceKey == nil) } }
-        .alert("无法保存", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(errorMessage ?? "") }
+        .alert("无法保存", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(LocalizedStringKey(errorMessage ?? "")) }
     }
 
     private func assign() { guard let selectedSourceKey else { return }; do { try MigrationResolutionService.apply(.assignRecord(recordKey: assignmentID, sheepSourceKey: selectedSourceKey), to: &session) } catch { errorMessage = error.localizedDescription } }

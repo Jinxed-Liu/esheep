@@ -112,6 +112,7 @@ enum FarmLocalBackupError: LocalizedError {
     case targetNotEmpty
     case identifierCollision
     case invalidProjection(String)
+    case cloudTargetForbidden
 
     var errorDescription: String? {
         switch self {
@@ -124,6 +125,7 @@ enum FarmLocalBackupError: LocalizedError {
         case .targetNotEmpty: "只能恢复到没有羊群生产数据的空牧场。"
         case .identifierCollision: "备份标识已被其他牧场使用，已停止恢复。"
         case .invalidProjection(let field): "备份中的投喂数据不完整或不一致：\(field)。"
+        case .cloudTargetForbidden: "文件备份只能恢复为新的仅本机牧场，不能直接覆盖 iCloud 或 eSheep 云牧场。"
         }
     }
 }
@@ -157,7 +159,18 @@ enum FarmLocalBackupService {
         return .init(envelope: envelope, entityCount: count)
     }
 
-    static func restore(_ preview: FarmBackupPreview, into farm: FarmRecord, account: AccountProfile, context: ModelContext) throws -> FarmBackupRestoreResult {
+    static func restore(
+        _ preview: FarmBackupPreview,
+        into farm: FarmRecord,
+        account: AccountProfile,
+        context: ModelContext,
+        additionalRestore: ((UUID, UUID, ModelContext) throws -> Void)? = nil
+    ) throws -> FarmBackupRestoreResult {
+        if let storageProfile = try context.fetch(FetchDescriptor<FarmStorageProfile>())
+            .first(where: { $0.farmID == farm.id }),
+           storageProfile.mode != .localOnly {
+            throw FarmLocalBackupError.cloudTargetForbidden
+        }
         let marker = "本地备份恢复：\(preview.envelope.checksum)"
         if try context.fetch(FetchDescriptor<DomainOperation>()).contains(where: { $0.farmID == farm.id && $0.summary == marker }) {
             return .init(restoredCount: 0, alreadyRestored: true)
@@ -165,8 +178,14 @@ enum FarmLocalBackupService {
         let hasData = try context.fetch(FetchDescriptor<PenRecord>()).contains { $0.farmID == farm.id }
             || context.fetch(FetchDescriptor<SheepRecord>()).contains { $0.farmID == farm.id }
             || context.fetch(FetchDescriptor<WeightRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<WeaningRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<BreedingProgramRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<BreedingProgramStepRecord>()).contains { $0.farmID == farm.id }
             || context.fetch(FetchDescriptor<TransferRecord>()).contains { $0.farmID == farm.id }
             || context.fetch(FetchDescriptor<RemovalRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<ProductionBatchRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<BatchMembershipRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<DailyPenCountRecord>()).contains { $0.farmID == farm.id }
             || context.fetch(FetchDescriptor<HealthRecord>()).contains { $0.farmID == farm.id }
             || context.fetch(FetchDescriptor<ReproductionRecord>()).contains { $0.farmID == farm.id }
             || context.fetch(FetchDescriptor<InventoryLotRecord>()).contains { $0.farmID == farm.id }
@@ -174,9 +193,13 @@ enum FarmLocalBackupService {
             || context.fetch(FetchDescriptor<FeedIngredientRecord>()).contains { $0.farmID == farm.id }
             || context.fetch(FetchDescriptor<FeedRecord>()).contains { $0.farmID == farm.id }
             || context.fetch(FetchDescriptor<TMRBatchRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<NoteRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<PhotoAssetRecord>()).contains { $0.farmID == farm.id }
+            || context.fetch(FetchDescriptor<SheepAvatarRecord>()).contains { $0.farmID == farm.id }
         guard !hasData else { throw FarmLocalBackupError.targetNotEmpty }
         try validateIdentifierCollisions(preview.envelope.payload, targetFarmID: farm.id, context: context)
         insert(preview.envelope.payload, farmID: farm.id, accountID: account.effectiveAccountID, context: context)
+        try additionalRestore?(farm.id, account.effectiveAccountID, context)
         farm.name = preview.envelope.payload.farm.name
         farm.updatedAt = .now
         context.insert(DomainOperation(farmID: farm.id, accountID: account.effectiveAccountID, kind: .recoverEntity, summary: marker, entityType: CloudEntityType.farm.rawValue, entityID: farm.id, payload: Data(preview.envelope.checksum.utf8)))

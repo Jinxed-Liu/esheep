@@ -641,7 +641,7 @@ private struct InsightMarkdownTableView: View {
                 Image(systemName: status.symbol)
                     .symbolRenderingMode(.hierarchical)
                 if let label = statusLabel(from: text) {
-                    Text(label)
+                    Text(LocalizedStringKey(label))
                         .lineLimit(1)
                 }
             }
