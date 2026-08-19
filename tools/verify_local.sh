@@ -63,6 +63,15 @@ run_vitest_with_discovery_gate() {
   fi
 }
 
+run_worker_vitest_from_ascii_copy() {
+  local source_directory="$1"
+  local staged_directory
+  staged_directory="$(mktemp -d /tmp/esheep-worker.XXXXXX)"
+  rsync -a --exclude node_modules "$source_directory/" "$staged_directory/"
+  (cd "$staged_directory" && npm ci --ignore-scripts)
+  run_vitest_with_discovery_gate "$staged_directory"
+}
+
 verify_supabase_public_config() {
   local environment="$1"
   local config="$repo_root/Config/${environment}Environment.local.xcconfig"
@@ -146,10 +155,13 @@ print(f"XCTest gate passed: discovered={total}, failed=0, skipped=0")
 
 require_command supabase
 require_command docker
+require_command rsync
 docker info >/dev/null
-(cd "$repo_root" && supabase db reset && supabase test db)
+(cd "$repo_root" && supabase db reset --local)
+"$repo_root/tools/run_supabase_pgtap.sh"
+(cd "$repo_root" && supabase db lint --local && supabase db advisors --local)
 
 # Legacy protocol regressions. These are not 3.1 production authority gates,
 # but if run they must execute at least one real test.
-run_vitest_with_discovery_gate "$repo_root/backend/identity-worker"
+run_worker_vitest_from_ascii_copy "$repo_root/backend/identity-worker"
 (cd "$repo_root/backend/cloudbase-identity-gateway" && npm run check && npm test && npm run security:audit)
