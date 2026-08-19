@@ -207,9 +207,10 @@ describe("Development Worker and D1 integration", () => {
       deviceID,
       publicKeyJWK: { y: publicKeyJWK.y, x: publicKeyJWK.x, crv: publicKeyJWK.crv, kty: publicKeyJWK.kty },
       displayName: "iPhone Air（重命名）",
+      tmrDataProtocolVersion: 1,
     }));
     expect(idempotentRegistration.status).toBe(201);
-    await expect(generation()).resolves.toMatchObject({ generation: 2 });
+    await expect(generation()).resolves.toMatchObject({ generation: 3 });
 
     const replacedKey = await call("/v1/devices/register", authenticatedJSON(owner.token, "POST", {
       deviceID,
@@ -218,10 +219,11 @@ describe("Development Worker and D1 integration", () => {
     }));
     expect(replacedKey.status).toBe(409);
     await expect(replacedKey.json()).resolves.toMatchObject({ error: { code: "device_key_mismatch" } });
-    await expect(generation()).resolves.toMatchObject({ generation: 2 });
-    const storedDevice = await env.DB.prepare("SELECT public_key_jwk AS publicKeyJWK FROM devices WHERE id = ?")
-      .bind(deviceID).first<{ publicKeyJWK: string }>();
+    await expect(generation()).resolves.toMatchObject({ generation: 3 });
+    const storedDevice = await env.DB.prepare("SELECT public_key_jwk AS publicKeyJWK, tmr_data_protocol_version AS tmrDataProtocolVersion FROM devices WHERE id = ?")
+      .bind(deviceID).first<{ publicKeyJWK: string; tmrDataProtocolVersion: number }>();
     expect(storedDevice?.publicKeyJWK).toBe(JSON.stringify(publicKeyJWK, Object.keys(publicKeyJWK).sort()));
+    expect(storedDevice?.tmrDataProtocolVersion).toBe(1);
   });
 
   it("locks invite redemption after five failures in fifteen minutes", async () => {

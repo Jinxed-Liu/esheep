@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(46);
+select plan(55);
 
 select set_config('esheep.test.user_a', gen_random_uuid()::text, false);
 select set_config('esheep.test.user_b', gen_random_uuid()::text, false);
@@ -88,6 +88,31 @@ select set_config(
   true
 );
 set local role authenticated;
+
+select lives_ok(
+  format(
+    $$update public.profiles
+      set display_name = 'Renamed account'
+      where user_id = %L::uuid$$,
+    current_setting('esheep.test.user_a')
+  ),
+  'user can update own account display name'
+);
+
+select results_eq(
+  format(
+    $$with updated as (
+        update public.profiles
+        set display_name = 'Must not apply'
+        where user_id = %L::uuid
+        returning 1
+      )
+      select count(*)::integer from updated$$,
+    current_setting('esheep.test.user_b')
+  ),
+  array[0],
+  'user cannot update another account display name'
+);
 
 select lives_ok(
   format(
@@ -523,6 +548,100 @@ select ok(
   ),
   'profile updates are limited to presentation columns'
 );
+
+select ok(
+  exists (
+    select 1
+    from storage.buckets
+    where id = 'account-avatars'
+      and not public
+      and file_size_limit = 65536
+  ),
+  'account avatar bucket is private and size-limited'
+);
+
+select ok(
+  has_column_privilege('authenticated', 'public.profiles', 'avatar_digest', 'UPDATE')
+  and has_column_privilege('authenticated', 'public.profiles', 'avatar_revision', 'UPDATE')
+  and not has_column_privilege('authenticated', 'public.profiles', 'app_account_id', 'UPDATE'),
+  'authenticated can update avatar presentation metadata but not account identity'
+);
+
+select set_config(
+  'request.jwt.claims',
+  json_build_object(
+    'sub', current_setting('esheep.test.user_a'),
+    'role', 'authenticated'
+  )::text,
+  true
+);
+set local role authenticated;
+
+select lives_ok(
+  format(
+    $$update public.profiles
+      set avatar_digest = %L, avatar_revision = 1
+      where user_id = %L::uuid$$,
+    repeat('a', 64),
+    current_setting('esheep.test.user_a')
+  ),
+  'user can update own avatar metadata'
+);
+
+select lives_ok(
+  format(
+    $$insert into storage.objects (bucket_id, name, owner_id)
+      values ('account-avatars', %L, %L)$$,
+    lower(current_setting('esheep.test.user_a')) || '/avatar.jpg',
+    current_setting('esheep.test.user_a')
+  ),
+  'user can upload only to own avatar object'
+);
+
+select is(
+  (
+    select count(*)::integer
+    from storage.objects
+    where bucket_id = 'account-avatars'
+  ),
+  1,
+  'user can read own avatar object'
+);
+
+reset role;
+select set_config(
+  'request.jwt.claims',
+  json_build_object(
+    'sub', current_setting('esheep.test.user_b'),
+    'role', 'authenticated'
+  )::text,
+  true
+);
+set local role authenticated;
+
+select is(
+  (
+    select count(*)::integer
+    from storage.objects
+    where bucket_id = 'account-avatars'
+  ),
+  0,
+  'another user cannot read the account avatar object'
+);
+
+select throws_ok(
+  format(
+    $$insert into storage.objects (bucket_id, name, owner_id)
+      values ('account-avatars', %L, %L)$$,
+    lower(current_setting('esheep.test.user_a')) || '/avatar.jpg',
+    current_setting('esheep.test.user_b')
+  ),
+  '42501',
+  'new row violates row-level security policy for table "objects"',
+  'another user cannot overwrite the account avatar object'
+);
+
+reset role;
 
 select is(
   (

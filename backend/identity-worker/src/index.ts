@@ -175,10 +175,20 @@ async function logoutSession(env: Env, auth: AuthContext): Promise<Response> {
 }
 
 async function registerDevice(request: Request, env: Env, auth: AuthContext): Promise<Response> {
-  const input = await body<{ deviceID: string; publicKeyJWK: JsonWebKey; displayName?: string }>(request);
+  const input = await body<{ deviceID: string; publicKeyJWK: JsonWebKey; displayName?: string; tmrDataProtocolVersion?: number }>(request);
   if (!input.deviceID || !input.publicKeyJWK) throw new APIError(400, "invalid_device", "设备标识或公钥缺失。");
-  const existing = await env.DB.prepare("SELECT account_id, public_key_jwk, status FROM devices WHERE id = ?")
-    .bind(input.deviceID).first<{ account_id: string; public_key_jwk: string; status: string }>();
+  if (input.tmrDataProtocolVersion !== undefined &&
+      (!Number.isInteger(input.tmrDataProtocolVersion) || input.tmrDataProtocolVersion < 0)) {
+    throw new APIError(400, "invalid_tmr_data_protocol_version", "TMR 数据协议版本无效。");
+  }
+  const tmrDataProtocolVersion = input.tmrDataProtocolVersion ?? 0;
+  const existing = await env.DB.prepare("SELECT account_id, public_key_jwk, status, tmr_data_protocol_version FROM devices WHERE id = ?")
+    .bind(input.deviceID).first<{
+      account_id: string;
+      public_key_jwk: string;
+      status: string;
+      tmr_data_protocol_version: number;
+    }>();
   if (existing && existing.account_id !== auth.accountID) {
     throw new APIError(409, "device_owned_by_another_account", "该设备已绑定其他账号。");
   }
@@ -197,10 +207,10 @@ async function registerDevice(request: Request, env: Env, auth: AuthContext): Pr
   }
   const timestamp = now();
   const statements = [
-    env.DB.prepare("INSERT INTO devices (id, account_id, public_key_jwk, display_name, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, status = 'active', last_seen_at = excluded.last_seen_at")
-      .bind(input.deviceID, auth.accountID, publicKeyJWK, input.displayName?.trim() || "Apple 设备", timestamp, timestamp),
+    env.DB.prepare("INSERT INTO devices (id, account_id, public_key_jwk, display_name, tmr_data_protocol_version, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, tmr_data_protocol_version = excluded.tmr_data_protocol_version, status = 'active', last_seen_at = excluded.last_seen_at")
+      .bind(input.deviceID, auth.accountID, publicKeyJWK, input.displayName?.trim() || "Apple 设备", tmrDataProtocolVersion, timestamp, timestamp),
   ];
-  if (!existing || existing.status !== "active") {
+  if (!existing || existing.status !== "active" || existing.tmr_data_protocol_version !== tmrDataProtocolVersion) {
     statements.push(
       env.DB.prepare("UPDATE farm_directories SET security_generation = security_generation + 1, updated_at = ? WHERE id IN (SELECT farm_id FROM memberships WHERE account_id = ? AND status = 'active')")
         .bind(timestamp, auth.accountID),
@@ -369,7 +379,7 @@ async function farmSecuritySnapshot(farmID: string, env: Env, auth: AuthContext)
   if (!membership) throw new APIError(403, "inactive_membership", "当前账号不是该牧场的有效成员。");
   const members = await env.DB.prepare("SELECT m.id AS membershipID, m.account_id AS accountID, a.display_name AS displayName, m.role, m.status, m.share_participant_record_name AS shareParticipantRecordName FROM memberships m JOIN accounts a ON a.id = m.account_id WHERE m.farm_id = ?")
     .bind(farmID).all();
-  const devices = await env.DB.prepare("SELECT d.id AS deviceID, d.account_id AS accountID, d.public_key_jwk AS publicKeyJWK FROM devices d JOIN memberships m ON m.account_id = d.account_id WHERE m.farm_id = ? AND m.status = 'active' AND d.status = 'active'")
+  const devices = await env.DB.prepare("SELECT d.id AS deviceID, d.account_id AS accountID, d.public_key_jwk AS publicKeyJWK, d.tmr_data_protocol_version AS tmrDataProtocolVersion FROM devices d JOIN memberships m ON m.account_id = d.account_id WHERE m.farm_id = ? AND m.status = 'active' AND d.status = 'active'")
     .bind(farmID).all();
   const revokedCertificates = await env.DB.prepare("SELECT id AS certificateID, revoked_at AS revokedAt FROM capability_certificates WHERE farm_id = ? AND revoked_at IS NOT NULL")
     .bind(farmID).all();
