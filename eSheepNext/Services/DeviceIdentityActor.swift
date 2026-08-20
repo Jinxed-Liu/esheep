@@ -27,20 +27,22 @@ actor DeviceIdentityActor {
     static let shared = DeviceIdentityActor()
 
     func identity() throws -> DeviceSigningIdentity {
-        let deviceID = try loadOrCreateDeviceID()
+        let scope = Self.currentAccountScope()
+        let deviceID = try loadOrCreateDeviceID(scope: scope)
         if SecureEnclave.isAvailable {
-            let key = try secureEnclaveKey()
+            let key = try secureEnclaveKey(scope: scope)
             return DeviceSigningIdentity(deviceID: deviceID, publicKeyX963: key.publicKey.x963Representation, usesSecureEnclave: true)
         }
-        let key = try softwareKey()
+        let key = try softwareKey(scope: scope)
         return DeviceSigningIdentity(deviceID: deviceID, publicKeyX963: key.publicKey.x963Representation, usesSecureEnclave: false)
     }
 
     func sign(_ data: Data) throws -> Data {
+        let scope = Self.currentAccountScope()
         if SecureEnclave.isAvailable {
-            return try secureEnclaveKey().signature(for: data).rawRepresentation
+            return try secureEnclaveKey(scope: scope).signature(for: data).rawRepresentation
         }
-        return try softwareKey().signature(for: data).rawRepresentation
+        return try softwareKey(scope: scope).signature(for: data).rawRepresentation
     }
 
     func register(using client: IdentityWorkerClient = .shared) async throws -> DeviceSigningIdentity {
@@ -63,32 +65,52 @@ actor DeviceIdentityActor {
         return identity
     }
 
-    private func loadOrCreateDeviceID() throws -> UUID {
-        if let data = try SecureAccountStore.data(account: "device-id"),
+    /// A device signing identity belongs to an authenticated account, not to
+    /// the physical installation. Reusing one unscoped identity after an
+    /// account switch causes the server to correctly reject registration as a
+    /// cross-account device takeover.
+    nonisolated static func storageAccountName(base: String, accountID: UUID?) -> String {
+        guard let accountID else { return base }
+        return "\(base).account.\(accountID.uuidString.lowercased())"
+    }
+
+    private nonisolated static func currentAccountScope() -> UUID? {
+        if AccountIdentityClients.activeProvider == .supabase,
+           let authUserID = SecureAccountStore.supabaseSession()?.authUserID {
+            return authUserID
+        }
+        return SecureAccountStore.persistedSessionAccountID()
+    }
+
+    private func loadOrCreateDeviceID(scope: UUID?) throws -> UUID {
+        let account = Self.storageAccountName(base: "device-id", accountID: scope)
+        if let data = try SecureAccountStore.data(account: account),
            let text = String(data: data, encoding: .utf8),
            let id = UUID(uuidString: text) {
             return id
         }
         let id = UUID()
-        try SecureAccountStore.save(Data(id.uuidString.utf8), account: "device-id")
+        try SecureAccountStore.save(Data(id.uuidString.utf8), account: account)
         return id
     }
 
-    private func secureEnclaveKey() throws -> SecureEnclave.P256.Signing.PrivateKey {
-        if let data = try SecureAccountStore.data(account: "device-secure-enclave-key") {
+    private func secureEnclaveKey(scope: UUID?) throws -> SecureEnclave.P256.Signing.PrivateKey {
+        let account = Self.storageAccountName(base: "device-secure-enclave-key", accountID: scope)
+        if let data = try SecureAccountStore.data(account: account) {
             return try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: data)
         }
         let key = try SecureEnclave.P256.Signing.PrivateKey()
-        try SecureAccountStore.save(key.dataRepresentation, account: "device-secure-enclave-key")
+        try SecureAccountStore.save(key.dataRepresentation, account: account)
         return key
     }
 
-    private func softwareKey() throws -> P256.Signing.PrivateKey {
-        if let data = try SecureAccountStore.data(account: "device-software-key") {
+    private func softwareKey(scope: UUID?) throws -> P256.Signing.PrivateKey {
+        let account = Self.storageAccountName(base: "device-software-key", accountID: scope)
+        if let data = try SecureAccountStore.data(account: account) {
             return try P256.Signing.PrivateKey(rawRepresentation: data)
         }
         let key = P256.Signing.PrivateKey()
-        try SecureAccountStore.save(key.rawRepresentation, account: "device-software-key")
+        try SecureAccountStore.save(key.rawRepresentation, account: account)
         return key
     }
 }
