@@ -7,6 +7,459 @@ import XCTest
 
 @MainActor
 final class InsightAssistantTests: XCTestCase {
+    func testBornLambSkillOverridesConflictingRawTableParameters() throws {
+        var arguments = farmQueryArguments(subject: "sheep")
+        arguments["query_kind"] = FarmDataQuerySkill.QueryKind.bornLambs.rawValue
+        arguments["date_field"] = "birth_at"
+        arguments["kind"] = ""
+        arguments["metric"] = "count"
+
+        let normalized = try FarmDataQuerySkill.normalize(arguments: arguments)
+        XCTAssertEqual(normalized["subject"] as? String, "reproduction")
+        XCTAssertEqual(normalized["date_field"] as? String, "occurred_at")
+        XCTAssertEqual(normalized["kind"] as? String, ReproductionRecordKind.lambing.rawValue)
+        XCTAssertEqual(normalized["metric"] as? String, "sum")
+    }
+
+    func testBornLambQuestionRequiresBornLambSkillEvidence() {
+        XCTAssertEqual(
+            FarmDataQuerySkill.requiredQueryKind(for: "2026年每个月出生多少羔羊"),
+            .bornLambs
+        )
+        XCTAssertEqual(
+            FarmDataQuerySkill.requiredQueryKind(
+                for: "今年每个月出生的羔羊数是多少，现在在群数是多少"
+            ),
+            .bornLambLifecycle
+        )
+    }
+
+    func testFarmQueryMonthGroupingUsesLocalFarmDateInsteadOfUTCDate() throws {
+        let instant = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2025-12-31T16:00:00Z")
+        )
+        let shanghai = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
+
+        XCTAssertEqual(
+            InsightFarmQueryEngine.day(instant, timeZone: shanghai),
+            "2026-01-01"
+        )
+        XCTAssertEqual(
+            InsightFarmQueryEngine.month(instant, timeZone: shanghai),
+            "2026-01"
+        )
+    }
+
+    func testFarmFactIntentRequiresEvidenceButLeavesGeneralKnowledgeAndWritesAlone() {
+        XCTAssertTrue(InsightFarmFactIntent.requiresEvidence(for: "现在一号圈有多少只母羊？"))
+        XCTAssertTrue(InsightFarmFactIntent.requiresEvidence(for: "比较最近三个月两个圈的平均体重"))
+        XCTAssertFalse(InsightFarmFactIntent.requiresEvidence(for: "母羊妊娠期一般多长？"))
+        XCTAssertFalse(InsightFarmFactIntent.requiresEvidence(for: "帮我记录001号羊今天称重45公斤"))
+    }
+
+    func testResponseGuardBlocksFarmAnswerWithoutGroundedQuery() {
+        XCTAssertEqual(
+            InsightAssistantResponseGuard.issue(
+                for: "一号圈现在有18只羊。",
+                createdDraftCount: 0,
+                successfulToolNames: [],
+                earTagEvidence: nil,
+                requiresGroundedFarmQuery: true,
+                hasGroundedFarmQuery: false
+            ),
+            .ungroundedFarmClaim
+        )
+        XCTAssertNil(InsightAssistantResponseGuard.issue(
+            for: "本地查询结果将由 App 直接展示。",
+            createdDraftCount: 0,
+            successfulToolNames: [InsightFarmQueryEngine.toolName],
+            earTagEvidence: nil,
+            requiresGroundedFarmQuery: true,
+            hasGroundedFarmQuery: true
+        ))
+    }
+
+    func testFarmQueryCombinesFiltersAndProducesDeterministicEvidence() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-grounded-query-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let pen = PenRecord(farmID: farmID, name: "一号圈")
+        context.insert(pen)
+        context.insert(SheepRecord(
+            farmID: farmID,
+            earTag: "E-001",
+            breed: "杜泊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: Date(timeIntervalSince1970: 1_700_000_000)
+        ))
+        context.insert(SheepRecord(
+            farmID: farmID,
+            earTag: "R-002",
+            breed: "萨福克",
+            sex: .ram,
+            penID: pen.id,
+            enteredAt: Date(timeIntervalSince1970: 1_700_000_000)
+        ))
+
+        let output = try InsightFarmQueryEngine().execute(
+            arguments: farmQueryArguments(
+                subject: "sheep",
+                sex: "ewe",
+                status: "active",
+                breed: "杜泊",
+                penName: "一号圈"
+            ),
+            farmID: farmID,
+            context: context,
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let grounded = try XCTUnwrap(InsightFarmQueryEngine.GroundedOutput(toolOutput: output))
+        XCTAssertEqual(grounded.rowCount, 1)
+        XCTAssertEqual(grounded.totalMatchingCount, 1)
+        XCTAssertTrue(grounded.isComplete)
+        XCTAssertTrue(grounded.markdown.contains("E-001"))
+        XCTAssertTrue(grounded.markdown.contains("杜泊"))
+        XCTAssertFalse(grounded.markdown.contains("R-002"))
+        XCTAssertTrue(grounded.markdown.contains("当前设备的 App 本地数据库直接计算"))
+        XCTAssertTrue(grounded.markdown.contains("不代表云端同步已经完成"))
+    }
+
+    func testFarmQueryUsesHistoricalPenAtRequestedAsOfDate() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-historical-query-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let firstPen = PenRecord(farmID: farmID, name: "原圈")
+        let secondPen = PenRecord(farmID: farmID, name: "新圈")
+        let enteredAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let sheep = SheepRecord(
+            farmID: farmID,
+            earTag: "H-001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: firstPen.id,
+            enteredAt: enteredAt
+        )
+        context.insert(firstPen)
+        context.insert(secondPen)
+        context.insert(sheep)
+        context.insert(TransferRecord(
+            farmID: farmID,
+            sheepID: sheep.id,
+            fromPenID: firstPen.id,
+            toPenID: secondPen.id,
+            occurredAt: enteredAt.addingTimeInterval(20 * 86_400)
+        ))
+        let asOf = enteredAt.addingTimeInterval(10 * 86_400)
+        var arguments = farmQueryArguments(subject: "sheep", penName: "原圈")
+        arguments["as_of"] = ISO8601DateFormatter().string(from: asOf)
+
+        let output = try InsightFarmQueryEngine().execute(
+            arguments: arguments,
+            farmID: farmID,
+            context: context,
+            now: enteredAt.addingTimeInterval(30 * 86_400)
+        )
+        let grounded = try XCTUnwrap(InsightFarmQueryEngine.GroundedOutput(toolOutput: output))
+        XCTAssertEqual(grounded.totalMatchingCount, 1)
+        XCTAssertTrue(grounded.markdown.contains("原圈"))
+        XCTAssertFalse(grounded.markdown.contains("| 新圈 |"))
+    }
+
+    func testSheepBirthDateQueryActuallyFiltersAndGroupsByBirthDate() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-birth-date-query-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let january = Date(timeIntervalSince1970: 1_768_435_200) // 2026-01-15 UTC
+        let priorYear = Date(timeIntervalSince1970: 1_736_899_200) // 2025-01-15 UTC
+        context.insert(SheepRecord(
+            farmID: farmID,
+            earTag: "B-2026",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: priorYear,
+            birthAt: january
+        ))
+        context.insert(SheepRecord(
+            farmID: farmID,
+            earTag: "B-2025",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: priorYear,
+            birthAt: priorYear
+        ))
+        var arguments = farmQueryArguments(subject: "sheep")
+        arguments["date_field"] = "birth_at"
+        arguments["date_from"] = "2026-01-01T00:00:00Z"
+        arguments["date_to"] = "2026-12-31T23:59:59Z"
+        arguments["group_by"] = "month"
+        arguments["metric"] = "count"
+
+        let output = try InsightFarmQueryEngine().execute(
+            arguments: arguments,
+            farmID: farmID,
+            context: context,
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let grounded = try XCTUnwrap(InsightFarmQueryEngine.GroundedOutput(toolOutput: output))
+        XCTAssertEqual(grounded.totalMatchingCount, 1)
+        XCTAssertTrue(grounded.markdown.contains("羊只档案出生日期"))
+        XCTAssertTrue(grounded.markdown.contains("| 2026-01 | 1 |"))
+        XCTAssertFalse(grounded.markdown.contains("B-2025"))
+    }
+
+    func testSheepDateRangeWithoutExplicitDateFieldIsRejected() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-date-field-required-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        var arguments = farmQueryArguments(subject: "sheep")
+        arguments["date_from"] = "2026-01-01T00:00:00Z"
+
+        XCTAssertThrowsError(try InsightFarmQueryEngine().execute(
+            arguments: arguments,
+            farmID: UUID(),
+            context: context,
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        ))
+    }
+
+    func testBornLambCountUsesLambingEventsAndSumsLambCount() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-born-lamb-count-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let ewe = SheepRecord(
+            farmID: farmID,
+            earTag: "EWE-001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        context.insert(ewe)
+        context.insert(ReproductionRecord(
+            farmID: farmID,
+            eweID: ewe.id,
+            kind: .lambing,
+            occurredAt: Date(timeIntervalSince1970: 1_768_435_200),
+            lambCount: 2
+        ))
+        context.insert(ReproductionRecord(
+            farmID: farmID,
+            eweID: ewe.id,
+            kind: .lambing,
+            occurredAt: Date(timeIntervalSince1970: 1_771_113_600),
+            lambCount: 1
+        ))
+        var arguments = farmQueryArguments(subject: "reproduction")
+        arguments["date_from"] = "2026-01-01T00:00:00Z"
+        arguments["date_to"] = "2026-12-31T23:59:59Z"
+        arguments["kind"] = ReproductionRecordKind.lambing.rawValue
+        arguments["group_by"] = "month"
+        arguments["metric"] = "sum"
+
+        let output = try InsightFarmQueryEngine().execute(
+            arguments: arguments,
+            farmID: farmID,
+            context: context,
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let grounded = try XCTUnwrap(InsightFarmQueryEngine.GroundedOutput(toolOutput: output))
+        XCTAssertEqual(grounded.totalMatchingCount, 2)
+        XCTAssertTrue(grounded.markdown.contains("| 2026-01 | 2 |"))
+        XCTAssertTrue(grounded.markdown.contains("| 2026-02 | 1 |"))
+    }
+
+    func testBornLambLifecycleKeepsEventAndProfileCountsSeparate() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-born-lamb-lifecycle-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let formatter = ISO8601DateFormatter()
+        let enteredAt = try XCTUnwrap(formatter.date(from: "2025-12-01T00:00:00Z"))
+        let birthAt = try XCTUnwrap(formatter.date(from: "2026-01-15T00:00:00Z"))
+        let asOf = try XCTUnwrap(formatter.date(from: "2026-08-27T00:00:00Z"))
+        let ewe = SheepRecord(
+            farmID: farmID,
+            earTag: "EWE-LIFECYCLE",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: enteredAt
+        )
+        let activeLamb = SheepRecord(
+            farmID: farmID,
+            earTag: "LAMB-ACTIVE",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: birthAt,
+            birthAt: birthAt
+        )
+        let soldLamb = SheepRecord(
+            farmID: farmID,
+            earTag: "LAMB-SOLD",
+            breed: "湖羊",
+            sex: .ram,
+            penID: nil,
+            enteredAt: birthAt,
+            birthAt: birthAt
+        )
+        context.insert(ewe)
+        context.insert(activeLamb)
+        context.insert(soldLamb)
+        context.insert(ReproductionRecord(
+            farmID: farmID,
+            eweID: ewe.id,
+            kind: .lambing,
+            occurredAt: birthAt,
+            lambCount: 3
+        ))
+        context.insert(RemovalRecord(
+            farmID: farmID,
+            sheepID: soldLamb.id,
+            kind: .sold,
+            reason: "出售",
+            occurredAt: try XCTUnwrap(formatter.date(from: "2026-06-01T00:00:00Z"))
+        ))
+        var arguments = farmQueryArguments(subject: "sheep")
+        arguments["query_kind"] = FarmDataQuerySkill.QueryKind.bornLambLifecycle.rawValue
+        arguments["date_from"] = "2026-01-01T00:00:00Z"
+        arguments["date_to"] = "2026-08-27T23:59:59Z"
+        arguments["as_of"] = "2026-08-27T00:00:00Z"
+
+        let output = try InsightFarmQueryEngine().execute(
+            arguments: arguments,
+            farmID: farmID,
+            context: context,
+            now: asOf
+        )
+        let grounded = try XCTUnwrap(InsightFarmQueryEngine.GroundedOutput(toolOutput: output))
+        XCTAssertEqual(grounded.queryKind, FarmDataQuerySkill.QueryKind.bornLambLifecycle.rawValue)
+        XCTAssertEqual(grounded.totalMatchingCount, 3)
+        XCTAssertTrue(grounded.markdown.contains("| 2026-01 | 3 | 2 | 1 | 0 | 1 | 0 | 0 |"))
+        XCTAssertTrue(grounded.markdown.contains("两者可能无法逐只对应"))
+    }
+
+    private func farmQueryArguments(
+        subject: String,
+        sex: String = "",
+        status: String = "",
+        breed: String = "",
+        penName: String = ""
+    ) -> [String: Any] {
+        [
+            "query_kind": queryKind(for: subject),
+            "subject": subject,
+            "date_field": subject == "sheep" || subject == "inventory" ? "none" : "occurred_at",
+            "date_from": "",
+            "date_to": "",
+            "as_of": "",
+            "ear_tag": "",
+            "sex": sex,
+            "status": status,
+            "breed": breed,
+            "pen_name": penName,
+            "kind": "",
+            "item_name": "",
+            "group_by": "none",
+            "metric": "records",
+            "minimum_value": "",
+            "maximum_value": "",
+            "relations": [],
+            "limit": 100,
+        ]
+    }
+
+    private func queryKind(for subject: String) -> String {
+        switch subject {
+        case "sheep": FarmDataQuerySkill.QueryKind.sheepProfiles.rawValue
+        case "weights": FarmDataQuerySkill.QueryKind.weightRecords.rawValue
+        case "reproduction": FarmDataQuerySkill.QueryKind.reproductionRecords.rawValue
+        case "health": FarmDataQuerySkill.QueryKind.healthRecords.rawValue
+        case "feeding": FarmDataQuerySkill.QueryKind.feedingRecords.rawValue
+        case "inventory": FarmDataQuerySkill.QueryKind.inventory.rawValue
+        default: FarmDataQuerySkill.QueryKind.sheepProfiles.rawValue
+        }
+    }
+
+    func testAssistantIsAvailableToEveryFarmRoleWhileRestrictedWritesStayDenied() throws {
+        let account = AccountProfile(
+            appleUserIdentifier: "assistant-access-\(UUID().uuidString)",
+            displayName: "测试账号"
+        )
+
+        for role in FarmRole.allCases {
+            let farm = FarmRecord(
+                ownerAccountID: account.effectiveAccountID,
+                name: "\(role.displayName)牧场",
+                role: role
+            )
+            let controller = InsightConversationController(account: account, farm: farm)
+            XCTAssertTrue(controller.canUseAssistant, "\(role.displayName)应可使用 AI 助手")
+        }
+
+        let container = try AppSchema.makeContainer(
+            name: "insight-role-write-gate-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let registry = InsightToolRegistry()
+        let command = FarmCommand.addIngredient(
+            name: "玉米",
+            unit: "kg",
+            dryMatterText: "0.88"
+        )
+        let payloadText = String(
+            decoding: try FarmCommandCloudPayloadEncoder.encode(command),
+            as: UTF8.self
+        )
+        let callData = try JSONSerialization.data(withJSONObject: [
+            "operation_kind": DomainOperationKind.addIngredient.rawValue,
+            "payload_json": payloadText,
+        ])
+        let worker = InsightAgentContext(
+            accountID: account.effectiveAccountID,
+            farmID: farmID,
+            role: .worker,
+            originDeviceID: UUID(),
+            conversationID: UUID()
+        )
+
+        XCTAssertThrowsError(try registry.execute(
+            .init(
+                callID: "restricted-write",
+                name: "draft_farm_command",
+                argumentsJSON: String(decoding: callData, as: UTF8.self)
+            ),
+            agent: worker,
+            context: context
+        )) { error in
+            guard let insightError = error as? InsightToolError,
+                  case .permissionDenied = insightError else {
+                return XCTFail("Expected permissionDenied, got \(error)")
+            }
+        }
+    }
+
     func testCredentialPrefixSelectsOfficialEndpointAndMasksSecret() throws {
         let standard = try MiMoCredential(apiKey: "sk-1234567890-secret")
         let tokenPlan = try MiMoCredential(apiKey: "tp-1234567890-secret")

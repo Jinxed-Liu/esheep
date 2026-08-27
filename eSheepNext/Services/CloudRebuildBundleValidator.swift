@@ -595,7 +595,12 @@ enum CloudRebuildBundleValidator {
             break
         case .deferOperationalAlert(let draft):
             if let subjectID = draft.subjectID {
-                try require(subjectID, in: entitiesByType[.sheep], field: "care.alertDeferral.subjectID")
+                let kind = FarmOperationalAlertKind(rawValue: draft.alertKindRawValue)
+                if kind?.deferralSubjectIsPen == true {
+                    try require(subjectID, in: entitiesByType[.pen], field: "care.alertDeferral.penID")
+                } else {
+                    try require(subjectID, in: entitiesByType[.sheep], field: "care.alertDeferral.sheepID")
+                }
             }
         case .setReminderStatus(let id, _):
             try require(id, in: entitiesByType[.careReminder], field: "care.reminderID")

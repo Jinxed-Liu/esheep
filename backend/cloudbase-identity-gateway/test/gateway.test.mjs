@@ -1010,19 +1010,9 @@ test("account deletion removes insight ciphertext envelopes devices and recovery
   assert.equal((await store.find({ type: "insight_key_state", accountID })).length, 0);
 });
 
-test("MiMo insights remains off by default and only enables allowlisted accounts", async () => {
-  const enabledAccountID = randomUUID();
-  const otherAccountID = randomUUID();
-  const defaultService = new CollaborationService({ store: new MemoryStore(), env: {} });
-  const enabledService = new CollaborationService({
-    store: new MemoryStore(),
-    env: {
-      MIMO_INSIGHTS_ENABLED: "true",
-      MIMO_INSIGHTS_ACCOUNT_ALLOWLIST: enabledAccountID.toUpperCase(),
-    },
-  });
+test("MiMo insights is available to every authenticated account", async () => {
+  const service = new CollaborationService({ store: new MemoryStore(), env: {} });
 
-  assert.equal((await defaultService.accountStatus(enabledAccountID)).features.mimoInsights, false);
-  assert.equal((await enabledService.accountStatus(enabledAccountID)).features.mimoInsights, true);
-  assert.equal((await enabledService.accountStatus(otherAccountID)).features.mimoInsights, false);
+  assert.equal((await service.accountStatus(randomUUID())).features.mimoInsights, true);
+  assert.equal((await service.accountStatus(randomUUID())).features.mimoInsights, true);
 });

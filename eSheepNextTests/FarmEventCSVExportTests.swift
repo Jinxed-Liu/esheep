@@ -85,6 +85,29 @@ final class FarmEventCSVExportTests: XCTestCase {
         XCTAssertFalse(FarmEventExportScope.inventory.includes(event(type: .health, occurredAt: now)))
     }
 
+    func testBirthScopeIncludesOnlyDerivedBirthEvents() {
+        let occurredAt = Date(timeIntervalSince1970: 100)
+        let birth = FarmEventSnapshot(
+            id: UUID(),
+            entityType: .sheep,
+            category: .herd,
+            occurredAt: occurredAt,
+            recordedAt: occurredAt,
+            title: "出生",
+            subject: "L001",
+            detail: "母羊 · 湖羊",
+            note: "",
+            fields: [],
+            isDerived: true
+        )
+        let profile = event(type: .sheep, occurredAt: occurredAt)
+
+        XCTAssertTrue(FarmEventExportScope.birth.includes(birth))
+        XCTAssertFalse(FarmEventExportScope.birth.includes(profile))
+        XCTAssertFalse(FarmEventExportScope.sheep.includes(birth))
+        XCTAssertTrue(FarmEventExportScope.sheep.includes(profile))
+    }
+
     private func event(
         id: String = UUID().uuidString,
         type: CloudEntityType,

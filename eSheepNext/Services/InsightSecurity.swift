@@ -2,18 +2,6 @@ import CryptoKit
 import Foundation
 import Security
 
-enum InsightFeatureConfiguration {
-    static var localOverrideEnabled: Bool {
-        if let value = Bundle.main.object(forInfoDictionaryKey: "MIMO_INSIGHTS_ENABLED") as? Bool {
-            return value
-        }
-        if let value = Bundle.main.object(forInfoDictionaryKey: "MIMO_INSIGHTS_ENABLED") as? String {
-            return ["yes", "true", "1"].contains(value.lowercased())
-        }
-        return false
-    }
-}
-
 enum MiMoCredentialKind: String, Codable, Sendable {
     case payAsYouGo
     case tokenPlan

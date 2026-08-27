@@ -171,8 +171,13 @@ enum FarmCareCommandHandler {
                 expectedSireID = draft.sireID
             }
             return sheep.sireID == expectedSireID
-        case .setBreedingRam(let sheepID, let active, _):
-            return try context.fetch(FetchDescriptor<SheepRecord>()).contains { $0.id == sheepID && $0.farmID == farmID && $0.isBreedingRam == active }
+        case .setBreedingRam(let sheepID, let active, let expectedRevision):
+            return try context.fetch(FetchDescriptor<SheepRecord>()).contains {
+                $0.id == sheepID &&
+                    $0.farmID == farmID &&
+                    $0.isBreedingRam == active &&
+                    $0.revision == expectedRevision + 1
+            }
         case .restorePedigreeAudit(let snapshot):
             return try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).contains { $0.id == snapshot.id && $0.farmID == farmID }
         case .recordReproductionBatch(let draft), .correctReproduction(_, let draft, _):

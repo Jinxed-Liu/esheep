@@ -306,6 +306,260 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testRestoreRetryTrustsMatchingDurableOperationReceipt() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "restore-durable-receipt-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let farmID = UUID()
+        let sheepID = UUID()
+        let operationID = UUID()
+        let modifiedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let payload = try FarmCommandCloudPayloadEncoder.encode(
+            .care(.setBreedingRam(
+                sheepID: sheepID,
+                isBreedingRam: true,
+                expectedRevision: 1
+            ))
+        )
+        let envelope = CloudOperationEnvelope(
+            farmID: farmID,
+            entityID: sheepID,
+            entityType: CloudEntityType.sheep.rawValue,
+            schemaVersion: 2,
+            revision: 2,
+            baseRevision: 1,
+            operationID: operationID,
+            modifiedAt: modifiedAt,
+            modifiedByAccountID: accountID,
+            modifiedByDeviceID: UUID(),
+            payload: payload,
+            payloadDigest: CloudPayloadDigest.hex(for: payload),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+        let farm = FarmRecord(
+            id: farmID,
+            ownerAccountID: accountID,
+            name: "断点恢复牧场"
+        )
+        let sheep = SheepRecord(
+            id: sheepID,
+            farmID: farmID,
+            earTag: "RECEIPT-RAM",
+            breed: "杜泊",
+            isBreedingRam: true,
+            sex: .ram,
+            penID: nil,
+            enteredAt: modifiedAt
+        )
+        // A later operation was already partially persisted before the old
+        // restore attempt failed, so replaying this older 1→2 operation would
+        // manufacture a conflict unless its durable operation receipt wins.
+        sheep.revision = 3
+        let receipt = DomainOperation(
+            id: operationID,
+            farmID: farmID,
+            accountID: accountID,
+            kind: .care,
+            occurredAt: modifiedAt,
+            summary: "Supabase 同步：care",
+            entityType: CloudEntityType.sheep.rawValue,
+            entityID: sheepID,
+            baseRevision: 1,
+            resultingRevision: 2,
+            payload: payload
+        )
+        let binding = FarmRemoteBinding(
+            farmID: farmID,
+            ownerAccountID: accountID,
+            provider: .supabase,
+            state: .preparing,
+            authorityGeneration: 1,
+            remoteFarmID: farmID.uuidString.lowercased()
+        )
+        context.insert(farm)
+        context.insert(sheep)
+        context.insert(receipt)
+        context.insert(binding)
+        try context.save()
+
+        let transport = ICloudFarmTransport(endpoints: .init(
+            establishBaseline: { _ in },
+            pushOperations: { _, _ in [] },
+            pullOperations: { _, _, revision, _ in
+                guard revision == 0 else {
+                    return FarmRemotePullPage(
+                        operations: [],
+                        cursorRevision: 3,
+                        hasMore: false
+                    )
+                }
+                return FarmRemotePullPage(
+                    operations: [envelope],
+                    cursorRevision: 3,
+                    hasMore: false
+                )
+            },
+            uploadAsset: { _, _, _, _, _, _ in
+                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+            },
+            downloadAsset: { _ in
+                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+            },
+            members: { _ in [] },
+            deactivate: { _, _, _ in }
+        ))
+
+        let result = try await FarmRemoteSyncCoordinator(
+            container: container,
+            transport: transport
+        ).catchUpRestoredFarm(farmID: farmID)
+
+        let verification = ModelContext(container)
+        XCTAssertEqual(result.cursorRevision, 3)
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<SheepRecord>())
+                .first?.revision,
+            3
+        )
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<DomainOperation>()).count,
+            1
+        )
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<FarmRemoteBinding>())
+                .first?.lastPulledRevision,
+            3
+        )
+    }
+
+    @MainActor
+    func testFailedPulledPageRollsBackEveryProjectionAndReceipt() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "restore-page-atomicity-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let farmID = UUID()
+        let noteID = UUID()
+        context.insert(FarmRecord(
+            id: farmID,
+            ownerAccountID: accountID,
+            name: "原子恢复牧场"
+        ))
+        context.insert(FarmRemoteBinding(
+            farmID: farmID,
+            ownerAccountID: accountID,
+            provider: .supabase,
+            state: .preparing,
+            authorityGeneration: 1,
+            remoteFarmID: farmID.uuidString.lowercased()
+        ))
+        try context.save()
+
+        let notePayload = try FarmCommandCloudPayloadEncoder.encode(
+            .addNote(
+                sheepID: nil,
+                penID: nil,
+                text: "本页必须整体回滚",
+                occurredAt: .now
+            )
+        )
+        let noteEnvelope = CloudOperationEnvelope(
+            farmID: farmID,
+            entityID: noteID,
+            entityType: CloudEntityType.note.rawValue,
+            schemaVersion: 2,
+            revision: 1,
+            baseRevision: 0,
+            operationID: UUID(),
+            modifiedAt: .now,
+            modifiedByAccountID: accountID,
+            modifiedByDeviceID: UUID(),
+            payload: notePayload,
+            payloadDigest: CloudPayloadDigest.hex(for: notePayload),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+        let missingSheepID = UUID()
+        let invalidPayload = try FarmCommandCloudPayloadEncoder.encode(
+            .care(.setBreedingRam(
+                sheepID: missingSheepID,
+                isBreedingRam: true,
+                expectedRevision: 1
+            ))
+        )
+        let invalidEnvelope = CloudOperationEnvelope(
+            farmID: farmID,
+            entityID: missingSheepID,
+            entityType: CloudEntityType.sheep.rawValue,
+            schemaVersion: 2,
+            revision: 2,
+            baseRevision: 1,
+            operationID: UUID(),
+            modifiedAt: .now,
+            modifiedByAccountID: accountID,
+            modifiedByDeviceID: UUID(),
+            payload: invalidPayload,
+            payloadDigest: CloudPayloadDigest.hex(for: invalidPayload),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+        let transport = ICloudFarmTransport(endpoints: .init(
+            establishBaseline: { _ in },
+            pushOperations: { _, _ in [] },
+            // Deliberately return the same two-operation page while the
+            // coordinator narrows its limit. Every failed attempt must leave
+            // the persistent store unchanged.
+            pullOperations: { _, _, _, _ in
+                FarmRemotePullPage(
+                    operations: [noteEnvelope, invalidEnvelope],
+                    cursorRevision: 2,
+                    hasMore: false
+                )
+            },
+            uploadAsset: { _, _, _, _, _, _ in
+                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+            },
+            downloadAsset: { _ in
+                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+            },
+            members: { _ in [] },
+            deactivate: { _, _, _ in }
+        ))
+
+        do {
+            _ = try await FarmRemoteSyncCoordinator(
+                container: container,
+                transport: transport
+            ).catchUpRestoredFarm(farmID: farmID)
+            XCTFail("Expected the invalid second operation to fail the page")
+        } catch {
+            XCTAssertTrue(error is FarmRemoteSyncError)
+        }
+
+        let verification = ModelContext(container)
+        XCTAssertTrue(
+            try verification.fetch(FetchDescriptor<NoteRecord>()).isEmpty
+        )
+        XCTAssertTrue(
+            try verification.fetch(FetchDescriptor<DomainOperation>()).isEmpty
+        )
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<FarmRemoteBinding>())
+                .first?.lastPulledRevision,
+            0
+        )
+    }
+
+    @MainActor
     func testNormalSyncQuarantinesOutboxFromRevokedMember() async throws {
         let container = try AppSchema.makeContainer(
             name: "revoked-member-outbox-\(UUID().uuidString)",

@@ -168,6 +168,53 @@ final class FarmEventHistoryTests: XCTestCase {
         XCTAssertFalse(events.contains { $0.detail.contains("其他牧场") || $0.detail.contains("已撤销") })
     }
 
+    func testTimelineAndExportIncludeIndependentBirthRecord() async throws {
+        let container = try AppSchema.makeContainer(name: "event-birth-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let pen = PenRecord(farmID: farmID, name: "产房")
+        let dam = SheepRecord(farmID: farmID, earTag: "D001", breed: "湖羊", sex: .ewe, penID: pen.id, enteredAt: Date(timeIntervalSince1970: 10))
+        let sire = SheepRecord(farmID: farmID, earTag: "S001", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: pen.id, enteredAt: Date(timeIntervalSince1970: 10))
+        let birthAt = Date(timeIntervalSince1970: 100)
+        let lamb = SheepRecord(
+            farmID: farmID,
+            earTag: "L001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: birthAt,
+            birthAt: birthAt,
+            damID: dam.id,
+            sireID: sire.id
+        )
+        context.insert(pen)
+        context.insert(dam)
+        context.insert(sire)
+        context.insert(lamb)
+        try context.save()
+
+        let events = try await FarmEventHistoryActor(container: container).load(farmID: farmID)
+        let birth = try XCTUnwrap(events.first { $0.title == "出生" && $0.subject == "L001" })
+        let fields = Dictionary(uniqueKeysWithValues: birth.fields.map { ($0.label, $0.value) })
+
+        XCTAssertEqual(birth.occurredAt, birthAt)
+        XCTAssertTrue(birth.isDerived)
+        XCTAssertNil(birth.editCapability)
+        XCTAssertEqual(fields["初始圈舍"], "产房")
+        XCTAssertEqual(fields["母本"], "D001")
+        XCTAssertEqual(fields["父本来源"], "S001")
+        XCTAssertTrue(FarmEventExportScope.birth.includes(birth))
+
+        let csv = try XCTUnwrap(String(
+            data: FarmEventCSVExport.csvData(events: events, scope: .birth, range: .all).dropFirst(3),
+            encoding: .utf8
+        ))
+        XCTAssertTrue(csv.contains("\"出生\""))
+        XCTAssertTrue(csv.contains("\"L001\""))
+        XCTAssertTrue(csv.contains("\"出生日期\""))
+        XCTAssertFalse(csv.contains("\"新建羊只\""))
+    }
+
     func testRemovalBatchHistoryUsesOneBatchTotalWithoutPerSheepAmount() async throws {
         let container = try AppSchema.makeContainer(name: "event-removal-batch-\(UUID().uuidString)", isStoredInMemoryOnly: true)
         let context = ModelContext(container)

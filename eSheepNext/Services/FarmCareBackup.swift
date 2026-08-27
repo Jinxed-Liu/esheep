@@ -87,8 +87,17 @@ struct FarmCareBackupPayload: Codable, Sendable, Equatable {
         for value in offspring { guard reproductionIDs.contains(value.lambingRecordID) else { throw FarmLocalBackupError.missingReference("offspring.lambingRecordID") }; if let id = value.sheepID, !sheepIDs.contains(id) { throw FarmLocalBackupError.missingReference("offspring.sheepID") } }
         for value in reminders { if let id = value.sheepID, !sheepIDs.contains(id) { throw FarmLocalBackupError.missingReference("reminder.sheepID") }; if let id = value.inventoryLotID, !lotIDs.contains(id) { throw FarmLocalBackupError.missingReference("reminder.inventoryLotID") } }
         for value in alertDeferrals ?? [] {
-            if let id = value.subjectID, !sheepIDs.contains(id) {
-                throw FarmLocalBackupError.missingReference("alertDeferral.subjectID")
+            guard let id = value.subjectID else { continue }
+            let kind = FarmOperationalAlertKind(rawValue: value.alertKindRawValue)
+            let hasSubject = kind?.deferralSubjectIsPen == true
+                ? penIDs.contains(id)
+                : sheepIDs.contains(id)
+            guard hasSubject else {
+                throw FarmLocalBackupError.missingReference(
+                    kind?.deferralSubjectIsPen == true
+                        ? "alertDeferral.penID"
+                        : "alertDeferral.sheepID"
+                )
             }
         }
         for value in pedigreeAudits ?? [] { guard sheepIDs.contains(value.sheepID) else { throw FarmLocalBackupError.missingReference("pedigreeAudit.sheepID") }; for id in [value.beforeDamID, value.afterDamID, value.beforeSireID, value.afterSireID].compactMap({ $0 }) where !sheepIDs.contains(id) { throw FarmLocalBackupError.missingReference("pedigreeAudit.parentID") }; for id in [value.beforeSemenDonorID, value.afterSemenDonorID].compactMap({ $0 }) where !donorIDs.contains(id) { throw FarmLocalBackupError.missingReference("pedigreeAudit.donorID") } }

@@ -199,6 +199,92 @@ final class InsightToolRegistry {
                 required: []
             ),
             Self.tool(
+                InsightFarmQueryEngine.toolName,
+                "按用户要求组合查询当前牧场数据。凡是询问当前牧场的数量、名单、日期、状态、统计、比较、趋势或明细，必须优先调用本工具，不能直接回答，也不能用常识补齐。支持羊只、称重、繁殖、健康、饲喂和健康库存；所有筛选都在 App 本地执行。询问产羔数或出生羔羊数时，必须查询 reproduction、kind=lambing、metric=sum，不能用羊只档案 birth_at 代替；询问录入档案中的出生日期分布时才使用 sheep、date_field=birth_at。字符串筛选不需要时传空字符串。",
+                properties: [
+                    "query_kind": Self.enumString(
+                        "业务查询口径。必须先按牧场数据查询技能选择；App 会据此固定真实数据源，冲突参数会被覆盖。",
+                        values: FarmDataQuerySkill.QueryKind.allCases.map(\.rawValue)
+                    ),
+                    "subject": Self.enumString(
+                        "查询对象",
+                        values: ["sheep", "weights", "reproduction", "health", "feeding", "inventory"]
+                    ),
+                    "date_field": Self.enumString(
+                        "日期范围和按月分组所使用的明确字段。sheep 只能用 none、birth_at、entered_at；业务记录只能用 occurred_at；inventory 用 none 或 expires_at。不得同时描述两个日期口径。",
+                        values: ["none", "birth_at", "entered_at", "occurred_at", "expires_at"]
+                    ),
+                    "date_from": Self.string("ISO 8601 开始时间；不限制时传空字符串"),
+                    "date_to": Self.string("ISO 8601 结束时间；不限制时传空字符串"),
+                    "as_of": Self.string("历史状态截止时点 ISO 8601；查询当前状态时传空字符串"),
+                    "ear_tag": Self.string("耳号关键词；不筛选时传空字符串"),
+                    "sex": Self.enumString("性别", values: ["", "ewe", "ram", "unknown"]),
+                    "status": Self.enumString("羊只状态", values: ["", "active", "removed", "deceased"]),
+                    "breed": Self.string("品种关键词；不筛选时传空字符串"),
+                    "pen_name": Self.string("圈舍名称关键词；不筛选时传空字符串"),
+                    "kind": Self.string("记录类型原始值；不筛选时传空字符串"),
+                    "item_name": Self.string("健康项目、饲料原料或库存名称关键词；不筛选时传空字符串"),
+                    "group_by": Self.enumString(
+                        "分组字段",
+                        values: ["none", "pen", "breed", "sex", "status", "kind", "item", "month"]
+                    ),
+                    "metric": Self.enumString(
+                        "结果形式；records 返回明细，其余返回确定性聚合",
+                        values: ["records", "count", "sum", "average", "minimum", "maximum"]
+                    ),
+                    "minimum_value": Self.string("数值下限；不限制时传空字符串"),
+                    "maximum_value": Self.string("数值上限；不限制时传空字符串"),
+                    "relations": .object([
+                        "type": .string("array"),
+                        "description": .string("仅查询 sheep 时使用的关联事件条件，可同时给出最多 8 条，例如既有产羔记录且最近没有配种；无关联条件时传空数组"),
+                        "maxItems": .number(8),
+                        "items": .object([
+                            "type": .string("object"),
+                            "properties": .object([
+                                "subject": Self.enumString(
+                                    "关联记录",
+                                    values: ["weights", "weanings", "reproduction", "health", "transfers", "removals"]
+                                ),
+                                "kind": Self.string("记录类型原始值；不限制时传空字符串"),
+                                "item_name": Self.string("健康项目关键词；不限制时传空字符串"),
+                                "date_from": Self.string("ISO 8601 开始时间；不限制时传空字符串"),
+                                "date_to": Self.string("ISO 8601 结束时间；不限制时传空字符串"),
+                                "existence": Self.enumString("必须存在或必须不存在", values: ["yes", "no"]),
+                                "minimum_count": .object([
+                                    "type": .string("integer"),
+                                    "minimum": .number(0),
+                                    "maximum": .number(10_000),
+                                ]),
+                                "maximum_count": .object([
+                                    "type": .string("integer"),
+                                    "description": .string("0 表示不设上限"),
+                                    "minimum": .number(0),
+                                    "maximum": .number(10_000),
+                                ]),
+                                "minimum_value": Self.string("关联数值下限，如体重或产羔数；不限制时传空字符串"),
+                                "maximum_value": Self.string("关联数值上限；不限制时传空字符串"),
+                            ]),
+                            "required": .array([
+                                "subject", "kind", "item_name", "date_from", "date_to", "existence",
+                                "minimum_count", "maximum_count", "minimum_value", "maximum_value",
+                            ].map(JSONValue.string)),
+                            "additionalProperties": .bool(false),
+                        ]),
+                    ]),
+                    "limit": .object([
+                        "type": .string("integer"),
+                        "description": .string("明细最多返回 1 到 100 条"),
+                        "minimum": .number(1),
+                        "maximum": .number(100),
+                    ]),
+                ],
+                required: [
+                    "query_kind", "subject", "date_field", "date_from", "date_to", "as_of", "ear_tag", "sex", "status",
+                    "breed", "pen_name", "kind", "item_name", "group_by", "metric",
+                    "minimum_value", "maximum_value", "relations", "limit",
+                ]
+            ),
+            Self.tool(
                 "find_sheep",
                 "在当前牧场按耳号或品种查找羊只，最多返回 20 条。不能访问其他牧场。",
                 properties: [
@@ -482,6 +568,15 @@ final class InsightToolRegistry {
         switch call.name {
         case "get_farm_overview":
             return .init(output: try farmOverview(farmID: agent.farmID, context: context), actionDraft: nil)
+        case InsightFarmQueryEngine.toolName:
+            return .init(
+                output: try InsightFarmQueryEngine().execute(
+                    arguments: arguments,
+                    farmID: agent.farmID,
+                    context: context
+                ),
+                actionDraft: nil
+            )
         case "find_sheep":
             return .init(
                 output: try findSheep(

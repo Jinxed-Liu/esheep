@@ -378,7 +378,6 @@
 				INFOPLIST_KEY_CLOUD_COLLABORATION_ENABLED = "$(CLOUD_COLLABORATION_ENABLED)";
 				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
-				INFOPLIST_KEY_MIMO_INSIGHTS_ENABLED = "$(MIMO_INSIGHTS_ENABLED)";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
 				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号、文档与牧场邀请二维码。";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
@@ -400,7 +399,6 @@
 					"@loader_path/Frameworks",
 				);
 				MARKETING_VERSION = 3.1.0;
-				MIMO_INSIGHTS_ENABLED = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.dev;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -440,7 +438,6 @@
 				INFOPLIST_KEY_CLOUD_COLLABORATION_ENABLED = "$(CLOUD_COLLABORATION_ENABLED)";
 				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
-				INFOPLIST_KEY_MIMO_INSIGHTS_ENABLED = "$(MIMO_INSIGHTS_ENABLED)";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
 				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号、文档与牧场邀请二维码。";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
@@ -462,7 +459,6 @@
 					"@loader_path/Frameworks",
 				);
 				MARKETING_VERSION = 3.1.0;
-				MIMO_INSIGHTS_ENABLED = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -550,7 +546,6 @@
 				INFOPLIST_KEY_CLOUD_COLLABORATION_ENABLED = "$(CLOUD_COLLABORATION_ENABLED)";
 				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
-				INFOPLIST_KEY_MIMO_INSIGHTS_ENABLED = "$(MIMO_INSIGHTS_ENABLED)";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
 				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号、文档与牧场邀请二维码。";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "用于确认敏感数据导出、牧场治理和删除操作。";
@@ -572,7 +567,6 @@
 					"@loader_path/Frameworks",
 				);
 				MARKETING_VERSION = 3.1.0;
-				MIMO_INSIGHTS_ENABLED = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;

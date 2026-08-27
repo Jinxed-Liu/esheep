@@ -59,6 +59,12 @@ enum FarmOperationalAlertKind: String, Codable, CaseIterable, Sendable, Hashable
     var isTMR: Bool {
         self == .tmrNotFed || self == .tmrLow || self == .tmrHigh
     }
+
+    /// TMR operational alerts describe a pen's feeding result; all other
+    /// operational alerts currently describe an individual sheep.
+    var deferralSubjectIsPen: Bool {
+        isTMR
+    }
 }
 
 struct FarmOperationalAlert: Identifiable, Sendable, Hashable {

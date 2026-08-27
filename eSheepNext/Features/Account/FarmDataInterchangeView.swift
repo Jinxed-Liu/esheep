@@ -91,6 +91,21 @@ struct FarmDataInterchangeView: View {
     @State private var localInventory: LocalStorageInventory?
     @State private var storageMessage: StorageMessage?
 
+    init(account: AccountProfile, farm: FarmRecord) {
+        self.account = account
+        self.farm = farm
+
+        let farmID = farm.id
+        _conflicts = Query(
+            filter: #Predicate<SyncConflictRecord> { $0.farmID == farmID },
+            sort: \.detectedAt,
+            order: .reverse
+        )
+        _storageProfiles = Query(
+            filter: #Predicate<FarmStorageProfile> { $0.farmID == farmID }
+        )
+    }
+
     private enum StorageMessage {
         case released(String)
         case nothingToClean
@@ -117,9 +132,8 @@ struct FarmDataInterchangeView: View {
 
     private var unresolvedConflictCount: Int {
         conflicts.count {
-            $0.farmID == farm.id
-                && ($0.statusRawValue == SyncConflictStatus.unresolved.rawValue
-                    || $0.statusRawValue == SyncConflictStatus.quarantined.rawValue)
+            $0.statusRawValue == SyncConflictStatus.unresolved.rawValue
+                || $0.statusRawValue == SyncConflictStatus.quarantined.rawValue
         }
     }
 
@@ -129,7 +143,7 @@ struct FarmDataInterchangeView: View {
             cloudEnabled: CloudFeatureConfiguration.isEnabled,
             subscriptionEnabled: SubscriptionFeatureConfiguration.isEnabled,
             unresolvedConflictCount: unresolvedConflictCount,
-            storageMode: storageProfiles.first(where: { $0.farmID == farm.id })?.mode ?? .localOnly
+            storageMode: storageProfiles.first?.mode ?? .localOnly
         )
     }
 
@@ -297,11 +311,17 @@ struct FarmDataInterchangeView: View {
     }
 
     private func refreshStorage() async {
-        storageSnapshot = await AppStorageUsageService.shared.snapshot()
+        let updatedSnapshot = await AppStorageUsageService.shared.snapshot()
+        if storageSnapshot != updatedSnapshot {
+            storageSnapshot = updatedSnapshot
+        }
         do {
-            localInventory = try LocalStorageInventoryService().inventory(
+            let updatedInventory = try LocalStorageInventoryService().inventory(
                 context: modelContext
             )
+            if localInventory != updatedInventory {
+                localInventory = updatedInventory
+            }
         } catch {
             storageMessage = .inventoryFailed(error.localizedDescription)
         }
@@ -436,10 +456,34 @@ private struct FarmDataTaskView: View {
     @State private var backupPreview: FarmPortableBackupPreview?
     @State private var isPreparingBackup = false
 
-    private var farmSheep: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil } }
+    init(account: AccountProfile, farm: FarmRecord, task: FarmDataTask) {
+        self.account = account
+        self.farm = farm
+        self.task = task
+
+        let farmID = farm.id
+        _sheep = Query(
+            filter: #Predicate<SheepRecord> {
+                $0.farmID == farmID && $0.deletedAt == nil
+            }
+        )
+        _pens = Query(
+            filter: #Predicate<PenRecord> {
+                $0.farmID == farmID && $0.deletedAt == nil
+            }
+        )
+        _storageProfiles = Query(
+            filter: #Predicate<FarmStorageProfile> { $0.farmID == farmID }
+        )
+        _outboxItems = Query(
+            filter: #Predicate<OutboxItem> { $0.farmID == farmID }
+        )
+    }
+
+    private var farmSheep: [SheepRecord] { sheep }
 
     private var storageProfile: FarmStorageProfile? {
-        storageProfiles.first { $0.farmID == farm.id }
+        storageProfiles.first
     }
 
     private var storageMode: FarmStorageMode {
@@ -449,8 +493,7 @@ private struct FarmDataTaskView: View {
     private var pendingCloudOperationCount: Int {
         guard let provider = storageMode.deliveryProvider else { return 0 }
         return outboxItems.count {
-            $0.farmID == farm.id &&
-                $0.deliveryProvider == provider &&
+            $0.deliveryProvider == provider &&
                 !$0.status.isTerminalDelivery
         }
     }
@@ -580,7 +623,11 @@ private struct FarmDataTaskView: View {
             if case .failure(let error) = result { message = .backupExportFailed(error.localizedDescription) }
             else { message = .backupExported }
         }
-        .fileImporter(isPresented: $isRestoringBackup, allowedContentTypes: [.eSheepPortableBackup, .json]) { result in
+        // `.data` keeps backups selectable when an older app version or a
+        // third-party Files provider did not preserve our custom type metadata.
+        // The selected bytes still have to pass the portable-backup preview,
+        // schema, checksum and reference validation before restore is enabled.
+        .fileImporter(isPresented: $isRestoringBackup, allowedContentTypes: [.eSheepPortableBackup, .json, .data]) { result in
             previewBackup(result)
         }
         .alert("数据交换", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {

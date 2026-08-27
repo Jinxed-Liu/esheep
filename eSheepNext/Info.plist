@@ -14,8 +14,6 @@
 	<string>$(CLOUD_COLLABORATION_ENABLED)</string>
 	<key>IDENTITY_WORKER_URL</key>
 	<string>$(IDENTITY_WORKER_URL)</string>
-	<key>MIMO_INSIGHTS_ENABLED</key>
-	<string>$(MIMO_INSIGHTS_ENABLED)</string>
 	<key>SUBSCRIPTIONS_ENABLED</key>
 	<string>$(SUBSCRIPTIONS_ENABLED)</string>
 	<key>SUPABASE_PUBLISHABLE_KEY</key>
@@ -49,6 +47,28 @@
 	<array>
 		<string>fetch</string>
 		<string>remote-notification</string>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>eSheep 完整备份</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.sheepfarm.ios.portable-backup</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>esheep-backup</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/vnd.esheep.portable-backup+json</string>
+			</dict>
+		</dict>
 	</array>
 </dict>
 </plist>

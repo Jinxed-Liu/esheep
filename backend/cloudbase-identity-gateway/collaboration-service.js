@@ -1072,20 +1072,11 @@ class CollaborationService {
       const farm = await this.store.get(key("farm", item.farmID));
       if (farm?.status === "active") visible.push({ ...item, farm });
     }
-    const insightAllowlist = new Set(
-      String(this.env.MIMO_INSIGHTS_ACCOUNT_ALLOWLIST || "")
-        .split(",")
-        .map((value) => value.trim().toLowerCase())
-        .filter(Boolean)
-    );
-    const insightEnabled = ["1", "true", "yes"].includes(
-      String(this.env.MIMO_INSIGHTS_ENABLED || "").toLowerCase()
-    ) && insightAllowlist.has(String(accountID).toLowerCase());
     return {
       accountID,
       displayName: account?.displayName,
       status: account?.status || "active",
-      features: { mimoInsights: insightEnabled },
+      features: { mimoInsights: true },
       memberships: visible.map((item) => ({ farm_id: item.farmID, ownerAccountID: item.farm.ownerAccountID, role: item.role, status: item.status, cloudZoneName: item.farm.cloudZoneName, shareRecordName: item.farm.shareRecordName || null })),
     };
   }

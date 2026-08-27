@@ -557,6 +557,22 @@ actor FarmRemoteSyncCoordinator {
             lhs.payload == rhs.payload
     }
 
+    private static func haveSameImmutableContent(
+        _ local: DomainOperation,
+        _ remote: CloudOperationEnvelope
+    ) -> Bool {
+        local.id == remote.operationID &&
+            local.farmID == remote.farmID &&
+            local.accountID == remote.modifiedByAccountID &&
+            local.schemaVersion == remote.schemaVersion &&
+            local.entityType == remote.entityType &&
+            local.entityID == remote.entityID &&
+            local.baseRevision == remote.baseRevision &&
+            local.resultingRevision == remote.revision &&
+            local.payloadDigest == remote.payloadDigest &&
+            local.payload == remote.payload
+    }
+
     private func pullUntilCurrent(
         farmID: UUID,
         generation: Int,
@@ -759,67 +775,89 @@ actor FarmRemoteSyncCoordinator {
         advancesCursor: Bool = true
     ) throws -> Int {
         let context = ModelContext(container)
+        context.autosaveEnabled = false
         let service = RemoteDomainApplyService()
         var conflictCount = 0
         var rebuildFrom: Date?
-        let existingOperationIDs = Set(
-            try context.fetch(FetchDescriptor<DomainOperation>())
-                .filter { $0.farmID == farmID }
-                .map(\.id)
-        )
+        var existingOperationsByID: [UUID: DomainOperation] = [:]
+        for operation in try context.fetch(FetchDescriptor<DomainOperation>())
+            .filter({ $0.farmID == farmID }) {
+            if let existing = existingOperationsByID[operation.id],
+               !Self.haveSameImmutableContent(existing, operation) {
+                throw FarmRemoteSyncError.conflictingOperationCopies
+            }
+            existingOperationsByID[operation.id] = operation
+        }
 
-        for envelope in envelopes {
-            guard envelope.farmID == farmID else {
-                throw FarmRemoteSyncError.malformedRemoteOperation
-            }
-            let outcome: RemoteApplyOutcome
-            do {
-                outcome = try service.apply(envelope, context: context)
-            } catch {
-                throw FarmRemoteSyncError.remoteOperationApplyFailed(
-                    operationID: envelope.operationID,
-                    entityID: envelope.entityID,
-                    baseRevision: envelope.baseRevision,
-                    resultingRevision: envelope.revision,
-                    detail: error.localizedDescription
-                )
-            }
-            switch outcome {
-            case .applied(let changedAt):
-                if let changedAt {
-                    rebuildFrom = min(rebuildFrom ?? changedAt, changedAt)
+        do {
+            for envelope in envelopes {
+                guard envelope.farmID == farmID else {
+                    throw FarmRemoteSyncError.malformedRemoteOperation
                 }
-            case .duplicate:
-                break
-            case .conflict(let localRevision):
-                conflictCount += 1
-                let local = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
-                    $0.farmID == farmID &&
-                        $0.entityID == envelope.entityID &&
-                        $0.resultingRevision == localRevision
-                }.max(by: { $0.createdAt < $1.createdAt })
-                let conflict = SyncConflictRecord(
-                    farmID: farmID,
-                    entityID: envelope.entityID,
-                    entityType: envelope.entityType,
-                    localRevision: localRevision,
-                    remoteRevision: envelope.revision,
-                    localPayload: local?.payload ?? Data(),
-                    remotePayload: envelope.payload,
-                    remoteAccountID: envelope.modifiedByAccountID,
-                    remoteDeviceID: envelope.modifiedByDeviceID,
-                    reasonCode: "supabaseBaseRevisionMismatch"
+
+                // A durable DomainOperation is the receipt for an already
+                // applied immutable cloud operation. Restore retries may start
+                // from an older conservative cursor, so never apply the same
+                // operation to an entity a second time. Still verify all
+                // immutable fields before trusting the receipt.
+                if let existing = existingOperationsByID[envelope.operationID] {
+                    guard Self.haveSameImmutableContent(existing, envelope) else {
+                        throw FarmRemoteSyncError.conflictingOperationCopies
+                    }
+                    rebuildFrom = min(
+                        rebuildFrom ?? existing.occurredAt,
+                        existing.occurredAt
+                    )
+                    continue
+                }
+
+                let outcome: RemoteApplyOutcome
+                do {
+                    outcome = try service.apply(envelope, context: context)
+                } catch {
+                    throw FarmRemoteSyncError.remoteOperationApplyFailed(
+                        operationID: envelope.operationID,
+                        entityID: envelope.entityID,
+                        baseRevision: envelope.baseRevision,
+                        resultingRevision: envelope.revision,
+                        detail: error.localizedDescription
+                    )
+                }
+                switch outcome {
+                case .applied(let changedAt):
+                    if let changedAt {
+                        rebuildFrom = min(rebuildFrom ?? changedAt, changedAt)
+                    }
+                case .duplicate:
+                    break
+                case .conflict(let localRevision):
+                    conflictCount += 1
+                    let local = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
+                        $0.farmID == farmID &&
+                            $0.entityID == envelope.entityID &&
+                            $0.resultingRevision == localRevision
+                    }.max(by: { $0.createdAt < $1.createdAt })
+                    let conflict = SyncConflictRecord(
+                        farmID: farmID,
+                        entityID: envelope.entityID,
+                        entityType: envelope.entityType,
+                        localRevision: localRevision,
+                        remoteRevision: envelope.revision,
+                        localPayload: local?.payload ?? Data(),
+                        remotePayload: envelope.payload,
+                        remoteAccountID: envelope.modifiedByAccountID,
+                        remoteDeviceID: envelope.modifiedByDeviceID,
+                        reasonCode: "supabaseBaseRevisionMismatch"
+                    )
+                    conflict.remoteEnvelopeData = try JSONEncoder.cloud.encode(envelope)
+                    context.insert(conflict)
+                }
+
+                try supersedeBlockedDeletionOperations(
+                    confirmedBy: envelope,
+                    context: context
                 )
-                conflict.remoteEnvelopeData = try JSONEncoder.cloud.encode(envelope)
-                context.insert(conflict)
-            }
 
-            try supersedeBlockedDeletionOperations(
-                confirmedBy: envelope,
-                context: context
-            )
-
-            if !existingOperationIDs.contains(envelope.operationID) {
                 let decoder = JSONDecoder()
                 decoder.dateDecodingStrategy = .iso8601
                 let payload = try decoder.decode(
@@ -843,29 +881,33 @@ actor FarmRemoteSyncCoordinator {
                 operation.capabilityCertificate = envelope.capabilityCertificate
                 operation.operationSignature = envelope.operationSignature
                 context.insert(operation)
+                existingOperationsByID[operation.id] = operation
             }
-        }
 
-        if let rebuildFrom {
-            try FarmHistoryRebuilder().rebuild(
-                farmID: farmID,
-                context: context,
-                from: rebuildFrom
-            )
-        }
-        if advancesCursor {
-            guard let binding = try context.fetch(FetchDescriptor<FarmRemoteBinding>()).first(where: {
-                $0.farmID == farmID && $0.provider == .supabase
-            }) else {
-                throw FarmRemoteSyncError.bindingMissing
+            if let rebuildFrom {
+                try FarmHistoryRebuilder().rebuild(
+                    farmID: farmID,
+                    context: context,
+                    from: rebuildFrom
+                )
             }
-            binding.lastPulledRevision = cursorRevision
-            binding.lastSuccessfulSyncAt = .now
-            binding.lastErrorCode = nil
-            binding.updatedAt = .now
+            if advancesCursor {
+                guard let binding = try context.fetch(FetchDescriptor<FarmRemoteBinding>()).first(where: {
+                    $0.farmID == farmID && $0.provider == .supabase
+                }) else {
+                    throw FarmRemoteSyncError.bindingMissing
+                }
+                binding.lastPulledRevision = cursorRevision
+                binding.lastSuccessfulSyncAt = .now
+                binding.lastErrorCode = nil
+                binding.updatedAt = .now
+            }
+            try context.save()
+            return conflictCount
+        } catch {
+            context.rollback()
+            throw error
         }
-        try context.save()
-        return conflictCount
     }
 
     private func supersedeBlockedDeletionOperations(

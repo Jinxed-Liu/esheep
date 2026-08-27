@@ -201,10 +201,11 @@ enum FarmPortableBackupService {
             context: context,
             exportedAt: exportedAt
         )
-        let legacyEnvelope = try decoder.decode(
-            FarmBackupEnvelopeV1.self,
-            from: legacyData
-        )
+        // Do not hand the user a file that only fails when they need it for
+        // recovery. The portable export has to pass the same staging restore
+        // used by the import path before the document picker is presented.
+        let legacyPreview = try FarmLocalBackupService.preview(data: legacyData)
+        let legacyEnvelope = legacyPreview.envelope
         guard let farm = try context.fetch(FetchDescriptor<FarmRecord>())
             .first(where: { $0.id == farmID && $0.deletedAt == nil }) else {
             throw FarmLocalBackupError.farmMismatch
@@ -225,7 +226,9 @@ enum FarmPortableBackupService {
             content: content,
             checksum: digest(content)
         )
-        return try encoder.encode(envelope)
+        let data = try encoder.encode(envelope)
+        _ = try preview(data: data)
+        return data
     }
 
     static func preview(data: Data) throws -> FarmPortableBackupPreview {

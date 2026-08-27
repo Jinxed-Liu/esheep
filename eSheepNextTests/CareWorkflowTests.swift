@@ -4,6 +4,81 @@ import XCTest
 
 @MainActor
 final class CareWorkflowTests: XCTestCase {
+    func testRemoteRedundantBreedingRamStateStillAdvancesRevisionBeforeNextToggle() throws {
+        let fixture = try makeFixture()
+        let ram = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "RESTORE-RAM",
+            breed: "杜泊",
+            isBreedingRam: true,
+            sex: .ram,
+            penID: nil,
+            enteredAt: .now
+        )
+        fixture.context.insert(ram)
+        try fixture.context.save()
+
+        func envelope(
+            active: Bool,
+            baseRevision: Int,
+            resultingRevision: Int
+        ) throws -> CloudOperationEnvelope {
+            let payload = try FarmCommandCloudPayloadEncoder.encode(
+                .care(.setBreedingRam(
+                    sheepID: ram.id,
+                    isBreedingRam: active,
+                    expectedRevision: baseRevision
+                ))
+            )
+            return CloudOperationEnvelope(
+                farmID: fixture.farm.id,
+                entityID: ram.id,
+                entityType: CloudEntityType.sheep.rawValue,
+                schemaVersion: 2,
+                revision: resultingRevision,
+                baseRevision: baseRevision,
+                operationID: UUID(),
+                modifiedAt: .now,
+                modifiedByAccountID: fixture.account.effectiveAccountID,
+                modifiedByDeviceID: UUID(),
+                payload: payload,
+                payloadDigest: CloudPayloadDigest.hex(for: payload),
+                capabilityCertificate: "test",
+                operationSignature: Data(),
+                deletedAt: nil
+            )
+        }
+
+        let redundantTrue = try envelope(
+            active: true,
+            baseRevision: 1,
+            resultingRevision: 2
+        )
+        let followingFalse = try envelope(
+            active: false,
+            baseRevision: 2,
+            resultingRevision: 3
+        )
+        let service = RemoteDomainApplyService()
+
+        XCTAssertEqual(
+            try service.apply(redundantTrue, context: fixture.context),
+            .applied(rebuildHistoryFrom: nil)
+        )
+        XCTAssertEqual(ram.revision, 2)
+        XCTAssertTrue(ram.isBreedingRam)
+        XCTAssertEqual(
+            try service.apply(followingFalse, context: fixture.context),
+            .applied(rebuildHistoryFrom: nil)
+        )
+        XCTAssertEqual(ram.revision, 3)
+        XCTAssertFalse(ram.isBreedingRam)
+        XCTAssertEqual(
+            try service.apply(followingFalse, context: fixture.context),
+            .duplicate
+        )
+    }
+
     func testBatchHealthCreatesStableSubjectsAndOneAuditableConsumption() throws {
         let fixture = try makeFixture()
         let pen = PenRecord(farmID: fixture.farm.id, name: "一号圈")

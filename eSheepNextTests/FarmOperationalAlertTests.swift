@@ -763,6 +763,10 @@ final class FarmOperationalAlertTests: XCTestCase {
             penID: nil,
             enteredAt: date("2026-01-01T00:00:00+08:00")
         )
+        let tmrPen = PenRecord(
+            farmID: sourceFarm.id,
+            name: "TMR 备份圈舍"
+        )
         let rule = FarmCareRuleRecord(
             farmID: sourceFarm.id,
             pregnancyCheckDays: 43,
@@ -793,9 +797,22 @@ final class FarmOperationalAlertTests: XCTestCase {
             deferredByAccountID: account.effectiveAccountID,
             createdAt: date("2026-08-09T08:15:00+08:00")
         )
+        let tmrDeferral = FarmAlertDeferralRecord(
+            farmID: sourceFarm.id,
+            alertID: UUID(),
+            alertKindRawValue: FarmOperationalAlertKind.tmrNotFed.rawValue,
+            subjectID: tmrPen.id,
+            sourceEntityID: UUID(),
+            conditionFingerprint: "tmr-backup-condition",
+            deferredUntil: date("2026-08-12T08:15:00+08:00"),
+            deferredByAccountID: account.effectiveAccountID,
+            createdAt: date("2026-08-09T08:15:00+08:00")
+        )
         context.insert(rule)
         context.insert(subject)
+        context.insert(tmrPen)
         context.insert(deferral)
+        context.insert(tmrDeferral)
         try context.save()
 
         let baseline = try MigrationCloudBootstrapService().makeProviderNeutralSnapshots(
@@ -832,8 +849,13 @@ final class FarmOperationalAlertTests: XCTestCase {
         let restoredRule = try XCTUnwrap(try destinationContext.fetch(FetchDescriptor<FarmCareRuleRecord>()).first {
             $0.farmID == destinationFarm.id
         })
-        let restoredDeferral = try XCTUnwrap(try destinationContext.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).first {
-            $0.farmID == destinationFarm.id
+        let restoredDeferrals = try destinationContext.fetch(FetchDescriptor<FarmAlertDeferralRecord>())
+            .filter { $0.farmID == destinationFarm.id }
+        let restoredDeferral = try XCTUnwrap(restoredDeferrals.first {
+            $0.alertKindRawValue == FarmOperationalAlertKind.invalidPen.rawValue
+        })
+        let restoredTMRDeferral = try XCTUnwrap(restoredDeferrals.first {
+            $0.alertKindRawValue == FarmOperationalAlertKind.tmrNotFed.rawValue
         })
         XCTAssertEqual(restoredRule.weaningAgeDays, 66)
         XCTAssertEqual(restoredRule.warningLeadDays, 5)
@@ -845,6 +867,7 @@ final class FarmOperationalAlertTests: XCTestCase {
         let restoredAlertID = StableCloudUUID.derived(namespace: destinationFarm.id, name: sourceAlertName)
         XCTAssertEqual(restoredDeferral.alertID, restoredAlertID)
         XCTAssertNotEqual(restoredDeferral.alertID, deferral.alertID)
+        XCTAssertEqual(restoredTMRDeferral.subjectID, tmrPen.id)
     }
 
     func testRemoteDeferralReplayIsIdempotentAndKeepsEnvelopeOperator() throws {

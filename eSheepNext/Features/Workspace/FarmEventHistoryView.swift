@@ -45,6 +45,8 @@ struct FarmEventSnapshot: Identifiable, Sendable {
     let detail: String
     let note: String
     let fields: [FarmEventField]
+    /// 从档案字段投影出的生命周期事实没有可独立删除的底层实体。
+    let isDerived: Bool
     let searchableText: String
 
     init(
@@ -57,7 +59,8 @@ struct FarmEventSnapshot: Identifiable, Sendable {
         subject: String,
         detail: String,
         note: String,
-        fields: [FarmEventField]
+        fields: [FarmEventField],
+        isDerived: Bool = false
     ) {
         self.id = id
         self.entityType = entityType
@@ -69,6 +72,7 @@ struct FarmEventSnapshot: Identifiable, Sendable {
         self.detail = detail
         self.note = note
         self.fields = fields
+        self.isDerived = isDerived
         searchableText = FarmEventSearch.normalized(
             ([title, subject, detail, note] + fields.flatMap { [$0.label, $0.value] })
                 .joined(separator: " ")
@@ -94,7 +98,8 @@ extension FarmEventSnapshot {
     }
 
     var editCapability: FarmCapability? {
-        switch entityType {
+        guard !isDerived else { return nil }
+        return switch entityType {
         case .sheep:
             .recordProduction
         case .weight, .transfer, .removal, .health, .reproduction:
@@ -185,6 +190,39 @@ actor FarmEventHistoryActor {
                     .init(label: "品种", value: record.breed),
                     .init(label: "入场圈舍", value: location)
                 ]
+            )
+        })
+
+        events.append(contentsOf: sheep.compactMap { record in
+            guard record.deletedAt == nil,
+                  !record.isHistoricalArchive,
+                  let birthAt = record.birthAt else { return nil }
+            let initialPen = record.initialPenID.flatMap { penName[$0] } ?? "未分圈"
+            let dam = record.damID.flatMap { sheepName[$0] } ?? "未关联"
+            let sire = record.sireID.flatMap { sheepName[$0] }
+                ?? record.semenDonorNameSnapshot
+                ?? "未关联"
+            return FarmEventSnapshot(
+                id: StableCloudUUID.derived(namespace: record.id, name: "farm-event-birth"),
+                entityType: .sheep,
+                category: .herd,
+                occurredAt: birthAt,
+                recordedAt: record.createdAt,
+                title: "出生",
+                subject: record.earTag,
+                detail: "\(record.sex.displayName) · \(record.breed)",
+                note: "",
+                fields: [
+                    .init(label: "耳号", value: record.earTag),
+                    .init(label: "性别", value: record.sex.displayName),
+                    .init(label: "品种", value: record.breed),
+                    .init(label: "出生日期", value: dateFormatter.string(from: birthAt)),
+                    .init(label: "初始圈舍", value: initialPen),
+                    .init(label: "母本", value: dam),
+                    .init(label: "父本来源", value: sire),
+                    .init(label: "羊只档案ID", value: record.id.uuidString.lowercased())
+                ],
+                isDerived: true
             )
         })
 
@@ -512,7 +550,7 @@ struct FarmEventHistoryView: View {
     }
 
     private func canDelete(_ event: FarmEventSnapshot) -> Bool {
-        canDelete && !isParityConfirmation(event)
+        canDelete && !event.isDerived && !isParityConfirmation(event)
     }
 
     private func isParityConfirmation(_ event: FarmEventSnapshot) -> Bool {

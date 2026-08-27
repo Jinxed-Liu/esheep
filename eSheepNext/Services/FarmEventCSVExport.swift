@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 /// 事件记录导出的业务范围。主数据仍由完整 XLSX/备份导出负责；这里覆盖事件历史中的每一种生产记录。
 enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
     case all
+    case birth
     case sheep
     case weight
     case weaning
@@ -21,6 +22,7 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
     var displayName: String {
         switch self {
         case .all: "全部记录"
+        case .birth: "出生记录"
         case .sheep: "羊只建档"
         case .weight: "称重记录"
         case .weaning: "断奶羔羊"
@@ -37,6 +39,7 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
     var symbol: String {
         switch self {
         case .all: "clock.arrow.circlepath"
+        case .birth: "calendar.badge.plus"
         case .sheep: "tag"
         case .weight: "scalemass"
         case .weaning: "leaf.circle.fill"
@@ -53,7 +56,8 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
     func includes(_ event: FarmEventSnapshot) -> Bool {
         switch self {
         case .all: true
-        case .sheep: event.entityType == .sheep
+        case .birth: event.entityType == .sheep && event.isDerived && event.title == "出生"
+        case .sheep: event.entityType == .sheep && !event.isDerived
         case .weight: event.entityType == .weight
         case .weaning: event.entityType == .weaning
         case .transfer: event.entityType == .transfer
