@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { CheckCircle } from "@phosphor-icons/react/CheckCircle";
 import { SpinnerGap } from "@phosphor-icons/react/SpinnerGap";
 import { WarningCircle } from "@phosphor-icons/react/WarningCircle";
@@ -7,6 +7,11 @@ import { AppHeader } from "./components/AppHeader.jsx";
 import { HomeDashboard } from "./components/HomeDashboard.jsx";
 import { makeDemoWorkspace } from "./data/demoData.js";
 import { isSupabaseConfigured } from "./lib/supabaseConfig.js";
+import {
+  WorkspaceDataSource,
+  workspaceHasSections,
+  workspaceSectionsForPage,
+} from "./lib/workspaceDataSource.js";
 
 let supabaseModulePromise;
 
@@ -14,6 +19,13 @@ function loadSupabaseModule() {
   supabaseModulePromise ??= import("./lib/supabase.js");
   return supabaseModulePromise;
 }
+
+const workspaceDataSource = new WorkspaceDataSource({
+  loadWorkspace: async (farmID, options) => {
+    const cloud = await loadSupabaseModule();
+    return cloud.loadCloudWorkspace(farmID, options);
+  },
+});
 
 const EntryPage = lazy(() => import("./components/pages/EntryPage.jsx"));
 const EventsPage = lazy(() => import("./components/pages/EventsPage.jsx"));
@@ -49,24 +61,6 @@ export function App() {
   const [recordDialog, setRecordDialog] = useState({ open: false, type: "new" });
   const [authState, setAuthState] = useState({ loading: true, error: "" });
   const [toast, setToast] = useState(null);
-  const workspaceRequestGeneration = useRef(0);
-  const workspaceAbortController = useRef(null);
-
-  const beginWorkspaceRequest = useCallback(() => {
-    workspaceAbortController.current?.abort();
-    const controller = new AbortController();
-    workspaceAbortController.current = controller;
-    workspaceRequestGeneration.current += 1;
-    return {
-      controller,
-      generation: workspaceRequestGeneration.current,
-    };
-  }, []);
-
-  const requestIsCurrent = useCallback((request) => (
-    !request.controller.signal.aborted &&
-      workspaceRequestGeneration.current === request.generation
-  ), []);
 
   const closeRecordDialog = useCallback(() => {
     setRecordDialog((current) => ({ ...current, open: false }));
@@ -85,7 +79,7 @@ export function App() {
   useEffect(() => {
     let active = true;
     let stopWatching = () => {};
-    const request = beginWorkspaceRequest();
+    workspaceDataSource.invalidate();
 
     async function restoreCloudSession() {
       if (!isSupabaseConfigured) {
@@ -99,21 +93,19 @@ export function App() {
         const cloud = await loadSupabaseModule();
         const user = await cloud.getVerifiedUser();
         if (!user) {
-          if (active && requestIsCurrent(request)) {
+          if (active) {
             setWorkspace(makeDemoWorkspace());
             setAuthState({ loading: false, error: "" });
           }
           return;
         }
-        const cloudWorkspace = await cloud.loadCloudWorkspace(undefined, {
-          signal: request.controller.signal,
-        });
-        if (active && requestIsCurrent(request)) {
+        const cloudWorkspace = await workspaceDataSource.loadOverview();
+        if (active) {
           setWorkspace(cloudWorkspace);
           setAuthState({ loading: false, error: "" });
         }
       } catch (error) {
-        if (active && requestIsCurrent(request) && error?.name !== "AbortError") {
+        if (active && error?.name !== "AbortError") {
           setWorkspace(makeDemoWorkspace());
           setAuthState({ loading: false, error: error.message || "云端会话恢复失败。" });
         }
@@ -126,8 +118,7 @@ export function App() {
         if (!active) return;
         stopWatching = cloud.watchAuth(({ event }) => {
           if (event === "SIGNED_OUT" && active) {
-            workspaceAbortController.current?.abort();
-            workspaceRequestGeneration.current += 1;
+            workspaceDataSource.invalidate();
             setWorkspace(makeDemoWorkspace());
             setAuthState({ loading: false, error: "" });
           }
@@ -137,10 +128,10 @@ export function App() {
 
     return () => {
       active = false;
-      request.controller.abort();
+      workspaceDataSource.invalidate();
       stopWatching();
     };
-  }, [beginWorkspaceRequest, requestIsCurrent]);
+  }, []);
 
   const deferredQuery = useDeferredValue(query);
   const searchIndex = useMemo(() => {
@@ -181,6 +172,37 @@ export function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
+  useEffect(() => {
+    if (!workspace || workspace.mode !== "cloud") return undefined;
+    const requiredSections = workspaceSectionsForPage(activePage);
+    if (workspaceHasSections(workspace, requiredSections)) return undefined;
+
+    let active = true;
+    setAuthState({ loading: true, error: "" });
+    void workspaceDataSource.loadForPage(
+      activePage,
+      workspace.farm.id,
+      { currentWorkspace: workspace },
+    ).then((cloudWorkspace) => {
+      if (!active) return;
+      setWorkspace(cloudWorkspace);
+      setAuthState({ loading: false, error: "" });
+    }).catch((error) => {
+      if (!active || error?.name === "AbortError") return;
+      const message = error.message || "页面数据装载失败。";
+      setAuthState({ loading: false, error: message });
+      showToast(message, "danger");
+    }).finally(() => {
+      if (active) {
+        setAuthState((current) => ({ ...current, loading: false }));
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [activePage, showToast, workspace]);
+
   function selectSearchResult(result) {
     setQuery("");
     navigate(result.kind === "event" ? "events" : "flock");
@@ -192,18 +214,15 @@ export function App() {
       if (farm) setWorkspace((current) => ({ ...current, farm }));
       return;
     }
-    const request = beginWorkspaceRequest();
     setAuthState({ loading: true, error: "" });
     try {
-      const cloud = await loadSupabaseModule();
-      const cloudWorkspace = await cloud.loadCloudWorkspace(farmID, {
-        signal: request.controller.signal,
+      const cloudWorkspace = await workspaceDataSource.loadOverview(farmID, {
+        bypassCache: true,
       });
-      if (!requestIsCurrent(request)) return;
       setWorkspace(cloudWorkspace);
       showToast(`已切换到 ${cloudWorkspace.farm.name}`);
     } catch (error) {
-      if (!requestIsCurrent(request) || error?.name === "AbortError") return;
+      if (error?.name === "AbortError") return;
       setAuthState({ loading: false, error: error.message || "牧场切换失败。" });
       showToast(error.message || "牧场切换失败。", "danger");
       return;
@@ -212,20 +231,17 @@ export function App() {
   }
 
   async function handleSignIn(email, password) {
-    const request = beginWorkspaceRequest();
+    workspaceDataSource.invalidate();
     setAuthState({ loading: true, error: "" });
     try {
       const cloud = await loadSupabaseModule();
       await cloud.signInWithPassword(email, password);
-      const cloudWorkspace = await cloud.loadCloudWorkspace(undefined, {
-        signal: request.controller.signal,
-      });
-      if (!requestIsCurrent(request)) return;
+      const cloudWorkspace = await workspaceDataSource.loadOverview();
       setWorkspace(cloudWorkspace);
       setAuthState({ loading: false, error: "" });
       showToast(`已连接 ${cloudWorkspace.farm.name}`);
     } catch (error) {
-      if (!requestIsCurrent(request) || error?.name === "AbortError") return;
+      if (error?.name === "AbortError") return;
       const message = error.message || "登录失败。";
       setAuthState({ loading: false, error: message });
       throw error;
@@ -248,8 +264,7 @@ export function App() {
   }
 
   async function handleSignOut() {
-    workspaceAbortController.current?.abort();
-    workspaceRequestGeneration.current += 1;
+    workspaceDataSource.invalidate();
     setAuthState({ loading: true, error: "" });
     try {
       const cloud = await loadSupabaseModule();
@@ -266,25 +281,46 @@ export function App() {
 
   async function reloadCloud() {
     if (workspace.mode !== "cloud") return;
-    const request = beginWorkspaceRequest();
+    workspaceDataSource.invalidate({ farmID: workspace.farm.id });
     setAuthState({ loading: true, error: "" });
     try {
-      const cloud = await loadSupabaseModule();
-      const cloudWorkspace = await cloud.loadCloudWorkspace(workspace.farm.id, {
-        signal: request.controller.signal,
-      });
-      if (!requestIsCurrent(request)) return;
+      const cloudWorkspace = await workspaceDataSource.loadForPage(
+        activePage,
+        workspace.farm.id,
+        {
+          currentWorkspace: workspace,
+          bypassCache: true,
+        },
+      );
       setWorkspace(cloudWorkspace);
       setAuthState({ loading: false, error: "" });
       showToast("云端投影已刷新。");
     } catch (error) {
-      if (!requestIsCurrent(request) || error?.name === "AbortError") return;
+      if (error?.name === "AbortError") return;
       setAuthState({ loading: false, error: error.message || "云端刷新失败。" });
       showToast(error.message || "云端刷新失败。", "danger");
     }
   }
 
-  function openRecord(type) {
+  async function openRecord(type) {
+    if (workspace.mode === "cloud" && ["feed", "new"].includes(type) &&
+        !workspaceHasSections(workspace, ["tmr"])) {
+      setAuthState({ loading: true, error: "" });
+      try {
+        const cloudWorkspace = await workspaceDataSource.loadTMR(
+          workspace.farm.id,
+          { currentWorkspace: workspace },
+        );
+        setWorkspace(cloudWorkspace);
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+        const message = error.message || "配方数据装载失败。";
+        setAuthState({ loading: false, error: message });
+        showToast(message, "danger");
+        return;
+      }
+      setAuthState({ loading: false, error: "" });
+    }
     setRecordDialog({ open: true, type });
   }
 

@@ -7,6 +7,10 @@ import {
   normalizedIdentifier,
   uniqueByNormalizedIdentifier,
 } from "./workspaceProjection.js";
+import {
+  normalizeWorkspaceSections,
+  workspaceEntityTypesForSections,
+} from "./workspaceDataSource.js";
 
 const { url, publishableKey } = supabaseBrowserConfiguration;
 
@@ -641,9 +645,14 @@ export async function signOut() {
   if (error) throw error;
 }
 
-export async function loadCloudWorkspace(preferredFarmID, { signal } = {}) {
+export async function loadCloudWorkspace(preferredFarmID, { signal, sections } = {}) {
   if (!supabase) throw new Error("Supabase 尚未配置。");
   signal?.throwIfAborted();
+
+  const loadedSections = normalizeWorkspaceSections(sections);
+  const requestedEntityTypes = new Set(
+    workspaceEntityTypesForSections(loadedSections),
+  );
 
   const user = await getVerifiedUser();
   if (!user) throw new Error("请先登录 Supabase 账号。");
@@ -673,6 +682,10 @@ export async function loadCloudWorkspace(preferredFarmID, { signal } = {}) {
     .then((result) => ({ result, error: null }))
     .catch((error) => ({ result: null, error }));
 
+  const fetchRequestedEntity = (entityType) => requestedEntityTypes.has(entityType)
+    ? fetchEntityRows(farm.id, entityType, signal)
+    : Promise.resolve([]);
+
   const [
     farmRows,
     penRows,
@@ -686,16 +699,16 @@ export async function loadCloudWorkspace(preferredFarmID, { signal } = {}) {
     feedingPlanRows,
     operationRows,
   ] = await Promise.all([
-    fetchEntityRows(farm.id, "farm", signal),
-    fetchEntityRows(farm.id, "pen", signal),
-    fetchEntityRows(farm.id, "sheep", signal),
-    fetchEntityRows(farm.id, "feed", signal),
-    fetchEntityRows(farm.id, "weight", signal),
-    fetchEntityRows(farm.id, "transfer", signal),
-    fetchEntityRows(farm.id, "removal", signal),
-    fetchEntityRows(farm.id, "feedIngredient", signal),
-    fetchEntityRows(farm.id, "tmrFormula", signal),
-    fetchEntityRows(farm.id, "tmrFeedingPlan", signal),
+    fetchRequestedEntity("farm"),
+    fetchRequestedEntity("pen"),
+    fetchRequestedEntity("sheep"),
+    fetchRequestedEntity("feed"),
+    fetchRequestedEntity("weight"),
+    fetchRequestedEntity("transfer"),
+    fetchRequestedEntity("removal"),
+    fetchRequestedEntity("feedIngredient"),
+    fetchRequestedEntity("tmrFormula"),
+    fetchRequestedEntity("tmrFeedingPlan"),
     fetchOperationRows(farm.id, farm.generation, signal),
   ]);
   signal?.throwIfAborted();
@@ -777,8 +790,9 @@ export async function loadCloudWorkspace(preferredFarmID, { signal } = {}) {
 
   return {
     mode: "cloud",
+    loadedSections,
     projectionCoverage: {
-      real: ["farm", "sheep", "pen", "feed", "weight", "transfer", "removal", "feedIngredient", "tmrFormula", "tmrFeedingPlan", "farm_operations"],
+      real: [...requestedEntityTypes, "farm_operations"],
       preview: ["alerts", "tmrMeals", "tmrMonitoring", "insights"],
       baseline: baselinePackage
         ? {
