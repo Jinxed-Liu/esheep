@@ -12,9 +12,9 @@ single-flight、取消、上下文 lease 和通知合并；Web 首屏与路由�
 CI 数据库临时环境和后端兼容边界已经建立。
 
 当前不能确认：真实 iPhone 上的 P95、hitch、冷启动和峰值内存是否达到目标；稳定
-Xcode 的签名 Archive/TestFlight 是否通过；本地一次性 Supabase 的 pgTAP、lint、
-advisor 和真实查询计划是否通过。以下未完成项不是以编译结果替代验收，而是明确保留
-为下一批的外部或证据门禁。
+Xcode 的签名 Archive/TestFlight 是否通过；Staging 的真实网络与 payload 规模是否
+达到端到端目标。以下未完成项不是以编译结果替代验收，而是明确保留为下一批的外部
+或证据门禁。
 
 ## 已完成
 
@@ -77,6 +77,10 @@ advisor 和真实查询计划是否通过。以下未完成项不是以编译结
 - `tools/verify_local.sh` 拆为 `static`、`ios`、`web`、`backend`、`db`、`all`；
   `all` 保持正式总门禁。GitHub Actions 已加入静态、Web、后端和一次性 Supabase
   migration/pgTAP 门禁，且不含部署、生产迁移、上传或输出目录清理动作。
+- 从当前已提交树导出独立 Supabase 临时项目，从空库两次应用 28 个 migration；4 个
+  pgTAP 文件共 79 条计划断言 0 失败，lint 和 advisors 无 error。在 10 万实体、20 万
+  操作和 1,000 检查点的匿名 10× fixture 上，最慢的目标服务端查询为 7.10 ms，现有
+  索引计划无需追加 migration。
 - 新增独立、非并行 `eSheepNextPerformanceTests` 目标，使用内存 SwiftData 和匿名
   JPEG fixture，不访问任何生产云。
 
@@ -89,6 +93,7 @@ advisor 和真实查询计划是否通过。以下未完成项不是以编译结
 | Web | Node 14/14，Sites 4/4，生产构建通过 | 初始 JS 93.22 KB gzip、153 模块、npm audit 0；本地演示模式，不代表真实 Supabase 网络 |
 | CloudBase 网关 | 33/33 通过 | 本地协议回归，不代表已部署 |
 | 遗留 Worker | 16/16 通过 | TypeScript 与本地协议回归，npm audit 0；不代表远端 secrets/环境 |
+| 隔离 Supabase | 28 migration、79 条 pgTAP 计划断言、0 失败 | lint 1 warning，advisors 仅 INFO；10× 目标查询最慢 7.10 ms；不代表 Staging 网络 P95 |
 | Debug iOS 构建 | 通过 | 通用模拟器；只证明可编译与测试宿主可运行 |
 | Release iOS 构建 | 通过 | Xcode 27 beta、通用真机、无签名；不替代 Archive/TestFlight |
 | 静态子门禁 | 代码、本地化、两个 Privacy Manifest 通过 | 完整 static 被缺失的本地 Staging 公开配置和并行法务占位符阻塞 |
@@ -113,10 +118,10 @@ advisor 和真实查询计划是否通过。以下未完成项不是以编译结
    历史、恢复、TMR 反转、authority 和 checkpoint，但两端尚未消费同一物理 fixture。
    Web 当前也未投影 TMR 批次/反转。下一批应先抽取两端真实投影入口，再让同一
    fixture 驱动它们；不能用测试专用重复算法伪造一致性。
-5. **Supabase 数据库**：在隔离的一次性本地实例或 CI 数据库执行 migration、全部
-   pgTAP、lint、security/performance advisor，并在当前与 10 倍匿名数据上保存
-   `EXPLAIN (ANALYZE, BUFFERS)`。本轮没有触碰已被其他项目占用的本地实例，也没有
-   reset 生产数据库。
+5. **Supabase Staging 端到端证据**：隔离本地实例已完成 migration、79 条 pgTAP、
+   lint、security/performance advisors，以及 1×/10× 匿名数据的
+   `EXPLAIN (ANALYZE, BUFFERS)`；没有新增索引。仍需在 Staging 记录 RLS、网络、
+   checkpoint 下载/解压和 JSON 投影的完整 P95。本轮没有 reset 现有本地项目或生产库。
 6. **Root 快照、查询与索引**：等待真机 signpost 和 Core Data fetch 证据。仅当根摘要
    长期扫描被证明为热点时，才接入 `RootWorkspaceSnapshotProviding`；完整历史语义
    查询继续保留。索引必须是独立 schema migration。
