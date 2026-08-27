@@ -292,6 +292,22 @@ private final class CloudSyncEngineDelegateProxy: CKSyncEngineDelegate, @uncheck
 }
 
 actor CloudSyncActor {
+    private final class Runtime {
+        let container: CKContainer
+        var privateEngine: CKSyncEngine
+        var sharedEngine: CKSyncEngine
+
+        init(
+            container: CKContainer,
+            privateEngine: CKSyncEngine,
+            sharedEngine: CKSyncEngine
+        ) {
+            self.container = container
+            self.privateEngine = privateEngine
+            self.sharedEngine = sharedEngine
+        }
+    }
+
     private struct ActiveManualBatch: Sendable {
         let id: UUID
         let task: Task<Void, any Error>
@@ -312,13 +328,25 @@ actor CloudSyncActor {
     }
 
     private static let manualBatchTimeout: Duration = .seconds(60)
-    private let container: CKContainer
+    private let containerIdentifier: String?
+    private let startupRepair: RecoveredBaselineStartupRepairResult
     private let persistence: FarmPersistenceActor
     private let deviceIdentity: DeviceIdentityActor
     private let mapper = CloudRecordMapper()
     private let delegateProxy: CloudSyncEngineDelegateProxy
-    private var privateEngine: CKSyncEngine
-    private var sharedEngine: CKSyncEngine
+    /// CloudKit can be disabled while Supabase remains authoritative. Avoid
+    /// constructing CKContainer/CKSyncEngine during app bootstrap in that
+    /// configuration; the runtime is created only by a real CloudKit path.
+    private var runtime: Runtime?
+    private var container: CKContainer { resolvedRuntime().container }
+    private var privateEngine: CKSyncEngine {
+        get { resolvedRuntime().privateEngine }
+        set { resolvedRuntime().privateEngine = newValue }
+    }
+    private var sharedEngine: CKSyncEngine {
+        get { resolvedRuntime().sharedEngine }
+        set { resolvedRuntime().sharedEngine = newValue }
+    }
     /// CKSyncEngine delegate callbacks can arrive after an engine reset. Keep
     /// an explicit identity map so a retired private engine can never be
     /// mistaken for the current shared engine (or vice versa).
@@ -347,59 +375,79 @@ actor CloudSyncActor {
         deviceIdentity: DeviceIdentityActor = .shared,
         startupRepair: RecoveredBaselineStartupRepairResult = .none
     ) {
+        self.containerIdentifier = containerIdentifier
+        self.startupRepair = startupRepair
+        self.persistence = persistence
+        self.deviceIdentity = deviceIdentity
+        let proxy = CloudSyncEngineDelegateProxy()
+        self.delegateProxy = proxy
+        proxy.owner = self
+    }
+
+    private func makeRuntime() -> Runtime {
         let container: CKContainer
         if let containerIdentifier, !containerIdentifier.isEmpty {
             container = CKContainer(identifier: containerIdentifier)
         } else {
             container = .default()
         }
-        self.container = container
-        self.persistence = persistence
-        self.deviceIdentity = deviceIdentity
-        let proxy = CloudSyncEngineDelegateProxy()
-        self.delegateProxy = proxy
 
         var privateConfiguration = CKSyncEngine.Configuration(
             database: container.privateCloudDatabase,
             stateSerialization: CloudEngineStateDiskStore.load(scope: .privateDatabase),
-            delegate: proxy
+            delegate: delegateProxy
         )
         privateConfiguration.automaticallySync =
             !CloudEngineStateDiskStore.wasCorrupted(scope: .privateDatabase) &&
             !startupRepair.blockedScopeRawValues.contains(CloudDatabaseScope.privateDatabase.rawValue)
         privateConfiguration.subscriptionID = "esheep-next-private"
-        self.privateEngine = CKSyncEngine(privateConfiguration)
+        let privateEngine = CKSyncEngine(privateConfiguration)
 
         var sharedConfiguration = CKSyncEngine.Configuration(
             database: container.sharedCloudDatabase,
             stateSerialization: CloudEngineStateDiskStore.load(scope: .sharedDatabase),
-            delegate: proxy
+            delegate: delegateProxy
         )
         sharedConfiguration.automaticallySync =
             !CloudEngineStateDiskStore.wasCorrupted(scope: .sharedDatabase) &&
             !startupRepair.blockedScopeRawValues.contains(CloudDatabaseScope.sharedDatabase.rawValue)
         sharedConfiguration.subscriptionID = "esheep-next-shared"
-        self.sharedEngine = CKSyncEngine(sharedConfiguration)
-        self.engineScopes = [
-            ObjectIdentifier(self.privateEngine): .privateDatabase,
-            ObjectIdentifier(self.sharedEngine): .sharedDatabase,
+        let sharedEngine = CKSyncEngine(sharedConfiguration)
+        engineScopes = [
+            ObjectIdentifier(privateEngine): .privateDatabase,
+            ObjectIdentifier(sharedEngine): .sharedDatabase,
         ]
 
-        let privateStaleChanges = self.privateEngine.state.pendingRecordZoneChanges.filter { change in
+        let privateStaleChanges = privateEngine.state.pendingRecordZoneChanges.filter { change in
             guard case .saveRecord(let recordID) = change else { return false }
             return startupRepair.privatePendingRecordNames.contains(recordID.recordName)
         }
         if !privateStaleChanges.isEmpty {
-            self.privateEngine.state.remove(pendingRecordZoneChanges: privateStaleChanges)
+            privateEngine.state.remove(pendingRecordZoneChanges: privateStaleChanges)
         }
-        let sharedStaleChanges = self.sharedEngine.state.pendingRecordZoneChanges.filter { change in
+        let sharedStaleChanges = sharedEngine.state.pendingRecordZoneChanges.filter { change in
             guard case .saveRecord(let recordID) = change else { return false }
             return startupRepair.sharedPendingRecordNames.contains(recordID.recordName)
         }
         if !sharedStaleChanges.isEmpty {
-            self.sharedEngine.state.remove(pendingRecordZoneChanges: sharedStaleChanges)
+            sharedEngine.state.remove(pendingRecordZoneChanges: sharedStaleChanges)
         }
-        proxy.owner = self
+        return Runtime(
+            container: container,
+            privateEngine: privateEngine,
+            sharedEngine: sharedEngine
+        )
+    }
+
+    private func resolvedRuntime() -> Runtime {
+        if let runtime { return runtime }
+        let runtime = makeRuntime()
+        self.runtime = runtime
+        return runtime
+    }
+
+    func hasInitializedCloudRuntime() -> Bool {
+        runtime != nil
     }
 
     func accountAvailability() async -> CloudAccountAvailability {
@@ -2356,10 +2404,15 @@ final class CloudCollaborationStore {
     }
 
     func refreshAccountAvailability() async {
-        accountAvailability = await sync.accountAvailability()
+        if CloudFeatureConfiguration.isEnabled {
+            accountAvailability = await sync.accountAvailability()
+        } else {
+            accountAvailability = .couldNotDetermine
+        }
         if IdentityWorkerConfiguration.baseURL != nil {
             workerHealth = try? await IdentityWorkerClient.shared.health()
         }
+        guard CloudFeatureConfiguration.isEnabled else { return }
         let corruptedScopes = await sync.corruptedStateScopes()
         if !corruptedScopes.isEmpty {
             let names = corruptedScopes.map(\.rawValue).joined(separator: "、")

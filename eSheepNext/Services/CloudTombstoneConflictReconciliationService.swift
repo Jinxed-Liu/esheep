@@ -370,14 +370,20 @@ protocol CloudTombstoneRecordFetching: Sendable {
 }
 
 actor CloudKitTombstoneRecordFetcher: CloudTombstoneRecordFetching {
-  private let container: CKContainer
+  private let containerIdentifier: String?
+  private lazy var container: CKContainer = Self.makeContainer(
+    identifier: containerIdentifier
+  )
 
   init(containerIdentifier: String?) {
-    if let containerIdentifier, !containerIdentifier.isEmpty {
-      container = CKContainer(identifier: containerIdentifier)
-    } else {
-      container = CKContainer.default()
+    self.containerIdentifier = containerIdentifier
+  }
+
+  private static func makeContainer(identifier: String?) -> CKContainer {
+    if let identifier, !identifier.isEmpty {
+      return CKContainer(identifier: identifier)
     }
+    return CKContainer.default()
   }
 
   func record(for id: CKRecord.ID, scope: CloudDatabaseScope) async throws -> CKRecord? {

@@ -421,11 +421,18 @@ final class SameAccountSyncSafetyTests: XCTestCase {
             containerIdentifier: "",
             persistence: FarmPersistenceActor(container: fixture.container)
         )
+        let initializedBeforeLocalTransition = await sync.hasInitializedCloudRuntime()
+        XCTAssertFalse(initializedBeforeLocalTransition)
         let transitionedToFreshRebuild = try await sync.prepareFreshRebuildAfterUnverifiedResetClaim(
             scope: .privateDatabase,
             farmID: fixture.farmID
         )
         XCTAssertTrue(transitionedToFreshRebuild)
+        let initializedAfterLocalTransition = await sync.hasInitializedCloudRuntime()
+        XCTAssertFalse(
+            initializedAfterLocalTransition,
+            "纯本地恢复状态转换不得提前创建 CloudKit 容器或同步引擎"
+        )
 
         let verify = ModelContext(fixture.container)
         let transitioned = try XCTUnwrap(

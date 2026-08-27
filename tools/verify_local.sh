@@ -206,15 +206,27 @@ verify_ios() {
 
   local test_destination="${TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 16 Pro}"
   local test_result="$local_derived_data/TestResults.xcresult"
-  DEVELOPER_DIR="$developer_dir" xcodebuild test \
+  local test_derived_data="$local_derived_data/Tests"
+  DEVELOPER_DIR="$developer_dir" xcodebuild build-for-testing \
     -project "$repo_root/eSheepNext.xcodeproj" \
     -scheme eSheepNext \
-    -configuration Release \
+    -configuration Debug \
     -destination "$test_destination" \
-    -derivedDataPath "$local_derived_data/Tests" \
+    -derivedDataPath "$test_derived_data" \
+    -parallel-testing-enabled NO \
+    -maximum-parallel-testing-workers 1 \
+    COMPILER_INDEX_STORE_ENABLE=NO
+
+  DEVELOPER_DIR="$developer_dir" xcodebuild test-without-building \
+    -project "$repo_root/eSheepNext.xcodeproj" \
+    -scheme eSheepNext \
+    -configuration Debug \
+    -destination "$test_destination" \
+    -derivedDataPath "$test_derived_data" \
     -resultBundlePath "$test_result" \
-    ENABLE_TESTABILITY=YES \
-    CODE_SIGNING_ALLOWED=NO
+    -parallel-testing-enabled NO \
+    -maximum-parallel-testing-workers 1 \
+    COMPILER_INDEX_STORE_ENABLE=NO
 
   DEVELOPER_DIR="$developer_dir" xcrun xcresulttool get test-results summary \
     --path "$test_result" --compact | python3 -c '

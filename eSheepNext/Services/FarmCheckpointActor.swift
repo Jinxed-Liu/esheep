@@ -87,14 +87,22 @@ struct FarmCheckpointCreationTaskRegistry {
 
 actor FarmCheckpointActor {
     private let modelContainer: ModelContainer
-    private let cloudContainer: CKContainer
+    private let containerIdentifier: String?
+    private lazy var cloudContainer: CKContainer = Self.makeCloudContainer(
+        identifier: containerIdentifier
+    )
     private let recoveryKeys: FarmRecoveryKeyActor
     private var checkpointCreationTasks = FarmCheckpointCreationTaskRegistry()
 
     init(modelContainer: ModelContainer, containerIdentifier: String? = Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String, recoveryKeys: FarmRecoveryKeyActor = .shared) {
         self.modelContainer = modelContainer
-        self.cloudContainer = containerIdentifier.flatMap { $0.isEmpty ? nil : CKContainer(identifier: $0) } ?? .default()
+        self.containerIdentifier = containerIdentifier
         self.recoveryKeys = recoveryKeys
+    }
+
+    private static func makeCloudContainer(identifier: String?) -> CKContainer {
+        identifier.flatMap { $0.isEmpty ? nil : CKContainer(identifier: $0) }
+            ?? .default()
     }
 
     func shouldCreateAutomaticCheckpoint(farmID: UUID) throws -> FarmCheckpointReason? {

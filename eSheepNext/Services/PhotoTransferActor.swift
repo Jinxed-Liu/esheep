@@ -44,7 +44,10 @@ struct OptimizedPhoto: Sendable {
 
 actor PhotoTransferActor {
     private let modelContainer: ModelContainer
-    private let cloudContainer: CKContainer
+    private let containerIdentifier: String?
+    private lazy var cloudContainer: CKContainer = Self.makeCloudContainer(
+        identifier: containerIdentifier
+    )
     private let mapper = CloudRecordMapper()
     private let recoveryKeys: FarmRecoveryKeyActor
     private let deviceIdentity: DeviceIdentityActor
@@ -52,9 +55,14 @@ actor PhotoTransferActor {
 
     init(modelContainer: ModelContainer, containerIdentifier: String? = Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String, recoveryKeys: FarmRecoveryKeyActor = .shared, deviceIdentity: DeviceIdentityActor = .shared) {
         self.modelContainer = modelContainer
-        self.cloudContainer = containerIdentifier.flatMap { $0.isEmpty ? nil : CKContainer(identifier: $0) } ?? .default()
+        self.containerIdentifier = containerIdentifier
         self.recoveryKeys = recoveryKeys
         self.deviceIdentity = deviceIdentity
+    }
+
+    private static func makeCloudContainer(identifier: String?) -> CKContainer {
+        identifier.flatMap { $0.isEmpty ? nil : CKContainer(identifier: $0) }
+            ?? .default()
     }
 
     func enqueue(data: Data, farmID: UUID, entityID: UUID?) throws -> UUID {
