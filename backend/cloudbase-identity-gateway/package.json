@@ -5,7 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "test": "node --test",
-    "check": "node --check index.js && node --check apple-auth.js && node --check collaboration-service.js",
+    "check": "node --check index.js && node --check apple-auth.js && node --check collaboration-store.js && node --check collaboration-service.js",
     "security:audit": "npm audit --omit=dev --audit-level=high"
   },
   "engines": {
