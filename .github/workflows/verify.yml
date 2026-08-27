@@ -1,0 +1,89 @@
+name: Repository verification
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'codex/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install static-check dependencies
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep zsh
+      - name: Run static gate
+        env:
+          VERIFY_PUBLIC_CONFIG: '0'
+        run: ./tools/verify_local.sh static
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+          package-manager-cache: true
+      - name: Install Web dependencies
+        working-directory: web
+        run: npm ci
+      - name: Run Web gate
+        run: ./tools/verify_local.sh web
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            backend/cloudbase-identity-gateway/package-lock.json
+            backend/identity-worker/package-lock.json
+          package-manager-cache: true
+      - name: Install backend dependencies
+        run: |
+          npm ci --prefix backend/cloudbase-identity-gateway
+          npm ci --prefix backend/identity-worker
+      - name: Run backend gate
+        run: ./tools/verify_local.sh backend
+
+  database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: supabase/setup-cli@v3
+        with:
+          version: 2.114.0
+      - name: Run disposable local database gate
+        env:
+          ALLOW_LOCAL_DB_RESET: '1'
+        run: ./tools/verify_local.sh db
+
+  # iOS remains a local stable-Xcode release gate until the hosted runner has
+  # the exact project-approved Xcode/runtime. CI must not substitute a beta build.
