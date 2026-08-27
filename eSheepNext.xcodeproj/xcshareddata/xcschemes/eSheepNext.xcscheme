@@ -39,6 +39,16 @@
                ReferencedContainer = "container:eSheepNext.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "E5A400032FC9000100A00001"
+               BuildableName = "eSheepNextPerformanceTests.xctest"
+               ReferencedContainer = "container:eSheepNext.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

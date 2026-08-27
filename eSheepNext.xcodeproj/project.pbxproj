@@ -27,6 +27,13 @@
 			remoteGlobalIDString = E5A100382FC6000100A00001;
 			remoteInfo = eSheepNextWidget;
 		};
+		E5A400072FC9000100A00001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E5A100012FC6000100A00001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E5A100082FC6000100A00001;
+			remoteInfo = eSheepNext;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -50,6 +57,7 @@
 		E5A100222FC6000100A00001 /* Config/StagingEnvironment.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/StagingEnvironment.xcconfig; sourceTree = "<group>"; };
 		E5A100232FC6000100A00001 /* Config/ReleaseEnvironment.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/ReleaseEnvironment.xcconfig; sourceTree = "<group>"; };
 		E5A100312FC6000100A00001 /* eSheepNextWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = eSheepNextWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		E5A400012FC9000100A00001 /* eSheepNextPerformanceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eSheepNextPerformanceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -91,6 +99,11 @@
 			path = eSheepNextWidget;
 			sourceTree = "<group>";
 		};
+		E5A400022FC9000100A00001 /* eSheepNextPerformanceTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = eSheepNextPerformanceTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -117,6 +130,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E5A400052FC9000100A00001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -128,6 +148,7 @@
 				E5A100232FC6000100A00001 /* Config/ReleaseEnvironment.xcconfig */,
 				E5A100032FC6000100A00001 /* eSheepNext */,
 				E5A1000D2FC6000100A00001 /* eSheepNextTests */,
+				E5A400022FC9000100A00001 /* eSheepNextPerformanceTests */,
 				E5A100342FC6000100A00001 /* eSheepNextWidget */,
 				E5A100072FC6000100A00001 /* Products */,
 			);
@@ -138,6 +159,7 @@
 			children = (
 				E5A100062FC6000100A00001 /* eSheepNext.app */,
 				E5A1000C2FC6000100A00001 /* eSheepNextTests.xctest */,
+				E5A400012FC9000100A00001 /* eSheepNextPerformanceTests.xctest */,
 				E5A100312FC6000100A00001 /* eSheepNextWidget.appex */,
 			);
 			name = Products;
@@ -217,6 +239,29 @@
 			productReference = E5A100312FC6000100A00001 /* eSheepNextWidget.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		E5A400032FC9000100A00001 /* eSheepNextPerformanceTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E5A4000C2FC9000100A00001 /* Build configuration list for PBXNativeTarget "eSheepNextPerformanceTests" */;
+			buildPhases = (
+				E5A400042FC9000100A00001 /* Sources */,
+				E5A400052FC9000100A00001 /* Frameworks */,
+				E5A400062FC9000100A00001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E5A400082FC9000100A00001 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E5A400022FC9000100A00001 /* eSheepNextPerformanceTests */,
+			);
+			name = eSheepNextPerformanceTests;
+			packageProductDependencies = (
+			);
+			productName = eSheepNextPerformanceTests;
+			productReference = E5A400012FC9000100A00001 /* eSheepNextPerformanceTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -236,6 +281,10 @@
 					};
 					E5A100382FC6000100A00001 = {
 						CreatedOnToolsVersion = 27.0;
+					};
+					E5A400032FC9000100A00001 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = E5A100082FC6000100A00001;
 					};
 				};
 			};
@@ -260,6 +309,7 @@
 			targets = (
 				E5A100082FC6000100A00001 /* eSheepNext */,
 				E5A1000E2FC6000100A00001 /* eSheepNextTests */,
+				E5A400032FC9000100A00001 /* eSheepNextPerformanceTests */,
 				E5A100382FC6000100A00001 /* eSheepNextWidget */,
 			);
 		};
@@ -281,6 +331,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		E5A100372FC6000100A00001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E5A400062FC9000100A00001 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -311,6 +368,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E5A400042FC9000100A00001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -323,6 +387,11 @@
 			isa = PBXTargetDependency;
 			target = E5A100382FC6000100A00001 /* eSheepNextWidget */;
 			targetProxy = E5A100322FC6000100A00001 /* PBXContainerItemProxy */;
+		};
+		E5A400082FC9000100A00001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E5A100082FC6000100A00001 /* eSheepNext */;
+			targetProxy = E5A400072FC9000100A00001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -694,6 +763,60 @@
 			};
 			name = Release;
 		};
+		E5A400092FC9000100A00001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.esheepnext.performance;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/eSheepNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/eSheepNext";
+			};
+			name = Debug;
+		};
+		E5A4000A2FC9000100A00001 /* Staging */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging.performance;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/eSheepNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/eSheepNext";
+			};
+			name = Staging;
+		};
+		E5A4000B2FC9000100A00001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 7BBQMZ87SM;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios.performance;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/eSheepNext.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/eSheepNext";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -733,6 +856,16 @@
 				E5A1003B2FC6000100A00001 /* Debug */,
 				E5A1003C2FC6000100A00001 /* Staging */,
 				E5A1003D2FC6000100A00001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E5A4000C2FC9000100A00001 /* Build configuration list for PBXNativeTarget "eSheepNextPerformanceTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E5A400092FC9000100A00001 /* Debug */,
+				E5A4000A2FC9000100A00001 /* Staging */,
+				E5A4000B2FC9000100A00001 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
