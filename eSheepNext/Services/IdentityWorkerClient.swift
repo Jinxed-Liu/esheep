@@ -283,10 +283,15 @@ actor IdentityWorkerClient {
     static let shared = IdentityWorkerClient()
 
     private let session: URLSession
+    private let baseURL: URL?
     private let encoder = JSONEncoder.cloud
     private let decoder: JSONDecoder
 
-    init(session: URLSession? = nil) {
+    init(
+        session: URLSession? = nil,
+        baseURL: URL? = IdentityWorkerConfiguration.baseURL
+    ) {
+        self.baseURL = baseURL
         if let session {
             self.session = session
         } else {
@@ -370,7 +375,7 @@ actor IdentityWorkerClient {
     func signOut() async throws -> WorkerSignOutResult {
         let warningMessage: String?
         do {
-            let _: EmptyWorkerResponse = try await request(
+            try await requestEmpty(
                 path: "/v1/auth/logout",
                 method: "POST",
                 body: Optional<String>.none
@@ -405,7 +410,11 @@ actor IdentityWorkerClient {
     }
 
     func revokeDevice(deviceID: UUID) async throws {
-        let _: EmptyWorkerResponse = try await request(path: "/v1/devices/\(deviceID.uuidString.lowercased())", method: "DELETE", body: Optional<String>.none)
+        try await requestEmpty(
+            path: "/v1/devices/\(deviceID.uuidString.lowercased())",
+            method: "DELETE",
+            body: Optional<String>.none
+        )
     }
 
     func requestInsightDevice(
@@ -531,7 +540,7 @@ actor IdentityWorkerClient {
     }
 
     func removeInsightRecovery() async throws {
-        let _: EmptyWorkerResponse = try await request(
+        try await requestEmpty(
             path: "/v1/insights/recovery",
             method: "DELETE",
             body: Optional<String>.none
@@ -595,11 +604,15 @@ actor IdentityWorkerClient {
     }
 
     func confirmInvite(inviteID: String, participantRecordName: String) async throws {
-        let _: EmptyWorkerResponse = try await request(path: "/v1/invites/\(inviteID)/confirm", method: "POST", body: ["shareParticipantRecordName": participantRecordName])
+        try await requestEmpty(
+            path: "/v1/invites/\(inviteID)/confirm",
+            method: "POST",
+            body: ["shareParticipantRecordName": participantRecordName]
+        )
     }
 
     func changeMemberRole(memberID: String, farmID: UUID, role: FarmRole) async throws {
-        let _: EmptyWorkerResponse = try await request(
+        try await requestEmpty(
             path: "/v1/members/\(memberID)",
             method: "PATCH",
             body: InviteBody(
@@ -612,7 +625,11 @@ actor IdentityWorkerClient {
     }
 
     func removeMember(memberID: String, farmID: UUID) async throws {
-        let _: EmptyWorkerResponse = try await request(path: "/v1/members/\(memberID)", method: "DELETE", body: FarmOnlyBody(farmID: farmID))
+        try await requestEmpty(
+            path: "/v1/members/\(memberID)",
+            method: "DELETE",
+            body: FarmOnlyBody(farmID: farmID)
+        )
     }
 
     func issueCapability(farmID: UUID, deviceID: UUID) async throws -> WorkerCapabilityResponse {
@@ -688,7 +705,45 @@ actor IdentityWorkerClient {
         allowRefresh: Bool = true,
         timeout: TimeInterval = 15
     ) async throws -> Response {
-        guard let baseURL = IdentityWorkerConfiguration.baseURL else { throw IdentityWorkerError.notConfigured }
+        let data = try await requestData(
+            path: path,
+            method: method,
+            body: body,
+            authenticated: authenticated,
+            allowRefresh: allowRefresh,
+            timeout: timeout
+        )
+        return try decoder.decode(Response.self, from: data)
+    }
+
+    private func requestEmpty<Body: Encodable>(
+        path: String,
+        method: String,
+        body: Body,
+        authenticated: Bool = true,
+        allowRefresh: Bool = true,
+        timeout: TimeInterval = 15
+    ) async throws {
+        let data = try await requestData(
+            path: path,
+            method: method,
+            body: body,
+            authenticated: authenticated,
+            allowRefresh: allowRefresh,
+            timeout: timeout
+        )
+        try IdentityWorkerResponseDecoder.decodeEmpty(data, using: decoder)
+    }
+
+    private func requestData<Body: Encodable>(
+        path: String,
+        method: String,
+        body: Body,
+        authenticated: Bool,
+        allowRefresh: Bool,
+        timeout: TimeInterval
+    ) async throws -> Data {
+        guard let baseURL else { throw IdentityWorkerError.notConfigured }
         let url = IdentityWorkerConfiguration.endpointURL(baseURL: baseURL, path: path)
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -709,6 +764,10 @@ actor IdentityWorkerClient {
         let response: URLResponse
         do {
             (data, response) = try await session.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch let error as URLError {
             throw IdentityWorkerError.networkUnavailable(
                 host: url.host(percentEncoded: false) ?? "身份服务",
@@ -718,7 +777,7 @@ actor IdentityWorkerClient {
         guard let http = response as? HTTPURLResponse else { throw IdentityWorkerError.invalidResponse }
         if http.statusCode == 401, authenticated, allowRefresh {
             try await refresh()
-            return try await self.request(
+            return try await requestData(
                 path: path,
                 method: method,
                 body: body,
@@ -736,10 +795,7 @@ actor IdentityWorkerClient {
             }
             throw IdentityWorkerError.invalidResponse
         }
-        if Response.self == EmptyWorkerResponse.self, data.isEmpty {
-            return EmptyWorkerResponse() as! Response
-        }
-        return try decoder.decode(Response.self, from: data)
+        return data
     }
 
     private func refresh() async throws {
@@ -820,4 +876,11 @@ private struct InviteBody: Codable {
 }
 private struct CapabilityBody: Codable { let farmID: UUID; let deviceID: UUID }
 private struct FarmOnlyBody: Codable { let farmID: UUID }
-private struct EmptyWorkerResponse: Codable {}
+struct EmptyResponse: Codable, Sendable, Equatable {}
+
+enum IdentityWorkerResponseDecoder {
+    static func decodeEmpty(_ data: Data, using decoder: JSONDecoder = JSONDecoder()) throws {
+        guard !data.isEmpty else { return }
+        _ = try decoder.decode(EmptyResponse.self, from: data)
+    }
+}

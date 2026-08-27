@@ -59,7 +59,12 @@ struct eSheepNextApp: App {
                 }
             }
             .environment(\.locale, preferences.language.locale)
-            .task { bootstrap.start() }
+            .task {
+                ImageThumbnailMemoryPressureMonitor.start()
+                let interval = PerformanceTrace.begin(.appLaunch)
+                bootstrap.start()
+                PerformanceTrace.end(interval)
+            }
         }
     }
 }

@@ -9,21 +9,16 @@ struct AccountAvatarView: View {
 
     var body: some View {
         Group {
-            if let data = account.avatarImageData, let image = UIImage(data: data) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                ZStack {
-                    LinearGradient(
-                        colors: [AppTheme.brand, AppTheme.brandSoft],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    Text(initials)
-                        .font(.system(size: size * 0.36, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
+            if let data = account.avatarImageData {
+                DownsampledDataImage(
+                    data: data,
+                    digest: avatarDigest(for: data),
+                    targetSize: CGSize(width: size, height: size)
+                ) {
+                    fallbackAvatar
                 }
+            } else {
+                fallbackAvatar
             }
         }
         .frame(width: size, height: size)
@@ -36,6 +31,24 @@ struct AccountAvatarView: View {
     private var initials: String {
         let characters = account.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         return characters.first.map(String.init) ?? "羊"
+    }
+
+    private var fallbackAvatar: some View {
+        ZStack {
+            LinearGradient(
+                colors: [AppTheme.brand, AppTheme.brandSoft],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Text(initials)
+                .font(.system(size: size * 0.36, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+        }
+    }
+
+    private func avatarDigest(for data: Data) -> String {
+        account.avatarCloudDigest ??
+            "account-avatar|\(account.id.uuidString)|\(account.updatedAt.timeIntervalSince1970)|\(data.count)"
     }
 }
 
@@ -100,6 +113,7 @@ struct AccountAvatarEditor: View {
         Task {
             defer { isProcessing = false }
             do {
+                let previousDigest = account.avatarCloudDigest
                 guard let sourceData = try await item.loadTransferable(type: Data.self),
                       let avatarData = ProfileAvatarProcessor.makeJPEG(from: sourceData) else {
                     throw ProfileAvatarError.invalidImage
@@ -109,6 +123,9 @@ struct AccountAvatarEditor: View {
                     account: account,
                     context: modelContext
                 )
+                if let previousDigest {
+                    await ImageThumbnailPipeline.shared.invalidate(digest: previousDigest)
+                }
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } catch is CancellationError {
                 return
@@ -124,10 +141,14 @@ struct AccountAvatarEditor: View {
         Task {
             defer { isProcessing = false }
             do {
+                let previousDigest = account.avatarCloudDigest
                 try await AccountAvatarCloudSyncService.shared.remove(
                     account: account,
                     context: modelContext
                 )
+                if let previousDigest {
+                    await ImageThumbnailPipeline.shared.invalidate(digest: previousDigest)
+                }
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } catch {
                 errorMessage = error.localizedDescription

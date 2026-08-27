@@ -36,6 +36,7 @@ struct AccountSignOutButton: View {
             defer { isSigningOut = false }
             do {
                 let result = try await AccountIdentityClients.active().signOut()
+                await ImageThumbnailPipeline.shared.removeAll()
                 session.authenticationDidSignOut(warning: result.warningMessage)
             } catch {
                 errorMessage = error.localizedDescription

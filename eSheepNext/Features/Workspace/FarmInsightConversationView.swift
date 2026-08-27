@@ -974,10 +974,16 @@ private struct InsightMessageBubble: View {
                         ScrollView(.horizontal) {
                             HStack(spacing: 8) {
                                 ForEach(attachments, id: \.id) { attachment in
-                                    if let data = attachment.imageData, let image = UIImage(data: data) {
-                                        Image(uiImage: image)
-                                            .resizable()
-                                            .scaledToFill()
+                                    if let data = attachment.imageData {
+                                        DownsampledDataImage(
+                                            data: data,
+                                            digest: attachment.digest,
+                                            targetSize: CGSize(width: 150, height: 120)
+                                        ) {
+                                            Rectangle()
+                                                .fill(.fill.tertiary)
+                                                .overlay { ProgressView().controlSize(.small) }
+                                        }
                                             .frame(width: 150, height: 120)
                                             .clipShape(.rect(cornerRadius: 13))
                                     }
@@ -1320,13 +1326,17 @@ private struct InsightPendingInputPreview: View {
                         HStack(spacing: 8) {
                             ForEach(pendingImages) { pending in
                                 ZStack(alignment: .topTrailing) {
-                                    if let image = UIImage(data: pending.data) {
-                                        Image(uiImage: image)
-                                            .resizable()
-                                            .scaledToFill()
-                                            .frame(width: 70, height: 62)
-                                            .clipShape(.rect(cornerRadius: 10))
+                                    DownsampledDataImage(
+                                        data: pending.data,
+                                        digest: pending.digest,
+                                        targetSize: CGSize(width: 70, height: 62)
+                                    ) {
+                                        Rectangle()
+                                            .fill(.fill.tertiary)
+                                            .overlay { ProgressView().controlSize(.small) }
                                     }
+                                    .frame(width: 70, height: 62)
+                                    .clipShape(.rect(cornerRadius: 10))
                                     Button {
                                         pendingImages.removeAll { $0.id == pending.id }
                                     } label: {
