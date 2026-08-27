@@ -2,10 +2,20 @@
 
 新一代 eSheep+ 的独立 iPhone/iPad 工程。最低系统版本为 iOS/iPadOS 26.1，采用 Swift 6、SwiftUI、SwiftData、Apple 原生 Liquid Glass 与蓝色品牌基线。旧版 `/Users/asiha/Desktop/eSheepPlus` 未被修改。
 
+> **3.1 当前架构说明：** 当前权威文档是
+> [`docs/eSheepNext-3.1-storage-implementation.md`](docs/eSheepNext-3.1-storage-implementation.md)。
+> 3.1 由每个牧场的 `FarmStorageProfile` 选择 local-only、Supabase 或 iCloud
+> 权威；`FarmCommandService` 仍是唯一业务写入入口，Outbox 在创建时固定
+> provider 与 authority generation。本文后面明确标为“3.0 历史记录”的
+> CloudBase/CloudKit 描述只保留迁移背景，不是 3.1 实施依据。
+
 ## 当前本地产品闭环
 
-- 登录页同时提供邮箱验证码注册、账号密码登录和 Sign in with Apple；无牧场首页和牧场设置均提供退出登录。退出会撤销 CloudBase Session，只清除本机登录令牌与 Apple 登录标识，保留牧场缓存和设备身份。
-- 已保存的本地工作区不再绕过真实会话门禁：只有持久化 CloudBase Session 有效，且 Apple 账号主体校验一致时才进入牧场；服务不可用或账号主体不一致会明确拒绝登录，不再显示为“迁移中”后继续使用本地身份。
+- 登录页同时提供邮箱验证码注册、账号密码登录和 Sign in with Apple；3.1
+  Release/Staging 账号由 Supabase Auth 恢复，旧 iCloud 协作路径仍可按配置使用
+  CloudBase 身份会话。退出只清除当前账号会话，保留隔离的本机牧场缓存与未同步记录。
+- 已保存的本地工作区不绕过真实会话门禁；账号恢复、当前牧场成员权限和
+  `FarmStorageProfile` 共同决定可见数据及远端路由，离线可用不等于可以更换云端权威。
 - 多牧场本地隔离：每条业务实体、操作审计和 Outbox 都强制携带 `farmID`。
 - SwiftData 已冻结为正式 `1.0.0` 版本化 Schema，并通过显式 `SchemaMigrationPlan` 打开持久化容器；启动失败不再崩溃，而是进入可重试、可导出诊断、可隔离原库的恢复入口。
 - 统一命令管道：角色能力校验、业务验证、SwiftData 保存、`DomainOperation` 审计和 Outbox 入队。
@@ -19,9 +29,13 @@
 - 原料库、配方、投喂多原料明细、投喂历史，以及按历史圈舍和真实羊天计算的自由采食分析。
 - 只读的确定性本地牧场助手；它不编造数据，也不能直接写入。
 - 原生五个 Tab、iPhone/iPad 适配、farm-scoped App Intents 与 Spotlight 索引、通知路由、后台补偿同步、可选牧场 Widget、App Icon、Privacy Manifest、Entitlement 基线和 Emoji 静态扫描。
-- 独立 CloudKit 同步层：private/shared `CKSyncEngine`、每牧场 Zone、CKShare、持久化同步状态、完整命令 Outbox、设备签名、能力证书、冲突隔离和异常硬删除检测。
-- CloudBase 是唯一生产身份与协作服务：Auth 负责邮箱验证码、密码、刷新、退出与 Apple 自定义登录，文档数据库保存账号、设备、匿名牧场目录、成员、邀请、能力证书和删除审计；养殖业务数据仍只存在 CloudKit。旧 Cloudflare/D1 实现仅保留协议回归，不进入 3.0 运行链路。
-- 3.0.0 为免费版本：Release 默认关闭 StoreKit 界面和付费判断，多牧场与已授权生产录入不依赖 Pro 权益；StoreKit 代码保留在默认关闭的构建开关后。
+- provider-routed 同步层：Supabase 与 CloudKit transport 都受
+  `FarmStorageProfile`、固定 provider 的 Outbox 和 authority generation 约束；
+  CloudKit 继续承载 iCloud 模式与旧数据迁移，Supabase 承载 3.1 配置选择它的牧场。
+- **3.0 历史记录：** CloudBase 曾是唯一生产身份与协作服务、养殖业务数据只在
+  CloudKit；此说法不再描述 3.1。CloudBase 网关和遗留 Worker 在调用方审计完成前
+  仍保留测试与兼容路径，但不决定 3.1 业务数据 provider。
+- **3.0 历史记录：** 3.0.0 免费版本及 StoreKit 开关说明仅用于追溯旧发布边界。
 - 云端协作中心：正式迁移牧场云端状态、系统共享、邀请码、成员与证书、同步、冲突、安全事件和账户删除状态。
 - Zone-wide `CKShare(recordZoneID:)`、成员安全 generation 快照、签名 Tombstone、冲突解决操作、压缩照片 `CKAsset`、场主私有加密照片副本与三份 checkpoint 保留策略。
 - 每牧场 iCloud 钥匙串恢复密钥、`.esheep-recovery` 恢复包、恢复码包装、恢复点校验与约束检查后的签名恢复操作。
@@ -31,6 +45,9 @@
 - 旧版牧场正式导入：阻断项清零后，将临时牧场、照片和版本化云端基线原子写入正式 SwiftData；同一来源包重复提交保持幂等，失败回滚数据库和资源目录。Development 在联网后自动续传至用户 iCloud，始终不修改 eSheep+ 或 Supabase。
 
 ## 当前阶段边界与外部状态
+
+下列包含日期的真机与云端记录是 3.0 阶段历史证据；除非另有 3.1 验收报告，
+不得把它们外推为当前 Supabase、稳定 Xcode Archive、TestFlight 或双账号验证结果。
 
 这些步骤不能由仓库代码或无签名构建替代，尚未在本机伪造完成状态：
 
@@ -45,7 +62,9 @@
 
 云端准入按环境隔离：Development 只允许具有完整迁移提交、基线摘要和照片校验的正式迁移牧场，不再存在固定种子测试牧场路径；Staging/Production 云功能仍由构建开关关闭。迁移目录在完整上传前保持 provisioning，第二台设备和受邀成员只能发现 active 牧场。
 
-详细边界与配置步骤见 `docs/云端协作安全设计.md`、`docs/CloudKit_Development配置清单.md` 和 `docs/Development七日验收记录.md`。
+3.1 当前边界见 `docs/eSheepNext-3.1-storage-implementation.md`；
+`docs/云端协作安全设计.md`、`docs/CloudKit_Development配置清单.md` 和
+`docs/Development七日验收记录.md` 均为旧 iCloud/3.0 路径资料。
 
 ## 本地验证
 
