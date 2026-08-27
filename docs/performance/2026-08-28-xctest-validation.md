@@ -61,3 +61,11 @@ xcodebuild test-without-building \
 不要为第二步设置 `CODE_SIGNING_ALLOWED=NO`：凭据保险箱测试需要正常模拟器签名。
 不要为 Debug 测试覆盖 `CLOUD_COLLABORATION_ENABLED`：环境契约测试会校验项目嵌入
 的真实配置。
+
+## 后续性能目标合并复验
+
+提交 `a58f28c` 新增独立 `eSheepNextPerformanceTests` 目标后，使用同一模拟器、
+Debug 配置和单 worker 再次运行完整 scheme：共发现 601 项，600 项通过、0 项失败、
+1 项仍按上述 beta 保护逻辑跳过，xcresult 报告 0 runtime warning。6 项性能用例均
+采集到 clock、CPU 和 memory 指标；详细 fixture 与数值见
+`docs/performance/2026-08-28-xctest-performance.md`。
