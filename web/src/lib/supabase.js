@@ -1,10 +1,14 @@
 import { createClient } from "@supabase/supabase-js";
 import { decodeCompactCheckpoint } from "./lzfse";
+import { isSupabaseConfigured, supabaseBrowserConfiguration } from "./supabaseConfig.js";
+import {
+  countByNormalizedIdentifier,
+  mergeProjectionPayload,
+  normalizedIdentifier,
+  uniqueByNormalizedIdentifier,
+} from "./workspaceProjection.js";
 
-const url = import.meta.env.VITE_SUPABASE_URL?.trim();
-const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim();
-
-export const isSupabaseConfigured = Boolean(url && publishableKey);
+const { url, publishableKey } = supabaseBrowserConfiguration;
 
 const browserClientKey = "__esheepnextSupabaseClient";
 
@@ -113,25 +117,6 @@ function projectionKey(entityType, entityID) {
   return `${entityType}:${normalizedIdentifier(entityID)}`;
 }
 
-function mergeProjectionPayload(basePayload, deltaPayload) {
-  if (!basePayload || typeof basePayload !== "object") return deltaPayload ?? {};
-  if (!deltaPayload || typeof deltaPayload !== "object") return basePayload;
-
-  const merged = { ...basePayload };
-  for (const [key, value] of Object.entries(deltaPayload)) {
-    const baseValue = basePayload[key];
-    if (
-      baseValue && typeof baseValue === "object" && !Array.isArray(baseValue) &&
-      value && typeof value === "object" && !Array.isArray(value)
-    ) {
-      merged[key] = { ...baseValue, ...value };
-    } else {
-      merged[key] = value;
-    }
-  }
-  return merged;
-}
-
 function baselineProjectionPayloads(baselinePackage) {
   const result = new Map();
   for (const projection of baselinePackage?.projections ?? []) {
@@ -198,10 +183,6 @@ function expandSheepRowsFromHistory(rows, baselinePayloads, operationRows) {
   });
 }
 
-function normalizedIdentifier(value) {
-  return String(value ?? "").replaceAll("-", "").toLowerCase();
-}
-
 function firstPayloadValue(payload, group, ...keys) {
   const bucket = payload?.[group];
   if (!bucket || typeof bucket !== "object") return undefined;
@@ -264,11 +245,11 @@ function entityDate(row, payload, fallbackKey = "occurredAt") {
   return dateValue(payload, fallbackKey)?.toISOString() ?? row?.modified_at ?? null;
 }
 
-async function fetchEntityRows(farmID, entityType) {
+async function fetchEntityRows(farmID, entityType, signal) {
   const rows = [];
   let offset = 0;
   while (true) {
-    const { data, error } = await supabase
+    let query = supabase
       .from("farm_entities")
       .select(entityRowSelect)
       .eq("farm_id", farmID)
@@ -277,6 +258,8 @@ async function fetchEntityRows(farmID, entityType) {
       .order("modified_at", { ascending: false })
       .order("entity_id", { ascending: false })
       .range(offset, offset + entityPageSize - 1);
+    if (signal) query = query.abortSignal(signal);
+    const { data, error } = await query;
     if (error) throw error;
     const page = data ?? [];
     rows.push(...page);
@@ -286,11 +269,11 @@ async function fetchEntityRows(farmID, entityType) {
   return rows;
 }
 
-async function fetchOperationRows(farmID, authorityGeneration) {
+async function fetchOperationRows(farmID, authorityGeneration, signal) {
   const rows = [];
   let offset = 0;
   while (true) {
-    const { data, error } = await supabase
+    let query = supabase
       .from("farm_operations")
       .select("operation_id,entity_type,entity_id,revision,occurred_at,modified_at,server_received_at,payload_base64")
       .eq("farm_id", farmID)
@@ -299,6 +282,8 @@ async function fetchOperationRows(farmID, authorityGeneration) {
       .order("revision", { ascending: false })
       .order("operation_id", { ascending: false })
       .range(offset, offset + entityPageSize - 1);
+    if (signal) query = query.abortSignal(signal);
+    const { data, error } = await query;
     if (error) throw error;
     const page = data ?? [];
     rows.push(...page);
@@ -308,8 +293,8 @@ async function fetchOperationRows(farmID, authorityGeneration) {
   return rows;
 }
 
-async function fetchLatestCompactCheckpoint(farmID, authorityGeneration) {
-  const { data: checkpoint, error: checkpointError } = await supabase
+async function fetchLatestCompactCheckpoint(farmID, authorityGeneration, signal) {
+  let query = supabase
     .from("farm_checkpoints")
     .select("checkpoint_id,through_revision,manifest,storage_path,checkpoint_format,archive_byte_count,archive_digest")
     .eq("farm_id", farmID)
@@ -318,6 +303,8 @@ async function fetchLatestCompactCheckpoint(farmID, authorityGeneration) {
     .order("through_revision", { ascending: false })
     .limit(1)
     .maybeSingle();
+  if (signal) query = query.abortSignal(signal);
+  const { data: checkpoint, error: checkpointError } = await query;
   if (checkpointError) throw checkpointError;
   if (!checkpoint) return null;
 
@@ -654,15 +641,26 @@ export async function signOut() {
   if (error) throw error;
 }
 
-export async function loadCloudWorkspace(preferredFarmID) {
+export async function loadCloudWorkspace(preferredFarmID, { signal } = {}) {
   if (!supabase) throw new Error("Supabase 尚未配置。");
+  signal?.throwIfAborted();
 
   const user = await getVerifiedUser();
   if (!user) throw new Error("请先登录 Supabase 账号。");
 
+  let accessQuery = supabase.rpc("list_my_active_farm_access");
+  let profileQuery = supabase
+    .from("profiles")
+    .select("app_account_id,display_name")
+    .eq("user_id", user.id)
+    .single();
+  if (signal) {
+    accessQuery = accessQuery.abortSignal(signal);
+    profileQuery = profileQuery.abortSignal(signal);
+  }
   const [{ data: accessRows, error: accessError }, { data: profile, error: profileError }] = await Promise.all([
-    supabase.rpc("list_my_active_farm_access"),
-    supabase.from("profiles").select("app_account_id,display_name").eq("user_id", user.id).single(),
+    accessQuery,
+    profileQuery,
   ]);
   if (accessError) throw accessError;
   if (profileError) throw profileError;
@@ -671,7 +669,7 @@ export async function loadCloudWorkspace(preferredFarmID) {
   const farms = accessRows.map(toFarm);
   const farm = farms.find((item) => item.id === preferredFarmID) ?? farms[0];
 
-  const checkpointPromise = fetchLatestCompactCheckpoint(farm.id, farm.generation)
+  const checkpointPromise = fetchLatestCompactCheckpoint(farm.id, farm.generation, signal)
     .then((result) => ({ result, error: null }))
     .catch((error) => ({ result: null, error }));
 
@@ -688,18 +686,19 @@ export async function loadCloudWorkspace(preferredFarmID) {
     feedingPlanRows,
     operationRows,
   ] = await Promise.all([
-    fetchEntityRows(farm.id, "farm"),
-    fetchEntityRows(farm.id, "pen"),
-    fetchEntityRows(farm.id, "sheep"),
-    fetchEntityRows(farm.id, "feed"),
-    fetchEntityRows(farm.id, "weight"),
-    fetchEntityRows(farm.id, "transfer"),
-    fetchEntityRows(farm.id, "removal"),
-    fetchEntityRows(farm.id, "feedIngredient"),
-    fetchEntityRows(farm.id, "tmrFormula"),
-    fetchEntityRows(farm.id, "tmrFeedingPlan"),
-    fetchOperationRows(farm.id, farm.generation),
+    fetchEntityRows(farm.id, "farm", signal),
+    fetchEntityRows(farm.id, "pen", signal),
+    fetchEntityRows(farm.id, "sheep", signal),
+    fetchEntityRows(farm.id, "feed", signal),
+    fetchEntityRows(farm.id, "weight", signal),
+    fetchEntityRows(farm.id, "transfer", signal),
+    fetchEntityRows(farm.id, "removal", signal),
+    fetchEntityRows(farm.id, "feedIngredient", signal),
+    fetchEntityRows(farm.id, "tmrFormula", signal),
+    fetchEntityRows(farm.id, "tmrFeedingPlan", signal),
+    fetchOperationRows(farm.id, farm.generation, signal),
   ]);
+  signal?.throwIfAborted();
 
   const checkpointResult = await checkpointPromise;
   const baselinePackage = checkpointResult.result?.baselinePackage ?? null;
@@ -745,9 +744,10 @@ export async function loadCloudWorkspace(preferredFarmID) {
   const sheep = activeSheepRows.map((row) => entityToSheep(row, penNameByID, latestWeightBySheep, latestTransferBySheep));
   const sheepByID = new Map(sheep.map((item) => [normalizedIdentifier(item.id), item]));
 
+  const sheepCountByPenID = countByNormalizedIdentifier(sheep, (item) => item.penID);
   const pensWithCounts = pens.map((pen) => ({
     ...pen,
-    headCount: sheep.filter((item) => normalizedIdentifier(item.penID) === normalizedIdentifier(pen.id)).length,
+    headCount: sheepCountByPenID.get(normalizedIdentifier(pen.id)) ?? 0,
   }));
   const occupiedPenCount = pensWithCounts.filter((pen) => pen.headCount > 0).length;
   const feedRecords = expandedFeedRows
@@ -761,10 +761,10 @@ export async function loadCloudWorkspace(preferredFarmID) {
     return at && at.getTime() >= recentWeightCutoff;
   }).length;
   const ingredients = expandedIngredientRows.map(entityToIngredient);
-  const recipes = expandedFormulaRows
-    .map(entityToRecipe)
-    .filter(Boolean)
-    .filter((recipe, index, items) => items.findIndex((item) => normalizedIdentifier(item.id) === normalizedIdentifier(recipe.id)) === index);
+  const recipes = uniqueByNormalizedIdentifier(
+    expandedFormulaRows.map(entityToRecipe).filter(Boolean),
+    (recipe) => recipe.id,
+  );
   const tmrPlan = expandedFeedingPlanRows
     .map(entityToFeedingPlan)
     .filter(Boolean)

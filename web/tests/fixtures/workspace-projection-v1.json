@@ -1,0 +1,43 @@
+{
+  "payloadMerge": {
+    "base": {
+      "strings": { "earTag": "A-100", "breed": "湖羊" },
+      "integers": { "isHistoricalArchive": 0 },
+      "unknownLegacyBucket": { "keep": "legacy" },
+      "unknownScalar": "keep-me"
+    },
+    "delta": {
+      "strings": { "earTag": "A-101" },
+      "integers": { "legacyStatusSnapshotIsAuthoritative": 1 },
+      "newClientBucket": { "supportedLater": true }
+    },
+    "expected": {
+      "strings": { "earTag": "A-101", "breed": "湖羊" },
+      "integers": {
+        "isHistoricalArchive": 0,
+        "legacyStatusSnapshotIsAuthoritative": 1
+      },
+      "unknownLegacyBucket": { "keep": "legacy" },
+      "unknownScalar": "keep-me",
+      "newClientBucket": { "supportedLater": true }
+    }
+  },
+  "identifierPairs": [
+    ["AABBCCDD-0000-1111-2222-333344445555", "aabbccdd000011112222333344445555"],
+    ["Pen-Alpha", "penalpha"],
+    [null, ""]
+  ],
+  "sheep": [
+    { "id": "s1", "penID": "PEN-01" },
+    { "id": "s2", "penID": "pen01" },
+    { "id": "s3", "penID": "PEN-02" },
+    { "id": "s4", "penID": null }
+  ],
+  "expectedPenCounts": { "pen01": 2, "pen02": 1 },
+  "recipes": [
+    { "id": "FORMULA-01", "name": "first revision" },
+    { "id": "formula01", "name": "duplicate revision" },
+    { "id": "FORMULA-02", "name": "second formula" }
+  ],
+  "expectedRecipeNames": ["first revision", "second formula"]
+}

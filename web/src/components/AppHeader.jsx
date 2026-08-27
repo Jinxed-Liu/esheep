@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  CaretDown,
-  Check,
-  MagnifyingGlass,
-  SignOut,
-  UserCircle,
-} from "@phosphor-icons/react";
+import { CaretDown } from "@phosphor-icons/react/CaretDown";
+import { Check } from "@phosphor-icons/react/Check";
+import { MagnifyingGlass } from "@phosphor-icons/react/MagnifyingGlass";
+import { SignOut } from "@phosphor-icons/react/SignOut";
+import { UserCircle } from "@phosphor-icons/react/UserCircle";
 
 export const NAV_ITEMS = [
   { id: "home", label: "首页" },

@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  ArrowsLeftRight,
-  Baby,
-  BowlFood,
-  Heart,
-  SignOut,
-  X,
-} from "@phosphor-icons/react";
+import { ArrowsLeftRight } from "@phosphor-icons/react/ArrowsLeftRight";
+import { Baby } from "@phosphor-icons/react/Baby";
+import { BowlFood } from "@phosphor-icons/react/BowlFood";
+import { Heart } from "@phosphor-icons/react/Heart";
+import { SignOut } from "@phosphor-icons/react/SignOut";
+import { X } from "@phosphor-icons/react/X";
 import { SheepGlyph as Sheep, WeightGlyph as Scale } from "./DomainIcons.jsx";
 
 const typeOptions = [

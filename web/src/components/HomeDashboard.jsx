@@ -1,18 +1,15 @@
-import {
-  ArrowsLeftRight,
-  Baby,
-  Barn,
-  BowlFood,
-  CaretRight,
-  CloudCheck,
-  CloudSlash,
-  FirstAid,
-  Heart,
-  Plus,
-  PlusCircle,
-  SignOut,
-  WarningCircle,
-} from "@phosphor-icons/react";
+import { ArrowsLeftRight } from "@phosphor-icons/react/ArrowsLeftRight";
+import { Baby } from "@phosphor-icons/react/Baby";
+import { Barn } from "@phosphor-icons/react/Barn";
+import { BowlFood } from "@phosphor-icons/react/BowlFood";
+import { CaretRight } from "@phosphor-icons/react/CaretRight";
+import { CloudCheck } from "@phosphor-icons/react/CloudCheck";
+import { CloudSlash } from "@phosphor-icons/react/CloudSlash";
+import { FirstAid } from "@phosphor-icons/react/FirstAid";
+import { Heart } from "@phosphor-icons/react/Heart";
+import { PlusCircle } from "@phosphor-icons/react/PlusCircle";
+import { SignOut } from "@phosphor-icons/react/SignOut";
+import { WarningCircle } from "@phosphor-icons/react/WarningCircle";
 import { SheepGlyph as Sheep, WeightGlyph as Scale } from "./DomainIcons.jsx";
 
 const eventIcons = {
