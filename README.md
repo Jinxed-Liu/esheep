@@ -58,7 +58,7 @@
 
 当前自动化基线以 `./tools/verify_local.sh` 的最新结果为准；同账号双真机验收与两个不同账号的共享协作验收必须分别记录，不能由编译、模拟响应或头像同步互相替代。
 
-2026-07-20 的 128/128 XCTest、2026-07-24 的旧本地总门禁和 Gateway 20/20 只保留为历史证据。2026-08-27 静态审计约有 575 个 XCTest 方法；当前完整套件两次均在 CoreSimulatorService 环境中未进入 XCTest 子进程，因此不能记为代码失败，也不能记为全量通过。本轮新增图片/Identity transport 11/11、Root 生命周期 4/4、Web 8/8、遗留 Worker 16/16、CloudBase Gateway 33/33 均已分别通过；稳定 Xcode Archive、完整 XCTest、真机性能、数据库一次性环境和双账号协作仍是独立门禁。
+2026-07-20 的 128/128 XCTest、2026-07-24 的旧本地总门禁和 Gateway 20/20 只保留为历史证据。2026-08-27 静态审计约有 575 个 XCTest 方法；2026-08-28 在延迟创建未使用的 CloudKit runtime 后，当前套件实际发现 595 项，594 项执行通过、0 项失败、1 项按既有 iOS 27 Beta 保护逻辑跳过。本轮图片/Identity transport 11/11、Root 生命周期 4/4、Web 14/14、Sites 4/4、遗留 Worker 16/16、CloudBase Gateway 33/33 均已分别通过；稳定 Xcode Archive、真机性能、数据库一次性环境和双账号协作仍是独立门禁，beta 模拟器结果不能替代它们。
 
 云端准入按环境隔离：Development 只允许具有完整迁移提交、基线摘要和照片校验的正式迁移牧场，不再存在固定种子测试牧场路径；Staging/Production 云功能仍由构建开关关闭。迁移目录在完整上传前保持 provisioning，第二台设备和受邀成员只能发现 active 牧场。
 
