@@ -52,13 +52,13 @@
 这些步骤不能由仓库代码或无签名构建替代，尚未在本机伪造完成状态：
 
 1. Debug/Development 已启用正式迁移牧场的 iCloud 双设备同步与成员邀请入口；同一账号两台真机的 private Zone 同步、断网续传、照片和重建已由用户在 2026-07-24 确认验收通过。两个不同账号的 shared Zone 邀请、撤权和连续七日验收仍未执行；Staging 与 Release 继续关闭。
-2. 仓库内 CloudBase Gateway 0.4.0 已覆盖邮箱、Apple、刷新、退出、删除、限流、账户显示名称与头像同步、迁移牧场 `provisioning → active` 目录状态，以及牧场 UUID 大小写统一。0.4.0 Development 部署和同账号头像跨设备一致性已取得真机证据；独立 Production 环境及双账号协作仍需单独验收。
+2. 仓库内 CloudBase Gateway 当前代码版本为 0.4.6，已覆盖邮箱、Apple、刷新、退出、删除、限流、账户显示名称与头像同步、迁移牧场 `provisioning → active` 目录状态，以及牧场 UUID 大小写统一。历史 0.4.0 Development 部署和同账号头像跨设备一致性曾取得真机证据；这不证明当前 0.4.6 已部署，也不替代独立 Production 环境及双账号协作验收。
 3. 登录成功后的业务写入只依赖本机 SwiftData；断网、CloudKit 关闭和重启不应阻断建羊、称重、转群、离场、修正、撤销、查询和备份恢复。
 4. 新增的 `com.sheepfarm.next.dev.widget` Bundle ID 仍需要有效描述文件才能在连接设备上运行 XCTest；无签名 App/Test/Widget 编译不受此限制。
 
 当前自动化基线以 `./tools/verify_local.sh` 的最新结果为准；同账号双真机验收与两个不同账号的共享协作验收必须分别记录，不能由编译、模拟响应或头像同步互相替代。
 
-2026-07-20 系谱与繁殖闭环已在 iPhone 16 Pro（iOS 27.0）执行全部 128 项 XCTest，128 项通过、0 失败、0 跳过；系谱、旧载荷与 checkpoint 全历史恢复聚焦回归 7/7 通过。当前仓库包含 289 个 XCTest 方法；2026-07-24 `./tools/verify_local.sh` 完整通过，覆盖 App/Test/Widget 双架构编译、Worker 16/16、CloudBase Gateway 20/20、Emoji 扫描及生产依赖审计，跟踪文件凭据模式扫描无命中。带 CloudKit Entitlement 的签名模拟器冷启动进入登录页，新增迁移与恢复测试 4/4 通过；其余 XCTest、11 英寸 iPad 完整页面回归和双账号 shared Zone 七日验收仍未完成。
+2026-07-20 的 128/128 XCTest、2026-07-24 的旧本地总门禁和 Gateway 20/20 只保留为历史证据。2026-08-27 静态审计约有 575 个 XCTest 方法；当前完整套件两次均在 CoreSimulatorService 环境中未进入 XCTest 子进程，因此不能记为代码失败，也不能记为全量通过。本轮新增图片/Identity transport 11/11、Root 生命周期 4/4、Web 8/8、遗留 Worker 16/16、CloudBase Gateway 33/33 均已分别通过；稳定 Xcode Archive、完整 XCTest、真机性能、数据库一次性环境和双账号协作仍是独立门禁。
 
 云端准入按环境隔离：Development 只允许具有完整迁移提交、基线摘要和照片校验的正式迁移牧场，不再存在固定种子测试牧场路径；Staging/Production 云功能仍由构建开关关闭。迁移目录在完整上传前保持 provisioning，第二台设备和受邀成员只能发现 active 牧场。
 
@@ -69,7 +69,11 @@
 ## 本地验证
 
 ```bash
-./tools/verify_local.sh
+./tools/verify_local.sh static
+./tools/verify_local.sh ios
+./tools/verify_local.sh web backend
+ALLOW_LOCAL_DB_RESET=1 ./tools/verify_local.sh db
+./tools/verify_local.sh all
 ```
 
-该脚本扫描 Emoji、完整编译 App/Test/Widget（包括 Metal Shader），运行旧 Worker 协议回归，以及 CloudBase Gateway 检查、测试和生产依赖安全审计。运行测试或安装真机需要为 App 与 Widget Bundle ID 配置 Apple 开发团队和 provisioning profile。
+不传参数时默认执行 `all`。`db` 只使用本地 Supabase 容器，并在非 CI 环境要求显式确认后才允许 reset；任何入口都不会上传、发布、迁移生产数据或清理 `outputs/`。`ios` 继续拒绝把 Beta Xcode 当作正式发布门禁，只有显式设置 `ALLOW_BETA_XCODE=1` 时才可用于诊断。身份兼容路径和遗留 Worker 的实际调用边界见 [`docs/legacy-identity-compatibility-matrix.md`](docs/legacy-identity-compatibility-matrix.md)。

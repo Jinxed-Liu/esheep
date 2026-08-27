@@ -16,8 +16,8 @@
 | `FarmStorageTransitionCoordinator` | 准备迁移、校验目标基线并通过 `commitAuthority` 原子提交权威切换 | 失败后不得静默回滚源端或跳过 generation 增长 |
 | Supabase | 当存储配置选择 `.supabase` 时承担 3.1 Auth、成员/RLS、业务实体、操作、Storage、Realtime、checkpoint 与读取 RPC | iOS/Web 只使用 publishable key 和用户会话；不得用 service role 绕过租户隔离或从客户端改变 RLS |
 | CloudKit | 当存储配置选择 `.iCloud` 时承担对应牧场的 private/shared 同步；继续读取旧版无 provider Outbox，并作为受控迁移来源 | 不处理明确钉住 `.supabase` 的 Outbox；不得自动成为所有牧场的默认权威 |
-| CloudBase 协作网关 / `IdentityWorkerClient` | 保留旧 iCloud 协作身份、设备、邀请、能力证书、头像和仍有调用方的 Insight 个人密文路径，直至独立兼容性审计完成 | 不替代 `FarmStorageProfile` 为 3.1 业务数据选 provider；仍有调用方时不得删除路由或停测 |
-| 遗留身份 Worker | 只保留协议回归、兼容性与已确认调用方所需路径 | 不进入新的 3.1 业务写入链；不得仅因“遗留”标签未经调用矩阵就删除 |
+| CloudBase 协作网关 / `IdentityWorkerClient` | 保留旧 iCloud 协作身份、设备、邀请、能力证书、头像和仍有调用方的 Insight 个人密文路径；当前调用方与路由见 [`legacy-identity-compatibility-matrix.md`](legacy-identity-compatibility-matrix.md) | 不替代 `FarmStorageProfile` 为 3.1 业务数据选 provider；仍有调用方时不得删除路由或停测 |
+| 遗留身份 Worker | 只保留协议回归和兼容性证据；其路由只是 CloudBase 网关当前协议的子集 | 不进入新的 3.1 业务写入链，不得重新写入发行配置，也不得仅因“遗留”标签未经调用矩阵就删除 |
 | React Web | 以用户会话和 RLS 只读加载当前页面所需投影，可保存本机草稿 | 不新增业务写入链，不缓存或展示其他牧场数据，不改变 iOS Outbox 协议 |
 
 任何性能缓存、快照、索引或只读 RPC 都只能缩短读取路径；它们不能成为新的
