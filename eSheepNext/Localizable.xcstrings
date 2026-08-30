@@ -177,10 +177,24 @@
       }
     },
     "《服务条款》" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Terms of Service"
+          }
+        }
+      }
     },
     "《隐私政策》" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Privacy Policy"
+          }
+        }
+      }
     },
     "\\n[本条消息已按上下文上限截断]" : {
       "extractionState" : "stale",
@@ -1410,7 +1424,14 @@
       }
     },
     "AI 会把你主动提交的文字、处理后图片、语音和有限授权牧场结果直接发送给 MiMo。拒绝或撤回不会影响非 AI 功能。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI sends the text, processed images, audio, and limited authorized farm results you intentionally submit directly to MiMo. Declining or withdrawing consent does not affect non-AI features."
+          }
+        }
+      }
     },
     "AI 助手" : {
       "localizations" : {
@@ -1561,7 +1582,14 @@
       }
     },
     "App 会立即停止当前账号的新云同步和 AI 调用并退出登录。本机缓存不会自动删除；请先导出所需数据。再次登录前必须重新阅读并明确同意。删除云端账号和历史数据需另行使用“删除账户”。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The app will immediately stop new cloud sync and AI requests for this account and sign you out. On-device caches are not deleted automatically; export any data you need first. You must review and explicitly consent again before signing back in. To delete the cloud account and historical data, use “Delete Account” separately."
+          }
+        }
+      }
     },
     "App 没有删除或覆盖数据库。你可以重试，导出诊断，或者把原数据库完整隔离后进入备份与云恢复流程。" : {
       "localizations" : {
@@ -1734,7 +1762,14 @@
       }
     },
     "Controller, address, privacy owner, and email placeholders must be replaced before release." : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Controller, address, privacy owner, and email placeholders must be replaced before release."
+          }
+        }
+      }
     },
     "CP" : {
       "localizations" : {
@@ -3082,7 +3117,14 @@
       }
     },
     "Updated / effective" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Updated / effective"
+          }
+        }
+      }
     },
     "UUID 引用" : {
       "extractionState" : "stale",
@@ -3106,7 +3148,14 @@
       }
     },
     "Version" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Version"
+          }
+        }
+      }
     },
     "XLSX 使用了不支持的压缩方式。" : {
       "extractionState" : "stale",
@@ -3518,7 +3567,14 @@
       }
     },
     "不会删除业务库、WAL/SHM、照片、eSheep 云迁移备份、Outbox、Tombstone、回执或 Keychain。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This does not delete the business database, WAL/SHM files, photos, eSheep Cloud migration backups, Outbox, Tombstones, receipts, or Keychain data."
+          }
+        }
+      }
     },
     "不会删除羔羊档案及其后续记录，只补偿本次产羔自动建立且未被人工修正的关系与称重记录。" : {
       "localizations" : {
@@ -3857,7 +3913,14 @@
       }
     },
     "业务数据已保存" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Business Data Saved"
+          }
+        }
+      }
     },
     "业务数据已保存在本机" : {
       "extractionState" : "stale",
@@ -9713,7 +9776,14 @@
       }
     },
     "单独同意" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Separate Consent"
+          }
+        }
+      }
     },
     "单羊" : {
       "extractionState" : "stale",
@@ -11159,13 +11229,34 @@
       }
     },
     "同意并启用 AI" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agree and Enable AI"
+          }
+        }
+      }
     },
     "同意版本" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consent Version"
+          }
+        }
+      }
     },
     "同意状态" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consent Status"
+          }
+        }
+      }
     },
     "同批出售必须填写一笔总售卖金额。" : {
       "extractionState" : "stale",
@@ -12583,7 +12674,14 @@
       }
     },
     "备份包含生产记录、历史、删除记录、TMR 和照片。eSheep 云牧场会先同步；仍有待上传记录时不会生成“已同步”备份。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The backup includes production records, history, deletion records, TMR data, and photos. eSheep Cloud farms sync first; a “synced” backup will not be created while uploads are still pending."
+          }
+        }
+      }
     },
     "备份包含重复耳号。" : {
       "extractionState" : "stale",
@@ -14813,7 +14911,14 @@
       }
     },
     "已同意当前 AI 数据说明" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consented to the Current AI Data Notice"
+          }
+        }
+      }
     },
     "已启用 eSheep 云。完整备份：%@" : {
       "localizations" : {
@@ -16849,7 +16954,14 @@
       }
     },
     "当前牧场仅保存在本机。请先在“云存储”中启用 eSheep 云，再管理成员与共享。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This farm is stored only on this device. Enable eSheep Cloud in “Cloud Storage” before managing members and sharing."
+          }
+        }
+      }
     },
     "当前牧场及本文件中找不到健康目录。" : {
       "extractionState" : "stale",
@@ -18637,7 +18749,14 @@
       }
     },
     "我单独同意必要的境外云处理" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I Separately Consent to Necessary Cross-Border Cloud Processing"
+          }
+        }
+      }
     },
     "我只能基于当前牧场本地数据回答羊只数量、圈舍、投喂和健康记录。请换一种问法。" : {
       "extractionState" : "stale",
@@ -18651,10 +18770,24 @@
       }
     },
     "我已阅读并同意 AI 数据处理说明" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I Have Read and Agree to the AI Data Processing Notice"
+          }
+        }
+      }
     },
     "我已阅读并同意服务条款和隐私政策" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I Have Read and Agree to the Terms of Service and Privacy Policy"
+          }
+        }
+      }
     },
     "或" : {
       "localizations" : {
@@ -20505,28 +20638,84 @@
       }
     },
     "撤回 AI 数据处理同意" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Withdraw AI Data Processing Consent"
+          }
+        }
+      }
     },
     "撤回 AI 数据处理同意？" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Withdraw AI Data Processing Consent?"
+          }
+        }
+      }
     },
     "撤回同意后停止云服务" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop Cloud Services After Withdrawing Consent"
+          }
+        }
+      }
     },
     "撤回后不会再向 MiMo 发送新请求。已保存的 API Key 和历史会话不会自动删除，你仍可分别删除。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No new requests will be sent to MiMo after withdrawal. Your saved API key and conversation history are not deleted automatically; you can delete each separately."
+          }
+        }
+      }
     },
     "撤回境外云处理同意并退出" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Withdraw Cross-Border Cloud Processing Consent and Sign Out"
+          }
+        }
+      }
     },
     "撤回并停止新请求" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Withdraw and Stop New Requests"
+          }
+        }
+      }
     },
     "撤回并退出" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Withdraw and Sign Out"
+          }
+        }
+      }
     },
     "撤回操作未完整完成" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Withdrawal Was Not Fully Completed"
+          }
+        }
+      }
     },
     "撤权" : {
       "localizations" : {
@@ -21255,7 +21444,14 @@
       }
     },
     "文件恢复只会建立新的仅本机牧场，不会覆盖当前 eSheep 云牧场。恢复完成并核对后，可再从云存储页面显式迁移。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Restoring this file creates a new on-device-only farm and does not overwrite the current eSheep Cloud farm. After restoration and review, you can explicitly migrate it from Cloud Storage."
+          }
+        }
+      }
     },
     "文字与工具" : {
       "localizations" : {
@@ -22156,7 +22352,14 @@
       }
     },
     "无法编辑圈舍" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to Edit Pen"
+          }
+        }
+      }
     },
     "无法解析附近邀请。" : {
       "extractionState" : "stale",
@@ -22201,7 +22404,14 @@
       }
     },
     "无法读取圈舍" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to Load Pens"
+          }
+        }
+      }
     },
     "无法读取所选图片。" : {
       "extractionState" : "stale",
@@ -23291,7 +23501,14 @@
       }
     },
     "更新 / 生效" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Updated / Effective"
+          }
+        }
+      }
     },
     "更新健康繁殖提醒" : {
       "extractionState" : "stale",
@@ -24448,7 +24665,14 @@
       }
     },
     "本临时迁移结果可进入人工验收。正式牧场、云端和旧版数据均未写入。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This temporary migration result is ready for manual acceptance. No writes were made to the production farm, cloud, or legacy data."
+          }
+        }
+      }
     },
     "本交父本必须是已标记的种公羊。" : {
       "extractionState" : "stale",
@@ -25224,7 +25448,14 @@
       }
     },
     "条款、隐私和境外告知版本：%@。同意时间、App 版本和语言会被记录用于证明你的选择。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Terms, privacy, and cross-border notice version: %@. The consent time, app version, and language are recorded as evidence of your choice."
+          }
+        }
+      }
     },
     "来源" : {
       "localizations" : {
@@ -25278,6 +25509,12 @@
     },
     "来源：已停用的旧云备份 · 业务记录 %lld · 照片 %lld" : {
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Source: Retired legacy cloud backup · Business records %lld · Photos %lld"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "new",
@@ -25390,7 +25627,14 @@
       }
     },
     "查看 AI 数据处理说明" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View AI Data Processing Notice"
+          }
+        }
+      }
     },
     "查看、筛选和导出牧场历史" : {
       "extractionState" : "stale",
@@ -25436,7 +25680,14 @@
       }
     },
     "查看境外提供个人信息告知" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View Cross-Border Personal Information Transfer Notice"
+          }
+        }
+      }
     },
     "查看或更换头像" : {
       "extractionState" : "stale",
@@ -25481,7 +25732,14 @@
       }
     },
     "查看接收方、数据种类、风险和撤回方式" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View Recipient, Data Categories, Risks, and Withdrawal Options"
+          }
+        }
+      }
     },
     "查看牧场成员" : {
       "extractionState" : "stale",
@@ -26586,7 +26844,14 @@
       }
     },
     "正在整理圈舍" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Organizing Pens…"
+          }
+        }
+      }
     },
     "正在整理投喂历史" : {
       "localizations" : {
@@ -26957,7 +27222,14 @@
       }
     },
     "正在读取圈舍" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading Pens…"
+          }
+        }
+      }
     },
     "正在读取成员…" : {
       "localizations" : {
@@ -27168,7 +27440,14 @@
       }
     },
     "正式发布前必须将主体、地址、隐私负责人和邮箱占位符替换为真实信息。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The controller, address, privacy owner, and email placeholders must be replaced with real information before official release."
+          }
+        }
+      }
     },
     "正式日均只计算截至昨天的完整自然日；晚补录转群、离场、投喂或盘槽后会按事实时间重新计算。" : {
       "localizations" : {
@@ -28178,7 +28457,14 @@
       }
     },
     "法律文件" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Legal Documents"
+          }
+        }
+      }
     },
     "注册并发送验证邮件" : {
       "localizations" : {
@@ -29294,7 +29580,14 @@
       }
     },
     "版本" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Version"
+          }
+        }
+      }
     },
     "牧场" : {
       "localizations" : {
@@ -36671,7 +36964,14 @@
       }
     },
     "请先阅读并主动选择" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Review and Choose"
+          }
+        }
+      }
     },
     "请关闭后刷新事件历史。" : {
       "localizations" : {
@@ -37424,7 +37724,14 @@
       }
     },
     "账号、云同步和协作使用境外 Supabase 基础设施；不同意时不能使用这些云功能。可选 AI 仍会另行征求同意。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Account, cloud sync, and collaboration use overseas Supabase infrastructure. If you do not consent, these cloud features are unavailable. Optional AI requires separate consent."
+          }
+        }
+      }
     },
     "账号名" : {
       "extractionState" : "stale",
@@ -38930,7 +39237,14 @@
       }
     },
     "这条记录在本机和 eSheep 云都发生过更改，请选择要保留的版本。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This record was changed both on this device and in eSheep Cloud. Choose which version to keep."
+          }
+        }
+      }
     },
     "这条记录在本机和云端都发生过更改，请选择要保留的版本。" : {
       "extractionState" : "stale",
@@ -39352,7 +39666,14 @@
       }
     },
     "选择后，App 会再次检查记录是否符合当前牧场的业务规则。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "After you choose, the app will validate the record again against the current farm’s business rules."
+          }
+        }
+      }
     },
     "选择后，应用会再次检查记录是否符合当前牧场的业务规则。" : {
       "extractionState" : "stale",
@@ -41455,13 +41776,34 @@
       }
     },
     "默认关闭；同意只适用于可选 AI，不影响其他牧场功能" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Off by default; consent applies only to optional AI and does not affect other farm features"
+          }
+        }
+      }
     },
     "默认关闭；打开后表示同意当前版本的服务条款和隐私政策" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Off by default; turning this on means you agree to the current Terms of Service and Privacy Policy"
+          }
+        }
+      }
     },
     "默认关闭；这是与条款和隐私政策分开的单独同意" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Off by default; this is separate consent from the Terms of Service and Privacy Policy"
+          }
+        }
+      }
     },
     "默认剂量" : {
       "localizations" : {

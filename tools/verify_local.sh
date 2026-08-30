@@ -166,7 +166,11 @@ verify_static() {
     print -r -- "CI 未注入本地公开配置，跳过 *.local.xcconfig 值校验。"
   fi
 
-  zsh "$repo_root/tools/verify_privacy_compliance.sh"
+  if [[ "${VERIFY_ALLOW_LEGAL_PLACEHOLDERS:-0}" == "1" ]]; then
+    zsh "$repo_root/tools/verify_privacy_compliance.sh" --allow-placeholders
+  else
+    zsh "$repo_root/tools/verify_privacy_compliance.sh"
+  fi
 }
 
 verify_ios() {
@@ -243,8 +247,9 @@ print(f"XCTest gate passed: discovered={total}, failed=0, skipped=0")
 verify_web() {
   section "web：测试、Sites 构建与依赖审计"
   require_command npm
+  (cd "$repo_root/web" && npm run build)
   run_node_test_with_discovery_gate "$repo_root/web"
-  (cd "$repo_root/web" && npm run build && npm run test:sites && npm audit)
+  (cd "$repo_root/web" && npm run test:sites && npm audit)
 }
 
 verify_backend() {

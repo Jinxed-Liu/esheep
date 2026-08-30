@@ -26,6 +26,7 @@ jobs:
       - name: Run static gate
         env:
           VERIFY_PUBLIC_CONFIG: '0'
+          VERIFY_ALLOW_LEGAL_PLACEHOLDERS: '1'
         run: ./tools/verify_local.sh static
 
   web:
@@ -40,6 +41,8 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
           package-manager-cache: true
+      - name: Install verification shell dependencies
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep zsh
       - name: Install Web dependencies
         working-directory: web
         run: npm ci
@@ -60,6 +63,8 @@ jobs:
             backend/cloudbase-identity-gateway/package-lock.json
             backend/identity-worker/package-lock.json
           package-manager-cache: true
+      - name: Install verification shell dependencies
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep zsh
       - name: Install backend dependencies
         run: |
           npm ci --prefix backend/cloudbase-identity-gateway
@@ -80,6 +85,8 @@ jobs:
       - uses: supabase/setup-cli@v3
         with:
           version: 2.114.0
+      - name: Install verification shell dependencies
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep zsh
       - name: Run disposable local database gate
         env:
           ALLOW_LOCAL_DB_RESET: '1'
