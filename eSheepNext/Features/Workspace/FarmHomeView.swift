@@ -112,7 +112,7 @@ struct FarmHomeView: View {
             syncSymbol: sharedFarmAdmissionStatus == nil
                 ? (homeSnapshot.pendingOutboxCount == 0 ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
                 : "person.2.badge.gearshape",
-            syncText: sharedFarmAdmissionStatus.map {
+            syncAccessibilityLabel: sharedFarmAdmissionStatus.map {
                 "正在加入共享牧场 · \($0.detailText)"
             } ?? (homeSnapshot.pendingOutboxCount == 0
                 ? "业务数据已保存"

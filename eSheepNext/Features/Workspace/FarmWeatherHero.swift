@@ -5,7 +5,7 @@ import SwiftUI
 struct FarmWeatherHero: View {
     let farm: FarmRecord
     let syncSymbol: String
-    let syncText: LocalizedStringKey
+    let syncAccessibilityLabel: LocalizedStringKey
     @Binding var isDetailPresented: Bool
 
     @State private var weather: FarmWeatherSnapshot?
@@ -70,8 +70,6 @@ struct FarmWeatherHero: View {
                 header
                 Spacer(minLength: 4)
                 primaryWeather
-                Spacer(minLength: 6)
-                footer
             }
             .padding(20)
         }
@@ -171,11 +169,20 @@ struct FarmWeatherHero: View {
 
             Spacer(minLength: 8)
 
-            Label(LocalizedStringKey(farm.role.displayName), systemImage: "person.crop.circle.fill")
-                .font(.caption.weight(.medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .glassEffect(.regular, in: .capsule)
+            HStack(spacing: 7) {
+                Label(LocalizedStringKey(farm.role.displayName), systemImage: "person.crop.circle.fill")
+
+                Image(systemName: syncSymbol)
+                    .font(.caption2.weight(.semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.white.opacity(0.82))
+                    .accessibilityLabel(Text(syncAccessibilityLabel))
+            }
+            .accessibilityElement(children: .combine)
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .glassEffect(.regular, in: .capsule)
         }
         .foregroundStyle(.white)
         .shadow(color: .black.opacity(0.30), radius: 3, y: 1)
@@ -248,18 +255,6 @@ struct FarmWeatherHero: View {
             }
             .foregroundStyle(.white.opacity(0.88))
         }
-    }
-
-    private var footer: some View {
-        HStack(spacing: 7) {
-            Image(systemName: syncSymbol)
-                .symbolRenderingMode(.hierarchical)
-            Text(syncText)
-                .lineLimit(1)
-            Spacer(minLength: 0)
-        }
-        .font(.caption)
-        .foregroundStyle(.white.opacity(0.80))
     }
 
     private func loadWeather() async {
