@@ -152,11 +152,23 @@ private struct FarmNavigationToolbar: ToolbarContent {
             NavigationLink {
                 FarmSettingsView(account: account, farm: activeFarm)
             } label: {
-                AccountAvatarView(account: account, size: 38)
+                FarmToolbarAccountAvatar(account: account)
             }
+            .buttonStyle(.plain)
             .accessibilityLabel("账户与牧场设置")
         }
         .sharedBackgroundVisibility(.hidden)
+    }
+}
+
+private struct FarmToolbarAccountAvatar: View {
+    let account: AccountProfile
+
+    var body: some View {
+        AccountAvatarView(account: account, size: 38)
+            .frame(width: 44, height: 44)
+            .glassEffect(.regular.interactive(), in: .circle)
+            .contentShape(.circle)
     }
 }
 

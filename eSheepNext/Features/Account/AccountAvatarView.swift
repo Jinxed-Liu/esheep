@@ -23,7 +23,6 @@ struct AccountAvatarView: View {
         }
         .frame(width: size, height: size)
         .clipShape(.circle)
-        .overlay { Circle().stroke(.white.opacity(0.72), lineWidth: size > 40 ? 2 : 1) }
         .contentShape(.circle)
         .accessibilityHidden(true)
     }
