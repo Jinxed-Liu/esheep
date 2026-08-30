@@ -7,6 +7,7 @@ import { CloudSlash } from "@phosphor-icons/react/CloudSlash";
 import { House } from "@phosphor-icons/react/House";
 import { MagnifyingGlass } from "@phosphor-icons/react/MagnifyingGlass";
 import { PencilSimpleLine } from "@phosphor-icons/react/PencilSimpleLine";
+import { Robot } from "@phosphor-icons/react/Robot";
 import { SignOut } from "@phosphor-icons/react/SignOut";
 import { Sparkle } from "@phosphor-icons/react/Sparkle";
 import { UserCircle } from "@phosphor-icons/react/UserCircle";
@@ -69,7 +70,7 @@ export function AppHeader({
   const farmMenuRef = useRef(null);
   const accountMenuRef = useRef(null);
   const activePrimaryPage = primaryPageFor(activePage);
-  const personName = workspace.profile?.displayName ?? "MiMo 助手";
+  const personName = workspace.profile?.displayName ?? "牧场成员";
 
   useOutsideDismiss(farmMenuRef, () => setFarmMenuOpen(false));
   useOutsideDismiss(accountMenuRef, () => setAccountMenuOpen(false));
@@ -139,38 +140,51 @@ export function AppHeader({
           ) : null}
         </div>
 
-        <div className="account-menu-wrap" ref={accountMenuRef}>
+        <div className="topbar-actions">
           <button
-            className="account-button"
+            className={`topbar-assistant-button${activePage === "assistant" ? " active" : ""}`}
             type="button"
-            onClick={() => setAccountMenuOpen((open) => !open)}
-            aria-expanded={accountMenuOpen}
+            onClick={() => onNavigate("assistant")}
+            aria-current={activePage === "assistant" ? "page" : undefined}
+            aria-label="Codex 助手"
           >
-            <img src="/assets/mimo-assistant.png" alt="" />
-            <span>{personName}</span>
-            <CaretDown size={15} weight="bold" />
+            <Robot size={20} weight={activePage === "assistant" ? "fill" : "duotone"} />
+            <span>Codex 助手</span>
           </button>
-          {accountMenuOpen ? (
-            <div className="popover account-menu">
-              <div className="account-summary">
-                <img src="/assets/mimo-assistant.png" alt="" />
-                <span>
-                  <strong>{personName}</strong>
-                  <small>{workspace.profile?.email ?? "牧场智能助理"}</small>
-                </span>
-              </div>
-              <button type="button" onClick={() => { onNavigate("settings"); setAccountMenuOpen(false); }}>
-                <UserCircle size={19} />
-                账户与牧场设置
-              </button>
-              {workspace.mode === "cloud" ? (
-                <button type="button" onClick={() => { onSignOut(); setAccountMenuOpen(false); }}>
-                  <SignOut size={19} />
-                  退出云端账号
+          <div className="account-menu-wrap" ref={accountMenuRef}>
+            <button
+              className="account-button"
+              type="button"
+              onClick={() => setAccountMenuOpen((open) => !open)}
+              aria-expanded={accountMenuOpen}
+              aria-label={`${personName}账户菜单`}
+            >
+              <img src="/assets/mimo-assistant.png" alt="" />
+              <span>{personName}</span>
+              <CaretDown size={15} weight="bold" />
+            </button>
+            {accountMenuOpen ? (
+              <div className="popover account-menu">
+                <div className="account-summary">
+                  <img src="/assets/mimo-assistant.png" alt="" />
+                  <span>
+                    <strong>{personName}</strong>
+                    <small>{workspace.profile?.email ?? "当前演示账户"}</small>
+                  </span>
+                </div>
+                <button type="button" onClick={() => { onNavigate("settings"); setAccountMenuOpen(false); }}>
+                  <UserCircle size={19} />
+                  账户与牧场设置
                 </button>
-              ) : null}
-            </div>
-          ) : null}
+                {workspace.mode === "cloud" ? (
+                  <button type="button" onClick={() => { onSignOut(); setAccountMenuOpen(false); }}>
+                    <SignOut size={19} />
+                    退出云端账号
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
     </>

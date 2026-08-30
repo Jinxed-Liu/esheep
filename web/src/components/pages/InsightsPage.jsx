@@ -5,7 +5,6 @@ import { CaretDown } from "@phosphor-icons/react/CaretDown";
 import { CaretRight } from "@phosphor-icons/react/CaretRight";
 import { ChartLineUp } from "@phosphor-icons/react/ChartLineUp";
 import { CheckCircle } from "@phosphor-icons/react/CheckCircle";
-import { PaperPlaneTilt } from "@phosphor-icons/react/PaperPlaneTilt";
 import { Robot } from "@phosphor-icons/react/Robot";
 import { Scales } from "@phosphor-icons/react/Scales";
 import { Tag } from "@phosphor-icons/react/Tag";
@@ -25,6 +24,7 @@ import {
   weightFilterOptions,
 } from "../../lib/appAnalytics.js";
 import { PageTop, ProjectionNotice } from "./FeaturePageShared.jsx";
+import FarmAssistant from "../FarmAssistant.jsx";
 
 const reportCards = [
   { id: "weight", title: "增重分析", detail: "有效羊只、最新均重、首末 ADG 与记录日趋势", icon: Scales },
@@ -201,34 +201,6 @@ function ScatterChart({ points, trend }) {
       <text className="chart-axis-label" x={left} y={height - 9}>前次体重 {numberText(minX, 1)} kg</text>
       <text className="chart-axis-label" x={width - right} y={height - 9} textAnchor="end">{numberText(maxX, 1)} kg</text>
     </svg>
-  );
-}
-
-function InsightAssistant({ workspace, onBack }) {
-  const [text, setText] = useState("");
-  const [messages, setMessages] = useState([{ id: "intro", role: "assistant", text: "我只汇总当前工作区按 App 口径计算出的数据，并同时说明时间范围、有效样本与分母。" }]);
-  function submit(event) {
-    event.preventDefault();
-    const prompt = text.trim();
-    if (!prompt) return;
-    const { weight, lamb, reproduction, feed } = workspace.insightData ?? {};
-    const reply = workspace.mode === "cloud"
-      ? `默认口径下：统一体重 ${numberText(weight?.canonicalSampleCount ?? 0, 0)} 条，完整产羔 ${numberText(lamb?.completeLambingCount ?? 0, 0)} 胎，截止日母羊群 ${numberText(reproduction?.cohortCount ?? 0, 0)} 只，近 7 个完整自然日有效采食圈舍 ${numberText(feed?.overview?.effectivePenCount ?? 0, 0)} 个。具体结论仍以对应分析页的筛选范围和样本数为准。`
-      : "当前是演示工作区，没有把演示数字当作牧场结论。";
-    const stamp = Date.now();
-    setMessages((current) => [...current, { id: `${stamp}-u`, role: "user", text: prompt }, { id: `${stamp}-a`, role: "assistant", text: reply }]);
-    setText("");
-  }
-  return (
-    <main className="page feature-page assistant-page">
-      <PageTop title="MiMo 助手" description="基于当前工作区已经装载的 App 同口径分析回答。" />
-      <button className="text-button back-link standalone-back" type="button" onClick={onBack}>返回洞察</button>
-      <section className="assistant-workspace">
-        <div className="assistant-thread">{messages.map((message) => <article className={message.role} key={message.id}>{message.role === "assistant" ? <img src="/assets/mimo-assistant.png" alt="" /> : <span className="user-message-mark">我</span>}<p>{message.text}</p></article>)}</div>
-        <div className="assistant-suggestions">{["当前有效体重样本有多少？", "完整产羔的出生死亡率是多少？", "采食分析里哪些是估算？"].map((suggestion) => <button type="button" key={suggestion} onClick={() => setText(suggestion)}>{suggestion}</button>)}</div>
-        <form className="assistant-composer" onSubmit={submit}><input value={text} onChange={(event) => setText(event.target.value)} placeholder="询问当前牧场数据…" /><button type="submit" aria-label="发送"><PaperPlaneTilt size={21} weight="fill" /></button></form>
-      </section>
-    </main>
   );
 }
 
@@ -434,7 +406,7 @@ export default function InsightsPage({ workspace, mode = "insights", onNavigate 
   const now = useMemo(() => new Date(), [workspace.farm?.id, workspace.lastSyncedAt]);
   const currentView = reportCards.find((card) => card.id === view);
   const data = workspace.insightData ?? {};
-  if (mode === "assistant") return <InsightAssistant workspace={workspace} onBack={() => onNavigate("insights")} />;
+  if (mode === "assistant") return <FarmAssistant workspace={workspace} onBack={() => onNavigate("insights")} />;
   if (currentView) {
     return (
       <main className="page feature-page analysis-page">
@@ -461,7 +433,7 @@ export default function InsightsPage({ workspace, mode = "insights", onNavigate 
       <section className="insight-overview-strip insight-overview-four">{overviewStats.map(({ label, value, unit, icon: Icon }) => <article key={label}><Icon size={25} /><span><small>{label}</small><strong>{numberText(value, 0)}<em>{unit}</em></strong></span></article>)}</section>
       <section className="insight-destination-grid">
         {reportCards.map(({ id, title, detail, icon: Icon }) => <button type="button" key={id} onClick={() => setView(id)}><Icon size={28} /><span><strong>{title}</strong><small>{detail}</small></span><CaretRight size={19} weight="bold" /></button>)}
-        <button className="assistant-entry" type="button" onClick={() => onNavigate("assistant")}><Robot size={28} /><span><strong>MiMo 助手</strong><small>查询当前工作区 App 同口径结果与样本边界</small></span><CaretRight size={19} weight="bold" /></button>
+        <button className="assistant-entry" type="button" onClick={() => onNavigate("assistant")}><Robot size={28} /><span><strong>Codex 牧场助手</strong><small>MiMo 双模型 · App 同口径工具 · 图片理解</small></span><CaretRight size={19} weight="bold" /></button>
       </section>
       <section className="insight-principle"><ChartLineUp size={25} /><span><strong>所有比例显示分母，所有均值保留有效样本</strong><small>体重按事件日归并；繁殖固定截止日母羊群；采食只用完整自然日和真实盘槽边界。</small></span></section>
     </main>

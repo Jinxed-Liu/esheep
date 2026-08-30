@@ -61,6 +61,34 @@ test("does not turn missing API or write requests into the app shell", async () 
   }
 });
 
+test("proxies assistant requests to a bound Codex harness service", async () => {
+  const calls = [];
+  const request = new Request("https://example.test/api/assistant/status", {
+    headers: { authorization: "Bearer test-token" },
+  });
+  const response = await worker.fetch(request, {
+    CODEX_HARNESS: {
+      fetch: async (proxiedRequest) => {
+        calls.push({
+          pathname: new URL(proxiedRequest.url).pathname,
+          authorization: proxiedRequest.headers.get("authorization"),
+        });
+        return Response.json({ configured: true, model: "mimo-v2.5-pro", multimodalModel: "mimo-v2.5" });
+      },
+    },
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [{ pathname: "/api/assistant/status", authorization: "Bearer test-token" }]);
+  assert.deepEqual(await response.json(), { configured: true, model: "mimo-v2.5-pro", multimodalModel: "mimo-v2.5" });
+});
+
+test("returns an explicit unavailable response when the harness is not bound", async () => {
+  const response = await worker.fetch(new Request("https://example.test/api/assistant/status"), {});
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, "HARNESS_NOT_BOUND");
+});
+
 test("emits the files required by Sites packaging", async () => {
   await access(new URL("../dist/client/index.html", import.meta.url));
   await access(new URL("../dist/server/index.js", import.meta.url));

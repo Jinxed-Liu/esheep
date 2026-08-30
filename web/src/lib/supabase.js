@@ -743,6 +743,18 @@ export async function getVerifiedUser() {
   return data.user ?? null;
 }
 
+export async function getAssistantAccessToken() {
+  if (!supabase) throw new Error("Supabase 尚未配置。");
+  const user = await getVerifiedUser();
+  if (!user) throw new Error("请先登录 Supabase 账号。");
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  if (!data.session?.access_token || data.session.user?.id !== user.id) {
+    throw new Error("登录状态已失效，请重新登录。");
+  }
+  return data.session.access_token;
+}
+
 export function watchAuth(callback) {
   if (!supabase) return () => {};
   const { data } = supabase.auth.onAuthStateChange((event, session) => {
