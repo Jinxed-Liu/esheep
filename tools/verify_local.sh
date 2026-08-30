@@ -110,14 +110,16 @@ verify_supabase_public_config() {
 
 run_node_test_with_discovery_gate() {
   local directory="$1"
-  local output_file
+  local output_file normalized_output
   output_file="$(mktemp -t esheep-node-test.XXXXXX)"
-  (cd "$directory" && npm test) 2>&1 | tee "$output_file"
-  if ! rg -q '^# tests [1-9][0-9]*$' "$output_file"; then
+  normalized_output="$(mktemp -t esheep-node-test-normalized.XXXXXX)"
+  (cd "$directory" && NO_COLOR=1 FORCE_COLOR=0 npm test) 2>&1 | tee "$output_file"
+  perl -pe 's/\e\[[0-?]*[ -\/]*[@-~]//g' "$output_file" > "$normalized_output"
+  if ! rg -q '^(#|ℹ)[[:space:]]+tests[[:space:]]+[1-9][0-9]*$' "$normalized_output"; then
     print -u2 -- "无法证明 Node 测试实际发现并执行：$directory"
     return 1
   fi
-  if rg -q '^# (fail|cancelled) [1-9][0-9]*$' "$output_file"; then
+  if rg -q '^(#|ℹ)[[:space:]]+(fail|cancelled)[[:space:]]+[1-9][0-9]*$' "$normalized_output"; then
     print -u2 -- "Node 测试存在失败或取消：$directory"
     return 1
   fi
@@ -125,14 +127,16 @@ run_node_test_with_discovery_gate() {
 
 run_vitest_with_discovery_gate() {
   local directory="$1"
-  local output_file
+  local output_file normalized_output
   output_file="$(mktemp -t esheep-vitest.XXXXXX)"
-  (cd "$directory" && npm test) 2>&1 | tee "$output_file"
-  if rg -q 'Test Files[[:space:]]+no tests|No test files found' "$output_file"; then
+  normalized_output="$(mktemp -t esheep-vitest-normalized.XXXXXX)"
+  (cd "$directory" && NO_COLOR=1 FORCE_COLOR=0 npm test) 2>&1 | tee "$output_file"
+  perl -pe 's/\e\[[0-?]*[ -\/]*[@-~]//g' "$output_file" > "$normalized_output"
+  if rg -q 'Test Files[[:space:]]+no tests|No test files found' "$normalized_output"; then
     print -u2 -- "Vitest 测试发现数为 0：$directory"
     return 1
   fi
-  if ! rg -q 'Test Files[[:space:]]+[1-9][0-9]* passed|[1-9][0-9]* passing' "$output_file"; then
+  if ! rg -q 'Test Files[[:space:]]+[1-9][0-9]* passed|[1-9][0-9]* passing' "$normalized_output"; then
     print -u2 -- "无法证明 Vitest 测试实际执行并通过：$directory"
     return 1
   fi
@@ -247,6 +251,7 @@ print(f"XCTest gate passed: discovered={total}, failed=0, skipped=0")
 verify_web() {
   section "web：测试、Sites 构建与依赖审计"
   require_command npm
+  require_command perl
   (cd "$repo_root/web" && npm run build)
   run_node_test_with_discovery_gate "$repo_root/web"
   (cd "$repo_root/web" && npm run test:sites && npm audit)
@@ -255,6 +260,7 @@ verify_web() {
 verify_backend() {
   section "backend：CloudBase 网关与遗留身份 Worker"
   require_command npm
+  require_command perl
   require_command rg
   require_command rsync
 

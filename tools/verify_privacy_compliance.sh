@@ -27,8 +27,16 @@ for policy in "$repo_root"/release/legal/*.md; do
     fail "法律文本版本不一致：$policy"
 done
 
-plutil -lint "$repo_root/eSheepNext/PrivacyInfo.xcprivacy" >/dev/null
-manifest_dump="$(plutil -p "$repo_root/eSheepNext/PrivacyInfo.xcprivacy")"
+manifest_dump="$(python3 - "$repo_root/eSheepNext/PrivacyInfo.xcprivacy" <<'PY'
+import json
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as manifest_file:
+    manifest = plistlib.load(manifest_file)
+print(json.dumps(manifest, ensure_ascii=False, sort_keys=True))
+PY
+)" || fail "Privacy Manifest 不是有效的 plist。"
 for data_type in \
   Name EmailAddress PhysicalAddress PreciseLocation PhotosorVideos AudioData \
   OtherUserContent UserID DeviceID OtherUsageData OtherDiagnosticData; do
@@ -36,7 +44,7 @@ for data_type in \
     fail "Privacy Manifest 缺少 NSPrivacyCollectedDataType${data_type}。"
   fi
 done
-if [[ "$manifest_dump" == *'"NSPrivacyCollectedDataTypeTracking" => true'* ]]; then
+if [[ "$manifest_dump" == *'"NSPrivacyCollectedDataTypeTracking": true'* ]]; then
   fail "Privacy Manifest 不得把数据声明为跨 App/网站跟踪。"
 fi
 
