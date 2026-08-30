@@ -554,9 +554,9 @@ final class AppSchemaMigrationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let storeURL = directory.appending(path: "V2.store")
         let accountID = UUID()
-        let iCloudFarmID = UUID()
+        let retiredCloudFarmID = UUID()
         let localFarmID = UUID()
-        let iCloudOperationID = UUID()
+        let retiredCloudOperationID = UUID()
         let localOperationID = UUID()
 
         do {
@@ -575,17 +575,17 @@ final class AppSchemaMigrationTests: XCTestCase {
                 appleUserIdentifier: "v2-storage-migration",
                 displayName: "V2 迁移"
             ))
-            context.insert(FarmRecord(id: iCloudFarmID, ownerAccountID: accountID, name: "iCloud 牧场"))
+            context.insert(FarmRecord(id: retiredCloudFarmID, ownerAccountID: accountID, name: "旧云牧场"))
             context.insert(FarmRecord(id: localFarmID, ownerAccountID: accountID, name: "本地牧场"))
             context.insert(CloudFarmBinding(
-                farmID: iCloudFarmID,
+                farmID: retiredCloudFarmID,
                 ownerAccountID: accountID,
                 state: .active
             ))
             context.insert(AppSchemaV2.OutboxItem(
-                farmID: iCloudFarmID,
+                farmID: retiredCloudFarmID,
                 accountID: accountID,
-                operationID: iCloudOperationID
+                operationID: retiredCloudOperationID
             ))
             context.insert(AppSchemaV2.OutboxItem(
                 farmID: localFarmID,
@@ -600,11 +600,11 @@ final class AppSchemaMigrationTests: XCTestCase {
         let profiles = try context.fetch(FetchDescriptor<FarmStorageProfile>())
         let outbox = try context.fetch(FetchDescriptor<OutboxItem>())
 
-        XCTAssertEqual(profiles.first(where: { $0.farmID == iCloudFarmID })?.mode, .iCloud)
+        XCTAssertEqual(profiles.first(where: { $0.farmID == retiredCloudFarmID })?.mode, .retiredAppleCloud)
         XCTAssertEqual(profiles.first(where: { $0.farmID == localFarmID })?.mode, .localOnly)
         XCTAssertEqual(
-            outbox.first(where: { $0.operationID == iCloudOperationID })?.deliveryProvider,
-            .iCloud
+            outbox.first(where: { $0.operationID == retiredCloudOperationID })?.deliveryProvider,
+            .retiredAppleCloud
         )
         XCTAssertEqual(
             outbox.first(where: { $0.operationID == localOperationID })?.status,
@@ -733,7 +733,8 @@ final class AppSchemaMigrationTests: XCTestCase {
             let outbox = OutboxItem(
                 farmID: farmID,
                 accountID: accountID,
-                operationID: operationID
+                operationID: operationID,
+                deliveryProvider: .supabase
             )
             outbox.deliveryProviderRawValue = nil
             outbox.statusRawValue = OutboxStatus.notRequiredLocalOnly.rawValue

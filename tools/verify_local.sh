@@ -166,10 +166,7 @@ verify_static() {
     print -r -- "CI 未注入本地公开配置，跳过 *.local.xcconfig 值校验。"
   fi
 
-  if rg -q '\{\{(DOMAIN|LEGAL_ENTITY)\}\}' "$repo_root/release"; then
-    print -u2 -- "公开网站或 App Store 元数据仍含域名/法律主体占位符。"
-    return 1
-  fi
+  zsh "$repo_root/tools/verify_privacy_compliance.sh"
 }
 
 verify_ios() {

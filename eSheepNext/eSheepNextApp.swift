@@ -4,8 +4,6 @@ import SwiftUI
 
 @main
 struct eSheepNextApp: App {
-    @UIApplicationDelegateAdaptor(CloudShareAppDelegate.self) private var cloudShareDelegate
-
     @State private var bootstrap = AppBootstrapController()
     @State private var session = AppSession()
     @State private var subscription = SubscriptionService()

@@ -6,9 +6,11 @@ import { CloudArrowDown } from "@phosphor-icons/react/CloudArrowDown";
 import { CloudCheck } from "@phosphor-icons/react/CloudCheck";
 import { CloudSlash } from "@phosphor-icons/react/CloudSlash";
 import { Gear } from "@phosphor-icons/react/Gear";
+import { Globe } from "@phosphor-icons/react/Globe";
 import { LockKey } from "@phosphor-icons/react/LockKey";
 import { SignIn } from "@phosphor-icons/react/SignIn";
 import { SignOut } from "@phosphor-icons/react/SignOut";
+import { ShieldCheck } from "@phosphor-icons/react/ShieldCheck";
 import { UsersThree } from "@phosphor-icons/react/UsersThree";
 import { WarningCircle } from "@phosphor-icons/react/WarningCircle";
 import { PageTop } from "./FeaturePageShared.jsx";
@@ -29,6 +31,8 @@ export default function SettingsPage({ workspace, authState, isConfigured, onSig
   const [busy, setBusy] = useState(false);
   const [appleBusy, setAppleBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [showMetricUnits, setShowMetricUnits] = useState(true);
+  const [allowAssistantContext, setAllowAssistantContext] = useState(false);
 
   async function submit(event) {
     event.preventDefault();
@@ -58,7 +62,7 @@ export default function SettingsPage({ workspace, authState, isConfigured, onSig
 
   return (
     <main className="page feature-page">
-      <PageTop title="设置" description="账号、牧场权限、云端数据与网页端安全边界。" icon={Gear} />
+      <PageTop title="设置" description="与 App 一致：账号、当前牧场、偏好、AI 与隐私，以及账号操作。" icon={Gear} />
       <div className="settings-grid">
         <section className="workspace-panel cloud-settings-card">
           <div className="panel-heading"><h2>Supabase 云端</h2>{workspace.mode === "cloud" ? <CloudCheck size={25} className="success-icon" /> : <CloudSlash size={25} />}</div>
@@ -92,6 +96,18 @@ export default function SettingsPage({ workspace, authState, isConfigured, onSig
             <article><CheckCircle size={22} weight="fill" /><span><strong>本地交互草稿</strong><small>录入、筛选、表格和 TMR 操作在网页内立即可验证。</small></span></article>
             <article className="pending"><WarningCircle size={22} weight="fill" /><span><strong>生产云写入仍受保护</strong><small>完整移植命令校验、设备身份、修订冲突、Outbox 与远端重放前，不伪装成“已提交”。</small></span></article>
           </div>
+        </section>
+
+        <section className="workspace-panel preferences-card">
+          <div className="panel-heading"><h2>偏好</h2><Globe size={24} /></div>
+          <label className="setting-toggle-row"><span><strong>显示公制单位</strong><small>体重使用 kg，温度使用摄氏度。</small></span><input type="checkbox" checked={showMetricUnits} onChange={(event) => setShowMetricUnits(event.target.checked)} /></label>
+          <div className="setting-readonly-row"><span><strong>时区</strong><small>业务日期按牧场时区计算。</small></span><b>{workspace.farm.timeZoneIdentifier || "Asia/Shanghai"}</b></div>
+        </section>
+
+        <section className="workspace-panel privacy-card">
+          <div className="panel-heading"><h2>AI 与隐私</h2><ShieldCheck size={24} /></div>
+          <label className="setting-toggle-row"><span><strong>允许助理读取当前页面上下文</strong><small>默认关闭；开启只影响本次浏览器会话。</small></span><input type="checkbox" checked={allowAssistantContext} onChange={(event) => setAllowAssistantContext(event.target.checked)} /></label>
+          <div className="setting-readonly-row"><span><strong>数据边界</strong><small>未接入的云端规则不会作为 AI 结论。</small></span><b>严格</b></div>
         </section>
 
         <section className="workspace-panel capability-card">

@@ -486,14 +486,14 @@ struct SheepDetailEntryView: View {
     let farm: FarmRecord
     let sheepID: UUID
 
-    @State private var entry: SheepDetailEntrySnapshot?
+    @State private var screenSnapshot: SheepDetailScreenSnapshot?
     @State private var isLoading = true
     @State private var loadError: String?
 
     var body: some View {
         Group {
-            if let entry {
-                SheepDetailView(account: account, farm: farm, entry: entry)
+            if let screenSnapshot {
+                SheepDetailView(account: account, farm: farm, screen: screenSnapshot)
             } else if isLoading {
                 ProgressView("正在读取羊只档案")
             } else {
@@ -505,23 +505,24 @@ struct SheepDetailEntryView: View {
             }
         }
         .task(id: sheepID) {
-            await loadEntry()
+            await loadScreen()
         }
     }
 
     @MainActor
-    private func loadEntry() async {
+    private func loadScreen() async {
         isLoading = true
         do {
-            entry = try await SheepDetailSnapshotActor(
+            let loaded = try await SheepDetailSnapshotActor(
                 container: modelContext.container
-            ).loadEntry(farmID: farm.id, sheepID: sheepID)
+            ).loadScreen(farmID: farm.id, sheepID: sheepID)
             try Task.checkCancellation()
-            loadError = entry == nil ? "该羊只可能已删除或不属于当前牧场。" : nil
+            screenSnapshot = loaded
+            loadError = loaded == nil ? "该羊只可能已删除或不属于当前牧场。" : nil
         } catch is CancellationError {
             return
         } catch {
-            entry = nil
+            screenSnapshot = nil
             loadError = error.localizedDescription
         }
         isLoading = false
@@ -556,12 +557,15 @@ struct SheepDetailView: View {
     @State private var pendingPhotoDeletion: PhotoDeletionDraft?
     private let commandService = FarmCommandService()
 
-    init(account: AccountProfile, farm: FarmRecord, entry: SheepDetailEntrySnapshot) {
+    init(account: AccountProfile, farm: FarmRecord, screen: SheepDetailScreenSnapshot) {
         self.account = account
         self.farm = farm
-        _subject = State(initialValue: entry.subject)
-        _penName = State(initialValue: entry.penName)
-        _avatarPhoto = State(initialValue: entry.avatarPhoto)
+        _subject = State(initialValue: screen.entry.subject)
+        _penName = State(initialValue: screen.entry.penName)
+        _avatarPhoto = State(initialValue: screen.entry.avatarPhoto)
+        _detailSnapshot = State(initialValue: screen.detail)
+        _isLoadingDetail = State(initialValue: false)
+        _detailLoadError = State(initialValue: screen.detailLoadErrorDescription)
     }
 
     private var sheepPhotos: [SheepDetailPhotoSnapshot] { detailSnapshot?.photos ?? [] }
@@ -779,7 +783,6 @@ struct SheepDetailView: View {
             guard let item else { return }
             addPhoto(item, setAsAvatar: false)
         }
-        .task(id: subject.id) { await reloadDetailSnapshot() }
         .alert("照片", isPresented: Binding(get: { photoMessage != nil }, set: { if !$0 { photoMessage = nil } })) {
             Button("完成", role: .cancel) {}
         } message: { Text(LocalizedStringKey(photoMessage ?? "")) }
@@ -883,12 +886,13 @@ struct SheepDetailView: View {
         isLoadingDetail = true
         defer { isLoadingDetail = false }
         do {
-            detailSnapshot = try await SheepDetailSnapshotActor(container: modelContext.container).load(
+            let updatedDetail = try await SheepDetailSnapshotActor(container: modelContext.container).load(
                 farmID: farm.id,
                 sheepID: subject.id,
                 subject: subject
             )
             try Task.checkCancellation()
+            detailSnapshot = updatedDetail
             detailLoadError = nil
         } catch is CancellationError {
             return
@@ -911,15 +915,16 @@ struct SheepDetailView: View {
                 return
             }
             try Task.checkCancellation()
-            subject = updatedEntry.subject
-            penName = updatedEntry.penName
-            avatarPhoto = updatedEntry.avatarPhoto
-            detailSnapshot = try await actor.load(
+            let updatedDetail = try await actor.load(
                 farmID: farm.id,
                 sheepID: updatedEntry.subject.id,
                 subject: updatedEntry.subject
             )
             try Task.checkCancellation()
+            subject = updatedEntry.subject
+            penName = updatedEntry.penName
+            avatarPhoto = updatedEntry.avatarPhoto
+            detailSnapshot = updatedDetail
             detailLoadError = nil
         } catch is CancellationError {
             return
@@ -1368,12 +1373,13 @@ private struct PhotoTimeEditor: View {
 
 private struct CloudPhotoThumbnail: View {
     @Environment(CloudCollaborationStore.self) private var collaboration
+    @Environment(\.displayScale) private var displayScale
     let assetID: UUID
     let digest: String
     let width: CGFloat
     let height: CGFloat
     let cornerRadius: CGFloat
-    @State private var image: UIImage?
+    @State private var thumbnail: ImageThumbnail?
     @State private var didFail = false
 
     init(assetID: UUID, digest: String, width: CGFloat = 104, height: CGFloat = 104, cornerRadius: CGFloat = 16) {
@@ -1386,8 +1392,12 @@ private struct CloudPhotoThumbnail: View {
 
     var body: some View {
         Group {
-            if let image {
-                Image(uiImage: image)
+            if let thumbnail {
+                Image(
+                    decorative: thumbnail.cgImage,
+                    scale: thumbnail.scale,
+                    orientation: .up
+                )
                     .resizable()
                     .scaledToFill()
             } else if didFail {
@@ -1402,91 +1412,125 @@ private struct CloudPhotoThumbnail: View {
         .background(Color(uiColor: .secondarySystemGroupedBackground))
         .clipShape(.rect(cornerRadius: cornerRadius))
         .task(id: PhotoLoadKey(
+            assetID: assetID,
             digest: digest,
-            lastSuccessfulSyncAt: collaboration.lastSuccessfulSyncAt
+            width: width,
+            height: height,
+            displayScale: displayScale
         )) {
-            image = nil
+            thumbnail = nil
             didFail = false
-            let data = try? await collaboration.loadPhotoData(assetID: assetID)
-            image = data.flatMap(UIImage.init(data:))
-            didFail = image == nil
+            guard let data = try? await collaboration.loadPhotoData(assetID: assetID),
+                  !Task.isCancelled else {
+                didFail = !Task.isCancelled
+                return
+            }
+            let loaded = await ImageThumbnailPipeline.shared.thumbnail(
+                data: data,
+                digest: digest,
+                targetSize: CGSize(width: width, height: height),
+                scale: displayScale
+            )
+            guard !Task.isCancelled else { return }
+            thumbnail = loaded
+            didFail = loaded == nil
         }
     }
 
     private struct PhotoLoadKey: Hashable {
+        let assetID: UUID
         let digest: String
-        let lastSuccessfulSyncAt: Date?
+        let width: CGFloat
+        let height: CGFloat
+        let displayScale: CGFloat
     }
 }
 
 struct PenManagementView: View {
-    @Query private var pens: [PenRecord]
-    @Query private var sheep: [SheepRecord]
+    @Environment(\.modelContext) private var modelContext
+    @Environment(CloudCollaborationStore.self) private var collaboration
 
     let account: AccountProfile
     let farm: FarmRecord
     @State private var isAddingPen = false
     @State private var displayScope = PenDisplayScope.occupied
+    @State private var rows: [PenManagementRowSnapshot] = []
+    @State private var loadRevision = 0
+    @State private var isLoading = true
+    @State private var hasLoaded = false
+    @State private var loadError: String?
 
-    init(account: AccountProfile, farm: FarmRecord) {
-        self.account = account
-        self.farm = farm
-        let farmID = farm.id
-        _pens = Query(
-            filter: #Predicate<PenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
-            sort: \PenRecord.name
-        )
-        _sheep = Query(
-            filter: #Predicate<SheepRecord> { $0.farmID == farmID && $0.deletedAt == nil },
-            sort: \SheepRecord.earTag
-        )
-    }
-
-    private var currentSheepByPen: [UUID: [SheepRecord]] {
-        Dictionary(
-            grouping: sheep.filter { $0.isCurrentlyPresent && $0.currentPenID != nil },
-            by: { $0.currentPenID! }
-        )
-    }
-
-    private func farmPens(sheepByPen: [UUID: [SheepRecord]]) -> [PenRecord] {
+    private var displayedPens: [PenManagementRowSnapshot] {
         switch displayScope {
         case .occupied:
-            pens.filter { sheepByPen[$0.id]?.isEmpty == false }
+            rows.filter { $0.currentSheepCount > 0 }
         case .clearedArchive:
-            pens.filter { sheepByPen[$0.id]?.isEmpty != false }
+            rows.filter { $0.currentSheepCount == 0 }
         case .all:
-            pens
+            rows
         }
     }
 
     var body: some View {
-        let sheepByPen = currentSheepByPen
-        let displayedPens = farmPens(sheepByPen: sheepByPen)
         List {
-            ForEach(displayedPens, id: \.id) { pen in
-                NavigationLink {
-                    PenDetailView(account: account, farm: farm, pen: pen, sheep: sheepByPen[pen.id] ?? [])
-                } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(pen.name).font(.headline)
-                        let currentCount = sheepByPen[pen.id]?.count ?? 0
-                        Text(currentCount == 0 ? LocalizedStringKey("已清圈 · 已归档") : LocalizedStringKey("当前羊只 \(currentCount) 只"))
-                            .font(.subheadline).foregroundStyle(.secondary)
+            if isLoading && rows.isEmpty {
+                ProgressView("正在整理圈舍")
+                    .frame(maxWidth: .infinity, minHeight: 320)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            } else {
+                ForEach(displayedPens) { pen in
+                    NavigationLink {
+                        PenDetailEntryView(
+                            account: account,
+                            farm: farm,
+                            penID: pen.id
+                        )
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(pen.name).font(.headline)
+                            Text(pen.currentSheepCount == 0
+                                ? LocalizedStringKey("已清圈 · 已归档")
+                                : LocalizedStringKey("当前羊只 \(pen.currentSheepCount) 只"))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
         }
         .overlay {
-            if displayedPens.isEmpty {
-                ContentUnavailableView(
-                    displayScope.emptyTitle,
-                    systemImage: "building.2",
-                    description: Text(LocalizedStringKey(displayScope.emptyDescription))
-                )
+            if hasLoaded && !isLoading && displayedPens.isEmpty {
+                if let loadError {
+                    ContentUnavailableView(
+                        "无法读取圈舍",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(loadError)
+                    )
+                } else {
+                    ContentUnavailableView(
+                        displayScope.emptyTitle,
+                        systemImage: "building.2",
+                        description: Text(LocalizedStringKey(displayScope.emptyDescription))
+                    )
+                }
             }
         }
         .navigationTitle("圈舍")
+        .task(id: PenManagementLoadRequest(
+            farmID: farm.id,
+            revision: loadRevision,
+            syncCompletedAt: collaboration.lastSuccessfulSyncAt
+        )) {
+            await reloadPens()
+        }
+        .onAppear {
+            guard hasLoaded else { return }
+            loadRevision &+= 1
+        }
+        .refreshable {
+            await reloadPens()
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -1500,9 +1544,40 @@ struct PenManagementView: View {
             }
             ToolbarItem(placement: .topBarTrailing) { Button { isAddingPen = true } label: { Image(systemName: "plus") } }
         }
-        .sheet(isPresented: $isAddingPen) { NavigationStack { AddPenView(account: account, farm: farm) } }
+        .sheet(isPresented: $isAddingPen, onDismiss: { loadRevision &+= 1 }) {
+            NavigationStack { AddPenView(account: account, farm: farm) }
+        }
         .farmExcelImport(account: account, farm: farm, sheets: ["圈舍"])
     }
+
+    @MainActor
+    private func reloadPens() async {
+        if rows.isEmpty { isLoading = true }
+        do {
+            let loaded = try await PenManagementSnapshotActor(
+                container: modelContext.container
+            ).loadList(farmID: farm.id)
+            try Task.checkCancellation()
+            if rows != loaded {
+                rows = loaded
+            }
+            loadError = nil
+            hasLoaded = true
+            isLoading = false
+        } catch is CancellationError {
+            return
+        } catch {
+            loadError = error.localizedDescription
+            hasLoaded = true
+            isLoading = false
+        }
+    }
+}
+
+private struct PenManagementLoadRequest: Hashable, Sendable {
+    let farmID: UUID
+    let revision: Int
+    let syncCompletedAt: Date?
 }
 
 private enum PenDisplayScope: String, CaseIterable, Identifiable {
@@ -1537,38 +1612,172 @@ private enum PenDisplayScope: String, CaseIterable, Identifiable {
     }
 }
 
-struct PenDetailView: View {
+struct PenDetailEntryView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(CloudCollaborationStore.self) private var collaboration
 
     let account: AccountProfile
     let farm: FarmRecord
-    let pen: PenRecord
-    let sheep: [SheepRecord]
+    let penID: UUID
+
+    @State private var snapshot: PenDetailSnapshot?
+    @State private var herdInsight: FarmInsight?
+    @State private var loadRevision = 0
+    @State private var isLoading = true
+    @State private var hasLoaded = false
+    @State private var loadError: String?
     @State private var isEditing = false
-    @State private var herdInsight: FarmInsight
+    @State private var editingPen: PenRecord?
+    @State private var actionError: String?
 
-    private let analysisMembers: [PenHerdMemberSnapshot]
-
-    init(account: AccountProfile, farm: FarmRecord, pen: PenRecord, sheep: [SheepRecord]) {
-        self.account = account
-        self.farm = farm
-        self.pen = pen
-        self.sheep = sheep
-        let members = sheep.map { PenHerdMemberSnapshot(id: $0.id, purpose: $0.purpose) }
-        analysisMembers = members
-        _herdInsight = State(initialValue: PenHerdInsightBuilder.insight(penName: pen.name, members: members))
+    var body: some View {
+        Group {
+            if let snapshot {
+                PenDetailView(
+                    account: account,
+                    farm: farm,
+                    snapshot: snapshot,
+                    herdInsight: herdInsight ?? PenHerdInsightBuilder.insight(
+                        penName: snapshot.pen.name,
+                        members: snapshot.analysisMembers
+                    ),
+                    onEdit: prepareEditing
+                )
+            } else if isLoading {
+                ProgressView("正在读取圈舍")
+            } else {
+                ContentUnavailableView(
+                    "圈舍不存在",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(loadError ?? "该圈舍可能已删除或不属于当前牧场。")
+                )
+            }
+        }
+        .task(id: PenDetailLoadRequest(
+            farmID: farm.id,
+            penID: penID,
+            revision: loadRevision,
+            syncCompletedAt: collaboration.lastSuccessfulSyncAt
+        )) {
+            await reloadDetail()
+        }
+        .refreshable {
+            await reloadDetail()
+        }
+        .sheet(isPresented: $isEditing, onDismiss: {
+            editingPen = nil
+            loadRevision &+= 1
+        }) {
+            if let editingPen {
+                NavigationStack {
+                    EditPenView(account: account, farm: farm, pen: editingPen)
+                }
+            }
+        }
+        .alert("无法编辑圈舍", isPresented: Binding(
+            get: { actionError != nil },
+            set: { if !$0 { actionError = nil } }
+        )) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(actionError ?? "")
+        }
     }
+
+    @MainActor
+    private func reloadDetail() async {
+        if snapshot == nil { isLoading = true }
+        do {
+            let loaded = try await PenManagementSnapshotActor(
+                container: modelContext.container
+            ).loadDetail(farmID: farm.id, penID: penID)
+            try Task.checkCancellation()
+            guard let loaded else {
+                snapshot = nil
+                herdInsight = nil
+                loadError = "该圈舍可能已删除或不属于当前牧场。"
+                hasLoaded = true
+                isLoading = false
+                return
+            }
+            let fallback = PenHerdInsightBuilder.insight(
+                penName: loaded.pen.name,
+                members: loaded.analysisMembers
+            )
+            let insight = (try? await PenAnalyticsReadActor(
+                container: modelContext.container
+            ).insight(
+                farmID: farm.id,
+                penName: loaded.pen.name,
+                members: loaded.analysisMembers
+            )) ?? fallback
+            try Task.checkCancellation()
+            if snapshot != loaded {
+                snapshot = loaded
+            }
+            if herdInsight != insight {
+                herdInsight = insight
+            }
+            loadError = nil
+            hasLoaded = true
+            isLoading = false
+        } catch is CancellationError {
+            return
+        } catch {
+            loadError = error.localizedDescription
+            hasLoaded = true
+            isLoading = false
+        }
+    }
+
+    @MainActor
+    private func prepareEditing() {
+        var descriptor = FetchDescriptor<PenRecord>(predicate: #Predicate {
+            $0.id == penID && $0.deletedAt == nil
+        })
+        descriptor.fetchLimit = 1
+        do {
+            guard let pen = try modelContext.fetch(descriptor).first,
+                  pen.farmID == farm.id else {
+                actionError = "该圈舍已不存在或不属于当前牧场。"
+                return
+            }
+            editingPen = pen
+            isEditing = true
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+}
+
+private struct PenDetailLoadRequest: Hashable, Sendable {
+    let farmID: UUID
+    let penID: UUID
+    let revision: Int
+    let syncCompletedAt: Date?
+}
+
+private struct PenDetailView: View {
+    let account: AccountProfile
+    let farm: FarmRecord
+    let snapshot: PenDetailSnapshot
+    let herdInsight: FarmInsight
+    let onEdit: () -> Void
 
     var body: some View {
         List {
-            if !pen.note.isEmpty { Section("说明") { Text(pen.note) } }
+            if !snapshot.pen.note.isEmpty {
+                Section("说明") { Text(snapshot.pen.note) }
+            }
             Section(LocalizedStringKey(herdInsight.title)) {
                 Text(LocalizedStringKey(herdInsight.summary))
                 ForEach(herdInsight.details, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
             }
             Section("当前羊只") {
-                if sheep.isEmpty { Text("当前没有在场羊只").foregroundStyle(.secondary) }
-                ForEach(sheep, id: \.id) { item in
+                if snapshot.sheep.isEmpty {
+                    Text("当前没有在场羊只").foregroundStyle(.secondary)
+                }
+                ForEach(snapshot.sheep) { item in
                     NavigationLink {
                         SheepDetailEntryView(
                             account: account,
@@ -1581,24 +1790,11 @@ struct PenDetailView: View {
                 }
             }
         }
-        .navigationTitle(pen.name)
+        .navigationTitle(snapshot.pen.name)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("编辑") { isEditing = true }
+                Button("编辑", action: onEdit)
                     .disabled(!CapabilitySet(role: farm.role).allows(.recordProduction))
-            }
-        }
-        .sheet(isPresented: $isEditing) {
-            NavigationStack { EditPenView(account: account, farm: farm, pen: pen) }
-        }
-        .task(id: pen.id) {
-            let reader = PenAnalyticsReadActor(container: modelContext.container)
-            if let insight = try? await reader.insight(
-                farmID: farm.id,
-                penName: pen.name,
-                members: analysisMembers
-            ) {
-                herdInsight = insight
             }
         }
     }

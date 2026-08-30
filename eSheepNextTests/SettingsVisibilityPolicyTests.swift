@@ -34,7 +34,6 @@ final class SettingsVisibilityPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shows(.importData))
         XCTAssertTrue(policy.shows(.exportData))
         XCTAssertTrue(policy.shows(.localBackup))
-        XCTAssertTrue(policy.shows(.cloudRecovery))
         XCTAssertTrue(policy.shows(.dataConflicts))
     }
 
@@ -51,7 +50,6 @@ final class SettingsVisibilityPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shows(.localBackup))
         XCTAssertFalse(policy.shows(.subscription))
         XCTAssertFalse(policy.shows(.exportData))
-        XCTAssertFalse(policy.shows(.cloudRecovery))
         XCTAssertFalse(policy.shows(.dataConflicts))
     }
 
@@ -67,7 +65,6 @@ final class SettingsVisibilityPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shows(.localBackup))
         XCTAssertFalse(policy.shows(.farmLocation))
         XCTAssertFalse(policy.shows(.exportData))
-        XCTAssertFalse(policy.shows(.cloudRecovery))
         XCTAssertFalse(policy.shows(.dataConflicts))
     }
 
@@ -79,7 +76,6 @@ final class SettingsVisibilityPolicyTests: XCTestCase {
         )
 
         XCTAssertTrue(policy.shows(.exportData))
-        XCTAssertTrue(policy.shows(.cloudRecovery))
         XCTAssertTrue(policy.shows(.dataConflicts))
         XCTAssertFalse(policy.shows(.farmLocation))
     }
@@ -95,14 +91,7 @@ final class SettingsVisibilityPolicyTests: XCTestCase {
 
         XCTAssertFalse(policy.shows(.subscription))
         XCTAssertFalse(policy.shows(.membersAndSharing))
-        XCTAssertFalse(policy.shows(.cloudRecovery))
         XCTAssertTrue(policy.shows(.dataConflicts))
-    }
-
-    func testCloudRecoveryOnlyAppearsForICloudAuthority() {
-        XCTAssertTrue(makePolicy(role: .owner, storageMode: .iCloud).shows(.cloudRecovery))
-        XCTAssertFalse(makePolicy(role: .owner, storageMode: .localOnly).shows(.cloudRecovery))
-        XCTAssertFalse(makePolicy(role: .owner, storageMode: .supabase).shows(.cloudRecovery))
     }
 
     func testConflictDestinationOnlyAppearsWhenActionIsRequired() {
@@ -118,16 +107,14 @@ final class SettingsVisibilityPolicyTests: XCTestCase {
         grantedWorkerCapabilities: Set<FarmCapability> = [],
         cloudEnabled: Bool = true,
         subscriptionEnabled: Bool = true,
-        unresolvedConflictCount: Int = 0,
-        storageMode: FarmStorageMode = .iCloud
+        unresolvedConflictCount: Int = 0
     ) -> SettingsVisibilityPolicy {
         SettingsVisibilityPolicy(
             role: role,
             grantedWorkerCapabilities: grantedWorkerCapabilities,
             cloudEnabled: cloudEnabled,
             subscriptionEnabled: subscriptionEnabled,
-            unresolvedConflictCount: unresolvedConflictCount,
-            storageMode: storageMode
+            unresolvedConflictCount: unresolvedConflictCount
         )
     }
 }

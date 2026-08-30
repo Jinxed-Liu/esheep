@@ -185,12 +185,12 @@ struct MigrationWorkspaceView: View {
     private var commitHelpText: String {
         isRepairingExistingMigration
             ? "只补入这份 eSheep+ 备份中尚未进入 Next 的历史记录；不会重复羊只，也不会追溯扣减饲料库存。"
-            : "创建后即可离线使用。Development 会在登录与 iCloud 可用时自动上传；失败不会影响本机录入。"
+            : "创建后即可离线使用。需要多设备同步时，可在建场完成后单独启用 eSheep 云。"
     }
     private var commitConfirmationMessage: String {
         isRepairingExistingMigration
-            ? "系统会按来源校验补齐缺失的投喂及明细，并刷新云端基线。已有业务记录不会重复，eSheep+ 不会被修改。"
-            : "系统会将已对账数据和云端基线原子写入当前账号。旧版 eSheep+ 不会被修改，iCloud 上传将在建场成功后自动进行。"
+            ? "系统会按来源校验补齐缺失的投喂及明细。已有业务记录不会重复，eSheep+ 不会被修改。"
+            : "系统会将已对账数据原子写入当前账号的本地牧场。旧版 eSheep+ 不会被修改，也不会自动上传。"
     }
 
     private func buildTemporaryFarm() {

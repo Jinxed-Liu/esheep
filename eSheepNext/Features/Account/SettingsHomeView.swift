@@ -27,11 +27,9 @@ struct SettingsHomeView: View {
     private var policy: SettingsVisibilityPolicy {
         SettingsVisibilityPolicy(
             role: farm.role,
-            cloudEnabled: CloudFeatureConfiguration.isEnabled ||
-                SupabaseAccountConfiguration.isConfigured,
+            cloudEnabled: SupabaseAccountConfiguration.isConfigured,
             subscriptionEnabled: SubscriptionFeatureConfiguration.isEnabled,
-            unresolvedConflictCount: unresolvedConflictCount,
-            storageMode: storageMode
+            unresolvedConflictCount: unresolvedConflictCount
         )
     }
 
@@ -206,7 +204,7 @@ struct SettingsHomeView: View {
                         systemImage: "hand.raised.fill",
                         iconColor: .gray
                     ) {
-                        PrivacyAndTermsSettingsView()
+                        PrivacyAndTermsSettingsView(account: account)
                     }
                 }
 
@@ -281,7 +279,7 @@ struct SettingsHomeView: View {
     private var cloudStorageSubtitle: String {
         switch storageMode {
         case .localOnly: "仅保存在此设备"
-        case .iCloud: "当前使用 iCloud"
+        case .retiredAppleCloud: "旧云存储已停用"
         case .supabase: "当前使用 eSheep 云"
         }
     }

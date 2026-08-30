@@ -1,55 +1,49 @@
 import { ArrowsLeftRight } from "@phosphor-icons/react/ArrowsLeftRight";
-import { Baby } from "@phosphor-icons/react/Baby";
 import { Barn } from "@phosphor-icons/react/Barn";
 import { BowlFood } from "@phosphor-icons/react/BowlFood";
 import { CaretRight } from "@phosphor-icons/react/CaretRight";
+import { CheckCircle } from "@phosphor-icons/react/CheckCircle";
 import { CloudCheck } from "@phosphor-icons/react/CloudCheck";
 import { CloudSlash } from "@phosphor-icons/react/CloudSlash";
-import { FirstAid } from "@phosphor-icons/react/FirstAid";
-import { Heart } from "@phosphor-icons/react/Heart";
-import { PlusCircle } from "@phosphor-icons/react/PlusCircle";
+import { DownloadSimple } from "@phosphor-icons/react/DownloadSimple";
+import { Plus } from "@phosphor-icons/react/Plus";
+import { Scales } from "@phosphor-icons/react/Scales";
 import { SignOut } from "@phosphor-icons/react/SignOut";
+import { Sun } from "@phosphor-icons/react/Sun";
+import { Tag } from "@phosphor-icons/react/Tag";
 import { WarningCircle } from "@phosphor-icons/react/WarningCircle";
-import { SheepGlyph as Sheep, WeightGlyph as Scale } from "./DomainIcons.jsx";
-
-const eventIcons = {
-  weight: Scale,
-  feed: BowlFood,
-  health: Heart,
-  transfer: ArrowsLeftRight,
-  reproduction: Baby,
-  tmr: BowlFood,
-  note: FirstAid,
-};
 
 const quickActions = [
-  { id: "addSheep", label: "新建羊只", icon: Sheep },
-  { id: "weight", label: "称重", icon: Scale },
+  { id: "addSheep", label: "新建羊只", icon: Tag },
+  { id: "weight", label: "称重", icon: Scales },
   { id: "transfer", label: "转群", icon: ArrowsLeftRight },
   { id: "removal", label: "离场", icon: SignOut },
-  { id: "feed", label: "记录投喂", icon: BowlFood },
-  { id: "health", label: "记录健康", icon: Heart },
+  { id: "feed", label: "投喂", icon: BowlFood },
+  { id: "export", label: "记录导出", icon: DownloadSimple },
 ];
 
 const metrics = [
-  { key: "activeSheep", label: "在场羊只", unit: "只", icon: Sheep },
+  { key: "activeSheep", label: "在场羊只", unit: "只", icon: Tag },
   { key: "activePens", label: "有羊圈舍", unit: "个", icon: Barn },
   { key: "feedsToday", label: "今日投喂", unit: "次", icon: BowlFood },
 ];
 
-function formatLedgerDate(date = new Date(), timeZone = "Asia/Shanghai") {
+function dateParts(date = new Date(), timeZone = "Asia/Shanghai") {
   const parts = new Intl.DateTimeFormat("zh-CN", {
     month: "numeric",
     day: "numeric",
     weekday: "long",
     timeZone,
   }).formatToParts(date);
-  const value = (type) => parts.find((part) => part.type === type)?.value ?? "";
-  return `${value("month")}月${value("day")}日，${value("weekday")}`;
+  const read = (type) => parts.find((part) => part.type === type)?.value ?? "";
+  return {
+    dateText: `${read("month")}月${read("day")}日，${read("weekday")}`,
+    yearText: new Intl.DateTimeFormat("zh-CN", { year: "numeric", timeZone }).format(date),
+  };
 }
 
-function timeText(value, timeZone = "Asia/Shanghai") {
-  if (!value) return "—";
+function syncTime(value, timeZone) {
+  if (!value) return "尚未同步";
   return new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
     minute: "2-digit",
@@ -58,175 +52,139 @@ function timeText(value, timeZone = "Asia/Shanghai") {
   }).format(new Date(value));
 }
 
-function dayAndTime(value, timeZone = "Asia/Shanghai") {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone,
-  }).format(new Date(value));
-}
-
-function EventIcon({ type }) {
-  const Icon = eventIcons[type] ?? FirstAid;
-  return <Icon size={23} weight="regular" aria-hidden="true" />;
+function ProductionRow({ icon: Icon, title, detail, value, unit, onClick }) {
+  return (
+    <button className="production-row" type="button" onClick={onClick}>
+      <span className="row-icon"><Icon size={23} /></span>
+      <span className="row-copy"><strong>{title}</strong><small>{detail}</small></span>
+      <span className="row-value">{value.toLocaleString("zh-CN")}<small>{unit}</small></span>
+      <CaretRight size={19} weight="bold" />
+    </button>
+  );
 }
 
 export function HomeDashboard({ workspace, onNavigate, onCreateRecord }) {
   const timeZone = workspace.farm?.timeZoneIdentifier || "Asia/Shanghai";
-  const baselineLoaded = workspace.projectionCoverage?.baseline?.status === "loaded";
+  const { dateText, yearText } = dateParts(new Date(), timeZone);
+  const weather = workspace.weather;
+  const alerts = workspace.alerts ?? [];
+  const tmrMeals = workspace.tmrMeals ?? [];
+
+  function runQuickAction(id) {
+    if (id === "export") {
+      onNavigate("events", { exportHint: true });
+      return;
+    }
+    onCreateRecord(id);
+  }
+
   return (
     <main className="page home-page">
-      <div className="page-command-row">
-        <button className="primary-button" type="button" onClick={() => onCreateRecord("new")}>
-          <PlusCircle size={21} weight="regular" />
-          新建记录
-        </button>
-      </div>
-
-      <div className="home-grid">
-        <section className="ledger-card main-ledger" aria-label="今日牧场台账">
-          <header className="ledger-date-header">
-            <h1>{formatLedgerDate(new Date(), timeZone)}</h1>
-            <p>{workspace.farm.name}</p>
+      <div className="home-layout">
+        <section className="home-briefing">
+          <header className="briefing-hero">
+            <div className="briefing-title">
+              <p className="eyebrow">{yearText} · {workspace.farm.name}</p>
+              <h1>{dateText}</h1>
+              <div className="weather-line">
+                <Sun size={22} weight="duotone" />
+                {weather ? (
+                  <span><strong>{weather.temperature}°</strong> {weather.condition}{weather.wind ? ` · ${weather.wind}` : ""}{weather.humidity == null ? "" : ` · 湿度 ${weather.humidity}%`}{weather.location ? ` · ${weather.location}` : ""}</span>
+                ) : (
+                  <span>天气详情仅在 App 授权后显示，网页端不猜测当前位置。</span>
+                )}
+              </div>
+            </div>
+            <div className={`sync-truth ${workspace.mode}`}>
+              {workspace.mode === "cloud" ? <CloudCheck size={20} weight="fill" /> : <CloudSlash size={20} />}
+              <span><strong>{workspace.mode === "cloud" ? "云端读取已连接" : "演示工作区"}</strong><small>{workspace.mode === "cloud" ? `最后读取 ${syncTime(workspace.lastSyncedAt, timeZone)}` : "操作只写入本次浏览器演示"}</small></span>
+            </div>
           </header>
 
-          <section className="ledger-section alerts-section">
-            <div className="ledger-section-title">
-              <h2>待办与异常{workspace.mode === "cloud" ? <small className="preview-badge">规则预览</small> : null}</h2>
-              <button type="button" onClick={() => onNavigate("insights")}>查看全部</button>
-            </div>
-            <div className="alert-list">
-              {workspace.alerts.length ? workspace.alerts.map((alert) => (
-                <button
-                  className="alert-row"
-                  key={alert.id}
-                  type="button"
-                  onClick={() => onNavigate(alert.target)}
-                  title={alert.description}
-                >
-                  <WarningCircle
-                    className={`tone-${alert.tone}`}
-                    size={29}
-                    weight="fill"
-                    aria-hidden="true"
-                  />
-                  <span className="alert-title">{alert.title}</span>
-                  <strong>{alert.count}<small>{alert.unit}</small></strong>
-                  <CaretRight size={21} weight="bold" />
-                </button>
-              )) : (
-                <div className="empty-state compact-empty-state">
-                  {workspace.mode === "cloud" ? "云端规则尚未接入网页端，当前不显示演示告警。" : "暂无待办与异常。"}
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section className="ledger-section events-section">
-            <div className="ledger-section-title">
-              <h2>最近事件</h2>
-            </div>
-            <div className="event-table-wrap">
-              <table className="event-table compact-table">
-                <thead>
-                  <tr>
-                    <th>时间</th>
-                    <th>事件</th>
-                    <th>对象</th>
-                    <th>操作人</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {workspace.events.slice(0, 5).map((event) => (
-                    <tr key={event.id}>
-                      <td><span className="timeline-dot" />{timeText(event.at, timeZone)}</td>
-                      <td><EventIcon type={event.type} /><span>{event.label}</span></td>
-                      <td>{event.object}</td>
-                      <td>{event.actor}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <footer className="sync-footer">
-            {workspace.mode === "cloud" ? (
-              <>
-                <CloudCheck size={20} weight="regular" />
-                <strong>{baselineLoaded ? "云端基础投影与紧凑基线已同步" : "云端基础投影已同步"}</strong>
-              </>
-            ) : (
-              <>
-                <CloudSlash size={20} weight="regular" />
-                <strong>演示数据</strong>
-              </>
-            )}
-            <span className="sync-separator" />
-            <span>{workspace.mode === "cloud" ? "规则与 TMR 顿次完成监控未接入 · " : ""}最后同步：{dayAndTime(workspace.lastSyncedAt, timeZone)}</span>
-          </footer>
-        </section>
-
-        <aside className="home-side-column">
-          <section className="ledger-card metric-strip" aria-label="牧场概览">
+          <section className="briefing-metrics" aria-label="牧场概览">
             {metrics.map(({ key, label, unit, icon: Icon }) => (
-              <div className="metric-item" key={key}>
-                <Icon size={39} weight="regular" aria-hidden="true" />
-                <span>
-                  <small>{label}</small>
-                  <strong>{workspace.metrics[key].toLocaleString("zh-CN")}<em>{unit}</em></strong>
-                </span>
-              </div>
-            ))}
-          </section>
-
-          <section className="ledger-card quick-actions" aria-label="快捷录入">
-            {quickActions.map(({ id, label, icon: Icon }) => (
-              <button type="button" key={id} onClick={() => onCreateRecord(id)}>
-                <Icon size={40} weight="regular" aria-hidden="true" />
-                <span>{label}</span>
+              <button
+                key={key}
+                type="button"
+                onClick={() => onNavigate(key === "activePens" ? "pens" : key === "feedsToday" ? "feeding" : "flock")}
+              >
+                <Icon size={27} weight="duotone" />
+                <span><small>{label}</small><strong>{workspace.metrics[key].toLocaleString("zh-CN")}<em>{unit}</em></strong></span>
+                <CaretRight size={17} weight="bold" />
               </button>
             ))}
           </section>
 
-          <section className="ledger-card tmr-today">
-            <div className="side-card-title">
-              <h2>今日投喂与 TMR{workspace.mode === "cloud" ? <small className="preview-badge">未接入</small> : null}</h2>
-              <button type="button" onClick={() => onCreateRecord("feed")}>记录 TMR 投喂</button>
+          <section className="briefing-section alert-section">
+            <div className="section-heading">
+              <span><p className="eyebrow">TODAY</p><h2>待办与异常</h2></span>
             </div>
-            <div className="tmr-meal-list">
-              {workspace.tmrMeals.length ? workspace.tmrMeals.map((meal, index) => (
-                <article className="tmr-meal" key={meal.id}>
-                  <div className="meal-time-rail">
-                    <span className="meal-period">{meal.period}</span>
-                    <time>{meal.time}</time>
-                    {index < workspace.tmrMeals.length - 1 ? <span className="meal-connector" /> : null}
-                  </div>
-                  <div className="meal-plan">
-                    <small>计划</small>
-                    <strong>{meal.time}</strong>
-                  </div>
-                  <div className="meal-actual">
-                    <small>实际投喂</small>
-                    <strong>{meal.actualKg.toLocaleString("zh-CN")}<em> kg</em></strong>
-                    <div className="progress-row">
-                      <span className="progress-track" aria-label={`完成 ${meal.progress}%`}>
-                        <i style={{ width: `${meal.progress}%` }} />
-                      </span>
-                      <b>{meal.progress}%</b>
-                    </div>
-                  </div>
-                </article>
+            <div className="operational-list">
+              {alerts.length ? alerts.map((alert) => (
+                <button className="operational-row" type="button" key={alert.id} onClick={() => onNavigate("alerts", { selectedID: alert.id })}>
+                  <WarningCircle className={`tone-${alert.tone}`} size={26} weight="fill" />
+                  <span className="row-copy"><strong>{alert.title}</strong><small>{alert.description}</small></span>
+                  <span className="row-value">{alert.count}<small>{alert.unit}</small></span>
+                  <CaretRight size={19} weight="bold" />
+                </button>
               )) : (
-                <div className="empty-state compact-empty-state">
-                  {workspace.mode === "cloud" ? "今天暂无已接入的云端 TMR 投喂记录。" : "暂无投喂计划。"}
+                <div className="open-empty-state">
+                  <strong>没有可展示的网页规则结果</strong>
+                  <span>{workspace.mode === "cloud" ? "App 的规则计算尚未接入 Web，因此这里保持为空。" : "当前演示工作区没有待办。"}</span>
                 </div>
               )}
             </div>
+            <button className="briefing-section-footer" type="button" onClick={() => onNavigate("alerts")}>查看全部 <CaretRight size={16} /></button>
+          </section>
+
+          <section className="briefing-section production-section">
+            <div className="section-heading">
+              <span><p className="eyebrow">FARM</p><h2>生产状态</h2></span>
+            </div>
+            <ProductionRow icon={Tag} title="羊只档案" detail="查看在场羊只、当前圈舍、体重与生产阶段" value={workspace.metrics.activeSheep} unit="只" onClick={() => onNavigate("flock")} />
+            <ProductionRow icon={Barn} title="圈舍状态" detail="查看有羊圈舍、用途与实时存栏投影" value={workspace.metrics.activePens} unit="个" onClick={() => onNavigate("pens")} />
+          </section>
+        </section>
+
+        <aside className="home-actions">
+          <button className="new-record-button" type="button" onClick={() => onCreateRecord("new")}>
+            <Plus size={21} weight="bold" />
+            新建记录
+          </button>
+
+          <section className="action-section">
+            <div className="side-section-title"><p className="eyebrow">QUICK ACTIONS</p><h2>快捷操作</h2></div>
+            <div className="quick-operation-list">
+              {quickActions.map(({ id, label, icon: Icon }) => (
+                <button type="button" key={id} onClick={() => runQuickAction(id)}>
+                  <Icon size={21} />
+                  <span>{label}</span>
+                  <CaretRight size={17} weight="bold" />
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="action-section tmr-summary">
+            <div className="side-section-title split-title">
+              <span><p className="eyebrow">FEEDING</p><h2>今日投喂与 TMR</h2></span>
+              <button type="button" onClick={() => onNavigate("tmr")}>工作台</button>
+            </div>
+            {tmrMeals.length ? (
+              <div className="meal-summary-list">
+                {tmrMeals.map((meal) => (
+                  <button type="button" key={meal.id} onClick={() => onNavigate("tmr-monitor")}>
+                    <span className="meal-period-badge">{meal.period}</span>
+                    <time>{meal.time}</time>
+                    <span className="meal-stat"><small>计划</small><strong>{meal.planKg.toLocaleString("zh-CN")}<em> kg</em></strong></span>
+                    <span className={`meal-stat actual ${meal.status}`}><small>实际投喂</small><strong>{meal.actualKg.toLocaleString("zh-CN")}<em> kg</em></strong></span>
+                    <CheckCircle size={18} weight="fill" className={`meal-check ${meal.status}`} />
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="side-empty-state">云端 TMR 顿次监控尚未接入。</div>
+            )}
           </section>
         </aside>
       </div>

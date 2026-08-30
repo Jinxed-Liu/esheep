@@ -125,7 +125,7 @@ enum FarmLocalBackupError: LocalizedError {
         case .targetNotEmpty: "只能恢复到没有羊群生产数据的空牧场。"
         case .identifierCollision: "备份标识已被其他牧场使用，已停止恢复。"
         case .invalidProjection(let field): "备份中的投喂数据不完整或不一致：\(field)。"
-        case .cloudTargetForbidden: "文件备份只能恢复为新的仅本机牧场，不能直接覆盖 iCloud 或 eSheep 云牧场。"
+        case .cloudTargetForbidden: "文件备份只能恢复为新的仅本机牧场，不能直接覆盖云端牧场。"
         }
     }
 }

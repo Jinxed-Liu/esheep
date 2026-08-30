@@ -285,7 +285,7 @@ struct FarmCompactBaselinePackageBuilder {
             farmID: farm.id,
             context: context
         )
-        var projections = try MigrationCloudBootstrapService()
+        var projections = try FarmBaselineSnapshotService()
             .makeProviderNeutralSnapshots(farm: farm, context: context)
             .map {
                 FarmCompactBaselinePackageV1.Projection(

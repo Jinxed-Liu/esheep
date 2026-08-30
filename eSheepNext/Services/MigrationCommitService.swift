@@ -65,22 +65,6 @@ struct MigrationCommitService {
                         farmID: farm.id,
                         context: destinationContext
                     )
-                    _ = try MigrationCloudBootstrapService().prepare(
-                        commit: existing,
-                        farm: farm,
-                        accountID: account.effectiveAccountID,
-                        context: destinationContext,
-                        allowsExistingBinding: true,
-                        forceRefresh: true
-                    )
-                    try destinationContext.save()
-                } else if farm.isLocalOnlyMigration || existing.cloudState == .localCommitted || existing.cloudState == .failed {
-                    _ = try MigrationCloudBootstrapService().prepare(
-                        commit: existing,
-                        farm: farm,
-                        accountID: account.effectiveAccountID,
-                        context: destinationContext
-                    )
                     try destinationContext.save()
                 }
             } catch {
@@ -139,8 +123,12 @@ struct MigrationCommitService {
                 createdAt: sourceFarm.createdAt,
                 updatedAt: .now
             )
-            destinationFarm.isLocalOnlyMigration = false
+            destinationFarm.isLocalOnlyMigration = true
             destinationContext.insert(destinationFarm)
+            destinationContext.insert(FarmStorageProfile(
+                farmID: destinationFarm.id,
+                mode: .localOnly
+            ))
             try copyFarmRecords(
                 farmID: sourceFarm.id,
                 sessionID: sessionID,
@@ -162,12 +150,6 @@ struct MigrationCommitService {
                 assetsRelativeDirectory: relativeAssetDirectory
             )
             destinationContext.insert(commitRecord)
-            _ = try MigrationCloudBootstrapService().prepare(
-                commit: commitRecord,
-                farm: destinationFarm,
-                accountID: account.effectiveAccountID,
-                context: destinationContext
-            )
             destinationContext.insert(FarmActivity(
                 id: StableMigrationID.uuid(sessionID: sessionID, sourceKey: "formal-commit-activity"),
                 farmID: sourceFarm.id,

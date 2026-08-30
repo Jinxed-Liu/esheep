@@ -128,6 +128,12 @@ struct SheepDetailSnapshot: Sendable {
     let reproductionInsight: FarmInsight
 }
 
+struct SheepDetailScreenSnapshot: Sendable {
+    let entry: SheepDetailEntrySnapshot
+    let detail: SheepDetailSnapshot?
+    let detailLoadErrorDescription: String?
+}
+
 /// Reads every secondary detail-page collection off the SwiftUI render path.
 ///
 /// `@Query` performs a synchronous fetch when its value is read. Reading several
@@ -148,6 +154,7 @@ actor SheepDetailSnapshotActor {
     func loadEntry(farmID: UUID, sheepID: UUID) throws -> SheepDetailEntrySnapshot? {
         try Task.checkCancellation()
         let context = ModelContext(container)
+        context.autosaveEnabled = false
         guard let record = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
             $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
         })).first else {
@@ -175,13 +182,46 @@ actor SheepDetailSnapshotActor {
         )
     }
 
+    /// Loads the stable navigation landing state before SwiftUI constructs the
+    /// detail list. This prevents large record sections from being inserted
+    /// while the user has already started scrolling.
+    func loadScreen(farmID: UUID, sheepID: UUID) throws -> SheepDetailScreenSnapshot? {
+        guard let entry = try loadEntry(farmID: farmID, sheepID: sheepID) else {
+            return nil
+        }
+        do {
+            let detail = try load(
+                farmID: farmID,
+                sheepID: sheepID,
+                subject: entry.subject
+            )
+            return SheepDetailScreenSnapshot(
+                entry: entry,
+                detail: detail,
+                detailLoadErrorDescription: nil
+            )
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            return SheepDetailScreenSnapshot(
+                entry: entry,
+                detail: nil,
+                detailLoadErrorDescription: error.localizedDescription
+            )
+        }
+    }
+
     func load(
         farmID: UUID,
         sheepID: UUID,
         subject: SheepDetailSubjectSnapshot
     ) throws -> SheepDetailSnapshot {
+        let interval = PerformanceTrace.begin(.sheepDetailLoad)
+        defer { PerformanceTrace.end(interval) }
+
         try Task.checkCancellation()
         let context = ModelContext(container)
+        context.autosaveEnabled = false
 
         let weights = try context.fetch(FetchDescriptor<WeightRecord>(
             predicate: #Predicate {
@@ -225,15 +265,11 @@ actor SheepDetailSnapshotActor {
             },
             sortBy: [SortDescriptor(\PhotoAssetRecord.createdAt, order: .reverse)]
         ))
-        let healthLinks = try context.fetch(FetchDescriptor<HealthSubjectLink>(predicate: #Predicate {
-            $0.farmID == farmID && $0.sheepID == sheepID
-        }))
-        let linkedHealthIDs = Set(healthLinks.map(\.healthRecordID))
-        let health = try context.fetch(FetchDescriptor<HealthRecord>(predicate: #Predicate {
-            $0.farmID == farmID && $0.deletedAt == nil
-        })).filter { record in
-            record.sheepID == sheepID || linkedHealthIDs.contains(record.id)
-        }
+        let health = try healthRecords(
+            context: context,
+            farmID: farmID,
+            sheepID: sheepID
+        )
         try Task.checkCancellation()
 
         var weightSamples = weights.map { record in
@@ -373,6 +409,7 @@ actor SheepDetailSnapshotActor {
     ) throws -> Data {
         try Task.checkCancellation()
         let context = ModelContext(container)
+        context.autosaveEnabled = false
         guard let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.id == sheepID && $0.deletedAt == nil
         })).first else {
@@ -387,15 +424,11 @@ actor SheepDetailSnapshotActor {
         let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.eweID == sheepID && $0.deletedAt == nil
         }))
-        let healthLinks = try context.fetch(FetchDescriptor<HealthSubjectLink>(predicate: #Predicate {
-            $0.farmID == farmID && $0.sheepID == sheepID
-        }))
-        let linkedHealthIDs = Set(healthLinks.map(\.healthRecordID))
-        let health = try context.fetch(FetchDescriptor<HealthRecord>(predicate: #Predicate {
-            $0.farmID == farmID && $0.deletedAt == nil
-        })).filter { record in
-            record.sheepID == sheepID || linkedHealthIDs.contains(record.id)
-        }
+        let health = try healthRecords(
+            context: context,
+            farmID: farmID,
+            sheepID: sheepID
+        )
         let allSheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
         }))
@@ -414,6 +447,36 @@ actor SheepDetailSnapshotActor {
             allSheep: allSheep,
             semenDonors: donors
         )
+    }
+
+    private func healthRecords(
+        context: ModelContext,
+        farmID: UUID,
+        sheepID: UUID
+    ) throws -> [HealthRecord] {
+        let direct = try context.fetch(FetchDescriptor<HealthRecord>(predicate: #Predicate {
+            $0.farmID == farmID &&
+                $0.sheepID == sheepID &&
+                $0.deletedAt == nil
+        }))
+        let links = try context.fetch(FetchDescriptor<HealthSubjectLink>(predicate: #Predicate {
+            $0.farmID == farmID && $0.sheepID == sheepID
+        }))
+        var recordsByID = Dictionary(uniqueKeysWithValues: direct.map { ($0.id, $0) })
+        for healthID in Set(links.map(\.healthRecordID)) where recordsByID[healthID] == nil {
+            let targetID = healthID
+            var descriptor = FetchDescriptor<HealthRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.id == targetID && $0.deletedAt == nil
+            })
+            descriptor.fetchLimit = 1
+            if let linked = try context.fetch(descriptor).first {
+                recordsByID[linked.id] = linked
+            }
+        }
+        return recordsByID.values.sorted {
+            if $0.occurredAt != $1.occurredAt { return $0.occurredAt > $1.occurredAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
     }
 }
 

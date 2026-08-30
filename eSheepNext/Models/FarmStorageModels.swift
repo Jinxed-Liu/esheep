@@ -3,20 +3,24 @@ import SwiftData
 
 enum FarmStorageMode: String, Codable, CaseIterable, Sendable {
     case localOnly
-    case iCloud
+    /// Read-only compatibility marker for stores created before the old provider was
+    /// removed. Startup cleanup deletes farms carrying this raw value before
+    /// any storage route can use it.
+    case retiredAppleCloud = "iCloud"
     case supabase
 
     var deliveryProvider: FarmRemoteProvider? {
         switch self {
         case .localOnly: nil
-        case .iCloud: .iCloud
+        case .retiredAppleCloud: nil
         case .supabase: .supabase
         }
     }
 }
 
 enum FarmRemoteProvider: String, Codable, CaseIterable, Sendable {
-    case iCloud
+    /// Legacy persisted value used only to identify records for deletion.
+    case retiredAppleCloud = "iCloud"
     case supabase
 }
 
@@ -162,7 +166,7 @@ final class FarmRemoteBinding {
     }
 
     var provider: FarmRemoteProvider {
-        FarmRemoteProvider(rawValue: providerRawValue) ?? .iCloud
+        FarmRemoteProvider(rawValue: providerRawValue) ?? .retiredAppleCloud
     }
 
     var state: FarmRemoteBindingState {
@@ -369,6 +373,14 @@ struct FarmStorageRoute: Equatable, Sendable {
     let targetMode: FarmStorageMode?
 
     var deliveryProvider: FarmRemoteProvider? {
+        // A persisted pre-removal transition must never revive the retired
+        // provider or use it as a migration source/target. Startup cleanup
+        // removes that farm before normal app work begins; this guard keeps
+        // the route fail-closed if any caller observes it earlier.
+        guard mode != .retiredAppleCloud,
+              targetMode != .retiredAppleCloud else {
+            return nil
+        }
         if transitionState.isMigrating {
             return targetMode?.deliveryProvider
         }
@@ -441,9 +453,8 @@ enum FarmStorageRouter {
         )
     }
 
-    /// A missing profile is only possible in pre-V3 stores or hand-built test
-    /// fixtures. Preserve the historic CloudKit behavior there to avoid
-    /// silently dropping an operation; every real V3 farm receives a profile.
+    /// Missing profiles are treated as local-only. Cloud delivery must always
+    /// be opted into by a current storage profile and an active remote binding.
     static func route(farmID: UUID, context: ModelContext) throws -> FarmStorageRoute {
         if let profile = try context.fetch(FetchDescriptor<FarmStorageProfile>()).first(where: {
             $0.farmID == farmID
@@ -458,7 +469,7 @@ enum FarmStorageRouter {
         }
 
         return FarmStorageRoute(
-            mode: .iCloud,
+            mode: .localOnly,
             transitionState: .idle,
             authorityGeneration: 0,
             migrationID: nil,

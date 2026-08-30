@@ -5,6 +5,7 @@
 - Keywords: sheep,farm,flock,feeding,TMR,breeding,health,records,livestock
 - Support URL: `https://{{DOMAIN}}/en/support`
 - Privacy Policy URL: `https://{{DOMAIN}}/en/privacy`
+- AI and International Transfer URL: `https://{{DOMAIN}}/en/ai-privacy`
 - Copyright: `© 2026 {{LEGAL_ENTITY}}`
 - Price: Free
 - Availability: Mainland China and all selected global storefronts
@@ -45,3 +46,8 @@ Camera access captures sheep, symptoms, ear tags, supporting records and QR
 codes. Location is used only to save a farm location and retrieve weather.
 Photo access attaches media selected by the user. An account owner must export
 and transfer or delete owned farms before requesting account deletion.
+
+Optional AI uses the user's own MiMo API key and sends intentional text,
+metadata-stripped images, audio, and limited authorized farm results directly
+from the device to MiMo. AI has a separate consent and cannot write farm data
+directly; every action draft requires human review and confirmation.

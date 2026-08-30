@@ -1,85 +1,52 @@
-# eSheepNext Web — Design QA
+# eSheepNext Web redesign QA
 
-## Visual source of truth
+- Selected reference: `design-qa-assets/home-redesign-option-1.png` (1487 × 1058)
+- Browser implementation: `design-qa-assets/home-redesign-implementation.png` (1487 × 1058)
+- Combined comparison input: `design-qa-assets/home-redesign-comparison.png`
+- Mobile evidence: `design-qa-assets/home-redesign-mobile.png` (390 × 844)
+- Browser state: deterministic local demo preview at `?preview=demo`; the default URL still restores the real Supabase session.
 
-- Accepted concept: `design-reference.png`
-- Source dimensions: 1487 × 1058 px
-- Latest implementation capture: `design-qa-assets/home-1488x1058-final.jpg`
-- Latest auth capture: `design-qa-assets/apple-auth-final.png` (settings page with Apple OAuth entry)
-- Implementation viewport: 1488 × 1058 CSS px, DPR 1
-- Same-scale comparison: `design-qa-assets/home-comparison-final.jpg`
-- Responsive evidence: `design-qa-assets/home-mobile-390x844-final.jpg`
-- Compared state: default demo workspace, home page, no menus or dialogs open
-- Normalization: the 1487 px source was rendered at 1488 px for the side-by-side comparison, a one-pixel horizontal normalization only.
+## Visual fidelity
 
-## Comparison method
+- P0: none. The App shell, navigation, home information hierarchy, primary action, alert/status groups, and TMR context all render and remain usable.
+- P1: none. The implementation matches the selected 142 px rail, 95 px top bar, 1487 × 1058 desktop canvas, main/right-column split, content edges, vertical rhythm, blue/white palette, thin separators, and compact row anatomy.
+- P2: none requiring correction. Intentional product-truth differences are the direct Phosphor `Tag` glyph in place of the generated sheep glyph and an explicit `演示工作区` / `云端读取已连接` state instead of falsely claiming that browser drafts are saved.
+- Copy check: primary navigation, quick actions, alert labels/counts, production status, and TMR plan/actual labels match the selected direction. Dynamic farm/account/cloud values remain data-driven.
+- Responsive check: 390 × 844 has no page-level horizontal overflow; the rail becomes a five-item bottom navigation and tables keep their own horizontal scroll.
 
-1. Inspected the accepted concept at original resolution before implementation.
-2. Opened the live React app in the Codex in-app browser at 1488 × 1058 and captured the visible viewport.
-3. Rendered source and implementation side by side at the same 1488 × 1058 display size.
-4. Re-inspected the accepted concept, latest implementation capture, and full same-scale composite at original detail.
-5. Exercised the global search, top-level navigation, TMR workspace, feeding workspace, settings/auth surface, and the `称重 → 选择 23081 → 65.2 kg → 确认记录` interaction.
+## Interaction acceptance
 
-## Inspected surfaces
-
-### Typography
-
-- Date heading scale, weight, letter spacing, and two-line farm identity preserve the concept hierarchy.
-- Navigation, alert labels, event table, metrics, and TMR values use the same compact Chinese desktop density.
-- No unsupported web font dependency was introduced; the stack uses PingFang/SF/Helvetica system typography.
-
-### Layout and spacing
-
-- The 76 px horizontal app header, cobalt brand block, farm selector, navigation, search, and assistant account area align with the concept.
-- The home body preserves the wide left ledger and narrow right operations column.
-- Left-card sections, blue timeline rails, three alert rows, five event rows, three metrics, six quick actions, and three TMR meals match the reference anatomy and count.
-- The primary above-fold content remains within the exact desktop viewport without horizontal or vertical overflow.
-- At 390 × 844, the page has no document-level horizontal overflow; the intentionally wide event table scrolls inside its own container.
-
-### Color, borders, and elevation
-
-- Brand cobalt, pale blue-gray canvas, white cards, neutral borders, red/orange alerts, green feed events, and gray progress tracks match the reference palette.
-- Card elevation remains restrained; borders and section rules do most of the structural work, as in the selected concept.
-
-### Assets and icons
-
-- Reused the actual eSheepNext app mark from the native project.
-- Generated and integrated a consistent MiMo assistant avatar for the account surface.
-- Replaced early generic sheep/scale glyphs with the closest production icon-library assets: Material Design Icons for sheep and Tabler's outline body scale.
-- Remaining P3 difference: the library glyph geometry is not a pixel-identical tracing of the concept, but weight, color, size, and semantic placement match.
-
-### Copy and visible content
-
-- Above-fold labels, navigation items, alert titles/counts, recent-event rows, quick actions, metrics, and TMR meal values match the selected concept.
-- Intentional state difference: the footer reads `演示数据` instead of `云端基础投影已同步` until an authenticated Supabase workspace is loaded. Cloud mode explicitly labels rule/TMR/catalog/insight previews so partial projection coverage is never presented as complete synchronization.
-- No unapproved implementation-only hero or workspace label remains above the fold.
-
-## Findings and fixes
-
-- P0: none.
-- P1: none.
-- P2 fixed: header utility region originally sat too far right; constrained it to the concept width.
-- P2 fixed: an unapproved `演示工作区` label changed above-fold composition; removed it.
-- P2 fixed: the first 390 px build allowed the 650 px event table to widen the document to 707 px; constrained grid children and retained table-local scrolling. Final body width is 390 px.
-- P3 fixed: the early generic scale icon diverged from the reference; replaced it with a closer Tabler outline body-scale asset and retained the closest available sheep-library glyph.
-- P3 accepted: minute anti-aliasing, system-font metrics, and one-pixel source normalization remain platform-level differences.
-
-## Functional QA
-
-- Global search returns sheep and event matches and clears when navigating to another workspace.
-- All eight primary navigation destinations render.
-- TMR exposes plan, formula/production, and deviation-monitoring surfaces.
-- Feeding exposes production records, ingredient-library, and recipe-management tabs. Entry flows preserve the App's controlled `早 / 中 / 晚 / 全天` meal semantics.
-- Settings exposes Supabase email/password and Apple OAuth authentication, RLS-oriented cloud read behavior, projection-coverage labels, role capabilities, and an explicit production-write safety boundary.
-- The Apple button is visible and enabled in the configured local preview; the browser was not sent through the external Apple consent screen during QA.
-- Supabase Auth settings report Apple as enabled, but the read-only authorize smoke check currently returns `missing OAuth secret`; the UI maps that external configuration gap to a Chinese remediation message.
-- The weight-record path closes the dialog, writes a new top ledger event, and displays `记录已写入演示台账。`.
-- Browser runtime inspection found no console warnings or errors beyond Vite/React development informational messages.
-- `npm run build` passes with code-split React, icons, Supabase, feature-page, and dialog chunks and no chunk-size warning.
-- `npm run test:sites` passes 4/4 tests.
-
-## Final assessment
-
-The implementation is faithful to the accepted concept's layout, hierarchy, density, palette, visible content, and operational character. The only deliberate visual-state change is the honest demo/cloud sync label, and remaining icon/font differences are minor platform-level variations.
+- All five App destinations open: 首页、洞察、录入、投喂、搜索.
+- Demo weighing flow submits and appears in recent events.
+- Unified search opens the selected sheep detail.
+- Feeding opens TMR completion/deviation monitoring with three meal rows.
+- A fresh browser tab completed the primary-route sweep with no console errors or warnings.
 
 final result: passed
+
+## App analytics parity QA
+
+- Desktop evidence: `design-qa-assets/insights-app-parity-desktop.png` (1440 × 1000 viewport)
+- Mobile evidence: `design-qa-assets/insights-app-parity-mobile.png` (390 × 844 viewport)
+- Live workspace: the signed-in Supabase farm at the default local URL; no demo values were used for the analytics acceptance.
+
+### Reference mismatch ledger
+
+1. Rail and top bar: matches the selected reference's fixed blue brand rail, white account bar, selected-route treatment, and left content origin.
+2. Main canvas: matches the reference's blue-white surface, thin separators, square-soft cards, and wide desktop rhythm; the analytics page intentionally uses the full content width instead of the home-only action sidebar.
+3. KPI anatomy: the four analytics totals use the same icon/label/value/unit hierarchy as the home livestock, pen, and feeding totals, with App-specific sample units retained.
+4. Destination cards: the two-column desktop grid keeps the reference's row geometry and chevrons; descriptions are denser because each destination must expose its statistical boundary before opening.
+5. Right-side operations column: intentionally absent on the analytics route because new-record actions and today's TMR are home context, not analytics context; adding them here would change the selected App information architecture.
+6. Typography and color: title weight, muted supporting copy, App blue accent, status green, and border contrast remain within the selected system; analysis-specific warnings use the same restrained notice treatment.
+7. Mobile collapse: the rail becomes the five-item bottom navigation, KPI rows become one column, and the 390 px viewport reports `scrollWidth === innerWidth`; no page-level horizontal overflow was found.
+8. Data-state difference: the live farm currently has no qualifying recent feed/trough intervals, so the App-correct result is `0` with an explicit boundary explanation rather than the reference mockup's illustrative TMR values.
+
+### Analytics interaction acceptance
+
+- All four destinations load from live cloud projections: 增重、羔羊（产羔/断奶）、繁殖（胎间距/产后天数/品种）、采食营养.
+- Historical lamb offspring stored with `sexRawValue` render as concrete 公/母 values.
+- The 7-day and 30-day feeding presets switch without the former per-pen full sheep-day recomputation stall.
+- The live event table contains 637 rendered rows; the placeholder scan found no blank object/value cells, `对象某某`, `未知对象`, `资料未展开`, or `[object Object]` values.
+- Browser console acceptance: no errors or warnings.
+
+analytics result: passed

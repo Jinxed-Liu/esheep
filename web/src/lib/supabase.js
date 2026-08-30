@@ -11,6 +11,14 @@ import {
   normalizeWorkspaceSections,
   workspaceEntityTypesForSections,
 } from "./workspaceDataSource.js";
+import {
+  buildFarmInsightData,
+  projectFarmOperationEvent,
+  projectionToReproductionRecord,
+  projectionToWeaningRecord,
+  projectionToWeightRecord,
+} from "./farmReadModels.js";
+import { decodeFeedNutrients, farmDayKey } from "./appAnalytics.js";
 
 const { url, publishableKey } = supabaseBrowserConfiguration;
 
@@ -35,38 +43,6 @@ const roleNames = {
   worker: "成员",
 };
 
-const eventLabels = {
-  sheep: "羊只资料更新",
-  pen: "圈舍资料更新",
-  weight: "称重记录",
-  transfer: "转群记录",
-  removal: "离场记录",
-  weaning: "断奶记录",
-  reproduction: "繁殖记录",
-  feed: "投喂记录",
-  health: "健康记录",
-  note: "备注记录",
-  tmrFormula: "TMR 配方更新",
-  tmrFeedingPlan: "TMR 计划更新",
-  tmrBatch: "TMR 批次更新",
-  tmrMealCompletion: "TMR 顿次完成",
-  tmrDeviationAcknowledgement: "TMR 偏差确认",
-};
-
-const eventIconTypes = {
-  weight: "weight",
-  transfer: "transfer",
-  health: "health",
-  reproduction: "reproduction",
-  feed: "feed",
-  tmrFormula: "tmr",
-  tmrFeedingPlan: "tmr",
-  tmrBatch: "tmr",
-  tmrMealCompletion: "tmr",
-  saveFeedIngredient: "feed",
-  addIngredient: "feed",
-};
-
 const entityRowSelect = "entity_id,entity_type,revision,operation_id,modified_at,deleted_at,payload_json,payload_base64";
 const entityPageSize = 1000;
 
@@ -80,24 +56,6 @@ const statusLabels = {
 const feedModeLabels = {
   limited: "限量投喂",
   freeChoice: "自由采食",
-};
-
-const eventKindLabels = {
-  addSheep: "新建羊只",
-  updateSheepProfile: "羊只资料更新",
-  recordWeight: "称重记录",
-  transferSheep: "转群记录",
-  removeSheep: "离场记录",
-  recordFeed: "投喂记录",
-  recordHealth: "健康记录",
-  recordReproduction: "繁殖记录",
-  recordWeaning: "断奶记录",
-  saveFeedIngredient: "原料更新",
-  addIngredient: "新建原料",
-  saveTMRFormula: "TMR 配方更新",
-  saveTMRFeedingPlan: "TMR 计划更新",
-  care: "照护记录",
-  addNote: "备注记录",
 };
 
 function decodeBase64JSON(value) {
@@ -279,7 +237,7 @@ async function fetchOperationRows(farmID, authorityGeneration, signal) {
   while (true) {
     let query = supabase
       .from("farm_operations")
-      .select("operation_id,entity_type,entity_id,revision,occurred_at,modified_at,server_received_at,payload_base64")
+      .select("operation_id,entity_type,entity_id,revision,occurred_at,modified_at,server_received_at,payload_base64,actor_user_id,modified_by_account_id")
       .eq("farm_id", farmID)
       .eq("authority_generation", authorityGeneration)
       .is("deleted_at", null)
@@ -295,6 +253,44 @@ async function fetchOperationRows(farmID, authorityGeneration, signal) {
     offset += entityPageSize;
   }
   return rows;
+}
+
+async function fetchActorDirectory(operationRows, user, profile, signal) {
+  const userIDs = [...new Set(operationRows.map((row) => row.actor_user_id).filter(Boolean))];
+  const byUserID = new Map();
+  const byAccountID = new Map();
+  const currentName = profile.display_name || user.email?.split("@")[0] || "牧场成员";
+  byUserID.set(normalizedIdentifier(user.id), currentName);
+  if (profile.app_account_id) byAccountID.set(normalizedIdentifier(profile.app_account_id), currentName);
+
+  if (!userIDs.length) return { byUserID, byAccountID, currentName };
+  let query = supabase
+    .from("profiles")
+    .select("user_id,app_account_id,display_name")
+    .in("user_id", userIDs);
+  if (signal) query = query.abortSignal(signal);
+  const { data, error } = await query;
+  // Some deployments intentionally restrict profiles to the signed-in row.
+  // Event projection remains usable and keeps IDs honest when that RLS policy
+  // does not expose other members' display names.
+  if (!error) {
+    for (const actor of data ?? []) {
+      const displayName = actor.display_name || `成员 ${String(actor.user_id).slice(0, 6)}`;
+      if (actor.user_id) byUserID.set(normalizedIdentifier(actor.user_id), displayName);
+      if (actor.app_account_id) byAccountID.set(normalizedIdentifier(actor.app_account_id), displayName);
+    }
+  }
+  return { byUserID, byAccountID, currentName };
+}
+
+function actorNameForOperation(row, actorDirectory) {
+  const userName = actorDirectory.byUserID.get(normalizedIdentifier(row.actor_user_id));
+  if (userName) return userName;
+  const accountName = actorDirectory.byAccountID.get(normalizedIdentifier(row.modified_by_account_id));
+  if (accountName) return accountName;
+  if (row.actor_user_id) return `成员 ${String(row.actor_user_id).slice(0, 6)}`;
+  if (row.modified_by_account_id) return `账户 ${String(row.modified_by_account_id).slice(0, 6)}`;
+  return "历史迁移";
 }
 
 async function fetchLatestCompactCheckpoint(farmID, authorityGeneration, signal) {
@@ -342,10 +338,13 @@ function humanSex(value) {
   return value || "—";
 }
 
-function entityToSheep(row, penNameByID, latestWeightBySheep, latestTransferBySheep) {
+function entityToSheep(row, penNameByID, latestWeightBySheep, latestTransferBySheep, latestRemovalBySheep) {
   const payload = payloadForRow(row);
   const sheepKey = normalizedIdentifier(row.entity_id);
   const transfer = latestTransferBySheep.get(sheepKey);
+  const removal = latestRemovalBySheep.get(sheepKey);
+  const initialPenID = firstPayloadValue(payload, "optionalIdentifiers", "penID") ??
+    firstPayloadValue(payload, "identifiers", "penID") ?? null;
   const snapshotPenID = firstPayloadValue(payload, "optionalIdentifiers", "legacyCurrentPenID", "penID") ??
     firstPayloadValue(payload, "identifiers", "penID") ?? transfer?.penID;
   // Native replay preserves a migrated currentPenID while the legacy pen
@@ -359,18 +358,36 @@ function entityToSheep(row, penNameByID, latestWeightBySheep, latestTransferBySh
   const purpose = firstPayloadValue(payload, "strings", "purpose");
   const earTag = firstPayloadValue(payload, "strings", "earTag", "legacyEarTag");
   const breed = firstPayloadValue(payload, "strings", "breed");
-  const sex = firstPayloadValue(payload, "strings", "sex");
+  const sexRaw = firstPayloadValue(payload, "strings", "sex");
   const weight = latestWeightBySheep.get(sheepKey);
+  const keepsLegacyStatus = hasAuthoritativeLegacyFlag(payload, "legacyStatusSnapshotIsAuthoritative") && !removal?.hasPostBaselineOperation;
+  const status = keepsLegacyStatus
+    ? (statusRaw || "active")
+    : removal
+      ? (removal.kind === "deceased" ? "deceased" : "removed")
+      : "active";
+  const removedAt = keepsLegacyStatus
+    ? dateValue(payload, "legacyRemovedAt")?.toISOString() ?? null
+    : removal?.at?.toISOString() ?? null;
   return {
     id: row.entity_id,
     penID: penID ?? null,
+    initialPenID,
+    currentPenID: penID ?? null,
     earTag: earTag ?? "资料未展开",
     breed: breed ?? "资料未展开",
-    sex: sex ? humanSex(sex) : "—",
+    sex: sexRaw ? humanSex(sexRaw) : "—",
+    sexRaw: sexRaw ?? "unknown",
+    purpose: purpose || "未分类",
+    status,
+    birthAt: dateValue(payload, "birthAt")?.toISOString() ?? null,
+    enteredAt: dateValue(payload, "occurredAt")?.toISOString() ?? row.modified_at,
+    removedAt,
+    isBreedingRam: String(firstPayloadValue(payload, "integers", "isBreedingRam") ?? "0") === "1",
     stage: purpose || statusLabels[statusRaw] || "未标注",
     pen: penNameByID.get(normalizedIdentifier(penID)) ?? "未分圈",
     weight: weight?.kilograms ?? null,
-    profileIncomplete: !earTag || !breed || !sex,
+    profileIncomplete: !earTag || !breed || !sexRaw,
     updatedAt: row.modified_at,
     revision: row.revision,
   };
@@ -393,21 +410,167 @@ function entityToFeed(row, penNameByID) {
   const payload = payloadForRow(row);
   const lines = Array.isArray(payload.feedLines) ? payload.feedLines : [];
   const kilograms = lines.reduce((sum, line) => sum + (parseNumber(line.kilogramsText) ?? 0), 0);
-  const dryMatter = lines.reduce((sum, line) => {
+  const dryMatterValues = lines.map((line) => {
     const kilogramsForLine = parseNumber(line.kilogramsText) ?? 0;
-    const dryMatterPercent = parseNumber(line.dryMatterTextSnapshot);
-    return sum + (dryMatterPercent == null ? 0 : kilogramsForLine * dryMatterPercent / 100);
-  }, 0);
+    const nutrients = decodeFeedNutrients(line.nutrientSnapshotJSON, line.dryMatterTextSnapshot);
+    return nutrients.dryMatter == null ? null : kilogramsForLine * nutrients.dryMatter / 100;
+  });
+  const dryMatter = dryMatterValues.length && dryMatterValues.every((value) => value != null)
+    ? dryMatterValues.reduce((sum, value) => sum + value, 0)
+    : null;
   const penID = firstPayloadValue(payload, "identifiers", "penID");
+  const modeCode = firstPayloadValue(payload, "strings", "mode") || "limited";
+  const remainingKilograms = parseNumber(firstPayloadValue(payload, "optionalStrings", "remainingKilogramsText"));
+  const compositionPayload = decodedPayloadJSON(firstPayloadValue(payload, "optionalStrings", "remainingCompositionJSON"), []);
+  let legacyRemainingComposition = Array.isArray(compositionPayload) ? compositionPayload : [];
+  if (!legacyRemainingComposition.length && compositionPayload && !Array.isArray(compositionPayload) && remainingKilograms > 0) {
+    const entries = Object.entries(compositionPayload).filter(([, percent]) => parseNumber(percent) > 0);
+    const totalPercent = entries.reduce((sum, [, percent]) => sum + parseNumber(percent), 0);
+    if (totalPercent > 0) {
+      legacyRemainingComposition = entries.map(([name, percent], index) => {
+        const line = lines.find((item) => String(item.ingredientNameSnapshot ?? "").localeCompare(name, "zh-CN", { sensitivity: "base" }) === 0);
+        return {
+          id: `${row.entity_id}:legacy-composition:${index}`,
+          ingredientID: line?.ingredientID ?? null,
+          ingredientBatchID: line?.ingredientBatchID ?? null,
+          ingredientNameSnapshot: name,
+          kilogramsText: String(remainingKilograms * parseNumber(percent) / totalPercent),
+          nutrientSnapshotJSON: line?.nutrientSnapshotJSON ?? "{}",
+          dryMatterTextSnapshot: line?.dryMatterTextSnapshot ?? null,
+        };
+      });
+    }
+  }
   return {
     id: row.entity_id,
     at: entityDate(row, payload),
+    occurredAt: entityDate(row, payload),
+    penID: penID ?? null,
     pen: penNameByID.get(normalizedIdentifier(penID)) ?? "未识别圈舍",
     meal: firstPayloadValue(payload, "strings", "mealName", "meal") || "全天",
     recipe: firstPayloadValue(payload, "optionalStrings", "recipeName") || "按原料记录",
-    mode: feedModeLabels[firstPayloadValue(payload, "strings", "mode")] ?? (firstPayloadValue(payload, "strings", "mode") || "投喂"),
+    mode: modeCode,
+    modeName: feedModeLabels[modeCode] ?? modeCode,
+    feederName: firstPayloadValue(payload, "strings", "feederName") || "",
     kilograms,
-    dryMatter: dryMatter > 0 ? dryMatter : null,
+    dryMatter,
+    lines: lines.map((line) => ({
+      id: line.id,
+      ingredientID: line.ingredientID ?? null,
+      ingredientBatchID: line.ingredientBatchID ?? null,
+      ingredientName: line.ingredientNameSnapshot || "未知原料",
+      freshKilograms: parseNumber(line.kilogramsText) ?? 0,
+      pricePerKilogram: parseNumber(line.pricePerKilogramTextSnapshot),
+      nutrientSnapshotJSON: line.nutrientSnapshotJSON ?? "{}",
+      dryMatterTextSnapshot: line.dryMatterTextSnapshot ?? null,
+      nutrients: decodeFeedNutrients(line.nutrientSnapshotJSON, line.dryMatterTextSnapshot),
+    })),
+    excludedSheepIDs: decodedPayloadJSON(firstPayloadValue(payload, "optionalStrings", "excludedSheepIDsJSON"), []),
+    historicalHeadCountSnapshot: parseNumber(firstPayloadValue(payload, "integers", "actualHeadCountSnapshot")),
+    legacyRemainingKilograms: remainingKilograms,
+    legacyDiscardedKilograms: parseNumber(firstPayloadValue(payload, "optionalStrings", "discardedKilogramsText")),
+    legacyRemainingComposition,
+  };
+}
+
+function decodedPayloadJSON(value, fallback) {
+  if (value && typeof value === "object") return value;
+  if (typeof value !== "string" || !value.trim()) return fallback;
+  try {
+    const decoded = JSON.parse(value);
+    return decoded ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function entityToTransfer(row) {
+  const payload = payloadForRow(row);
+  const sheepID = firstPayloadValue(payload, "identifiers", "sheepID");
+  const at = entityDate(row, payload);
+  if (!sheepID || !at) return null;
+  return {
+    id: row.entity_id,
+    sheepID,
+    fromPenID: firstPayloadValue(payload, "optionalIdentifiers", "fromPenID") ?? null,
+    toPenID: payload?.optionalIdentifiers && Object.hasOwn(payload.optionalIdentifiers, "toPenID")
+      ? payload.optionalIdentifiers.toPenID ?? null
+      : firstPayloadValue(payload, "identifiers", "toPenID") ?? null,
+    at,
+    occurredAt: at,
+    recordedAt: row.modified_at,
+  };
+}
+
+function entityToRemoval(row) {
+  const payload = payloadForRow(row);
+  const sheepID = firstPayloadValue(payload, "identifiers", "sheepID");
+  const at = entityDate(row, payload);
+  if (!sheepID || !at) return null;
+  return {
+    id: row.entity_id,
+    sheepID,
+    kind: firstPayloadValue(payload, "strings", "kind") || "culled",
+    at,
+    occurredAt: at,
+    recordedAt: row.modified_at,
+  };
+}
+
+function entityToBatch(row) {
+  const payload = payloadForRow(row);
+  const name = firstPayloadValue(payload, "strings", "name") || `批次 ${row.entity_id.slice(0, 6)}`;
+  const note = firstPayloadValue(payload, "strings", "note") || "";
+  const inferred = name.includes("历史推断") || note.includes("自动推断") || note.includes("依据批量");
+  const migrated = !inferred && (note.includes("自动迁移") || note.includes("已有育肥起点"));
+  const startedAt = dateValue(payload, "startedAt")?.toISOString() ?? row.modified_at;
+  return {
+    id: row.entity_id,
+    name,
+    purpose: firstPayloadValue(payload, "strings", "purpose") || "未分类",
+    stage: firstPayloadValue(payload, "strings", "purpose") || "未分类",
+    note,
+    startedAt,
+    startDate: farmDayKey(startedAt, "Asia/Shanghai") ?? "—",
+    source: inferred ? "historicalInference" : migrated ? "historicalMigration" : "manual",
+    sheepCount: 0,
+    penCount: 0,
+    status: "已归档",
+  };
+}
+
+function entityToBatchMembership(row) {
+  const payload = payloadForRow(row);
+  const batchID = firstPayloadValue(payload, "identifiers", "batchID");
+  const sheepID = firstPayloadValue(payload, "identifiers", "sheepID");
+  const joinedAt = dateValue(payload, "joinedAt")?.toISOString();
+  if (!batchID || !sheepID || !joinedAt) return null;
+  return {
+    id: row.entity_id,
+    batchID,
+    sheepID,
+    joinedAt,
+    leftAt: dateValue(payload, "leftAt")?.toISOString() ?? null,
+    leaveReason: firstPayloadValue(payload, "optionalStrings", "leaveReason") ?? firstPayloadValue(payload, "strings", "reason") ?? "",
+  };
+}
+
+function entityToTroughObservation(row) {
+  const payload = payloadForRow(row);
+  const penID = firstPayloadValue(payload, "identifiers", "penID");
+  const observedAt = dateValue(payload, "observedAt")?.toISOString() ?? row.modified_at;
+  if (!penID || !observedAt) return null;
+  const composition = decodedPayloadJSON(firstPayloadValue(payload, "optionalStrings", "compositionSnapshotJSON"), []);
+  return {
+    id: row.entity_id,
+    penID,
+    relatedFeedRecordID: firstPayloadValue(payload, "optionalIdentifiers", "relatedFeedRecordID") ?? null,
+    feederName: firstPayloadValue(payload, "strings", "feederName") || "",
+    observedAt,
+    actualRemainingKilograms: parseNumber(firstPayloadValue(payload, "strings", "actualRemainingKilogramsText")) ?? 0,
+    discardedKilograms: parseNumber(firstPayloadValue(payload, "optionalStrings", "discardedKilogramsText")) ?? 0,
+    measurementMethod: firstPayloadValue(payload, "strings", "measurementMethod") || "实称",
+    composition: Array.isArray(composition) ? composition : [],
   };
 }
 
@@ -492,8 +655,11 @@ function latestTransfers(rows) {
   for (const row of rows) {
     const payload = payloadForRow(row);
     const sheepID = firstPayloadValue(payload, "identifiers", "sheepID");
-    const penID = firstPayloadValue(payload, "optionalIdentifiers", "toPenID");
-    if (!sheepID || !penID) continue;
+    const hasOptionalPen = payload?.optionalIdentifiers && Object.hasOwn(payload.optionalIdentifiers, "toPenID");
+    const penID = hasOptionalPen
+      ? payload.optionalIdentifiers.toPenID ?? null
+      : firstPayloadValue(payload, "identifiers", "toPenID") ?? null;
+    if (!sheepID || (!hasOptionalPen && !penID)) continue;
     const at = parseDate(firstPayloadValue(payload, "dates", "occurredAt")) ?? parseDate(row.modified_at);
     const recordedAt = parseDate(row.modified_at);
     const stableID = normalizedIdentifier(row.entity_id);
@@ -565,38 +731,6 @@ function latestRemovals(rows) {
     }
   }
   return result;
-}
-
-function entityToEvent(row, actorName, sheepByID, penNameByID) {
-  const entityType = row.entity_type;
-  const payload = payloadForRow(row);
-  const kind = payload.kind;
-  const sheepID = firstPayloadValue(payload, "identifiers", "sheepID") ?? nestedPayloadValue(payload, "sheepID");
-  const penID = firstPayloadValue(payload, "optionalIdentifiers", "toPenID", "penID") ?? firstPayloadValue(payload, "identifiers", "penID") ?? nestedPayloadValue(payload, "penID");
-  const sheep = sheepByID.get(normalizedIdentifier(sheepID));
-  const penName = penNameByID.get(normalizedIdentifier(penID));
-  const formulaName = payload?.tmrCommand?.saveFormula?._0?.name ?? payload?.tmrCommand?.saveFormula?.name;
-  const ingredientName = firstPayloadValue(payload, "strings", "name");
-  return {
-    id: row.operation_id,
-    at: row.occurred_at ?? row.modified_at ?? row.server_received_at,
-    type: eventIconTypes[kind] ?? eventIconTypes[entityType] ?? "note",
-    label: eventKindLabels[kind] ?? eventLabels[entityType] ?? `${entityType} 记录`,
-    object: sheep
-      ? `羊只 ${sheep.earTag}`
-      : penName
-        ? penName
-        : formulaName
-          ? `配方 ${formulaName}`
-          : ingredientName && ["feedIngredient"].includes(entityType)
-            ? `原料 ${ingredientName}`
-            : entityType === "tmrFeedingPlan"
-              ? "TMR 计划"
-              : `对象 ${row.entity_id.slice(0, 8)}`,
-    actor: actorName || "牧场成员",
-    status: "synced",
-    revision: Number(row.revision),
-  };
 }
 
 export async function getVerifiedUser() {
@@ -697,6 +831,11 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
     ingredientRows,
     formulaRows,
     feedingPlanRows,
+    weaningRows,
+    reproductionRows,
+    productionBatchRows,
+    batchMembershipRows,
+    troughObservationRows,
     operationRows,
   ] = await Promise.all([
     fetchRequestedEntity("farm"),
@@ -709,6 +848,11 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
     fetchRequestedEntity("feedIngredient"),
     fetchRequestedEntity("tmrFormula"),
     fetchRequestedEntity("tmrFeedingPlan"),
+    fetchRequestedEntity("weaning"),
+    fetchRequestedEntity("reproduction"),
+    fetchRequestedEntity("productionBatch"),
+    fetchRequestedEntity("batchMembership"),
+    fetchRequestedEntity("feedTroughObservation"),
     fetchOperationRows(farm.id, farm.generation, signal),
   ]);
   signal?.throwIfAborted();
@@ -727,6 +871,11 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
   const expandedIngredientRows = expandRows(ingredientRows);
   const expandedFormulaRows = expandRows(formulaRows);
   const expandedFeedingPlanRows = expandRows(feedingPlanRows);
+  const expandedWeaningRows = expandRows(weaningRows);
+  const expandedReproductionRows = expandRows(reproductionRows);
+  const expandedProductionBatchRows = expandRows(productionBatchRows);
+  const expandedBatchMembershipRows = expandRows(batchMembershipRows);
+  const expandedTroughObservationRows = expandRows(troughObservationRows);
 
   const pens = expandedPenRows.map(entityToPen);
   const penNameByID = new Map(pens.map((pen) => [normalizedIdentifier(pen.id), pen.name]));
@@ -754,8 +903,16 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
     // in replay, including historical rows restored by the compact baseline.
     return !removal;
   });
-  const sheep = activeSheepRows.map((row) => entityToSheep(row, penNameByID, latestWeightBySheep, latestTransferBySheep));
-  const sheepByID = new Map(sheep.map((item) => [normalizedIdentifier(item.id), item]));
+  const allSheep = expandedSheepRows.map((row) => entityToSheep(
+    row,
+    penNameByID,
+    latestWeightBySheep,
+    latestTransferBySheep,
+    latestRemovalBySheep,
+  ));
+  const allSheepByID = new Map(allSheep.map((item) => [normalizedIdentifier(item.id), item]));
+  const activeSheepIDs = new Set(activeSheepRows.map((row) => normalizedIdentifier(row.entity_id)));
+  const sheep = allSheep.filter((item) => activeSheepIDs.has(normalizedIdentifier(item.id)));
 
   const sheepCountByPenID = countByNormalizedIdentifier(sheep, (item) => item.penID);
   const pensWithCounts = pens.map((pen) => ({
@@ -768,11 +925,43 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
     .sort((left, right) => new Date(right.at).getTime() - new Date(left.at).getTime());
   const todayKey = dateKey(new Date(), farmTimeZone);
   const feedsToday = feedRecords.filter((record) => dateKey(record.at, farmTimeZone) === todayKey).length;
-  const recentWeightCutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const recentWeightCount = expandedWeightRows.filter((row) => {
-    const at = dateValue(payloadForRow(row), "occurredAt") ?? parseDate(row.modified_at);
-    return at && at.getTime() >= recentWeightCutoff;
-  }).length;
+  const weightRecords = expandedWeightRows
+    .map((row) => projectionToWeightRecord(row, payloadForRow(row)))
+    .filter(Boolean);
+  const weaningRecords = expandedWeaningRows
+    .map((row) => projectionToWeaningRecord(row, payloadForRow(row)))
+    .filter(Boolean);
+  const reproductionRecords = expandedReproductionRows
+    .map((row) => projectionToReproductionRecord(row, payloadForRow(row)))
+    .filter(Boolean)
+    .map((record) => ({
+      ...record,
+      eweEarTag: allSheepByID.get(normalizedIdentifier(record.eweID))?.earTag ?? null,
+      sireEarTag: allSheepByID.get(normalizedIdentifier(record.sireID))?.earTag ?? null,
+    }));
+  const transferRecords = expandedTransferRows.map(entityToTransfer).filter(Boolean);
+  const removalRecords = expandedRemovalRows.map(entityToRemoval).filter(Boolean);
+  const batchMemberships = expandedBatchMembershipRows.map(entityToBatchMembership).filter(Boolean);
+  const troughObservations = expandedTroughObservationRows.map(entityToTroughObservation).filter(Boolean);
+  const rawBatches = expandedProductionBatchRows.map(entityToBatch);
+  const membershipsByBatch = new Map();
+  for (const membership of batchMemberships) {
+    const key = normalizedIdentifier(membership.batchID);
+    const list = membershipsByBatch.get(key) ?? [];
+    list.push(membership);
+    membershipsByBatch.set(key, list);
+  }
+  const batches = rawBatches.map((batch) => {
+    const memberships = membershipsByBatch.get(normalizedIdentifier(batch.id)) ?? [];
+    const openMemberships = memberships.filter((membership) => !membership.leftAt);
+    const penIDs = new Set(openMemberships.map((membership) => allSheepByID.get(normalizedIdentifier(membership.sheepID))?.penID).filter(Boolean).map(normalizedIdentifier));
+    return {
+      ...batch,
+      sheepCount: openMemberships.length,
+      penCount: penIDs.size,
+      status: openMemberships.length ? "进行中" : "已结束",
+    };
+  });
   const ingredients = expandedIngredientRows.map(entityToIngredient);
   const recipes = uniqueByNormalizedIdentifier(
     expandedFormulaRows.map(entityToRecipe).filter(Boolean),
@@ -786,14 +975,52 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
     tmrPlan.formulaName = recipes.find((recipe) => normalizedIdentifier(recipe.id) === normalizedIdentifier(tmrPlan.formulaID))?.name ?? "未命名配方";
   }
   const tmrMeals = [];
-  const events = operationRows.map((row) => entityToEvent(row, profile.display_name, sheepByID, penNameByID));
+  const actorDirectory = await fetchActorDirectory(operationRows, user, profile, signal);
+  signal?.throwIfAborted();
+  const events = operationRows
+    .map((row) => projectFarmOperationEvent({
+      row,
+      payload: payloadForRow(row),
+      actorName: actorNameForOperation(row, actorDirectory),
+      sheepByID: allSheepByID,
+      penNameByID,
+    }))
+    .sort((left, right) => new Date(right.at).getTime() - new Date(left.at).getTime() || right.revision - left.revision);
+  const analyticsSource = {
+    sheep: allSheep.map((item) => ({
+      id: item.id,
+      earTag: item.earTag,
+      breed: item.breed,
+      purpose: item.purpose,
+      sex: item.sexRaw,
+      status: item.status,
+      initialPenID: item.initialPenID,
+      currentPenID: item.currentPenID,
+      birthAt: item.birthAt,
+      enteredAt: item.enteredAt,
+      removedAt: item.removedAt,
+      isBreedingRam: item.isBreedingRam,
+    })),
+    pens,
+    weights: weightRecords,
+    weanings: weaningRecords,
+    reproduction: reproductionRecords,
+    removals: removalRecords,
+    transfers: transferRecords,
+    batches,
+    batchMemberships,
+    feeds: feedRecords,
+    troughObservations,
+    dailyPenCounts: [],
+  };
+  const insightData = buildFarmInsightData({ source: analyticsSource, timeZone: farmTimeZone });
 
   return {
     mode: "cloud",
     loadedSections,
     projectionCoverage: {
       real: [...requestedEntityTypes, "farm_operations"],
-      preview: ["alerts", "tmrMeals", "tmrMonitoring", "insights"],
+      preview: ["alerts", "tmrMeals", "tmrMonitoring"],
       baseline: baselinePackage
         ? {
             status: "loaded",
@@ -815,6 +1042,7 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
       displayName: profile.display_name || user.email?.split("@")[0] || "牧场成员",
       email: user.email,
     },
+    weather: null,
     metrics: {
       activeSheep: sheep.length,
       activePens: occupiedPenCount,
@@ -829,12 +1057,10 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
     recipes,
     tmrMeals,
     tmrPlan,
-    insightData: {
-      recentWeightCount,
-      feedKilogramsToday: feedRecords
-        .filter((record) => dateKey(record.at, farmTimeZone) === todayKey)
-        .reduce((sum, record) => sum + record.kilograms, 0),
-    },
+    batches,
+    careItems: [],
+    analyticsSource,
+    insightData,
     lastSyncedAt: new Date().toISOString(),
   };
 }

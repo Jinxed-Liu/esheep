@@ -8,10 +8,6 @@
 	<string>$(APP_GROUP_IDENTIFIER)</string>
 	<key>CAPABILITY_SIGNING_PUBLIC_KEY_PEM</key>
 	<string>$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)</string>
-	<key>CLOUDKIT_CONTAINER_IDENTIFIER</key>
-	<string>$(CLOUDKIT_CONTAINER_IDENTIFIER)</string>
-	<key>CLOUD_COLLABORATION_ENABLED</key>
-	<string>$(CLOUD_COLLABORATION_ENABLED)</string>
 	<key>IDENTITY_WORKER_URL</key>
 	<string>$(IDENTITY_WORKER_URL)</string>
 	<key>SUBSCRIPTIONS_ENABLED</key>
@@ -26,8 +22,6 @@
 	<array>
 		<string>com.sheepfarm.esheepnext.refresh</string>
 	</array>
-	<key>CKSharingSupported</key>
-	<true/>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

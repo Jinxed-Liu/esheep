@@ -163,8 +163,6 @@ private struct FarmNavigationToolbar: ToolbarContent {
 private struct FarmSwitcher: View {
     @Environment(AppSession.self) private var session
 
-    private let restoringFarmName = "正在从 iCloud 恢复的牧场"
-
     let farms: [FarmRecord]
     let activeFarm: FarmRecord
     let sharedFarmAdmissionStatus: SharedFarmAdmissionStatus?
@@ -226,10 +224,6 @@ private struct FarmSwitcher: View {
 
     @ViewBuilder
     private func farmNameText(_ name: String) -> some View {
-        if name == restoringFarmName {
-            Text("正在从 iCloud 恢复的牧场")
-        } else {
-            Text(verbatim: name)
-        }
+        Text(verbatim: name)
     }
 }

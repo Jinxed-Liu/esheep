@@ -48,6 +48,41 @@ test("plans overview and route entity reads without eager TMR or weight data", (
       "tmrFeedingPlan",
     ],
   );
+  assert.deepEqual(
+    workspaceEntityTypesForSections(workspaceSectionsForPage("pens")),
+    ["farm", "pen", "sheep", "feed", "transfer", "removal", "weight"],
+  );
+  assert.deepEqual(
+    workspaceEntityTypesForSections(workspaceSectionsForPage("search")),
+    ["farm", "pen", "sheep", "feed", "transfer", "removal", "weight"],
+  );
+  assert.deepEqual(
+    workspaceEntityTypesForSections(workspaceSectionsForPage("insights")),
+    [
+      "farm",
+      "pen",
+      "sheep",
+      "feed",
+      "transfer",
+      "removal",
+      "weight",
+      "weaning",
+      "reproduction",
+      "productionBatch",
+      "batchMembership",
+      "feedTroughObservation",
+    ],
+  );
+  assert.deepEqual(
+    workspaceEntityTypesForSections(workspaceSectionsForPage("care")),
+    ["farm", "pen", "sheep", "feed", "transfer", "removal"],
+  );
+  for (const page of ["feeding", "feed-history", "ingredients", "tmr-feed", "tmr-produce", "tmr-batches", "tmr-monitor", "tmr-plans", "tmr-formulas"]) {
+    assert.deepEqual(
+      workspaceEntityTypesForSections(workspaceSectionsForPage(page)),
+      ["farm", "pen", "sheep", "feed", "transfer", "removal", "feedIngredient", "tmrFormula", "tmrFeedingPlan"],
+    );
+  }
 });
 
 test("reuses a section-complete workspace and accumulates route coverage", async () => {

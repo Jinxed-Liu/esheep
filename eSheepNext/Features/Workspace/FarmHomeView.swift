@@ -110,15 +110,13 @@ struct FarmHomeView: View {
         FarmWeatherHero(
             farm: farm,
             syncSymbol: sharedFarmAdmissionStatus == nil
-                ? (homeSnapshot.pendingOutboxCount == 0 ? "checkmark.icloud" : "arrow.triangle.2.circlepath.icloud")
+                ? (homeSnapshot.pendingOutboxCount == 0 ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
                 : "person.2.badge.gearshape",
             syncText: sharedFarmAdmissionStatus.map {
                 "正在加入共享牧场 · \($0.detailText)"
-            } ?? (
-                CloudFeatureConfiguration.isEnabled
-                    ? (homeSnapshot.pendingOutboxCount == 0 ? "本地记录已排队处理" : "有 \(homeSnapshot.pendingOutboxCount) 条本地记录等待同步")
-                    : "业务数据已保存在本机"
-            ),
+            } ?? (homeSnapshot.pendingOutboxCount == 0
+                ? "业务数据已保存"
+                : "有 \(homeSnapshot.pendingOutboxCount) 条本地记录等待同步"),
             isDetailPresented: $isWeatherDetailPresented
         )
     }

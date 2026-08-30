@@ -140,10 +140,9 @@ struct FarmDataInterchangeView: View {
     private var policy: SettingsVisibilityPolicy {
         SettingsVisibilityPolicy(
             role: farm.role,
-            cloudEnabled: CloudFeatureConfiguration.isEnabled,
+            cloudEnabled: SupabaseAccountConfiguration.isConfigured,
             subscriptionEnabled: SubscriptionFeatureConfiguration.isEnabled,
-            unresolvedConflictCount: unresolvedConflictCount,
-            storageMode: storageProfiles.first?.mode ?? .localOnly
+            unresolvedConflictCount: unresolvedConflictCount
         )
     }
 
@@ -236,21 +235,9 @@ struct FarmDataInterchangeView: View {
                     }
                 }
 
-                if policy.shows(.cloudRecovery) {
-                    NavigationLink {
-                        CloudRecoveryCenterView(account: account, farm: farm)
-                    } label: {
-                        SettingsRowLabel(
-                            title: "iCloud 恢复",
-                            subtitle: "恢复密钥与云端恢复点",
-                            systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90"
-                        )
-                    }
-                }
-
                 if policy.shows(.dataConflicts) {
                     NavigationLink {
-                        CloudConflictCenterView(account: account, farm: farm)
+                        FarmConflictCenterView(account: account, farm: farm)
                     } label: {
                         SettingsRowLabel(
                             title: "数据异常处理",
@@ -422,7 +409,7 @@ private struct LocalStorageCleanupReviewView: View {
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("不会删除业务库、WAL/SHM、照片、CloudAssets、Supabase 迁移备份、Outbox、Tombstone、回执或 Keychain。")
+                Text("不会删除业务库、WAL/SHM、照片、eSheep 云迁移备份、Outbox、Tombstone、回执或 Keychain。")
             }
         }
     }
@@ -585,7 +572,7 @@ private struct FarmDataTaskView: View {
                     if CapabilitySet(role: farm.role).allows(.recordProduction) {
                         Button("选择备份并检查") { isRestoringBackup = true }
                     }
-                    Text("备份包含生产记录、历史、删除记录、TMR 和照片。iCloud 或 eSheep 云牧场会先同步；仍有待上传记录时不会生成“已同步”备份。")
+                    Text("备份包含生产记录、历史、删除记录、TMR 和照片。eSheep 云牧场会先同步；仍有待上传记录时不会生成“已同步”备份。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 if let backupPreview {
@@ -595,7 +582,7 @@ private struct FarmDataTaskView: View {
                         backupSummary(backupPreview)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-                        Text("文件恢复只会建立新的仅本机牧场，不会覆盖当前 iCloud 或 eSheep 云牧场。恢复完成并核对后，可再从云存储页面显式迁移。")
+                        Text("文件恢复只会建立新的仅本机牧场，不会覆盖当前 eSheep 云牧场。恢复完成并核对后，可再从云存储页面显式迁移。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         Button("恢复为新的仅本机牧场") { restoreBackup(backupPreview) }
@@ -643,8 +630,8 @@ private struct FarmDataTaskView: View {
         switch preview.sourceStorageMode {
         case .localOnly:
             return Text("来源：仅本机 · 业务记录 \(preview.entityCount) · 照片 \(preview.photoCount)")
-        case .iCloud:
-            return Text("来源：iCloud · 业务记录 \(preview.entityCount) · 照片 \(preview.photoCount)")
+        case .retiredAppleCloud:
+            return Text("来源：已停用的旧云备份 · 业务记录 \(preview.entityCount) · 照片 \(preview.photoCount)")
         case .supabase:
             return Text("来源：eSheep 云 · 业务记录 \(preview.entityCount) · 照片 \(preview.photoCount)")
         }
@@ -706,7 +693,11 @@ private struct FarmDataTaskView: View {
         isPreparingBackup = true
         Task { @MainActor in
             defer { isPreparingBackup = false }
-            if storageMode != .localOnly {
+            guard storageMode != .retiredAppleCloud else {
+                message = .backupExportFailed("旧云端牧场已停用且正在删除，不能再生成云端一致性备份。")
+                return
+            }
+            if storageMode == .supabase {
                 await collaboration.synchronizeNow()
                 guard pendingCloudOperationCount == 0 else {
                     message = .backupPending(pendingCloudOperationCount)

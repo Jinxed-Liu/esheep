@@ -885,7 +885,7 @@ final class FarmCommandService {
         defer {
             if !committed { context.rollback() }
         }
-        try validateCloudIdentity(in: farm, context: context)
+        try validateStorageRoute(in: farm, context: context)
         if let impact = try executeWithoutSaving(command, in: farm, context: context) {
             try rebuildHistoryIfNeeded(for: [impact], farmID: farm.farmID, context: context)
         }
@@ -909,7 +909,7 @@ final class FarmCommandService {
         defer {
             if !committed { context.rollback() }
         }
-        try validateCloudIdentity(in: farm, context: context)
+        try validateStorageRoute(in: farm, context: context)
         let sheep = try sheepRecord(sheepID, farmID: farm.farmID, context: context)
         let update = SheepAvatarPhotoUpdate(photoAssetID: photoAssetID)
         try SheepAvatarSelectionStore.validate(
@@ -984,23 +984,10 @@ final class FarmCommandService {
         defer {
             if !committed { context.rollback() }
         }
-        try validateCloudIdentity(in: farm, context: context)
+        try validateStorageRoute(in: farm, context: context)
         let route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
-        let applicablePlans: [LegacyPhotoFilenameRepairPlan]
-        let providerSkippedCount: Int
-        if route.deliveryProvider == .iCloud {
-            applicablePlans = candidates.plans.filter { plan in
-                plan.photos.allSatisfy {
-                    FileManager.default.fileExists(
-                        atPath: PhotoTransferActor.absoluteURL(for: $0.relativePath).path
-                    )
-                }
-            }
-            providerSkippedCount = candidates.plans.count - applicablePlans.count
-        } else {
-            applicablePlans = candidates.plans
-            providerSkippedCount = 0
-        }
+        let applicablePlans = candidates.plans
+        let providerSkippedCount = 0
         guard !applicablePlans.isEmpty else {
             return LegacyPhotoFilenameRepairReport(
                 repairedSheepCount: 0,
@@ -1038,8 +1025,8 @@ final class FarmCommandService {
                         context: context
                     )
                     photoRevisionByID[photo.id] = baseRevision + 1
-                case .iCloud:
-                    try stageICloudPhotoProjectionRefresh(photo: photo, context: context)
+                case .retiredAppleCloud:
+                    throw FarmCommandError.cloudIdentityLocked
                 case nil:
                     break
                 }
@@ -1099,7 +1086,7 @@ final class FarmCommandService {
         defer {
             if !committed { context.rollback() }
         }
-        try validateCloudIdentity(in: farm, context: context)
+        try validateStorageRoute(in: farm, context: context)
         if let impact = try executeWithoutSaving(
             command,
             in: farm,
@@ -1176,7 +1163,7 @@ final class FarmCommandService {
         defer {
             if !committed { context.rollback() }
         }
-        try validateCloudIdentity(in: farm, context: context)
+        try validateStorageRoute(in: farm, context: context)
 
         var pendingHistory: [HistoryImpact] = []
         var receiptBySourceRequestID: [UUID: FarmCommandExecutionReceipt] = [:]
@@ -1306,7 +1293,7 @@ final class FarmCommandService {
         defer {
             if !committed { context.rollback() }
         }
-        try validateCloudIdentity(in: farm, context: context)
+        try validateStorageRoute(in: farm, context: context)
         var pendingHistory: [HistoryImpact] = []
 
         func flushHistory() throws {
@@ -1512,50 +1499,13 @@ final class FarmCommandService {
         ))
     }
 
-    private func stageICloudPhotoProjectionRefresh(
-        photo: PhotoAssetRecord,
-        context: ModelContext
-    ) throws {
-        let fileURL = PhotoTransferActor.absoluteURL(for: photo.relativePath)
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            throw PhotoTransferError.sourceUnreadable
-        }
-        let byteCount = Int64(
-            try fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        )
-        if let transfer = try context.fetch(FetchDescriptor<CloudAssetTransfer>()).first(where: {
-            $0.farmID == photo.farmID &&
-                $0.assetID == photo.id &&
-                $0.direction == .upload
-        }) {
-            transfer.localRelativePath = photo.relativePath
-            transfer.payloadDigest = photo.sha256
-            transfer.byteCount = byteCount
-            transfer.sourceDigest = photo.sourceSHA256.isEmpty ? photo.sha256 : photo.sourceSHA256
-            transfer.statusRawValue = CloudAssetTransferStatus.pending.rawValue
-            transfer.nextRetryAt = nil
-            transfer.lastErrorCode = nil
-            transfer.updatedAt = .now
-        } else {
-            context.insert(CloudAssetTransfer(
-                farmID: photo.farmID,
-                assetID: photo.id,
-                localRelativePath: photo.relativePath,
-                payloadDigest: photo.sha256,
-                byteCount: byteCount,
-                direction: .upload,
-                sourceDigest: photo.sourceSHA256.isEmpty ? photo.sha256 : photo.sourceSHA256
-            ))
-        }
-    }
-
-    private func validateCloudIdentity(in farm: FarmContext, context: ModelContext) throws {
+    private func validateStorageRoute(in farm: FarmContext, context: ModelContext) throws {
         let farmID = farm.farmID
-        let accountID = farm.accountID
         let route = try FarmStorageRouter.route(farmID: farmID, context: context)
-        guard route.mode != .localOnly else { return }
-
-        if route.mode == .supabase {
+        switch route.mode {
+        case .localOnly:
+            return
+        case .supabase:
             let remoteBinding = try context.fetch(FetchDescriptor<FarmRemoteBinding>()).first {
                 $0.farmID == farmID &&
                 $0.provider == .supabase
@@ -1564,16 +1514,8 @@ final class FarmCommandService {
                 throw FarmCommandError.cloudIdentityLocked
             }
             return
-        }
-
-        let cloudBinding = try context.fetch(FetchDescriptor<CloudFarmBinding>(predicate: #Predicate {
-            $0.farmID == farmID
-        })).first
-        if let cloudBinding {
-            let hasUsableCertificate = try context.fetch(FetchDescriptor<CapabilityCertificateRecord>(predicate: #Predicate {
-                $0.farmID == farmID && $0.accountID == accountID
-            })).contains(where: \.isUsable)
-            guard cloudBinding.state == .active, hasUsableCertificate else { throw FarmCommandError.cloudIdentityLocked }
+        case .retiredAppleCloud:
+            throw FarmCommandError.cloudIdentityLocked
         }
     }
 
@@ -1606,11 +1548,6 @@ final class FarmCommandService {
         batchState: BatchExecutionState? = nil
     ) throws -> StagedCommandResult {
         let farmID = farm.farmID
-        try validateTMRCloudDataProtocol(
-            for: command,
-            farmID: farmID,
-            context: context
-        )
         guard farm.capabilities.allows(command.requiredCapability) else {
             throw FarmPermissionError.denied(command.requiredCapability)
         }
@@ -1735,47 +1672,6 @@ final class FarmCommandService {
             historyImpact: projectedHistoryImpact,
             operation: operation
         )
-    }
-
-    private func validateTMRCloudDataProtocol(
-        for command: FarmCommand,
-        farmID: UUID,
-        context: ModelContext
-    ) throws {
-        guard case .tmr = command else { return }
-        let route = try FarmStorageRouter.route(farmID: farmID, context: context)
-        guard route.mode == .iCloud else { return }
-        let snapshots = try context.fetch(FetchDescriptor<FarmMembershipSnapshotRecord>())
-            .filter { $0.farmID == farmID && $0.validatedAt != nil }
-        guard let latest = snapshots.max(by: {
-            if $0.generation != $1.generation { return $0.generation < $1.generation }
-            return $0.issuedAt < $1.issuedAt
-        }),
-        let envelope = try? JSONDecoder.tmrMembership.decode(
-            FarmMembershipSnapshotEnvelope.self,
-            from: latest.payload
-        ),
-        envelope.farmID == farmID,
-        envelope.generation == latest.generation else {
-            throw FarmCommandError.tmrCloudProtocolUnavailable(
-                "请先联网刷新协作安全目录，确认所有活跃设备均已升级。"
-            )
-        }
-        let activeAccountIDs = Set(envelope.members.lazy
-            .filter { $0.status == "active" }
-            .map(\.accountID))
-        let activeDevices = envelope.devices.filter { activeAccountIDs.contains($0.accountID) }
-        guard !activeDevices.isEmpty else {
-            throw FarmCommandError.tmrCloudProtocolUnavailable(
-                "安全目录中没有可验证的活跃设备，请先刷新协作安全目录。"
-            )
-        }
-        let incompatible = TMRCloudDataProtocol.incompatibleActiveDeviceIDs(in: envelope)
-        guard incompatible.isEmpty else {
-            throw FarmCommandError.tmrCloudProtocolUnavailable(
-                "仍有 \(incompatible.count) 台活跃设备未声明支持当前 TMR 数据协议，请先在这些设备上升级并重新打开 App。"
-            )
-        }
     }
 
     /// Older clients encoded lambing and its automatically created lamb/weight

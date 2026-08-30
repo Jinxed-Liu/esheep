@@ -13,22 +13,22 @@ export const demoFarms = [
 
 export const demoAlerts = [
   {
-    id: "weaning",
-    title: "该断奶未断奶",
-    count: 10,
-    unit: "只",
-    tone: "danger",
-    target: "insights",
-    description: "达到牧场设置的断奶日龄，且尚无有效断奶事件。",
-  },
-  {
     id: "pregnancy",
     title: "待孕检",
-    count: 1,
+    count: 5,
     unit: "只",
     tone: "warning",
-    target: "entry",
-    description: "配种后已进入孕检窗口，尚未记录检查结果。",
+    target: "alerts",
+    description: "有 5 只母羊进入孕检窗口，尚未记录检查结果。",
+  },
+  {
+    id: "weaning",
+    title: "待断奶",
+    count: 12,
+    unit: "只",
+    tone: "danger",
+    target: "alerts",
+    description: "有 12 只羔羊达到牧场设置的断奶日龄。",
   },
   {
     id: "pen",
@@ -36,7 +36,7 @@ export const demoAlerts = [
     count: 2,
     unit: "项",
     tone: "danger",
-    target: "flock",
+    target: "alerts",
     description: "圈舍存栏与有效转群历史需要复核。",
   },
 ];
@@ -91,19 +91,33 @@ export const demoRecipes = [
 ];
 
 export const demoTMRMeals = [
-  { id: "tmr-am", period: "早", time: "06:00", planKg: 2000, actualKg: 1850, progress: 92, status: "completed" },
+  { id: "tmr-am", period: "早", time: "06:00", planKg: 1850, actualKg: 1850, progress: 100, status: "completed" },
   { id: "tmr-noon", period: "中", time: "12:00", planKg: 1250, actualKg: 0, progress: 0, status: "pending" },
   { id: "tmr-pm", period: "晚", time: "18:00", planKg: 1600, actualKg: 0, progress: 0, status: "pending" },
 ];
 
 export const demoInsightSeries = [42.1, 43.4, 44.2, 45.8, 47.5, 48.7, 50.2, 51.6];
 
+export const demoBatches = [
+  { id: "batch-1", name: "育肥 2026-08", stage: "育肥中期", penCount: 4, sheepCount: 96, startDate: "2026-08-01", status: "进行中" },
+  { id: "batch-2", name: "后备母羊 2026-Q3", stage: "后备培育", penCount: 3, sheepCount: 68, startDate: "2026-07-12", status: "进行中" },
+  { id: "batch-3", name: "春季产羔批次", stage: "已完成", penCount: 5, sheepCount: 112, startDate: "2026-03-08", status: "已归档" },
+];
+
+export const demoCareItems = [
+  { id: "care-1", name: "羊痘疫苗", category: "疫苗", stock: 86, unit: "剂", threshold: 40 },
+  { id: "care-2", name: "伊维菌素", category: "驱虫", stock: 24, unit: "支", threshold: 20 },
+  { id: "care-3", name: "长效土霉素", category: "治疗", stock: 12, unit: "瓶", threshold: 15 },
+];
+
 export function makeDemoWorkspace() {
   return {
     mode: "demo",
-    farm: demoFarms[0],
+    farm: { ...demoFarms[0], timeZoneIdentifier: "Asia/Shanghai" },
     farms: demoFarms,
-    metrics: { activeSheep: 111, activePens: 18, feedsToday: 6 },
+    profile: { displayName: "MiMo 助手", email: "demo@esheepnext.local" },
+    weather: { temperature: 25, condition: "多云", wind: "北风 2级", humidity: 72 },
+    metrics: { activeSheep: 382, activePens: 15, feedsToday: 6 },
     alerts: demoAlerts,
     events: demoEvents,
     sheep: demoSheep,
@@ -112,6 +126,10 @@ export function makeDemoWorkspace() {
     ingredients: demoIngredients,
     recipes: demoRecipes,
     tmrMeals: demoTMRMeals,
+    batches: demoBatches,
+    careItems: demoCareItems,
+    tmrPlan: { formulaName: "育肥全混合日粮", penCount: 6, granularity: "按圈舍", allocationMode: "按头数", tolerancePercent: 5, morningShare: 0.4, noonShare: 0.25, eveningShare: 0.35 },
+    insightData: { recentWeightCount: 86, feedKilogramsToday: 684 },
     lastSyncedAt: isoAt(9, 15),
   };
 }

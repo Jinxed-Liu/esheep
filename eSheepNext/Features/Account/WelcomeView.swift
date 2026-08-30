@@ -45,6 +45,8 @@ struct WelcomeView: View {
     @State private var rawNonce = AppleIdentityActor.makeNonce()
     @State private var isBindingAccount = false
     @State private var selectedLegalDocument: LegalDocument?
+    @State private var hasAcceptedTermsAndPrivacy = false
+    @State private var hasAcceptedCrossBorder = false
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable {
@@ -175,7 +177,12 @@ struct WelcomeView: View {
                     )
                         .buttonStyle(.glassProminent)
                         .frame(maxWidth: .infinity)
-                        .disabled(isBindingAccount || !passwordFormIsReady || !identityIsConfigured)
+                        .disabled(
+                            isBindingAccount ||
+                                !passwordFormIsReady ||
+                                !identityIsConfigured ||
+                                !hasRequiredLegalConsent
+                        )
 
                     if !identityIsConfigured {
                         Text("账号注册、密码登录和 Apple 登录需要配置 Supabase。")
@@ -186,6 +193,8 @@ struct WelcomeView: View {
                 }
                 .padding(18)
                 .glassEffect(.regular, in: .rect(cornerRadius: 22))
+
+                legalConsentCard
 
                 HStack(spacing: 12) {
                     Rectangle().fill(.separator).frame(height: 1)
@@ -205,7 +214,7 @@ struct WelcomeView: View {
                 .signInWithAppleButtonStyle(.black)
                 .frame(height: 52)
                 .clipShape(.rect(cornerRadius: 14))
-                .disabled(isBindingAccount || !identityIsConfigured)
+                .disabled(isBindingAccount || !identityIsConfigured || !hasRequiredLegalConsent)
 
                 Text("Apple 登录使用系统当前提供的 Apple 账户。两台设备登录同一 Apple 账户时会映射到同一 eSheepNext 账号；跨账号共享仍应使用不同的 Apple 或邮箱账号。")
                     .font(.footnote)
@@ -217,18 +226,6 @@ struct WelcomeView: View {
                         .font(.footnote)
                 }
 
-                VStack(spacing: 8) {
-                    Text("继续表示你已阅读并同意以下说明：")
-                        .font(.footnote)
-                        .foregroundStyle(.tertiary)
-                    HStack(spacing: 14) {
-                        ForEach(LegalDocument.allCases) { document in
-                            Button(LocalizedStringKey(document.title)) { selectedLegalDocument = document }
-                                .font(.footnote)
-                        }
-                    }
-                }
-                .multilineTextAlignment(.center)
             }
             .frame(maxWidth: 520)
             .padding(.horizontal, 24)
@@ -273,6 +270,53 @@ struct WelcomeView: View {
             && !passwordConfirmation.isEmpty
     }
 
+    private var hasRequiredLegalConsent: Bool {
+        hasAcceptedTermsAndPrivacy && hasAcceptedCrossBorder
+    }
+
+    private var legalConsentCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("请先阅读并主动选择")
+                .font(.headline)
+
+            Toggle(isOn: $hasAcceptedTermsAndPrivacy) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("我已阅读并同意服务条款和隐私政策")
+                        .font(.subheadline.weight(.semibold))
+                    HStack(spacing: 12) {
+                        Button("《服务条款》") { selectedLegalDocument = .terms }
+                        Button("《隐私政策》") { selectedLegalDocument = .privacy }
+                    }
+                    .font(.footnote)
+                }
+            }
+            .accessibilityHint("默认关闭；打开后表示同意当前版本的服务条款和隐私政策")
+
+            Divider()
+
+            Toggle(isOn: $hasAcceptedCrossBorder) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("我单独同意必要的境外云处理")
+                        .font(.subheadline.weight(.semibold))
+                    Text("账号、云同步和协作使用境外 Supabase 基础设施；不同意时不能使用这些云功能。可选 AI 仍会另行征求同意。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("查看接收方、数据种类、风险和撤回方式") {
+                        selectedLegalDocument = .crossBorder
+                    }
+                    .font(.footnote)
+                }
+            }
+            .accessibilityHint("默认关闭；这是与条款和隐私政策分开的单独同意")
+
+            Text("条款、隐私和境外告知版本：\(LegalPolicyVersions.terms)。同意时间、App 版本和语言会被记录用于证明你的选择。")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(18)
+        .glassEffect(.regular, in: .rect(cornerRadius: 22))
+    }
+
     private var identityIsConfigured: Bool {
         SupabaseAccountConfiguration.isConfigured || IdentityWorkerConfiguration.baseURL != nil
     }
@@ -304,6 +348,10 @@ struct WelcomeView: View {
     }
 
     private func submitPasswordAuthentication() {
+        guard hasRequiredLegalConsent else {
+            errorMessage = "请先分别阅读并同意服务条款/隐私政策和必要的境外云处理。"
+            return
+        }
         let mode = credentialMode
         let submittedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let submittedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -358,7 +406,14 @@ struct WelcomeView: View {
                 } else {
                     response = try await IdentityWorkerClient.shared.authenticate(username: submittedUsername, password: submittedPassword)
                 }
-                let accountProfileID = try upsertPasswordAccount(from: response)
+                let identityClient = try AccountIdentityClients.active()
+                let consentReceipt = LegalConsentReceipt()
+                try await identityClient.recordLegalConsent(consentReceipt)
+                let accountProfileID = try upsertPasswordAccount(
+                    from: response,
+                    consentReceipt: consentReceipt
+                )
+                try LegalConsentStore.save(consentReceipt, for: response.accountID)
                 if AccountIdentityClients.activeProvider == .supabase {
                     _ = try await DeviceIdentityActor.shared.registerWithActiveAccountProvider()
                 }
@@ -382,6 +437,10 @@ struct WelcomeView: View {
     }
 
     private func handleAppleAuthorization(_ result: Result<ASAuthorization, Error>) {
+        guard hasRequiredLegalConsent else {
+            errorMessage = "请先分别阅读并同意服务条款/隐私政策和必要的境外云处理。"
+            return
+        }
         switch result {
         case .success(let authorization):
             guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
@@ -398,7 +457,14 @@ struct WelcomeView: View {
                 do {
                     let payload = try AppleIdentityActor.payload(from: credential, rawNonce: nonce)
                     let workerSession = try await AppleIdentityActor.shared.bind(payload)
-                    let accountProfileID = try upsertAppleAccount(from: credential, workerSession: workerSession)
+                    let consentReceipt = LegalConsentReceipt()
+                    try await AccountIdentityClients.active().recordLegalConsent(consentReceipt)
+                    let accountProfileID = try upsertAppleAccount(
+                        from: credential,
+                        workerSession: workerSession,
+                        consentReceipt: consentReceipt
+                    )
+                    try LegalConsentStore.save(consentReceipt, for: workerSession.accountID)
                     if AccountIdentityClients.activeProvider == .supabase {
                         _ = try await DeviceIdentityActor.shared.registerWithActiveAccountProvider()
                     }
@@ -413,12 +479,17 @@ struct WelcomeView: View {
     }
 
     @MainActor
-    private func upsertPasswordAccount(from response: WorkerSessionResponse) throws -> UUID {
+    private func upsertPasswordAccount(
+        from response: WorkerSessionResponse,
+        consentReceipt: LegalConsentReceipt
+    ) throws -> UUID {
         if let existing = accounts.first(where: { $0.serverAccountID == response.accountID }) {
             try prepareForDifferentAccount(activating: existing.id)
             existing.displayName = response.displayName ?? existing.displayName
             existing.serverBindingStateRaw = ServerBindingState.verified.rawValue
             existing.authenticationMethodRawValue = AccountAuthenticationMethod.password.rawValue
+            existing.acceptedTermsVersion = consentReceipt.termsVersion
+            existing.acceptedPrivacyVersion = consentReceipt.privacyVersion
             existing.updatedAt = .now
             try modelContext.save()
             return existing.id
@@ -431,6 +502,8 @@ struct WelcomeView: View {
             authenticationMethod: .password
         )
         account.serverAccountID = response.accountID
+        account.acceptedTermsVersion = consentReceipt.termsVersion
+        account.acceptedPrivacyVersion = consentReceipt.privacyVersion
         try prepareForDifferentAccount(activating: account.id)
         modelContext.insert(account)
         try modelContext.save()
@@ -438,7 +511,11 @@ struct WelcomeView: View {
     }
 
     @MainActor
-    private func upsertAppleAccount(from credential: ASAuthorizationAppleIDCredential, workerSession: WorkerSessionResponse) throws -> UUID {
+    private func upsertAppleAccount(
+        from credential: ASAuthorizationAppleIDCredential,
+        workerSession: WorkerSessionResponse,
+        consentReceipt: LegalConsentReceipt
+    ) throws -> UUID {
         let appleID = credential.user
         let appleSubjectHash = AppleIdentityHash.value(for: appleID)
         if let existing = accounts.first(where: { $0.appleSubjectHash == appleSubjectHash }) {
@@ -455,6 +532,8 @@ struct WelcomeView: View {
             existing.serverAccountID = workerSession.accountID
             existing.serverBindingStateRaw = ServerBindingState.verified.rawValue
             existing.authenticationMethodRawValue = AccountAuthenticationMethod.apple.rawValue
+            existing.acceptedTermsVersion = consentReceipt.termsVersion
+            existing.acceptedPrivacyVersion = consentReceipt.privacyVersion
             if let name = workerSession.displayName, !name.isEmpty { existing.displayName = name }
             existing.updatedAt = .now
             try modelContext.save()
@@ -469,6 +548,8 @@ struct WelcomeView: View {
             authenticationMethod: .apple
         )
         account.serverAccountID = workerSession.accountID
+        account.acceptedTermsVersion = consentReceipt.termsVersion
+        account.acceptedPrivacyVersion = consentReceipt.privacyVersion
         try prepareForDifferentAccount(activating: account.id)
         try SecureAccountStore.saveAppleUserIdentifier(appleID)
         modelContext.insert(account)

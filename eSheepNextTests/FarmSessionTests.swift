@@ -4,20 +4,14 @@ import XCTest
 
 @MainActor
 final class FarmSessionTests: XCTestCase {
-    func testBuildEmbedsExpectedEnvironmentAndCloudKitRuntimeConfiguration() throws {
-        let container = try XCTUnwrap(
-            Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER") as? String
-        )
-        XCTAssertFalse(container.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
+    func testBuildDoesNotEmbedRetiredAppleCloudRuntimeConfiguration() {
+        XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "CLOUDKIT_CONTAINER_IDENTIFIER"))
+        XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "CLOUD_COLLABORATION_ENABLED"))
+        XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "CKSharingSupported"))
         #if DEBUG
-        XCTAssertTrue(CloudFeatureConfiguration.isEnabled)
         XCTAssertEqual(AppEnvironment.current, .development)
-        XCTAssertEqual(container, "iCloud.com.sheepfarm.next.dev")
         #else
-        XCTAssertFalse(CloudFeatureConfiguration.isEnabled)
         XCTAssertEqual(AppEnvironment.current, .production)
-        XCTAssertEqual(container, "iCloud.com.sheepfarm.ios")
         #endif
     }
 
@@ -322,15 +316,15 @@ final class FarmSessionTests: XCTestCase {
         XCTAssertFalse(session.isReauthenticationPresented)
     }
 
-    func testAutomaticCloudRecoveryIsSingleFlightPerAccount() {
+    func testAutomaticRemoteDiscoveryIsSingleFlightPerAccount() {
         let session = AppSession(activeAccountProfileID: nil)
         let accountID = UUID()
 
-        XCTAssertTrue(session.beginAutomaticCloudRecovery(accountID: accountID))
-        XCTAssertFalse(session.beginAutomaticCloudRecovery(accountID: accountID))
+        XCTAssertTrue(session.beginAutomaticRemoteDiscovery(accountID: accountID))
+        XCTAssertFalse(session.beginAutomaticRemoteDiscovery(accountID: accountID))
 
-        session.finishAutomaticCloudRecovery(accountID: accountID)
-        XCTAssertTrue(session.beginAutomaticCloudRecovery(accountID: accountID))
+        session.finishAutomaticRemoteDiscovery(accountID: accountID)
+        XCTAssertTrue(session.beginAutomaticRemoteDiscovery(accountID: accountID))
     }
 
     private func makeContainer() throws -> ModelContainer {

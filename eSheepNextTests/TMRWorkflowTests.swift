@@ -186,57 +186,6 @@ final class TMRWorkflowTests: XCTestCase {
         XCTAssertEqual(try balance(batchID: batchID, in: fixture.context), 100)
     }
 
-    func testCloudProtocolGateTreatsUnversionedActiveDevicesAsIncompatible() {
-        let activeAccountID = UUID()
-        let inactiveAccountID = UUID()
-        let legacyDeviceID = UUID()
-        let snapshot = FarmMembershipSnapshotEnvelope(
-            farmID: UUID(),
-            generation: 3,
-            issuedAt: .now,
-            members: [
-                .init(
-                    membershipID: "active",
-                    accountID: activeAccountID,
-                    role: .owner,
-                    status: "active",
-                    shareParticipantRecordName: nil
-                ),
-                .init(
-                    membershipID: "revoked",
-                    accountID: inactiveAccountID,
-                    role: .worker,
-                    status: "revoked",
-                    shareParticipantRecordName: nil
-                )
-            ],
-            devices: [
-                .init(
-                    deviceID: legacyDeviceID,
-                    accountID: activeAccountID,
-                    publicKeyJWK: "{}"
-                ),
-                .init(
-                    deviceID: UUID(),
-                    accountID: activeAccountID,
-                    publicKeyJWK: "{}",
-                    tmrDataProtocolVersion: TMRCloudDataProtocol.currentVersion
-                ),
-                .init(
-                    deviceID: UUID(),
-                    accountID: inactiveAccountID,
-                    publicKeyJWK: "{}"
-                )
-            ],
-            revokedCertificates: []
-        )
-
-        XCTAssertEqual(
-            TMRCloudDataProtocol.incompatibleActiveDeviceIDs(in: snapshot),
-            [legacyDeviceID]
-        )
-    }
-
     func testProductionAndSplitFeedingMaintainSeparateRawAndTMRLedgers() throws {
         let fixture = try makeFixture()
         let formulaID = try saveFormula(in: fixture)
@@ -908,7 +857,7 @@ final class TMRWorkflowTests: XCTestCase {
             try source.context.fetch(FetchDescriptor<FarmRecord>())
                 .first { $0.id == source.farmContext.farmID }
         )
-        let snapshots = try MigrationCloudBootstrapService().makeProviderNeutralSnapshots(
+        let snapshots = try FarmBaselineSnapshotService().makeProviderNeutralSnapshots(
             farm: sourceFarm,
             context: source.context
         )
@@ -919,14 +868,13 @@ final class TMRWorkflowTests: XCTestCase {
         XCTAssertEqual(decodedTMRPayload.kind, .restoreTMRBaseline)
         XCTAssertTrue(TMRCloudDataProtocol.isSupported(by: decodedTMRPayload))
 
-        let operations = CloudRebuildActor.sortedOperations(try snapshots.map {
+        let operations = try snapshots.map {
             try baselineEnvelope(
                 from: $0,
                 farmID: source.farmContext.farmID,
                 ownerID: source.farmContext.accountID
             )
-        })
-        try CloudRebuildBundleValidator.validateReferences(operations: operations, assets: [])
+        }
         let tmrOperation = try XCTUnwrap(operations.first { $0.entityType == CloudEntityType.tmrBaseline.rawValue })
 
         let targetContainer = try AppSchema.makeContainer(

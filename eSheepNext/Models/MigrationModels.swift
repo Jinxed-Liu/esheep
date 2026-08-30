@@ -18,10 +18,10 @@ enum MigrationCloudState: String, Codable, Sendable, CaseIterable {
         switch self {
         case .localCommitted: "已保存在本机"
         case .baselineReady: "等待联网上传"
-        case .provisioning: "正在建立 iCloud 牧场"
+        case .provisioning: "旧云端迁移已停用"
         case .uploading: "正在上传迁移数据"
         case .verifying: "正在核对云端数据"
-        case .synced: "iCloud 已完成"
+        case .synced: "旧云端迁移记录"
         case .failed: "云端准备失败"
         }
     }

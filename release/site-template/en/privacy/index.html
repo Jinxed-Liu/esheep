@@ -1,1 +1,134 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>eSheep+ Privacy Policy</title><link rel="stylesheet" href="../../assets/site.css"></head><body><main><h1>Privacy Policy</h1><p class="meta">eSheep+ 3.1.0 · Updated August 18, 2026</p><p>eSheep+ processes account names, email addresses, user and device identifiers, farm locations explicitly saved by users, farm production content and photos to provide authentication, sync, collaboration, recovery and support. We do not show ads, track across apps or sell personal data.</p><h2>Storage and sharing</h2><p>Cloud data is processed by Supabase Auth, Postgres, Storage and Realtime in Singapore. Realtime is only a delivery hint; database records, checkpoints and digests are authoritative. Farm data is available only to active members within their roles.</p><h2>Your choices</h2><p>You can export farm data, leave a shared farm or request account deletion in the app. Farm owners must first export and transfer or delete owned farms. After ownership blockers are resolved, deletion is targeted for completion within 24 hours.</p><p>Contact <a href="mailto:support@{{DOMAIN}}">support@{{DOMAIN}}</a>.</p></main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="index,follow">
+  <title>eSheep+ Privacy Policy</title>
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/site.css">
+</head>
+<body>
+  <header>
+      <nav aria-label="Legal and support">
+        <a href="../privacy/">Privacy</a>
+        <a href="../terms/">Terms</a>
+        <a href="../ai-privacy/">AI &amp; transfers</a>
+        <a href="../account-deletion/">Delete account</a>
+        <a href="../support/">Support</a>
+        <a href="../../zh-cn/privacy/" hreflang="zh-CN">简体中文</a>
+      </nav></header>
+  <main><h1>eSheep+ Privacy Policy</h1>
+<p>Version: 2026.09.01 Updated: August 27, 2026 Effective: September 1, 2026</p>
+<h2>Introduction and controller</h2>
+<p>eSheep+ is an iPhone and iPad application for sheep-farm operations, production records, analysis, and member collaboration. This policy explains how we process information relating to identifiable people. Animal health, breeding, and weight records are generally farm production data, but any names, phone numbers, voices, images, or other identifiers embedded in those records are treated as personal information.</p>
+<p>Controller: <code>{{LEGAL_ENTITY}}</code> Registered address: <code>{{REGISTERED_ADDRESS}}</code> Privacy contact: <code>{{PRIVACY_OWNER}}</code> Email: <code>{{PRIVACY_EMAIL}}</code> Website: <code>https://{{DOMAIN}}/en/privacy</code></p>
+<p>These placeholders must be replaced with accurate, reachable details before release. Until then, this is a pre-release draft.</p>
+<h2>1. Information we process</h2>
+<ol>
+<li><strong>Account and identity data:</strong> display name, email, the stable identifier returned by Sign in with Apple, any name a user allows Apple to provide, and eSheep account IDs. We use these for registration, sign-in, verification, recovery, security notices, and member identity. Passwords are verified by the authentication provider; the app does not store readable passwords.</li>
+<li><strong>Device and security data:</strong> an app-generated device UUID, device display name, public key, supported data-protocol version, session state, and security status. We use these to register and revoke devices, protect sessions, maintain sync compatibility, and recover data. Apple processes Face ID or Touch ID templates on the device; eSheep+ does not receive those templates.</li>
+<li><strong>Farm and collaboration data:</strong> farm name, address text, location explicitly saved by a user, time zone, memberships, roles, invitations, sheep, pens, weights, breeding, animal health, medication, feed, formulas, TMR batches, stock, costs, reminders, notes, attachments, and operation history. We use these for records, calculations, exports, sync, recovery, and role-based collaboration.</li>
+<li><strong>Photos, files, and scans:</strong> photos or selected media of sheep, symptoms, ear tags, receipts, QR codes, and files chosen for import. We do not scan the entire photo library. Images sent to AI are resized and re-encoded to remove original EXIF and location metadata.</li>
+<li><strong>Location and weather data:</strong> requested only while the app is in use when a user saves a farm location or uses a related weather feature. We use it for farm coordinates, time zone, and relevant weather, not continuous background tracking, advertising, or workforce movement profiles.</li>
+<li><strong>Optional AI content:</strong> a user's prompt, selected images, recorded audio, conversation history, and limited farm results returned by on-device tools for the current question. This is sent to MiMo only after a separate consent and an intentional send action. A user's MiMo API key remains in the local Keychain and is used by the device to authenticate directly to MiMo.</li>
+<li><strong>Service and security records:</strong> authentication, sync, database, object storage, email delivery, and deletion jobs may generate timestamps, request status, error codes, IP addresses, user/device identifiers, and limited security logs. We use these to prevent abuse, diagnose failures, audit access, restore service, and comply with law. Ordinary logs must not contain passwords, full tokens, or API keys.</li>
+<li><strong>Support and rights requests:</strong> contact details, communications, minimum identity-verification material, and request records, used to provide support and handle privacy rights and incidents.</li>
+</ol>
+<p>System permissions—including camera, microphone, location, selected photos, calendars, reminders, notifications, nearby devices, and local network—are explained in the app. Refusing an optional permission does not disable unrelated features.</p>
+<h2>2. Purposes, methods, and legal bases</h2>
+<p>We receive information directly from users, generate limited identifiers locally, receive permitted data from Apple, receive actions from invited farm members, and generate necessary service records. We process it to:</p>
+<ul>
+<li>perform the Terms by providing accounts, offline records, sync, collaboration, imports/exports, recovery, and support;</li>
+<li>provide permission-based features such as location, media, microphone, calendars, reminders, notifications, AI, and legally required overseas transfers;</li>
+<li>comply with legal obligations and secure accounts and data;</li>
+<li>protect life, health, or property in a legally permitted emergency; and</li>
+<li>pursue other purposes permitted by applicable law.</li>
+</ul>
+<p>If a purpose, method, or category changes materially, we update this policy and obtain renewed or separate consent when required.</p>
+<h2>3. On-device processing</h2>
+<p>Offline farm records, AI conversations, local import files, Keychain credentials and MiMo keys, and an optional copy of sent voice audio can remain solely on the device. Data that never leaves the device is not “collected” for Apple's App Privacy label, but it remains protected by this policy and device security.</p>
+<p>Long-term retention of sent voice audio is off by default. A user may enable it in AI settings. Turning it off affects future recordings; existing copies can be removed with the relevant conversation or account data.</p>
+<h2>4. Processors, sharing, and disclosures</h2>
+<p>We do not sell personal information, serve third-party ads, use an advertising identifier, or track users across apps or websites.</p>
+<p>We may use the following processors to provide the service:</p>
+<ul>
+<li><strong>Supabase, Inc./Supabase Pte. Ltd. and infrastructure subprocessors:</strong> authentication, Postgres database, object storage, realtime delivery hints, backups, and security logs. The production region is <code>{{SUPABASE_REGION_COUNTRY}}</code> (planned: Singapore; verify against the production console before release).</li>
+<li><strong><code>{{SMTP_PROVIDER}}</code>:</strong> registration, recovery, and security email. The legal entity, location, and retention period must be completed before release.</li>
+<li><strong>Apple Inc. and applicable affiliates:</strong> Sign in with Apple, legacy CloudKit migration, system notifications, maps/weather, and operating-system permissions, also governed by Apple's applicable terms.</li>
+</ul>
+<p>We require processors to follow documented purposes, retention, confidentiality, and security obligations, and we review contracts, permissions, logs, and subprocessors. The published recipient list contains the current categories, links, locations, and status.</p>
+<p>When an owner or administrator invites a farm member, that member can access only the current farm data allowed by their role. Inviters must have authority to share the data and revoke access when no longer needed.</p>
+<p>We disclose personal information to another controller only when a user initiates it, it is necessary to perform the service, the law requires it, or an emergency lawful basis applies. Where required, we complete an impact assessment and obtain separate consent first.</p>
+<h2>5. AI assistant</h2>
+<p>The AI assistant is optional. A user supplies their own MiMo API key and separately accepts the AI data notice before first use.</p>
+<ul>
+<li>Recipient: Xiaomi MiMo. Its July 7, 2026 Service Agreement says the platform is operated by Xiaomi Technologies Singapore Pte. Ltd. and also identifies Xiaomi Technology Netherlands B.V. and applicable affiliates. The current API-content processing/storage region is <code>{{MIMO_API_REGION_COUNTRY}}</code> and requires written confirmation before release.</li>
+<li>Content sent: intentional prompts, processed images, audio, relevant conversation context, and limited farm results retrieved for that question. Broader or sensitive detail requires a per-action disclosure in the app.</li>
+<li>Never intentionally sent: passwords, Apple tokens, Supabase session secrets, the MiMo key itself, unselected photo-library content, or original import files.</li>
+<li>Human control: models can be wrong. AI does not directly execute a farm write; it creates a reviewable draft that an authorized user must verify and confirm. It is not veterinary, legal, or financial advice.</li>
+<li>Retention: eSheep+ stores conversations locally. Production does not sync AI history through the eSheep service unless the user explicitly enables a feature that visibly reports encrypted sync. MiMo retention follows its current API rules.</li>
+<li>Training: MiMo Privacy Policy version <code>v20260421</code> (stated update date: March 17, 2026) says API-submitted content is not used for model training or other purposes. We will recheck this commitment and update the notice if it changes.</li>
+</ul>
+<p>Do not submit identity numbers, bank details, human medical records, passwords, API keys, or unrelated personal information to AI.</p>
+<h2>6. International transfers</h2>
+<p>Accounts, cloud sync, and AI may provide personal information outside Mainland China. The recipient, country or region, purpose, method, data categories, and rights channel are described in the separate International Transfer and AI Notice. The sign-in screen separates acceptance of the Terms/Privacy Policy from separate consent to necessary overseas processing; optional AI has its own consent.</p>
+<p>We assess whether a security assessment, certification, standard contract filing, or other legal mechanism applies. This draft is not evidence that transfer formalities are complete until recipients, regions, contracts, volumes, and safeguards are verified. We will not provide personal information stored in China to a foreign judicial or law-enforcement authority without approval from the competent Chinese authority where required.</p>
+<p>A user may withdraw transfer consent. Withdrawal does not invalidate earlier lawful processing. Because accounts and cloud collaboration depend on overseas infrastructure, we will stop new transfers after withdrawal and those functions may no longer work; we will provide available export, deletion, or local handling options required by law.</p>
+<h2>7. Retention and deletion</h2>
+<div class="table-scroll"><table><thead><tr>
+<th>Data</th>
+<th>Retention method</th>
+<th>End-of-life action</th>
+</tr></thead><tbody>
+<tr>
+<td>Local farm data, attachments, AI conversations</td>
+<td>While the user keeps the relevant farm, conversation, or account</td>
+<td>Remove local records and files; remove Keychain items through sign-out/deletion flows</td>
+</tr>
+<tr>
+<td>Active accounts, members, and devices</td>
+<td>While the account and service remain active</td>
+<td>Revoke sessions, devices, and memberships, then run deletion</td>
+</tr>
+<tr>
+<td>Cloud farm production records</td>
+<td>While the farm exists and as needed for accounting, audit, and collaboration</td>
+<td>Delete identifiable content when the farm is deleted; de-identify immutable operation history only when needed for ledger integrity</td>
+</tr>
+<tr>
+<td>Account deletion job</td>
+<td>Target completion within 24 hours after ownership blockers are resolved</td>
+<td>Delete or de-identify and retain limited job status as compliance evidence</td>
+</tr>
+<tr>
+<td>Backups, security and service logs</td>
+<td>Shortest production-configured period; target maximum 30 days unless law or an active investigation requires longer</td>
+<td>Rolling deletion or irreversible anonymization; storage and security only while deletion is deferred</td>
+</tr>
+<tr>
+<td>Support and privacy-right records</td>
+<td>Normally no longer than three years as needed to prove resolution</td>
+<td>Delete or anonymize</td>
+</tr>
+<tr>
+<td>Impact assessments and statutory records</td>
+<td>Period required by law; impact-assessment records at least three years</td>
+<td>Secure deletion or legal archive</td>
+</tr>
+</tbody></table></div>
+<p>We delete or anonymize data when the purpose is achieved or impossible, it is no longer necessary, retention expires, consent is withdrawn, an account closes, or processing violates law or agreement. Where a statutory period has not expired or immediate deletion is technically infeasible, we stop all processing except storage and necessary protection.</p>
+<h2>8. Security</h2>
+<p>Measures include encrypted transport, iOS Keychain, device keys, Supabase row-level security and controlled RPCs, private storage buckets, role-based access, session revocation, image metadata removal, log minimization, backups, and recovery checks. No connected service can guarantee absolute security. If personal information is or may be leaked, altered, or lost, we will mitigate promptly and notify competent authorities and affected people when required, describing the data, cause, likely harm, actions, and contact channel.</p>
+<h2>9. Individual rights</h2>
+<p>Subject to applicable law, users may access, copy, explain, correct, supplement, delete, restrict, or transfer personal information; withdraw consent; leave a shared farm; request a role change; close an account; and complain about processing.</p>
+<p>Use in-app settings or email <code>{{PRIVACY_EMAIL}}</code>. We conduct the minimum identity and authorization check and use 15 business days as an internal response target unless law requires otherwise. A refusal will include reasons and an escalation route. Owners must first export and transfer or delete owned farms so account closure does not harm other members or ledger integrity.</p>
+<h2>10. Children</h2>
+<p>The service is for farm operators and workers with full legal capacity and is not directed to children under 14. If we learn that information about a child under 14 was processed without valid guardian consent, we will suspend the processing, contact the guardian when appropriate, and delete it as required. A dedicated children's notice and guardian consent will precede any future child-directed service.</p>
+<h2>11. Changes</h2>
+<p>We publish each version, update date, and material changes in the app and on the website. Material changes to purposes, methods, categories, recipients, or individual rights may be communicated by prominent in-app notice or email, with renewed or separate consent where required. We retain prior versions and consent evidence as needed for compliance.</p>
+<h2>12. Contact and complaints</h2>
+<p>For privacy questions, rights requests, or incidents, contact <code>{{PRIVACY_EMAIL}}</code>. Users may also complain to the competent cybersecurity, data-protection, consumer, or other regulatory authority.</p></main>
+  <footer>eSheep+ · Legal version 2026.09.01</footer>
+</body>
+</html>

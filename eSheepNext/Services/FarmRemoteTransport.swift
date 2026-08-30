@@ -154,7 +154,7 @@ enum FarmRemoteTransportError: LocalizedError {
     case authorityTransitionMissing
     case invalidAssetDigest
     case baselineStagingRequired
-    case unsupportedICloudBridgeOperation
+    case unsupportedOperation
     case tmrClientUpgradeRequired
 
     var errorDescription: String? {
@@ -167,8 +167,8 @@ enum FarmRemoteTransportError: LocalizedError {
             "附件内容与声明的 SHA-256 摘要不一致。"
         case .baselineStagingRequired:
             "非空牧场必须先完成可验证的暂存基线，不能直接激活 Supabase 权威。"
-        case .unsupportedICloudBridgeOperation:
-            "该 iCloud 操作尚未接入通用传输桥。"
+        case .unsupportedOperation:
+            "该远端传输操作不受当前服务支持。"
         case .tmrClientUpgradeRequired:
             "牧场仍有未支持当前 TMR 数据协议的活跃设备，请先在这些设备上升级并重新打开 App，再重试同步。"
         }
@@ -271,73 +271,73 @@ extension FarmRemoteTransport {
     func prepareAuthorityTransition(
         _: FarmAuthorityTransitionRequest
     ) async throws -> FarmAuthorityTransitionReceipt {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func stageBaselineOperations(
         _: [FarmRemotePendingOperation],
         request _: FarmAuthorityTransitionRequest
     ) async throws -> FarmRemoteOperationPushResult {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func prepareCompactAuthorityTransition(
         _: FarmAuthorityTransitionRequest
     ) async throws -> FarmAuthorityTransitionReceipt {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func stageBaselineProjections(
         _: [FarmCompactBaselinePackageV1.Projection],
         request _: FarmAuthorityTransitionRequest
     ) async throws {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func registerCheckpoint(_: FarmRemoteCheckpoint) async throws {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func authorityTransitionStatus(
         farmID _: UUID,
         migrationID _: UUID
     ) async throws -> FarmAuthorityTransitionStatus {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func compactAuthorityTransitionStatus(
         farmID _: UUID,
         migrationID _: UUID
     ) async throws -> FarmCompactAuthorityTransitionStatus {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func abortAuthorityTransition(
         farmID _: UUID,
         migrationID _: UUID
     ) async throws {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func verifyAndCommitAuthority(
         request _: FarmAuthorityTransitionRequest,
         checkpointID _: UUID
     ) async throws -> FarmAuthorityCommitReceipt {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func registerCompactCheckpoint(
         _: FarmCompactRemoteCheckpoint,
         manifest _: FarmCompactBaselinePackageV1.Manifest
     ) async throws {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func verifyAndCommitCompactAuthority(
         request _: FarmAuthorityTransitionRequest,
         checkpointID _: UUID
     ) async throws -> FarmAuthorityCommitReceipt {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func completeAuthorityTransition(
@@ -345,21 +345,21 @@ extension FarmRemoteTransport {
         migrationID _: UUID,
         authorityGeneration _: Int
     ) async throws -> FarmAuthorityCompletionReceipt {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func downloadLatestCheckpoint(
         farmID _: UUID,
         authorityGeneration _: Int
     ) async throws -> FarmRemoteCheckpoint {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func downloadLatestCompactCheckpoint(
         farmID _: UUID,
         authorityGeneration _: Int
     ) async throws -> FarmCompactRemoteCheckpoint {
-        throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+        throw FarmRemoteTransportError.unsupportedOperation
     }
 
     func pushPendingOperations(
@@ -370,87 +370,6 @@ extension FarmRemoteTransport {
             operations.map(\.envelope),
             authorityGeneration: authorityGeneration
         ))
-    }
-}
-
-/// The existing CloudKit implementation remains authoritative. These
-/// endpoints allow its proven zone/share/checkpoint services to be composed
-/// behind the same contract without reimplementing CloudKit in this type.
-struct ICloudFarmTransportEndpoints: Sendable {
-    let establishBaseline: @Sendable (FarmRemoteBaseline) async throws -> Void
-    let pushOperations: @Sendable ([CloudOperationEnvelope], Int) async throws -> [FarmRemoteOperationReceipt]
-    let pullOperations: @Sendable (UUID, Int, Int, Int) async throws -> FarmRemotePullPage
-    let uploadAsset: @Sendable (UUID, Int, UUID, Data, String, String) async throws -> FarmRemoteAsset
-    let downloadAsset: @Sendable (FarmRemoteAsset) async throws -> Data
-    let members: @Sendable (UUID) async throws -> [FarmRemoteMember]
-    let deactivate: @Sendable (UUID, Int, Bool) async throws -> Void
-}
-
-actor ICloudFarmTransport: FarmRemoteTransport {
-    nonisolated let provider = FarmRemoteProvider.iCloud
-    private let endpoints: ICloudFarmTransportEndpoints
-
-    init(endpoints: ICloudFarmTransportEndpoints) {
-        self.endpoints = endpoints
-    }
-
-    func establishBaseline(_ baseline: FarmRemoteBaseline) async throws {
-        try await endpoints.establishBaseline(baseline)
-    }
-
-    func pushOperations(
-        _ operations: [CloudOperationEnvelope],
-        authorityGeneration: Int
-    ) async throws -> [FarmRemoteOperationReceipt] {
-        try await endpoints.pushOperations(operations, authorityGeneration)
-    }
-
-    func pullOperations(
-        farmID: UUID,
-        authorityGeneration: Int,
-        after revision: Int,
-        limit: Int
-    ) async throws -> FarmRemotePullPage {
-        try await endpoints.pullOperations(
-            farmID,
-            authorityGeneration,
-            revision,
-            max(1, limit)
-        )
-    }
-
-    func uploadAsset(
-        farmID: UUID,
-        authorityGeneration: Int,
-        assetID: UUID,
-        data: Data,
-        sha256: String,
-        contentType: String
-    ) async throws -> FarmRemoteAsset {
-        try await endpoints.uploadAsset(
-            farmID,
-            authorityGeneration,
-            assetID,
-            data,
-            sha256,
-            contentType
-        )
-    }
-
-    func downloadAsset(_ asset: FarmRemoteAsset) async throws -> Data {
-        try await endpoints.downloadAsset(asset)
-    }
-
-    func members(farmID: UUID) async throws -> [FarmRemoteMember] {
-        try await endpoints.members(farmID)
-    }
-
-    func deactivate(
-        farmID: UUID,
-        authorityGeneration: Int,
-        archive: Bool
-    ) async throws {
-        try await endpoints.deactivate(farmID, authorityGeneration, archive)
     }
 }
 

@@ -182,7 +182,7 @@ struct FarmBaselinePackageBuilder {
         }
 
         var nextSequence = frozenSequence + 1
-        let snapshots = try MigrationCloudBootstrapService()
+        let snapshots = try FarmBaselineSnapshotService()
             .makeProviderNeutralSnapshots(farm: farm, context: context)
         let cutoffAt = try context.fetch(FetchDescriptor<FarmStorageProfile>())
             .first(where: {

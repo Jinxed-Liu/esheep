@@ -176,6 +176,12 @@
         }
       }
     },
+    "《服务条款》" : {
+
+    },
+    "《隐私政策》" : {
+
+    },
     "\\n[本条消息已按上下文上限截断]" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -522,6 +528,7 @@
       }
     },
     "%@ · 邀请码 %@" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1329,6 +1336,7 @@
       }
     },
     "8 位邀请码" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1400,6 +1408,9 @@
           }
         }
       }
+    },
+    "AI 会把你主动提交的文字、处理后图片、语音和有限授权牧场结果直接发送给 MiMo。拒绝或撤回不会影响非 AI 功能。" : {
+
     },
     "AI 助手" : {
       "localizations" : {
@@ -1549,6 +1560,9 @@
         }
       }
     },
+    "App 会立即停止当前账号的新云同步和 AI 调用并退出登录。本机缓存不会自动删除；请先导出所需数据。再次登录前必须重新阅读并明确同意。删除云端账号和历史数据需另行使用“删除账户”。" : {
+
+    },
     "App 没有删除或覆盖数据库。你可以重试，导出诊断，或者把原数据库完整隔离后进入备份与云恢复流程。" : {
       "localizations" : {
         "en" : {
@@ -1570,6 +1584,7 @@
       }
     },
     "Apple 登录" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1718,112 +1733,8 @@
         }
       }
     },
-    "CKShare 不能提供 App 字段级服务端权限。这里的证书、设备签名、隔离与恢复属于风险缓解机制，不等同于绝对不可绕过的服务端授权。" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CKShare cannot provide App field-level server-side permissions. The certificates, device signatures, isolation and restore here are risk mitigation mechanisms and are not equivalent to server-side authorization that cannot be bypassed."
-          }
-        }
-      }
-    },
-    "CloudKit 仅用于读取和迁移旧牧场。3.1 新建云端牧场以 Supabase 为权威；每个牧场的数据彼此独立。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CloudKit is used only for reading and moving old pastures. 3.1 New cloudy pastures are under the authority of Supabase; data for each range is independent of each other."
-          }
-        }
-      }
-    },
-    "CloudKit 删除证据" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CloudKit delete evidence"
-          }
-        }
-      }
-    },
-    "CloudKit 已存在另一条通过签名验证的同 revision 删除事实；本机操作保留但停止交付。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "There is another identical deletion verified by signature in CloudKit; this machine retains but stops delivery."
-          }
-        }
-      }
-    },
-    "CloudKit 报告账户暂时不可用。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The CloudKit report account is temporarily unavailable."
-          }
-        }
-      }
-    },
-    "CloudKit 暂时没有可调度记录，已保留进度并等待下次前台继续。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CloudKit, for the time being, had no movement records and had kept progress and was awaiting the next reception."
-          }
-        }
-      }
-    },
-    "CloudKit 未能生成可用的共享邀请链接，请稍后重试。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CloudKit could not generate available shared invitation links. Please try again later."
-          }
-        }
-      }
-    },
-    "CloudKit 未返回可用的共享参与者，请稍后重试。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CloudKit has not returned available shared participants, please try again later."
-          }
-        }
-      }
-    },
-    "CloudKit 本批同步超过硬时限，已请求取消并等待原操作收尾。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CloudKit, which has exceeded the hard time limit, has requested to cancel and wait for the original operation to be completed."
-          }
-        }
-      }
-    },
-    "CloudKit 核对结果" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CloudKit check results"
-          }
-        }
-      }
+    "Controller, address, privacy owner, and email placeholders must be replaced before release." : {
+
     },
     "CP" : {
       "localizations" : {
@@ -1868,6 +1779,7 @@
       }
     },
     "D1" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1911,6 +1823,7 @@
       }
     },
     "Development 服务" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -2146,92 +2059,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "IANA time zone"
-          }
-        }
-      }
-    },
-    "iCloud" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iCloud"
-          }
-        }
-      }
-    },
-    "iCloud 受系统限制" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iCloud subject to system limitations"
-          }
-        }
-      }
-    },
-    "iCloud 可用" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iCloud Available"
-          }
-        }
-      }
-    },
-    "iCloud 已完成" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iCloud Completed"
-          }
-        }
-      }
-    },
-    "iCloud 恢复" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iCloud Recovery"
-          }
-        }
-      }
-    },
-    "iCloud 数据说明" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iCloud Data Description"
-          }
-        }
-      }
-    },
-    "iCloud 暂时不可用" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iCloud is not available for the time being"
-          }
-        }
-      }
-    },
-    "iCloud 账号发生变化，等待重新验证。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iCloud account changed, awaiting recertification."
           }
         }
       }
@@ -2573,17 +2400,6 @@
         }
       }
     },
-    "Operation 与 Tombstone 均已由 CloudKit 证实，Entity 投影不再阻塞交付。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Operation and Tombstone have been confirmed by CloudKit that the Entity projection is no longer blocked."
-          }
-        }
-      }
-    },
     "Operation 无法解析" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -2888,6 +2704,7 @@
       }
     },
     "Supabase 邀请为 256 位随机码，24 小时内只能兑换一次。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -2898,6 +2715,7 @@
       }
     },
     "SwiftData 离线工作库" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -3263,6 +3081,9 @@
         }
       }
     },
+    "Updated / effective" : {
+
+    },
     "UUID 引用" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -3283,6 +3104,9 @@
           }
         }
       }
+    },
+    "Version" : {
+
     },
     "XLSX 使用了不支持的压缩方式。" : {
       "extractionState" : "stale",
@@ -3318,6 +3142,7 @@
       }
     },
     "Zone" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -3500,6 +3325,7 @@
       }
     },
     "上传采用低负载分批处理；高温或低电量时会自动暂停。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -3681,6 +3507,7 @@
       }
     },
     "不会删除业务库、WAL/SHM、照片、CloudAssets、Supabase 迁移备份、Outbox、Tombstone、回执或 Keychain。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -3689,6 +3516,9 @@
           }
         }
       }
+    },
+    "不会删除业务库、WAL/SHM、照片、eSheep 云迁移备份、Outbox、Tombstone、回执或 Keychain。" : {
+
     },
     "不会删除羔羊档案及其后续记录，只补偿本次产羔自动建立且未被人工修正的关系与称重记录。" : {
       "localizations" : {
@@ -3952,6 +3782,7 @@
       }
     },
     "与场主面对面时，双方打开靠近邀请页面，将手机并排放置并逐渐靠近；不要让顶部相碰，以免触发系统 NameDrop。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -4025,7 +3856,11 @@
         }
       }
     },
+    "业务数据已保存" : {
+
+    },
     "业务数据已保存在本机" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -4617,6 +4452,7 @@
       }
     },
     "云端写入已锁定" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -4726,6 +4562,7 @@
       }
     },
     "云端恢复" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -4934,6 +4771,7 @@
       }
     },
     "云端记录" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -5021,6 +4859,7 @@
       }
     },
     "云缓存重建" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -5042,21 +4881,12 @@
       }
     },
     "五种方式发送的是同一个私有邀请。对方接受后会自动匹配成员关系。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "The five methods send the same private invitation. After the other party accepts, the membership will be automatically matched."
-          }
-        }
-      }
-    },
-    "五种方式发送的是同一份私有邀请。对方提交 iCloud 身份、场主批准后，再打开共享链接加入。" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "All five methods send the same private invitation. The invitee submits their iCloud identity, the owner approves it, and the invitee then opens the share link to join."
           }
         }
       }
@@ -5972,6 +5802,7 @@
       }
     },
     "使用 Supabase 一次性邀请码" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -7043,16 +6874,6 @@
         }
       }
     },
-    "先输入邀请码提交本机 iCloud 身份；场主批准后，再打开 CKShare 链接接受共享。" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Enter the invitation code to submit this device's iCloud identity. After the owner approves it, open the CKShare link to accept the share."
-          }
-        }
-      }
-    },
     "克/天" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -7636,6 +7457,7 @@
       }
     },
     "八位邀请码" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -7774,6 +7596,7 @@
       }
     },
     "共享照片估算" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -8099,6 +7922,7 @@
       }
     },
     "最近完成" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -8150,6 +7974,7 @@
       }
     },
     "最高 revision" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -8203,6 +8028,7 @@
       }
     },
     "冲突与安全" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -8802,6 +8628,7 @@
       }
     },
     "分页" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -8823,6 +8650,7 @@
       }
     },
     "切换仅替换当前牧场的已确认云端缓存；账号、其他牧场、本机配置和未确认 Outbox 不参与替换。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -8833,6 +8661,7 @@
       }
     },
     "切换到已校验缓存" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -8892,18 +8721,8 @@
         }
       }
     },
-    "创建后即可离线使用。Development 会在登录与 iCloud 可用时自动上传；失败不会影响本机录入。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Created to use offline. Development automatically uploads when login and iCloud is available; failure does not affect the login."
-          }
-        }
-      }
-    },
     "创建后可选择靠近发送、iMessage、微信、链接或二维码。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -8924,6 +8743,7 @@
       }
     },
     "创建恢复点" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -9382,6 +9202,7 @@
       }
     },
     "刷新成员列表" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -9584,6 +9405,7 @@
       }
     },
     "加入%@的邀请二维码" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -9626,6 +9448,7 @@
       }
     },
     "加入步骤" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -9888,6 +9711,9 @@
           }
         }
       }
+    },
+    "单独同意" : {
+
     },
     "单羊" : {
       "extractionState" : "stale",
@@ -10604,6 +10430,7 @@
       }
     },
     "发送给成员" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -10664,6 +10491,7 @@
       }
     },
     "取消并保留旧库" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -10825,17 +10653,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Only the site owner's Private Database range can create recovery sites."
-          }
-        }
-      }
-    },
-    "只有当前牧场的场主可以建立 CloudKit Zone 和共享。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Only current ranchers can create CloudKit Zone and share it."
           }
         }
       }
@@ -11341,6 +11158,15 @@
         }
       }
     },
+    "同意并启用 AI" : {
+
+    },
+    "同意版本" : {
+
+    },
+    "同意状态" : {
+
+    },
     "同批出售必须填写一笔总售卖金额。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -11417,6 +11243,7 @@
       }
     },
     "同步中心" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -11656,17 +11483,6 @@
         }
       }
     },
-    "启用 CloudKit 时必须配置 CLOUDKIT_CONTAINER_IDENTIFIER。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CLUDKIT CONTAINER IDENTIFIER must be configured to enable CloudKit."
-          }
-        }
-      }
-    },
     "启用 eSheep 云" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -11751,6 +11567,7 @@
       }
     },
     "员工" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -12403,6 +12220,7 @@
       }
     },
     "场主批准后，打开邀请链接接受共享。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -12413,6 +12231,7 @@
       }
     },
     "场主批准后接受共享" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -12423,6 +12242,7 @@
       }
     },
     "场主签名和完整牧场资料均已验证。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -12762,15 +12582,8 @@
         }
       }
     },
-    "备份包含生产记录、历史、删除记录、TMR 和照片。iCloud 或 eSheep 云牧场会先同步；仍有待上传记录时不会生成“已同步”备份。" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The backup includes production records, history, deletion records, TMR data, and photos. iCloud or eSheep Cloud farms sync first; a backup will not be marked “Synced” while uploads are still pending."
-          }
-        }
-      }
+    "备份包含生产记录、历史、删除记录、TMR 和照片。eSheep 云牧场会先同步；仍有待上传记录时不会生成“已同步”备份。" : {
+
     },
     "备份包含重复耳号。" : {
       "extractionState" : "stale",
@@ -13278,6 +13091,7 @@
       }
     },
     "失败结果不会覆盖旧工作库，staging 证据会保留供复核。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -13529,6 +13343,7 @@
       }
     },
     "安全事件" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -13592,6 +13407,7 @@
       }
     },
     "完成时间" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -13712,6 +13528,7 @@
       }
     },
     "实体摘要" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14015,28 +13832,8 @@
         }
       }
     },
-    "对方确认后会验证邀请码并打开 iCloud 共享。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The invitation code will be validated and the iClaud share will be opened after confirmation."
-          }
-        }
-      }
-    },
-    "对方输入邀请码后，你批准其 iCloud 身份；对方随后打开邀请接受私有共享。" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "After the other party enters the invitation code, you approve their iCloud identity; they then open the invitation to private sharing."
-          }
-        }
-      }
-    },
     "对方需要在“加入牧场”中打开“靠近接收”" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14249,6 +14046,7 @@
       }
     },
     "导出恢复包" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14421,6 +14219,7 @@
       }
     },
     "将邀请二维码放入取景框" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14475,6 +14274,7 @@
       }
     },
     "尚未创建" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14786,17 +14586,6 @@
         }
       }
     },
-    "已从同一已验证 staging 原子修复迁移基线羊只投影；未重放云端操作，未重置已完成追赶的 CKSyncEngine 状态。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Only projection of sheep from the same validated atom repair migration baseline has been made; no cloud operation has been reset, no CKSyncEngine status has been reset."
-          }
-        }
-      }
-    },
     "已使用 %lld%%" : {
       "localizations" : {
         "en" : {
@@ -14850,6 +14639,7 @@
       }
     },
     "已保留 Outbox" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14958,6 +14748,7 @@
       }
     },
     "已加入共享牧场" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -15011,6 +14802,7 @@
       }
     },
     "已取消的会话会从头重新执行。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -15019,6 +14811,9 @@
           }
         }
       }
+    },
+    "已同意当前 AI 数据说明" : {
+
     },
     "已启用 eSheep 云。完整备份：%@" : {
       "localizations" : {
@@ -15150,6 +14945,7 @@
       }
     },
     "已应用操作" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -16295,6 +16091,7 @@
       }
     },
     "建立新的 staging 重建" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -16346,6 +16143,7 @@
       }
     },
     "开启成员共享" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -16376,6 +16174,7 @@
       }
     },
     "开始恢复" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -16437,6 +16236,7 @@
       }
     },
     "开始重建" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -16586,17 +16386,6 @@
         }
       }
     },
-    "当前 iCloud 账户不可用。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The current iCloud account is not available."
-          }
-        }
-      }
-    },
     "当前 Key" : {
       "localizations" : {
         "en" : {
@@ -16663,6 +16452,7 @@
       }
     },
     "当前会话" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -16711,17 +16501,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Current use of eSheep clouds"
-          }
-        }
-      }
-    },
-    "当前使用 iCloud" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Current iCloud"
           }
         }
       }
@@ -16801,6 +16580,7 @@
       }
     },
     "当前同步：待上传 %@ · 处理中 %@ · 阻塞 %@" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -16867,6 +16647,7 @@
       }
     },
     "当前已确认写入" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -16888,6 +16669,7 @@
       }
     },
     "当前数据库" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -16919,6 +16701,7 @@
       }
     },
     "当前本地结果" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -17065,6 +16848,9 @@
         }
       }
     },
+    "当前牧场仅保存在本机。请先在“云存储”中启用 eSheep 云，再管理成员与共享。" : {
+
+    },
     "当前牧场及本文件中找不到健康目录。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -17182,17 +16968,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "The current rangelands have not yet been certified for formal migration submission and cloud-based baselines and cannot be built."
-          }
-        }
-      }
-    },
-    "当前牧场尚未建立 CloudKit 绑定。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CloudKit has not been established at this time."
           }
         }
       }
@@ -17318,17 +17093,6 @@
         }
       }
     },
-    "当前牧场没有可用于重建的 CloudKit 绑定。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "There is currently no cloudKit binding available for reconstruction."
-          }
-        }
-      }
-    },
     "当前牧场的 Supabase 启云任务已经在运行，请查看现有进度。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -17438,6 +17202,7 @@
       }
     },
     "当前牧场还不能邀请成员，请稍后重试。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18131,6 +17896,7 @@
       }
     },
     "待迁移照片 %@ 张 · 已生成云端资产 %@ 份" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18315,6 +18081,7 @@
       }
     },
     "恢复" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18335,6 +18102,7 @@
       }
     },
     "恢复与存储" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18345,6 +18113,7 @@
       }
     },
     "恢复中心" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18376,6 +18145,7 @@
       }
     },
     "恢复前会检查数据完整性；如发现异常，本次恢复不会写入。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18386,6 +18156,7 @@
       }
     },
     "恢复包" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18461,22 +18232,12 @@
       }
     },
     "恢复密钥与云端恢复点" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Recovery keys and cloud restore points"
-          }
-        }
-      }
-    },
-    "恢复密钥已写入 iCloud 钥匙串。" : {
       "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Restore key written to iCloud."
+            "value" : "Recovery keys and cloud restore points"
           }
         }
       }
@@ -18514,6 +18275,7 @@
       }
     },
     "恢复点" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18610,6 +18372,7 @@
       }
     },
     "恢复码只在本次导出期间显示，请与恢复包分开保管。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18790,6 +18553,7 @@
       }
     },
     "成员角色" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18811,6 +18575,7 @@
       }
     },
     "成员资格已经建立，正在验证场主签名并下载完整牧场资料。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18871,6 +18636,9 @@
         }
       }
     },
+    "我单独同意必要的境外云处理" : {
+
+    },
     "我只能基于当前牧场本地数据回答羊只数量、圈舍、投喂和健康记录。请换一种问法。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -18881,6 +18649,12 @@
           }
         }
       }
+    },
+    "我已阅读并同意 AI 数据处理说明" : {
+
+    },
+    "我已阅读并同意服务条款和隐私政策" : {
+
     },
     "或" : {
       "localizations" : {
@@ -19295,6 +19069,7 @@
       }
     },
     "打开邀请方式" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -19398,6 +19173,7 @@
       }
     },
     "扫描邀请二维码" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -20728,6 +20504,30 @@
         }
       }
     },
+    "撤回 AI 数据处理同意" : {
+
+    },
+    "撤回 AI 数据处理同意？" : {
+
+    },
+    "撤回同意后停止云服务" : {
+
+    },
+    "撤回后不会再向 MiMo 发送新请求。已保存的 API Key 和历史会话不会自动删除，你仍可分别删除。" : {
+
+    },
+    "撤回境外云处理同意并退出" : {
+
+    },
+    "撤回并停止新请求" : {
+
+    },
+    "撤回并退出" : {
+
+    },
+    "撤回操作未完整完成" : {
+
+    },
     "撤权" : {
       "localizations" : {
         "en" : {
@@ -20946,6 +20746,7 @@
       }
     },
     "操作已完成" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -20967,6 +20768,7 @@
       }
     },
     "操作未完成" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -21053,6 +20855,7 @@
       }
     },
     "改用二维码" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -21189,6 +20992,7 @@
       }
     },
     "数据库" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -21408,17 +21212,6 @@
         }
       }
     },
-    "文件备份只能恢复为新的仅本机牧场，不能直接覆盖 iCloud 或 eSheep 云牧场。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Document backup can only be restored to the new machine ranch and cannot directly cover iClaud or eSheep."
-          }
-        }
-      }
-    },
     "文件大小" : {
       "localizations" : {
         "en" : {
@@ -21461,15 +21254,8 @@
         }
       }
     },
-    "文件恢复只会建立新的仅本机牧场，不会覆盖当前 iCloud 或 eSheep 云牧场。恢复完成并核对后，可再从云存储页面显式迁移。" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Restoring from a file creates a new on-device-only farm and does not overwrite the current iCloud or eSheep Cloud farm. After verifying the restored data, you can explicitly migrate it from Cloud Storage settings."
-          }
-        }
-      }
+    "文件恢复只会建立新的仅本机牧场，不会覆盖当前 eSheep 云牧场。恢复完成并核对后，可再从云存储页面显式迁移。" : {
+
     },
     "文字与工具" : {
       "localizations" : {
@@ -21851,6 +21637,7 @@
       }
     },
     "新会话会替代仍在运行的旧会话，但不会删除上一份已完成结果或未确认 Outbox。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -22295,6 +22082,7 @@
       }
     },
     "无法发送邀请" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -22356,17 +22144,6 @@
         }
       }
     },
-    "无法确定 iCloud 状态" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Could not determine iCloud state"
-          }
-        }
-      }
-    },
     "无法编码附近邀请。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -22377,6 +22154,9 @@
           }
         }
       }
+    },
+    "无法编辑圈舍" : {
+
     },
     "无法解析附近邀请。" : {
       "extractionState" : "stale",
@@ -22419,6 +22199,9 @@
           }
         }
       }
+    },
+    "无法读取圈舍" : {
+
     },
     "无法读取所选图片。" : {
       "extractionState" : "stale",
@@ -23267,6 +23050,7 @@
       }
     },
     "暂无可显示的成员" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -23506,6 +23290,9 @@
         }
       }
     },
+    "更新 / 生效" : {
+
+    },
     "更新健康繁殖提醒" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -23540,6 +23327,7 @@
       }
     },
     "更新日期：2026 年 8 月 18 日" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -23720,6 +23508,7 @@
       }
     },
     "有效期至" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -23740,6 +23529,7 @@
       }
     },
     "有效照片 %@ 张 · 云端资产 %@ 份" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -23756,6 +23546,7 @@
       }
     },
     "有效照片 %@ 张 · 云端资产 %@ 份（含 %@ 份删除历史）" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -23824,7 +23615,6 @@
       }
     },
     "服务条款" : {
-      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -23835,6 +23625,7 @@
       }
     },
     "服务版本" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -24365,17 +24156,6 @@
         }
       }
     },
-    "未登录 iCloud" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iCloud not login"
-          }
-        }
-      }
-    },
     "未知" : {
       "localizations" : {
         "en" : {
@@ -24667,15 +24447,8 @@
         }
       }
     },
-    "本临时迁移结果可进入人工验收。正式牧场、CloudKit 和旧版数据均未写入。" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "This temporary migration result is ready for manual review. No production farm, CloudKit, or legacy data has been modified."
-          }
-        }
-      }
+    "本临时迁移结果可进入人工验收。正式牧场、云端和旧版数据均未写入。" : {
+
     },
     "本交父本必须是已标记的种公羊。" : {
       "extractionState" : "stale",
@@ -24695,17 +24468,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "It's important to have a choice between a male and a male."
-          }
-        }
-      }
-    },
-    "本地 Tombstone 投影已与通过验证的 CloudKit 权威保持一致。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The local Tombstone projector is aligned with the certified CloudKit authority."
           }
         }
       }
@@ -24732,6 +24494,7 @@
       }
     },
     "本地存储" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -24881,6 +24644,7 @@
       }
     },
     "本地记录已排队处理" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -24897,17 +24661,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Local records to be synchronized"
-          }
-        }
-      }
-    },
-    "本地重复 Tombstone 已采用同实体、同 revision 的已验证 CloudKit 权威；历史 Operation 保持不变。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Locally repeats that Tombstone has adopted the same entity, the same validated CloudKit authority; history Operation remains unchanged."
           }
         }
       }
@@ -25236,6 +24989,7 @@
       }
     },
     "本次邀请" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -25371,6 +25125,7 @@
       }
     },
     "权威操作" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -25381,6 +25136,7 @@
       }
     },
     "权威缓存已经切换完成；这里只重建增量同步引擎，不会重新下载整座牧场。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -25467,6 +25223,9 @@
         }
       }
     },
+    "条款、隐私和境外告知版本：%@。同意时间、App 版本和语言会被记录用于证明你的选择。" : {
+
+    },
     "来源" : {
       "localizations" : {
         "en" : {
@@ -25507,22 +25266,22 @@
         }
       }
     },
-    "来源：iCloud · 业务记录 %lld · 照片 %lld" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Source: iCloud · Records %lld · Photos %lld"
-          }
-        }
-      }
-    },
     "来源：仅本机 · 业务记录 %lld · 照片 %lld" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Source: On-device only · Records %lld · Photos %lld"
+          }
+        }
+      }
+    },
+    "来源：已停用的旧云备份 · 业务记录 %lld · 照片 %lld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "来源：已停用的旧云备份 · 业务记录 %1$lld · 照片 %2$lld"
           }
         }
       }
@@ -25630,6 +25389,9 @@
         }
       }
     },
+    "查看 AI 数据处理说明" : {
+
+    },
     "查看、筛选和导出牧场历史" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -25673,6 +25435,9 @@
         }
       }
     },
+    "查看境外提供个人信息告知" : {
+
+    },
     "查看或更换头像" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -25715,6 +25480,9 @@
         }
       }
     },
+    "查看接收方、数据种类、风险和撤回方式" : {
+
+    },
     "查看牧场成员" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -25747,6 +25515,7 @@
       }
     },
     "查看迁移技术明细" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -25883,6 +25652,7 @@
       }
     },
     "校验问题" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -25902,17 +25672,8 @@
         }
       }
     },
-    "核对 CloudKit 并修复（%lld）" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Check CloudKit and fix (%lld)"
-          }
-        }
-      }
-    },
     "核对 Tombstone 权威（%lld）" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -25972,6 +25733,7 @@
       }
     },
     "核对当前牧场的 Operation 与 Tombstone；只有签名验证通过才会修正本地投影或云端签名索引，无法证明一致时不会覆盖权威数据。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -26034,6 +25796,7 @@
       }
     },
     "检查并处理加入申请" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -26055,6 +25818,7 @@
       }
     },
     "检查批准状态并加入" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -26124,17 +25888,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "No changes in the root records of rangelands were detected through signature operations, and no local rangeland information was covered."
-          }
-        }
-      }
-    },
-    "检测到没有合法 Tombstone 的 CloudKit 实体硬删除，未删除本地数据。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "A CloudKit entity with no valid Tombstone was detected to be hard-deleted and local data not deleted."
           }
         }
       }
@@ -26288,16 +26041,6 @@
         }
       }
     },
-    "正在从 iCloud 恢复的牧场" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Restoring farm from iCloud"
-          }
-        }
-      }
-    },
     "正在保存" : {
       "localizations" : {
         "en" : {
@@ -26360,6 +26103,7 @@
       }
     },
     "正在准备成员共享，完成后即可发送邀请" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -26433,6 +26177,7 @@
       }
     },
     "正在创建邀请…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -26463,6 +26208,7 @@
       }
     },
     "正在加入共享牧场" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -26515,6 +26261,7 @@
       }
     },
     "正在同步" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -26653,17 +26400,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Looking for an invitation"
-          }
-        }
-      }
-    },
-    "正在建立 iCloud 牧场" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Creating iCloud ranch"
           }
         }
       }
@@ -26849,6 +26585,9 @@
         }
       }
     },
+    "正在整理圈舍" : {
+
+    },
     "正在整理投喂历史" : {
       "localizations" : {
         "en" : {
@@ -26921,16 +26660,6 @@
         }
       }
     },
-    "正在核对 CloudKit…" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Checking CloudKit…"
-          }
-        }
-      }
-    },
     "正在核对云端数据" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -26959,6 +26688,7 @@
       }
     },
     "正在核对当前同步状态" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -26990,6 +26720,7 @@
       }
     },
     "正在检查…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -27225,6 +26956,9 @@
         }
       }
     },
+    "正在读取圈舍" : {
+
+    },
     "正在读取成员…" : {
       "localizations" : {
         "en" : {
@@ -27360,6 +27094,7 @@
       }
     },
     "正在验证…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -27431,6 +27166,9 @@
           }
         }
       }
+    },
+    "正式发布前必须将主体、地址、隐私负责人和邮箱占位符替换为真实信息。" : {
+
     },
     "正式日均只计算截至昨天的完整自然日；晚补录转群、离场、投喂或盘槽后会按事实时间重新计算。" : {
       "localizations" : {
@@ -28278,6 +28016,7 @@
       }
     },
     "没有已记录的问题" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -28437,6 +28176,9 @@
           }
         }
       }
+    },
+    "法律文件" : {
+
     },
     "注册并发送验证邮件" : {
       "localizations" : {
@@ -29211,6 +28953,7 @@
       }
     },
     "照片在共享区与场主恢复区各保留一份压缩权威版本，界面数值为本机已知记录的估算值。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -29550,6 +29293,9 @@
         }
       }
     },
+    "版本" : {
+
+    },
     "牧场" : {
       "localizations" : {
         "en" : {
@@ -29583,6 +29329,7 @@
       }
     },
     "牧场主确认后，牧场会自动出现在切换菜单中。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -29593,6 +29340,7 @@
       }
     },
     "牧场云端状态" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -29719,17 +29467,6 @@
         }
       }
     },
-    "牧场尚未建立有效的 CloudKit 绑定。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ClaudKit has not yet been effectively bound."
-          }
-        }
-      }
-    },
     "牧场尚未确认 TMR 监控总开关；计划仍会显示差值，但不会自动提醒。" : {
       "localizations" : {
         "en" : {
@@ -29762,17 +29499,6 @@
         }
       }
     },
-    "牧场已经绑定其他 iCloud 区域，不能自动升级。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The rangelands have been bound to other iCloud areas and cannot be automatically upgraded."
-          }
-        }
-      }
-    },
     "牧场快照" : {
       "localizations" : {
         "en" : {
@@ -29784,6 +29510,7 @@
       }
     },
     "牧场成员" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -29900,6 +29627,7 @@
       }
     },
     "环境" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -30215,6 +29943,7 @@
       }
     },
     "生效版本：3.1.0" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -30449,6 +30178,7 @@
       }
     },
     "申请加入" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -30459,6 +30189,7 @@
       }
     },
     "申请已提交" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -31050,6 +30781,7 @@
       }
     },
     "直接复用已经完成下载和校验的 staging，不会重新全量拉取。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -31213,6 +30945,7 @@
       }
     },
     "确认从恢复点重建" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -31300,16 +31033,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Confirm that only the current goal, valid feeding record and completion status are bound; new deviations will still be generated after the data changes."
-          }
-        }
-      }
-    },
-    "确认后会验证邀请码，并把本机 iCloud 身份提交给场主批准。" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "After confirmation, invitation code will be verified and the local iCloud identity will be submitted to owner for approval."
           }
         }
       }
@@ -32050,6 +31773,7 @@
       }
     },
     "私有恢复照片" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -32296,6 +32020,7 @@
       }
     },
     "移除成员" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -32358,6 +32083,7 @@
       }
     },
     "立即同步" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -32464,27 +32190,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Waiting for another phone."
-          }
-        }
-      }
-    },
-    "等待场主批准你的 iCloud 身份。" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wait for owner to approve your iCloud identity."
-          }
-        }
-      }
-    },
-    "等待场主确认 CKShare 参与者" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Waiting for the owner to confirm CKShare attendees"
           }
         }
       }
@@ -32626,6 +32331,7 @@
       }
     },
     "管理员" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -32647,6 +32353,7 @@
       }
     },
     "管理苹果共享成员" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -32862,17 +32569,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "The system will continue the next time the front desk is restore and will not set the current semi-finished product as the cloud authority."
-          }
-        }
-      }
-    },
-    "系统会将已对账数据和云端基线原子写入当前账号。旧版 eSheep+ 不会被修改，iCloud 上传将在建场成功后自动进行。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The system will write reconciled data and cloud baseline atoms to the current account number. The old version eSheep+ will not be modified, and the iCloud upload will be automatically done after the site has been successfully built."
           }
         }
       }
@@ -33401,6 +33097,7 @@
       }
     },
     "继续上传" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -33472,6 +33169,7 @@
       }
     },
     "继续表示你已阅读并同意以下说明：" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -35469,6 +35167,7 @@
       }
     },
     "解决结果" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -36029,6 +35728,7 @@
       }
     },
     "设为员工" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -36059,6 +35759,7 @@
       }
     },
     "设为管理员" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -36164,6 +35865,7 @@
       }
     },
     "诊断实体" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -36174,6 +35876,7 @@
       }
     },
     "诊断摘要" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -36184,6 +35887,7 @@
       }
     },
     "诊断时间" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -36194,22 +35898,12 @@
       }
     },
     "诊断照片" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diagnostic photos"
-          }
-        }
-      }
-    },
-    "该 iCloud 操作尚未接入通用传输桥。" : {
       "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The iCloud operation has not yet reached the Universal Transmission Bridge."
+            "value" : "Diagnostic photos"
           }
         }
       }
@@ -36365,6 +36059,7 @@
       }
     },
     "该圈舍可能已删除或不属于当前牧场。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -36975,6 +36670,9 @@
         }
       }
     },
+    "请先阅读并主动选择" : {
+
+    },
     "请关闭后刷新事件历史。" : {
       "localizations" : {
         "en" : {
@@ -37255,6 +36953,7 @@
       }
     },
     "请让对方打开 eSheepNext → 加入牧场 → 扫描邀请二维码" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -37342,6 +37041,7 @@
       }
     },
     "请返回并使用复制链接。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -37722,6 +37422,9 @@
           }
         }
       }
+    },
+    "账号、云同步和协作使用境外 Supabase 基础设施；不同意时不能使用这些云功能。可选 AI 仍会另行征求同意。" : {
+
     },
     "账号名" : {
       "extractionState" : "stale",
@@ -38125,6 +37828,7 @@
       }
     },
     "身份" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -38135,6 +37839,7 @@
       }
     },
     "身份服务" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -38474,6 +38179,7 @@
       }
     },
     "输入邀请消息中的 8 位邀请码。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -38582,6 +38288,7 @@
       }
     },
     "迁移基线写入" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -38592,6 +38299,7 @@
       }
     },
     "迁移基线外写入" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -38602,6 +38310,7 @@
       }
     },
     "迁移基线已确认 %@ / %@ · 待上传 %@ · 处理中 %@ · 阻塞 %@" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -38737,6 +38446,7 @@
       }
     },
     "迁移数据上传" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -38747,6 +38457,7 @@
       }
     },
     "迁移数据已上传" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -38768,6 +38479,7 @@
       }
     },
     "迁移时照片" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -39176,6 +38888,7 @@
       }
     },
     "这是 App 私有邀请数据，系统相机不会把它当作网页链接。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -39216,7 +38929,11 @@
         }
       }
     },
+    "这条记录在本机和 eSheep 云都发生过更改，请选择要保留的版本。" : {
+
+    },
     "这条记录在本机和云端都发生过更改，请选择要保留的版本。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -39301,6 +39018,7 @@
       }
     },
     "这里用于查看或移除已共享成员，不是发送邀请。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -39418,6 +39136,7 @@
       }
     },
     "退出共享牧场" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -39632,7 +39351,11 @@
         }
       }
     },
+    "选择后，App 会再次检查记录是否符合当前牧场的业务规则。" : {
+
+    },
     "选择后，应用会再次检查记录是否符合当前牧场的业务规则。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -39683,6 +39406,7 @@
       }
     },
     "选择恢复包并导入" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -39890,6 +39614,7 @@
       }
     },
     "邀请加入%@" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -39900,6 +39625,7 @@
       }
     },
     "邀请加入牧场" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -39921,6 +39647,7 @@
       }
     },
     "邀请已安全传送" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -39953,6 +39680,7 @@
       }
     },
     "邀请成员" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -39974,6 +39702,7 @@
       }
     },
     "邀请码" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -40289,6 +40018,7 @@
       }
     },
     "配置 Development Worker 后需要重新使用 Apple 登录，才能注册设备、取得角色证书和加入共享牧场。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -40468,6 +40198,7 @@
       }
     },
     "重建中心" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -40478,6 +40209,7 @@
       }
     },
     "重建原则" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -40542,16 +40274,6 @@
         }
       }
     },
-    "重建期间牧场保持只读。系统从 CloudKit 全量拉取到独立 staging 工作区，校验通过前不会清空或覆盖当前本地缓存。" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Farm remains read-only during reconstruction. The system pulls the full amount from CloudKit to the independent staging workspace, and does not empty or overwrite the current local cache until the verification passes."
-          }
-        }
-      }
-    },
     "重建结果尚未通过校验，不能切换本地缓存。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -40585,6 +40307,7 @@
       }
     },
     "重新切换已校验缓存" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -40666,6 +40389,7 @@
       }
     },
     "重新执行此会话" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -40687,6 +40411,7 @@
       }
     },
     "重新查找" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -40748,6 +40473,7 @@
       }
     },
     "重新连接增量同步" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -41073,7 +40799,6 @@
       }
     },
     "隐私政策" : {
-      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -41346,6 +41071,7 @@
       }
     },
     "靠近接收" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -41356,6 +41082,7 @@
       }
     },
     "靠近接收邀请" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -41366,6 +41093,7 @@
       }
     },
     "靠近邀请" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -41387,6 +41115,7 @@
       }
     },
     "面对面邀请" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -41646,6 +41375,7 @@
       }
     },
     "验证" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -41656,6 +41386,7 @@
       }
     },
     "验证并申请加入" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -41666,6 +41397,7 @@
       }
     },
     "验证邀请码" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -41721,6 +41453,15 @@
           }
         }
       }
+    },
+    "默认关闭；同意只适用于可选 AI，不影响其他牧场功能" : {
+
+    },
+    "默认关闭；打开后表示同意当前版本的服务条款和隐私政策" : {
+
+    },
+    "默认关闭；这是与条款和隐私政策分开的单独同意" : {
+
     },
     "默认剂量" : {
       "localizations" : {

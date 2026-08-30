@@ -16,16 +16,6 @@ enum IdentityWorkerConfiguration {
     }
 }
 
-enum CloudFeatureConfiguration {
-    static var isEnabled: Bool {
-        if let value = Bundle.main.object(forInfoDictionaryKey: "CLOUD_COLLABORATION_ENABLED") as? Bool { return value }
-        if let value = Bundle.main.object(forInfoDictionaryKey: "CLOUD_COLLABORATION_ENABLED") as? String {
-            return ["yes", "true", "1"].contains(value.lowercased())
-        }
-        return false
-    }
-}
-
 enum MemberSharingConfiguration {
     /// 正式迁移牧场完成云端基线并激活后开放成员共享。
     static let isEnabled = true
@@ -87,40 +77,6 @@ struct WorkerAccountDeletionResponse: Codable, Sendable, Equatable {
     let status: String
 }
 
-struct WorkerInviteResponse: Codable, Sendable {
-    let inviteID: String
-    let code: String
-    let role: FarmRole
-    let expiresAt: Int
-    let shareParticipantID: String?
-}
-
-struct WorkerRedeemResponse: Codable, Sendable {
-    let inviteID: String
-    let farmID: UUID
-    let role: FarmRole
-    let membershipStatus: String
-    let shareURL: URL?
-}
-
-struct WorkerPendingInviteResponse: Codable, Sendable {
-    let inviteID: String
-    let farmID: UUID
-    let role: FarmRole
-    let shareParticipantID: String?
-    let cloudKitUserRecordName: String?
-    let expiresAt: Int
-}
-
-struct WorkerCapabilityResponse: Codable, Sendable {
-    let certificateID: String
-    let certificate: String
-    let role: FarmRole
-    let capabilities: [FarmCapability]
-    let issuedAt: Int
-    let expiresAt: Int
-}
-
 struct WorkerAccountStatus: Codable, Sendable {
     struct Features: Codable, Sendable {
         let mimoInsights: Bool?
@@ -131,8 +87,6 @@ struct WorkerAccountStatus: Codable, Sendable {
         let ownerAccountID: UUID?
         let role: FarmRole
         let status: String
-        let cloudZoneName: String?
-        let shareRecordName: String?
     }
 
     let accountID: UUID
@@ -547,95 +501,6 @@ actor IdentityWorkerClient {
         )
     }
 
-    func registerFarm(farmID: UUID, zoneName: String, shareRecordName: String?, status: String = "active") async throws {
-        let _: WorkerFarmRegistrationResponse = try await request(path: "/v1/farms/register", method: "POST", body: FarmRegistrationBody(farmID: farmID, zoneName: zoneName, shareRecordName: shareRecordName, status: status))
-    }
-
-    func activateFarm(farmID: UUID) async throws {
-        let _: WorkerFarmRegistrationResponse = try await request(path: "/v1/farms/\(farmID.uuidString.lowercased())/activate", method: "POST", body: Optional<String>.none)
-    }
-
-    func createInvite(
-        farmID: UUID,
-        role: FarmRole,
-        shareParticipantID: String? = nil,
-        shareURL: URL? = nil
-    ) async throws -> WorkerInviteResponse {
-        try await request(
-            path: "/v1/invites",
-            method: "POST",
-            body: InviteBody(
-                farmID: farmID,
-                role: role,
-                shareParticipantID: shareParticipantID,
-                shareURL: shareURL
-            )
-        )
-    }
-
-    func redeemInvite(
-        code: String,
-        cloudKitUserRecordName: String
-    ) async throws -> WorkerRedeemResponse {
-        try await request(
-            path: "/v1/invites/redeem",
-            method: "POST",
-            body: [
-                "code": code,
-                "cloudKitUserRecordName": cloudKitUserRecordName,
-            ]
-        )
-    }
-
-    func redeemInvite(shareParticipantID: String) async throws -> WorkerRedeemResponse {
-        try await request(
-            path: "/v1/invites/redeem",
-            method: "POST",
-            body: ["shareParticipantID": shareParticipantID]
-        )
-    }
-
-    func pendingInvites(farmID: UUID) async throws -> [WorkerPendingInviteResponse] {
-        try await request(
-            path: "/v1/farms/\(farmID.uuidString.lowercased())/invites/pending",
-            method: "GET",
-            body: Optional<String>.none
-        )
-    }
-
-    func confirmInvite(inviteID: String, participantRecordName: String) async throws {
-        try await requestEmpty(
-            path: "/v1/invites/\(inviteID)/confirm",
-            method: "POST",
-            body: ["shareParticipantRecordName": participantRecordName]
-        )
-    }
-
-    func changeMemberRole(memberID: String, farmID: UUID, role: FarmRole) async throws {
-        try await requestEmpty(
-            path: "/v1/members/\(memberID)",
-            method: "PATCH",
-            body: InviteBody(
-                farmID: farmID,
-                role: role,
-                shareParticipantID: nil,
-                shareURL: nil
-            )
-        )
-    }
-
-    func removeMember(memberID: String, farmID: UUID) async throws {
-        try await requestEmpty(
-            path: "/v1/members/\(memberID)",
-            method: "DELETE",
-            body: FarmOnlyBody(farmID: farmID)
-        )
-    }
-
-    func issueCapability(farmID: UUID, deviceID: UUID) async throws -> WorkerCapabilityResponse {
-        try await request(path: "/v1/capabilities/issue", method: "POST", body: CapabilityBody(farmID: farmID, deviceID: deviceID))
-    }
-
     func accountStatus() async throws -> WorkerAccountStatus {
         try await request(path: "/v1/account/status", method: "GET", body: Optional<String>.none)
     }
@@ -866,16 +731,6 @@ private struct PasswordRegistrationBody: Codable {
 private struct PasswordLoginBody: Codable { let username: String; let password: String }
 private struct AccountProfileUpdateBody: Codable { let displayName: String }
 private struct AccountAvatarUpdateBody: Codable { let dataBase64: String; let digest: String }
-private struct FarmRegistrationBody: Codable { let farmID: UUID; let zoneName: String; let shareRecordName: String?; let status: String }
-private struct WorkerFarmRegistrationResponse: Codable { let farmID: UUID; let status: String }
-private struct InviteBody: Codable {
-    let farmID: UUID
-    let role: FarmRole
-    let shareParticipantID: String?
-    let shareURL: URL?
-}
-private struct CapabilityBody: Codable { let farmID: UUID; let deviceID: UUID }
-private struct FarmOnlyBody: Codable { let farmID: UUID }
 struct EmptyResponse: Codable, Sendable, Equatable {}
 
 enum IdentityWorkerResponseDecoder {

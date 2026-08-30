@@ -502,6 +502,10 @@ final class InsightConversationController {
             availability = .unavailable("当前牧场角色没有读取牧场的权限。")
             return
         }
+        guard AIPrivacyConsentStore.hasCurrentConsent(for: account.effectiveAccountID) else {
+            availability = .unavailable("请先在 AI 助手设置中阅读并单独同意 AI 数据处理说明。")
+            return
+        }
         do {
             if let credential = try await MiMoCredentialVault.shared.credential(for: account.effectiveAccountID) {
                 availability = .ready(maskedCredential: credential.maskedValue)
@@ -523,6 +527,9 @@ final class InsightConversationController {
 
     @discardableResult
     func saveCredential(_ apiKey: String) async throws -> MiMoCredential {
+        guard AIPrivacyConsentStore.hasCurrentConsent(for: account.effectiveAccountID) else {
+            throw InsightSecurityError.privacyConsentRequired
+        }
         let credential = try await validateCredential(apiKey)
         _ = try await MiMoCredentialVault.shared.save(
             apiKey: credential.apiKey,
@@ -897,6 +904,11 @@ final class InsightConversationController {
         origin: InsightInputOrigin
     ) async {
         guard let modelContext else { return }
+        guard AIPrivacyConsentStore.hasCurrentConsent(for: account.effectiveAccountID) else {
+            availability = .unavailable("请先在 AI 助手设置中阅读并单独同意 AI 数据处理说明。")
+            errorMessage = InsightSecurityError.privacyConsentRequired.localizedDescription
+            return
+        }
         guard case .ready = availability else {
             errorMessage = "请先配置并验证 AI 助手使用的 MiMo API Key。"
             return

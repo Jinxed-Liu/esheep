@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="index,follow">
+  <title>eSheep+ AI and International Transfer Notice</title>
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../assets/site.css">
+</head>
+<body>
+  <header>
+      <nav aria-label="Legal and support">
+        <a href="../privacy/">Privacy</a>
+        <a href="../terms/">Terms</a>
+        <a href="../ai-privacy/">AI &amp; transfers</a>
+        <a href="../account-deletion/">Delete account</a>
+        <a href="../support/">Support</a>
+        <a href="../../zh-cn/ai-privacy/" hreflang="zh-CN">简体中文</a>
+      </nav></header>
+  <main><h1>eSheep+ AI and International Transfer Notice</h1>
+<p>Version: 2026.09.01 Updated: August 27, 2026</p>
+<p>This notice prominently identifies overseas recipients, purposes, methods, categories, risks, and rights in addition to the Privacy Policy. <strong>Necessary cloud processing and optional AI require separate, unchecked-by-default consents.</strong></p>
+<h2>1. Core cloud accounts, sync, and collaboration</h2>
+<ul>
+<li>Recipient: Supabase, Inc./Supabase Pte. Ltd. and infrastructure subprocessors listed in the applicable DPA.</li>
+<li>Country or region: <code>{{SUPABASE_REGION_COUNTRY}}</code> (planned: Singapore; verify against the production console, contract, and subprocessor list before release).</li>
+<li>Contact and rights: contact <code>{{PRIVACY_EMAIL}}</code> first or use Supabase's official privacy channel for processing it controls.</li>
+<li>Purpose: authentication, database sync, private attachments, role collaboration, recovery, backups, and security audit.</li>
+<li>Method: encrypted direct connection from the app to the production Supabase project with account-, farm-, and role-scoped RLS/RPC controls.</li>
+<li>Categories: display name, email, user/device IDs, session security, farm location, memberships, farm content and attachments, and necessary IP, timestamp, request-status, and security logs.</li>
+<li>Retention: active service period and the deletion rules in the Privacy Policy; backup/security-log target maximum 30 days, subject to final production verification.</li>
+<li>Necessity: the current account, cloud sync, and collaboration functions depend on this infrastructure. Refusal or withdrawal stops new transfers and disables those cloud functions, without removing legally available export, closure, or local-data options.</li>
+</ul>
+<h2>2. Authentication email</h2>
+<ul>
+<li>Recipient: <code>{{SMTP_PROVIDER}}</code></li>
+<li>Country or region: <code>{{SMTP_REGION_COUNTRY}}</code></li>
+<li>Purpose and categories: registration, recovery, and security email using the address, message content, delivery status, and necessary IP/time logs.</li>
+<li>Rights and retention: <code>{{SMTP_PRIVACY_URL}}</code>; <code>{{SMTP_RETENTION}}</code>.</li>
+</ul>
+<p>Email registration must not launch until these fields are completed.</p>
+<h2>3. Optional MiMo AI</h2>
+<ul>
+<li>External or overseas recipient: Xiaomi MiMo. Its July 7, 2026 Service Agreement says the platform is operated by Xiaomi Technologies Singapore Pte. Ltd. and also identifies Xiaomi Technology Netherlands B.V. and applicable affiliates. The actual API storage/processing region is <code>{{MIMO_API_REGION_COUNTRY}}</code> and must be confirmed in writing before release.</li>
+<li>Contact: MiMo's official Contact Us, <code>support-mimo@xiaomi.com</code>, and Xiaomi privacy-support channels, or <code>{{PRIVACY_EMAIL}}</code>.</li>
+<li>Purpose: answer intentional prompts, understand selected images/audio, and create a locally reviewable farm-action draft.</li>
+<li>Method: the user supplies a MiMo API key and the iPhone calls MiMo over encrypted transport; the eSheep server does not receive the readable key.</li>
+<li>Categories: intentional text, re-encoded images without original EXIF, recordings, conversation context, and limited authorized farm results for the current question. Broader sensitive detail receives a per-action prompt.</li>
+<li>Retention and training: governed by the current MiMo API policy. Privacy Policy version <code>v20260421</code> (stated update date: March 17, 2026) says API content is not used for model training or other purposes; we will update this notice if that rule changes.</li>
+<li>Optional: refusal does not affect non-AI records, sync, or export. Withdrawal stops new AI requests; the user can remove the local key and conversations.</li>
+</ul>
+<h2>4. Risks and safeguards</h2>
+<p>Other jurisdictions may have different privacy and government-access rules. Providers may suffer outages or unauthorized access and change subprocessors. Free text, images, or audio may unintentionally include unrelated personal data. AI can be wrong.</p>
+<p>Safeguards include DPA/contract and subprocessor review, TLS, Keychain, RLS, private storage, role access, minimized queries, image re-encoding, voice retention off by default, human confirmation before writes, account deletion, and an incident plan. No measure eliminates all risk. Do not upload passwords, identity numbers, bank details, or human medical records.</p>
+<h2>5. Consent and withdrawal</h2>
+<p>Checking “Consent to necessary international processing” confirms separate consent for the core cloud scope above. AI requires another consent in AI settings and is not covered by the core-cloud checkbox.</p>
+<p>Withdraw in settings or through <code>{{PRIVACY_EMAIL}}</code>. Withdrawal does not invalidate earlier lawful processing; we stop future transfers and explain feature impact, export, and deletion options.</p></main>
+  <footer>eSheep+ · Legal version 2026.09.01</footer>
+</body>
+</html>

@@ -7,3 +7,10 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
 
 Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
+
+## Durable eSheepNext Web decisions
+
+- The user rejected the previous Web product because it was visually dated and its feature hierarchy did not match the iOS App. Do not treat this as a cosmetic-only restyle.
+- The Web top-level navigation must mirror `FarmWorkspaceView`: `首页 / 洞察 / 录入 / 投喂 / 搜索`. Sheep and pens open from Home; TMR stays inside Feeding; health/reproduction, production batches, and event history stay inside Records; account and farm settings stay behind the avatar.
+- The selected redesign source of truth is `design-qa-assets/home-redesign-option-1.png` at 1487 × 1058. Preserve its slim left rail, quiet top bar, open main work area, narrow action column, typography hierarchy, spacing, and restrained blue/white visual system.
+- Cloud projection and production-write truth remain product requirements. Never label a browser-only draft, preview fixture, or unavailable App capability as synced or submitted.

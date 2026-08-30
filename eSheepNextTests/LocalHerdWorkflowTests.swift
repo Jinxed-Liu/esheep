@@ -279,13 +279,13 @@ final class LocalHerdWorkflowTests: XCTestCase {
 
         let data = try FarmPortableBackupService.export(
             farmID: source.farm.id,
-            sourceStorageMode: .iCloud,
+            sourceStorageMode: .retiredAppleCloud,
             sourceAuthorityGeneration: 7,
             sourceWasFullySynchronized: true,
             context: source.context
         )
         let preview = try FarmPortableBackupService.preview(data: data)
-        XCTAssertEqual(preview.sourceStorageMode, .iCloud)
+        XCTAssertEqual(preview.sourceStorageMode, .retiredAppleCloud)
         XCTAssertTrue(preview.sourceWasFullySynchronized)
         XCTAssertEqual(preview.photoCount, 1)
 
@@ -353,7 +353,7 @@ final class LocalHerdWorkflowTests: XCTestCase {
             )
         )
 
-        for mode in [FarmStorageMode.iCloud, .supabase] {
+        for mode in [FarmStorageMode.retiredAppleCloud, .supabase] {
             let destination = try makeFixture(farmName: "云端目标")
             destination.context.insert(FarmStorageProfile(
                 farmID: destination.farm.id,

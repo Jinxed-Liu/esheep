@@ -67,7 +67,6 @@ struct SheepPhotoViewer: View {
         }
         .task(id: LoadKey(
             candidates: item.candidates,
-            lastSuccessfulSyncAt: collaboration.lastSuccessfulSyncAt,
             retryToken: retryToken
         )) {
             await loadPhoto()
@@ -144,7 +143,6 @@ struct SheepPhotoViewer: View {
 
     private struct LoadKey: Hashable {
         let candidates: [SheepPhotoReference]
-        let lastSuccessfulSyncAt: Date?
         let retryToken: Int
     }
 }

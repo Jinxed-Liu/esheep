@@ -11,11 +11,25 @@ const intentSections = {
 const pageIntents = {
   home: "overview",
   flock: "herd",
+  pens: "herd",
+  alerts: "overview",
   entry: "records",
+  care: "records",
+  batches: "records",
   events: "records",
   feeding: "tmr",
+  "feed-history": "tmr",
+  ingredients: "tmr",
   tmr: "tmr",
+  "tmr-feed": "tmr",
+  "tmr-produce": "tmr",
+  "tmr-batches": "tmr",
+  "tmr-monitor": "tmr",
+  "tmr-plans": "tmr",
+  "tmr-formulas": "tmr",
   insights: "insight",
+  assistant: "insight",
+  search: "herd",
   settings: "overview",
 };
 
@@ -41,6 +55,15 @@ export function workspaceEntityTypesForSections(sections) {
   const entityTypes = ["farm", "pen", "sheep", "feed", "transfer", "removal"];
   if (requested.has("herd") || requested.has("insight")) {
     entityTypes.push("weight");
+  }
+  if (requested.has("insight")) {
+    entityTypes.push(
+      "weaning",
+      "reproduction",
+      "productionBatch",
+      "batchMembership",
+      "feedTroughObservation",
+    );
   }
   if (requested.has("tmr")) {
     entityTypes.push("feedIngredient", "tmrFormula", "tmrFeedingPlan");

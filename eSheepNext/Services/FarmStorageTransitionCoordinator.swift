@@ -4,6 +4,7 @@ import SwiftData
 enum FarmStorageTransitionError: LocalizedError, Equatable {
     case profileMissing
     case transitionAlreadyActive
+    case retiredProviderUnavailable
     case sameMode
     case sharedFarmCannotBecomeLocal
     case invalidState(
@@ -18,6 +19,8 @@ enum FarmStorageTransitionError: LocalizedError, Equatable {
             "当前牧场缺少存储模式配置。"
         case .transitionAlreadyActive:
             "当前牧场已经在执行存储迁移。"
+        case .retiredProviderUnavailable:
+            "旧云存储已停用；该牧场会在启动清理中删除，不能执行存储迁移。"
         case .sameMode:
             "目标存储模式与当前模式相同。"
         case .sharedFarmCannotBecomeLocal:
@@ -41,6 +44,10 @@ enum FarmStorageTransitionCoordinator {
         let profile = try profile(farmID: farmID, context: context)
         guard profile.transitionState == .idle else {
             throw FarmStorageTransitionError.transitionAlreadyActive
+        }
+        guard profile.mode != .retiredAppleCloud,
+              targetMode != .retiredAppleCloud else {
+            throw FarmStorageTransitionError.retiredProviderUnavailable
         }
         guard profile.mode != targetMode else {
             throw FarmStorageTransitionError.sameMode

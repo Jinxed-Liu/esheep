@@ -317,7 +317,7 @@ private actor LocalStorageArchiveWorker {
 
 /// Reclaims only data that is either independently archived or can be rebuilt
 /// from a verified authority. Business entities, DomainOperation, Tombstone,
-/// photos, CloudKit receipts and security incidents are deliberately excluded.
+/// photos, remote receipts and security incidents are deliberately excluded.
 @MainActor
 struct LocalStorageOptimizationService {
     private static let auditArchiveRoot = "MigrationAuditArchives"

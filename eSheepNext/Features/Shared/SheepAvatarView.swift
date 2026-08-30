@@ -96,8 +96,7 @@ private struct SheepPhotoImage: View {
         .task(id: LoadKey(
             photos: photos,
             maximumPixelSize: maximumPixelSize,
-            renderingMode: renderingMode,
-            lastSuccessfulSyncAt: collaboration.lastSuccessfulSyncAt
+            renderingMode: renderingMode
         )) {
             image = nil
             didFail = false
@@ -122,19 +121,6 @@ private struct SheepPhotoImage: View {
         let photos: [SheepPhotoReference]
         let maximumPixelSize: Int
         let renderingMode: SheepPhotoRenderingMode
-        let lastSuccessfulSyncAt: Date?
-
-        init(
-            photos: [SheepPhotoReference],
-            maximumPixelSize: Int,
-            renderingMode: SheepPhotoRenderingMode,
-            lastSuccessfulSyncAt: Date?
-        ) {
-            self.photos = photos
-            self.maximumPixelSize = maximumPixelSize
-            self.renderingMode = renderingMode
-            self.lastSuccessfulSyncAt = lastSuccessfulSyncAt
-        }
     }
 }
 

@@ -97,6 +97,14 @@ final class SheepDetailSnapshotActorTests: XCTestCase {
             itemNameSnapshot: "群体驱虫",
             occurredAt: Date(timeIntervalSince1970: 600)
         )
+        let unrelatedHealth = HealthRecord(
+            farmID: farmID,
+            sheepID: otherSheep.id,
+            penID: nil,
+            kind: .treatment,
+            itemNameSnapshot: "其他羊治疗",
+            occurredAt: Date(timeIntervalSince1970: 650)
+        )
         let healthLink = HealthSubjectLink(
             farmID: farmID,
             healthRecordID: linkedHealth.id,
@@ -133,6 +141,7 @@ final class SheepDetailSnapshotActorTests: XCTestCase {
         context.insert(transfer)
         context.insert(directHealth)
         context.insert(linkedHealth)
+        context.insert(unrelatedHealth)
         context.insert(healthLink)
         context.insert(lambing)
         context.insert(photo)
@@ -153,12 +162,16 @@ final class SheepDetailSnapshotActorTests: XCTestCase {
         )
         let reader = SheepDetailSnapshotActor(container: container)
         let entry = try await reader.loadEntry(farmID: farmID, sheepID: sheep.id)
+        let screen = try await reader.loadScreen(farmID: farmID, sheepID: sheep.id)
         let snapshot = try await reader.load(farmID: farmID, sheepID: sheep.id, subject: subject)
 
         XCTAssertEqual(entry?.subject.id, sheep.id)
         XCTAssertEqual(entry?.subject.earTag, "S3-SH030")
         XCTAssertEqual(entry?.subject.note, "重点观察")
         XCTAssertEqual(entry?.penName, "产羔舍")
+        XCTAssertEqual(screen?.entry.subject.id, sheep.id)
+        XCTAssertNil(screen?.detailLoadErrorDescription)
+        XCTAssertEqual(screen?.detail?.timeline.count, 9)
         XCTAssertEqual(snapshot.weights.map(\.kilograms), [42.5, 25, 40, 3.2])
         XCTAssertEqual(snapshot.weights.map(\.source), [.weighing, .weaning, .weighing, .lambingBirth])
         XCTAssertEqual(snapshot.photos.map(\.id), [photo.id])
@@ -167,6 +180,7 @@ final class SheepDetailSnapshotActorTests: XCTestCase {
         XCTAssertEqual(snapshot.timeline.first?.id, photo.id)
         XCTAssertTrue(snapshot.timeline.contains { $0.title == "断奶重" && $0.detail == "25 千克" })
         XCTAssertTrue(snapshot.timeline.contains { $0.title == "初生重" && $0.detail == "3.2 千克" })
+        XCTAssertFalse(snapshot.timeline.contains { $0.detail.contains("其他羊治疗") })
         XCTAssertEqual(snapshot.lifecycleInsight.summary, "S3-SH030 湖羊")
         XCTAssertEqual(snapshot.reproductionInsight.summary, "S3-SH030 共1胎")
 

@@ -37,8 +37,11 @@ final class AccountProfile {
         self.avatarCloudDigest = nil
         self.serverBindingStateRaw = serverBindingStateRaw
         self.authenticationMethodRawValue = authenticationMethod.rawValue
-        self.acceptedTermsVersion = "1.0"
-        self.acceptedPrivacyVersion = "1.0"
+        // Consent is never inferred from account construction. WelcomeView
+        // records explicit, unchecked-by-default acceptance before activating
+        // the account and then sets these version fields.
+        self.acceptedTermsVersion = ""
+        self.acceptedPrivacyVersion = ""
         self.statusRawValue = "active"
         self.createdAt = createdAt
         self.updatedAt = updatedAt

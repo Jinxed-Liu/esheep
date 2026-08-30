@@ -55,7 +55,9 @@ struct StoredInsightAudio: Sendable, Equatable {
 }
 
 enum InsightVoicePrivacyPreference {
-    static let defaultRetainsSentAudio = true
+    // Audio is sent only for the user's current request. Keeping a replayable
+    // local copy is optional and therefore disabled by default.
+    static let defaultRetainsSentAudio = false
 
     static func retainsSentAudio(
         for accountID: UUID,

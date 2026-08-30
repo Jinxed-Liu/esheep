@@ -187,20 +187,6 @@ enum TMRCloudDataProtocol {
         payload.integers[field] == currentVersion
     }
 
-    static func incompatibleActiveDeviceIDs(
-        in snapshot: FarmMembershipSnapshotEnvelope
-    ) -> [UUID] {
-        let activeAccountIDs = Set(snapshot.members.lazy
-            .filter { $0.status == "active" }
-            .map(\.accountID))
-        return snapshot.devices
-            .filter {
-                activeAccountIDs.contains($0.accountID) &&
-                    ($0.tmrDataProtocolVersion ?? 0) < currentVersion
-            }
-            .map(\.deviceID)
-            .sorted { $0.uuidString < $1.uuidString }
-    }
 }
 
 enum FarmCommandCloudPayloadEncoder {

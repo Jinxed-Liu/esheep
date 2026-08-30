@@ -262,42 +262,18 @@ private struct FarmSearchRequest: Equatable {
 }
 
 private struct FarmSearchPenDestination: View {
-    @Query private var pens: [PenRecord]
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
-
     let account: AccountProfile
     let farm: FarmRecord
+    let penID: UUID
 
     init(account: AccountProfile, farm: FarmRecord, penID: UUID) {
         self.account = account
         self.farm = farm
-        let farmID = farm.id
-        _pens = Query(filter: #Predicate<PenRecord> {
-            $0.id == penID && $0.farmID == farmID && $0.deletedAt == nil
-        })
-        _sheep = Query(
-            filter: #Predicate<SheepRecord> {
-                $0.farmID == farmID && $0.currentPenID == penID && $0.deletedAt == nil
-            },
-            sort: \.earTag
-        )
+        self.penID = penID
     }
 
     var body: some View {
-        if let pen = pens.first {
-            PenDetailView(
-                account: account,
-                farm: farm,
-                pen: pen,
-                sheep: sheep.filter { $0.status == .active }
-            )
-        } else {
-            ContentUnavailableView(
-                "圈舍不存在",
-                systemImage: "questionmark.folder",
-                description: Text("该圈舍可能已删除或不属于当前牧场。")
-            )
-        }
+        PenDetailEntryView(account: account, farm: farm, penID: penID)
     }
 }
 

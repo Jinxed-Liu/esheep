@@ -34,7 +34,7 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertTrue(SubscriptionCapabilityPolicy.canRecordProduction(role: .worker, entitlement: basic))
     }
 
-    func testOnlyOwnerCanCreateAdditionalLocalOrICloudFarm() {
+    func testOnlyOwnerCanCreateAdditionalFarm() {
         let accountID = UUID()
         let active = AccountEntitlement(accountID: accountID, tier: .farmPro, state: .active, productID: SubscriptionProductID.yearly, validUntil: .now.addingTimeInterval(86_400))
         let grace = AccountEntitlement(accountID: accountID, tier: .farmPro, state: .gracePeriod, productID: SubscriptionProductID.monthly, validUntil: .now)
@@ -46,7 +46,7 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertFalse(SubscriptionCapabilityPolicy.canCreateAdditionalFarm(role: .worker, entitlement: active, subscriptionsEnabled: true))
     }
 
-    func testCreatingLocalOrICloudFarmNeverRequiresPro() {
+    func testCreatingFarmNeverRequiresPro() {
         let basic = AccountEntitlement.basic(accountID: UUID())
         let pro = AccountEntitlement(
             accountID: UUID(),
@@ -366,23 +366,6 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(target.query, "A001")
     }
 
-    func testUnverifiedFarmIsRejectedByDevelopmentCloudGate() async throws {
-        let container = try AppSchema.makeContainer(name: "migration-cloud-gate-\(UUID().uuidString)", isStoredInMemoryOnly: true)
-        let context = ModelContext(container)
-        let farm = FarmRecord(ownerAccountID: UUID(), name: "未迁移牧场")
-        context.insert(farm)
-        try context.save()
-
-        do {
-            try await FarmPersistenceActor(container: container).requireCloudAdmission(farmID: farm.id, environment: .development)
-            XCTFail("没有正式迁移提交和完整基线的牧场不能通过 Development 云端门禁")
-        } catch let error as CloudSyncError {
-            guard case .verifiedMigrationRequired = error else {
-                return XCTFail("收到错误的拒绝原因：\(error.localizedDescription)")
-            }
-        }
-    }
-
     func testCloudAdmissionPolicyRequiresVerifiedMigrationInDevelopment() throws {
         let verifiedMigrationFarm = CloudAdmissionRequest(
             environment: .development,
@@ -530,29 +513,50 @@ final class FarmDomainTests: XCTestCase {
         )
     }
 
-    func testMigrationRoutesNewOperationsOnlyToTargetProviderAndGeneration() throws {
+    func testRetiredProviderRouteFailsClosedEvenWithHistoricalTransitionState() throws {
         let container = try makeContainer()
         let context = ModelContext(container)
         let farmID = UUID()
         let profile = FarmStorageProfile(
             farmID: farmID,
-            mode: .iCloud,
+            mode: .retiredAppleCloud,
             transitionState: .uploadingBaseline,
             authorityGeneration: 4,
             migrationID: UUID()
         )
-        profile.sourceModeRawValue = FarmStorageMode.iCloud.rawValue
+        profile.sourceModeRawValue = FarmStorageMode.retiredAppleCloud.rawValue
         profile.targetModeRawValue = FarmStorageMode.supabase.rawValue
         context.insert(profile)
         try context.save()
 
         let route = try FarmStorageRouter.route(farmID: farmID, context: context)
 
-        XCTAssertEqual(route.mode, .iCloud)
-        XCTAssertEqual(route.deliveryProvider, .supabase)
+        XCTAssertEqual(route.mode, .retiredAppleCloud)
+        XCTAssertNil(route.deliveryProvider)
         XCTAssertEqual(route.authorityGeneration, 4)
         XCTAssertEqual(route.deliveryAuthorityGeneration, 5)
-        XCTAssertTrue(route.requiresOutbox)
+        XCTAssertFalse(route.requiresOutbox)
+    }
+
+    func testRetiredProviderCannotBeginStorageTransition() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let farmID = UUID()
+        context.insert(FarmStorageProfile(farmID: farmID, mode: .retiredAppleCloud))
+        try context.save()
+
+        XCTAssertThrowsError(
+            try FarmStorageTransitionCoordinator.begin(
+                farmID: farmID,
+                targetMode: .supabase,
+                context: context
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? FarmStorageTransitionError,
+                .retiredProviderUnavailable
+            )
+        }
     }
 
     func testStorageTransitionCommitsExactlyOneNewAuthorityGeneration() throws {
@@ -561,7 +565,7 @@ final class FarmDomainTests: XCTestCase {
         let farmID = UUID()
         let profile = FarmStorageProfile(
             farmID: farmID,
-            mode: .iCloud,
+            mode: .localOnly,
             authorityGeneration: 7
         )
         context.insert(profile)
@@ -625,7 +629,7 @@ final class FarmDomainTests: XCTestCase {
         let container = try makeContainer()
         let context = ModelContext(container)
         let farmID = UUID()
-        let profile = FarmStorageProfile(farmID: farmID, mode: .iCloud)
+        let profile = FarmStorageProfile(farmID: farmID, mode: .localOnly)
         context.insert(profile)
         try context.save()
 
@@ -1913,16 +1917,15 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertFalse(first.wasAlreadyCommitted)
         let committedFarm = try XCTUnwrap(try context.fetch(FetchDescriptor<FarmRecord>()).filter { $0.id == first.farmID }.first)
         XCTAssertEqual(committedFarm.ownerAccountID, account.effectiveAccountID)
-        XCTAssertFalse(committedFarm.isLocalOnlyMigration)
+        XCTAssertTrue(committedFarm.isLocalOnlyMigration)
         XCTAssertEqual(try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == first.farmID }.count, 1)
         XCTAssertEqual(try context.fetch(FetchDescriptor<WeightRecord>()).filter { $0.farmID == first.farmID }.count, 1)
         let commit = try XCTUnwrap(try context.fetch(FetchDescriptor<MigrationCommitRecord>()).first)
-        XCTAssertEqual(commit.cloudState, .baselineReady)
-        XCTAssertFalse(commit.baselineDigest.isEmpty)
-        XCTAssertGreaterThanOrEqual(commit.baselineEntityCount, 3)
+        XCTAssertEqual(commit.cloudState, .localCommitted)
+        XCTAssertTrue(commit.baselineDigest.isEmpty)
+        XCTAssertEqual(commit.baselineEntityCount, 0)
         let firstOutbox = try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.farmID == first.farmID }
-        XCTAssertEqual(firstOutbox.count, commit.baselineEntityCount)
-        XCTAssertTrue(firstOutbox.allSatisfy { $0.status == .pending })
+        XCTAssertTrue(firstOutbox.isEmpty)
 
         let second = try MigrationCommitService().commit(sessionID: session.id, account: account, destinationContext: context)
         XCTAssertTrue(second.wasAlreadyCommitted)
@@ -1932,7 +1935,7 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.farmID == first.farmID }.count, firstOutbox.count)
     }
 
-    func testLegacyCommittedMigrationAutomaticallyBuildsOneCloudBaseline() throws {
+    func testLegacyCommittedMigrationStaysLocalUntilExplicitSupabaseEnable() throws {
         let container = try AppSchema.makeContainer(name: "legacy-migration-upgrade-\(UUID().uuidString)", isStoredInMemoryOnly: true)
         let context = ModelContext(container)
         let account = AccountProfile(appleUserIdentifier: "legacy-migration-owner", displayName: "场主")
@@ -1945,17 +1948,28 @@ final class FarmDomainTests: XCTestCase {
         context.insert(account); context.insert(farm); context.insert(pen); context.insert(sheep); context.insert(commit)
         try context.save()
 
-        let first = try MigrationCloudBootstrapService().upgradeEligibleLegacyFarms(accountID: account.effectiveAccountID, context: context)
-        XCTAssertEqual(first.count, 1)
-        XCTAssertFalse(farm.isLocalOnlyMigration)
-        XCTAssertEqual(commit.cloudState, .baselineReady)
-        XCTAssertFalse(commit.baselineDigest.isEmpty)
-        let operationIDs = try context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.farmID == farm.id }.map(\.id)
-        XCTAssertEqual(Set(operationIDs).count, operationIDs.count)
+        let first = try FarmBaselineSnapshotService().makeProviderNeutralSnapshots(
+            farm: farm,
+            context: context
+        )
+        let second = try FarmBaselineSnapshotService().makeProviderNeutralSnapshots(
+            farm: farm,
+            context: context
+        )
 
-        let second = try MigrationCloudBootstrapService().upgradeEligibleLegacyFarms(accountID: account.effectiveAccountID, context: context)
-        XCTAssertTrue(second.isEmpty)
-        XCTAssertEqual(try context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.farmID == farm.id }.map(\.id), operationIDs)
+        XCTAssertFalse(first.isEmpty)
+        XCTAssertEqual(first, second)
+        XCTAssertTrue(farm.isLocalOnlyMigration)
+        XCTAssertEqual(commit.cloudState, .localCommitted)
+        XCTAssertTrue(commit.baselineDigest.isEmpty)
+        XCTAssertTrue(
+            try context.fetch(FetchDescriptor<DomainOperation>())
+                .filter { $0.farmID == farm.id }.isEmpty
+        )
+        XCTAssertTrue(
+            try context.fetch(FetchDescriptor<OutboxItem>())
+                .filter { $0.farmID == farm.id }.isEmpty
+        )
     }
 
     func testFeedRecordKeepsBatchPriceAndNutrientSnapshotsInItsCloudOperation() throws {

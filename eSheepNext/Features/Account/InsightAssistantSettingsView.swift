@@ -27,6 +27,11 @@ struct InsightAssistantSettingsView: View {
     @State private var officialUsageMessage: String?
     @State private var isLoadingOfficialUsage = false
     @State private var isOfficialLoginPresented = false
+    @State private var hasAcceptedAIPrivacy: Bool
+    @State private var hasReadAIPrivacy = false
+    @State private var isWithdrawingAIConsent = false
+    @State private var selectedLegalDocument: LegalDocument?
+    @State private var isUpdatingAIConsent = false
 
     init(account: AccountProfile, farm: FarmRecord) {
         self.account = account
@@ -39,10 +44,45 @@ struct InsightAssistantSettingsView: View {
                 for: account.effectiveAccountID
             )
         )
+        _hasAcceptedAIPrivacy = State(
+            initialValue: AIPrivacyConsentStore.hasCurrentConsent(
+                for: account.effectiveAccountID
+            )
+        )
     }
 
     var body: some View {
         Form {
+            Section {
+                if hasAcceptedAIPrivacy {
+                    Label("已同意当前 AI 数据说明", systemImage: "checkmark.shield.fill")
+                        .foregroundStyle(.green)
+                    LabeledContent("同意版本", value: LegalPolicyVersions.ai)
+                    Button("撤回 AI 数据处理同意", role: .destructive) {
+                        isWithdrawingAIConsent = true
+                    }
+                    .disabled(isUpdatingAIConsent)
+                } else {
+                    Toggle("我已阅读并同意 AI 数据处理说明", isOn: $hasReadAIPrivacy)
+                        .accessibilityHint("默认关闭；同意只适用于可选 AI，不影响其他牧场功能")
+                    Button("同意并启用 AI") {
+                        acceptAIPrivacy()
+                    }
+                    .disabled(!hasReadAIPrivacy || isUpdatingAIConsent)
+                }
+
+                Button("查看 AI 数据处理说明") {
+                    selectedLegalDocument = .ai
+                }
+                Button("查看境外提供个人信息告知") {
+                    selectedLegalDocument = .crossBorder
+                }
+            } header: {
+                Text("单独同意")
+            } footer: {
+                Text("AI 会把你主动提交的文字、处理后图片、语音和有限授权牧场结果直接发送给 MiMo。拒绝或撤回不会影响非 AI 功能。")
+            }
+
             Section {
                 LabeledContent("服务商", value: "MiMo")
                 LabeledContent("文字与工具", value: "mimo-v2.5-pro")
@@ -120,11 +160,12 @@ struct InsightAssistantSettingsView: View {
                         Text(officialUsage == nil ? LocalizedStringKey("查询官方额度") : LocalizedStringKey("刷新官方额度"))
                     }
                 }
-                .disabled(isLoadingOfficialUsage)
+                .disabled(isLoadingOfficialUsage || !hasAcceptedAIPrivacy)
 
                 Button("登录 MiMo 官方账户") {
                     isOfficialLoginPresented = true
                 }
+                .disabled(!hasAcceptedAIPrivacy)
             } header: {
                 Text("MiMo 官方额度")
             } footer: {
@@ -176,6 +217,7 @@ struct InsightAssistantSettingsView: View {
                     apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || isSaving
                         || controller.isTestingCredential
+                        || !hasAcceptedAIPrivacy
                 )
 
                 if savedCredentialMask != nil {
@@ -301,6 +343,18 @@ struct InsightAssistantSettingsView: View {
             Text(LocalizedStringKey(errorMessage ?? ""))
         }
         .confirmationDialog(
+            "撤回 AI 数据处理同意？",
+            isPresented: $isWithdrawingAIConsent,
+            titleVisibility: .visible
+        ) {
+            Button("撤回并停止新请求", role: .destructive) {
+                withdrawAIPrivacy()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("撤回后不会再向 MiMo 发送新请求。已保存的 API Key 和历史会话不会自动删除，你仍可分别删除。")
+        }
+        .confirmationDialog(
             "删除 MiMo API Key？",
             isPresented: $isDeleteConfirmationPresented,
             titleVisibility: .visible
@@ -347,6 +401,16 @@ struct InsightAssistantSettingsView: View {
                 }
             }
         }
+        .sheet(item: $selectedLegalDocument) { document in
+            NavigationStack {
+                LegalDocumentView(document: document)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("完成") { selectedLegalDocument = nil }
+                        }
+                    }
+            }
+        }
         .task {
             await controller.connect(to: modelContext)
             await loadCredentialStatus()
@@ -361,6 +425,49 @@ struct InsightAssistantSettingsView: View {
         Task {
             await loadOfficialUsage(silent: false)
             isLoadingOfficialUsage = false
+        }
+    }
+
+    private func acceptAIPrivacy() {
+        guard !isUpdatingAIConsent else { return }
+        isUpdatingAIConsent = true
+        Task {
+            defer { isUpdatingAIConsent = false }
+            do {
+                let event = AIPrivacyConsentEvent(action: .accepted)
+                try await AccountIdentityClients.active().recordAIPrivacyConsent(event)
+                try AIPrivacyConsentStore.saveCurrentConsent(for: account.effectiveAccountID)
+                hasAcceptedAIPrivacy = true
+                hasReadAIPrivacy = false
+                await controller.refreshCredential()
+            } catch {
+                hasAcceptedAIPrivacy = false
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func withdrawAIPrivacy() {
+        do {
+            try AIPrivacyConsentStore.withdraw(for: account.effectiveAccountID)
+            hasAcceptedAIPrivacy = false
+            hasReadAIPrivacy = false
+            Task { await controller.refreshCredential() }
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+
+        Task {
+            do {
+                try await AccountIdentityClients.active().recordAIPrivacyConsent(
+                    AIPrivacyConsentEvent(action: .withdrawn)
+                )
+            } catch {
+                // Withdrawal is effective locally immediately. A server-log
+                // failure must never resume AI processing or undo withdrawal.
+                errorMessage = "AI 已在本机停用，但撤回留痕暂未同步：\(error.localizedDescription)"
+            }
         }
     }
 
@@ -392,6 +499,10 @@ struct InsightAssistantSettingsView: View {
 
     private func save() {
         guard !isSaving, !controller.isTestingCredential else { return }
+        guard hasAcceptedAIPrivacy else {
+            errorMessage = InsightSecurityError.privacyConsentRequired.localizedDescription
+            return
+        }
         let submittedKey = apiKey
         isSaving = true
         Task {

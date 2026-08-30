@@ -1,7 +1,6 @@
 import SwiftData
 import LocalAuthentication
 import SwiftUI
-import VisionKit
 
 enum SettingsDestination: String, CaseIterable, Hashable {
     case accountAvatar
@@ -19,7 +18,6 @@ enum SettingsDestination: String, CaseIterable, Hashable {
     case importData
     case exportData
     case localBackup
-    case cloudRecovery
     case dataConflicts
 }
 
@@ -29,7 +27,6 @@ struct SettingsVisibilityPolicy: Equatable {
     let memberSharingEnabled: Bool
     let subscriptionEnabled: Bool
     let unresolvedConflictCount: Int
-    let storageMode: FarmStorageMode
 
     init(
         role: FarmRole,
@@ -37,8 +34,7 @@ struct SettingsVisibilityPolicy: Equatable {
         cloudEnabled: Bool,
         memberSharingEnabled: Bool = MemberSharingConfiguration.isEnabled,
         subscriptionEnabled: Bool,
-        unresolvedConflictCount: Int,
-        storageMode: FarmStorageMode = .localOnly
+        unresolvedConflictCount: Int
     ) {
         capabilities = CapabilitySet(
             role: role,
@@ -48,7 +44,6 @@ struct SettingsVisibilityPolicy: Equatable {
         self.memberSharingEnabled = memberSharingEnabled
         self.subscriptionEnabled = subscriptionEnabled
         self.unresolvedConflictCount = unresolvedConflictCount
-        self.storageMode = storageMode
     }
 
     var mainDestinations: [SettingsDestination] {
@@ -84,9 +79,6 @@ struct SettingsVisibilityPolicy: Equatable {
         if capabilities.allows(.exportFarm) {
             destinations.insert(.exportData)
             destinations.insert(.localBackup)
-        }
-        if storageMode == .iCloud && capabilities.allows(.recoverFarm) {
-            destinations.insert(.cloudRecovery)
         }
         if unresolvedConflictCount > 0 && capabilities.allows(.resolveConflicts) {
             destinations.insert(.dataConflicts)
@@ -138,16 +130,154 @@ struct AccountAvatarSettingsView: View {
 }
 
 struct PrivacyAndTermsSettingsView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(AppSession.self) private var session
+
+    let account: AccountProfile
+
+    @State private var isConfirmingWithdrawal = false
+    @State private var isWithdrawing = false
+    @State private var errorMessage: String?
+
     var body: some View {
-        List(LegalDocument.allCases) { document in
-            NavigationLink {
-                LegalDocumentView(document: document)
-            } label: {
-                Label(LocalizedStringKey(document.title), systemImage: document.systemImage)
+        List {
+            Section("法律文件") {
+                ForEach(LegalDocument.allCases) { document in
+                    NavigationLink {
+                        LegalDocumentView(document: document)
+                    } label: {
+                        Label(
+                            LocalizedStringKey(document.title),
+                            systemImage: document.systemImage
+                        )
+                    }
+                }
+            }
+
+            Section("同意状态") {
+                LabeledContent("服务条款", value: account.acceptedTermsVersion.isEmpty
+                    ? "未记录"
+                    : account.acceptedTermsVersion)
+                LabeledContent("隐私政策", value: account.acceptedPrivacyVersion.isEmpty
+                    ? "未记录"
+                    : account.acceptedPrivacyVersion)
+                LabeledContent(
+                    "当前状态",
+                    value: hasCurrentLegalConsent ? "已同意当前版本" : "需要重新确认"
+                )
+
+                Button("撤回境外云处理同意并退出", role: .destructive) {
+                    isConfirmingWithdrawal = true
+                }
+                .disabled(isWithdrawing || !hasAnyRecordedConsent)
             }
         }
         .navigationTitle("隐私与条款")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "撤回同意后停止云服务",
+            isPresented: $isConfirmingWithdrawal,
+            titleVisibility: .visible
+        ) {
+            Button("撤回并退出", role: .destructive) {
+                withdrawLegalConsent()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("App 会立即停止当前账号的新云同步和 AI 调用并退出登录。本机缓存不会自动删除；请先导出所需数据。再次登录前必须重新阅读并明确同意。删除云端账号和历史数据需另行使用“删除账户”。")
+        }
+        .alert("撤回操作未完整完成", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    private var hasCurrentLegalConsent: Bool {
+        account.acceptedTermsVersion == LegalPolicyVersions.terms &&
+            account.acceptedPrivacyVersion == LegalPolicyVersions.privacy &&
+            LegalConsentStore.hasCurrentConsent(for: account.effectiveAccountID)
+    }
+
+    private var hasAnyRecordedConsent: Bool {
+        !account.acceptedTermsVersion.isEmpty ||
+            !account.acceptedPrivacyVersion.isEmpty ||
+            LegalConsentStore.receipt(for: account.effectiveAccountID) != nil
+    }
+
+    private func withdrawLegalConsent() {
+        guard !isWithdrawing else { return }
+        isWithdrawing = true
+
+        Task { @MainActor in
+            var warnings: [String] = []
+            let accountID = account.effectiveAccountID
+            let identity: (any AccountIdentityClient)?
+
+            do {
+                identity = try AccountIdentityClients.active()
+            } catch {
+                identity = nil
+                warnings.append("账号服务不可用，服务器撤回凭证需稍后人工核对：\(error.localizedDescription)")
+            }
+
+            if let identity {
+                do {
+                    try await identity.recordLegalConsentWithdrawal(
+                        LegalConsentWithdrawalEvent()
+                    )
+                } catch {
+                    warnings.append("服务器未能写入撤回凭证：\(error.localizedDescription)")
+                }
+            }
+
+            if AIPrivacyConsentStore.hasCurrentConsent(for: accountID),
+               let identity {
+                do {
+                    try await identity.recordAIPrivacyConsent(
+                        AIPrivacyConsentEvent(action: .withdrawn)
+                    )
+                } catch {
+                    warnings.append("AI 撤回凭证未能同步：\(error.localizedDescription)")
+                }
+            }
+
+            do {
+                try LegalConsentStore.remove(for: accountID)
+                try AIPrivacyConsentStore.withdraw(for: accountID)
+            } catch {
+                warnings.append("本机安全凭证清理失败：\(error.localizedDescription)")
+            }
+
+            account.acceptedTermsVersion = ""
+            account.acceptedPrivacyVersion = ""
+            account.updatedAt = .now
+            do {
+                try modelContext.save()
+            } catch {
+                warnings.append("本机账号状态保存失败：\(error.localizedDescription)")
+            }
+
+            if let identity {
+                do {
+                    let result = try await identity.signOut()
+                    if let warning = result.warningMessage {
+                        warnings.append(warning)
+                    }
+                } catch {
+                    warnings.append("服务器会话未能即时撤销：\(error.localizedDescription)")
+                }
+            }
+
+            await ImageThumbnailPipeline.shared.removeAll()
+            let message = (["已撤回当前版本同意并停止本机云处理。"] + warnings)
+                .joined(separator: "\n")
+            session.authenticationDidSignOut(warning: message)
+            isWithdrawing = false
+        }
     }
 }
 
@@ -233,172 +363,6 @@ enum AccountDeletionAuthorization {
         )
         guard approved else {
             throw AccountDeletionAuthorizationError.freshSignInRequired
-        }
-    }
-}
-
-struct JoinFarmView: View {
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
-    @Environment(AppSession.self) private var session
-    @Environment(CloudCollaborationStore.self) private var collaboration
-
-    let account: AccountProfile
-
-    @State private var code = ""
-    @State private var result: WorkerRedeemResponse?
-    @State private var isWorking = false
-    @State private var errorMessage: String?
-    @State private var isProximityReceiverPresented = false
-    @State private var isQRCodeScannerPresented = false
-    @State private var shareURL: URL?
-    @State private var isSupabaseJoinPresented = false
-    @State private var supabaseJoinedFarmID: UUID?
-
-    private var normalizedCode: String {
-        code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                if SupabaseAccountConfiguration.isConfigured {
-                    Section {
-                        Button {
-                            isSupabaseJoinPresented = true
-                        } label: {
-                            Label(
-                                "使用 Supabase 一次性邀请码",
-                                systemImage: "externaldrive.connected.to.line.below"
-                            )
-                        }
-                    } footer: {
-                        Text("Supabase 邀请为 256 位随机码，24 小时内只能兑换一次。")
-                    }
-                }
-
-                Section {
-                    Button {
-                        guard DataScannerViewController.isSupported,
-                              DataScannerViewController.isAvailable else {
-                            errorMessage = "当前设备暂时不能使用相机扫描，请检查相机权限，或手动输入邀请码。"
-                            return
-                        }
-                        isQRCodeScannerPresented = true
-                    } label: {
-                        Label("扫描邀请二维码", systemImage: "qrcode.viewfinder")
-                    }
-
-                    Button {
-                        isProximityReceiverPresented = true
-                    } label: {
-                        Label("靠近接收邀请", systemImage: "wave.3.left.circle.fill")
-                    }
-                } footer: {
-                    Text("与场主面对面时，双方打开靠近邀请页面，将手机并排放置并逐渐靠近；不要让顶部相碰，以免触发系统 NameDrop。")
-                }
-
-                Section {
-                    Label("输入邀请消息中的 8 位邀请码。", systemImage: "1.circle")
-                    Label("等待场主批准你的 iCloud 身份。", systemImage: "2.circle")
-                    Label("场主批准后，打开邀请链接接受共享。", systemImage: "3.circle")
-                } header: {
-                    Text("加入步骤")
-                }
-
-                Section("邀请码") {
-                    TextField("8 位邀请码", text: $code)
-                        .textInputAutocapitalization(.characters)
-                        .autocorrectionDisabled()
-                        .fontDesign(.monospaced)
-
-                    Button(isWorking ? LocalizedStringKey("正在验证…") : LocalizedStringKey("验证并申请加入")) {
-                        redeem()
-                    }
-                    .disabled(isWorking || normalizedCode.count != 8)
-                }
-
-                if let result {
-                    Section("申请已提交") {
-                        LabeledContent("成员角色") {
-                            Text(LocalizedStringKey(result.role.displayName))
-                        }
-                        Text("牧场主确认后，牧场会自动出现在切换菜单中。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        if let shareURL {
-                            Button("场主批准后接受共享") {
-                                openURL(shareURL)
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("加入牧场")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(result == nil ? LocalizedStringKey("取消") : LocalizedStringKey("完成")) {
-                        dismiss()
-                    }
-                }
-            }
-            .alert("无法加入牧场", isPresented: Binding(
-                get: { errorMessage != nil },
-                set: { if !$0 { errorMessage = nil } }
-            )) {
-                Button("知道了", role: .cancel) {}
-            } message: {
-                Text(LocalizedStringKey(errorMessage ?? ""))
-            }
-            .sheet(isPresented: $isProximityReceiverPresented) {
-                ProximityInvitationReceiverView(accountID: account.effectiveAccountID)
-            }
-            .sheet(isPresented: $isQRCodeScannerPresented) {
-                FarmInvitationQRCodeScannerView { invitation in
-                    code = invitation.code
-                    shareURL = invitation.shareURL
-                }
-            }
-            .task {
-                guard let invitation = session.pendingFarmInvitation else { return }
-                code = invitation.code
-                shareURL = invitation.shareURL
-                session.pendingFarmInvitation = nil
-            }
-        }
-        .sheet(isPresented: $isSupabaseJoinPresented) {
-            SupabaseJoinFarmView(account: account) { farm in
-                supabaseJoinedFarmID = farm.id
-            }
-        }
-        .onChange(of: isSupabaseJoinPresented) { _, isPresented in
-            guard !isPresented,
-                  let farmID = supabaseJoinedFarmID else { return }
-            supabaseJoinedFarmID = nil
-            session.selectedFarmID = farmID
-            dismiss()
-        }
-    }
-
-    private func redeem() {
-        guard !isWorking else { return }
-        isWorking = true
-        Task {
-            defer { isWorking = false }
-            do {
-                let service = InviteServiceActor(persistence: collaboration.persistence)
-                let userRecordName = try await collaboration.sync.currentCloudUserRecordName()
-                let redemption = try await service.redeem(
-                    code: normalizedCode,
-                    cloudKitUserRecordName: userRecordName
-                )
-                result = redemption
-                shareURL = redemption.shareURL ?? shareURL
-                code = ""
-            } catch {
-                errorMessage = error.localizedDescription
-            }
         }
     }
 }

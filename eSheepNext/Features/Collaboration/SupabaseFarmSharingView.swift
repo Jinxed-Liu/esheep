@@ -36,17 +36,13 @@ struct FarmMembersAndSharingView: View {
         if profiles.first(where: { $0.farmID == farm.id })?.mode == .supabase {
             SupabaseFarmSharingView(account: account, farm: farm)
         } else {
-            #if DEBUG
-            CloudCollaborationCenterView(account: account, farm: farm)
-            #else
             ContentUnavailableView(
                 "成员与共享",
-                systemImage: "externaldrive.badge.icloud",
-                description: Text("CloudKit 仅用于读取和迁移旧牧场。3.1 新建云端牧场以 Supabase 为权威；每个牧场的数据彼此独立。")
+                systemImage: "person.2.slash",
+                description: Text("当前牧场仅保存在本机。请先在“云存储”中启用 eSheep 云，再管理成员与共享。")
             )
             .navigationTitle("成员与共享")
             .navigationBarTitleDisplayMode(.inline)
-            #endif
         }
     }
 }

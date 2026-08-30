@@ -22,7 +22,7 @@ struct MigrationReviewCenterView: View {
                     .foregroundStyle(report.blockingDiscrepancies.isEmpty ? .green : .red)
                 LabeledContent("警告项", value: "\(report.discrepancies.filter { $0.severity == .warning }.count)")
                 LabeledContent("自动补建历史归档羊只", value: "\(report.archivalSheep)")
-                Text(report.blockingDiscrepancies.isEmpty ? LocalizedStringKey("本临时迁移结果可进入人工验收。正式牧场、CloudKit 和旧版数据均未写入。") : LocalizedStringKey("仍有阻断项，不能给出迁移演练通过结论。"))
+                Text(report.blockingDiscrepancies.isEmpty ? LocalizedStringKey("本临时迁移结果可进入人工验收。正式牧场、云端和旧版数据均未写入。") : LocalizedStringKey("仍有阻断项，不能给出迁移演练通过结论。"))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

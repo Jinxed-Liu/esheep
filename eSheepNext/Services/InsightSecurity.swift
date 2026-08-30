@@ -54,6 +54,7 @@ struct MiMoCredential: Codable, Equatable, Sendable {
 
 enum InsightSecurityError: LocalizedError {
     case invalidAPIKey
+    case privacyConsentRequired
     case missingMasterKey
     case invalidEnvelope
     case invalidRecoveryCode
@@ -64,6 +65,8 @@ enum InsightSecurityError: LocalizedError {
         switch self {
         case .invalidAPIKey:
             "请输入有效的 MiMo API Key（sk- 或 tp- 开头）。"
+        case .privacyConsentRequired:
+            "请先阅读并单独同意 AI 数据处理说明。"
         case .missingMasterKey:
             "当前设备还没有洞察加密密钥，请先完成设备批准或恢复。"
         case .invalidEnvelope:

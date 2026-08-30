@@ -42,7 +42,7 @@ struct FarmCloudStorageSettingsView: View {
     private var modeTitle: String {
         switch profile?.mode ?? .localOnly {
         case .localOnly: "仅保存在此设备"
-        case .iCloud: "iCloud"
+        case .retiredAppleCloud: "旧云存储已停用"
         case .supabase: "eSheep 云"
         }
     }

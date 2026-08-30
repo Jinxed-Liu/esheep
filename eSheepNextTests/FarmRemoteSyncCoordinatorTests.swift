@@ -2,6 +2,84 @@ import SwiftData
 import XCTest
 @testable import eSheepNext
 
+private struct TestFarmRemoteTransportEndpoints: Sendable {
+    let establishBaseline: @Sendable (FarmRemoteBaseline) async throws -> Void
+    let pushOperations: @Sendable ([CloudOperationEnvelope], Int) async throws -> [FarmRemoteOperationReceipt]
+    let pullOperations: @Sendable (UUID, Int, Int, Int) async throws -> FarmRemotePullPage
+    let uploadAsset: @Sendable (UUID, Int, UUID, Data, String, String) async throws -> FarmRemoteAsset
+    let downloadAsset: @Sendable (FarmRemoteAsset) async throws -> Data
+    let members: @Sendable (UUID) async throws -> [FarmRemoteMember]
+    let deactivate: @Sendable (UUID, Int, Bool) async throws -> Void
+}
+
+private actor TestFarmRemoteTransport: FarmRemoteTransport {
+    nonisolated let provider = FarmRemoteProvider.supabase
+    private let endpoints: TestFarmRemoteTransportEndpoints
+
+    init(endpoints: TestFarmRemoteTransportEndpoints) {
+        self.endpoints = endpoints
+    }
+
+    func establishBaseline(_ baseline: FarmRemoteBaseline) async throws {
+        try await endpoints.establishBaseline(baseline)
+    }
+
+    func pushOperations(
+        _ operations: [CloudOperationEnvelope],
+        authorityGeneration: Int
+    ) async throws -> [FarmRemoteOperationReceipt] {
+        try await endpoints.pushOperations(operations, authorityGeneration)
+    }
+
+    func pullOperations(
+        farmID: UUID,
+        authorityGeneration: Int,
+        after revision: Int,
+        limit: Int
+    ) async throws -> FarmRemotePullPage {
+        try await endpoints.pullOperations(
+            farmID,
+            authorityGeneration,
+            revision,
+            max(1, limit)
+        )
+    }
+
+    func uploadAsset(
+        farmID: UUID,
+        authorityGeneration: Int,
+        assetID: UUID,
+        data: Data,
+        sha256: String,
+        contentType: String
+    ) async throws -> FarmRemoteAsset {
+        try await endpoints.uploadAsset(
+            farmID,
+            authorityGeneration,
+            assetID,
+            data,
+            sha256,
+            contentType
+        )
+    }
+
+    func downloadAsset(_ asset: FarmRemoteAsset) async throws -> Data {
+        try await endpoints.downloadAsset(asset)
+    }
+
+    func members(farmID: UUID) async throws -> [FarmRemoteMember] {
+        try await endpoints.members(farmID)
+    }
+
+    func deactivate(
+        farmID: UUID,
+        authorityGeneration: Int,
+        archive: Bool
+    ) async throws {
+        try await endpoints.deactivate(farmID, authorityGeneration, archive)
+    }
+}
+
 final class FarmRemoteSyncCoordinatorTests: XCTestCase {
     func testLegacyCloudPayloadDecodesMissingLaterCollectionsAsEmpty() throws {
         let data = Data(#"""
@@ -53,7 +131,7 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
         context.insert(binding)
         try context.save()
 
-        let transport = ICloudFarmTransport(endpoints: .init(
+        let transport = TestFarmRemoteTransport(endpoints: .init(
             establishBaseline: { _ in },
             pushOperations: { _, _ in [] },
             pullOperations: { _, _, revision, _ in
@@ -64,10 +142,10 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
                 )
             },
             uploadAsset: { _, _, _, _, _, _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             downloadAsset: { _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             members: { _ in [] },
             deactivate: { _, _, _ in }
@@ -191,7 +269,7 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
         target.insert(binding)
         try target.save()
 
-        let transport = ICloudFarmTransport(endpoints: .init(
+        let transport = TestFarmRemoteTransport(endpoints: .init(
             establishBaseline: { _ in },
             pushOperations: { _, _ in [] },
             pullOperations: { _, _, revision, _ in
@@ -209,10 +287,10 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
                 )
             },
             uploadAsset: { _, _, _, _, _, _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             downloadAsset: { _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             members: { _ in [] },
             deactivate: { _, _, _ in }
@@ -265,10 +343,10 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
         context.insert(binding)
         try context.save()
 
-        let transport = ICloudFarmTransport(endpoints: .init(
+        let transport = TestFarmRemoteTransport(endpoints: .init(
             establishBaseline: { _ in },
             pushOperations: { _, _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             pullOperations: { _, _, revision, _ in
                 FarmRemotePullPage(
@@ -278,10 +356,10 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
                 )
             },
             uploadAsset: { _, _, _, _, _, _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             downloadAsset: { _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             members: { _ in [] },
             deactivate: { _, _, _ in }
@@ -387,7 +465,7 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
         context.insert(binding)
         try context.save()
 
-        let transport = ICloudFarmTransport(endpoints: .init(
+        let transport = TestFarmRemoteTransport(endpoints: .init(
             establishBaseline: { _ in },
             pushOperations: { _, _ in [] },
             pullOperations: { _, _, revision, _ in
@@ -405,10 +483,10 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
                 )
             },
             uploadAsset: { _, _, _, _, _, _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             downloadAsset: { _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             members: { _ in [] },
             deactivate: { _, _, _ in }
@@ -512,7 +590,7 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
             operationSignature: Data(),
             deletedAt: nil
         )
-        let transport = ICloudFarmTransport(endpoints: .init(
+        let transport = TestFarmRemoteTransport(endpoints: .init(
             establishBaseline: { _ in },
             pushOperations: { _, _ in [] },
             // Deliberately return the same two-operation page while the
@@ -526,10 +604,10 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
                 )
             },
             uploadAsset: { _, _, _, _, _, _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             downloadAsset: { _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             members: { _ in [] },
             deactivate: { _, _, _ in }
@@ -609,10 +687,10 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
         context.insert(outbox)
         try context.save()
 
-        let transport = ICloudFarmTransport(endpoints: .init(
+        let transport = TestFarmRemoteTransport(endpoints: .init(
             establishBaseline: { _ in },
             pushOperations: { _, _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             pullOperations: { _, _, revision, _ in
                 FarmRemotePullPage(
@@ -622,10 +700,10 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
                 )
             },
             uploadAsset: { _, _, _, _, _, _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             downloadAsset: { _ in
-                throw FarmRemoteTransportError.unsupportedICloudBridgeOperation
+                throw FarmRemoteTransportError.unsupportedOperation
             },
             members: { _ in [] },
             deactivate: { _, _, _ in }

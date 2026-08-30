@@ -74,7 +74,7 @@ enum OutboxStatus: String, Codable, Sendable {
     /// membership. Keep the immutable operation for audit, but never retry it
     /// under a different signed-in identity.
     case quarantinedMembershipRevoked
-    /// CloudKit already contains a different, fully verified immutable
+    /// The retired provider already contains a different, fully verified immutable
     /// deletion fact for the same entity. The local operation is retained for
     /// audit, but it is no longer eligible for delivery or blocking metrics.
     case supersededRemoteAuthority
@@ -193,7 +193,7 @@ final class OutboxItem {
         entityID: UUID? = nil,
         baseRevision: Int = 0,
         payloadDigest: String = "",
-        deliveryProvider: FarmRemoteProvider = .iCloud,
+        deliveryProvider: FarmRemoteProvider,
         authorityGeneration: Int = 0
     ) {
         self.id = id

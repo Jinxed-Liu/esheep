@@ -179,12 +179,15 @@ final class AppBootstrapController {
     private func prepareStore() async throws {
         let prepared = try await Task.detached(priority: .userInitiated) {
             let container = try AppSchema.makeContainer()
+            let retiredCloudCleanup = try RetiredCloudFarmRemovalService
+                .removeRetiredCloudFarms(from: container)
             let cloudPreparation = CloudCollaborationStore.prepareStartup(
                 container: container
             )
             return AppPreparedStore(
                 container: container,
-                cloudPreparation: cloudPreparation
+                cloudPreparation: cloudPreparation,
+                retiredCloudCleanup: retiredCloudCleanup
             )
         }.value
         try Task.checkCancellation()
@@ -193,6 +196,12 @@ final class AppBootstrapController {
             container: prepared.container,
             startupPreparation: prepared.cloudPreparation
         )
+        if prepared.retiredCloudCleanup.hasPendingFileCleanup {
+            let warning = "旧云端牧场数据库已删除，但仍有 \(prepared.retiredCloudCleanup.pendingFileCleanupCount) 个本地文件等待下次启动继续清理。"
+            collaboration.lastErrorMessage = [collaboration.lastErrorMessage, warning]
+                .compactMap { $0 }
+                .joined(separator: "\n")
+        }
         modelContainer = prepared.container
         self.collaboration = collaboration
         failure = nil
@@ -206,4 +215,5 @@ final class AppBootstrapController {
 private struct AppPreparedStore: Sendable {
     let container: ModelContainer
     let cloudPreparation: CloudCollaborationStartupPreparation
+    let retiredCloudCleanup: RetiredCloudFarmRemovalReport
 }

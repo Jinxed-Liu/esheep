@@ -182,13 +182,7 @@ struct FarmWeatherHero: View {
     }
 
     private var farmNameView: Text {
-        // This is an app-generated placeholder used while rebuilding an
-        // iCloud farm, not a name entered by the user. Keep real farm names
-        // verbatim while allowing the placeholder to follow the app locale.
-        if farm.name == "正在从 iCloud 恢复的牧场" {
-            return Text("正在从 iCloud 恢复的牧场")
-        }
-        return Text(verbatim: farm.name)
+        Text(verbatim: farm.name)
     }
 
     private var locationNameView: Text {
@@ -236,7 +230,7 @@ struct FarmWeatherHero: View {
             VStack(alignment: .leading, spacing: 5) {
                 Label(
                     farm.locationSnapshot == nil ? "设置牧场位置后显示实时天气" : "天气服务暂时不可用",
-                    systemImage: farm.locationSnapshot == nil ? "location.slash.fill" : "exclamationmark.icloud.fill"
+                    systemImage: farm.locationSnapshot == nil ? "location.slash.fill" : "exclamationmark.triangle.fill"
                 )
                 .font(.headline)
                 #if DEBUG

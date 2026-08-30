@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { CheckCircle } from "@phosphor-icons/react/CheckCircle";
 import { SpinnerGap } from "@phosphor-icons/react/SpinnerGap";
 import { WarningCircle } from "@phosphor-icons/react/WarningCircle";
@@ -32,6 +32,10 @@ const EventsPage = lazy(() => import("./components/pages/EventsPage.jsx"));
 const FeedingPage = lazy(() => import("./components/pages/FeedingPage.jsx"));
 const FlockPage = lazy(() => import("./components/pages/FlockPage.jsx"));
 const InsightsPage = lazy(() => import("./components/pages/InsightsPage.jsx"));
+const AlertsPage = lazy(() => import("./components/pages/AppAlignedPages.jsx").then((module) => ({ default: module.AlertsPage })));
+const CarePage = lazy(() => import("./components/pages/AppAlignedPages.jsx").then((module) => ({ default: module.CarePage })));
+const ProductionBatchesPage = lazy(() => import("./components/pages/AppAlignedPages.jsx").then((module) => ({ default: module.ProductionBatchesPage })));
+const SearchPage = lazy(() => import("./components/pages/AppAlignedPages.jsx").then((module) => ({ default: module.SearchPage })));
 const RecordDialog = lazy(() => import("./components/RecordDialog.jsx").then((module) => ({ default: module.RecordDialog })));
 const SettingsPage = lazy(() => import("./components/pages/SettingsPage.jsx"));
 const TMRPage = lazy(() => import("./components/pages/TMRPage.jsx"));
@@ -53,11 +57,11 @@ function explainAppleAuthError(error) {
 
 export function App() {
   const [activePage, setActivePage] = useState("home");
+  const [routeContext, setRouteContext] = useState({});
   // Do not render the local demo while Supabase session restoration is in
   // flight. The previous default made a signed-in user briefly see a
   // completely different farm and mistake it for their cloud data.
   const [workspace, setWorkspace] = useState(null);
-  const [query, setQuery] = useState("");
   const [recordDialog, setRecordDialog] = useState({ open: false, type: "new" });
   const [authState, setAuthState] = useState({ loading: true, error: "" });
   const [toast, setToast] = useState(null);
@@ -80,6 +84,18 @@ export function App() {
     let active = true;
     let stopWatching = () => {};
     workspaceDataSource.invalidate();
+
+    // A local-only presentation route keeps visual QA deterministic without
+    // signing the user's real Supabase session out. The default route always
+    // restores the real session first.
+    if (new URLSearchParams(window.location.search).get("preview") === "demo") {
+      setWorkspace(makeDemoWorkspace());
+      setAuthState({ loading: false, error: "" });
+      return () => {
+        active = false;
+        workspaceDataSource.invalidate();
+      };
+    }
 
     async function restoreCloudSession() {
       if (!isSupabaseConfigured) {
@@ -133,7 +149,6 @@ export function App() {
     };
   }, []);
 
-  const deferredQuery = useDeferredValue(query);
   const searchIndex = useMemo(() => {
     if (!workspace) return [];
     const sheep = (workspace.sheep ?? []).map((item) => ({
@@ -154,21 +169,21 @@ export function App() {
       kind: "event",
       id: item.id,
       title: item.label,
-      detail: `${item.object} · ${item.actor}`,
-      haystack: [item.label, item.object, item.actor].join("\n").toLowerCase(),
+      detail: [item.object, item.detail, item.actor].filter(Boolean).join(" · "),
+      haystack: [
+        item.label,
+        item.object,
+        item.detail,
+        item.note,
+        item.actor,
+        ...(item.fields ?? []).flatMap((field) => [field.label, field.value]),
+      ].join("\n").toLowerCase(),
     }));
     return sheep.concat(pens, events);
   }, [workspace]);
-  const searchResults = useMemo(() => {
-    if (!workspace) return [];
-    const needle = deferredQuery.trim().toLowerCase();
-    if (!needle) return [];
-    return searchIndex.filter((item) => item.haystack.includes(needle)).slice(0, 12);
-  }, [deferredQuery, searchIndex, workspace]);
-
-  const navigate = useCallback((page) => {
-    setQuery("");
+  const navigate = useCallback((page, context = {}) => {
     setActivePage(page);
+    setRouteContext(context);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
@@ -204,8 +219,13 @@ export function App() {
   }, [activePage, showToast, workspace]);
 
   function selectSearchResult(result) {
-    setQuery("");
-    navigate(result.kind === "event" ? "events" : "flock");
+    if (result.kind === "event") {
+      navigate("events", { selectedID: result.id });
+    } else if (result.kind === "pen") {
+      navigate("pens", { selectedID: result.id });
+    } else {
+      navigate("flock", { selectedID: result.id });
+    }
   }
 
   async function changeFarm(farmID) {
@@ -342,7 +362,7 @@ export function App() {
         events: [event, ...current.events],
         lastSyncedAt: draft ? current.lastSyncedAt : new Date().toISOString(),
       };
-      if (record.type === "addSheep") {
+      if (!draft && record.type === "addSheep") {
         const newSheep = {
           id: createID(),
           earTag: record.values.earTag,
@@ -356,7 +376,21 @@ export function App() {
         next.sheep = [newSheep, ...current.sheep];
         next.metrics = { ...current.metrics, activeSheep: current.metrics.activeSheep + 1 };
       }
-      if (record.type === "feed") {
+      if (!draft && record.type === "weight") {
+        next.sheep = current.sheep.map((sheep) => sheep.earTag === record.values.sheep
+          ? { ...sheep, weight: Number(record.values.kilograms), updatedAt: record.occurredAt }
+          : sheep);
+      }
+      if (!draft && record.type === "transfer") {
+        next.sheep = current.sheep.map((sheep) => sheep.earTag === record.values.sheep
+          ? { ...sheep, pen: record.values.pen, updatedAt: record.occurredAt }
+          : sheep);
+      }
+      if (!draft && record.type === "removal") {
+        next.sheep = current.sheep.filter((sheep) => sheep.earTag !== record.values.sheep);
+        next.metrics = { ...current.metrics, activeSheep: Math.max(0, current.metrics.activeSheep - 1) };
+      }
+      if (!draft && record.type === "feed") {
         next.feedRecords = [{
           id: createID(),
           at: record.occurredAt,
@@ -393,12 +427,26 @@ export function App() {
 
   let content;
   switch (activePage) {
-    case "flock": content = <FlockPage workspace={workspace} onCreateRecord={openRecord} />; break;
-    case "entry": content = <EntryPage workspace={workspace} onCreateRecord={openRecord} />; break;
-    case "feeding": content = <FeedingPage workspace={workspace} onCreateRecord={openRecord} />; break;
-    case "tmr": content = <TMRPage workspace={workspace} onCreateRecord={openRecord} />; break;
-    case "insights": content = <InsightsPage workspace={workspace} />; break;
-    case "events": content = <EventsPage workspace={workspace} />; break;
+    case "flock":
+    case "pens": content = <FlockPage workspace={workspace} initialView={activePage === "pens" ? "pens" : "sheep"} selectedID={routeContext.selectedID} onCreateRecord={openRecord} />; break;
+    case "alerts": content = <AlertsPage workspace={workspace} selectedID={routeContext.selectedID} onNavigate={navigate} onCreateRecord={openRecord} />; break;
+    case "entry": content = <EntryPage workspace={workspace} onCreateRecord={openRecord} onNavigate={navigate} />; break;
+    case "care": content = <CarePage workspace={workspace} onCreateRecord={openRecord} />; break;
+    case "batches": content = <ProductionBatchesPage workspace={workspace} />; break;
+    case "feeding":
+    case "feed-history":
+    case "ingredients": content = <FeedingPage workspace={workspace} mode={activePage} onCreateRecord={openRecord} onNavigate={navigate} />; break;
+    case "tmr":
+    case "tmr-feed":
+    case "tmr-produce":
+    case "tmr-batches":
+    case "tmr-monitor":
+    case "tmr-plans":
+    case "tmr-formulas": content = <TMRPage workspace={workspace} mode={activePage} onCreateRecord={openRecord} onNavigate={navigate} />; break;
+    case "insights":
+    case "assistant": content = <InsightsPage workspace={workspace} mode={activePage} onNavigate={navigate} />; break;
+    case "search": content = <SearchPage searchIndex={searchIndex} onOpenResult={selectSearchResult} />; break;
+    case "events": content = <EventsPage workspace={workspace} selectedID={routeContext.selectedID} exportHint={routeContext.exportHint} />; break;
     case "settings": content = <SettingsPage workspace={workspace} authState={authState} isConfigured={isSupabaseConfigured} onSignIn={handleSignIn} onAppleSignIn={handleAppleSignIn} onSignOut={handleSignOut} onReloadCloud={reloadCloud} />; break;
     default: content = <HomeDashboard workspace={workspace} onNavigate={navigate} onCreateRecord={openRecord} />;
   }
@@ -410,10 +458,6 @@ export function App() {
         onNavigate={navigate}
         workspace={workspace}
         onFarmChange={changeFarm}
-        query={query}
-        onQueryChange={setQuery}
-        searchResults={searchResults}
-        onSearchResult={selectSearchResult}
         onSignOut={handleSignOut}
       />
       <Suspense fallback={<div className="route-loading"><SpinnerGap size={26} className="spin" />正在打开工作区…</div>}>

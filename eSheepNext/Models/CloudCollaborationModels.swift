@@ -1,4 +1,3 @@
-import CloudKit
 import Foundation
 import SwiftData
 
@@ -88,7 +87,7 @@ final class CloudFarmBinding {
         self.farmID = farmID
         self.ownerAccountID = ownerAccountID
         self.zoneName = CloudZoneName.forFarm(farmID)
-        self.zoneOwnerName = CKCurrentUserDefaultName
+        self.zoneOwnerName = "__retired_cloud_owner__"
         self.databaseScopeRawValue = databaseScope.rawValue
         self.stateRawValue = state.rawValue
         self.createdAt = .now
@@ -302,7 +301,7 @@ final class CloudOperationReceipt {
     var recordName: String
     var serverChangeTag: String?
     var databaseScopeRawValue: String
-    /// The exact CloudKit zone that produced this acknowledgement. Optional
+    /// Legacy remote-zone acknowledgement metadata. Optional
     /// keeps existing SwiftData stores eligible for lightweight migration;
     /// a legacy nil value is deliberately not treated as proof for any zone.
     var zoneName: String?

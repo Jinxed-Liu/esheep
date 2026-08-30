@@ -3,18 +3,24 @@ import { ArrowsLeftRight } from "@phosphor-icons/react/ArrowsLeftRight";
 import { Baby } from "@phosphor-icons/react/Baby";
 import { BowlFood } from "@phosphor-icons/react/BowlFood";
 import { Heart } from "@phosphor-icons/react/Heart";
+import { Notebook } from "@phosphor-icons/react/Notebook";
+import { Scales } from "@phosphor-icons/react/Scales";
 import { SignOut } from "@phosphor-icons/react/SignOut";
+import { Tag } from "@phosphor-icons/react/Tag";
+import { UsersThree } from "@phosphor-icons/react/UsersThree";
 import { X } from "@phosphor-icons/react/X";
-import { SheepGlyph as Sheep, WeightGlyph as Scale } from "./DomainIcons.jsx";
 
 const typeOptions = [
-  { id: "addSheep", label: "新建羊只", icon: Sheep },
-  { id: "weight", label: "称重", icon: Scale },
+  { id: "addSheep", label: "新建羊只", icon: Tag },
+  { id: "weight", label: "称重", icon: Scales },
   { id: "transfer", label: "转群", icon: ArrowsLeftRight },
   { id: "removal", label: "离场", icon: SignOut },
   { id: "feed", label: "记录投喂", icon: BowlFood },
-  { id: "health", label: "记录健康", icon: Heart },
-  { id: "reproduction", label: "繁殖记录", icon: Baby },
+  { id: "health", label: "治疗 / 疫苗", icon: Heart },
+  { id: "note", label: "现场备注", icon: Notebook },
+  { id: "reproduction", label: "配种 / 孕检", icon: Baby },
+  { id: "lambing", label: "产羔", icon: Baby },
+  { id: "weaning", label: "断奶", icon: UsersThree },
 ];
 
 function localDateValue() {
@@ -128,6 +134,35 @@ function RecordFields({ type, values, setValue, workspace }) {
     );
   }
 
+  if (type === "note") {
+    return (
+      <div className="form-grid two-columns">
+        <Field label="关联羊只（可选）"><OptionSelect value={values.sheep} onChange={(value) => setValue("sheep", value)}><option value="">不关联羊只</option>{sheepOptions.map((sheep) => <option key={sheep.id}>{sheep.earTag}</option>)}</OptionSelect></Field>
+        <Field label="发生时间"><input type="datetime-local" required value={values.occurredAt} onChange={(event) => setValue("occurredAt", event.target.value)} /></Field>
+      </div>
+    );
+  }
+
+  if (type === "weaning") {
+    return (
+      <div className="form-grid two-columns">
+        <Field label="羔羊耳号"><OptionSelect required value={values.sheep} onChange={(value) => setValue("sheep", value)}><option value="">请选择</option>{sheepOptions.map((sheep) => <option key={sheep.id}>{sheep.earTag}</option>)}</OptionSelect></Field>
+        <Field label="断奶后圈舍"><OptionSelect required value={values.pen} onChange={(value) => setValue("pen", value)}><option value="">请选择</option>{penOptions.map((pen) => <option key={pen.id}>{pen.name}</option>)}</OptionSelect></Field>
+        <Field label="断奶时间"><input type="datetime-local" required value={values.occurredAt} onChange={(event) => setValue("occurredAt", event.target.value)} /></Field>
+      </div>
+    );
+  }
+
+  if (type === "lambing") {
+    return (
+      <div className="form-grid two-columns">
+        <Field label="母羊耳号"><OptionSelect required value={values.sheep} onChange={(value) => setValue("sheep", value)}><option value="">请选择</option>{sheepOptions.filter((sheep) => sheep.sex === "母").map((sheep) => <option key={sheep.id}>{sheep.earTag}</option>)}</OptionSelect></Field>
+        <Field label="产羔结果"><input required value={values.result} onChange={(event) => setValue("result", event.target.value)} placeholder="例如 活羔 2 只" /></Field>
+        <Field label="发生时间"><input type="datetime-local" required value={values.occurredAt} onChange={(event) => setValue("occurredAt", event.target.value)} /></Field>
+      </div>
+    );
+  }
+
   return (
     <div className="form-grid two-columns">
       <Field label="母羊耳号"><OptionSelect required value={values.sheep} onChange={(value) => setValue("sheep", value)}><option value="">请选择</option>{sheepOptions.filter((sheep) => sheep.sex === "母").map((sheep) => <option key={sheep.id}>{sheep.earTag}</option>)}</OptionSelect></Field>
@@ -146,6 +181,9 @@ function eventSummary(type, values) {
     case "removal": return { label: "离场记录", object: `羊只 ${values.sheep} · ${values.removalKind}`, eventType: "note" };
     case "feed": return { label: "记录投喂", object: `${values.pen} · ${values.meal}`, eventType: "feed" };
     case "health": return { label: "健康记录", object: `羊只 ${values.sheep} · ${values.itemName}`, eventType: "health" };
+    case "note": return { label: "现场备注", object: values.sheep ? `羊只 ${values.sheep} · ${values.note}` : values.note, eventType: "note" };
+    case "weaning": return { label: "断奶记录", object: `羊只 ${values.sheep} → ${values.pen}`, eventType: "reproduction" };
+    case "lambing": return { label: "产羔记录", object: `母羊 ${values.sheep} · ${values.result}`, eventType: "reproduction" };
     default: return { label: values.reproductionKind, object: `母羊 ${values.sheep}`, eventType: "reproduction" };
   }
 }
@@ -201,7 +239,7 @@ export function RecordDialog({ open, requestedType, workspace, onClose, onSubmit
         ) : (
           <form onSubmit={submit}>
             <RecordFields type={type} values={values} setValue={setValue} workspace={workspace} />
-            <Field label="备注"><textarea rows="3" value={values.note} onChange={(event) => setValue("note", event.target.value)} placeholder="可选；只记录与本次业务事实相关的信息" /></Field>
+            <Field label={type === "note" ? "现场备注" : "备注"}><textarea required={type === "note"} rows="3" value={values.note} onChange={(event) => setValue("note", event.target.value)} placeholder={type === "note" ? "请填写需要保留的现场事实" : "可选；只记录与本次业务事实相关的信息"} /></Field>
             <footer>
               {requestedType === "new" ? <button className="text-button" type="button" onClick={() => setType(null)}>返回选择</button> : <span />}
               <div><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-button" type="submit">确认记录</button></div>

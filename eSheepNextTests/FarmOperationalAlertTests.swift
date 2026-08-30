@@ -815,7 +815,7 @@ final class FarmOperationalAlertTests: XCTestCase {
         context.insert(tmrDeferral)
         try context.save()
 
-        let baseline = try MigrationCloudBootstrapService().makeProviderNeutralSnapshots(
+        let baseline = try FarmBaselineSnapshotService().makeProviderNeutralSnapshots(
             farm: sourceFarm,
             context: context
         )

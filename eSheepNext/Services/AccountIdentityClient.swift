@@ -48,6 +48,9 @@ protocol AccountIdentityClient: Sendable {
     func updateDisplayName(_ displayName: String) async throws -> String
     func signOut() async throws -> WorkerSignOutResult
     func deleteAccount() async throws -> WorkerAccountDeletionResponse
+    func recordLegalConsent(_ receipt: LegalConsentReceipt) async throws
+    func recordLegalConsentWithdrawal(_ event: LegalConsentWithdrawalEvent) async throws
+    func recordAIPrivacyConsent(_ event: AIPrivacyConsentEvent) async throws
     func registerDevice(
         deviceID: UUID,
         publicKeyJWK: [String: String],
@@ -117,6 +120,19 @@ actor CloudBaseAccountIdentityClient: AccountIdentityClient {
 
     func deleteAccount() async throws -> WorkerAccountDeletionResponse {
         try await client.deleteAccount()
+    }
+
+    func recordLegalConsent(_: LegalConsentReceipt) async throws {
+        // The CloudBase path is retained only for legacy-account recovery and
+        // has no versioned receipt endpoint. Release builds use Supabase.
+    }
+
+    func recordLegalConsentWithdrawal(_: LegalConsentWithdrawalEvent) async throws {
+        // Legacy recovery path; release builds use the versioned Supabase RPC.
+    }
+
+    func recordAIPrivacyConsent(_: AIPrivacyConsentEvent) async throws {
+        // Legacy recovery path; see recordLegalConsent(_:).
     }
 
     func registerDevice(
@@ -265,6 +281,58 @@ actor SupabaseAccountIdentityClient: AccountIdentityClient {
         }
     }
 
+    private struct LegalConsentParameters: Encodable, Sendable {
+        let termsVersion: String
+        let privacyVersion: String
+        let crossBorderVersion: String
+        let consentedAt: String
+        let appVersion: String
+        let localeIdentifier: String
+
+        enum CodingKeys: String, CodingKey {
+            case termsVersion = "p_terms_version"
+            case privacyVersion = "p_privacy_version"
+            case crossBorderVersion = "p_cross_border_version"
+            case consentedAt = "p_consented_at"
+            case appVersion = "p_app_version"
+            case localeIdentifier = "p_locale_identifier"
+        }
+    }
+
+    private struct AIPrivacyConsentParameters: Encodable, Sendable {
+        let version: String
+        let action: String
+        let occurredAt: String
+        let appVersion: String
+        let localeIdentifier: String
+
+        enum CodingKeys: String, CodingKey {
+            case version = "p_version"
+            case action = "p_action"
+            case occurredAt = "p_occurred_at"
+            case appVersion = "p_app_version"
+            case localeIdentifier = "p_locale_identifier"
+        }
+    }
+
+    private struct LegalConsentWithdrawalParameters: Encodable, Sendable {
+        let termsVersion: String
+        let privacyVersion: String
+        let crossBorderVersion: String
+        let occurredAt: String
+        let appVersion: String
+        let localeIdentifier: String
+
+        enum CodingKeys: String, CodingKey {
+            case termsVersion = "p_terms_version"
+            case privacyVersion = "p_privacy_version"
+            case crossBorderVersion = "p_cross_border_version"
+            case occurredAt = "p_occurred_at"
+            case appVersion = "p_app_version"
+            case localeIdentifier = "p_locale_identifier"
+        }
+    }
+
     nonisolated let provider = AccountIdentityProvider.supabase
     nonisolated let supabase: SupabaseClient
 
@@ -375,6 +443,59 @@ actor SupabaseAccountIdentityClient: AccountIdentityClient {
             deletionJobID: response.deletionJobID,
             status: response.status
         )
+    }
+
+    func recordLegalConsent(_ receipt: LegalConsentReceipt) async throws {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try await supabase
+            .rpc(
+                "record_legal_consent",
+                params: LegalConsentParameters(
+                    termsVersion: receipt.termsVersion,
+                    privacyVersion: receipt.privacyVersion,
+                    crossBorderVersion: receipt.crossBorderVersion,
+                    consentedAt: formatter.string(from: receipt.consentedAt),
+                    appVersion: receipt.appVersion,
+                    localeIdentifier: receipt.localeIdentifier
+                )
+            )
+            .execute()
+    }
+
+    func recordLegalConsentWithdrawal(_ event: LegalConsentWithdrawalEvent) async throws {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try await supabase
+            .rpc(
+                "record_legal_consent_withdrawal",
+                params: LegalConsentWithdrawalParameters(
+                    termsVersion: event.termsVersion,
+                    privacyVersion: event.privacyVersion,
+                    crossBorderVersion: event.crossBorderVersion,
+                    occurredAt: formatter.string(from: event.occurredAt),
+                    appVersion: event.appVersion,
+                    localeIdentifier: event.localeIdentifier
+                )
+            )
+            .execute()
+    }
+
+    func recordAIPrivacyConsent(_ event: AIPrivacyConsentEvent) async throws {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try await supabase
+            .rpc(
+                "record_ai_privacy_consent",
+                params: AIPrivacyConsentParameters(
+                    version: event.version,
+                    action: event.action.rawValue,
+                    occurredAt: formatter.string(from: event.occurredAt),
+                    appVersion: event.appVersion,
+                    localeIdentifier: event.localeIdentifier
+                )
+            )
+            .execute()
     }
 
     func registerDevice(

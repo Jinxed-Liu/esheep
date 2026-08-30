@@ -496,21 +496,21 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
                 willMigrate: nil,
                 didMigrate: { context in
                     let farms = try context.fetch(FetchDescriptor<FarmRecord>())
-                    let cloudKitBindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
+                    let retiredCloudBindings = try context.fetch(FetchDescriptor<CloudFarmBinding>())
                     let existingProfiles = try context.fetch(FetchDescriptor<FarmStorageProfile>())
                     let profiledFarmIDs = Set(existingProfiles.map(\.farmID))
-                    let iCloudFarmIDs = Set(cloudKitBindings.map(\.farmID))
+                    let retiredCloudFarmIDs = Set(retiredCloudBindings.map(\.farmID))
 
                     for farm in farms where !profiledFarmIDs.contains(farm.id) {
                         context.insert(FarmStorageProfile(
                             farmID: farm.id,
-                            mode: iCloudFarmIDs.contains(farm.id) ? .iCloud : .localOnly
+                            mode: retiredCloudFarmIDs.contains(farm.id) ? .retiredAppleCloud : .localOnly
                         ))
                     }
 
                     for item in try context.fetch(FetchDescriptor<OutboxItem>()) {
-                        if iCloudFarmIDs.contains(item.farmID) {
-                            item.deliveryProviderRawValue = FarmRemoteProvider.iCloud.rawValue
+                        if retiredCloudFarmIDs.contains(item.farmID) {
+                            item.deliveryProviderRawValue = FarmRemoteProvider.retiredAppleCloud.rawValue
                         } else {
                             item.deliveryProviderRawValue = nil
                             item.statusRawValue = OutboxStatus.notRequiredLocalOnly.rawValue

@@ -17,29 +17,11 @@ import UIKit
 #if DEBUG
 private enum DevelopmentLocalAccountRecoveryError: LocalizedError {
     case supabaseDevelopmentDisabled
-    case farmNotFound
-    case activeSheepCountMismatch(expected: Int, actual: Int)
-    case ownerMembershipMismatch
-    case privateBindingMismatch
-    case validatedSnapshotMissing
-    case ownerAlreadyBound
 
     var errorDescription: String? {
         switch self {
         case .supabaseDevelopmentDisabled:
             "只允许在已启用 Supabase 的 Development 构建中执行。"
-        case .farmNotFound:
-            "没有找到指定的本地牧场。"
-        case .activeSheepCountMismatch(let expected, let actual):
-            "在场羊只校验失败：预期 \(expected)，实际 \(actual)。"
-        case .ownerMembershipMismatch:
-            "当前账号与旧场主成员记录不一致。"
-        case .privateBindingMismatch:
-            "旧牧场的私有云绑定证据不一致。"
-        case .validatedSnapshotMissing:
-            "没有找到已经验证的场主成员快照。"
-        case .ownerAlreadyBound:
-            "旧场主账号已绑定到另一个本地账户。"
         }
     }
 }
@@ -55,13 +37,9 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Query private var accounts: [AccountProfile]
     @Query(sort: \FarmRecord.updatedAt, order: .reverse) private var farms: [FarmRecord]
-    @Query private var cloudBindings: [CloudFarmBinding]
     @Query private var remoteBindings: [FarmRemoteBinding]
     @Query private var remoteRestoreRecords: [FarmRemoteRestoreRecord]
     @Query private var membershipBindings: [FarmMembershipBinding]
-    @Query private var migrationCommits: [MigrationCommitRecord]
-    @Query(sort: \CloudRebuildSessionRecord.updatedAt, order: .reverse)
-    private var cloudRebuildSessions: [CloudRebuildSessionRecord]
     @State private var lifecycleCoordinator = AppLifecycleCoordinator()
 
     var body: some View {
@@ -69,20 +47,17 @@ struct RootView: View {
 
         Group {
             if let account = activeAccount,
-               hasPersistedLocalAccount(for: account) {
+               hasPersistedLocalAccount(for: account),
+               hasCurrentLegalConsent(for: account) {
                 if let restore = pendingRemoteRestore {
                     SupabaseFarmRestoreProgressView(record: restore)
                 } else if visibleFarms.isEmpty {
-                    if pendingSharedFarmIDs.isEmpty {
-                        FarmSetupView(account: account)
-                    } else {
-                        SharedFarmAdmissionProgressView()
-                    }
+                    FarmSetupView(account: account)
                 } else {
                     FarmWorkspaceView(
                         account: account,
                         farms: visibleFarms,
-                        sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
+                        sharedFarmAdmissionStatus: nil
                     )
                 }
             } else {
@@ -146,14 +121,6 @@ struct RootView: View {
                 .operationalAlerts,
             ])
         }
-        .onReceive(NotificationCenter.default.publisher(for: CloudRuntimeNotification.recoveryRequired)) { notification in
-            guard let farmID = CloudRuntimeNotification.farmID(from: notification),
-                  visibleFarms.contains(where: { $0.id == farmID }) else { return }
-            lifecycleCoordinator.requestRefresh([
-                .systemSnapshot,
-                .operationalAlerts,
-            ])
-        }
         .onReceive(NotificationCenter.default.publisher(for: FarmOperationalAlertRuntimeNotification.refreshRequested)) { notification in
             guard let farmID = FarmOperationalAlertRuntimeNotification.farmID(from: notification),
                   visibleFarms.contains(where: { $0.id == farmID }) else { return }
@@ -163,11 +130,6 @@ struct RootView: View {
             if let code = SupabaseFarmInvitationLink.code(from: url),
                SupabaseAccountConfiguration.isConfigured {
                 session.pendingSupabaseInvitationCode = code
-                session.isJoinFarmPresented = true
-                return
-            }
-            if let invitation = PendingFarmInvitation(url: url) {
-                session.pendingFarmInvitation = invitation
                 session.isJoinFarmPresented = true
                 return
             }
@@ -211,15 +173,6 @@ struct RootView: View {
                 await performForegroundCloudSync(lease: lease)
             }
         }
-        .task(id: sharedFarmAdmissionTaskID) {
-            let context = sharedFarmAdmissionTaskID
-            await lifecycleCoordinator.performSingleFlight(
-                kind: .sharedFarmAdmission,
-                context: context
-            ) { lease in
-                await completePendingSharedFarmAdmissions(lease: lease)
-            }
-        }
         .task(id: accountAvatarCloudTaskID) {
             let context = accountAvatarCloudTaskID
             await lifecycleCoordinator.performSingleFlight(
@@ -238,32 +191,14 @@ struct RootView: View {
                 await runInsightPersonalSyncLoop(lease: lease)
             }
         }
-        .task(id: migrationCloudTaskID) {
-            let context = migrationCloudTaskID
+        .task(id: remoteFarmDiscoveryTaskID) {
+            let context = remoteFarmDiscoveryTaskID
             await lifecycleCoordinator.performSingleFlight(
                 kind: .migrationRecovery,
                 context: context
             ) { lease in
-                await recoverMigrationCloudIfNeeded(lease: lease)
+                await discoverRemoteFarmsIfNeeded(lease: lease)
             }
-        }
-        .task(id: maintenanceTaskID) {
-            let context = maintenanceTaskID
-            await lifecycleCoordinator.performSingleFlight(
-                kind: .identityMaintenance,
-                context: context
-            ) { lease in
-                await runIdentityMaintenanceLoop(lease: lease)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .didAcceptFarmCloudShare)) { notification in
-            guard let account = activeAccount else { return }
-            Task {
-                await collaboration.acceptShareNotification(notification, accountID: account.effectiveAccountID)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .didFailToAcceptFarmCloudShare)) { notification in
-            collaboration.lastErrorMessage = (notification.object as? Error)?.localizedDescription ?? "系统共享接受失败。"
         }
     }
 
@@ -281,6 +216,12 @@ struct RootView: View {
         session.activeAccountProfileID == account.id
     }
 
+    private func hasCurrentLegalConsent(for account: AccountProfile) -> Bool {
+        account.acceptedTermsVersion == LegalPolicyVersions.terms &&
+            account.acceptedPrivacyVersion == LegalPolicyVersions.privacy &&
+            LegalConsentStore.hasCurrentConsent(for: account.effectiveAccountID)
+    }
+
     private var pendingRemoteRestore: FarmRemoteRestoreRecord? {
         guard let account = activeAccount else { return nil }
         return remoteRestoreRecords
@@ -295,34 +236,29 @@ struct RootView: View {
     private func performForegroundCloudSync(
         lease: AppLifecycleCoordinator.Lease
     ) async {
-        let activeICloudFarmIDs = Set(
-            activeCloudBindings.filter { $0.state == .active }.map(\.farmID)
-        )
-        let activeSupabaseFarmIDs = Set(
+        let activeFarmIDs = Set(
             remoteBindings.filter {
                 $0.provider == .supabase && $0.state == .active
             }.map(\.farmID)
         )
-        let activeFarmIDs = activeICloudFarmIDs.union(activeSupabaseFarmIDs)
         guard scenePhase == .active,
               session.accountAccessStatus.allowsCloudOperations,
-              (CloudFeatureConfiguration.isEnabled || SupabaseAccountConfiguration.isConfigured),
+              SupabaseAccountConfiguration.isConfigured,
               activeAccount?.serverBindingState == .verified,
-              !migrationCommits.contains(where: {
-                  activeFarmIDs.contains($0.farmID) &&
-                  $0.ownerAccountID == activeAccount?.effectiveAccountID &&
-                  $0.cloudState != .synced
-              }),
               !activeFarmIDs.isEmpty,
               lifecycleCoordinator.isCurrent(lease) else { return }
 
-        let interval = PerformanceTrace.begin(.syncPull, count: activeFarmIDs.count)
+        let interval = PerformanceTrace.begin(.foregroundResume, count: activeFarmIDs.count)
         defer { PerformanceTrace.end(interval) }
-        await collaboration.resumeSupabaseSynchronization()
-        guard lifecycleCoordinator.isCurrent(lease) else { return }
+
+        // Let the foreground transition and the first interactive frame settle
+        // before network reconciliation starts competing for CPU and model work.
         guard await waitForSecondaryLaunchWindow(.milliseconds(700)) else { return }
         guard lifecycleCoordinator.isCurrent(lease) else { return }
-        await collaboration.synchronizeNow()
+        // `resumeSupabaseSynchronization` already reconnects realtime listeners
+        // and performs one complete reconciliation. A second synchronizeNow()
+        // here repeated the same work on every foreground transition.
+        await collaboration.resumeSupabaseSynchronization()
     }
 
     @MainActor
@@ -387,7 +323,7 @@ struct RootView: View {
     }
 
     @MainActor
-    private func recoverMigrationCloudIfNeeded(
+    private func discoverRemoteFarmsIfNeeded(
         lease: AppLifecycleCoordinator.Lease
     ) async {
         guard scenePhase == .active,
@@ -404,31 +340,6 @@ struct RootView: View {
     }
 
     @MainActor
-    private func runIdentityMaintenanceLoop(
-        lease: AppLifecycleCoordinator.Lease
-    ) async {
-        guard session.accountAccessStatus.allowsCloudOperations,
-              let account = activeAccount,
-              account.serverBindingState == .verified,
-              lifecycleCoordinator.isCurrent(lease) else { return }
-        guard await waitForSecondaryLaunchWindow(.seconds(5)) else { return }
-        while lifecycleCoordinator.isCurrent(lease) {
-            let farmIDs = activeCloudBindings
-                .filter { $0.state == .active }
-                .map(\.farmID)
-            await collaboration.performIdentityMaintenance(
-                accountID: account.effectiveAccountID,
-                farmIDs: farmIDs
-            )
-            guard lifecycleCoordinator.isCurrent(lease) else { return }
-            do {
-                try await Task.sleep(for: .seconds(43_200))
-            } catch {
-                return
-            }
-        }
-    }
-
     private func verifyActiveAccount(
         lease: AppLifecycleCoordinator.Lease
     ) async {
@@ -459,14 +370,6 @@ struct RootView: View {
                         "alreadyCompleted=\(clone.alreadyCompleted)"
                 )
             }
-            if try repairDevelopmentLocalAccountBindingIfRequested(account: account) {
-                session.authenticationCheckDidFinish(
-                    .requiresSignIn("已恢复原本地牧场的账号关联；本地数据可以使用。重新登录后再继续云端验证。"),
-                    automaticallyPresentReauthentication: false
-                )
-                subscription.reset()
-                return
-            }
         } catch {
             collaboration.lastErrorMessage = "本地牧场账号关联恢复未执行：\(error.localizedDescription)"
         }
@@ -476,6 +379,15 @@ struct RootView: View {
               hasPersistedLocalAccount(for: account) else {
             session.authenticationCheckDidFinish(
                 .requiresSignIn("本机登录会话不存在，请重新登录。"),
+                automaticallyPresentReauthentication: false
+            )
+            subscription.reset()
+            return
+        }
+
+        guard hasCurrentLegalConsent(for: account) else {
+            session.authenticationCheckDidFinish(
+                .requiresSignIn("服务条款或隐私政策已更新，请阅读并重新明确同意后继续。"),
                 automaticallyPresentReauthentication: false
             )
             subscription.reset()
@@ -500,14 +412,27 @@ struct RootView: View {
         await subscription.activate(accountID: account.effectiveAccountID)
         guard lifecycleCoordinator.isCurrent(lease) else { return }
 
-        // A successful sign-in must deterministically start farm discovery.
-        // Relying only on a sibling SwiftUI task to be recreated when the
-        // access status changes can leave a clean install authenticated but
-        // showing no cloud farms until a later foreground transition.
-        await recoverAccessibleFarms(
-            accountID: account.effectiveAccountID,
-            lease: lease
-        )
+        // A clean install still needs a deterministic first discovery because
+        // the sibling SwiftUI task may not be recreated after authentication.
+        // Once any local or remote farm state is known, the dedicated delayed
+        // discovery task owns later refreshes; repeating it here made every
+        // foreground authentication path restore the same farms again.
+        let knownAccountFarmIDs = Set(farms.compactMap { farm -> UUID? in
+            farm.ownerAccountID == account.effectiveAccountID ? farm.id : nil
+        }).union(membershipBindings.compactMap { membership -> UUID? in
+            membership.accountID == account.effectiveAccountID
+                ? membership.farmID
+                : nil
+        })
+        let hasKnownRemoteFarmState = remoteBindings.contains { binding in
+            binding.provider == .supabase && knownAccountFarmIDs.contains(binding.farmID)
+        }
+        if visibleFarms.isEmpty && !hasKnownRemoteFarmState {
+            await recoverAccessibleFarms(
+                accountID: account.effectiveAccountID,
+                lease: lease
+            )
+        }
     }
 
     @MainActor
@@ -516,31 +441,12 @@ struct RootView: View {
         lease: AppLifecycleCoordinator.Lease? = nil
     ) async {
         if let lease, !lifecycleCoordinator.isCurrent(lease) { return }
-        guard session.beginAutomaticCloudRecovery(accountID: accountID) else { return }
-        defer { session.finishAutomaticCloudRecovery(accountID: accountID) }
+        guard session.beginAutomaticRemoteDiscovery(accountID: accountID) else { return }
+        defer { session.finishAutomaticRemoteDiscovery(accountID: accountID) }
 
         let interval = PerformanceTrace.begin(.syncRebuild)
         defer { PerformanceTrace.end(interval) }
 
-        // The authoritative source device must be allowed to finish its
-        // immutable migration upload before any recovery root preflight.
-        // A slow CloudKit root read must never sit in front of the Outbox
-        // drain and make an in-progress migration appear stalled.
-        await collaboration.resumeAutomaticMigrationUploads(accountID: accountID)
-        guard !Task.isCancelled else { return }
-        if let lease, !lifecycleCoordinator.isCurrent(lease) { return }
-        do {
-            _ = try await OwnerFarmRecoveryCoordinator(
-                modelContainer: modelContext.container
-            ).stageMismatchedActiveOwnerFarms(accountID: accountID)
-        } catch is CancellationError {
-            return
-        } catch {
-            // A transient root preflight failure must not prevent a farm
-            // already locked in rebuildingCache from resuming its staged
-            // recovery on this foreground pass.
-            collaboration.lastErrorMessage = error.localizedDescription
-        }
         await collaboration.discoverAndRestoreOwnerFarms(accountID: accountID)
         guard !Task.isCancelled else { return }
         if let lease, !lifecycleCoordinator.isCurrent(lease) { return }
@@ -583,97 +489,6 @@ struct RootView: View {
     }
 
     @MainActor
-    private func repairDevelopmentLocalAccountBindingIfRequested(
-        account: AccountProfile
-    ) throws -> Bool {
-        let arguments = ProcessInfo.processInfo.arguments
-        guard let farmID = developmentArgument(
-            named: "--recover-local-account-farm",
-            in: arguments
-        ).flatMap(UUID.init(uuidString:)),
-        let expectedActiveCount = developmentArgument(
-            named: "--expected-active-sheep",
-            in: arguments
-        ).flatMap(Int.init) else {
-            return false
-        }
-
-        guard SupabaseAccountConfiguration.isEnabled else {
-            throw DevelopmentLocalAccountRecoveryError.supabaseDevelopmentDisabled
-        }
-        guard let farm = farms.first(where: {
-            $0.id == farmID && $0.deletedAt == nil
-        }) else {
-            throw DevelopmentLocalAccountRecoveryError.farmNotFound
-        }
-        guard farm.ownerAccountID != account.effectiveAccountID else {
-            session.selectedFarmID = farm.id
-            return false
-        }
-
-        let activeSheepCount = try modelContext.fetch(
-            FetchDescriptor<SheepRecord>()
-        ).lazy.filter {
-            $0.farmID == farm.id &&
-                $0.deletedAt == nil &&
-                $0.statusRawValue == SheepStatus.active.rawValue
-        }.count
-        guard activeSheepCount == expectedActiveCount else {
-            throw DevelopmentLocalAccountRecoveryError.activeSheepCountMismatch(
-                expected: expectedActiveCount,
-                actual: activeSheepCount
-            )
-        }
-
-        let normalizedAccountName = account.displayName
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-        guard membershipBindings.contains(where: {
-            $0.farmID == farm.id &&
-                $0.accountID == farm.ownerAccountID &&
-                $0.role == .owner &&
-                $0.status == .active &&
-                ($0.displayName ?? "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-                    == normalizedAccountName
-        }) else {
-            throw DevelopmentLocalAccountRecoveryError.ownerMembershipMismatch
-        }
-        guard cloudBindings.contains(where: {
-            $0.farmID == farm.id &&
-                $0.ownerAccountID == farm.ownerAccountID &&
-                $0.databaseScope == .privateDatabase &&
-                $0.state == .active
-        }) else {
-            throw DevelopmentLocalAccountRecoveryError.privateBindingMismatch
-        }
-
-        let snapshots = try modelContext.fetch(
-            FetchDescriptor<FarmMembershipSnapshotRecord>()
-        )
-        guard snapshots.contains(where: {
-            $0.farmID == farm.id &&
-                $0.signedByAccountID == farm.ownerAccountID &&
-                $0.validatedAt != nil
-        }) else {
-            throw DevelopmentLocalAccountRecoveryError.validatedSnapshotMissing
-        }
-        guard !accounts.contains(where: {
-            $0.id != account.id &&
-                $0.effectiveAccountID == farm.ownerAccountID
-        }) else {
-            throw DevelopmentLocalAccountRecoveryError.ownerAlreadyBound
-        }
-
-        account.serverAccountID = farm.ownerAccountID
-        account.serverBindingStateRaw = ServerBindingState.verified.rawValue
-        account.updatedAt = .now
-        try modelContext.save()
-        session.selectedFarmID = farm.id
-        return true
-    }
-
     private func developmentArgument(
         named name: String,
         in arguments: [String]
@@ -696,7 +511,6 @@ struct RootView: View {
                 }
                 .map(\.farmID)
         )
-        let bindingsByFarmID = Dictionary(grouping: cloudBindings, by: \.farmID)
         let remoteBindingsByFarmID = Dictionary(
             grouping: remoteBindings,
             by: \.farmID
@@ -707,169 +521,43 @@ struct RootView: View {
             },
             by: \.farmID
         ).compactMapValues { $0.first?.status }
+
         return farms.filter { farm in
-            guard !hiddenRestoringFarmIDs.contains(farm.id) else {
+            guard farm.deletedAt == nil,
+                  !hiddenRestoringFarmIDs.contains(farm.id) else {
                 return false
             }
-            if let supabaseBinding = remoteBindingsByFarmID[farm.id]?.first(where: {
-                $0.provider == .supabase
-            }) {
+            if let remoteBinding = remoteBindingsByFarmID[farm.id]?.first(
+                where: { $0.provider == .supabase }
+            ) {
                 return SupabaseFarmVisibilityPolicy.isReadyForDisplay(
-                    bindingState: supabaseBinding.state,
+                    bindingState: remoteBinding.state,
                     membershipStatus: membershipsByFarmID[farm.id]
                 )
             }
-            let binding = bindingsByFarmID[farm.id]?.first
-            if let sharedBinding = bindingsByFarmID[farm.id]?.first(where: {
-                $0.databaseScope == .sharedDatabase
-            }) {
-                guard let membershipStatus = membershipsByFarmID[farm.id] else {
-                    return false
-                }
-                return SharedFarmAdmissionPolicy.isReadyForDisplay(
-                    bindingScope: sharedBinding.databaseScope,
-                    bindingState: sharedBinding.state,
-                    farmName: farm.name,
-                    membershipStatus: membershipStatus
-                )
-            }
-            return SharedFarmAdmissionPolicy.isLocallyOwnedForDisplay(
-                farmOwnerAccountID: farm.ownerAccountID,
-                activeAccountID: account.effectiveAccountID,
-                bindingScope: binding?.databaseScope
-            )
+            return farm.ownerAccountID == account.effectiveAccountID
         }
     }
-
-    private var pendingSharedFarmIDs: [UUID] {
-        guard let account = activeAccount else { return [] }
-        let membershipStatuses = Dictionary(
-            grouping: membershipBindings.filter {
-                $0.accountID == account.effectiveAccountID
-            },
-            by: \.farmID
-        ).compactMapValues { $0.first?.status }
-        let farmNames = Dictionary(
-            uniqueKeysWithValues: farms.map { ($0.id, $0.name) }
-        )
-        return Set(cloudBindings.compactMap { binding in
-            guard binding.databaseScope == .sharedDatabase,
-                  let farmName = farmNames[binding.farmID],
-                  SharedFarmAdmissionPolicy.isPendingAdmission(
-                      bindingScope: binding.databaseScope,
-                      bindingState: binding.state,
-                      farmName: farmName,
-                      membershipStatus: membershipStatuses[binding.farmID]
-                  ) else {
-                return nil
-            }
-            return binding.farmID
-        })
-        .sorted { $0.uuidString < $1.uuidString }
-    }
-
-    private var activeCloudBindings: [CloudFarmBinding] {
-        let farmIDs = Set(visibleFarms.map(\.id))
-        return cloudBindings.filter { farmIDs.contains($0.farmID) }
-    }
-
-    private var currentSharedFarmAdmissionSession: CloudRebuildSessionRecord? {
-        let farmIDs = Set(pendingSharedFarmIDs)
-        return cloudRebuildSessions.first {
-            farmIDs.contains($0.farmID) &&
-                $0.databaseScope == .sharedDatabase
-        }
-    }
-
-    private var sharedFarmAdmissionStatus: SharedFarmAdmissionStatus? {
-        guard !pendingSharedFarmIDs.isEmpty else { return nil }
-        guard let session = currentSharedFarmAdmissionSession else {
-            return SharedFarmAdmissionStatus(detailText: "正在验证成员权限和场主签名")
-        }
-        let detailText: String
-        switch session.status {
-        case .preparing:
-            detailText = "正在建立安全下载通道"
-        case .fetching:
-            if session.fetchedRecordCount > 0 {
-                detailText = "已下载 \(session.fetchedRecordCount.formatted()) 条 · 第 \(session.pageCount.formatted()) 页"
-            } else {
-                detailText = "正在读取云端牧场资料"
-            }
-        case .downloadingAssets:
-            detailText = "正在下载照片 \(session.downloadedAssetCount.formatted()) / \(session.fetchedAssetCount.formatted())"
-        case .validating:
-            detailText = "资料已下载，正在校验完整性"
-        case .readyToCommit:
-            detailText = "校验完成，正在准备显示牧场"
-        case .committing:
-            detailText = "正在安全切换到共享牧场资料"
-        case .completed:
-            detailText = "资料已就绪，正在完成成员绑定"
-        case .failed, .cancelled:
-            detailText = session.status == .failed
-                ? "加入中断，已停止自动重试"
-                : "加入已暂停"
-        }
-        return SharedFarmAdmissionStatus(detailText: detailText)
-    }
-
-    private var maintenanceTaskID: String {
-        let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
-        let farmPart = activeCloudBindings.filter { $0.state == .active }.map(\.farmID.uuidString).sorted().joined(separator: ",")
-        return "\(accountPart)|\(farmPart)|\(session.accountAccessStatus.taskKey)"
-    }
-
     private var authenticationTaskID: String {
         "\(scenePhase)|\(session.activeAccountProfileID?.uuidString ?? "none")|\(session.authenticationRevision)"
     }
 
     private var foregroundCloudSyncTaskID: String {
         let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
-        let activeICloudFarmIDs = Set(
-            activeCloudBindings.filter { $0.state == .active }.map(\.farmID)
-        )
-        let activeSupabaseFarmIDs = Set(
-            remoteBindings.filter {
-                $0.provider == .supabase && $0.state == .active
-            }.map(\.farmID)
-        )
-        let activeFarmIDs = activeICloudFarmIDs.union(activeSupabaseFarmIDs)
-        let iCloudBindingPart = activeICloudFarmIDs
-            .map { "\($0.uuidString):icloud" }
-        let supabaseBindingPart = remoteBindings
-            .filter {
-                activeFarmIDs.contains($0.farmID) &&
-                    $0.provider == .supabase
-            }
+        let bindingPart = remoteBindings
+            .filter { $0.provider == .supabase }
             .map {
                 "\($0.farmID.uuidString):supabase:\($0.authorityGeneration):\($0.state.rawValue)"
             }
-        let bindingPart = (iCloudBindingPart + supabaseBindingPart)
             .sorted()
             .joined(separator: ",")
-        let migrationPart = migrationCommits
-            .filter { activeFarmIDs.contains($0.farmID) }
-            .map { "\($0.farmID.uuidString):\($0.cloudState.rawValue)" }
-            .sorted()
-            .joined(separator: ",")
-        return "\(scenePhase)|\(accountPart)|\(bindingPart)|\(migrationPart)|\(session.accountAccessStatus.taskKey)"
+        return "\(scenePhase)|\(accountPart)|\(bindingPart)|\(session.accountAccessStatus.taskKey)"
     }
 
-    private var sharedFarmAdmissionTaskID: String {
+    private var remoteFarmDiscoveryTaskID: String {
         let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
-        let farmPart = pendingSharedFarmIDs.map(\.uuidString).joined(separator: ",")
-        return "\(scenePhase)|\(accountPart)|\(farmPart)|\(session.accountAccessStatus.taskKey)"
-    }
-
-    private var migrationCloudTaskID: String {
-        let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
-        // Cache replacement inserts the recovered migration commit and legacy
-        // cleanup deletes the superseded one. Neither may change this task's
-        // identity or SwiftUI will cancel and restart the recovery mid-commit.
         return "\(scenePhase)|\(accountPart)|\(session.accountAccessStatus.taskKey)"
     }
-
     private var accountAvatarCloudTaskID: String {
         let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
         return "\(scenePhase)|\(accountPart)|\(preferences.effectivePowerSavingEnabled)|\(session.accountAccessStatus.taskKey)"
@@ -977,71 +665,12 @@ struct RootView: View {
     }
 
     @MainActor
-    private func completePendingSharedFarmAdmissions(
-        lease: AppLifecycleCoordinator.Lease
-    ) async {
-        guard scenePhase == .active,
-              session.accountAccessStatus.allowsCloudOperations,
-              let account = activeAccount,
-              account.serverBindingState == .verified,
-              CloudFeatureConfiguration.isEnabled,
-              !pendingSharedFarmIDs.isEmpty,
-              lifecycleCoordinator.isCurrent(lease) else {
-            return
-        }
-        guard await waitForSecondaryLaunchWindow(.milliseconds(700)) else {
-            return
-        }
-
-        var attempt = 0
-        while lifecycleCoordinator.isCurrent(lease) {
-            let farmIDs = pendingSharedFarmIDs
-            guard !farmIDs.isEmpty else { return }
-            var completedAny = false
-            for farmID in farmIDs {
-                guard lifecycleCoordinator.isCurrent(lease) else { return }
-                if await collaboration.completeAcceptedSharedFarmAdmission(
-                    farmID: farmID,
-                    accountID: account.effectiveAccountID
-                ) {
-                    completedAny = true
-                }
-            }
-            if completedAny {
-                guard lifecycleCoordinator.isCurrent(lease) else { return }
-                lifecycleCoordinator.requestRefresh(.systemSnapshot)
-                session.reconcileActiveFarm(with: visibleFarms)
-            }
-            attempt += 1
-            do {
-                try await Task.sleep(
-                    for: attempt <= 24 ? .seconds(5) : .seconds(30)
-                )
-            } catch {
-                return
-            }
-        }
-    }
-
     private func waitForSecondaryLaunchWindow(_ duration: Duration) async -> Bool {
         do {
             try await Task.sleep(for: duration)
             return !Task.isCancelled
         } catch {
             return false
-        }
-    }
-}
-
-private struct SharedFarmAdmissionProgressView: View {
-    var body: some View {
-        ContentUnavailableView {
-            Label("正在加入共享牧场", systemImage: "person.2.badge.gearshape")
-        } description: {
-            Text("成员资格已经建立，正在验证场主签名并下载完整牧场资料。")
-        } actions: {
-            ProgressView()
-                .controlSize(.large)
         }
     }
 }

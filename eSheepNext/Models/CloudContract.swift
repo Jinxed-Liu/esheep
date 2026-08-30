@@ -240,7 +240,7 @@ enum CloudOperationSecurity {
             throw CloudContractError.invalidPayloadDigest
         }
         // A capability authorizes the cloud write, not the historical business
-        // date carried by an offline or migrated operation. CloudKit's server
+        // date carried by an offline or migrated operation. The remote server's
         // modification date is therefore the authoritative authorization time
         // when it is available. The fallback preserves local/test validation.
         guard claims.isValid(at: authorizationDate ?? envelope.modifiedAt) else {

@@ -10,28 +10,6 @@ enum AppTab: Hashable {
     case search
 }
 
-struct PendingFarmInvitation: Sendable, Equatable {
-    let code: String
-    let shareURL: URL
-
-    init?(url: URL) {
-        guard url.host == "invite",
-              url.scheme == "esheep" || url.scheme == "esheep-staging",
-              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let code = components.queryItems?.first(where: { $0.name == "code" })?.value?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .uppercased(),
-              code.count == 8,
-              let shareValue = components.queryItems?.first(where: { $0.name == "share" })?.value,
-              let shareURL = URL(string: shareValue),
-              shareURL.scheme == "https" else {
-            return nil
-        }
-        self.code = code
-        self.shareURL = shareURL
-    }
-}
-
 enum AppNavigationRequest: Codable, Sendable, Equatable {
     case home
     case addSheep
@@ -72,7 +50,7 @@ enum FarmSessionError: LocalizedError {
 final class AppSession {
     @ObservationIgnored private let persistActiveAccountProfileID: (UUID) -> Void
     @ObservationIgnored private let clearActiveAccountProfileID: () -> Void
-    @ObservationIgnored private var automaticCloudRecoveryAccountIDs = Set<UUID>()
+    @ObservationIgnored private var automaticRemoteDiscoveryAccountIDs = Set<UUID>()
 
     var activeAccountProfileID: UUID?
     var selectedFarmID: UUID?
@@ -90,7 +68,6 @@ final class AppSession {
     var pendingSheepID: UUID?
     var pendingCareReminderID: UUID?
     var pendingOperationalAlertsRequestID: UUID?
-    var pendingFarmInvitation: PendingFarmInvitation?
     var pendingSupabaseInvitationCode: String?
 
     init(
@@ -236,12 +213,12 @@ final class AppSession {
         authenticationRevision += 1
     }
 
-    func beginAutomaticCloudRecovery(accountID: UUID) -> Bool {
-        automaticCloudRecoveryAccountIDs.insert(accountID).inserted
+    func beginAutomaticRemoteDiscovery(accountID: UUID) -> Bool {
+        automaticRemoteDiscoveryAccountIDs.insert(accountID).inserted
     }
 
-    func finishAutomaticCloudRecovery(accountID: UUID) {
-        automaticCloudRecoveryAccountIDs.remove(accountID)
+    func finishAutomaticRemoteDiscovery(accountID: UUID) {
+        automaticRemoteDiscoveryAccountIDs.remove(accountID)
     }
 
     @discardableResult

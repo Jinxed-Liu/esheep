@@ -2665,28 +2665,28 @@ final class InsightAssistantTests: XCTestCase {
         XCTAssertLessThanOrEqual(max(optimized.pixelWidth, optimized.pixelHeight), 1_600)
     }
 
-    func testVoiceRetentionPreferenceDefaultsOnAndIsAccountScoped() throws {
+    func testVoiceRetentionPreferenceDefaultsOffAndIsAccountScoped() throws {
         let suiteName = "insight-voice-privacy-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let firstAccountID = UUID()
         let secondAccountID = UUID()
 
-        XCTAssertTrue(InsightVoicePrivacyPreference.retainsSentAudio(
-            for: firstAccountID,
-            defaults: defaults
-        ))
-        InsightVoicePrivacyPreference.setRetainsSentAudio(
-            false,
-            for: firstAccountID,
-            defaults: defaults
-        )
-
         XCTAssertFalse(InsightVoicePrivacyPreference.retainsSentAudio(
             for: firstAccountID,
             defaults: defaults
         ))
+        InsightVoicePrivacyPreference.setRetainsSentAudio(
+            true,
+            for: firstAccountID,
+            defaults: defaults
+        )
+
         XCTAssertTrue(InsightVoicePrivacyPreference.retainsSentAudio(
+            for: firstAccountID,
+            defaults: defaults
+        ))
+        XCTAssertFalse(InsightVoicePrivacyPreference.retainsSentAudio(
             for: secondAccountID,
             defaults: defaults
         ))

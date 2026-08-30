@@ -30,7 +30,7 @@ struct SupabaseFarmRestoreProgressView: View {
             List {
                 Section {
                     VStack(spacing: 14) {
-                        Image(systemName: "icloud.and.arrow.down.fill")
+                        Image(systemName: "arrow.down.circle.fill")
                             .font(.system(size: 42))
                             .foregroundStyle(.blue)
                         Text("正在恢复云端牧场")
