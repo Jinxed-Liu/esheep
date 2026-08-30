@@ -83,6 +83,10 @@ struct CareLambDraft: Codable, Sendable, Equatable, Identifiable {
     let id: UUID
     let sheepID: UUID
     let earTag: String
+    /// `nil` keeps older payloads compatible and asks the command handler to
+    /// derive a default from the recorded parents. A non-nil value is the
+    /// user's explicit choice and must be preserved as entered (after trim).
+    let breed: String?
     let sex: SheepSex
     /// Kept under its legacy payload name for backward cloud compatibility.
     /// The value is only a true birth weight when `weightOccurredAt` is within
@@ -96,6 +100,7 @@ struct CareLambDraft: Codable, Sendable, Equatable, Identifiable {
         id: UUID = UUID(),
         sheepID: UUID = UUID(),
         earTag: String,
+        breed: String? = nil,
         sex: SheepSex,
         birthWeightText: String = "",
         weightOccurredAt: Date? = nil,
@@ -105,6 +110,7 @@ struct CareLambDraft: Codable, Sendable, Equatable, Identifiable {
         self.id = id
         self.sheepID = sheepID
         self.earTag = earTag
+        self.breed = breed
         self.sex = sex
         self.birthWeightText = birthWeightText
         self.weightOccurredAt = weightOccurredAt

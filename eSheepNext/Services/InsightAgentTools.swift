@@ -1262,7 +1262,7 @@ final class InsightToolRegistry {
                     "offspring[]:CareLambDraft", "penID?", "note",
                 ],
                 "CareLambDraft": [
-                    "id", "sheepID", "earTag", "sex", "birthWeightText",
+                    "id", "sheepID", "earTag", "breed?", "sex", "birthWeightText",
                     "createSheepRecord", "isStillborn",
                 ],
             ],

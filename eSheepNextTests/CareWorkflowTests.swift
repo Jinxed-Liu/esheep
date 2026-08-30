@@ -168,6 +168,7 @@ final class CareWorkflowTests: XCTestCase {
         let lamb = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<SheepRecord>()).first { $0.earTag == "L001" })
         XCTAssertEqual(lamb.damID, ewe.id)
         XCTAssertEqual(lamb.sireID, ram.id)
+        XCTAssertEqual(lamb.breed, "杜泊-湖羊串")
         XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter { $0.lambingRecordID == lambingID }.count, 1)
         let childOperations = try fixture.context.fetch(FetchDescriptor<DomainOperation>()).filter {
             $0.farmID == fixture.farm.id &&
@@ -194,6 +195,70 @@ final class CareWorkflowTests: XCTestCase {
         let invalidDeadCount = CareLambingDraft(id: UUID(), eweID: ewe.id, occurredAt: .now, sireID: ram.id, semenID: nil, parity: 3, birthDeadCount: 0, offspring: [.init(earTag: "", sex: .ram, birthWeightText: "2.5", createSheepRecord: false, isStillborn: true)], penID: nil, note: "")
         XCTAssertThrowsError(try fixture.service.execute(.care(.recordLambing(invalidDeadCount)), in: fixture.ownerContext, context: fixture.context))
         XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<ReproductionRecord>()).count, before)
+    }
+
+    func testLambingBreedDefaultCanBeOverriddenByUser() throws {
+        let fixture = try makeFixture()
+        let ewe = try insertEwe(fixture, earTag: "E-BREED")
+        insertParityBaseline(fixture, ewe: ewe, parity: 0)
+        let ram = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "R-BREED",
+            breed: "杜泊",
+            isBreedingRam: true,
+            sex: .ram,
+            penID: nil,
+            enteredAt: .now.addingTimeInterval(-3_600)
+        )
+        fixture.context.insert(ram)
+
+        let draft = CareLambingDraft(
+            eweID: ewe.id,
+            occurredAt: .now,
+            sireID: ram.id,
+            semenID: nil,
+            parity: 1,
+            birthDeadCount: 0,
+            offspring: [
+                .init(earTag: "L-BREED-AUTO", sex: .ewe),
+                .init(earTag: "L-BREED-USER", breed: "用户确认品种", sex: .ram),
+            ],
+            penID: nil,
+            note: ""
+        )
+        try fixture.service.execute(
+            .care(.recordLambing(draft)),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+
+        let lambs = try fixture.context.fetch(FetchDescriptor<SheepRecord>())
+        XCTAssertEqual(lambs.first { $0.earTag == "L-BREED-AUTO" }?.breed, "杜泊-湖羊串")
+        XCTAssertEqual(lambs.first { $0.earTag == "L-BREED-USER" }?.breed, "用户确认品种")
+    }
+
+    func testLambBreedSuggestionDoesNotReplaceUserEditedValue() {
+        let suggestion = LambingEntrySemantics.suggestedLambBreed(
+            paternalBreed: " 杜泊 ",
+            maternalBreed: " 湖羊 "
+        )
+        XCTAssertEqual(suggestion, "杜泊-湖羊串")
+        XCTAssertEqual(
+            LambingEntrySemantics.breedAfterApplyingSuggestion(
+                currentBreed: "湖羊",
+                suggestedBreed: suggestion,
+                userOverrodeSuggestion: false
+            ),
+            "杜泊-湖羊串"
+        )
+        XCTAssertEqual(
+            LambingEntrySemantics.breedAfterApplyingSuggestion(
+                currentBreed: "用户确认品种",
+                suggestedBreed: suggestion,
+                userOverrodeSuggestion: true
+            ),
+            "用户确认品种"
+        )
     }
 
     func testConfirmedSupabaseLambingBackfillsMissingChildDeliveryOperations() throws {

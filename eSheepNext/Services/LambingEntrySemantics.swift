@@ -18,6 +18,43 @@ enum LambingEntrySemantics {
     /// ordinary weighing facts at their actual measurement time.
     static let birthWeightWindow: TimeInterval = 24 * 60 * 60
 
+    /// Builds the editable default shown for a lamb's breed. When both parent
+    /// breeds are known, the product rule is `父本品种-母本品种串`.
+    /// A single known parent remains a useful fallback for legacy/unknown-
+    /// paternity records, while a completely unknown pairing stays explicit.
+    static func suggestedLambBreed(
+        paternalBreed: String?,
+        maternalBreed: String?
+    ) -> String {
+        let paternal = normalizedBreed(paternalBreed)
+        let maternal = normalizedBreed(maternalBreed)
+
+        switch (paternal, maternal) {
+        case let (paternal?, maternal?):
+            return "\(paternal)-\(maternal)串"
+        case let (paternal?, nil):
+            return paternal
+        case let (nil, maternal?):
+            return maternal
+        case (nil, nil):
+            return "未知"
+        }
+    }
+
+    static func breedAfterApplyingSuggestion(
+        currentBreed: String,
+        suggestedBreed: String,
+        userOverrodeSuggestion: Bool
+    ) -> String {
+        userOverrodeSuggestion ? currentBreed : suggestedBreed
+    }
+
+    private static func normalizedBreed(_ breed: String?) -> String? {
+        guard let breed else { return nil }
+        let normalized = breed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
+    }
+
     static func entryParityBaselineID(sheepID: UUID) -> UUID {
         StableCloudUUID.derived(namespace: sheepID, name: "parity-at-entry")
     }

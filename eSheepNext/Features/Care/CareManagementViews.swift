@@ -589,14 +589,25 @@ private struct LambFormRow: Identifiable {
     let id: UUID
     let sheepID: UUID
     var earTag: String
+    var breed: String
+    var breedWasEdited: Bool
     var sex: SheepSex
     var weight: String
     var weightOccurredAt: Date?
     var createRecord: Bool
     var isStillborn: Bool
 
-    init(id: UUID = UUID(), sheepID: UUID = UUID(), earTag: String = "", sex: SheepSex = .ram, weight: String = "", weightOccurredAt: Date? = nil, createRecord: Bool = true, isStillborn: Bool = false) {
-        self.id = id; self.sheepID = sheepID; self.earTag = earTag; self.sex = sex; self.weight = weight; self.weightOccurredAt = weightOccurredAt; self.createRecord = createRecord; self.isStillborn = isStillborn
+    init(id: UUID = UUID(), sheepID: UUID = UUID(), earTag: String = "", breed: String = "", breedWasEdited: Bool = false, sex: SheepSex = .ram, weight: String = "", weightOccurredAt: Date? = nil, createRecord: Bool = true, isStillborn: Bool = false) {
+        self.id = id
+        self.sheepID = sheepID
+        self.earTag = earTag
+        self.breed = breed
+        self.breedWasEdited = breedWasEdited
+        self.sex = sex
+        self.weight = weight
+        self.weightOccurredAt = weightOccurredAt
+        self.createRecord = createRecord
+        self.isStillborn = isStillborn
     }
 }
 
@@ -606,6 +617,56 @@ private enum LambingFormLimits {
 
 private func parityDisplayName(_ parity: Int) -> String {
     parity == 0 ? "0 胎" : "第 \(parity) 胎"
+}
+
+private func lambingPaternalBreed(
+    relatedBreeding: ReproductionRecord?,
+    selectedSireID: UUID?,
+    selectedSemenID: UUID?,
+    sheep: [SheepRecord],
+    semen: [SemenRecord],
+    donors: [SemenDonorRecord]
+) -> String? {
+    func normalized(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    if let relatedBreeding {
+        if let breed = normalized(relatedBreeding.semenDonorBreedSnapshot) {
+            return breed
+        }
+        if let sireID = relatedBreeding.sireID,
+           let breed = normalized(sheep.first(where: { $0.id == sireID })?.breed) {
+            return breed
+        }
+        if let semenID = relatedBreeding.semenID,
+           let breed = normalized(semen.first(where: { $0.id == semenID })?.breed) {
+            return breed
+        }
+        return nil
+    }
+    if let selectedSireID {
+        return normalized(sheep.first(where: { $0.id == selectedSireID })?.breed)
+    }
+    if let selectedSemenID {
+        guard let semenRecord = semen.first(where: { $0.id == selectedSemenID }) else {
+            return nil
+        }
+        if let donorID = semenRecord.donorID,
+           let donor = donors.first(where: { $0.id == donorID && $0.deletedAt == nil }) {
+            if let breed = normalized(donor.breed) {
+                return breed
+            }
+            if let linkedRamID = donor.linkedRamID,
+               let breed = normalized(sheep.first(where: { $0.id == linkedRamID })?.breed) {
+                return breed
+            }
+        }
+        return normalized(semenRecord.breed)
+    }
+    return nil
 }
 
 private struct LambCountSection: View {
@@ -659,9 +720,20 @@ private struct LambFormSection: View {
         }
     }
 
+    private var editableBreed: Binding<String> {
+        Binding(
+            get: { row.breed },
+            set: { value in
+                row.breed = value
+                row.breedWasEdited = true
+            }
+        )
+    }
+
     var body: some View {
         Section {
             TextField("耳号", text: $row.earTag)
+            TextField("品种（可修改）", text: editableBreed)
             Picker("性别", selection: $row.sex) {
                 Text("公").tag(SheepSex.ram)
                 Text("母").tag(SheepSex.ewe)
@@ -687,6 +759,7 @@ private struct LambFormSection: View {
         } header: {
             Text("羔羊 \(number)")
         } footer: {
+            Text("品种为系统建议，可直接修改；保存时以填写内容为准。")
             if weightKind == .routine {
                 Text(row.createRecord ? LocalizedStringKey("已超过出生 24 小时，将按实际时间保存为普通称重。") : LocalizedStringKey("普通称重必须建立羊只档案后才能保存。"))
             }
@@ -700,6 +773,7 @@ struct CareLambingEntryView: View {
     @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
     @Query(sort: \SemenRecord.code) private var semen: [SemenRecord]
+    @Query(sort: \SemenDonorRecord.name) private var semenDonors: [SemenDonorRecord]
     @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproduction: [ReproductionRecord]
     @Query private var rules: [FarmCareRuleRecord]
 
@@ -736,6 +810,10 @@ struct CareLambingEntryView: View {
             filter: #Predicate<SemenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
             sort: \SemenRecord.code
         )
+        _semenDonors = Query(
+            filter: #Predicate<SemenDonorRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \SemenDonorRecord.name
+        )
         _reproduction = Query(
             filter: #Predicate<ReproductionRecord> { $0.farmID == farmID && $0.deletedAt == nil },
             sort: \ReproductionRecord.occurredAt,
@@ -753,6 +831,19 @@ struct CareLambingEntryView: View {
     private var ramCandidates: [SheepEarTagSearchCandidate] { breedingRams.map { .init(sheep: $0) } }
     private var openBreedings: [ReproductionRecord] { guard let eweID else { return [] }; return reproduction.filter { record in record.farmID == farm.id && record.eweID == eweID && record.kind == .breeding && record.deletedAt == nil && record.occurredAt <= occurredAt && !reproduction.contains { closure in closure.farmID == farm.id && closure.relatedBreedingRecordID == record.id && closure.deletedAt == nil && (closure.kind == .lambing || closure.kind == .abortion) } } }
     private var relatedBreeding: ReproductionRecord? { relatedBreedingID.flatMap { id in openBreedings.first { $0.id == id } } }
+    private var suggestedLambBreed: String {
+        LambingEntrySemantics.suggestedLambBreed(
+            paternalBreed: lambingPaternalBreed(
+                relatedBreeding: relatedBreeding,
+                selectedSireID: sireID,
+                selectedSemenID: semenID,
+                sheep: sheep,
+                semen: semen,
+                donors: semenDonors
+            ),
+            maternalBreed: eweID.flatMap { id in sheep.first(where: { $0.id == id })?.breed }
+        )
+    }
     private var recordedCurrentParity: Int {
         guard let eweID else { return 0 }
         return LambingEntrySemantics.currentParity(eweID: eweID, farmID: farm.id, before: occurredAt, records: reproduction)
@@ -836,7 +927,11 @@ struct CareLambingEntryView: View {
             .navigationTitle("产羔记录").toolbar { EntrySaveToolbar(action: save) }.recordErrorAlert($errorMessage)
             .farmExcelImport(account: account, farm: farm, sheets: ["产羔"])
             .onAppear(perform: refreshCandidates)
-            .onChange(of: eweID) { _, _ in relatedBreedingID = nil; resetAndRefreshCandidates() }
+            .onChange(of: eweID) { _, _ in
+                relatedBreedingID = nil
+                resetAndRefreshCandidates()
+                applyBreedSuggestion()
+            }
             .onChange(of: occurredAt) { oldValue, newValue in
                 for index in rows.indices {
                     guard let weighedAt = rows[index].weightOccurredAt else { continue }
@@ -846,15 +941,25 @@ struct CareLambingEntryView: View {
                 }
                 relatedBreedingID = nil
                 resetAndRefreshCandidates()
+                applyBreedSuggestion()
             }
             .onChange(of: lambCountText) { _, value in resizeRows(to: value) }
-            .onChange(of: relatedBreedingID) { _, value in if value != nil { sireID = nil; semenID = nil } }
-            .onChange(of: sireID) { _, value in if value != nil { semenID = nil } }
-            .onChange(of: semenID) { _, value in if value != nil { sireID = nil } }
+            .onChange(of: relatedBreedingID) { _, value in
+                if value != nil { sireID = nil; semenID = nil }
+                applyBreedSuggestion()
+            }
+            .onChange(of: sireID) { _, value in
+                if value != nil { semenID = nil }
+                applyBreedSuggestion()
+            }
+            .onChange(of: semenID) { _, value in
+                if value != nil { sireID = nil }
+                applyBreedSuggestion()
+            }
     }
     private func appendLamb() {
         guard rows.count < LambingFormLimits.maximumLambCount else { return }
-        rows.append(LambFormRow())
+        rows.append(LambFormRow(breed: suggestedLambBreed))
         lambCountText = "\(rows.count)"
     }
     private func removeLamb(_ id: UUID) {
@@ -865,9 +970,19 @@ struct CareLambingEntryView: View {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let count = Int(normalized), (1...LambingFormLimits.maximumLambCount).contains(count) else { return }
         if count > rows.count {
-            rows.append(contentsOf: (rows.count..<count).map { _ in LambFormRow() })
+            rows.append(contentsOf: (rows.count..<count).map { _ in LambFormRow(breed: suggestedLambBreed) })
         } else if count < rows.count {
             rows.removeLast(rows.count - count)
+        }
+    }
+    private func applyBreedSuggestion() {
+        let suggestion = suggestedLambBreed
+        for index in rows.indices {
+            rows[index].breed = LambingEntrySemantics.breedAfterApplyingSuggestion(
+                currentBreed: rows[index].breed,
+                suggestedBreed: suggestion,
+                userOverrodeSuggestion: rows[index].breedWasEdited
+            )
         }
     }
     private func resetAndRefreshCandidates() { candidateWasPreselected = false; sireID = nil; semenID = nil; refreshCandidates() }
@@ -886,6 +1001,7 @@ struct CareLambingEntryView: View {
                 id: $0.id,
                 sheepID: $0.sheepID,
                 earTag: $0.earTag,
+                breed: $0.breed,
                 sex: $0.sex,
                 birthWeightText: $0.weight,
                 weightOccurredAt: $0.weightOccurredAt,
@@ -1134,6 +1250,7 @@ struct LambingCorrectionView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
     @Query(sort: \SemenRecord.code) private var semen: [SemenRecord]
+    @Query(sort: \SemenDonorRecord.name) private var semenDonors: [SemenDonorRecord]
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
     @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var reproduction: [ReproductionRecord]
     @Query private var offspringRecords: [LambingOffspringRecord]
@@ -1169,6 +1286,10 @@ struct LambingCorrectionView: View {
             filter: #Predicate<SemenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
             sort: \SemenRecord.code
         )
+        _semenDonors = Query(
+            filter: #Predicate<SemenDonorRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \SemenDonorRecord.name
+        )
         _pens = Query(
             filter: #Predicate<PenRecord> { $0.farmID == farmID && $0.deletedAt == nil },
             sort: \PenRecord.name
@@ -1192,6 +1313,19 @@ struct LambingCorrectionView: View {
         }
     } }
     private var linkedBreeding: ReproductionRecord? { relatedBreedingID.flatMap { id in eligibleBreedings.first { $0.id == id } } }
+    private var suggestedLambBreed: String {
+        LambingEntrySemantics.suggestedLambBreed(
+            paternalBreed: lambingPaternalBreed(
+                relatedBreeding: linkedBreeding,
+                selectedSireID: paternalMode == .breedingRam ? sireID : nil,
+                selectedSemenID: paternalMode == .semen ? semenID : nil,
+                sheep: sheep,
+                semen: semen,
+                donors: semenDonors
+            ),
+            maternalBreed: sheep.first(where: { $0.id == record.eweID })?.breed
+        )
+    }
     private var priorParity: Int {
         LambingEntrySemantics.priorParityForLambing(
             eweID: record.eweID,
@@ -1269,10 +1403,20 @@ struct LambingCorrectionView: View {
                     rows[index].weightOccurredAt = newValue
                 }
             }
+            applyBreedSuggestion()
         }
         .onChange(of: lambCountText) { _, value in resizeRows(to: value) }
-        .onChange(of: relatedBreedingID) { _, value in if value != nil { paternalMode = .unknown; sireID = nil; semenID = nil } }
-        .onChange(of: paternalMode) { _, value in if value != .breedingRam { sireID = nil }; if value != .semen { semenID = nil } }
+        .onChange(of: relatedBreedingID) { _, value in
+            if value != nil { paternalMode = .unknown; sireID = nil; semenID = nil }
+            applyBreedSuggestion()
+        }
+        .onChange(of: paternalMode) { _, value in
+            if value != .breedingRam { sireID = nil }
+            if value != .semen { semenID = nil }
+            applyBreedSuggestion()
+        }
+        .onChange(of: sireID) { _, _ in applyBreedSuggestion() }
+        .onChange(of: semenID) { _, _ in applyBreedSuggestion() }
     }
 
     private func load() {
@@ -1285,6 +1429,9 @@ struct LambingCorrectionView: View {
         rows = offspringRecords
             .filter { $0.farmID == farm.id && $0.lambingRecordID == record.id && $0.deletedAt == nil }
             .map { detail in
+                let child = detail.sheepID.flatMap { sheepID in
+                    sheep.first { $0.id == sheepID }
+                }
                 let linkedWeight = detail.autoBirthWeightRecordID.flatMap { weightID in
                     weightRecords.first { $0.id == weightID && $0.farmID == farm.id && $0.deletedAt == nil }
                 }
@@ -1293,6 +1440,8 @@ struct LambingCorrectionView: View {
                     id: detail.id,
                     sheepID: detail.sheepID ?? UUID(),
                     earTag: detail.legacyEarTag,
+                    breed: child?.breed ?? suggestedLambBreed,
+                    breedWasEdited: child != nil,
                     sex: SheepSex(rawValue: detail.sexRawValue) ?? .unknown,
                     weight: linkedWeight?.kilogramsText ?? legacyBirthWeight ?? "",
                     weightOccurredAt: linkedWeight?.occurredAt ?? (legacyBirthWeight == nil ? nil : record.occurredAt),
@@ -1302,14 +1451,14 @@ struct LambingCorrectionView: View {
             }
         let initialCount = max(rows.count, record.lambCount, 1)
         if initialCount > rows.count {
-            rows.append(contentsOf: (rows.count..<initialCount).map { _ in LambFormRow() })
+            rows.append(contentsOf: (rows.count..<initialCount).map { _ in LambFormRow(breed: suggestedLambBreed) })
         }
         lambCountText = "\(rows.count)"
     }
 
     private func appendLamb() {
         guard rows.count < LambingFormLimits.maximumLambCount else { return }
-        rows.append(LambFormRow())
+        rows.append(LambFormRow(breed: suggestedLambBreed))
         lambCountText = "\(rows.count)"
     }
 
@@ -1322,9 +1471,20 @@ struct LambingCorrectionView: View {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let count = Int(normalized), (1...LambingFormLimits.maximumLambCount).contains(count) else { return }
         if count > rows.count {
-            rows.append(contentsOf: (rows.count..<count).map { _ in LambFormRow() })
+            rows.append(contentsOf: (rows.count..<count).map { _ in LambFormRow(breed: suggestedLambBreed) })
         } else if count < rows.count {
             rows.removeLast(rows.count - count)
+        }
+    }
+
+    private func applyBreedSuggestion() {
+        let suggestion = suggestedLambBreed
+        for index in rows.indices {
+            rows[index].breed = LambingEntrySemantics.breedAfterApplyingSuggestion(
+                currentBreed: rows[index].breed,
+                suggestedBreed: suggestion,
+                userOverrodeSuggestion: rows[index].breedWasEdited
+            )
         }
     }
 
@@ -1341,6 +1501,7 @@ struct LambingCorrectionView: View {
                 id: $0.id,
                 sheepID: $0.sheepID,
                 earTag: $0.earTag,
+                breed: $0.breed,
                 sex: $0.sex,
                 birthWeightText: $0.weight,
                 weightOccurredAt: $0.weightOccurredAt,
