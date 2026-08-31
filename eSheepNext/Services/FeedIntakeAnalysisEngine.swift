@@ -819,7 +819,7 @@ enum FeedIntakeAnalysisEngine {
             mpBlockedReason: mp.blockedReason
         )
 
-        let ingredients = Dictionary(grouping: components) { component in
+        let ingredients: [FeedAnalysisIngredientResult] = Dictionary(grouping: components) { component in
             "\(component.ingredientID?.uuidString ?? "unknown")|\(component.ingredientBatchID?.uuidString ?? "none")|\(component.name)"
         }.map { key, values in
             let merged = mergeComponents(values)
@@ -833,7 +833,9 @@ enum FeedIntakeAnalysisEngine {
                 freshKilogramsPerSheepDay: divisor.map { total / $0 },
                 nutrition: nutritionSummary(merged)
             )
-        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }.sorted { lhs, rhs in
+            lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
 
         let growth = growthResult(
             penID: penID,

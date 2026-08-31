@@ -1973,24 +1973,32 @@ final class InsightToolRegistry {
             let rows = snapshot.feeds.filter { $0.occurredAt >= cutoff }
             let penNames = Dictionary(uniqueKeysWithValues: snapshot.pens.map { ($0.id, $0.name) })
             let byPen = Dictionary(grouping: rows, by: { penNames[$0.penID] ?? "未知圈舍" })
-            let byIngredient = Dictionary(grouping: rows, by: \.ingredientName)
+            let byIngredient = Dictionary(grouping: rows) { (row: FarmAnalyticsSnapshot.Feed) in
+                row.ingredientName
+            }
+            let byPenRows: [[String: Any]] = byPen.map { name, feeds in
+                ["name": name, "kilograms": feeds.reduce(0) { $0 + $1.kilograms }]
+            }
+            .sorted { lhs, rhs in
+                (lhs["kilograms"] as? Double ?? 0) > (rhs["kilograms"] as? Double ?? 0)
+            }
+            .prefix(50)
+            .map { $0 }
+            let byIngredientRows: [[String: Any]] = byIngredient.map { name, feeds in
+                ["name": name, "kilograms": feeds.reduce(0) { $0 + $1.kilograms }]
+            }
+            .sorted { lhs, rhs in
+                (lhs["kilograms"] as? Double ?? 0) > (rhs["kilograms"] as? Double ?? 0)
+            }
+            .prefix(50)
+            .map { $0 }
             return try boundedJSON([
                 "focus": "feeding",
                 "period_days": 30,
                 "record_line_count": rows.count,
                 "total_kg": rows.reduce(0) { $0 + $1.kilograms },
-                "by_pen": byPen.map {
-                    ["name": $0.key, "kilograms": $0.value.reduce(0) { $0 + $1.kilograms }]
-                }
-                .sorted { ($0["kilograms"] as? Double ?? 0) > ($1["kilograms"] as? Double ?? 0) }
-                .prefix(50)
-                .map { $0 },
-                "by_ingredient": byIngredient.map {
-                    ["name": $0.key, "kilograms": $0.value.reduce(0) { $0 + $1.kilograms }]
-                }
-                .sorted { ($0["kilograms"] as? Double ?? 0) > ($1["kilograms"] as? Double ?? 0) }
-                .prefix(50)
-                .map { $0 },
+                "by_pen": byPenRows,
+                "by_ingredient": byIngredientRows,
             ])
         default:
             throw InsightToolError.invalidArguments("focus")
