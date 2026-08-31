@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="${0:A:h:h}"
 developer_dir="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
-expected_xcode_build="${EXPECTED_XCODE_BUILD:-27A5228h}"
+expected_xcode_build="${EXPECTED_XCODE_BUILD:-27A5252f}"
 expected_app_build="${EXPECTED_APP_BUILD:-4}"
 release_config="$repo_root/Config/ReleaseEnvironment.local.xcconfig"
 test_destination="${TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 17 Pro}"

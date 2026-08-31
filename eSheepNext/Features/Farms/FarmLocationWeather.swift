@@ -494,9 +494,9 @@ actor FarmWeatherRepository {
 
 struct FarmWeatherPanel: View {
     let farm: FarmRecord
-    @State private var state: State = .idle
+    @State private var state: WeatherPanelState = .idle
 
-    private enum State: Equatable {
+    private enum WeatherPanelState: Equatable {
         case idle
         case loading
         case loaded(FarmWeatherSnapshot)
