@@ -6,22 +6,12 @@
 	<string>$(APP_ENVIRONMENT)</string>
 	<key>APP_GROUP_IDENTIFIER</key>
 	<string>$(APP_GROUP_IDENTIFIER)</string>
-	<key>CAPABILITY_SIGNING_PUBLIC_KEY_PEM</key>
-	<string>$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)</string>
-	<key>IDENTITY_WORKER_URL</key>
-	<string>$(IDENTITY_WORKER_URL)</string>
-	<key>SUBSCRIPTIONS_ENABLED</key>
-	<string>$(SUBSCRIPTIONS_ENABLED)</string>
-	<key>SUPABASE_PUBLISHABLE_KEY</key>
-	<string>$(SUPABASE_PUBLISHABLE_KEY)</string>
-	<key>SUPABASE_URL</key>
-	<string>$(SUPABASE_URL)</string>
-	<key>SUPABASE_ENABLED</key>
-	<string>$(SUPABASE_ENABLED)</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.sheepfarm.esheepnext.refresh</string>
 	</array>
+	<key>CAPABILITY_SIGNING_PUBLIC_KEY_PEM</key>
+	<string>$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -33,10 +23,20 @@
 			</array>
 		</dict>
 	</array>
+	<key>IDENTITY_WORKER_URL</key>
+	<string>$(IDENTITY_WORKER_URL)</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_esheep-invite._tcp</string>
 	</array>
+	<key>SUBSCRIPTIONS_ENABLED</key>
+	<string>$(SUBSCRIPTIONS_ENABLED)</string>
+	<key>SUPABASE_ENABLED</key>
+	<string>$(SUPABASE_ENABLED)</string>
+	<key>SUPABASE_PUBLISHABLE_KEY</key>
+	<string>$(SUPABASE_PUBLISHABLE_KEY)</string>
+	<key>SUPABASE_URL</key>
+	<string>$(SUPABASE_URL)</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

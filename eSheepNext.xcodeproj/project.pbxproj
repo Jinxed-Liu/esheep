@@ -493,7 +493,7 @@
 				INFOPLIST_FILE = eSheepNext/Info.plist;
 				INFOPLIST_KEY_APP_ENVIRONMENT = "$(APP_ENVIRONMENT)";
 				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
-				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
+				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+ Dev";
 				INFOPLIST_KEY_CFBundleURLTypes = "{ CFBundleURLName = \"com.sheepfarm.esheep.deep-link\"; CFBundleURLSchemes = (esheep); }";
 				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
@@ -596,7 +596,7 @@
 				INFOPLIST_FILE = eSheepNext/Info.plist;
 				INFOPLIST_KEY_APP_ENVIRONMENT = "$(APP_ENVIRONMENT)";
 				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
-				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+ Staging";
+				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+ Dev";
 				INFOPLIST_KEY_CFBundleURLTypes = "{ CFBundleURLName = \"com.sheepfarm.esheep.deep-link\"; CFBundleURLSchemes = (esheep-staging); }";
 				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
