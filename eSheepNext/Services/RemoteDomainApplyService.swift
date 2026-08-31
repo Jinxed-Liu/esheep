@@ -550,7 +550,15 @@ struct RemoteDomainApplyService {
             return .applied(rebuildHistoryFrom: record.enteredAt)
         case .updateSheepProfile:
             guard let record = try fetch(SheepRecord.self, id: try identifier("sheepID", payload), context: context) else { throw RemoteDomainApplyError.missingReference("sheepID") }
-            guard record.revision == envelope.baseRevision else { return .conflict(localRevision: record.revision) }
+            let hasEntityOperation = try context.fetch(FetchDescriptor<DomainOperation>()).contains {
+                $0.farmID == envelope.farmID && $0.entityID == envelope.entityID
+            }
+            let canAdoptBaselineAlignedRevision =
+                record.revision == envelope.revision && !hasEntityOperation
+            guard record.revision == envelope.baseRevision ||
+                    canAdoptBaselineAlignedRevision else {
+                return .conflict(localRevision: record.revision)
+            }
             let earTag = try string("earTag", payload)
             let normalized = EarTag.normalized(earTag)
             let hasEarTagConflict: Bool
@@ -696,7 +704,6 @@ struct RemoteDomainApplyService {
             insertIndexed(replacement, context: context)
             return .applied(rebuildHistoryFrom: occurredAt)
         case .removeSheep:
-            if try exists(RemovalRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let sheepID = try identifier("sheepID", payload)
             guard let sheep = try fetch(SheepRecord.self, id: sheepID, context: context) else {
                 throw RemoteDomainApplyError.missingReference("sheepID")
@@ -705,6 +712,32 @@ struct RemoteDomainApplyService {
                 releaseLegacyHistoryProjectionAuthority(for: sheep)
             }
             let occurredAt = try date("occurredAt", payload)
+            if let existing = try fetch(
+                RemovalRecord.self,
+                id: envelope.entityID,
+                context: context
+            ) {
+                guard existing.deletedAt != nil else { return .duplicate }
+                guard existing.revision == envelope.baseRevision else {
+                    return .conflict(localRevision: existing.revision)
+                }
+                existing.sheepID = sheepID
+                existing.kindRawValue =
+                    (RemovalKind(rawValue: try string("kind", payload)) ?? .culled).rawValue
+                existing.reason = try string("reason", payload)
+                existing.amountText = optionalString("amountText", payload)
+                existing.removalBatchID = optionalID("removalBatchID", payload)
+                existing.batchTotalAmountText = optionalString(
+                    "batchTotalAmountText",
+                    payload
+                )
+                existing.occurredAt = occurredAt
+                existing.note = payload.strings["note"] ?? ""
+                existing.recordedAt = envelope.modifiedAt
+                existing.deletedAt = nil
+                existing.revision = envelope.revision
+                return .applied(rebuildHistoryFrom: occurredAt)
+            }
             insertIndexed(RemovalRecord(
                 id: envelope.entityID,
                 farmID: envelope.farmID,
@@ -776,7 +809,42 @@ struct RemoteDomainApplyService {
             }
             return .applied(rebuildHistoryFrom: nil)
         case .assignBatchMembership:
-            if try exists(BatchMembershipRecord.self, id: envelope.entityID, context: context) { return .duplicate }
+            if let existing = try fetch(
+                BatchMembershipRecord.self,
+                id: envelope.entityID,
+                context: context
+            ) {
+                let hasMembershipOperation = try context.fetch(
+                    FetchDescriptor<DomainOperation>()
+                ).contains {
+                    $0.farmID == envelope.farmID &&
+                        $0.entityID == envelope.entityID &&
+                        $0.entityType == CloudEntityType.batchMembership.rawValue
+                }
+                guard !hasMembershipOperation else { return .duplicate }
+                let batchID = try identifier("batchID", payload)
+                let sheepID = try identifier("sheepID", payload)
+                let joinedAt = try date("joinedAt", payload)
+                guard existing.batchID == batchID,
+                      existing.sheepID == sheepID,
+                      abs(existing.joinedAt.timeIntervalSince(joinedAt)) < 1 else {
+                    throw RemoteDomainApplyError.invalidPayload(
+                        "batchMembership.parentProjection"
+                    )
+                }
+                existing.leftAt = optionalDate("leftAt", payload)
+                existing.leaveReason = payload.optionalStrings["leaveReason"] ?? nil
+                existing.updatedAt = envelope.modifiedAt
+                if replayIndex == nil {
+                    try ProductionBatchLifecycle.reconcile(
+                        batchID: existing.batchID,
+                        farmID: envelope.farmID,
+                        context: context,
+                        changedAt: envelope.modifiedAt
+                    )
+                }
+                return .applied(rebuildHistoryFrom: existing.joinedAt)
+            }
             let record = BatchMembershipRecord(id: envelope.entityID, farmID: envelope.farmID, batchID: try identifier("batchID", payload), sheepID: try identifier("sheepID", payload), joinedAt: try date("joinedAt", payload))
             record.leftAt = optionalDate("leftAt", payload)
             record.leaveReason = payload.optionalStrings["leaveReason"] ?? nil

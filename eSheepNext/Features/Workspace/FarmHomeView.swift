@@ -109,16 +109,34 @@ struct FarmHomeView: View {
     private var hero: some View {
         FarmWeatherHero(
             farm: farm,
-            syncSymbol: sharedFarmAdmissionStatus == nil
-                ? (homeSnapshot.pendingOutboxCount == 0 ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
-                : "person.2.badge.gearshape",
-            syncAccessibilityLabel: sharedFarmAdmissionStatus.map {
-                "正在加入共享牧场 · \($0.detailText)"
-            } ?? (homeSnapshot.pendingOutboxCount == 0
-                ? "业务数据已保存"
-                : "有 \(homeSnapshot.pendingOutboxCount) 条本地记录等待同步"),
+            syncSymbol: homeSyncSymbol,
+            syncAccessibilityLabel: homeSyncAccessibilityLabel,
             isDetailPresented: $isWeatherDetailPresented
         )
+    }
+
+    private var homeSyncSymbol: String {
+        if sharedFarmAdmissionStatus != nil {
+            return "person.2.badge.gearshape"
+        }
+        if homeSnapshot.conflictOutboxCount > 0 {
+            return "exclamationmark.triangle.fill"
+        }
+        return homeSnapshot.pendingOutboxCount == 0
+            ? "checkmark.circle.fill"
+            : "arrow.triangle.2.circlepath"
+    }
+
+    private var homeSyncAccessibilityLabel: LocalizedStringKey {
+        if let sharedFarmAdmissionStatus {
+            return "正在加入共享牧场 · \(sharedFarmAdmissionStatus.detailText)"
+        }
+        if homeSnapshot.conflictOutboxCount > 0 {
+            return "有 \(homeSnapshot.conflictOutboxCount) 条同步冲突等待安全处理"
+        }
+        return homeSnapshot.pendingOutboxCount == 0
+            ? "业务数据已保存"
+            : "有 \(homeSnapshot.pendingOutboxCount) 条本地记录等待同步"
     }
 
     private var metrics: some View {

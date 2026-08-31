@@ -8080,12 +8080,21 @@
       }
     },
     "冲突" : {
-      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Conflict"
+          }
+        }
+      }
+    },
+    "冲突记录已安全保留，但不会按普通网络重试处理；系统会先校验云端版本再修复。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conflicting records are safely retained. They are verified against the cloud version before repair instead of being retried as ordinary network failures."
           }
         }
       }
@@ -11340,6 +11349,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sync center"
+          }
+        }
+      }
+    },
+    "同步冲突" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync conflicts"
           }
         }
       }
@@ -23657,6 +23676,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Moondown"
+          }
+        }
+      }
+    },
+    "有 %lld 条同步冲突等待安全处理" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld sync conflicts are waiting for safe resolution"
           }
         }
       }

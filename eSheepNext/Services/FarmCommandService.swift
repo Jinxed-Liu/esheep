@@ -13,6 +13,7 @@ enum FarmCommandError: LocalizedError {
     case feedIngredientBatchNotFound
     case batchNotFound
     case removalNotFound
+    case duplicateRemovalRecord
     case invalidRemovalBatch(String)
     case duplicateBatchMembership
     case batchMembershipNotFound
@@ -65,6 +66,7 @@ enum FarmCommandError: LocalizedError {
         case .feedIngredientBatchNotFound: "投喂原料批次不存在、已停用，或不属于所选原料。"
         case .batchNotFound: "未找到当前牧场中的生产批次。"
         case .removalNotFound: "未找到可恢复的离场记录。"
+        case .duplicateRemovalRecord: "该离场记录已经存在，请勿重复导入。"
         case .invalidRemovalBatch(let detail): "离场批次无效：\(detail)"
         case .duplicateBatchMembership: "该羊已在未结束的生产批次中。"
         case .batchMembershipNotFound: "未找到可结束的批次成员关系。"
@@ -837,7 +839,10 @@ final class FarmCommandService {
         let sheepIDs: Set<UUID>
         let weightIDs: Set<UUID>
 
-        static let empty = CompositeChildSnapshot(sheepIDs: [], weightIDs: [])
+        static let empty = CompositeChildSnapshot(
+            sheepIDs: [],
+            weightIDs: []
+        )
     }
 
     private let historyRebuilder: FarmHistoryRebuilder
@@ -1690,12 +1695,19 @@ final class FarmCommandService {
         farmID: UUID,
         context: ModelContext
     ) throws -> CompositeChildSnapshot {
-        guard Self.lambingDraft(from: command) != nil else { return .empty }
+        let capturesLambingChildren = Self.lambingDraft(from: command) != nil
+        guard capturesLambingChildren else {
+            return .empty
+        }
         return CompositeChildSnapshot(
-            sheepIDs: Set(try context.fetch(FetchDescriptor<SheepRecord>())
-                .lazy.filter { $0.farmID == farmID }.map(\.id)),
-            weightIDs: Set(try context.fetch(FetchDescriptor<WeightRecord>())
-                .lazy.filter { $0.farmID == farmID }.map(\.id))
+            sheepIDs: capturesLambingChildren
+                ? Set(try context.fetch(FetchDescriptor<SheepRecord>())
+                    .lazy.filter { $0.farmID == farmID }.map(\.id))
+                : [],
+            weightIDs: capturesLambingChildren
+                ? Set(try context.fetch(FetchDescriptor<WeightRecord>())
+                    .lazy.filter { $0.farmID == farmID }.map(\.id))
+                : []
         )
     }
 
@@ -1708,34 +1720,151 @@ final class FarmCommandService {
         batchState: BatchExecutionState?,
         context: ModelContext
     ) throws {
-        guard let draft = Self.lambingDraft(from: command) else { return }
-        let intendedSheepIDs = Set<UUID>(draft.offspring
-            .filter { $0.createSheepRecord }.map { $0.sheepID })
-        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter {
-            $0.farmID == farm.farmID &&
-                intendedSheepIDs.contains($0.id) &&
-                !childrenBefore.sheepIDs.contains($0.id)
+        if let draft = Self.lambingDraft(from: command) {
+            let intendedSheepIDs = Set<UUID>(draft.offspring
+                .filter { $0.createSheepRecord }.map { $0.sheepID })
+            let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter {
+                $0.farmID == farm.farmID &&
+                    intendedSheepIDs.contains($0.id) &&
+                    !childrenBefore.sheepIDs.contains($0.id)
+            }
+            let offspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter {
+                $0.farmID == farm.farmID && $0.lambingRecordID == draft.id
+            }
+            let intendedWeightIDs = Set<UUID>(offspring.compactMap {
+                $0.autoBirthWeightRecordID
+            })
+            let weights = try context.fetch(FetchDescriptor<WeightRecord>()).filter {
+                $0.farmID == farm.farmID &&
+                    intendedWeightIDs.contains($0.id) &&
+                    !childrenBefore.weightIDs.contains($0.id)
+            }
+            try stageCompositeChildOperations(
+                parentOperation: parentOperation,
+                sheep: sheep,
+                weights: weights,
+                accountID: farm.accountID,
+                route: route,
+                batchState: batchState,
+                context: context
+            )
         }
-        let offspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter {
-            $0.farmID == farm.farmID && $0.lambingRecordID == draft.id
+
+        if case .createBatch(_, _, let startedAt, let sheepIDs, _) = command,
+           let batchID = parentOperation.entityID {
+            try stageNewBatchMembershipProjectionOperations(
+                parentOperation: parentOperation,
+                batchID: batchID,
+                sheepIDs: sheepIDs,
+                joinedAt: startedAt,
+                farmID: farm.farmID,
+                accountID: farm.accountID,
+                route: route,
+                batchState: batchState,
+                context: context
+            )
         }
-        let intendedWeightIDs = Set<UUID>(offspring.compactMap {
-            $0.autoBirthWeightRecordID
-        })
-        let weights = try context.fetch(FetchDescriptor<WeightRecord>()).filter {
-            $0.farmID == farm.farmID &&
-                intendedWeightIDs.contains($0.id) &&
-                !childrenBefore.weightIDs.contains($0.id)
+    }
+
+    /// Build child facts directly from the validated create command. SwiftData
+    /// does not guarantee that a fetch made before the transaction is saved
+    /// will include every pending membership insert on every runtime.
+    private func stageNewBatchMembershipProjectionOperations(
+        parentOperation: DomainOperation,
+        batchID: UUID,
+        sheepIDs: [UUID],
+        joinedAt: Date,
+        farmID: UUID,
+        accountID: UUID,
+        route: FarmStorageRoute,
+        batchState: BatchExecutionState?,
+        context: ModelContext
+    ) throws {
+        for sheepID in sheepIDs.sorted(by: {
+            $0.uuidString < $1.uuidString
+        }) {
+            let membershipID = StableCloudUUID.derived(
+                namespace: batchID,
+                name: "batch-member-\(sheepID.uuidString.lowercased())"
+            )
+            let operation = DomainOperation(
+                id: Self.compositeBatchMembershipOperationID(
+                    parentOperationID: parentOperation.id,
+                    membershipID: membershipID
+                ),
+                farmID: farmID,
+                accountID: accountID,
+                kind: .assignBatchMembership,
+                occurredAt: joinedAt,
+                summary: "生产批次成员投影",
+                entityType: CloudEntityType.batchMembership.rawValue,
+                entityID: membershipID,
+                baseRevision: 0,
+                resultingRevision: 1,
+                payload: try FarmCommandCloudPayloadEncoder.encode(
+                    .assignSheepToBatch(
+                        batchID: batchID,
+                        sheepID: sheepID,
+                        joinedAt: joinedAt
+                    )
+                )
+            )
+            try stageCompositeChildOperation(
+                operation,
+                route: route,
+                batchState: batchState,
+                context: context
+            )
         }
-        try stageCompositeChildOperations(
-            parentOperation: parentOperation,
-            sheep: sheep,
-            weights: weights,
-            accountID: farm.accountID,
-            route: route,
-            batchState: batchState,
-            context: context
-        )
+    }
+
+    /// A create-batch operation also materializes stable membership children.
+    /// Supabase stores only the operation's primary entity, so every child
+    /// needs its own immutable operation before a later leave/restore can use
+    /// a valid remote revision chain.
+    private func stageBatchMembershipProjectionOperations(
+        parentOperation: DomainOperation,
+        memberships: [BatchMembershipRecord],
+        accountID: UUID,
+        route: FarmStorageRoute,
+        batchState: BatchExecutionState?,
+        context: ModelContext
+    ) throws {
+        for membership in memberships.sorted(by: {
+            $0.id.uuidString < $1.id.uuidString
+        }) {
+            var payload = try Self.decodeCloudPayload(
+                FarmCommandCloudPayloadEncoder.encode(.assignSheepToBatch(
+                    batchID: membership.batchID,
+                    sheepID: membership.sheepID,
+                    joinedAt: membership.joinedAt
+                ))
+            )
+            payload.optionalDates["leftAt"] = membership.leftAt
+            payload.optionalStrings["leaveReason"] = membership.leaveReason
+            let operation = DomainOperation(
+                id: Self.compositeBatchMembershipOperationID(
+                    parentOperationID: parentOperation.id,
+                    membershipID: membership.id
+                ),
+                farmID: membership.farmID,
+                accountID: accountID,
+                kind: .assignBatchMembership,
+                occurredAt: membership.updatedAt,
+                summary: "生产批次成员投影",
+                entityType: CloudEntityType.batchMembership.rawValue,
+                entityID: membership.id,
+                baseRevision: 0,
+                resultingRevision: 1,
+                payload: try JSONEncoder.cloud.encode(payload)
+            )
+            try stageCompositeChildOperation(
+                operation,
+                route: route,
+                batchState: batchState,
+                context: context
+            )
+        }
     }
 
     /// Backfills only children of already confirmed Supabase care operations.
@@ -1853,6 +1982,311 @@ final class FarmCommandService {
         }
         if insertedCount > 0 { try context.save() }
         return insertedCount
+    }
+
+    /// Older create-batch operations materialized membership rows locally and
+    /// on replay, but did not give those rows their own provider-neutral cloud
+    /// operation. Backfill only children of a confirmed Supabase parent: this
+    /// proves the batch was created after activation and that the server saw
+    /// the parent while never receiving the missing child entity.
+    @discardableResult
+    func repairMissingProductionBatchMembershipDeliveryOperations(
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> Int {
+        let route = try FarmStorageRouter.route(farmID: farmID, context: context)
+        guard route.deliveryProvider == .supabase else { return 0 }
+        let outboxes = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.farmID == farmID && $0.deliveryProvider == .supabase
+        }
+        let confirmedOperationIDs = Set(outboxes.lazy
+            .filter { $0.status == .confirmed }
+            .map(\.operationID))
+        guard !confirmedOperationIDs.isEmpty else { return 0 }
+
+        let farmOperations = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            $0.farmID == farmID
+        }
+        let confirmedParents = farmOperations.filter {
+            confirmedOperationIDs.contains($0.id) &&
+                $0.kindRawValue == DomainOperationKind.createBatch.rawValue
+        }
+        guard !confirmedParents.isEmpty else { return 0 }
+        let existingMembershipCreationIDs = Set(farmOperations.lazy.compactMap {
+            $0.kindRawValue == DomainOperationKind.assignBatchMembership.rawValue
+                ? $0.entityID
+                : nil
+        })
+        var insertedCount = 0
+        for parent in confirmedParents {
+            guard let batchID = parent.entityID else { continue }
+            let missing = try context.fetch(
+                FetchDescriptor<BatchMembershipRecord>()
+            ).filter {
+                $0.farmID == farmID &&
+                    $0.batchID == batchID &&
+                    !existingMembershipCreationIDs.contains($0.id)
+            }
+            guard !missing.isEmpty else { continue }
+            try stageBatchMembershipProjectionOperations(
+                parentOperation: parent,
+                memberships: missing,
+                accountID: parent.accountID,
+                route: route,
+                batchState: nil,
+                context: context
+            )
+            insertedCount += missing.count
+        }
+        if insertedCount > 0 { try context.save() }
+        return insertedCount
+    }
+
+    /// Once a backfilled membership snapshot is confirmed, older leave/restore
+    /// attempts that ended in exactly the same local state are audit history,
+    /// not deliverable work. Retire them without deleting either operation.
+    @discardableResult
+    func supersedeBlockedBatchMembershipChainsCoveredByConfirmedProjection(
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> Int {
+        let outboxes = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.farmID == farmID && $0.deliveryProvider == .supabase
+        }
+        let confirmedOperationIDs = Set(outboxes.lazy
+            .filter { $0.status == .confirmed }
+            .map(\.operationID))
+        let blocked = outboxes.filter {
+            $0.status == .blockedConflict &&
+                $0.errorMessage == "base_revision_mismatch" &&
+                $0.entityType == CloudEntityType.batchMembership.rawValue
+        }
+        guard !blocked.isEmpty else { return 0 }
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            $0.farmID == farmID
+        }
+        let confirmedSnapshots = operations.filter {
+            confirmedOperationIDs.contains($0.id) &&
+                $0.kindRawValue == DomainOperationKind.assignBatchMembership.rawValue
+        }
+        var snapshotByEntityID: [UUID: DomainOperation] = [:]
+        for operation in confirmedSnapshots {
+            guard let entityID = operation.entityID else { continue }
+            if let existing = snapshotByEntityID[entityID],
+               existing.resultingRevision >= operation.resultingRevision {
+                continue
+            }
+            snapshotByEntityID[entityID] = operation
+        }
+        let memberships = try context.fetch(FetchDescriptor<BatchMembershipRecord>()).filter {
+            $0.farmID == farmID
+        }
+        var membershipByID: [UUID: BatchMembershipRecord] = [:]
+        for membership in memberships {
+            if let existing = membershipByID[membership.id],
+               existing.updatedAt >= membership.updatedAt {
+                continue
+            }
+            membershipByID[membership.id] = membership
+        }
+        var repairedCount = 0
+        for item in blocked {
+            guard let entityID = item.entityID,
+                  let snapshot = snapshotByEntityID[entityID],
+                  let membership = membershipByID[entityID],
+                  let payload = try? Self.decodeCloudPayload(snapshot.payload) else {
+                continue
+            }
+            let snapshotLeftAt = payload.optionalDates["leftAt"] ?? nil
+            let snapshotLeaveReason = payload.optionalStrings["leaveReason"] ?? nil
+            guard snapshotLeftAt == membership.leftAt,
+                  snapshotLeaveReason == membership.leaveReason else {
+                continue
+            }
+            item.statusRawValue = OutboxStatus.supersededRemoteAuthority.rawValue
+            item.errorMessage = "superseded_by_confirmed_membership_projection:" +
+                snapshot.id.uuidString.lowercased()
+            item.nextRetryAt = nil
+            repairedCount += 1
+        }
+        if repairedCount > 0 { try context.save() }
+        return repairedCount
+    }
+
+    /// Re-importing a stable removal ID after the original removal was undone
+    /// used to create a second projection and restart at revision zero. Rebase
+    /// only when the local immutable history proves a newer confirmed revision
+    /// and there is exactly one active projection carrying the blocked intent.
+    @discardableResult
+    func repairBlockedRecreatedRemovalOperations(
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> Int {
+        let route = try FarmStorageRouter.route(farmID: farmID, context: context)
+        guard route.deliveryProvider == .supabase else { return 0 }
+        let outboxes = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.farmID == farmID && $0.deliveryProvider == .supabase
+        }
+        let blocked = outboxes.filter {
+            $0.status == .blockedConflict &&
+                $0.errorMessage == "base_revision_mismatch" &&
+                $0.entityType == CloudEntityType.removal.rawValue
+        }
+        guard !blocked.isEmpty else { return 0 }
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            $0.farmID == farmID
+        }
+        let operationsByID = Dictionary(grouping: operations, by: \.id)
+        let outboxesByOperationID = Dictionary(grouping: outboxes, by: \.operationID)
+        var repairedCount = 0
+        var stagedRetryIDs = Set<UUID>()
+        for item in blocked {
+            guard let entityID = item.entityID,
+                  let blockedCandidates = operationsByID[item.operationID],
+                  blockedCandidates.count == 1,
+                  let blockedOperation = blockedCandidates.first,
+                  blockedOperation.kindRawValue == DomainOperationKind.removeSheep.rawValue else {
+                continue
+            }
+            let authoritativeRevision = operations.lazy.filter {
+                $0.entityID == entityID &&
+                    (outboxesByOperationID[$0.id] == nil ||
+                        outboxesByOperationID[$0.id]?.contains(where: {
+                            $0.status == .confirmed
+                        }) == true)
+            }.map(\.resultingRevision).max() ?? 0
+            guard authoritativeRevision > blockedOperation.baseRevision else {
+                continue
+            }
+            let projections = try context.fetch(FetchDescriptor<RemovalRecord>()).filter {
+                $0.farmID == farmID && $0.id == entityID
+            }
+            let active = projections.filter { $0.deletedAt == nil }
+            guard active.count == 1, let current = active.first else { continue }
+            let retryID = StableCloudUUID.derived(
+                namespace: blockedOperation.id,
+                name: "revision-aware-removal-retry:v1"
+            )
+            if operationsByID[retryID] == nil,
+               stagedRetryIDs.insert(retryID).inserted {
+                current.revision = authoritativeRevision + 1
+                let retry = DomainOperation(
+                    id: retryID,
+                    farmID: farmID,
+                    accountID: blockedOperation.accountID,
+                    kind: .removeSheep,
+                    occurredAt: blockedOperation.occurredAt,
+                    summary: blockedOperation.summary,
+                    entityType: blockedOperation.entityType,
+                    entityID: entityID,
+                    baseRevision: authoritativeRevision,
+                    resultingRevision: authoritativeRevision + 1,
+                    payload: blockedOperation.payload
+                )
+                try stageCompositeChildOperation(
+                    retry,
+                    route: route,
+                    batchState: nil,
+                    context: context
+                )
+            }
+            for stale in projections where stale !== current {
+                context.delete(stale)
+            }
+            item.statusRawValue = OutboxStatus.supersededRemoteAuthority.rawValue
+            item.errorMessage = "superseded_by_revision_aware_retry:" +
+                retryID.uuidString.lowercased()
+            item.nextRetryAt = nil
+            repairedCount += 1
+        }
+        if repairedCount > 0 { try context.save() }
+        return repairedCount
+    }
+
+    /// A compact/baseline projection can carry a local model revision greater
+    /// than the provider-neutral entity revision. If the first profile update
+    /// is the only operation for that sheep, rebase it to the baseline's 1→2
+    /// chain. Any actual remote operation disables this automatic path.
+    @discardableResult
+    func repairBlockedBaselineSheepProfileRevisionDrift(
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> Int {
+        let route = try FarmStorageRouter.route(farmID: farmID, context: context)
+        guard route.deliveryProvider == .supabase else { return 0 }
+        let outboxes = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.farmID == farmID && $0.deliveryProvider == .supabase
+        }
+        let blocked = outboxes.filter {
+            $0.status == .blockedConflict &&
+                $0.errorMessage == "base_revision_mismatch" &&
+                $0.entityType == CloudEntityType.sheep.rawValue
+        }
+        guard !blocked.isEmpty else { return 0 }
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            $0.farmID == farmID
+        }
+        let operationsByID = Dictionary(grouping: operations, by: \.id)
+        let outboxesByOperationID = Dictionary(grouping: outboxes, by: \.operationID)
+        var repairedCount = 0
+        var stagedRetryIDs = Set<UUID>()
+        for item in blocked {
+            guard let entityID = item.entityID,
+                  let blockedCandidates = operationsByID[item.operationID],
+                  blockedCandidates.count == 1,
+                  let blockedOperation = blockedCandidates.first,
+                  blockedOperation.kindRawValue == DomainOperationKind.updateSheepProfile.rawValue,
+                  blockedOperation.baseRevision > 1 else {
+                continue
+            }
+            let otherAuthoritativeOperations = operations.filter {
+                $0.entityID == entityID &&
+                    $0.id != blockedOperation.id &&
+                    (outboxesByOperationID[$0.id] == nil ||
+                        outboxesByOperationID[$0.id]?.contains(where: {
+                            $0.status == .confirmed
+                        }) == true)
+            }
+            guard otherAuthoritativeOperations.isEmpty else { continue }
+            let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter {
+                $0.farmID == farmID && $0.id == entityID && $0.deletedAt == nil
+            }
+            guard sheep.count == 1, let current = sheep.first else { continue }
+            let retryID = StableCloudUUID.derived(
+                namespace: blockedOperation.id,
+                name: "baseline-revision-profile-retry:v1"
+            )
+            if operationsByID[retryID] == nil,
+               stagedRetryIDs.insert(retryID).inserted {
+                current.revision = 2
+                let retry = DomainOperation(
+                    id: retryID,
+                    farmID: farmID,
+                    accountID: blockedOperation.accountID,
+                    kind: .updateSheepProfile,
+                    occurredAt: blockedOperation.occurredAt,
+                    summary: blockedOperation.summary,
+                    entityType: blockedOperation.entityType,
+                    entityID: entityID,
+                    baseRevision: 1,
+                    resultingRevision: 2,
+                    payload: blockedOperation.payload
+                )
+                try stageCompositeChildOperation(
+                    retry,
+                    route: route,
+                    batchState: nil,
+                    context: context
+                )
+            }
+            item.statusRawValue = OutboxStatus.supersededRemoteAuthority.rawValue
+            item.errorMessage = "superseded_by_baseline_revision_retry:" +
+                retryID.uuidString.lowercased()
+            item.nextRetryAt = nil
+            repairedCount += 1
+        }
+        if repairedCount > 0 { try context.save() }
+        return repairedCount
     }
 
     /// A legacy photo-name repair created valid local tombstones on clients
@@ -2073,6 +2507,16 @@ final class FarmCommandService {
         StableCloudUUID.derived(
             namespace: parentOperationID,
             name: "lambing-child-weight:\(weightID.uuidString.lowercased())"
+        )
+    }
+
+    private static func compositeBatchMembershipOperationID(
+        parentOperationID: UUID,
+        membershipID: UUID
+    ) -> UUID {
+        StableCloudUUID.derived(
+            namespace: parentOperationID,
+            name: "batch-child-membership:\(membershipID.uuidString.lowercased())"
         )
     }
 
@@ -3166,20 +3610,67 @@ final class FarmCommandService {
             }
             sheep.legacyStatusSnapshotIsAuthoritative = false
             sheep.legacyPenSnapshotIsAuthoritative = false
-            let record = RemovalRecord(
-                id: recordID ?? UUID(),
-                farmID: farm.farmID,
-                sheepID: sheepID,
-                kind: kind,
-                reason: reason.trimmingCharacters(in: .whitespacesAndNewlines),
-                amountText: amountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) },
-                removalBatchID: removalBatchID,
-                batchTotalAmountText: batchTotalAmountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) },
-                occurredAt: occurredAt,
-                note: note.trimmingCharacters(in: .whitespacesAndNewlines)
+            let entityID = recordID ?? UUID()
+            let existing = try context.fetch(FetchDescriptor<RemovalRecord>()).filter {
+                $0.id == entityID && $0.farmID == farm.farmID
+            }
+            guard !existing.contains(where: { $0.deletedAt == nil }) else {
+                throw FarmCommandError.duplicateRemovalRecord
+            }
+            let operationRevision = try context.fetch(FetchDescriptor<DomainOperation>()).lazy
+                .filter { $0.farmID == farm.farmID && $0.entityID == entityID }
+                .map(\.resultingRevision)
+                .max() ?? 0
+            let tombstoneRevision = try context.fetch(FetchDescriptor<TombstoneRecord>()).lazy
+                .filter { $0.farmID == farm.farmID && $0.entityID == entityID }
+                .map(\.revision)
+                .max() ?? 0
+            let projectionRevision = existing.map(\.revision).max() ?? 0
+            let baseRevision = max(
+                operationRevision,
+                max(tombstoneRevision, projectionRevision)
             )
-            context.insert(record)
-            return appliedResult(.removal, record.id)
+            let record: RemovalRecord
+            if let reusable = existing.max(by: { $0.revision < $1.revision }) {
+                reusable.sheepID = sheepID
+                reusable.kindRawValue = kind.rawValue
+                reusable.reason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+                reusable.amountText = amountText.flatMap {
+                    $0.isEmpty ? nil : normalizedDecimal($0)
+                }
+                reusable.removalBatchID = removalBatchID
+                reusable.batchTotalAmountText = batchTotalAmountText.flatMap {
+                    $0.isEmpty ? nil : normalizedDecimal($0)
+                }
+                reusable.occurredAt = occurredAt
+                reusable.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+                reusable.recordedAt = .now
+                reusable.deletedAt = nil
+                reusable.revision = baseRevision + 1
+                record = reusable
+            } else {
+                let inserted = RemovalRecord(
+                    id: entityID,
+                    farmID: farm.farmID,
+                    sheepID: sheepID,
+                    kind: kind,
+                    reason: reason.trimmingCharacters(in: .whitespacesAndNewlines),
+                    amountText: amountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) },
+                    removalBatchID: removalBatchID,
+                    batchTotalAmountText: batchTotalAmountText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) },
+                    occurredAt: occurredAt,
+                    note: note.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+                inserted.revision = max(1, baseRevision + 1)
+                context.insert(inserted)
+                record = inserted
+            }
+            return appliedResult(
+                .removal,
+                record.id,
+                baseRevision: baseRevision,
+                revision: record.revision
+            )
         case .correctRemoval(let originalID, let kind, let reason, let amountText, let occurredAt, let note, let correctionReason):
             guard let original = try context.fetch(FetchDescriptor<RemovalRecord>()).first(where: { $0.id == originalID && $0.farmID == farm.farmID && $0.deletedAt == nil }) else {
                 throw FarmCommandError.sourceRecordNotFound

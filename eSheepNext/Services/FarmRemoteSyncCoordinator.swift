@@ -87,8 +87,24 @@ actor FarmRemoteSyncCoordinator {
         farmID: UUID,
         maxOutboxItems: Int = 25
     ) async throws -> FarmRemoteSyncResult {
+        var binding = try bindingSnapshot(farmID: farmID)
+        var preflightDownloadedCount = 0
+        var preflightConflictCount = 0
+        if try hasBlockedRevisionConflicts(farmID: farmID) {
+            // A repair may only rebase against a fully caught-up immutable
+            // history. Pull first so a stale device cannot overwrite a newer
+            // remote edit while trying to heal its local Outbox.
+            let preflightPull = try await pullUntilCurrent(
+                farmID: farmID,
+                generation: binding.generation,
+                startingCursor: binding.cursorRevision
+            )
+            preflightDownloadedCount = preflightPull.operationCount
+            preflightConflictCount = preflightPull.conflictCount
+            binding = try bindingSnapshot(farmID: farmID)
+        }
         try await repairLocalDeliveryFacts(farmID: farmID)
-        let binding = try bindingSnapshot(farmID: farmID)
+        binding = try bindingSnapshot(farmID: farmID)
         let repairedTMRCount = try await repairMissingTMRHistoryIfNeeded(
             farmID: farmID,
             generation: binding.generation,
@@ -101,7 +117,7 @@ actor FarmRemoteSyncCoordinator {
         )
 
         var uploadedCount = 0
-        var conflictCount = 0
+        var conflictCount = preflightConflictCount
         if !prepared.operations.isEmpty {
             do {
                 let push = try await transport.pushPendingOperations(
@@ -129,9 +145,11 @@ actor FarmRemoteSyncCoordinator {
             startingCursor: binding.cursorRevision
         )
         conflictCount += pull.conflictCount
+        try await finalizeConfirmedLocalRepairs(farmID: farmID)
         return FarmRemoteSyncResult(
             uploadedOperationCount: uploadedCount,
-            downloadedOperationCount: repairedTMRCount + pull.operationCount,
+            downloadedOperationCount:
+                preflightDownloadedCount + repairedTMRCount + pull.operationCount,
             conflictCount: conflictCount,
             cursorRevision: pull.cursorRevision
         )
@@ -174,6 +192,22 @@ actor FarmRemoteSyncCoordinator {
                 farmID: farmID,
                 context: context
             )
+            _ = try service.repairMissingProductionBatchMembershipDeliveryOperations(
+                farmID: farmID,
+                context: context
+            )
+            _ = try service.supersedeBlockedBatchMembershipChainsCoveredByConfirmedProjection(
+                farmID: farmID,
+                context: context
+            )
+            _ = try service.repairBlockedRecreatedRemovalOperations(
+                farmID: farmID,
+                context: context
+            )
+            _ = try service.repairBlockedBaselineSheepProfileRevisionDrift(
+                farmID: farmID,
+                context: context
+            )
             let blocked = try context.fetch(FetchDescriptor<OutboxItem>()).first {
                 $0.farmID == farmID &&
                     $0.deliveryProvider == .supabase &&
@@ -193,6 +227,31 @@ actor FarmRemoteSyncCoordinator {
                 ),
                 context: context
             )
+        }
+    }
+
+    private func hasBlockedRevisionConflicts(farmID: UUID) throws -> Bool {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<OutboxItem>()).contains {
+            $0.farmID == farmID &&
+                $0.deliveryProvider == .supabase &&
+                $0.status == .blockedConflict &&
+                $0.errorMessage == "base_revision_mismatch"
+        }
+    }
+
+    /// Some conflict chains can be retired only after their replacement fact
+    /// has been confirmed by Supabase. Finalize those chains in the same sync
+    /// pass so the UI cannot remain stuck until a later foreground wake.
+    private func finalizeConfirmedLocalRepairs(farmID: UUID) async throws {
+        let container = self.container
+        try await MainActor.run {
+            let context = ModelContext(container)
+            _ = try FarmCommandService()
+                .supersedeBlockedBatchMembershipChainsCoveredByConfirmedProjection(
+                    farmID: farmID,
+                    context: context
+                )
         }
     }
 

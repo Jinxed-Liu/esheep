@@ -22,6 +22,20 @@ final class ProductionBatchLifecycleTests: XCTestCase {
     func testCreateBatchAtomicallyCreatesSelectedMembershipsAtChosenStart() throws {
         let fixture = try makeFixture()
         let startedAt = fixture.enteredAt.addingTimeInterval(86_400)
+        fixture.context.insert(FarmStorageProfile(
+            farmID: fixture.farm.id,
+            mode: .supabase,
+            authorityGeneration: 1
+        ))
+        fixture.context.insert(FarmRemoteBinding(
+            farmID: fixture.farm.id,
+            ownerAccountID: fixture.account.id,
+            provider: .supabase,
+            state: .active,
+            authorityGeneration: 1,
+            remoteFarmID: fixture.farm.id.uuidString.lowercased()
+        ))
+        try fixture.context.save()
 
         try fixture.service.execute(
             .createBatch(name: "春季留养", purpose: "选育", startedAt: startedAt, sheepIDs: [fixture.first.id, fixture.second.id], note: "人工选择"),
@@ -35,7 +49,22 @@ final class ProductionBatchLifecycleTests: XCTestCase {
         XCTAssertEqual(Set(memberships.map(\.sheepID)), [fixture.first.id, fixture.second.id])
         XCTAssertTrue(memberships.allSatisfy { $0.joinedAt == startedAt && $0.leftAt == nil })
         XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.entityID == batch.id }.count, 1)
-        XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.entityID == batch.id }.count, 1)
+        let membershipIDs = Set(memberships.map(\.id))
+        let membershipOperations = try fixture.context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            $0.entityID.map(membershipIDs.contains) == true
+        }
+        XCTAssertEqual(membershipOperations.count, 2)
+        XCTAssertTrue(membershipOperations.allSatisfy {
+            $0.kindRawValue == DomainOperationKind.assignBatchMembership.rawValue &&
+                $0.baseRevision == 0 &&
+                $0.resultingRevision == 1
+        })
+        XCTAssertEqual(
+            try fixture.context.fetch(FetchDescriptor<OutboxItem>()).filter {
+                $0.entityID == batch.id || $0.entityID.map(membershipIDs.contains) == true
+            }.count,
+            3
+        )
     }
 
     func testInvalidMemberRollsBackWholeBatchCreation() throws {
@@ -133,12 +162,13 @@ final class ProductionBatchLifecycleTests: XCTestCase {
         XCTAssertEqual(
             membershipOperations.map(\.kindRawValue),
             [
+                DomainOperationKind.assignBatchMembership.rawValue,
                 DomainOperationKind.leaveBatchMembership.rawValue,
                 DomainOperationKind.restoreBatchMembership.rawValue,
             ]
         )
-        XCTAssertEqual(membershipOperations.map(\.baseRevision), [1, 2])
-        XCTAssertEqual(membershipOperations.map(\.resultingRevision), [2, 3])
+        XCTAssertEqual(membershipOperations.map(\.baseRevision), [0, 1, 2])
+        XCTAssertEqual(membershipOperations.map(\.resultingRevision), [1, 2, 3])
         let restorePayload = try decodePayload(try XCTUnwrap(membershipOperations.last).payload)
         XCTAssertEqual(restorePayload.kind, .restoreBatchMembership)
         XCTAssertEqual(restorePayload.identifiers["membershipID"], membership.id)

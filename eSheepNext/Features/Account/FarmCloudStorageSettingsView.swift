@@ -55,7 +55,20 @@ struct FarmCloudStorageSettingsView: View {
         outboxItems.count {
             $0.farmID == farm.id
                 && $0.deliveryProvider == .supabase
-                && !$0.status.isTerminalDelivery
+                && [
+                    .pending,
+                    .uploading,
+                    .awaitingConfirmation,
+                    .retryableFailure,
+                ].contains($0.status)
+        }
+    }
+
+    private var conflictOutboxCount: Int {
+        outboxItems.count {
+            $0.farmID == farm.id
+                && $0.deliveryProvider == .supabase
+                && [.blockedConflict, .rejectedPermission].contains($0.status)
         }
     }
 
@@ -140,6 +153,15 @@ struct FarmCloudStorageSettingsView: View {
             } else if profile?.mode == .supabase {
                 Section("同步状态") {
                     LabeledContent("待同步记录", value: pendingOutboxCount.formatted())
+                    if conflictOutboxCount > 0 {
+                        LabeledContent("同步冲突") {
+                            Label(
+                                conflictOutboxCount.formatted(),
+                                systemImage: "exclamationmark.triangle.fill"
+                            )
+                            .foregroundStyle(.orange)
+                        }
+                    }
                     LabeledContent(
                         "已保存记录",
                         value: (remoteStorageMetrics?.entityCount ?? 0).formatted()
@@ -151,9 +173,15 @@ struct FarmCloudStorageSettingsView: View {
                             countStyle: .file
                         )
                     )
-                    Text("同步中断不会丢失本机记录，恢复网络后会自动继续。")
+                    Text(conflictOutboxCount == 0
+                        ? "同步中断不会丢失本机记录，恢复网络后会自动继续。"
+                        : "冲突记录已安全保留，但不会按普通网络重试处理；系统会先校验云端版本再修复。")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(
+                            conflictOutboxCount == 0
+                                ? Color.secondary
+                                : Color.orange
+                        )
                 }
             }
 
@@ -191,6 +219,7 @@ struct FarmCloudStorageSettingsView: View {
                         value: (remoteBinding?.lastPulledRevision ?? 0).formatted()
                     )
                     LabeledContent("Outbox", value: pendingOutboxCount.formatted())
+                    LabeledContent("冲突", value: conflictOutboxCount.formatted())
                     if let remoteStorageMetrics {
                         LabeledContent(
                             "云端实体",

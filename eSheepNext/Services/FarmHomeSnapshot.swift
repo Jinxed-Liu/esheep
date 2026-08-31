@@ -7,13 +7,15 @@ struct FarmHomeSnapshot: Sendable, Equatable {
     let todayFeedCount: Int
     let activeHealthRecordCount: Int
     let pendingOutboxCount: Int
+    let conflictOutboxCount: Int
 
     static let empty = FarmHomeSnapshot(
         activeSheepCount: 0,
         occupiedPenCount: 0,
         todayFeedCount: 0,
         activeHealthRecordCount: 0,
-        pendingOutboxCount: 0
+        pendingOutboxCount: 0,
+        conflictOutboxCount: 0
     )
 }
 
@@ -53,10 +55,21 @@ actor FarmHomeSnapshotActor {
             $0.farmID == farmID && $0.deletedAt == nil
         }))
         let pending = OutboxStatus.pending.rawValue
+        let uploading = OutboxStatus.uploading.rawValue
+        let awaitingConfirmation = OutboxStatus.awaitingConfirmation.rawValue
         let retryable = OutboxStatus.retryableFailure.rawValue
         let pendingOutboxCount = try context.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
             $0.farmID == farmID &&
-                ($0.statusRawValue == pending || $0.statusRawValue == retryable)
+                ($0.statusRawValue == pending ||
+                    $0.statusRawValue == uploading ||
+                    $0.statusRawValue == awaitingConfirmation ||
+                    $0.statusRawValue == retryable)
+        }))
+        let blocked = OutboxStatus.blockedConflict.rawValue
+        let rejected = OutboxStatus.rejectedPermission.rawValue
+        let conflictOutboxCount = try context.fetchCount(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+            $0.farmID == farmID &&
+                ($0.statusRawValue == blocked || $0.statusRawValue == rejected)
         }))
         try Task.checkCancellation()
 
@@ -67,7 +80,8 @@ actor FarmHomeSnapshotActor {
             occupiedPenCount: pens.count { occupiedPenIDs.contains($0.id) },
             todayFeedCount: todayFeedCount,
             activeHealthRecordCount: activeHealthRecordCount,
-            pendingOutboxCount: pendingOutboxCount
+            pendingOutboxCount: pendingOutboxCount,
+            conflictOutboxCount: conflictOutboxCount
         )
     }
 }
