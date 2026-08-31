@@ -11689,7 +11689,14 @@
       }
     },
     "品种（可修改）" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Variety (editable)"
+          }
+        }
+      }
     },
     "品种不能为空。" : {
       "extractionState" : "stale",
@@ -11703,7 +11710,14 @@
       }
     },
     "品种为系统建议，可直接修改；保存时以填写内容为准。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The variety is a system suggestion and can be edited; the value entered when saving is used."
+          }
+        }
+      }
     },
     "品种分析" : {
       "extractionState" : "stale",
