@@ -21,6 +21,8 @@
 	<string>manual</string>
 	<key>teamID</key>
 	<string>7BBQMZ87SM</string>
+	<key>testFlightInternalTestingOnly</key>
+	<true/>
 	<key>uploadSymbols</key>
 	<true/>
 </dict>
