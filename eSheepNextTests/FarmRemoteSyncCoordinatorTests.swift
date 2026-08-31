@@ -81,6 +81,152 @@ private actor TestFarmRemoteTransport: FarmRemoteTransport {
 }
 
 final class FarmRemoteSyncCoordinatorTests: XCTestCase {
+    @MainActor
+    func testConflictedPullAdvancesCursorWithoutForgingDurableReceipt() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "remote-conflict-no-receipt-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let ownerID = UUID()
+        let sheepID = UUID()
+        let removalID = UUID()
+        let removedAt = Date(timeIntervalSince1970: 1_780_500_000)
+        context.insert(FarmRecord(
+            id: farmID,
+            ownerAccountID: ownerID,
+            name: "冲突回执测试场"
+        ))
+        context.insert(SheepRecord(
+            id: sheepID,
+            farmID: farmID,
+            earTag: "CONFLICT-001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: removedAt.addingTimeInterval(-86_400)
+        ))
+        let localRemoval = RemovalRecord(
+            id: removalID,
+            farmID: farmID,
+            sheepID: sheepID,
+            kind: .deceased,
+            reason: "旧投影",
+            occurredAt: removedAt
+        )
+        localRemoval.deletedAt = removedAt.addingTimeInterval(60)
+        localRemoval.revision = 1
+        context.insert(localRemoval)
+        context.insert(FarmRemoteBinding(
+            farmID: farmID,
+            ownerAccountID: ownerID,
+            provider: .supabase,
+            state: .preparing,
+            authorityGeneration: 1,
+            remoteFarmID: farmID.uuidString.lowercased()
+        ))
+        try context.save()
+
+        let payload = try FarmCommandCloudPayloadEncoder.encode(
+            .removeSheep(
+                sheepID: sheepID,
+                kind: .deceased,
+                reason: "云端权威离场",
+                amountText: nil,
+                occurredAt: removedAt,
+                note: "",
+                recordID: removalID
+            )
+        )
+        let envelope = CloudOperationEnvelope(
+            farmID: farmID,
+            entityID: removalID,
+            entityType: CloudEntityType.removal.rawValue,
+            schemaVersion: 2,
+            revision: 3,
+            baseRevision: 2,
+            operationID: UUID(),
+            modifiedAt: removedAt.addingTimeInterval(120),
+            modifiedByAccountID: ownerID,
+            modifiedByDeviceID: UUID(),
+            payload: payload,
+            payloadDigest: CloudPayloadDigest.hex(for: payload),
+            capabilityCertificate: "test",
+            operationSignature: Data([1]),
+            deletedAt: nil
+        )
+        let transport = TestFarmRemoteTransport(endpoints: .init(
+            establishBaseline: { _ in },
+            pushOperations: { _, _ in [] },
+            pullOperations: { _, _, _, _ in
+                FarmRemotePullPage(
+                    operations: [envelope],
+                    cursorRevision: 1,
+                    hasMore: false
+                )
+            },
+            uploadAsset: { _, _, _, _, _, _ in
+                throw FarmRemoteTransportError.unsupportedOperation
+            },
+            downloadAsset: { _ in
+                throw FarmRemoteTransportError.unsupportedOperation
+            },
+            members: { _ in [] },
+            deactivate: { _, _, _ in }
+        ))
+
+        let result = try await FarmRemoteSyncCoordinator(
+            container: container,
+            transport: transport
+        ).catchUpRestoredFarm(farmID: farmID)
+
+        let verification = ModelContext(container)
+        XCTAssertEqual(result.conflictCount, 1)
+        XCTAssertEqual(result.cursorRevision, 1)
+        XCTAssertTrue(
+            try verification.fetch(FetchDescriptor<DomainOperation>()).isEmpty
+        )
+        let conflict = try XCTUnwrap(
+            try verification.fetch(FetchDescriptor<SyncConflictRecord>()).first
+        )
+        XCTAssertEqual(conflict.entityID, removalID)
+        XCTAssertEqual(conflict.statusRawValue, SyncConflictStatus.unresolved.rawValue)
+        XCTAssertNotNil(conflict.remoteEnvelopeData)
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<FarmRemoteBinding>())
+                .first?.lastPulledRevision,
+            1
+        )
+
+        // Once the missing intervening revision becomes available, startup or
+        // the next sync retries the retained envelope and creates the durable
+        // receipt only after the projection was actually applied.
+        let conflictedRemoval = try XCTUnwrap(
+            try verification.fetch(FetchDescriptor<RemovalRecord>()).first
+        )
+        conflictedRemoval.revision = 2
+        try verification.save()
+        XCTAssertEqual(
+            try RemoteProjectionReceiptRepair.repair(
+                farmID: farmID,
+                context: verification
+            ),
+            2
+        )
+        XCTAssertNil(conflictedRemoval.deletedAt)
+        XCTAssertEqual(conflictedRemoval.revision, 3)
+        XCTAssertEqual(conflict.statusRawValue, SyncConflictStatus.acceptedRemote.rawValue)
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<DomainOperation>()).count,
+            1
+        )
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<SheepRecord>()).first?.status,
+            .deceased
+        )
+    }
+
     func testLegacyCloudPayloadDecodesMissingLaterCollectionsAsEmpty() throws {
         let data = Data(#"""
         {

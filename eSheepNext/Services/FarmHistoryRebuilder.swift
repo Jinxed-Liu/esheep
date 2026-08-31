@@ -771,6 +771,359 @@ enum PostRecoveryHistoryProjectionRepair {
     }
 }
 
+/// Repairs projections written by receivers that persisted an immutable remote
+/// operation receipt even though applying that operation had conflicted.  The
+/// repair is deliberately evidence-bound: it never invents an operation, never
+/// changes an entity beyond the newest accepted receipt, and only bridges a
+/// missing removal revision when a matching, unrestored tombstone proves the
+/// intervening revision.
+enum RemoteProjectionReceiptRepair {
+    @discardableResult
+    static func repair(container: ModelContainer) throws -> Int {
+        let context = ModelContext(container)
+        let activeFarmIDs = Set(try context.fetch(FetchDescriptor<FarmRemoteBinding>())
+            .filter { $0.provider == .supabase && $0.state == .active }
+            .map(\.farmID))
+        var repairedCount = 0
+        for farmID in activeFarmIDs {
+            repairedCount += try repair(farmID: farmID, context: context)
+        }
+        return repairedCount
+    }
+
+    @discardableResult
+    static func repair(farmID: UUID, context: ModelContext) throws -> Int {
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>())
+            .filter { $0.farmID == farmID }
+
+        var operationByID: [UUID: DomainOperation] = [:]
+        var newestRelevantByEntityID: [UUID: DomainOperation] = [:]
+        for operation in operations {
+            operationByID[operation.id] = operation
+            guard let entityID = operation.entityID,
+                  operation.kindRawValue == DomainOperationKind.removeSheep.rawValue ||
+                    operation.kindRawValue == DomainOperationKind.updateSheepProfile.rawValue else {
+                continue
+            }
+            if let current = newestRelevantByEntityID[entityID],
+               current.resultingRevision > operation.resultingRevision ||
+                (current.resultingRevision == operation.resultingRevision &&
+                    current.createdAt >= operation.createdAt) {
+                continue
+            }
+            newestRelevantByEntityID[entityID] = operation
+        }
+
+        let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>())
+            .filter { $0.farmID == farmID }
+        let removals = try context.fetch(FetchDescriptor<RemovalRecord>())
+            .filter { $0.farmID == farmID }
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+            .filter { $0.farmID == farmID }
+        let removalsByID = Dictionary(grouping: removals, by: \.id)
+        let sheepByID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
+        let service = RemoteDomainApplyService()
+        var repairedCount = 0
+        var rebuildFrom: Date?
+
+        do {
+            let unresolvedConflicts = try context.fetch(FetchDescriptor<SyncConflictRecord>())
+                .filter {
+                    $0.farmID == farmID &&
+                        $0.statusRawValue == SyncConflictStatus.unresolved.rawValue
+                }
+            var retriedOperationIDs = Set<UUID>()
+            let cloudDecoder = JSONDecoder()
+            cloudDecoder.dateDecodingStrategy = .iso8601
+            for conflict in unresolvedConflicts {
+                guard let data = conflict.remoteEnvelopeData,
+                      let envelope = try? cloudDecoder.decode(
+                        CloudOperationEnvelope.self,
+                        from: data
+                      ),
+                      envelope.farmID == farmID,
+                      envelope.entityID == conflict.entityID,
+                      envelope.entityType == conflict.entityType,
+                      envelope.payload == conflict.remotePayload,
+                      envelope.payloadDigest == CloudPayloadDigest.hex(for: envelope.payload),
+                      operationByID[envelope.operationID] == nil,
+                      retriedOperationIDs.insert(envelope.operationID).inserted,
+                      let payload = try? decodePayload(envelope.payload) else {
+                    continue
+                }
+                guard case .applied(let changedAt) = try service.apply(
+                    envelope,
+                    context: context
+                ) else {
+                    continue
+                }
+                let receipt = DomainOperation(
+                    id: envelope.operationID,
+                    farmID: envelope.farmID,
+                    accountID: envelope.modifiedByAccountID,
+                    kind: payload.kind,
+                    occurredAt: envelope.modifiedAt,
+                    summary: "Supabase 同步自愈：\(payload.kind.rawValue)",
+                    entityType: envelope.entityType,
+                    entityID: envelope.entityID,
+                    baseRevision: envelope.baseRevision,
+                    resultingRevision: envelope.revision,
+                    payload: envelope.payload
+                )
+                receipt.modifiedByDeviceID = envelope.modifiedByDeviceID
+                receipt.capabilityCertificate = envelope.capabilityCertificate
+                receipt.operationSignature = envelope.operationSignature
+                context.insert(receipt)
+                operationByID[receipt.id] = receipt
+                if let changedAt {
+                    rebuildFrom = min(rebuildFrom ?? changedAt, changedAt)
+                }
+                repairedCount += 1
+                repairedCount += resolveMatchingConflicts(
+                    operationID: envelope.operationID,
+                    farmID: farmID,
+                    entityID: envelope.entityID,
+                    context: context
+                )
+            }
+
+            for operation in newestRelevantByEntityID.values {
+                guard operation.payloadDigest == CloudPayloadDigest.hex(for: operation.payload),
+                      operation.resultingRevision == operation.baseRevision + 1,
+                      let envelope = envelope(from: operation),
+                      let payload = try? decodePayload(operation.payload) else {
+                    continue
+                }
+                let entityID = operation.entityID!
+                let hasLaterEntityOperation = operations.contains {
+                    $0.entityID == entityID &&
+                        $0.resultingRevision > operation.resultingRevision
+                }
+                guard !hasLaterEntityOperation else { continue }
+
+                switch payload.kind {
+                case .removeSheep:
+                    guard operation.entityType == CloudEntityType.removal.rawValue,
+                          payload.identifiers["sheepID"] != nil,
+                          let removal = removalsByID[entityID]?.first,
+                          removal.sheepID == payload.identifiers["sheepID"] else {
+                        continue
+                    }
+
+                    if removal.deletedAt != nil && removal.revision < operation.baseRevision {
+                        guard hasValidTombstoneBridge(
+                            entityID: entityID,
+                            targetBaseRevision: operation.baseRevision,
+                            tombstones: tombstones,
+                            operationByID: operationByID
+                        ) else {
+                            continue
+                        }
+                        removal.revision = operation.baseRevision
+                    }
+
+                    if removal.deletedAt != nil {
+                        guard removal.revision == operation.baseRevision else { continue }
+                        guard case .applied(let changedAt) = try service.apply(envelope, context: context) else {
+                            continue
+                        }
+                        rebuildFrom = min(rebuildFrom ?? changedAt ?? removal.occurredAt, changedAt ?? removal.occurredAt)
+                        repairedCount += 1
+                    } else if removal.revision == operation.resultingRevision {
+                        if !removalMatches(removal, payload: payload) {
+                            _ = try ConflictDomainMergeService.apply(
+                                payload: operation.payload,
+                                entityType: operation.entityType,
+                                entityID: entityID,
+                                farmID: farmID,
+                                revision: operation.resultingRevision,
+                                context: context
+                            )
+                            removal.deletedAt = nil
+                            repairedCount += 1
+                        }
+                        if let projectedSheep = sheepByID[removal.sheepID],
+                           projectedSheep.status == .active ||
+                            projectedSheep.removedAt != removal.occurredAt ||
+                            projectedSheep.currentPenID != nil {
+                            rebuildFrom = min(rebuildFrom ?? removal.occurredAt, removal.occurredAt)
+                            repairedCount += 1
+                        }
+                    }
+
+                    repairedCount += resolveMatchingConflicts(
+                        operationID: operation.id,
+                        farmID: farmID,
+                        entityID: entityID,
+                        context: context
+                    )
+
+                case .updateSheepProfile:
+                    guard operation.entityType == CloudEntityType.sheep.rawValue,
+                          payload.identifiers["sheepID"] == entityID,
+                          let record = sheepByID[entityID],
+                          record.revision == operation.baseRevision ||
+                            record.revision == operation.resultingRevision else {
+                        continue
+                    }
+                    if sheepProfileMatches(record, payload: payload) {
+                        repairedCount += resolveMatchingConflicts(
+                            operationID: operation.id,
+                            farmID: farmID,
+                            entityID: entityID,
+                            context: context
+                        )
+                        continue
+                    }
+                    guard case .applied = try service.apply(envelope, context: context) else {
+                        continue
+                    }
+                    repairedCount += 1
+                    repairedCount += resolveMatchingConflicts(
+                        operationID: operation.id,
+                        farmID: farmID,
+                        entityID: entityID,
+                        context: context
+                    )
+
+                default:
+                    continue
+                }
+            }
+
+            if let rebuildFrom {
+                try FarmHistoryRebuilder().rebuild(
+                    farmID: farmID,
+                    context: context,
+                    from: rebuildFrom
+                )
+            }
+            if context.hasChanges { try context.save() }
+            return repairedCount
+        } catch {
+            context.rollback()
+            throw error
+        }
+    }
+
+    private static func envelope(from operation: DomainOperation) -> CloudOperationEnvelope? {
+        guard let entityID = operation.entityID,
+              let deviceID = operation.modifiedByDeviceID,
+              let signature = operation.operationSignature else {
+            return nil
+        }
+        return CloudOperationEnvelope(
+            farmID: operation.farmID,
+            entityID: entityID,
+            entityType: operation.entityType,
+            schemaVersion: operation.schemaVersion,
+            revision: operation.resultingRevision,
+            baseRevision: operation.baseRevision,
+            operationID: operation.id,
+            modifiedAt: operation.occurredAt,
+            modifiedByAccountID: operation.accountID,
+            modifiedByDeviceID: deviceID,
+            payload: operation.payload,
+            payloadDigest: operation.payloadDigest,
+            capabilityCertificate: operation.capabilityCertificate,
+            operationSignature: signature,
+            deletedAt: nil
+        )
+    }
+
+    private static func decodePayload(_ data: Data) throws -> FarmCommandCloudPayload {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(FarmCommandCloudPayload.self, from: data)
+    }
+
+    private static func hasValidTombstoneBridge(
+        entityID: UUID,
+        targetBaseRevision: Int,
+        tombstones: [TombstoneRecord],
+        operationByID: [UUID: DomainOperation]
+    ) -> Bool {
+        tombstones.contains { tombstone in
+            guard tombstone.entityType == CloudEntityType.removal.rawValue,
+                  tombstone.entityID == entityID,
+                  tombstone.revision == targetBaseRevision,
+                  tombstone.restoredAt == nil,
+                  let operationID = tombstone.operationID,
+                  let operation = operationByID[operationID],
+                  operation.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue,
+                  operation.entityType == CloudEntityType.removal.rawValue,
+                  operation.entityID == entityID,
+                  operation.baseRevision + 1 == targetBaseRevision,
+                  operation.resultingRevision == targetBaseRevision,
+                  operation.payloadDigest == CloudPayloadDigest.hex(for: operation.payload),
+                  operation.modifiedByDeviceID != nil,
+                  operation.operationSignature != nil,
+                  let payload = try? decodePayload(operation.payload) else {
+                return false
+            }
+            return payload.kind == .tombstoneEntity &&
+                payload.strings["entityType"] == CloudEntityType.removal.rawValue &&
+                payload.identifiers["entityID"] == entityID
+        }
+    }
+
+    private static func removalMatches(
+        _ removal: RemovalRecord,
+        payload: FarmCommandCloudPayload
+    ) -> Bool {
+        removal.sheepID == payload.identifiers["sheepID"] &&
+            removal.kindRawValue == payload.strings["kind"] &&
+            removal.reason == payload.strings["reason"] &&
+            removal.amountText == (payload.optionalStrings["amountText"] ?? nil) &&
+            removal.removalBatchID == (payload.optionalIdentifiers["removalBatchID"] ?? nil) &&
+            removal.batchTotalAmountText == (payload.optionalStrings["batchTotalAmountText"] ?? nil) &&
+            removal.occurredAt == payload.dates["occurredAt"] &&
+            removal.note == (payload.strings["note"] ?? "")
+    }
+
+    private static func sheepProfileMatches(
+        _ sheep: SheepRecord,
+        payload: FarmCommandCloudPayload
+    ) -> Bool {
+        sheep.earTag == payload.strings["earTag"] &&
+            sheep.breed == payload.strings["breed"] &&
+            sheep.sexRawValue == payload.strings["sex"] &&
+            sheep.birthAt == (payload.optionalDates["birthAt"] ?? nil) &&
+            sheep.note == (payload.strings["note"] ?? "")
+    }
+
+    private static func resolveMatchingConflicts(
+        operationID: UUID,
+        farmID: UUID,
+        entityID: UUID,
+        context: ModelContext
+    ) -> Int {
+        let conflicts = ((try? context.fetch(FetchDescriptor<SyncConflictRecord>())) ?? [])
+            .filter {
+                $0.farmID == farmID &&
+                    $0.entityID == entityID &&
+                    $0.statusRawValue == SyncConflictStatus.unresolved.rawValue
+            }
+        var resolved = 0
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        for conflict in conflicts {
+            guard let data = conflict.remoteEnvelopeData,
+                  let envelope = try? decoder.decode(CloudOperationEnvelope.self, from: data),
+                  envelope.operationID == operationID else {
+                continue
+            }
+            conflict.statusRawValue = SyncConflictStatus.acceptedRemote.rawValue
+            conflict.resolvedAt = .now
+            conflict.resolutionNote = "已依据经验证的云端操作回执自动恢复本地投影。"
+            conflict.resolutionOperationID = operationID
+            conflict.resolutionFailureReason = nil
+            resolved += 1
+        }
+        return resolved
+    }
+}
+
 private struct DailyPenCountKey: Hashable {
     let penID: UUID
     let purpose: String

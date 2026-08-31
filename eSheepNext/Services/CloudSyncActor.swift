@@ -109,6 +109,13 @@ final class CloudCollaborationStore {
                 "增量历史投影修复失败：\(error.localizedDescription)"
             )
         }
+        do {
+            _ = try RemoteProjectionReceiptRepair.repair(container: container)
+        } catch {
+            startupErrorMessages.append(
+                "云端操作投影自愈失败：\(error.localizedDescription)"
+            )
+        }
         return CloudCollaborationStartupPreparation(
             errorMessages: startupErrorMessages
         )

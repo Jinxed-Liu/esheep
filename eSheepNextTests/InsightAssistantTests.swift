@@ -3341,6 +3341,19 @@ final class InsightAssistantTests: XCTestCase {
                 enteredAt: occurredAt.addingTimeInterval(-86_400)
             )
         }
+        context.insert(FarmStorageProfile(
+            farmID: farmID,
+            mode: .supabase,
+            authorityGeneration: 1
+        ))
+        context.insert(FarmRemoteBinding(
+            farmID: farmID,
+            ownerAccountID: accountID,
+            provider: .supabase,
+            state: .active,
+            authorityGeneration: 1,
+            remoteFarmID: farmID.uuidString.lowercased()
+        ))
         sheep.forEach(context.insert)
         try context.save()
 

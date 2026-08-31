@@ -550,13 +550,25 @@ struct RemoteDomainApplyService {
             return .applied(rebuildHistoryFrom: record.enteredAt)
         case .updateSheepProfile:
             guard let record = try fetch(SheepRecord.self, id: try identifier("sheepID", payload), context: context) else { throw RemoteDomainApplyError.missingReference("sheepID") }
-            let hasEntityOperation = try context.fetch(FetchDescriptor<DomainOperation>()).contains {
+            let entityOperations = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
                 $0.farmID == envelope.farmID && $0.entityID == envelope.entityID
+            }
+            let hasEntityOperation = !entityOperations.isEmpty
+            let hasMatchingAcceptedReceipt = entityOperations.contains {
+                Self.matchesAcceptedReceipt($0, envelope: envelope)
+            }
+            let hasLaterEntityOperation = entityOperations.contains {
+                $0.resultingRevision > envelope.revision
             }
             let canAdoptBaselineAlignedRevision =
                 record.revision == envelope.revision && !hasEntityOperation
+            let canRepairAcceptedRemoteProjection =
+                record.revision == envelope.revision &&
+                    hasMatchingAcceptedReceipt &&
+                    !hasLaterEntityOperation
             guard record.revision == envelope.baseRevision ||
-                    canAdoptBaselineAlignedRevision else {
+                    canAdoptBaselineAlignedRevision ||
+                    canRepairAcceptedRemoteProjection else {
                 return .conflict(localRevision: record.revision)
             }
             let earTag = try string("earTag", payload)
@@ -1381,7 +1393,14 @@ struct RemoteDomainApplyService {
                     context: context
                 )
             }
-            try DomainEntityDeletionService.setDeletedAt(envelope.deletedAt ?? envelope.modifiedAt, type: entityType, id: entityID, farmID: envelope.farmID, context: context)
+            try DomainEntityDeletionService.setDeletedAt(
+                envelope.deletedAt ?? envelope.modifiedAt,
+                type: entityType,
+                id: entityID,
+                farmID: envelope.farmID,
+                revision: envelope.revision,
+                context: context
+            )
             let tombstone = TombstoneRecord(
                 farmID: envelope.farmID,
                 entityType: entityType.rawValue,
@@ -1413,7 +1432,14 @@ struct RemoteDomainApplyService {
                     context: context
                 )
             }
-            try DomainEntityDeletionService.setDeletedAt(nil, type: entityType, id: tombstone.entityID, farmID: envelope.farmID, context: context)
+            try DomainEntityDeletionService.setDeletedAt(
+                nil,
+                type: entityType,
+                id: tombstone.entityID,
+                farmID: envelope.farmID,
+                revision: envelope.revision,
+                context: context
+            )
             tombstone.restoredAt = envelope.modifiedAt
             tombstone.restoredByOperationID = envelope.operationID
             return .applied(rebuildHistoryFrom: .distantPast)
@@ -1485,6 +1511,26 @@ struct RemoteDomainApplyService {
                 allowsBaselineProjection: true
             )
         }
+    }
+
+    private static func matchesAcceptedReceipt(
+        _ receipt: DomainOperation,
+        envelope: CloudOperationEnvelope
+    ) -> Bool {
+        receipt.id == envelope.operationID &&
+            receipt.farmID == envelope.farmID &&
+            receipt.accountID == envelope.modifiedByAccountID &&
+            receipt.schemaVersion == envelope.schemaVersion &&
+            receipt.entityType == envelope.entityType &&
+            receipt.entityID == envelope.entityID &&
+            receipt.baseRevision == envelope.baseRevision &&
+            receipt.resultingRevision == envelope.revision &&
+            receipt.payloadDigest == envelope.payloadDigest &&
+            receipt.payload == envelope.payload &&
+            receipt.modifiedByDeviceID == envelope.modifiedByDeviceID &&
+            receipt.occurredAt == envelope.modifiedAt &&
+            receipt.capabilityCertificate == envelope.capabilityCertificate &&
+            receipt.operationSignature == envelope.operationSignature
     }
 
     private func expectedEntityType(for kind: DomainOperationKind) -> CloudEntityType? {

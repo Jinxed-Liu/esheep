@@ -454,6 +454,19 @@ final class FarmEventHistoryTests: XCTestCase {
         let accountID = UUID()
         let feed = FeedRecord(farmID: farmID, penID: UUID(), mode: .limited, occurredAt: .now)
         let line = FeedRecordLine(farmID: farmID, feedRecordID: feed.id, ingredientID: UUID(), kilogramsText: "12", ingredientNameSnapshot: "玉米")
+        context.insert(FarmStorageProfile(
+            farmID: farmID,
+            mode: .supabase,
+            authorityGeneration: 1
+        ))
+        context.insert(FarmRemoteBinding(
+            farmID: farmID,
+            ownerAccountID: accountID,
+            provider: .supabase,
+            state: .active,
+            authorityGeneration: 1,
+            remoteFarmID: farmID.uuidString.lowercased()
+        ))
         context.insert(feed)
         context.insert(line)
         try context.save()

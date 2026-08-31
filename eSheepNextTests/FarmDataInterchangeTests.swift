@@ -61,7 +61,9 @@ final class FarmDataInterchangeTests: XCTestCase {
         let context = ModelContext(container)
         let account = AccountProfile(appleUserIdentifier: "import-owner", displayName: "场主")
         let farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: "测试场")
-        context.insert(account); context.insert(farm); try context.save()
+        context.insert(account); context.insert(farm)
+        configureSupabaseStorage(for: farm, ownerAccountID: account.effectiveAccountID, context: context)
+        try context.save()
         let csv = "耳号,品种,性别,圈舍,入场日期,出生日期,备注\nA001,湖羊,母羊,一号圈,2026-01-01,2025-01-01,导入\n"
         let preview = try FarmDataInterchange.preview(data: Data(csv.utf8), fileExtension: "csv")
 
@@ -218,6 +220,7 @@ final class FarmDataInterchangeTests: XCTestCase {
         let first = SheepRecord(farmID: farm.id, earTag: "A001", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: date("2026-01-01"))
         let second = SheepRecord(farmID: farm.id, earTag: "A002", breed: "杜泊", sex: .ram, penID: nil, enteredAt: date("2026-01-01"))
         context.insert(owner); context.insert(farm); context.insert(first); context.insert(second)
+        configureSupabaseStorage(for: farm, ownerAccountID: owner.effectiveAccountID, context: context)
         try context.save()
         let workbook = try XLSXCodec.encode(sheets: [.init(name: "离场", rows: [
             ["导入键", "羊只耳号列表", "类型", "原因", "总售卖金额", "发生日期", "备注"],
@@ -337,6 +340,7 @@ final class FarmDataInterchangeTests: XCTestCase {
         context.insert(owner)
         context.insert(farm)
         sheep.forEach(context.insert)
+        configureSupabaseStorage(for: farm, ownerAccountID: owner.effectiveAccountID, context: context)
         try context.save()
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -447,7 +451,9 @@ final class FarmDataInterchangeTests: XCTestCase {
         let context = ModelContext(container)
         let owner = AccountProfile(appleUserIdentifier: "excel-atomic-owner", displayName: "场主")
         let farm = FarmRecord(ownerAccountID: owner.effectiveAccountID, name: "测试场")
-        context.insert(owner); context.insert(farm); try context.save()
+        context.insert(owner); context.insert(farm)
+        configureSupabaseStorage(for: farm, ownerAccountID: owner.effectiveAccountID, context: context)
+        try context.save()
         let workbook = try XLSXCodec.encode(sheets: [
             .init(name: "新建羊只", rows: [
                 ["导入键", "耳号", "品种", "性别", "圈舍", "入场日期", "出生日期", "备注"],
@@ -513,6 +519,26 @@ final class FarmDataInterchangeTests: XCTestCase {
         XCTAssertTrue(try context.fetch(FetchDescriptor<ProductionBatchRecord>()).isEmpty)
         XCTAssertTrue(try context.fetch(FetchDescriptor<DomainOperation>()).isEmpty)
         XCTAssertTrue(try context.fetch(FetchDescriptor<OutboxItem>()).isEmpty)
+    }
+
+    private func configureSupabaseStorage(
+        for farm: FarmRecord,
+        ownerAccountID: UUID,
+        context: ModelContext
+    ) {
+        context.insert(FarmStorageProfile(
+            farmID: farm.id,
+            mode: .supabase,
+            authorityGeneration: 1
+        ))
+        context.insert(FarmRemoteBinding(
+            farmID: farm.id,
+            ownerAccountID: ownerAccountID,
+            provider: .supabase,
+            state: .active,
+            authorityGeneration: 1,
+            remoteFarmID: farm.id.uuidString.lowercased()
+        ))
     }
 
     private func date(_ value: String) -> Date {

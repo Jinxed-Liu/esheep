@@ -5,7 +5,14 @@ enum DomainEntityDeletionService {
     private static let healthInventoryReversalPrefix = "删除健康记录反向恢复库存："
     private static let reproductionSemenReversalPrefix = "撤销繁殖记录反向恢复冻精："
 
-    static func setDeletedAt(_ date: Date?, type: CloudEntityType, id: UUID, farmID: UUID, context: ModelContext) throws {
+    static func setDeletedAt(
+        _ date: Date?,
+        type: CloudEntityType,
+        id: UUID,
+        farmID: UUID,
+        revision: Int? = nil,
+        context: ModelContext
+    ) throws {
         switch type {
         case .farm: throw FarmPermissionError.denied(.manageFarm)
         case .pen: try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
@@ -117,6 +124,78 @@ enum DomainEntityDeletionService {
         case .careReminder: try context.fetch(FetchDescriptor<CareReminderRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .alertDeferral:
             if date != nil, let value = try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).first(where: { $0.id == id && $0.farmID == farmID }) { context.delete(value) }
+        }
+
+        // A remote tombstone is a real revision in the entity's immutable
+        // history, not merely a visibility flag.  Keeping the projection at
+        // the pre-delete revision makes the next valid cloud operation (for
+        // example a 2 -> 3 recreation) conflict forever.  Entity kinds that
+        // intentionally have no local revision continue to rely on their
+        // DomainOperation/TombstoneRecord lineage.
+        if let revision {
+            try alignRevision(
+                revision,
+                type: type,
+                id: id,
+                farmID: farmID,
+                context: context
+            )
+        }
+    }
+
+    private static func alignRevision(
+        _ revision: Int,
+        type: CloudEntityType,
+        id: UUID,
+        farmID: UUID,
+        context: ModelContext
+    ) throws {
+        switch type {
+        case .pen:
+            try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .sheep:
+            try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .weight:
+            try context.fetch(FetchDescriptor<WeightRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .weaning:
+            try context.fetch(FetchDescriptor<WeaningRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .breedingProgram:
+            try context.fetch(FetchDescriptor<BreedingProgramRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .breedingProgramStep:
+            try context.fetch(FetchDescriptor<BreedingProgramStepRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .transfer:
+            try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .removal:
+            try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .feed:
+            try context.fetch(FetchDescriptor<FeedRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .feedTroughObservation:
+            try context.fetch(FetchDescriptor<FeedTroughObservationRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .reproduction:
+            try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .semen:
+            try context.fetch(FetchDescriptor<SemenRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .semenDonor:
+            try context.fetch(FetchDescriptor<SemenDonorRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .note:
+            try context.fetch(FetchDescriptor<NoteRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .feedIngredientBatch:
+            try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first(where: { $0.id == id && $0.farmID == farmID })?.revision = revision
+        case .careReminder:
+            try context.fetch(FetchDescriptor<CareReminderRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
+        case .farm, .productionBatch, .batchMembership, .feedIngredient,
+             .feedRecipe, .feedRecipeComponent, .feedLine,
+             .feedStockTransaction, .feedStockCount, .tmrFormula,
+             .tmrFeedingPlan, .tmrFeedingPlanPen, .tmrBatch,
+             .tmrBatchIngredient, .tmrBatchLoadLine, .tmrBatchMovement,
+             .tmrFeedingRun, .tmrFeedingAllocation, .tmrMealCompletion,
+             .tmrDeviationAcknowledgement, .tmrMonitoringRule,
+             .tmrBaseline, .inventoryLot, .inventoryTransaction, .health,
+             .pedigreeChange, .photoAsset, .healthCatalogItem,
+             .healthSubjectLink, .lambingOffspring, .careBatch,
+             .semenTransaction, .careRule,
+             .alertDeferral:
+            break
         }
     }
 

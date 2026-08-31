@@ -604,6 +604,19 @@ final class FarmOperationalAlertTests: XCTestCase {
         let farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: "测试场")
         context.insert(account)
         context.insert(farm)
+        context.insert(FarmStorageProfile(
+            farmID: farm.id,
+            mode: .supabase,
+            authorityGeneration: 1
+        ))
+        context.insert(FarmRemoteBinding(
+            farmID: farm.id,
+            ownerAccountID: account.effectiveAccountID,
+            provider: .supabase,
+            state: .active,
+            authorityGeneration: 1,
+            remoteFarmID: farm.id.uuidString.lowercased()
+        ))
         try context.save()
         let service = FarmCommandService()
         let owner = FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: .owner)

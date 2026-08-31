@@ -656,6 +656,7 @@ final class FarmDomainTests: XCTestCase {
         let farm = FarmRecord(ownerAccountID: account.id, name: "北场")
         context.insert(account)
         context.insert(farm)
+        configureSupabaseStorage(farmID: farm.id, ownerAccountID: account.id, context: context)
         try context.save()
 
         let command = FarmCommandService()
@@ -947,6 +948,7 @@ final class FarmDomainTests: XCTestCase {
         let farm = FarmRecord(ownerAccountID: owner.id, name: "位置测试场")
         context.insert(owner)
         context.insert(farm)
+        configureSupabaseStorage(farmID: farm.id, ownerAccountID: owner.id, context: context)
         try context.save()
 
         let command = FarmCommand.updateFarmLocation(
@@ -1408,6 +1410,7 @@ final class FarmDomainTests: XCTestCase {
         context.insert(farm)
         context.insert(sheep)
         context.insert(photo)
+        configureSupabaseStorage(farmID: farm.id, ownerAccountID: account.id, context: context)
         try context.save()
 
         let service = FarmCommandService()
@@ -1909,6 +1912,7 @@ final class FarmDomainTests: XCTestCase {
         context.insert(sourcePen)
         context.insert(targetPen)
         context.insert(lamb)
+        configureSupabaseStorage(farmID: farm.id, ownerAccountID: account.id, context: context)
         try context.save()
         let farmContext = FarmContext(accountID: account.id, farmID: farm.id, role: .owner)
         let service = FarmCommandService()
@@ -2236,6 +2240,26 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(cloudLine.ingredientBatchNameSnapshot, "2025 春批")
         XCTAssertEqual(cloudLine.pricePerKilogramTextSnapshot, "2.35")
         XCTAssertEqual(cloudLine.nutrientSnapshotJSON, #"{"crudeProtein":9,"dryMatter":88}"#)
+    }
+
+    private func configureSupabaseStorage(
+        farmID: UUID,
+        ownerAccountID: UUID,
+        context: ModelContext
+    ) {
+        context.insert(FarmStorageProfile(
+            farmID: farmID,
+            mode: .supabase,
+            authorityGeneration: 1
+        ))
+        context.insert(FarmRemoteBinding(
+            farmID: farmID,
+            ownerAccountID: ownerAccountID,
+            provider: .supabase,
+            state: .active,
+            authorityGeneration: 1,
+            remoteFarmID: farmID.uuidString.lowercased()
+        ))
     }
 
     private func makeContainer() throws -> ModelContainer {

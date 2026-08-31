@@ -87,6 +87,10 @@ actor FarmRemoteSyncCoordinator {
         farmID: UUID,
         maxOutboxItems: Int = 25
     ) async throws -> FarmRemoteSyncResult {
+        try RemoteProjectionReceiptRepair.repair(
+            farmID: farmID,
+            context: ModelContext(container)
+        )
         var binding = try bindingSnapshot(farmID: farmID)
         var preflightDownloadedCount = 0
         var preflightConflictCount = 0
@@ -161,6 +165,10 @@ actor FarmRemoteSyncCoordinator {
     func catchUpRestoredFarm(
         farmID: UUID
     ) async throws -> FarmRemoteSyncResult {
+        try RemoteProjectionReceiptRepair.repair(
+            farmID: farmID,
+            context: ModelContext(container)
+        )
         let binding = try bindingSnapshot(
             farmID: farmID,
             allowedStates: [.preparing, .active]
@@ -882,14 +890,18 @@ actor FarmRemoteSyncCoordinator {
                         detail: error.localizedDescription
                     )
                 }
+                let recordsDurableReceipt: Bool
                 switch outcome {
                 case .applied(let changedAt):
+                    recordsDurableReceipt = true
                     if let changedAt {
                         rebuildFrom = min(rebuildFrom ?? changedAt, changedAt)
                     }
                 case .duplicate:
+                    recordsDurableReceipt = true
                     break
                 case .conflict(let localRevision):
+                    recordsDurableReceipt = false
                     conflictCount += 1
                     let local = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
                         $0.farmID == farmID &&
@@ -911,6 +923,8 @@ actor FarmRemoteSyncCoordinator {
                     conflict.remoteEnvelopeData = try JSONEncoder.cloud.encode(envelope)
                     context.insert(conflict)
                 }
+
+                guard recordsDurableReceipt else { continue }
 
                 try supersedeBlockedDeletionOperations(
                     confirmedBy: envelope,

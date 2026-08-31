@@ -4067,7 +4067,14 @@ final class FarmCommandService {
                 farmID: farm.farmID,
                 context: context
             )
-            try DomainEntityDeletionService.setDeletedAt(.now, type: entityType, id: entityID, farmID: farm.farmID, context: context)
+            try DomainEntityDeletionService.setDeletedAt(
+                .now,
+                type: entityType,
+                id: entityID,
+                farmID: farm.farmID,
+                revision: baseRevision + 1,
+                context: context
+            )
             context.insert(TombstoneRecord(
                 farmID: farm.farmID,
                 entityType: entityType.rawValue,
@@ -4082,7 +4089,14 @@ final class FarmCommandService {
                   let entityType = CloudEntityType(rawValue: tombstone.entityType) else {
                 throw FarmCommandError.missingRequiredValue("删除记录")
             }
-            try DomainEntityDeletionService.setDeletedAt(nil, type: entityType, id: tombstone.entityID, farmID: farm.farmID, context: context)
+            try DomainEntityDeletionService.setDeletedAt(
+                nil,
+                type: entityType,
+                id: tombstone.entityID,
+                farmID: farm.farmID,
+                revision: tombstone.revision + 1,
+                context: context
+            )
             tombstone.restoredAt = .now
             return appliedResult(entityType, tombstone.entityID, baseRevision: tombstone.revision, revision: tombstone.revision + 1)
         }
