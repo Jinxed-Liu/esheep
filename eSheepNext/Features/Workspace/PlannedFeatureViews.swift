@@ -1043,6 +1043,22 @@ private struct FeedCountExclusionView: View {
     private var visibleSheepIDs: Set<UUID> { Set(pens.flatMap { sheepByPen[$0.id] ?? [] }.map(\.id)) }
     private var visibleRecommendations: Set<UUID> { recommendedSheepIDs.intersection(visibleSheepIDs) }
 
+    private func recommendedSheep(in pen: PenRecord) -> [FeedPenEligibleSheepSnapshot] {
+        (sheepByPen[pen.id] ?? [])
+            .filter { item in visibleRecommendations.contains(item.id) }
+            .sorted { lhs, rhs in
+                lhs.earTag.localizedStandardCompare(rhs.earTag) == .orderedAscending
+            }
+    }
+
+    private func otherSheep(in pen: PenRecord) -> [FeedPenEligibleSheepSnapshot] {
+        (sheepByPen[pen.id] ?? [])
+            .filter { item in !visibleRecommendations.contains(item.id) }
+            .sorted { lhs, rhs in
+                lhs.earTag.localizedStandardCompare(rhs.earTag) == .orderedAscending
+            }
+    }
+
     private func toggleExclusion(for sheepID: UUID) {
         if excludedSheepIDs.contains(sheepID) {
             excludedSheepIDs.remove(sheepID)
@@ -1070,12 +1086,7 @@ private struct FeedCountExclusionView: View {
                     }
 
                     ForEach(pens, id: \.id) { pen in
-                        ForEach(
-                            (sheepByPen[pen.id] ?? [])
-                                .filter { visibleRecommendations.contains($0.id) }
-                                .sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending },
-                            id: \.id
-                        ) { item in
+                        ForEach(recommendedSheep(in: pen), id: \.id) { item in
                             Button {
                                 toggleExclusion(for: item.id)
                             } label: {
@@ -1095,9 +1106,7 @@ private struct FeedCountExclusionView: View {
             }
 
             ForEach(pens, id: \.id) { pen in
-                let otherSheep = (sheepByPen[pen.id] ?? [])
-                    .filter { !visibleRecommendations.contains($0.id) }
-                    .sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }
+                let otherSheep = otherSheep(in: pen)
                 if !otherSheep.isEmpty {
                     Section("\(pen.name) · 其他羊只") {
                         ForEach(otherSheep, id: \.id) { item in
