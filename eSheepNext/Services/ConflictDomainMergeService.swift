@@ -112,7 +112,7 @@ enum ConflictDomainMergeService {
             value.occurredAt = payload.dates["occurredAt"] ?? value.occurredAt
             value.revision = revision
             return nil
-        case .recordWeaning, .createBreedingProgram, .receiveInventory, .recordHealth, .recordReproduction, .createBatch, .assignBatchMembership, .leaveBatchMembership:
+        case .recordWeaning, .createBreedingProgram, .receiveInventory, .recordHealth, .recordReproduction, .createBatch, .assignBatchMembership, .leaveBatchMembership, .restoreBatchMembership:
             throw ConflictResolutionError.unsupportedBusinessMerge
         default:
             throw ConflictResolutionError.unsupportedBusinessMerge

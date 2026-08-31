@@ -261,6 +261,26 @@ final class CareWorkflowTests: XCTestCase {
         )
     }
 
+    func testOnlyOnePedigreeSireCandidateCanContributeToBreedSuggestion() {
+        XCTAssertEqual(
+            LambingEntrySemantics.soleSireCandidateBreedForSuggestion(
+                candidateBreeds: [" 杜泊 "]
+            ),
+            "杜泊"
+        )
+        XCTAssertNil(
+            LambingEntrySemantics.soleSireCandidateBreedForSuggestion(
+                candidateBreeds: ["杜泊", "杜泊"]
+            ),
+            "多个父本候选即使品种相同也不能被当作唯一父本线索"
+        )
+        XCTAssertNil(
+            LambingEntrySemantics.soleSireCandidateBreedForSuggestion(
+                candidateBreeds: ["  "]
+            )
+        )
+    }
+
     func testConfirmedSupabaseLambingBackfillsMissingChildDeliveryOperations() throws {
         let fixture = try makeFixture()
         let ewe = try insertEwe(fixture, earTag: "E-BACKFILL")

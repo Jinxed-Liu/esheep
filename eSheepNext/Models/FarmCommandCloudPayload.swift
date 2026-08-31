@@ -297,6 +297,10 @@ enum FarmCommandCloudPayloadEncoder {
             payload.identifiers = ["batchID": batchID, "sheepID": sheepID]
             payload.dates = ["leftAt": leftAt]
             payload.strings = ["reason": reason]
+        case .restoreBatchMembership(let membershipID, let restoredAt, let reason):
+            payload.identifiers = ["membershipID": membershipID]
+            payload.dates = ["restoredAt": restoredAt]
+            payload.strings = ["reason": reason]
         case .addIngredient(let name, let unit, let dryMatterText):
             payload.strings = ["name": name, "unit": unit]
             payload.optionalStrings = ["dryMatterText": dryMatterText]

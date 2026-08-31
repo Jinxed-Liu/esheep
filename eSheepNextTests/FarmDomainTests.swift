@@ -231,6 +231,133 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(snapshot.farms.first(where: { $0.farmID == first.id })?.pendingOperationCount, 1)
     }
 
+    func testSpotlightItemsExposeSheepEventsIndividuallyInReverseChronologicalOrder() throws {
+        let farmID = UUID()
+        let sheepID = UUID()
+        let otherSheepID = UUID()
+        let penID = UUID()
+        let olderEvent = FarmEventSnapshot(
+            id: UUID(),
+            entityType: .transfer,
+            category: .herd,
+            relatedSheepIDs: [sheepID],
+            occurredAt: Date(timeIntervalSince1970: 100),
+            recordedAt: Date(timeIntervalSince1970: 110),
+            title: "转群",
+            subject: "XL-001",
+            detail: "育成圈 → 繁殖一圈",
+            note: "进入繁殖群",
+            fields: [.init(label: "目标圈舍", value: "繁殖一圈")]
+        )
+        let newerEvent = FarmEventSnapshot(
+            id: UUID(),
+            entityType: .weight,
+            category: .herd,
+            relatedSheepIDs: [sheepID],
+            occurredAt: Date(timeIntervalSince1970: 200),
+            recordedAt: Date(timeIntervalSince1970: 210),
+            title: "称重",
+            subject: "XL-001",
+            detail: "52.5 千克",
+            note: "月度称重",
+            fields: [.init(label: "体重", value: "52.5 千克")]
+        )
+        let unrelatedEvent = FarmEventSnapshot(
+            id: UUID(),
+            entityType: .note,
+            category: .note,
+            relatedSheepIDs: [otherSheepID],
+            occurredAt: Date(timeIntervalSince1970: 300),
+            recordedAt: Date(timeIntervalSince1970: 310),
+            title: "备注",
+            subject: "OLD-001",
+            detail: "其他牧场旧数据",
+            note: "",
+            fields: []
+        )
+        let snapshot = FarmSpotlightSnapshot(
+            farmID: farmID,
+            farmName: "星露谷牧场",
+            sheep: [.init(id: sheepID, earTag: "XL-001")],
+            pens: [.init(id: penID, name: "繁殖一圈")],
+            events: [olderEvent, unrelatedEvent, newerEvent]
+        )
+
+        let items = FarmSystemIntegrationService.searchableItems(in: snapshot)
+        let eventItems = items.filter { $0.uniqueIdentifier.contains(":event:") }
+
+        XCTAssertEqual(items.count, 3)
+        XCTAssertEqual(eventItems.map { $0.attributeSet.title }, ["XL-001 · 称重", "XL-001 · 转群"])
+        XCTAssertFalse(items.contains { $0.uniqueIdentifier.contains(otherSheepID.uuidString.lowercased()) })
+        let newestItem = try XCTUnwrap(eventItems.first)
+        XCTAssertTrue(newestItem.attributeSet.contentDescription?.contains("52.5 千克") == true)
+        XCTAssertTrue(newestItem.attributeSet.contentDescription?.contains("月度称重") == true)
+        XCTAssertTrue(newestItem.attributeSet.keywords?.contains("体重") == true)
+        XCTAssertTrue(newestItem.attributeSet.textContent?.contains("事件：称重") == true)
+        XCTAssertEqual(newestItem.attributeSet.contentCreationDate, newerEvent.occurredAt)
+        let contentURL = try XCTUnwrap(newestItem.attributeSet.contentURL)
+        let target = FarmSystemIntegrationService.target(from: contentURL)
+        XCTAssertEqual(target?.kind, .searchSheep)
+        XCTAssertEqual(target?.entityID, sheepID)
+        XCTAssertTrue(FarmSystemIntegrationService.searchableItems(in: nil).isEmpty)
+    }
+
+    func testSpotlightSharedEventDoesNotCrossIndexOtherSheepEarTags() throws {
+        let farmID = UUID()
+        let eweID = UUID()
+        let ramID = UUID()
+        let event = FarmEventSnapshot(
+            id: UUID(),
+            entityType: .reproduction,
+            category: .reproduction,
+            relatedSheepIDs: [eweID, ramID],
+            occurredAt: .now,
+            recordedAt: .now,
+            title: "配种",
+            subject: "E001",
+            detail: "R001",
+            note: "",
+            fields: [
+                .init(label: "母羊", value: "E001"),
+                .init(label: "公羊", value: "R001"),
+                .init(label: "结果", value: "本交")
+            ]
+        )
+        let snapshot = FarmSpotlightSnapshot(
+            farmID: farmID,
+            farmName: "星露谷牧场",
+            sheep: [
+                .init(id: eweID, earTag: "E001"),
+                .init(id: ramID, earTag: "R001")
+            ],
+            pens: [],
+            events: [event]
+        )
+
+        let items = FarmSystemIntegrationService.searchableItems(in: snapshot)
+        let eweItem = try XCTUnwrap(items.first {
+            $0.uniqueIdentifier.contains(":sheep:\(eweID.uuidString.lowercased()):")
+        })
+        let ramItem = try XCTUnwrap(items.first {
+            $0.uniqueIdentifier.contains(":sheep:\(ramID.uuidString.lowercased()):")
+        })
+        let eweSearchText = [
+            eweItem.attributeSet.title ?? "",
+            eweItem.attributeSet.contentDescription ?? "",
+            eweItem.attributeSet.textContent ?? "",
+            eweItem.attributeSet.keywords?.joined(separator: " ") ?? ""
+        ].joined(separator: " ")
+        let ramSearchText = [
+            ramItem.attributeSet.title ?? "",
+            ramItem.attributeSet.contentDescription ?? "",
+            ramItem.attributeSet.textContent ?? "",
+            ramItem.attributeSet.keywords?.joined(separator: " ") ?? ""
+        ].joined(separator: " ")
+
+        XCTAssertFalse(eweSearchText.contains("R001"))
+        XCTAssertFalse(ramSearchText.contains("E001"))
+    }
+
     func testDeferredSystemSnapshotFetchesOnlyRequestedFarm() async throws {
         let container = try AppSchema.makeContainer(
             name: "deferred-system-snapshot-\(UUID().uuidString)",
@@ -274,6 +401,61 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(snapshot.farms.map(\.farmID), [first.id])
         XCTAssertEqual(snapshot.farms.first?.sheep.map(\.earTag), ["A001"])
         XCTAssertEqual(snapshot.farms.first?.pens.map(\.name), ["当前圈舍"])
+    }
+
+    func testSpotlightSnapshotActorKeepsEventsInsideRequestedFarm() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "spotlight-event-snapshot-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let ownerID = UUID()
+        let cloudFarm = FarmRecord(ownerAccountID: ownerID, name: "星露谷牧场")
+        let retiredFarm = FarmRecord(ownerAccountID: ownerID, name: "吉昊羊场")
+        let cloudSheep = SheepRecord(
+            farmID: cloudFarm.id,
+            earTag: "XL-001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: Date(timeIntervalSince1970: 100)
+        )
+        let retiredSheep = SheepRecord(
+            farmID: retiredFarm.id,
+            earTag: "OLD-001",
+            breed: "旧数据",
+            sex: .unknown,
+            penID: nil,
+            enteredAt: Date(timeIntervalSince1970: 100)
+        )
+        context.insert(cloudFarm)
+        context.insert(retiredFarm)
+        context.insert(cloudSheep)
+        context.insert(retiredSheep)
+        context.insert(WeightRecord(
+            farmID: cloudFarm.id,
+            sheepID: cloudSheep.id,
+            kilogramsText: "51.2",
+            occurredAt: Date(timeIntervalSince1970: 300)
+        ))
+        context.insert(WeightRecord(
+            farmID: retiredFarm.id,
+            sheepID: retiredSheep.id,
+            kilogramsText: "40",
+            occurredAt: Date(timeIntervalSince1970: 400)
+        ))
+        try context.save()
+
+        let snapshot = try await FarmSpotlightSnapshotActor(
+            container: container
+        ).makeSnapshot(farmID: cloudFarm.id)
+        let items = FarmSystemIntegrationService.searchableItems(in: snapshot)
+
+        XCTAssertEqual(snapshot?.farmID, cloudFarm.id)
+        XCTAssertEqual(snapshot?.sheep.map(\.earTag), ["XL-001"])
+        XCTAssertTrue(items.contains { $0.attributeSet.title == "XL-001 · 称重" })
+        XCTAssertFalse(items.contains { $0.attributeSet.title?.contains("OLD-001") == true })
+        XCTAssertFalse(items.contains { $0.attributeSet.textContent?.contains("吉昊羊场") == true })
     }
 
     func testPenHerdInsightUsesOnlyLatestWeightForCurrentMembers() {

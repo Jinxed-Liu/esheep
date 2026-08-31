@@ -11795,12 +11795,12 @@
         }
       }
     },
-    "唯一候选已在本表单中预选；只有点击保存才会写入。" : {
+    "唯一候选的品种已用于羔羊品种建议；父本仍未确认。点击候选后，保存时才会写入系谱。" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The only candidates are preselected in this form; they will not be written until Save is clicked."
+            "value" : "The sole candidate's breed is used only for the lamb breed suggestion; the sire remains unconfirmed. Select the candidate to record it in the pedigree when saving."
           }
         }
       }

@@ -11,6 +11,7 @@ enum InsightToolError: LocalizedError {
     case staleRevision
     case obsoleteWeaningDraft
     case resultTooLarge
+    case farmFactsUnavailable(String)
     case extendedDataConsentRequired
     case deviceActionUnavailable(String)
 
@@ -30,6 +31,8 @@ enum InsightToolError: LocalizedError {
             "这张旧版断奶草案缺少目标圈舍，请删除后重新让 AI 生成断奶卡片。"
         case .resultTooLarge:
             "工具结果超过安全发送范围，需要缩小查询。"
+        case .farmFactsUnavailable(let message):
+            "牧场事实暂不可用：\(message)"
         case .extendedDataConsentRequired:
             "该工具需要用户针对本次扩展数据发送明确授权。"
         case .deviceActionUnavailable(let message):
@@ -200,10 +203,10 @@ final class InsightToolRegistry {
             ),
             Self.tool(
                 InsightFarmQueryEngine.toolName,
-                "按用户要求组合查询当前牧场数据。凡是询问当前牧场的数量、名单、日期、状态、统计、比较、趋势或明细，必须优先调用本工具，不能直接回答，也不能用常识补齐。支持羊只、称重、繁殖、健康、饲喂和健康库存；所有筛选都在 App 本地执行。询问产羔数或出生羔羊数时，必须查询 reproduction、kind=lambing、metric=sum，不能用羊只档案 birth_at 代替；询问录入档案中的出生日期分布时才使用 sheep、date_field=birth_at。字符串筛选不需要时传空字符串。",
+                "读取当前牧场的权威明细或执行不需要跨行时间运算的直接聚合。当前在场、在群、存栏使用 query_kind=current_herd；出生羔羊数使用 born_lambs。需要相邻记录、首末记录、差值、间隔或变化速率时改用 calculate_farm_data。所有筛选都在 App 本地执行，字符串筛选不需要时传空字符串。",
                 properties: [
                     "query_kind": Self.enumString(
-                        "业务查询口径。必须先按牧场数据查询技能选择；App 会据此固定真实数据源，冲突参数会被覆盖。",
+                        "业务查询口径。必须先按牧场数据查询技能选择；App 会据此固定真实数据源，无法完整执行的条件会被拒绝。",
                         values: FarmDataQuerySkill.QueryKind.allCases.map(\.rawValue)
                     ),
                     "subject": Self.enumString(
@@ -285,8 +288,83 @@ final class InsightToolRegistry {
                 ]
             ),
             Self.tool(
+                InsightFarmCalculationEngine.toolName,
+                "在当前设备的权威牧场事实上执行通用数值流水线：选择样本源和群体，按羊分区，选择单点/相邻/首末窗口，再计算值、差值、日历间隔或单位日变化，最后分组并聚合。完整群体变化率分析可一次确定性返回总体、真实相邻称重区间、生产批次和截至时点生命周期四个维度。工具不理解自然语言指标；模型必须根据用户问题自行组合算子。结果是证据而不是最终答复。当前仅支持体重样本源。",
+                properties: [
+                    "source": Self.enumString(
+                        "本地数值事实源",
+                        values: ["weight_samples"]
+                    ),
+                    "sample_policy": Self.enumString(
+                        "recorded_only 只用常规称重；canonical_timeline 使用按牧场日去重的统一体重时间线",
+                        values: ["recorded_only", "canonical_timeline"]
+                    ),
+                    "cohort": Self.enumString(
+                        "参与计算的羊只群体；current_in_herd 使用 App 统一当前状态事实",
+                        values: ["all_profiles", "current_in_herd", "removed"]
+                    ),
+                    "pen_membership": Self.enumString(
+                        "圈舍筛选时点：at_cutoff 按 as_of 时点归属；at_measurement 按每条样本发生时归属",
+                        values: ["at_cutoff", "at_measurement"]
+                    ),
+                    "pen_name": Self.string("精确圈舍名称；不筛选时传空字符串"),
+                    "ear_tag": Self.string("耳号关键词；不筛选时传空字符串"),
+                    "breed": Self.string("品种关键词；不筛选时传空字符串"),
+                    "sex": Self.enumString(
+                        "性别；不筛选时传空字符串",
+                        values: ["", "ewe", "ram", "unknown"]
+                    ),
+                    "date_from": Self.string("样本 ISO 8601 开始时间；不限制时传空字符串"),
+                    "date_to": Self.string("样本 ISO 8601 结束时间；不限制时传空字符串"),
+                    "as_of": Self.string("群体状态和样本截止时点 ISO 8601；当前时点传空字符串"),
+                    "partition_by": Self.enumString(
+                        "窗口计算必须按 sheep 分区；单点聚合可用 none",
+                        values: ["sheep", "none"]
+                    ),
+                    "window": Self.enumString(
+                        "none 为每条样本；adjacent 为同羊相邻两点；first_to_last 为同羊首末两点",
+                        values: ["none", "adjacent", "first_to_last"]
+                    ),
+                    "transform": Self.enumString(
+                        "value 取终点值；difference 终点减起点；elapsed_days 牧场日历天数；difference_per_day 差值除以牧场日历天数",
+                        values: ["value", "difference", "elapsed_days", "difference_per_day"]
+                    ),
+                    "analysis_scope": Self.enumString(
+                        "complete 用于未明确限定单一视角的群体变化率分析，并强制返回总体、称重区间、生产批次、生命周期及完整性；focused 仅用于用户明确指定单一值或单一分组",
+                        values: ["focused", "complete"]
+                    ),
+                    "group_by": Self.enumString(
+                        "主结果按整体、真实起止称重区间、区间终点日/月、生产批次、截至时点生命周期、羊只或圈舍分组；complete 还会自动返回四个完整分析维度",
+                        values: [
+                            "none", "weighing_interval", "interval_end_day", "interval_end_month",
+                            "production_batch", "lifecycle_status", "sheep", "pen",
+                        ]
+                    ),
+                    "reduce": Self.enumString(
+                        "对每组观察值返回明细或执行确定性聚合",
+                        values: ["records", "count", "sum", "average", "minimum", "maximum"]
+                    ),
+                    "selection": Self.enumString(
+                        "all 返回全部分组；latest 仅用于日期分组并返回最近一组",
+                        values: ["all", "latest"]
+                    ),
+                    "limit": .object([
+                        "type": .string("integer"),
+                        "description": .string("最多返回 1 到 100 个分组或明细"),
+                        "minimum": .number(1),
+                        "maximum": .number(100),
+                    ]),
+                ],
+                required: [
+                    "source", "sample_policy", "cohort", "pen_membership", "pen_name",
+                    "ear_tag", "breed", "sex", "date_from", "date_to", "as_of",
+                    "partition_by", "window", "transform", "analysis_scope", "group_by", "reduce",
+                    "selection", "limit",
+                ]
+            ),
+            Self.tool(
                 "find_sheep",
-                "在当前牧场按耳号或品种查找羊只，最多返回 20 条。不能访问其他牧场。",
+                "在当前牧场按耳号或品种查找羊只，精确耳号优先，最多返回 20 条。返回出生日期、入场日期、性别、品种、统一事实契约下的当前状态和圈舍；不能访问其他牧场。",
                 properties: [
                     "query": Self.string("耳号或品种关键词"),
                 ],
@@ -571,6 +649,15 @@ final class InsightToolRegistry {
         case InsightFarmQueryEngine.toolName:
             return .init(
                 output: try InsightFarmQueryEngine().execute(
+                    arguments: arguments,
+                    farmID: agent.farmID,
+                    context: context
+                ),
+                actionDraft: nil
+            )
+        case InsightFarmCalculationEngine.toolName:
+            return .init(
+                output: try InsightFarmCalculationEngine().execute(
                     arguments: arguments,
                     farmID: agent.farmID,
                     context: context
@@ -1551,30 +1638,61 @@ final class InsightToolRegistry {
     private func findSheep(query: String, farmID: UUID, context: ModelContext) throws -> String {
         let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { throw InsightToolError.invalidArguments("query") }
+        let normalizedKey = normalized.lowercased()
         let pens = try context.fetch(FetchDescriptor<PenRecord>()).filter {
             $0.farmID == farmID && $0.deletedAt == nil
         }
         let penNames = Dictionary(uniqueKeysWithValues: pens.map { ($0.id, $0.name) })
+        let transfers = try context.fetch(FetchDescriptor<TransferRecord>()).filter {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }
+        let removals = try context.fetch(FetchDescriptor<RemovalRecord>()).filter {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }
+        let transfersBySheep = Dictionary(grouping: transfers, by: \.sheepID)
+        let removalsBySheep = Dictionary(grouping: removals, by: \.sheepID)
         let values = try context.fetch(FetchDescriptor<SheepRecord>()).filter {
             $0.farmID == farmID && $0.deletedAt == nil &&
                 ($0.earTag.localizedCaseInsensitiveContains(normalized)
                     || $0.breed.localizedCaseInsensitiveContains(normalized))
+        }.sorted { lhs, rhs in
+            let lhsExact = lhs.earTag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedKey
+            let rhsExact = rhs.earTag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedKey
+            if lhsExact != rhsExact { return lhsExact }
+            if lhs.earTag != rhs.earTag {
+                return lhs.earTag.localizedStandardCompare(rhs.earTag) == .orderedAscending
+            }
+            return lhs.id.uuidString < rhs.id.uuidString
         }
-        let result = values.prefix(20).map {
-            [
-                "id": $0.id.uuidString.lowercased(),
-                "ear_tag": $0.earTag,
-                "breed": $0.breed,
-                "sex": $0.sex.rawValue,
-                "status": $0.status.rawValue,
-                "pen": $0.currentPenID.flatMap { penNames[$0] } ?? "未分圈",
-                "revision": String($0.revision),
+        let now = Date.now
+        let result: [[String: Any]] = values.prefix(20).map { sheep in
+            let fact = FarmSheepStateResolver.resolve(
+                sheep,
+                cutoff: .current(now),
+                transfers: transfersBySheep[sheep.id] ?? [],
+                removals: removalsBySheep[sheep.id] ?? []
+            )
+            return [
+                "id": sheep.id.uuidString.lowercased(),
+                "ear_tag": sheep.earTag,
+                "breed": sheep.breed,
+                "sex": sheep.sex.rawValue,
+                "birth_at": sheep.birthAt.map(Self.iso8601) ?? NSNull(),
+                "entered_at": Self.iso8601(sheep.enteredAt),
+                "status": fact.status?.rawValue ?? "unknown",
+                "currently_present": fact.isPresent,
+                "pen": fact.penID.flatMap { penNames[$0] } ?? "未分圈",
+                "state_basis": fact.basis.rawValue,
+                "projection_matches_stored_state": fact.projectionMatchesStoredState,
+                "revision": sheep.revision,
             ]
         }
         return try boundedJSON([
             "rows": result,
             "row_count": result.count,
             "truncated": values.count > result.count,
+            "contract_version": FarmFactContract.version,
+            "queried_at": Self.iso8601(now),
             "scope": "current_farm_only",
         ])
     }

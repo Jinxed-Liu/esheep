@@ -342,10 +342,13 @@ enum SheepWeightSampleBuilder {
 
     /// 同一只羊同一天只保留一个统计点：常规称重优先，其次是断奶重、产羔初生重、断奶补录初生重。
     /// 同来源一天多次记录时采用当天最后一次，保证图表、最近体重和 ADG 使用同一口径。
-    static func dailyCanonical(_ samples: [SheepWeightSample]) -> [SheepWeightSample] {
+    static func dailyCanonical(
+        _ samples: [SheepWeightSample],
+        calendar: Calendar = FarmAnalyticsDate.calendar
+    ) -> [SheepWeightSample] {
         let valid = samples.filter { $0.kilograms > 0 && $0.kilograms.isFinite }
         let grouped = Dictionary(grouping: valid) {
-            DayKey(sheepID: $0.sheepID, day: FarmAnalyticsDate.day($0.occurredAt))
+            DayKey(sheepID: $0.sheepID, day: calendar.startOfDay(for: $0.occurredAt))
         }
         return grouped.values.compactMap { sameDay in
             sameDay.sorted(by: isPreferred).first

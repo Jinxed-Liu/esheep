@@ -105,6 +105,12 @@ struct FarmInsightConversationView: View {
                     return
                 }
                 await controller.connect(to: modelContext)
+#if DEBUG
+                if case .ready = controller.availability,
+                   let prompt = InsightAcceptanceLaunchRequest.takePrompt() {
+                    controller.send(text: prompt)
+                }
+#endif
             }
             .task(id: storedAudioRevision) {
                 await loadStoredAudio()
@@ -131,7 +137,7 @@ struct FarmInsightConversationView: View {
             }
             .sheet(isPresented: $isConversationSearchPresented) {
                 InsightConversationSearchView(
-                    messages: controller.messages,
+                    messages: displayMessages,
                     drafts: controller.drafts
                 ) { messageID in
                     searchResultTargetID = messageID
@@ -186,9 +192,6 @@ struct FarmInsightConversationView: View {
                     set: { if !$0 { controller.errorMessage = nil } }
                 ),
                 actions: {
-                    if controller.messages.last?.status == .failed {
-                        Button("重试") { controller.retryLastMessage() }
-                    }
                     Button("好", role: .cancel) {}
                 },
                 message: {
@@ -224,9 +227,9 @@ struct FarmInsightConversationView: View {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     conversationMetadata
                     availabilityBanner
-                    if !controller.messages.isEmpty {
-                        ForEach(Array(controller.messages.enumerated()), id: \.element.id) { index, message in
-                            if shouldShowTimestamp(at: index, in: controller.messages) {
+                    if !displayMessages.isEmpty {
+                        ForEach(Array(displayMessages.enumerated()), id: \.element.id) { index, message in
+                            if shouldShowTimestamp(at: index, in: displayMessages) {
                                 InsightConversationTimestamp(date: message.createdAt)
                             }
                             InsightConversationMessageRow(
@@ -237,7 +240,7 @@ struct FarmInsightConversationView: View {
                                 isPlayingAudio: audioPlayer.isPlaying
                                     && audioPlaybackSource == .sentMessage(message.id),
                                 drafts: messageDrafts(for: message.id),
-                                endsRoleGroup: endsRoleGroup(at: index, in: controller.messages),
+                                endsRoleGroup: endsRoleGroup(at: index, in: displayMessages),
                                 canExecute: controller.canExecute,
                                 executionCount: controller.executionCount,
                                 draftPresentation: controller.presentation,
@@ -404,6 +407,10 @@ struct FarmInsightConversationView: View {
             "明天上午 8 点提醒我检查饮水",
             "下周一安排一次羊群盘点日历事件",
         ]
+    }
+
+    private var displayMessages: [InsightMessageRecord] {
+        controller.visibleMessages
     }
 
     private var isReady: Bool {
@@ -637,9 +644,9 @@ struct FarmInsightConversationView: View {
     }
 
     private var scrollRevision: String {
-        let last = controller.messages.last
+        let last = displayMessages.last
         return [
-            String(controller.messages.count),
+            String(displayMessages.count),
             last?.id.uuidString ?? "",
             String(last?.text.count ?? 0),
             String(last?.updatedAt.timeIntervalSinceReferenceDate ?? 0),
@@ -1098,7 +1105,7 @@ private struct InsightMessageBubble: View {
         case .completed:
             isUser ? "已发送" : nil
         case .failed:
-            "发送失败"
+            isUser ? "发送未完成" : "内部处理未完成"
         case .cancelled:
             "已停止"
         }

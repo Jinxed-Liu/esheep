@@ -3,6 +3,24 @@ import Foundation
 import SwiftData
 import UniformTypeIdentifiers
 
+struct FarmSpotlightSheep: Identifiable, Sendable, Equatable {
+    let id: UUID
+    let earTag: String
+}
+
+struct FarmSpotlightPen: Identifiable, Sendable, Equatable {
+    let id: UUID
+    let name: String
+}
+
+struct FarmSpotlightSnapshot: Sendable {
+    let farmID: UUID
+    let farmName: String
+    let sheep: [FarmSpotlightSheep]
+    let pens: [FarmSpotlightPen]
+    let events: [FarmEventSnapshot]
+}
+
 enum FarmSystemNavigationKind: String, Codable, Sendable {
     case home
     case searchSheep
@@ -73,54 +91,171 @@ enum FarmSystemIntegrationService {
         )
     }
 
-    @discardableResult
-    static func publish(
-        _ snapshot: FarmWidgetSnapshot,
-        refreshSearchIndex shouldRefreshSearchIndex: Bool = true
-    ) async -> [String] {
-        let previousDomains = FarmWidgetSnapshotStore.load().farms.map { spotlightDomain(farmID: $0.farmID) }
+    static func publish(_ snapshot: FarmWidgetSnapshot) async {
         try? FarmWidgetSnapshotStore.save(snapshot)
-        guard shouldRefreshSearchIndex else { return previousDomains }
-        await refreshSearchIndex(snapshot, replacingDomains: previousDomains)
-        return previousDomains
     }
 
-    static func refreshSearchIndex(
-        _ snapshot: FarmWidgetSnapshot,
-        replacingDomains previousDomains: [String]
-    ) async {
-        let currentDomains = snapshot.farms.map { spotlightDomain(farmID: $0.farmID) }
-        try? await CSSearchableIndex.default().deleteSearchableItems(
-            withDomainIdentifiers: Array(Set(previousDomains + currentDomains))
-        )
-        let items = snapshot.farms.flatMap { farm -> [CSSearchableItem] in
-            let sheepItems = farm.sheep.map { item in
-                let attributes = CSSearchableItemAttributeSet(contentType: .item)
-                attributes.title = item.earTag
-                attributes.contentDescription = "\(farm.name) · \(item.breed)"
-                attributes.keywords = [farm.name, item.earTag, item.breed]
-                attributes.contentURL = deepLink(farmID: farm.farmID, kind: "sheep", entityID: item.sheepID, query: item.earTag)
-                return CSSearchableItem(
-                    uniqueIdentifier: "farm:\(farm.farmID.uuidString.lowercased()):sheep:\(item.sheepID.uuidString.lowercased())",
-                    domainIdentifier: spotlightDomain(farmID: farm.farmID),
-                    attributeSet: attributes
-                )
+    static func refreshSearchIndex(_ snapshot: FarmSpotlightSnapshot?) async {
+        // Core Spotlight is a persistent, bundle-scoped local index. Removing
+        // CloudKit or replacing the widget snapshot does not remove entries
+        // whose old domain identifier is no longer known to this build. Reset
+        // the app's index before rebuilding so a retired/local-only farm can
+        // never remain visible through an orphaned domain.
+        do {
+            let index = CSSearchableIndex.default()
+            try await index.deleteAllSearchableItems()
+            let items = searchableItems(in: snapshot)
+            for batch in items.chunked(maximumCount: 500) {
+                try Task.checkCancellation()
+                try await index.indexSearchableItems(batch)
             }
-            let penItems = farm.pens.map { item in
-                let attributes = CSSearchableItemAttributeSet(contentType: .item)
-                attributes.title = item.name
-                attributes.contentDescription = "\(farm.name) · 圈舍"
-                attributes.keywords = [farm.name, item.name, "圈舍"]
-                attributes.contentURL = deepLink(farmID: farm.farmID, kind: "pen", entityID: item.penID, query: item.name)
-                return CSSearchableItem(
-                    uniqueIdentifier: "farm:\(farm.farmID.uuidString.lowercased()):pen:\(item.penID.uuidString.lowercased())",
-                    domainIdentifier: spotlightDomain(farmID: farm.farmID),
-                    attributeSet: attributes
-                )
-            }
-            return sheepItems + penItems
+        } catch {
+            #if DEBUG
+            print("[CoreSpotlight] Rebuild failed: \(error)")
+            #endif
         }
-        if !items.isEmpty { try? await CSSearchableIndex.default().indexSearchableItems(items) }
+    }
+
+    static func searchableItems(in snapshot: FarmSpotlightSnapshot?) -> [CSSearchableItem] {
+        guard let snapshot else { return [] }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.calendar = .current
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+
+        let sheepByID = Dictionary(uniqueKeysWithValues: snapshot.sheep.map { ($0.id, $0) })
+        let associationFieldLabels: Set<String> = [
+            "对象",
+            "母羊",
+            "公羊",
+            "母本",
+            "父本来源",
+            "冻精供体",
+            "羊只档案ID",
+        ]
+        var eventsBySheepID: [UUID: [FarmEventSnapshot]] = [:]
+        for event in snapshot.events {
+            for sheepID in event.relatedSheepIDs where sheepByID[sheepID] != nil {
+                eventsBySheepID[sheepID, default: []].append(event)
+            }
+        }
+
+        var eventItems: [CSSearchableItem] = []
+        for sheep in snapshot.sheep.sorted(by: spotlightSheepSort) {
+            let events = (eventsBySheepID[sheep.id] ?? []).sorted(by: spotlightEventSort)
+            eventItems.reserveCapacity(eventItems.count + events.count)
+            for (eventIndex, event) in events.enumerated() {
+                let dateText = formatter.string(from: event.occurredAt)
+                let otherRelatedEarTags = Set(event.relatedSheepIDs.compactMap { relatedID -> String? in
+                    guard relatedID != sheep.id else { return nil }
+                    return sheepByID[relatedID]?.earTag
+                })
+                let trimmedDetail = event.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+                let searchableDetail = otherRelatedEarTags.contains(trimmedDetail) ? "" : event.detail
+                let searchableFields = event.fields.filter {
+                    !associationFieldLabels.contains($0.label)
+                }
+                let summaryParts = [dateText, searchableDetail, event.note].nonEmptyUniqueValues
+                let summary = summaryParts.joined(separator: " · ")
+                let title = "\(sheep.earTag) · \(event.title)"
+                let fieldLines = searchableFields.compactMap { field -> String? in
+                    let value = field.value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return value.isEmpty ? nil : "\(field.label)：\(value)"
+                }
+                let attributes = CSSearchableItemAttributeSet(contentType: .item)
+                attributes.title = title
+                attributes.displayName = title
+                attributes.alternateNames = [sheep.earTag]
+                attributes.contentDescription = summary
+                attributes.subject = "\(snapshot.farmName) · \(event.category.displayName)"
+                attributes.kind = "羊只历史事件"
+                attributes.containerTitle = snapshot.farmName
+                attributes.containerDisplayName = snapshot.farmName
+                attributes.textContent = (
+                    [
+                        "牧场：\(snapshot.farmName)",
+                        "耳号：\(sheep.earTag)",
+                        "事件：\(event.title)",
+                        "发生时间：\(dateText)",
+                        searchableDetail.isEmpty ? "" : "内容：\(searchableDetail)",
+                        event.note.isEmpty ? "" : "备注：\(event.note)",
+                    ] + fieldLines
+                ).nonEmptyUniqueValues.joined(separator: "\n")
+                attributes.keywords = (
+                    [
+                        snapshot.farmName,
+                        sheep.earTag,
+                        event.title,
+                        event.category.displayName,
+                        searchableDetail,
+                        event.note,
+                    ] + searchableFields.flatMap { [$0.label, $0.value] }
+                ).nonEmptyUniqueValues
+                attributes.contentCreationDate = event.occurredAt
+                attributes.contentModificationDate = event.recordedAt
+                attributes.metadataModificationDate = event.recordedAt
+                attributes.userOwned = true
+                attributes.rankingHint = NSNumber(value: max(1, 100 - eventIndex))
+                attributes.contentURL = deepLink(
+                    farmID: snapshot.farmID,
+                    kind: "sheep",
+                    entityID: sheep.id,
+                    query: sheep.earTag
+                )
+                eventItems.append(CSSearchableItem(
+                    uniqueIdentifier: [
+                        "farm",
+                        snapshot.farmID.uuidString.lowercased(),
+                        "sheep",
+                        sheep.id.uuidString.lowercased(),
+                        "event",
+                        event.entityType.rawValue,
+                        event.id.uuidString.lowercased(),
+                    ].joined(separator: ":"),
+                    domainIdentifier: spotlightDomain(farmID: snapshot.farmID),
+                    attributeSet: attributes
+                ))
+            }
+        }
+
+        let penItems = snapshot.pens.map { item in
+            let title = "\(item.name) · 圈舍"
+            let attributes = CSSearchableItemAttributeSet(contentType: .item)
+            attributes.title = title
+            attributes.displayName = title
+            attributes.alternateNames = [item.name]
+            attributes.contentDescription = snapshot.farmName
+            attributes.subject = "\(snapshot.farmName) · 圈舍"
+            attributes.kind = "圈舍"
+            attributes.containerTitle = snapshot.farmName
+            attributes.containerDisplayName = snapshot.farmName
+            attributes.textContent = "牧场：\(snapshot.farmName)\n圈舍：\(item.name)"
+            attributes.keywords = [snapshot.farmName, item.name, "圈舍"]
+            attributes.userOwned = true
+            attributes.rankingHint = 20
+            attributes.contentURL = deepLink(farmID: snapshot.farmID, kind: "pen", entityID: item.id, query: item.name)
+            return CSSearchableItem(
+                uniqueIdentifier: "farm:\(snapshot.farmID.uuidString.lowercased()):pen:\(item.id.uuidString.lowercased())",
+                domainIdentifier: spotlightDomain(farmID: snapshot.farmID),
+                attributeSet: attributes
+            )
+        }
+        return eventItems + penItems
+    }
+
+    private static func spotlightSheepSort(_ lhs: FarmSpotlightSheep, _ rhs: FarmSpotlightSheep) -> Bool {
+        let comparison = lhs.earTag.localizedStandardCompare(rhs.earTag)
+        if comparison != .orderedSame { return comparison == .orderedAscending }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    private static func spotlightEventSort(_ lhs: FarmEventSnapshot, _ rhs: FarmEventSnapshot) -> Bool {
+        if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt > rhs.occurredAt }
+        if lhs.recordedAt != rhs.recordedAt { return lhs.recordedAt > rhs.recordedAt }
+        if lhs.entityType != rhs.entityType { return lhs.entityType.rawValue < rhs.entityType.rawValue }
+        return lhs.id.uuidString > rhs.id.uuidString
     }
 
     static func target(from url: URL) -> FarmSystemNavigationTarget? {
@@ -154,6 +289,27 @@ enum FarmSystemIntegrationService {
         components.path = "/\(farmID.uuidString.lowercased())/\(kind)/\(entityID.uuidString.lowercased())"
         components.queryItems = [URLQueryItem(name: "q", value: query)]
         return components.url
+    }
+}
+
+private extension Array where Element == String {
+    var nonEmptyUniqueValues: [String] {
+        var seen: Set<String> = []
+        return compactMap { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return nil }
+            return trimmed
+        }
+    }
+}
+
+private extension Array {
+    func chunked(maximumCount: Int) -> [[Element]] {
+        guard maximumCount > 0, !isEmpty else { return [] }
+        return stride(from: startIndex, to: endIndex, by: maximumCount).map { start in
+            let end = index(start, offsetBy: maximumCount, limitedBy: endIndex) ?? endIndex
+            return Array(self[start..<end])
+        }
     }
 }
 
@@ -216,6 +372,54 @@ actor FarmSystemSnapshotActor {
             generatedAt: .now,
             selectedFarmID: selectedFarmID,
             farms: farmSnapshots
+        )
+    }
+}
+
+actor FarmSpotlightSnapshotActor {
+    private let container: ModelContainer
+
+    init(container: ModelContainer) {
+        self.container = container
+    }
+
+    func makeSnapshot(farmID: UUID?) async throws -> FarmSpotlightSnapshot? {
+        guard let farmID else { return nil }
+        let events = try await FarmEventHistoryActor(container: container).load(farmID: farmID)
+        try Task.checkCancellation()
+
+        let context = ModelContext(container)
+        guard let farm = try context.fetch(FetchDescriptor<FarmRecord>(
+            predicate: #Predicate {
+                $0.id == farmID && $0.deletedAt == nil
+            }
+        )).first else { return nil }
+        let sheepRecords = try context.fetch(FetchDescriptor<SheepRecord>(
+            predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            }
+        )).filter { !$0.isHistoricalArchive }
+        let penRecords = try context.fetch(FetchDescriptor<PenRecord>(
+            predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            }
+        ))
+        let occupiedPens = CurrentFarmOccupancy.occupiedPens(
+            farmID: farmID,
+            sheep: sheepRecords,
+            pens: penRecords
+        )
+
+        return FarmSpotlightSnapshot(
+            farmID: farm.id,
+            farmName: farm.name,
+            sheep: sheepRecords.map {
+                FarmSpotlightSheep(id: $0.id, earTag: $0.earTag)
+            },
+            pens: occupiedPens.map {
+                FarmSpotlightPen(id: $0.id, name: $0.name)
+            },
+            events: events
         )
     }
 }

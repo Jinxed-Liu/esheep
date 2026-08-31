@@ -21,6 +21,7 @@ enum DomainOperationKind: String, Codable, Sendable, Hashable {
     case createBatch
     case assignBatchMembership
     case leaveBatchMembership
+    case restoreBatchMembership
     case addIngredient
     case createRecipe
     case addRecipeComponent

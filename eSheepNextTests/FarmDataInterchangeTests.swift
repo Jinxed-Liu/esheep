@@ -50,7 +50,7 @@ final class FarmDataInterchangeTests: XCTestCase {
     }
 
     func testWidgetSnapshotISO8601EncodingRequiresMatchingDecoder() throws {
-        let snapshot = FarmWidgetSnapshot(version: 1, generatedAt: date("2026-07-18"), selectedFarmID: nil, farms: [])
+        let snapshot = FarmWidgetSnapshot(version: FarmWidgetSnapshot.currentVersion, generatedAt: date("2026-07-18"), selectedFarmID: nil, farms: [])
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         XCTAssertEqual(try decoder.decode(FarmWidgetSnapshot.self, from: encoder.encode(snapshot)), snapshot)

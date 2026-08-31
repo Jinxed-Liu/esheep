@@ -796,6 +796,16 @@ struct RemoteDomainApplyService {
                 try ProductionBatchLifecycle.reconcile(batchID: record.batchID, farmID: envelope.farmID, context: context, changedAt: envelope.modifiedAt)
             }
             return .applied(rebuildHistoryFrom: record.leftAt)
+        case .restoreBatchMembership:
+            guard let record = try fetch(BatchMembershipRecord.self, id: envelope.entityID, context: context) else { throw RemoteDomainApplyError.missingReference("batchMembership") }
+            guard let leftAt = record.leftAt else { return .duplicate }
+            record.leftAt = nil
+            record.leaveReason = nil
+            record.updatedAt = envelope.modifiedAt
+            if replayIndex == nil {
+                try ProductionBatchLifecycle.reconcile(batchID: record.batchID, farmID: envelope.farmID, context: context, changedAt: envelope.modifiedAt)
+            }
+            return .applied(rebuildHistoryFrom: leftAt)
         case .addIngredient:
             if try exists(FeedIngredientRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             insertIndexed(FeedIngredientRecord(id: envelope.entityID, farmID: envelope.farmID, name: try string("name", payload), unit: try string("unit", payload), dryMatterText: optionalString("dryMatterText", payload)), context: context)
@@ -1421,7 +1431,7 @@ struct RemoteDomainApplyService {
         case .transferSheep, .correctTransfer: .transfer
         case .removeSheep, .correctRemoval, .restoreSheep: .removal
         case .createBatch: .productionBatch
-        case .assignBatchMembership, .leaveBatchMembership: .batchMembership
+        case .assignBatchMembership, .leaveBatchMembership, .restoreBatchMembership: .batchMembership
         case .addIngredient: .feedIngredient
         case .createRecipe: .feedRecipe
         case .addRecipeComponent: .feedRecipeComponent

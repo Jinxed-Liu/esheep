@@ -538,6 +538,27 @@ struct RootView: View {
             return farm.ownerAccountID == account.effectiveAccountID
         }
     }
+
+    /// System surfaces follow the active Supabase authority. Local-only
+    /// recovery farms remain available inside the app until explicitly
+    /// audited, but they must not leak back into Spotlight, widgets or intents.
+    private var cloudSystemFarms: [FarmRecord] {
+        let activeSupabaseFarmIDs = Set(remoteBindings.compactMap { binding -> UUID? in
+            binding.provider == .supabase && binding.state == .active
+                ? binding.farmID
+                : nil
+        })
+        return visibleFarms.filter { activeSupabaseFarmIDs.contains($0.id) }
+    }
+
+    private var cloudSystemSelectedFarmID: UUID? {
+        if let selectedFarmID = session.selectedFarmID,
+           cloudSystemFarms.contains(where: { $0.id == selectedFarmID }) {
+            return selectedFarmID
+        }
+        return cloudSystemFarms.first?.id
+    }
+
     private var authenticationTaskID: String {
         "\(scenePhase)|\(session.activeAccountProfileID?.uuidString ?? "none")|\(session.authenticationRevision)"
     }
@@ -569,8 +590,8 @@ struct RootView: View {
     }
 
     private var systemSnapshotTaskID: String {
-        let farmPart = visibleFarms.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
-        return "\(scenePhase)|\(farmPart)|\(session.selectedFarmID?.uuidString ?? "none")|\(lifecycleCoordinator.systemSnapshotRevision)"
+        let farmPart = cloudSystemFarms.map { "\($0.id.uuidString):\($0.updatedAt.timeIntervalSince1970)" }.joined(separator: ",")
+        return "\(scenePhase)|\(farmPart)|\(cloudSystemSelectedFarmID?.uuidString ?? "none")|\(lifecycleCoordinator.systemSnapshotRevision)"
     }
 
     private var operationalAlertDigestTaskID: String {
@@ -624,37 +645,57 @@ struct RootView: View {
         lease: AppLifecycleCoordinator.Lease
     ) async {
         guard scenePhase == .active,
-              !visibleFarms.isEmpty,
               lifecycleCoordinator.isCurrent(lease) else { return }
+        let systemFarms = cloudSystemFarms
+        let selectedFarmID = cloudSystemSelectedFarmID
         let interval = PerformanceTrace.begin(
             .systemSnapshot,
-            count: visibleFarms.count
+            count: systemFarms.count
         )
         defer { PerformanceTrace.end(interval) }
         do {
             // Widget data is useful but must not compete with the first frame.
             try await Task.sleep(for: .milliseconds(1_500))
-            let snapshot = try await FarmSystemSnapshotActor(
-                container: modelContext.container
-            ).makeSnapshot(
-                farmIDs: visibleFarms.map(\.id),
-                selectedFarmID: session.selectedFarmID
-            )
+            let snapshot: FarmWidgetSnapshot
+            if systemFarms.isEmpty {
+                snapshot = FarmWidgetSnapshot(
+                    version: FarmWidgetSnapshot.currentVersion,
+                    generatedAt: .now,
+                    selectedFarmID: nil,
+                    farms: []
+                )
+            } else {
+                snapshot = try await FarmSystemSnapshotActor(
+                    container: modelContext.container
+                ).makeSnapshot(
+                    farmIDs: systemFarms.map(\.id),
+                    selectedFarmID: selectedFarmID
+                )
+            }
             try Task.checkCancellation()
             guard lifecycleCoordinator.isCurrent(lease) else { return }
-            let previousDomains = await FarmSystemIntegrationService.publish(
-                snapshot,
-                refreshSearchIndex: false
-            )
+            await FarmSystemIntegrationService.publish(snapshot)
 
             // Spotlight indexing is the heaviest secondary launch job. Run it
             // only after the workspace has had time to become interactive.
             try await Task.sleep(for: .seconds(8))
             guard lifecycleCoordinator.isCurrent(lease) else { return }
-            await FarmSystemIntegrationService.refreshSearchIndex(
-                snapshot,
-                replacingDomains: previousDomains
-            )
+            let spotlightSnapshot: FarmSpotlightSnapshot?
+            do {
+                spotlightSnapshot = try await FarmSpotlightSnapshotActor(
+                    container: modelContext.container
+                ).makeSnapshot(farmID: selectedFarmID)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Never keep a previous farm's local index when current event
+                // history cannot be assembled safely.
+                await FarmSystemIntegrationService.refreshSearchIndex(nil)
+                throw error
+            }
+            try Task.checkCancellation()
+            guard lifecycleCoordinator.isCurrent(lease) else { return }
+            await FarmSystemIntegrationService.refreshSearchIndex(spotlightSnapshot)
         } catch is CancellationError {
             return
         } catch {

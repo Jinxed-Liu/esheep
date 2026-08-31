@@ -5,6 +5,7 @@ import SwiftData
 /// filters, grouping and metrics, but all data access and arithmetic stay local.
 struct InsightFarmQueryEngine {
     static let toolName = "query_farm_data"
+    static let persistedEvidenceToolName = "query_farm_data_evidence"
 
     struct GroundedOutput: Equatable {
         let queryID: String
@@ -14,6 +15,12 @@ struct InsightFarmQueryEngine {
         let rowCount: Int
         let totalMatchingCount: Int
         let isComplete: Bool
+        let contractVersion: String
+        let canonicalArgumentsJSON: String
+        let timeZoneIdentifier: String
+        let stateBasis: [String]
+        let unknownStateCount: Int
+        let projectionMismatchCount: Int
 
         init?(toolOutput: String) {
             guard let data = toolOutput.data(using: .utf8),
@@ -25,7 +32,18 @@ struct InsightFarmQueryEngine {
                   let markdown = object["answer_markdown"] as? String,
                   let rowCount = object["row_count"] as? Int,
                   let totalMatchingCount = object["total_matching_count"] as? Int,
-                  let isComplete = object["is_complete"] as? Bool else {
+                  let isComplete = object["is_complete"] as? Bool,
+                  let contractVersion = object["contract_version"] as? String,
+                  contractVersion == FarmFactContract.version,
+                  let canonicalArguments = object["canonical_arguments"] as? [String: Any],
+                  let canonicalData = try? JSONSerialization.data(
+                    withJSONObject: canonicalArguments,
+                    options: [.sortedKeys]
+                  ),
+                  let timeZoneIdentifier = object["time_zone"] as? String,
+                  let stateBasis = object["state_basis"] as? [String],
+                  let unknownStateCount = object["unknown_state_count"] as? Int,
+                  let projectionMismatchCount = object["projection_mismatch_count"] as? Int else {
                 return nil
             }
             self.queryID = queryID
@@ -35,7 +53,23 @@ struct InsightFarmQueryEngine {
             self.rowCount = rowCount
             self.totalMatchingCount = totalMatchingCount
             self.isComplete = isComplete
+            self.contractVersion = contractVersion
+            self.canonicalArgumentsJSON = String(decoding: canonicalData, as: UTF8.self)
+            self.timeZoneIdentifier = timeZoneIdentifier
+            self.stateBasis = stateBasis
+            self.unknownStateCount = unknownStateCount
+            self.projectionMismatchCount = projectionMismatchCount
         }
+    }
+
+    static func canonicalArguments(in toolOutput: String) -> [String: Any]? {
+        guard let data = toolOutput.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["evidence_kind"] as? String == "farm_query",
+              object["contract_version"] as? String == FarmFactContract.version else {
+            return nil
+        }
+        return object["canonical_arguments"] as? [String: Any]
     }
 
     private struct Request {
@@ -58,6 +92,10 @@ struct InsightFarmQueryEngine {
         let maximumValue: Decimal?
         let relations: [RelationRequest]
         let limit: Int
+        let timeZone: TimeZone
+        let timeZoneIdentifier: String
+        let stateCutoff: FarmFactContract.StateCutoff
+        let canonicalArguments: [String: Any]
     }
 
     private struct RelationRequest {
@@ -79,13 +117,33 @@ struct InsightFarmQueryEngine {
         let number: Decimal?
     }
 
+    private struct FactAudit {
+        var stateBasis = Set<String>()
+        var unknownStateCount = 0
+        var projectionMismatchCount = 0
+
+        static let empty = FactAudit()
+    }
+
+    private struct RowResult {
+        let rows: [Row]
+        let audit: FactAudit
+    }
+
     func execute(
         arguments: [String: Any],
         farmID: UUID,
         context: ModelContext,
         now: Date = .now
     ) throws -> String {
-        let request = try parse(FarmDataQuerySkill.normalize(arguments: arguments), now: now)
+        let normalizedArguments = try FarmDataQuerySkill.normalize(arguments: arguments)
+        let farmTimeZone = try farmTimeZone(farmID: farmID, context: context)
+        let request = try parse(
+            normalizedArguments,
+            now: now,
+            timeZone: farmTimeZone.value,
+            timeZoneIdentifier: farmTimeZone.identifier
+        )
         if request.queryKind == FarmDataQuerySkill.QueryKind.bornLambLifecycle.rawValue {
             return try bornLambLifecycleOutput(
                 request,
@@ -100,6 +158,7 @@ struct InsightFarmQueryEngine {
         let rows: [Row]
         let columns: [(key: String, title: String)]
         let subjectName: String
+        var audit = FactAudit.empty
 
         switch request.subject {
         case "sheep":
@@ -108,7 +167,9 @@ struct InsightFarmQueryEngine {
                 ("ear_tag", "耳号"), ("sex", "性别"), ("breed", "品种"),
                 ("status", "状态"), ("pen", "圈舍"), ("birth_at", "出生日期"),
             ]
-            rows = try sheepRows(request, farmID: farmID, context: context)
+            let result = try sheepRows(request, farmID: farmID, context: context)
+            rows = result.rows
+            audit = result.audit
         case "weights":
             subjectName = "称重"
             columns = [
@@ -168,10 +229,17 @@ struct InsightFarmQueryEngine {
         let object: [String: Any] = [
             "evidence_kind": "farm_query",
             "query_id": queryID,
+            "contract_version": FarmFactContract.version,
             "query_kind": request.queryKind,
             "farm_id": farmID.uuidString.lowercased(),
             "executed_at": Self.iso8601(now),
             "as_of": Self.iso8601(request.asOf),
+            "time_zone": request.timeZoneIdentifier,
+            "state_cutoff_basis": request.stateCutoff.evidenceName,
+            "state_basis": audit.stateBasis.sorted(),
+            "unknown_state_count": audit.unknownStateCount,
+            "projection_mismatch_count": audit.projectionMismatchCount,
+            "data_origin": "device_swiftdata",
             "subject": request.subject,
             "source_description": sourceDescription(request),
             "filters_applied": filterDescriptions(request),
@@ -180,6 +248,8 @@ struct InsightFarmQueryEngine {
             "row_count": renderedRows.count,
             "total_matching_count": totalCount,
             "is_complete": complete,
+            "completeness": complete ? "complete" : "limited",
+            "canonical_arguments": request.canonicalArguments,
             "answer_markdown": markdown,
         ]
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
@@ -211,11 +281,15 @@ struct InsightFarmQueryEngine {
         let removals = try context.fetch(FetchDescriptor<RemovalRecord>()).filter {
             $0.farmID == farmID && $0.deletedAt == nil && $0.occurredAt <= request.asOf
         }
+        let transfers = try context.fetch(FetchDescriptor<TransferRecord>()).filter {
+            $0.farmID == farmID && $0.deletedAt == nil && $0.occurredAt <= request.asOf
+        }
         let removalsBySheepID = Dictionary(grouping: removals, by: \.sheepID)
+        let transfersBySheepID = Dictionary(grouping: transfers, by: \.sheepID)
 
         var bornByMonth: [String: Int] = [:]
         for record in lambingRecords {
-            bornByMonth[Self.month(record.occurredAt), default: 0] += record.lambCount
+            bornByMonth[Self.month(record.occurredAt, timeZone: request.timeZone), default: 0] += record.lambCount
         }
 
         var profilesByMonth: [String: Int] = [:]
@@ -224,46 +298,70 @@ struct InsightFarmQueryEngine {
         var soldByMonth: [String: Int] = [:]
         var culledByMonth: [String: Int] = [:]
         var transferredByMonth: [String: Int] = [:]
+        var unknownRemovalByMonth: [String: Int] = [:]
+        var audit = FactAudit.empty
         for item in sheep {
             guard let birthAt = item.birthAt else { continue }
-            let month = Self.month(birthAt)
-            profilesByMonth[month, default: 0] += 1
-            guard let removal = FarmHistoryTimeline.removal(
-                for: item.id,
+            let fact = FarmSheepStateResolver.current(
+                item,
                 at: request.asOf,
+                transfers: transfersBySheepID[item.id] ?? [],
                 removals: removalsBySheepID[item.id] ?? []
-            ) else {
+            )
+            audit.stateBasis.insert(fact.basis.rawValue)
+            guard fact.isIncluded else { continue }
+            if !fact.presenceProjectionMatchesStoredState ||
+                !fact.statusProjectionMatchesStoredState {
+                audit.projectionMismatchCount += 1
+            }
+            let month = Self.month(birthAt, timeZone: request.timeZone)
+            profilesByMonth[month, default: 0] += 1
+            switch fact.status {
+            case .active:
                 activeByMonth[month, default: 0] += 1
-                continue
+            case .deceased:
+                deceasedByMonth[month, default: 0] += 1
+            case .removed:
+                switch fact.removalKind {
+                case .deceased: deceasedByMonth[month, default: 0] += 1
+                case .sold: soldByMonth[month, default: 0] += 1
+                case .culled: culledByMonth[month, default: 0] += 1
+                case .transferredOut: transferredByMonth[month, default: 0] += 1
+                case nil: unknownRemovalByMonth[month, default: 0] += 1
+                }
+            case nil:
+                audit.unknownStateCount += 1
             }
-            switch removal.kind {
-            case .deceased: deceasedByMonth[month, default: 0] += 1
-            case .sold: soldByMonth[month, default: 0] += 1
-            case .culled: culledByMonth[month, default: 0] += 1
-            case .transferredOut: transferredByMonth[month, default: 0] += 1
-            }
+        }
+
+        guard audit.projectionMismatchCount == 0 else {
+            throw InsightToolError.farmFactsUnavailable(
+                "有 \(audit.projectionMismatchCount) 只羊的当前档案与事件流水不一致，已停止计算生命周期数量。"
+            )
         }
 
         let months = Set(monthBuckets(request))
             .union(bornByMonth.keys)
             .union(profilesByMonth.keys)
             .sorted()
-        let rangeStart = request.dateFrom.map(Self.day) ?? "不限"
-        let rangeEnd = request.dateTo.map(Self.day) ?? Self.day(request.asOf)
+        let rangeStart = request.dateFrom.map { Self.day($0, timeZone: request.timeZone) } ?? "不限"
+        let rangeEnd = request.dateTo.map { Self.day($0, timeZone: request.timeZone) }
+            ?? Self.day(request.asOf, timeZone: request.timeZone)
         var lines = [
             "查询结果：出生羔羊及当前生命周期状态",
             "",
             "- 出生数来源：当前设备 SwiftData · 产羔记录 ReproductionRecord.lambCount",
-            "- 状态数来源：当前设备 SwiftData · 羊只档案 SheepRecord.birthAt + RemovalRecord",
+            "- 状态数来源：当前设备 SwiftData · \(FarmFactContract.version) 当前状态规则",
+            "- 牧场时区：\(request.timeZoneIdentifier)",
             "- 日期范围：\(rangeStart) 至 \(rangeEnd)",
             "- 状态截止：\(Self.iso8601(request.asOf))",
             "- 完整性：完整结果",
             "",
-            "| 出生月份 | 产羔记录出生数 | 已建档羔羊 | 现在在群 | 死亡 | 出售 | 淘汰 | 转出 |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|",
+            "| 出生月份 | 产羔记录出生数 | 已建档羔羊 | 现在在群 | 死亡 | 出售 | 淘汰 | 转出 | 离群类型未明 |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
         lines += months.map { month in
-            "| \(month) | \(bornByMonth[month, default: 0]) | \(profilesByMonth[month, default: 0]) | \(activeByMonth[month, default: 0]) | \(deceasedByMonth[month, default: 0]) | \(soldByMonth[month, default: 0]) | \(culledByMonth[month, default: 0]) | \(transferredByMonth[month, default: 0]) |"
+            "| \(month) | \(bornByMonth[month, default: 0]) | \(profilesByMonth[month, default: 0]) | \(activeByMonth[month, default: 0]) | \(deceasedByMonth[month, default: 0]) | \(soldByMonth[month, default: 0]) | \(culledByMonth[month, default: 0]) | \(transferredByMonth[month, default: 0]) | \(unknownRemovalByMonth[month, default: 0]) |"
         }
         lines += [
             "",
@@ -276,18 +374,27 @@ struct InsightFarmQueryEngine {
         let object: [String: Any] = [
             "evidence_kind": "farm_query",
             "query_id": queryID,
+            "contract_version": FarmFactContract.version,
             "query_kind": request.queryKind,
             "farm_id": farmID.uuidString.lowercased(),
             "executed_at": Self.iso8601(now),
             "as_of": Self.iso8601(request.asOf),
+            "time_zone": request.timeZoneIdentifier,
+            "state_cutoff_basis": request.stateCutoff.evidenceName,
+            "state_basis": audit.stateBasis.sorted(),
+            "unknown_state_count": audit.unknownStateCount,
+            "projection_mismatch_count": audit.projectionMismatchCount,
+            "data_origin": "device_swiftdata",
             "subject": "born_lamb_lifecycle",
-            "source_description": "产羔记录 lambCount + 羊只档案出生日期 + 离群记录",
+            "source_description": "产羔记录 lambCount + 羊只档案出生日期 + \(FarmFactContract.version) 当前状态规则",
             "filters_applied": filterDescriptions(request),
             "metric": "lifecycle_counts",
             "group_by": "month",
             "row_count": months.count,
             "total_matching_count": bornByMonth.values.reduce(0, +),
             "is_complete": true,
+            "completeness": "complete",
+            "canonical_arguments": request.canonicalArguments,
             "answer_markdown": markdown,
         ]
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
@@ -295,7 +402,12 @@ struct InsightFarmQueryEngine {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private func parse(_ values: [String: Any], now: Date) throws -> Request {
+    private func parse(
+        _ values: [String: Any],
+        now: Date,
+        timeZone: TimeZone,
+        timeZoneIdentifier: String
+    ) throws -> Request {
         func string(_ key: String) throws -> String {
             guard let value = values[key] as? String, value.count <= 1_000 else {
                 throw InsightToolError.invalidArguments(key)
@@ -344,7 +456,11 @@ struct InsightFarmQueryEngine {
         if let dateFrom, let dateTo, dateFrom > dateTo {
             throw InsightToolError.invalidArguments("date_from/date_to")
         }
-        let asOf = try optionalDate("as_of") ?? now
+        let asOfText = try string("as_of")
+        let hasExplicitAsOf = !asOfText.isEmpty
+        let asOf = hasExplicitAsOf
+            ? try Self.parseDate(asOfText, field: "as_of")
+            : now
         guard asOf <= now.addingTimeInterval(300) else {
             throw InsightToolError.invalidArguments("as_of")
         }
@@ -441,11 +557,15 @@ struct InsightFarmQueryEngine {
             minimumValue: minimumValue,
             maximumValue: maximumValue,
             relations: relations,
-            limit: limit
+            limit: limit,
+            timeZone: timeZone,
+            timeZoneIdentifier: timeZoneIdentifier,
+            stateCutoff: hasExplicitAsOf ? .historical(asOf) : .current(asOf),
+            canonicalArguments: values
         )
     }
 
-    private func sheepRows(_ request: Request, farmID: UUID, context: ModelContext) throws -> [Row] {
+    private func sheepRows(_ request: Request, farmID: UUID, context: ModelContext) throws -> RowResult {
         let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter {
             $0.farmID == farmID && $0.deletedAt == nil && $0.enteredAt <= request.asOf
         }
@@ -482,20 +602,52 @@ struct InsightFarmQueryEngine {
                 healthBySheepID[sheepID, default: []].append(record)
             }
         }
-        return sheep.compactMap { item in
+        var audit = FactAudit.empty
+        var rows: [Row] = []
+        rows.reserveCapacity(sheep.count)
+        let isCurrentCutoff: Bool
+        switch request.stateCutoff {
+        case .current: isCurrentCutoff = true
+        case .historical: isCurrentCutoff = false
+        }
+        let requiresExactStatusProjection = request.queryKind != FarmDataQuerySkill.QueryKind.currentHerd.rawValue
+            || request.groupBy == "status"
+        let requiresExactPenProjection = !request.penName.isEmpty
+            || request.groupBy == "pen"
+            || request.metric == "records"
+
+        for item in sheep {
             let itemTransfers = transfersBySheepID[item.id] ?? []
             let itemRemovals = removalsBySheepID[item.id] ?? []
-            let removal = FarmHistoryTimeline.removal(for: item.id, at: request.asOf, removals: itemRemovals)
-            let status = removal?.kind.resultingStatus ?? .active
-            let penID = status == .active
-                ? FarmHistoryTimeline.pen(for: item, at: request.asOf, transfers: itemTransfers)
-                : nil
-            let pen = penID.flatMap { penNames[$0] } ?? (status == .active ? "未分圈" : "已离群")
+            let fact = FarmSheepStateResolver.resolve(
+                item,
+                cutoff: request.stateCutoff,
+                transfers: itemTransfers,
+                removals: itemRemovals
+            )
+            audit.stateBasis.insert(fact.basis.rawValue)
+            guard fact.isIncluded else { continue }
+            if !fact.isKnown { audit.unknownStateCount += 1 }
+            if isCurrentCutoff {
+                let hasMismatch = !fact.presenceProjectionMatchesStoredState
+                    || (requiresExactStatusProjection && !fact.statusProjectionMatchesStoredState)
+                    || (requiresExactPenProjection && !fact.penProjectionMatchesStoredState)
+                if hasMismatch { audit.projectionMismatchCount += 1 }
+            }
+
+            let status = fact.status
+            let pen: String
+            if let status {
+                pen = fact.penID.flatMap { penNames[$0] }
+                    ?? (status == .active ? "未分圈" : "已离群")
+            } else {
+                pen = "状态无法判断"
+            }
             guard matches(item.earTag, request.earTag),
                   matches(item.breed, request.breed),
                   matches(pen, request.penName),
                   request.sex.isEmpty || item.sex.rawValue == request.sex,
-                  request.status.isEmpty || status.rawValue == request.status,
+                  request.status.isEmpty || status?.rawValue == request.status,
                   sheepDateMatches(item, request: request),
                   relationsMatch(
                       sheepID: item.id,
@@ -506,23 +658,36 @@ struct InsightFarmQueryEngine {
                       health: healthBySheepID[item.id] ?? [],
                       transfers: itemTransfers,
                       removals: itemRemovals
-                  ) else { return nil }
+                  ) else { continue }
             let values = [
                 "ear_tag": item.earTag,
                 "sex": item.sex.displayName,
                 "breed": item.breed.isEmpty ? "未填写" : item.breed,
-                "status": status.displayName,
+                "status": status?.displayName ?? "无法判断",
                 "pen": pen,
-                "birth_at": item.birthAt.map(Self.day) ?? "未填写",
-                "entered_at": Self.day(item.enteredAt),
+                "birth_at": item.birthAt.map { Self.day($0, timeZone: request.timeZone) } ?? "未填写",
+                "entered_at": Self.day(item.enteredAt, timeZone: request.timeZone),
             ]
-            return Row(
+            rows.append(Row(
                 values: values,
                 group: groupValue(request.groupBy, dateField: request.dateField, values: values),
                 number: nil
+            ))
+        }
+        if audit.projectionMismatchCount > 0 {
+            throw InsightToolError.farmFactsUnavailable(
+                "有 \(audit.projectionMismatchCount) 只羊的物化档案与统一事实规则不一致，已停止返回可能与首页不同的结果。"
             )
         }
-        .sorted { ($0.values["ear_tag"] ?? "") < ($1.values["ear_tag"] ?? "") }
+        if !isCurrentCutoff,
+           audit.unknownStateCount > 0,
+           (!request.status.isEmpty || !request.penName.isEmpty || ["status", "pen"].contains(request.groupBy)) {
+            throw InsightToolError.farmFactsUnavailable(
+                "有 \(audit.unknownStateCount) 只羊缺少可证明该历史时点状态的日期或事件，不能给出完整历史状态统计。"
+            )
+        }
+        rows.sort { ($0.values["ear_tag"] ?? "") < ($1.values["ear_tag"] ?? "") }
+        return RowResult(rows: rows, audit: audit)
     }
 
     private func weightRows(_ request: Request, farmID: UUID, context: ModelContext) throws -> [Row] {
@@ -545,7 +710,7 @@ struct InsightFarmQueryEngine {
                 .flatMap { penNames[$0] } ?? "未分圈"
             guard sheepMatches(item, pen: pen, request: request), numberMatches(kilograms, request) else { return nil }
             let values = [
-                "occurred_at": Self.day(record.occurredAt), "ear_tag": item.earTag,
+                "occurred_at": Self.day(record.occurredAt, timeZone: request.timeZone), "ear_tag": item.earTag,
                 "kilograms": kilograms.stableText, "pen": pen,
                 "breed": item.breed, "sex": item.sex.displayName,
             ]
@@ -575,7 +740,7 @@ struct InsightFarmQueryEngine {
             let numeric = Decimal(record.lambCount)
             guard sheepMatches(ewe, pen: pen, request: request), numberMatches(numeric, request) else { return nil }
             let values = [
-                "occurred_at": Self.day(record.occurredAt), "ear_tag": ewe.earTag,
+                "occurred_at": Self.day(record.occurredAt, timeZone: request.timeZone), "ear_tag": ewe.earTag,
                 "kind": record.kind.displayName, "lamb_count": String(record.lambCount),
                 "parity": record.parity.map(String.init) ?? "未填写",
                 "result": record.result.isEmpty ? "未填写" : record.result,
@@ -600,14 +765,17 @@ struct InsightFarmQueryEngine {
             let pen = record.penID.flatMap { penNames[$0] } ?? "未关联圈舍"
             if !request.earTag.isEmpty, item.map({ matches($0.earTag, request.earTag) }) != true { return nil }
             if !request.breed.isEmpty, item.map({ matches($0.breed, request.breed) }) != true { return nil }
+            if !request.sex.isEmpty, item?.sex.rawValue != request.sex { return nil }
             guard matches(pen, request.penName) else { return nil }
             let numeric = record.quantityText.flatMap(Decimal.stable)
             guard numberMatches(numeric, request) else { return nil }
             let quantity = [record.quantityText, record.unit].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
             let values = [
-                "occurred_at": Self.day(record.occurredAt), "ear_tag": item?.earTag ?? "未关联羊只",
+                "occurred_at": Self.day(record.occurredAt, timeZone: request.timeZone), "ear_tag": item?.earTag ?? "未关联羊只",
                 "pen": pen, "kind": record.kind.displayName, "item": record.itemNameSnapshot,
                 "quantity": quantity.isEmpty ? "未填写" : quantity,
+                "breed": item?.breed.isEmpty == false ? item?.breed ?? "" : "未填写",
+                "sex": item?.sex.displayName ?? "未关联羊只",
             ]
             return Row(values: values, group: groupValue(request.groupBy, dateField: request.dateField, values: values), number: numeric)
         }
@@ -627,7 +795,7 @@ struct InsightFarmQueryEngine {
             guard matches(pen, request.penName), matches(line.ingredientNameSnapshot, request.itemName),
                   numberMatches(line.kilograms, request) else { return nil }
             let values = [
-                "occurred_at": Self.day(feed.occurredAt), "pen": pen,
+                "occurred_at": Self.day(feed.occurredAt, timeZone: request.timeZone), "pen": pen,
                 "ingredient": line.ingredientNameSnapshot, "kilograms": line.kilograms.stableText,
                 "meal": feed.mealName.isEmpty ? "未填写" : feed.mealName,
                 "item": line.ingredientNameSnapshot,
@@ -659,7 +827,7 @@ struct InsightFarmQueryEngine {
                 "item": lot.catalogName, "batch": lot.batchNumber.isEmpty ? "未填写" : lot.batchNumber,
                 "kind": HealthRecordKind(rawValue: lot.kindRawValue)?.displayName ?? lot.kindRawValue,
                 "quantity": quantity.stableText, "unit": lot.unit.isEmpty ? "未填写" : lot.unit,
-                "expires_at": lot.expiresAt.map(Self.day) ?? "未填写",
+                "expires_at": lot.expiresAt.map { Self.day($0, timeZone: request.timeZone) } ?? "未填写",
             ]
             return Row(values: values, group: groupValue(request.groupBy, dateField: request.dateField, values: values), number: quantity)
         }
@@ -681,6 +849,8 @@ struct InsightFarmQueryEngine {
             "查询结果：\(subjectName)",
             "",
             "- 数据来源：\(sourceDescription(request))",
+            "- 事实契约：\(FarmFactContract.version)",
+            "- 牧场时区：\(request.timeZoneIdentifier)",
             "- 查询条件：\(scope)",
             "- 数据截止：\(Self.iso8601(request.asOf))",
             "- 完整性：\(completeness)",
@@ -727,8 +897,12 @@ struct InsightFarmQueryEngine {
     private func filterDescriptions(_ request: Request) -> [String] {
         var values: [String] = []
         if request.dateField != "none" { values.append("日期字段=\(dateFieldTitle(request.dateField))") }
-        if let dateFrom = request.dateFrom { values.append("日期≥\(Self.day(dateFrom))") }
-        if let dateTo = request.dateTo { values.append("日期≤\(Self.day(dateTo))") }
+        if let dateFrom = request.dateFrom {
+            values.append("日期≥\(Self.day(dateFrom, timeZone: request.timeZone))")
+        }
+        if let dateTo = request.dateTo {
+            values.append("日期≤\(Self.day(dateTo, timeZone: request.timeZone))")
+        }
         if !request.earTag.isEmpty { values.append("耳号包含“\(request.earTag)”") }
         if !request.sex.isEmpty { values.append("性别=\(request.sex)") }
         if !request.status.isEmpty { values.append("状态=\(request.status)") }
@@ -742,8 +916,12 @@ struct InsightFarmQueryEngine {
             var details = [relation.subject]
             if !relation.kind.isEmpty { details.append("类型=\(relation.kind)") }
             if !relation.itemName.isEmpty { details.append("项目包含“\(relation.itemName)”") }
-            if let dateFrom = relation.dateFrom { details.append("从\(Self.day(dateFrom))") }
-            if let dateTo = relation.dateTo { details.append("到\(Self.day(dateTo))") }
+            if let dateFrom = relation.dateFrom {
+                details.append("从\(Self.day(dateFrom, timeZone: request.timeZone))")
+            }
+            if let dateTo = relation.dateTo {
+                details.append("到\(Self.day(dateTo, timeZone: request.timeZone))")
+            }
             if relation.minimumCount > 0 { details.append("至少\(relation.minimumCount)条") }
             if let maximumCount = relation.maximumCount { details.append("至多\(maximumCount)条") }
             if let minimumValue = relation.minimumValue { details.append("数值≥\(minimumValue.stableText)") }
@@ -815,6 +993,27 @@ struct InsightFarmQueryEngine {
             && (relation.maximumValue.map { value <= $0 } ?? true)
     }
 
+    private func farmTimeZone(
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> (value: TimeZone, identifier: String) {
+        let farm = try context.fetch(FetchDescriptor<FarmRecord>()).first {
+            $0.id == farmID && $0.deletedAt == nil
+        }
+        guard let farm else {
+            throw InsightToolError.farmFactsUnavailable(
+                "当前牧场记录不存在，无法确定数据边界和时区。"
+            )
+        }
+        let identifier = farm.timeZoneIdentifier
+        guard let timeZone = TimeZone(identifier: identifier) else {
+            throw InsightToolError.farmFactsUnavailable(
+                "牧场时区 \(identifier) 无效，不能可靠划分日期和月份。"
+            )
+        }
+        return (timeZone, identifier)
+    }
+
     private func currentSheep(farmID: UUID, context: ModelContext) throws -> [SheepRecord] {
         try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
     }
@@ -881,13 +1080,13 @@ struct InsightFarmQueryEngine {
         let effectiveEnd = min(request.dateTo ?? request.asOf, request.asOf)
         guard dateFrom <= effectiveEnd else { return [] }
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
+        calendar.timeZone = request.timeZone
         guard var cursor = calendar.date(from: calendar.dateComponents([.year, .month], from: dateFrom)) else {
             return []
         }
         var values: [String] = []
         while cursor <= effectiveEnd, values.count < 240 {
-            values.append(String(Self.day(cursor).prefix(7)))
+            values.append(Self.month(cursor, timeZone: request.timeZone))
             guard let next = calendar.date(byAdding: .month, value: 1, to: cursor) else { break }
             cursor = next
         }
@@ -898,9 +1097,9 @@ struct InsightFarmQueryEngine {
         switch request.subject {
         case "sheep":
             switch request.dateField {
-            case "birth_at": return "当前设备 SwiftData · 羊只档案 SheepRecord.birthAt"
-            case "entered_at": return "当前设备 SwiftData · 羊只档案 SheepRecord.enteredAt"
-            default: return "当前设备 SwiftData · 羊只档案 SheepRecord"
+            case "birth_at": return "当前设备 SwiftData · SheepRecord.birthAt + \(FarmFactContract.version) 羊只范围"
+            case "entered_at": return "当前设备 SwiftData · SheepRecord.enteredAt + \(FarmFactContract.version) 羊只范围"
+            default: return "当前设备 SwiftData · 羊只档案 + \(FarmFactContract.version) 羊只状态规则"
             }
         case "weights": return "当前设备 SwiftData · 称重记录 WeightRecord.occurredAt/kilograms"
         case "reproduction": return "当前设备 SwiftData · 繁殖记录 ReproductionRecord.occurredAt/lambCount"

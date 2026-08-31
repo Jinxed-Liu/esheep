@@ -791,7 +791,6 @@ struct CareLambingEntryView: View {
     @State private var lambCountText = "1"
     @State private var note = ""
     @State private var candidates: [PedigreeSireCandidate] = []
-    @State private var candidateWasPreselected = false
     @State private var errorMessage: String?
 
     init(account: AccountProfile, farm: FarmRecord) {
@@ -831,16 +830,23 @@ struct CareLambingEntryView: View {
     private var ramCandidates: [SheepEarTagSearchCandidate] { breedingRams.map { .init(sheep: $0) } }
     private var openBreedings: [ReproductionRecord] { guard let eweID else { return [] }; return reproduction.filter { record in record.farmID == farm.id && record.eweID == eweID && record.kind == .breeding && record.deletedAt == nil && record.occurredAt <= occurredAt && !reproduction.contains { closure in closure.farmID == farm.id && closure.relatedBreedingRecordID == record.id && closure.deletedAt == nil && (closure.kind == .lambing || closure.kind == .abortion) } } }
     private var relatedBreeding: ReproductionRecord? { relatedBreedingID.flatMap { id in openBreedings.first { $0.id == id } } }
+    private var sireCandidateBreedSuggestion: String? {
+        guard relatedBreedingID == nil, sireID == nil, semenID == nil else { return nil }
+        return LambingEntrySemantics.soleSireCandidateBreedForSuggestion(
+            candidateBreeds: candidates.map(\.breed)
+        )
+    }
     private var suggestedLambBreed: String {
-        LambingEntrySemantics.suggestedLambBreed(
-            paternalBreed: lambingPaternalBreed(
-                relatedBreeding: relatedBreeding,
-                selectedSireID: sireID,
-                selectedSemenID: semenID,
-                sheep: sheep,
-                semen: semen,
-                donors: semenDonors
-            ),
+        let confirmedPaternalBreed = lambingPaternalBreed(
+            relatedBreeding: relatedBreeding,
+            selectedSireID: sireID,
+            selectedSemenID: semenID,
+            sheep: sheep,
+            semen: semen,
+            donors: semenDonors
+        )
+        return LambingEntrySemantics.suggestedLambBreed(
+            paternalBreed: confirmedPaternalBreed ?? sireCandidateBreedSuggestion,
             maternalBreed: eweID.flatMap { id in sheep.first(where: { $0.id == id })?.breed }
         )
     }
@@ -905,7 +911,11 @@ struct CareLambingEntryView: View {
                                 HStack { VStack(alignment: .leading) { Text(candidate.earTag); Text("排序分 \(candidate.rankingScore, format: .number.precision(.fractionLength(2)))").font(.caption).foregroundStyle(.secondary) }; Spacer(); if sireID == candidate.ramID { Image(systemName: "checkmark.circle.fill") } }
                             }
                         }
-                        if candidates.count == 1 && candidateWasPreselected { Text("唯一候选已在本表单中预选；只有点击保存才会写入。").font(.caption).foregroundStyle(.orange) }
+                        if sireCandidateBreedSuggestion != nil {
+                            Text("唯一候选的品种已用于羔羊品种建议；父本仍未确认。点击候选后，保存时才会写入系谱。")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
                     }
                 }
             }
@@ -985,8 +995,28 @@ struct CareLambingEntryView: View {
             )
         }
     }
-    private func resetAndRefreshCandidates() { candidateWasPreselected = false; sireID = nil; semenID = nil; refreshCandidates() }
-    private func refreshCandidates() { guard let eweID else { candidates = []; return }; do { candidates = try PedigreeAnalysis.sireCandidates(eweID: eweID, lambingAt: occurredAt, gestationDays: gestationDays, farmID: farm.id, context: modelContext); if candidates.count == 1 && sireID == nil && semenID == nil && relatedBreedingID == nil && !candidateWasPreselected { sireID = candidates[0].ramID; candidateWasPreselected = true } } catch { errorMessage = error.localizedDescription } }
+    private func resetAndRefreshCandidates() {
+        sireID = nil
+        semenID = nil
+        refreshCandidates()
+    }
+    private func refreshCandidates() {
+        guard let eweID else {
+            candidates = []
+            return
+        }
+        do {
+            candidates = try PedigreeAnalysis.sireCandidates(
+                eweID: eweID,
+                lambingAt: occurredAt,
+                gestationDays: gestationDays,
+                farmID: farm.id,
+                context: modelContext
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
     private func save() {
         guard let eweID else { errorMessage = "请先搜索并确认产羔母羊。"; return }
         let normalizedCount = lambCountText.trimmingCharacters(in: .whitespacesAndNewlines)

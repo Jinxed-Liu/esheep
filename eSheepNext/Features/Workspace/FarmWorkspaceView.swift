@@ -115,6 +115,13 @@ struct FarmWorkspaceView: View {
                     authenticationMethod: account.authenticationMethod
                 )
             }
+#if DEBUG
+            .onAppear {
+                guard InsightAcceptanceLaunchRequest.prompt != nil else { return }
+                session.selectedTab = .assistant
+                assistantFarmID = activeFarm.id
+            }
+#endif
             .onChange(of: activeFarm.id) { previousFarmID, currentFarmID in
                 guard previousFarmID != currentFarmID else { return }
                 assistantFarmID = nil

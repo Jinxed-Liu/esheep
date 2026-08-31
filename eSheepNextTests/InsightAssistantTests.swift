@@ -21,17 +21,767 @@ final class InsightAssistantTests: XCTestCase {
         XCTAssertEqual(normalized["metric"] as? String, "sum")
     }
 
-    func testBornLambQuestionRequiresBornLambSkillEvidence() {
+    func testGenericFarmCalculatorComposesDifferentMetricsFromTheSameFacts() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-generic-calculation-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let farm = insertFarm(farmID, into: context)
+        farm.name = "通用计算测试牧场"
+        let targetPen = PenRecord(farmID: farmID, name: "大棚十二舍")
+        let otherPen = PenRecord(farmID: farmID, name: "其他圈舍")
+        context.insert(targetPen)
+        context.insert(otherPen)
+
+        let firstAt = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-07-01T00:00:00+08:00")
+        )
+        let lastAt = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-07-11T00:00:00+08:00")
+        )
+        let asOf = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-07-20T00:00:00+08:00")
+        )
+        let firstSheep = SheepRecord(
+            farmID: farmID,
+            earTag: "7022",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: targetPen.id,
+            enteredAt: firstAt.addingTimeInterval(-86_400)
+        )
+        let secondSheep = SheepRecord(
+            farmID: farmID,
+            earTag: "7028",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: targetPen.id,
+            enteredAt: firstAt.addingTimeInterval(-86_400)
+        )
+        let excludedSheep = SheepRecord(
+            farmID: farmID,
+            earTag: "9999",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: otherPen.id,
+            enteredAt: firstAt.addingTimeInterval(-86_400)
+        )
+        for sheep in [firstSheep, secondSheep, excludedSheep] {
+            context.insert(sheep)
+        }
+        for (sheep, firstWeight, lastWeight) in [
+            (firstSheep, "10", "12"),
+            (secondSheep, "20", "23"),
+            (excludedSheep, "10", "110"),
+        ] {
+            context.insert(WeightRecord(
+                farmID: farmID,
+                sheepID: sheep.id,
+                kilogramsText: firstWeight,
+                occurredAt: firstAt
+            ))
+            context.insert(WeightRecord(
+                farmID: farmID,
+                sheepID: sheep.id,
+                kilogramsText: lastWeight,
+                occurredAt: lastAt
+            ))
+        }
+        try context.save()
+
+        var ratePlan = farmCalculationArguments(
+            penName: targetPen.name,
+            asOf: ISO8601DateFormatter().string(from: asOf)
+        )
+        ratePlan["window"] = "adjacent"
+        ratePlan["transform"] = "difference_per_day"
+        ratePlan["group_by"] = "interval_end_day"
+        ratePlan["reduce"] = "average"
+        ratePlan["selection"] = "latest"
+        let rateOutput = try InsightFarmCalculationEngine().execute(
+            arguments: ratePlan,
+            farmID: farmID,
+            context: context,
+            now: asOf
+        )
+        let rateObject = try calculationObject(rateOutput)
+        let rateGroups = try XCTUnwrap(rateObject["groups"] as? [[String: Any]])
+        let rateGroup = try XCTUnwrap(rateGroups.first)
+
+        XCTAssertEqual(rateObject["result_unit"] as? String, "kg/day")
+        XCTAssertEqual(rateObject["observation_count"] as? Int, 2)
+        XCTAssertEqual(rateObject["eligible_profile_count"] as? Int, 2)
+        XCTAssertEqual(rateGroup["key"] as? String, "2026-07-11")
+        XCTAssertEqual(rateGroup["sample_count"] as? Int, 2)
+        XCTAssertEqual(try XCTUnwrap(rateGroup["value"] as? Double), 0.25, accuracy: 0.000_001)
+
+        var changePlan = ratePlan
+        changePlan["window"] = "first_to_last"
+        changePlan["transform"] = "difference"
+        changePlan["group_by"] = "none"
+        changePlan["reduce"] = "average"
+        changePlan["selection"] = "all"
+        let changeOutput = try InsightFarmCalculationEngine().execute(
+            arguments: changePlan,
+            farmID: farmID,
+            context: context,
+            now: asOf
+        )
+        let changeObject = try calculationObject(changeOutput)
+        let changeGroups = try XCTUnwrap(changeObject["groups"] as? [[String: Any]])
+        let changeGroup = try XCTUnwrap(changeGroups.first)
+
+        XCTAssertEqual(changeObject["result_unit"] as? String, "kg")
+        XCTAssertEqual(changeObject["observation_count"] as? Int, 2)
+        XCTAssertEqual(try XCTUnwrap(changeGroup["value"] as? Double), 2.5, accuracy: 0.000_001)
+        XCTAssertEqual(changeObject["operator_pipeline"] as? [String], [
+            "filter", "sheep", "first_to_last", "difference", "focused", "none", "average", "all",
+        ])
+
+        let grounded = try XCTUnwrap(
+            InsightFarmCalculationEngine.GroundedOutput(toolOutput: rateOutput)
+        )
+        XCTAssertEqual(grounded.contractVersion, FarmFactContract.version)
+        XCTAssertEqual(grounded.timeZoneIdentifier, "Asia/Shanghai")
+        XCTAssertEqual(grounded.observationCount, 2)
+        XCTAssertTrue(grounded.isComplete)
+
+        var invalidPlan = ratePlan
+        invalidPlan["window"] = "none"
+        XCTAssertThrowsError(try InsightFarmCalculationEngine().execute(
+            arguments: invalidPlan,
+            farmID: farmID,
+            context: context,
+            now: asOf
+        ))
+    }
+
+    func testHistoricalPenCalculationUsesMeasurementMembershipWithoutPretendingItIsCurrentHerd() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-historical-pen-calculation-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        insertFarm(farmID, into: context)
+        let pen = PenRecord(farmID: farmID, name: "大棚十二舍")
+        let firstAt = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-06-01T00:00:00+08:00")
+        )
+        let lastAt = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-06-11T00:00:00+08:00")
+        )
+        let removedAt = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-06-20T00:00:00+08:00")
+        )
+        let asOf = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-07-01T00:00:00+08:00")
+        )
+        let sheep = SheepRecord(
+            farmID: farmID,
+            earTag: "HISTORICAL-PEN-001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: pen.id,
+            enteredAt: firstAt.addingTimeInterval(-86_400)
+        )
+        sheep.statusRawValue = SheepStatus.removed.rawValue
+        sheep.currentPenID = nil
+        sheep.removedAt = removedAt
+        context.insert(pen)
+        context.insert(sheep)
+        context.insert(WeightRecord(
+            farmID: farmID,
+            sheepID: sheep.id,
+            kilogramsText: "10",
+            occurredAt: firstAt
+        ))
+        context.insert(WeightRecord(
+            farmID: farmID,
+            sheepID: sheep.id,
+            kilogramsText: "12",
+            occurredAt: lastAt
+        ))
+        context.insert(RemovalRecord(
+            farmID: farmID,
+            sheepID: sheep.id,
+            kind: .sold,
+            reason: "出售",
+            occurredAt: removedAt
+        ))
+        try context.save()
+
+        var historicalPlan = farmCalculationArguments(
+            penName: pen.name,
+            asOf: ISO8601DateFormatter().string(from: asOf)
+        )
+        historicalPlan["cohort"] = "all_profiles"
+        historicalPlan["pen_membership"] = "at_measurement"
+        historicalPlan["window"] = "adjacent"
+        historicalPlan["transform"] = "difference_per_day"
+        historicalPlan["group_by"] = "interval_end_day"
+        historicalPlan["reduce"] = "average"
+        historicalPlan["selection"] = "latest"
+        let historicalOutput = try InsightFarmCalculationEngine().execute(
+            arguments: historicalPlan,
+            farmID: farmID,
+            context: context,
+            now: asOf
+        )
+        let historicalObject = try calculationObject(historicalOutput)
+        let historicalGroups = try XCTUnwrap(historicalObject["groups"] as? [[String: Any]])
+        let historicalValue = try XCTUnwrap(historicalGroups.first?["value"] as? Double)
+
+        XCTAssertEqual(historicalValue, 0.2, accuracy: 0.000_001)
+        XCTAssertEqual(historicalObject["observation_count"] as? Int, 1)
+        XCTAssertEqual(historicalObject["eligible_profile_count"] as? Int, 1)
+
+        var currentPlan = historicalPlan
+        currentPlan["cohort"] = "current_in_herd"
+        currentPlan["pen_membership"] = "at_cutoff"
+        let currentOutput = try InsightFarmCalculationEngine().execute(
+            arguments: currentPlan,
+            farmID: farmID,
+            context: context,
+            now: asOf
+        )
+        let currentObject = try calculationObject(currentOutput)
+
+        XCTAssertEqual(currentObject["observation_count"] as? Int, 0)
+        XCTAssertEqual(currentObject["eligible_profile_count"] as? Int, 0)
+    }
+
+    func testRateAnalysisIntentRoutesNaturalLanguageToCompletePlan() throws {
+        let intent = try XCTUnwrap(
+            InsightRateAnalysisIntent.detect(
+                question: "大棚十二舍日增重多少",
+                availablePenNames: ["一舍西", "大棚十二舍"]
+            )
+        )
+
+        XCTAssertEqual(intent.penName, "大棚十二舍")
+        XCTAssertEqual(intent.calculationArguments["source"] as? String, "weight_samples")
+        XCTAssertEqual(intent.calculationArguments["window"] as? String, "adjacent")
+        XCTAssertEqual(intent.calculationArguments["transform"] as? String, "difference_per_day")
+        XCTAssertEqual(intent.calculationArguments["analysis_scope"] as? String, "complete")
+        XCTAssertEqual(intent.calculationArguments["group_by"] as? String, "none")
+
+        XCTAssertNil(
+            InsightRateAnalysisIntent.detect(
+                question: "大棚十二舍最近一次称重记录",
+                availablePenNames: ["大棚十二舍"]
+            )
+        )
+        XCTAssertNil(
+            InsightRateAnalysisIntent.detect(
+                question: "2026年7月大棚十二舍日增重多少",
+                availablePenNames: ["大棚十二舍"]
+            )
+        )
+        XCTAssertNil(
+            InsightRateAnalysisIntent.detect(
+                question: "大棚十二舍每只羊日增重多少",
+                availablePenNames: ["大棚十二舍"]
+            )
+        )
+    }
+
+    func testCompleteRateAnalysisSeparatesIntervalsBatchesAndLifecycleOutcomes() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-complete-rate-analysis-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        insertFarm(farmID, into: context)
+        let pen = PenRecord(farmID: farmID, name: "分析圈舍")
+        let firstAt = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-07-01T00:00:00+08:00")
+        )
+        let secondAt = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-07-11T00:00:00+08:00")
+        )
+        let removalAt = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-07-15T00:00:00+08:00")
+        )
+        let asOf = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-07-20T00:00:00+08:00")
+        )
+        let batchA = ProductionBatchRecord(
+            farmID: farmID,
+            name: "育肥一批",
+            purpose: "育肥",
+            startedAt: firstAt.addingTimeInterval(-86_400)
+        )
+        let batchB = ProductionBatchRecord(
+            farmID: farmID,
+            name: "育肥二批",
+            purpose: "育肥",
+            startedAt: firstAt.addingTimeInterval(-86_400)
+        )
+        context.insert(pen)
+        context.insert(batchA)
+        context.insert(batchB)
+
+        func makeSheep(_ earTag: String) -> SheepRecord {
+            let sheep = SheepRecord(
+                farmID: farmID,
+                earTag: earTag,
+                breed: "湖羊",
+                sex: .ram,
+                penID: pen.id,
+                enteredAt: firstAt.addingTimeInterval(-86_400)
+            )
+            context.insert(sheep)
+            return sheep
+        }
+        func addWeights(_ sheep: SheepRecord, _ first: String, _ second: String) {
+            context.insert(WeightRecord(
+                farmID: farmID,
+                sheepID: sheep.id,
+                kilogramsText: first,
+                occurredAt: firstAt
+            ))
+            context.insert(WeightRecord(
+                farmID: farmID,
+                sheepID: sheep.id,
+                kilogramsText: second,
+                occurredAt: secondAt
+            ))
+        }
+        func assign(_ sheep: SheepRecord, to batch: ProductionBatchRecord) {
+            context.insert(BatchMembershipRecord(
+                farmID: farmID,
+                batchID: batch.id,
+                sheepID: sheep.id,
+                joinedAt: firstAt.addingTimeInterval(-86_400)
+            ))
+        }
+        func remove(_ sheep: SheepRecord, kind: RemovalKind) {
+            sheep.statusRawValue = kind.resultingStatus.rawValue
+            sheep.currentPenID = nil
+            sheep.removedAt = removalAt
+            context.insert(RemovalRecord(
+                farmID: farmID,
+                sheepID: sheep.id,
+                kind: kind,
+                reason: kind.displayName,
+                occurredAt: removalAt
+            ))
+        }
+
+        let active = makeSheep("ACTIVE-A")
+        addWeights(active, "10", "12")
+        assign(active, to: batchA)
+
+        let sold = makeSheep("SOLD-A")
+        addWeights(sold, "20", "23")
+        assign(sold, to: batchA)
+        remove(sold, kind: .sold)
+
+        let deceased = makeSheep("DECEASED-B")
+        addWeights(deceased, "30", "31")
+        assign(deceased, to: batchB)
+        remove(deceased, kind: .deceased)
+
+        let crossBatch = makeSheep("CROSS-BATCH")
+        addWeights(crossBatch, "40", "44")
+        let firstMembership = BatchMembershipRecord(
+            farmID: farmID,
+            batchID: batchA.id,
+            sheepID: crossBatch.id,
+            joinedAt: firstAt.addingTimeInterval(-86_400)
+        )
+        firstMembership.leftAt = firstAt
+        context.insert(firstMembership)
+        context.insert(BatchMembershipRecord(
+            farmID: farmID,
+            batchID: batchB.id,
+            sheepID: crossBatch.id,
+            joinedAt: secondAt
+        ))
+        try context.save()
+
+        var plan = farmCalculationArguments(
+            penName: pen.name,
+            asOf: ISO8601DateFormatter().string(from: asOf)
+        )
+        plan["sample_policy"] = "recorded_only"
+        plan["cohort"] = "all_profiles"
+        plan["pen_membership"] = "at_measurement"
+        plan["window"] = "adjacent"
+        plan["transform"] = "difference_per_day"
+        plan["analysis_scope"] = "complete"
+        plan["group_by"] = "none"
+        plan["reduce"] = "average"
+        plan["selection"] = "all"
+
+        let output = try InsightFarmCalculationEngine().execute(
+            arguments: plan,
+            farmID: farmID,
+            context: context,
+            now: asOf
+        )
+        let object = try calculationObject(output)
+        let contract = try XCTUnwrap(object["analysis_contract"] as? [String: Any])
+        let requiredDimensions = try XCTUnwrap(contract["required_dimensions"] as? [String])
+        let sections = try XCTUnwrap(object["analysis_sections"] as? [[String: Any]])
+
+        XCTAssertEqual(requiredDimensions, [
+            "none", "weighing_interval", "production_batch", "lifecycle_status",
+        ])
+        XCTAssertEqual(sections.compactMap { $0["dimension"] as? String }, requiredDimensions)
+        XCTAssertEqual(object["observation_count"] as? Int, 4)
+        XCTAssertEqual(object["analyzed_profile_count"] as? Int, 4)
+
+        let overall = try sectionGroup("none", key: "all", in: sections)
+        XCTAssertEqual(try XCTUnwrap(overall["average"] as? Double), 0.25, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(overall["minimum"] as? Double), 0.1, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(overall["maximum"] as? Double), 0.4, accuracy: 0.000_001)
+        XCTAssertEqual(overall["sample_count"] as? Int, 4)
+        XCTAssertEqual(overall["sheep_count"] as? Int, 4)
+        XCTAssertEqual(overall["elapsed_days_minimum"] as? Int, 10)
+        XCTAssertEqual(overall["elapsed_days_maximum"] as? Int, 10)
+
+        let batchAGroup = try sectionGroup("production_batch", key: "育肥一批", in: sections)
+        XCTAssertEqual(batchAGroup["sample_count"] as? Int, 2)
+        XCTAssertEqual(try XCTUnwrap(batchAGroup["average"] as? Double), 0.25, accuracy: 0.000_001)
+        let batchBGroup = try sectionGroup("production_batch", key: "育肥二批", in: sections)
+        XCTAssertEqual(try XCTUnwrap(batchBGroup["average"] as? Double), 0.1, accuracy: 0.000_001)
+        let crossGroup = try sectionGroup("production_batch", key: "跨生产批次区间", in: sections)
+        XCTAssertEqual(try XCTUnwrap(crossGroup["average"] as? Double), 0.4, accuracy: 0.000_001)
+
+        let activeGroup = try sectionGroup("lifecycle_status", key: "当前在群", in: sections)
+        XCTAssertEqual(activeGroup["sample_count"] as? Int, 2)
+        XCTAssertEqual(try XCTUnwrap(activeGroup["average"] as? Double), 0.3, accuracy: 0.000_001)
         XCTAssertEqual(
-            FarmDataQuerySkill.requiredQueryKind(for: "2026年每个月出生多少羔羊"),
-            .bornLambs
+            try XCTUnwrap(sectionGroup("lifecycle_status", key: "出售", in: sections)["average"] as? Double),
+            0.3,
+            accuracy: 0.000_001
         )
         XCTAssertEqual(
-            FarmDataQuerySkill.requiredQueryKind(
-                for: "今年每个月出生的羔羊数是多少，现在在群数是多少"
+            try XCTUnwrap(sectionGroup("lifecycle_status", key: "死亡", in: sections)["average"] as? Double),
+            0.1,
+            accuracy: 0.000_001
+        )
+
+        for (key, invalidValue) in [
+            ("sample_policy", "canonical_timeline"),
+            ("cohort", "current_in_herd"),
+            ("pen_membership", "at_cutoff"),
+            ("group_by", "weighing_interval"),
+        ] {
+            var invalidPlan = plan
+            invalidPlan[key] = invalidValue
+            XCTAssertThrowsError(try InsightFarmCalculationEngine().execute(
+                arguments: invalidPlan,
+                farmID: farmID,
+                context: context,
+                now: asOf
+            ), "complete analysis accepted semantically narrowed \(key)=\(invalidValue)")
+        }
+    }
+
+    func testAdjacentPenRateDoesNotBridgeAcrossAnOutsidePenMeasurement() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-no-false-adjacent-interval-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        insertFarm(farmID, into: context)
+        let target = PenRecord(farmID: farmID, name: "目标圈")
+        let outside = PenRecord(farmID: farmID, name: "外圈")
+        let day1 = Date(timeIntervalSince1970: 1_783_353_600)
+        let day2 = day1.addingTimeInterval(10 * 86_400)
+        let day3 = day2.addingTimeInterval(10 * 86_400)
+        let sheep = SheepRecord(
+            farmID: farmID,
+            earTag: "PEN-TIMELINE",
+            breed: "湖羊",
+            sex: .ram,
+            penID: target.id,
+            enteredAt: day1.addingTimeInterval(-86_400)
+        )
+        context.insert(target)
+        context.insert(outside)
+        context.insert(sheep)
+        context.insert(WeightRecord(farmID: farmID, sheepID: sheep.id, kilogramsText: "10", occurredAt: day1))
+        context.insert(TransferRecord(
+            farmID: farmID,
+            sheepID: sheep.id,
+            fromPenID: target.id,
+            toPenID: outside.id,
+            occurredAt: day1.addingTimeInterval(86_400)
+        ))
+        context.insert(WeightRecord(farmID: farmID, sheepID: sheep.id, kilogramsText: "20", occurredAt: day2))
+        context.insert(TransferRecord(
+            farmID: farmID,
+            sheepID: sheep.id,
+            fromPenID: outside.id,
+            toPenID: target.id,
+            occurredAt: day2.addingTimeInterval(86_400)
+        ))
+        context.insert(WeightRecord(farmID: farmID, sheepID: sheep.id, kilogramsText: "30", occurredAt: day3))
+        try context.save()
+
+        var plan = farmCalculationArguments(
+            penName: target.name,
+            asOf: ISO8601DateFormatter().string(from: day3.addingTimeInterval(86_400))
+        )
+        plan["cohort"] = "all_profiles"
+        plan["pen_membership"] = "at_measurement"
+        plan["window"] = "adjacent"
+        plan["transform"] = "difference_per_day"
+        plan["group_by"] = "none"
+        plan["reduce"] = "average"
+
+        let output = try InsightFarmCalculationEngine().execute(
+            arguments: plan,
+            farmID: farmID,
+            context: context,
+            now: day3.addingTimeInterval(86_400)
+        )
+        let object = try calculationObject(output)
+
+        XCTAssertEqual(object["observation_count"] as? Int, 0)
+        XCTAssertEqual(object["excluded_non_continuous_pen_intervals"] as? Int, 2)
+        XCTAssertEqual(object["excluded_insufficient_sample_profiles"] as? Int, 1)
+        XCTAssertTrue((object["groups"] as? [[String: Any]])?.isEmpty == true)
+    }
+
+    func testCompleteCalculationAnswerContractRejectsCollapsedSingleAverage() {
+        let output = #"{"evidence_kind":"farm_calculation","analysis_contract":{"kind":"multidimensional_adjacent_rate_analysis","required_answer_sections":["总体结论","称重区间","生产批次","生命周期","数据完整性"]}}"#
+        let exchange = MiMoFunctionExchange(
+            call: InsightFunctionCall(
+                callID: "complete-analysis",
+                name: InsightFarmCalculationEngine.toolName,
+                argumentsJSON: "{}"
             ),
-            .bornLambLifecycle
+            output: output
         )
+
+        XCTAssertNotNil(InsightCalculationAnswerContract.correctiveInstruction(
+            candidate: "总体平均日增重 0.25 kg/day。",
+            exchanges: [exchange]
+        ))
+        XCTAssertNil(InsightCalculationAnswerContract.correctiveInstruction(
+            candidate: "# 总体结论\n# 称重区间\n# 生产批次\n# 生命周期\n# 数据完整性",
+            exchanges: [exchange]
+        ))
+    }
+
+    func testCompleteCalculationAnswerContractRejectsGroupValueDrift() {
+        let output = #"{"evidence_kind":"farm_calculation","analysis_contract":{"kind":"multidimensional_adjacent_rate_analysis","required_answer_sections":["总体结论","称重区间","生产批次","生命周期","数据完整性"]},"analysis_sections":[{"dimension":"lifecycle_status","groups":[{"key":"出售","sample_count":180,"sheep_count":85,"value":0.3288059857}]}]}"#
+        let exchange = MiMoFunctionExchange(
+            call: InsightFunctionCall(
+                callID: "complete-analysis-values",
+                name: InsightFarmCalculationEngine.toolName,
+                argumentsJSON: "{}"
+            ),
+            output: output
+        )
+        let sections = "# 总体结论\n# 称重区间\n# 生产批次\n# 生命周期\n# 数据完整性\n"
+
+        XCTAssertNotNil(InsightCalculationAnswerContract.correctiveInstruction(
+            candidate: sections + "| 出售 | 179 | 85 | 0.329 kg/天 |",
+            exchanges: [exchange]
+        ))
+        XCTAssertNil(InsightCalculationAnswerContract.correctiveInstruction(
+            candidate: sections + "| 出售 | 180 | 85 | 0.329 kg/天 |",
+            exchanges: [exchange]
+        ))
+    }
+
+    func testNativeHarnessFeedsToolEvidenceBackAndRetriesAnOffTargetAnswer() async throws {
+        let toolCall = InsightFunctionCall(
+            callID: "calculation-1",
+            name: InsightFarmCalculationEngine.toolName,
+            argumentsJSON: #"{"source":"weight_samples"}"#
+        )
+        let client = ScriptedMiMoResponder(scripts: [
+            [
+                .responseStarted(id: "response-1"),
+                .functionCall(toolCall),
+                .completed(responseID: "response-1", usage: nil),
+            ],
+            [
+                .responseStarted(id: "response-2"),
+                .textDelta("查询到两条称重记录。"),
+                .completed(responseID: "response-2", usage: nil),
+            ],
+            [
+                .responseStarted(id: "response-3"),
+                .textDelta("大棚十二舍最近一次区间的平均日增重是 0.25 千克/天。"),
+                .completed(responseID: "response-3", usage: nil),
+            ],
+        ])
+        let tool = InsightToolDefinition(
+            name: InsightFarmCalculationEngine.toolName,
+            description: "测试用通用计算工具",
+            parameters: ["type": .string("object")]
+        )
+        let credential = try MiMoCredential(apiKey: "sk-1234567890-harness")
+        let harness = InsightAgentHarness(client: client, maximumToolRoundTrips: 4)
+        var executionCount = 0
+        var reviewCount = 0
+
+        let result = try await harness.run(
+            model: MiMoCredential.textModel,
+            instructions: "回答用户实际问题。",
+            messages: [MiMoInputMessage(role: .user, text: "大棚十二舍之前日增重多少")],
+            tools: [tool],
+            credential: credential,
+            execute: { call in
+                executionCount += 1
+                XCTAssertEqual(call, toolCall)
+                return .init(
+                    output: #"{"evidence_kind":"farm_calculation","result_unit":"kg/day","groups":[{"value":0.25}]}"#,
+                    succeeded: true
+                )
+            },
+            reviewCandidate: { text, exchanges, successfulTools in
+                reviewCount += 1
+                XCTAssertEqual(exchanges.count, 1)
+                XCTAssertEqual(exchanges.first?.call, toolCall)
+                XCTAssertTrue(successfulTools.contains(InsightFarmCalculationEngine.toolName))
+                if text.contains("两条称重记录") {
+                    return .retry("工具返回的是计算证据，最终答案必须给出用户询问的数值和单位。")
+                }
+                return .accept
+            },
+            resolveRejectedCandidate: { _, _, _, _ in
+                XCTFail("该脚本应在内部修复后通过，不应进入确定性兜底。")
+                return ""
+            }
+        )
+
+        XCTAssertEqual(executionCount, 1)
+        XCTAssertEqual(reviewCount, 2)
+        XCTAssertEqual(result.exchanges.count, 1)
+        XCTAssertEqual(result.successfulToolNames, [InsightFarmCalculationEngine.toolName])
+        XCTAssertEqual(result.text, "大棚十二舍最近一次区间的平均日增重是 0.25 千克/天。")
+        let requests = client.capturedRequests()
+        XCTAssertEqual(requests.count, 3)
+        XCTAssertTrue(requests[0].functionExchanges.isEmpty)
+        XCTAssertEqual(requests[1].functionExchanges.count, 1)
+        XCTAssertEqual(requests[2].functionExchanges.count, 1)
+        XCTAssertEqual(requests.map(\.model), Array(repeating: MiMoCredential.textModel, count: 3))
+    }
+
+    func testNativeHarnessResolvesRepeatedReviewFailureInsideTheSameRequest() async throws {
+        let badAnswer: [InsightModelEvent] = [
+            .responseStarted(id: "response"),
+            .textDelta("请重试。"),
+            .completed(responseID: "response", usage: nil),
+        ]
+        let client = ScriptedMiMoResponder(scripts: [badAnswer, badAnswer, badAnswer])
+        let credential = try MiMoCredential(apiKey: "sk-1234567890-no-retry")
+        let harness = InsightAgentHarness(
+            client: client,
+            maximumToolRoundTrips: 4,
+            maximumCandidateRepairs: 2
+        )
+        var fallbackCount = 0
+
+        let result = try await harness.run(
+            model: MiMoCredential.textModel,
+            instructions: "回答用户实际问题。",
+            messages: [MiMoInputMessage(role: .user, text: "S2-U033什么时候出生的")],
+            tools: [],
+            credential: credential,
+            execute: { _ in
+                XCTFail("这个脚本不应执行工具。")
+                return .init(output: "", succeeded: false)
+            },
+            reviewCandidate: { _, _, _ in
+                .retry("没有本地权威证据支持具体羊只的出生日期。")
+            },
+            resolveRejectedCandidate: { _, issue, _, _ in
+                fallbackCount += 1
+                return InsightGroundedFallbackRenderer.render(
+                    question: "S2-U033什么时候出生的",
+                    queries: [],
+                    calculationEvidence: [],
+                    issue: issue
+                )
+            }
+        )
+
+        XCTAssertEqual(client.capturedRequests().count, 3)
+        XCTAssertEqual(fallbackCount, 1)
+        XCTAssertTrue(result.text.contains("没有取得足以支持结论的本地牧场证据"))
+        XCTAssertTrue(result.text.contains("出生日期"))
+        XCTAssertFalse(result.text.contains("重试"))
+    }
+
+    func testNativeHarnessAutomaticallyRecoversTransientTransportFailure() async throws {
+        let client = FlakyMiMoResponder(
+            failures: [.networkUnavailable],
+            events: [
+                .responseStarted(id: "recovered-response"),
+                .textDelta("已经在内部恢复并完成回答。"),
+                .completed(responseID: "recovered-response", usage: nil),
+            ]
+        )
+        let credential = try MiMoCredential(apiKey: "sk-1234567890-transport-recovery")
+        let harness = InsightAgentHarness(
+            client: client,
+            maximumToolRoundTrips: 1,
+            maximumTransportRecoveries: 1
+        )
+
+        let result = try await harness.run(
+            model: MiMoCredential.textModel,
+            instructions: "回答用户实际问题。",
+            messages: [MiMoInputMessage(role: .user, text: "说明当前情况")],
+            tools: [],
+            credential: credential,
+            execute: { _ in
+                XCTFail("这个脚本不应执行工具。")
+                return .init(output: "", succeeded: false)
+            },
+            reviewCandidate: { _, _, _ in .accept },
+            resolveRejectedCandidate: { _, _, _, _ in
+                XCTFail("恢复成功后不应进入兜底。")
+                return ""
+            }
+        )
+
+        XCTAssertEqual(client.requestCount, 2)
+        XCTAssertEqual(result.text, "已经在内部恢复并完成回答。")
+        XCTAssertFalse(result.text.contains("重试"))
+    }
+
+    func testSemanticReviewerCannotAcceptFarmSpecificClaimWithoutSuccessfulEvidence() async throws {
+        let reviewCall = InsightFunctionCall(
+            callID: "review-1",
+            name: "review_grounded_farm_answer",
+            argumentsJSON: #"{"verdict":"accept","claim_scope":"farm_specific","evidence_sufficient":true,"issue":"","corrective_instruction":""}"#
+        )
+        let client = ScriptedMiMoResponder(scripts: [[
+            .responseStarted(id: "review-response"),
+            .functionCall(reviewCall),
+            .completed(responseID: "review-response", usage: nil),
+        ]])
+        let credential = try MiMoCredential(apiKey: "sk-1234567890-reviewer")
+
+        let review = try await InsightGroundedAnswerReviewer.review(
+            question: "当前用户消息：S2-U033什么时候出生的",
+            candidate: "S2-U033 不在牧场记录中。",
+            exchanges: [],
+            successfulToolNames: [],
+            model: MiMoCredential.textModel,
+            credential: credential,
+            client: client
+        )
+
+        XCTAssertFalse(review.isAccepted)
+        XCTAssertEqual(review.claimScope, "farm_specific")
+        XCTAssertTrue(review.evidenceSufficient)
+        XCTAssertTrue(review.issue.contains("没有足以支持"))
     }
 
     func testFarmQueryMonthGroupingUsesLocalFarmDateInsteadOfUTCDate() throws {
@@ -50,33 +800,407 @@ final class InsightAssistantTests: XCTestCase {
         )
     }
 
-    func testFarmFactIntentRequiresEvidenceButLeavesGeneralKnowledgeAndWritesAlone() {
-        XCTAssertTrue(InsightFarmFactIntent.requiresEvidence(for: "现在一号圈有多少只母羊？"))
-        XCTAssertTrue(InsightFarmFactIntent.requiresEvidence(for: "比较最近三个月两个圈的平均体重"))
-        XCTAssertFalse(InsightFarmFactIntent.requiresEvidence(for: "母羊妊娠期一般多长？"))
-        XCTAssertFalse(InsightFarmFactIntent.requiresEvidence(for: "帮我记录001号羊今天称重45公斤"))
+    func testGroundedFallbackUsesVerifiedCalculationWithoutAskingTheUserToRetry() {
+        let calculation = #"{"evidence_kind":"farm_calculation","result_unit":"kg/day","observation_count":2,"is_complete":true,"formula":"(end_value - start_value) / farm_calendar_days(start_at, end_at)","groups":[{"key":"2026-07-11","value":0.25,"sample_count":2,"sheep_count":2}]}"#
+
+        let answer = InsightGroundedFallbackRenderer.render(
+            question: "大棚十二舍日增重多少",
+            queries: [],
+            calculationEvidence: [calculation],
+            issue: "最终答案没有通过复核，请重试。"
+        )
+
+        XCTAssertTrue(answer.contains("0.25 kg/day"))
+        XCTAssertTrue(answer.contains("样本 2"))
+        XCTAssertTrue(answer.contains("数据完整性：完整"))
+        XCTAssertFalse(answer.contains("重试"))
+
+        for error in [
+            MiMoClientError.invalidResponse,
+            MiMoClientError.incomplete(reason: "max_output_tokens"),
+            MiMoClientError.server(status: 500, message: "服务异常，请重试。"),
+        ] {
+            XCTAssertFalse(
+                InsightConversationController.generationFailureDescription(error).contains("重试")
+            )
+            XCTAssertFalse(error.localizedDescription.contains("重试"))
+            XCTAssertFalse(error.localizedDescription.contains("再试"))
+        }
+
+        for error in [
+            InsightMediaError.audioRecordingFailed,
+            InsightMediaError.audioTooLarge,
+            InsightMediaError.audioStorageFailed,
+        ] {
+            XCTAssertFalse(error.localizedDescription.contains("重试"))
+            XCTAssertFalse(error.localizedDescription.contains("再试"))
+        }
     }
 
-    func testResponseGuardBlocksFarmAnswerWithoutGroundedQuery() {
+    func testGroundedFallbackPreservesEveryCompleteRateAnalysisDimension() {
+        let calculation = #"{"evidence_kind":"farm_calculation","result_unit":"kg/day","observation_count":4,"is_complete":false,"formula":"(end_value - start_value) / farm_calendar_days(start_at, end_at)","source_description":"WeightRecord 常规称重","time_zone":"Asia/Shanghai","canonical_arguments":{"pen_name":"大棚十二舍"},"batch_attribution_counts":{"assigned":2,"cross_batch":1,"unassigned":1},"relevant_profile_count":5,"analyzed_profile_count":4,"excluded_insufficient_sample_profiles":1,"excluded_non_continuous_pen_intervals":2,"excluded_non_positive_day_intervals":0,"groups":[{"key":"all","value":0.25,"average":0.25,"minimum":0.1,"maximum":0.4,"sample_count":4,"sheep_count":4}],"analysis_contract":{"kind":"multidimensional_adjacent_rate_analysis","required_answer_sections":["总体结论","称重区间","生产批次","生命周期","数据完整性"]},"analysis_sections":[{"title":"总体口径","dimension":"none","is_complete":true,"groups":[{"key":"all","value":0.25,"average":0.25,"minimum":0.1,"maximum":0.4,"median":0.24,"sample_count":4,"sheep_count":4,"positive_count":3,"zero_count":0,"negative_count":1,"total_weight_change":10.555,"total_observation_days":40,"first_interval_start":"2026-07-01T00:00:00.000Z","last_interval_end":"2026-07-11T00:00:00.000Z","elapsed_days_average":10,"elapsed_days_minimum":10,"elapsed_days_maximum":10,"sheep_weighted_daily_rate":0.25,"pooled_daily_rate":0.263875}]},{"title":"不同称重区间","dimension":"weighing_interval","is_complete":true,"groups":[{"key":"2026-07-01 → 2026-07-11（10天）","value":0.25,"average":0.25,"minimum":0.1,"maximum":0.4,"sample_count":4,"sheep_count":4}]},{"title":"生产批次","dimension":"production_batch","is_complete":true,"groups":[{"key":"育肥一批","value":0.3,"average":0.3,"minimum":0.3,"maximum":0.3,"sample_count":2,"sheep_count":2},{"key":"跨生产批次区间","value":0.4,"average":0.4,"minimum":0.4,"maximum":0.4,"sample_count":1,"sheep_count":1}]},{"title":"生命周期","dimension":"lifecycle_status","is_complete":true,"groups":[{"key":"当前在群","value":0.3,"average":0.3,"minimum":0.2,"maximum":0.4,"sample_count":2,"sheep_count":2},{"key":"出售","value":0.3,"average":0.3,"minimum":0.3,"maximum":0.3,"sample_count":1,"sheep_count":1},{"key":"死亡","value":0.1,"average":0.1,"minimum":0.1,"maximum":0.1,"sample_count":1,"sheep_count":1}]}]}"#
+
+        let answer = InsightGroundedFallbackRenderer.render(
+            question: "大棚十二舍日增重多少",
+            queries: [],
+            calculationEvidence: [calculation],
+            issue: "候选答案只给了一个平均数，请重试。"
+        )
+
+        for heading in ["总体结论", "称重区间", "生产批次", "生命周期", "数据完整性"] {
+            XCTAssertTrue(answer.contains("### \(heading)"), "missing heading: \(heading)")
+        }
+        XCTAssertTrue(answer.contains("## 大棚十二舍日增重完整分析"))
+        XCTAssertTrue(answer.contains("| 区间等权平均 | 0.250 kg/天 |"))
+        XCTAssertTrue(answer.contains("| 羊只等权平均 | 0.250 kg/天 |"))
+        XCTAssertTrue(answer.contains("| 总增重 ÷ 总观察天数 | 0.264 kg/天 |"))
+        XCTAssertTrue(answer.contains("| 区间总增重 | 10.56 kg |"))
+        XCTAssertTrue(answer.contains("WeightRecord 常规称重"))
+        XCTAssertTrue(answer.contains("育肥一批"))
+        XCTAssertTrue(answer.contains("跨生产批次区间"))
+        XCTAssertTrue(answer.contains("当前在群"))
+        XCTAssertTrue(answer.contains("出售"))
+        XCTAssertTrue(answer.contains("死亡"))
+        XCTAssertTrue(answer.contains("称重点不足"))
+        XCTAssertTrue(answer.contains("完整性：受限"))
+        XCTAssertFalse(answer.contains("重试"))
+    }
+
+    func testVerifiedCompleteAnalysisAlwaysComposesTablesFromCalculationEvidence() {
+        let complete = #"{"evidence_kind":"farm_calculation","result_unit":"kg/day","observation_count":181,"is_complete":false,"canonical_arguments":{"pen_name":"大棚十二舍"},"relevant_profile_count":86,"analyzed_profile_count":85,"excluded_insufficient_sample_profiles":1,"excluded_non_continuous_pen_intervals":0,"excluded_non_positive_day_intervals":0,"groups":[{"key":"all","value":0.33,"sample_count":181,"sheep_count":85}],"analysis_contract":{"kind":"multidimensional_adjacent_rate_analysis"},"analysis_sections":[{"title":"总体口径","dimension":"none","is_complete":true,"groups":[{"key":"all","value":0.33,"median":0.32,"minimum":0.1,"maximum":0.5,"sample_count":181,"sheep_count":85,"positive_count":181,"zero_count":0,"negative_count":0,"sheep_weighted_daily_rate":0.34,"pooled_daily_rate":0.35}]},{"title":"不同称重区间","dimension":"weighing_interval","is_complete":true,"groups":[{"key":"2026-06-01 → 2026-07-01（30天）","value":0.33,"sample_count":181,"sheep_count":85}]},{"title":"生产批次","dimension":"production_batch","is_complete":true,"groups":[{"key":"育肥批次","value":0.33,"sample_count":181,"sheep_count":85}]},{"title":"生命周期","dimension":"lifecycle_status","is_complete":true,"groups":[{"key":"出售","value":0.3288059857,"sample_count":180,"sheep_count":85},{"key":"死亡","value":0.297,"sample_count":1,"sheep_count":1}]}]}"#
+        let focused = #"{"evidence_kind":"farm_calculation","result_unit":"kg/day","observation_count":1,"is_complete":true,"groups":[{"key":"all","value":99,"sample_count":1,"sheep_count":1}]}"#
+
+        let answer = InsightGroundedFallbackRenderer.verifiedCompleteAnalysis(
+            calculationEvidence: [complete]
+        )
+
+        XCTAssertNotNil(answer)
+        XCTAssertTrue(answer?.contains("| 出售 | 180 | 85 | 0.329 kg/天 |") == true)
+        XCTAssertFalse(answer?.contains("179") == true)
+        XCTAssertNil(InsightGroundedFallbackRenderer.verifiedCompleteAnalysis(
+            calculationEvidence: [focused]
+        ))
+    }
+
+    func testGroundedFallbackKeepsCompleteStructureWhenNoIntervalIsAvailable() {
+        let calculation = #"{"evidence_kind":"farm_calculation","result_unit":"kg/day","observation_count":0,"is_complete":false,"formula":"(end_value - start_value) / farm_calendar_days(start_at, end_at)","relevant_profile_count":3,"analyzed_profile_count":0,"excluded_insufficient_sample_profiles":3,"excluded_non_continuous_pen_intervals":0,"excluded_non_positive_day_intervals":0,"groups":[],"analysis_contract":{"kind":"multidimensional_adjacent_rate_analysis"},"analysis_sections":[{"title":"总体口径","groups":[],"is_complete":true},{"title":"不同称重区间","groups":[],"is_complete":true},{"title":"生产批次","groups":[],"is_complete":true},{"title":"生命周期","groups":[],"is_complete":true}]}"#
+
+        let answer = InsightGroundedFallbackRenderer.render(
+            question: "某圈舍日增重多少",
+            queries: [],
+            calculationEvidence: [calculation],
+            issue: "候选答案不完整"
+        )
+
+        for heading in ["总体结论", "称重区间", "生产批次", "生命周期", "数据完整性"] {
+            XCTAssertTrue(answer.contains("### \(heading)"), "missing heading: \(heading)")
+        }
+        XCTAssertTrue(answer.contains("没有符合该维度条件的有效相邻称重区间"))
+        XCTAssertTrue(answer.contains("称重点不足 3 只"))
+    }
+
+    func testIPhoneAirCurrentHerdRegressionUsesTheSameCountAcrossAIHomeAndExport() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-iphone-air-current-herd-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let farm = FarmRecord(id: farmID, ownerAccountID: UUID(), name: "星露谷牧场")
+        farm.timeZoneIdentifier = "Asia/Shanghai"
+        let pen = PenRecord(farmID: farmID, name: "一号圈")
+        let enteredAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var allSheep: [SheepRecord] = []
+        allSheep.reserveCapacity(945)
+
+        context.insert(farm)
+        context.insert(pen)
+        for index in 0..<380 {
+            let sheep = SheepRecord(
+                farmID: farmID,
+                earTag: String(format: "ACTIVE-%03d", index),
+                breed: "湖羊",
+                sex: index.isMultiple(of: 2) ? .ewe : .ram,
+                penID: pen.id,
+                enteredAt: enteredAt
+            )
+            allSheep.append(sheep)
+            context.insert(sheep)
+        }
+        for index in 0..<258 {
+            let sheep = SheepRecord(
+                farmID: farmID,
+                earTag: String(format: "LEGACY-REMOVED-%03d", index),
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                enteredAt: enteredAt
+            )
+            sheep.statusRawValue = SheepStatus.removed.rawValue
+            sheep.legacyStatusSnapshotIsAuthoritative = true
+            allSheep.append(sheep)
+            context.insert(sheep)
+        }
+        for index in 0..<307 {
+            let sheep = SheepRecord(
+                farmID: farmID,
+                earTag: String(format: "HISTORICAL-%03d", index),
+                isHistoricalArchive: true,
+                breed: "未知",
+                sex: .unknown,
+                penID: nil,
+                enteredAt: enteredAt
+            )
+            allSheep.append(sheep)
+            context.insert(sheep)
+        }
+        try context.save()
+
+        var arguments = farmQueryArguments(subject: "sheep")
+        arguments["query_kind"] = FarmDataQuerySkill.QueryKind.currentHerd.rawValue
+        arguments["metric"] = "count"
+        let output = try InsightFarmQueryEngine().execute(
+            arguments: arguments,
+            farmID: farmID,
+            context: context,
+            now: now
+        )
+        let grounded = try XCTUnwrap(InsightFarmQueryEngine.GroundedOutput(toolOutput: output))
+        XCTAssertEqual(grounded.queryKind, FarmDataQuerySkill.QueryKind.currentHerd.rawValue)
+        XCTAssertEqual(grounded.totalMatchingCount, 380)
+        XCTAssertEqual(grounded.contractVersion, FarmFactContract.version)
+        XCTAssertEqual(grounded.timeZoneIdentifier, "Asia/Shanghai")
+        XCTAssertEqual(grounded.unknownStateCount, 0)
+        XCTAssertEqual(grounded.projectionMismatchCount, 0)
+        XCTAssertEqual(
+            Set(grounded.stateBasis),
+            Set([
+                FarmFactContract.SheepStateBasis.currentEventProjection.rawValue,
+                FarmFactContract.SheepStateBasis.currentLegacySnapshot.rawValue,
+                FarmFactContract.SheepStateBasis.currentHistoricalArchive.rawValue,
+            ])
+        )
+
+        let canonical = try XCTUnwrap(InsightFarmQueryEngine.canonicalArguments(in: output))
+        XCTAssertEqual(canonical["query_kind"] as? String, FarmDataQuerySkill.QueryKind.currentHerd.rawValue)
+        XCTAssertEqual(canonical["status"] as? String, SheepStatus.active.rawValue)
+        XCTAssertEqual(canonical["as_of"] as? String, "")
+        let replayOutput = try InsightFarmQueryEngine().execute(
+            arguments: canonical,
+            farmID: farmID,
+            context: context,
+            now: now
+        )
+        let replay = try XCTUnwrap(InsightFarmQueryEngine.GroundedOutput(toolOutput: replayOutput))
+        XCTAssertEqual(replay.totalMatchingCount, grounded.totalMatchingCount)
+        XCTAssertEqual(replay.canonicalArgumentsJSON, grounded.canonicalArgumentsJSON)
+        XCTAssertEqual(replay.markdown, grounded.markdown)
+
+        let home = try await FarmHomeSnapshotActor(container: container).load(
+            farmID: farmID,
+            now: now
+        )
+        XCTAssertEqual(home.activeSheepCount, 380)
+
+        let csvData = InHerdSheepExport.csvData(farmID: farmID, sheep: allSheep, pens: [pen])
+        let csv = String(decoding: csvData.dropFirst(3), as: UTF8.self)
+        XCTAssertEqual(csv.components(separatedBy: "\"ACTIVE-").count - 1, 380)
+        XCTAssertTrue(csv.contains("ACTIVE-000"))
+        XCTAssertFalse(csv.contains("LEGACY-REMOVED-000"))
+        XCTAssertFalse(csv.contains("HISTORICAL-000"))
+    }
+
+    func testCurrentHerdRefusesAStaleProjectionInsteadOfReturningAnApproximation() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-current-herd-stale-projection-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        insertFarm(farmID, into: context)
+        let enteredAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let removalAt = enteredAt.addingTimeInterval(86_400)
+        let sheep = SheepRecord(
+            farmID: farmID,
+            earTag: "STALE-001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: enteredAt
+        )
+        context.insert(sheep)
+        context.insert(RemovalRecord(
+            farmID: farmID,
+            sheepID: sheep.id,
+            kind: .sold,
+            reason: "出售",
+            occurredAt: removalAt
+        ))
+        var arguments = farmQueryArguments(subject: "sheep")
+        arguments["query_kind"] = FarmDataQuerySkill.QueryKind.currentHerd.rawValue
+        arguments["metric"] = "count"
+
+        XCTAssertThrowsError(try InsightFarmQueryEngine().execute(
+            arguments: arguments,
+            farmID: farmID,
+            context: context,
+            now: removalAt.addingTimeInterval(86_400)
+        )) { error in
+            guard let toolError = error as? InsightToolError else {
+                return XCTFail("应返回牧场事实不可用错误，实际为 \(error)")
+            }
+            guard case .farmFactsUnavailable(let message) = toolError else {
+                return XCTFail("应停止返回近似数字，实际为 \(toolError)")
+            }
+            XCTAssertTrue(message.contains("停止返回"))
+        }
+    }
+
+    func testHistoricalStatusQueryRefusesUndatedLegacyRemoval() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-historical-unknown-state-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        insertFarm(farmID, into: context)
+        let sheep = SheepRecord(
+            farmID: farmID,
+            earTag: "UNDATED-REMOVED",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        sheep.statusRawValue = SheepStatus.removed.rawValue
+        sheep.legacyStatusSnapshotIsAuthoritative = true
+        context.insert(sheep)
+        var arguments = farmQueryArguments(subject: "sheep", status: SheepStatus.active.rawValue)
+        arguments["as_of"] = "2025-01-01T00:00:00Z"
+        arguments["metric"] = "count"
+
+        XCTAssertThrowsError(try InsightFarmQueryEngine().execute(
+            arguments: arguments,
+            farmID: farmID,
+            context: context,
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        )) { error in
+            guard let toolError = error as? InsightToolError else {
+                return XCTFail("应返回牧场事实不可用错误，实际为 \(error)")
+            }
+            guard case .farmFactsUnavailable(let message) = toolError else {
+                return XCTFail("历史未知状态不应被默认为在场，实际为 \(toolError)")
+            }
+            XCTAssertTrue(message.contains("缺少可证明"))
+        }
+    }
+
+    func testFarmDataQuerySkillRejectsFiltersThatTheSelectedMetricCannotApply() {
+        var arguments = farmQueryArguments(subject: "feeding", breed: "湖羊")
+        arguments["query_kind"] = FarmDataQuerySkill.QueryKind.feedingRecords.rawValue
+
+        XCTAssertThrowsError(try FarmDataQuerySkill.normalize(arguments: arguments)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("breed"))
+        }
+
+        var historicalCurrentHerd = farmQueryArguments(subject: "sheep")
+        historicalCurrentHerd["query_kind"] = FarmDataQuerySkill.QueryKind.currentHerd.rawValue
+        historicalCurrentHerd["as_of"] = "2025-12-31T23:59:59Z"
+        XCTAssertThrowsError(try FarmDataQuerySkill.normalize(arguments: historicalCurrentHerd)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("as_of"))
+        }
+
+        var contradictoryCurrentHerd = farmQueryArguments(
+            subject: "sheep",
+            status: SheepStatus.removed.rawValue
+        )
+        contradictoryCurrentHerd["query_kind"] = FarmDataQuerySkill.QueryKind.currentHerd.rawValue
+        XCTAssertThrowsError(try FarmDataQuerySkill.normalize(arguments: contradictoryCurrentHerd)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("status"))
+        }
+    }
+
+    func testFarmQueryReadsTheFarmTimeZoneBeforeGroupingRecords() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-farm-time-zone-query-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let farm = FarmRecord(id: farmID, ownerAccountID: UUID(), name: "上海测试场")
+        farm.timeZoneIdentifier = "Asia/Shanghai"
+        let ewe = SheepRecord(
+            farmID: farmID,
+            earTag: "TZ-EWE",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let instant = try XCTUnwrap(ISO8601DateFormatter().date(from: "2025-12-31T16:00:00Z"))
+        context.insert(farm)
+        context.insert(ewe)
+        context.insert(ReproductionRecord(
+            farmID: farmID,
+            eweID: ewe.id,
+            kind: .lambing,
+            occurredAt: instant,
+            lambCount: 2
+        ))
+        var arguments = farmQueryArguments(subject: "reproduction")
+        arguments["query_kind"] = FarmDataQuerySkill.QueryKind.bornLambs.rawValue
+        arguments["date_from"] = "2025-12-01T00:00:00Z"
+        arguments["date_to"] = "2026-01-31T23:59:59Z"
+        arguments["group_by"] = "month"
+        arguments["metric"] = "sum"
+
+        let output = try InsightFarmQueryEngine().execute(
+            arguments: arguments,
+            farmID: farmID,
+            context: context,
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let grounded = try XCTUnwrap(InsightFarmQueryEngine.GroundedOutput(toolOutput: output))
+        XCTAssertEqual(grounded.timeZoneIdentifier, "Asia/Shanghai")
+        XCTAssertTrue(grounded.markdown.contains("| 2026-01 | 2 |"))
+        XCTAssertFalse(grounded.markdown.contains("| 2025-12 | 2 |"))
+    }
+
+    func testFarmQueryRefusesMissingFarmContextInsteadOfUsingTheDeviceTimeZone() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-missing-farm-time-zone-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        var arguments = farmQueryArguments(subject: "sheep")
+        arguments["query_kind"] = FarmDataQuerySkill.QueryKind.currentHerd.rawValue
+        arguments["metric"] = "count"
+
+        XCTAssertThrowsError(try InsightFarmQueryEngine().execute(
+            arguments: arguments,
+            farmID: UUID(),
+            context: context,
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("牧场记录不存在"))
+        }
+    }
+
+    func testResponseGuardLeavesNaturalLanguageGroundingToTheSemanticReviewer() {
+        XCTAssertNil(InsightAssistantResponseGuard.issue(
+            for: "S2-U033 目前不在牧场记录中。",
+            createdDraftCount: 0,
+            earTagEvidence: nil
+        ))
         XCTAssertEqual(
             InsightAssistantResponseGuard.issue(
-                for: "一号圈现在有18只羊。",
+                for: "操作卡片已生成，请确认。",
                 createdDraftCount: 0,
-                successfulToolNames: [],
-                earTagEvidence: nil,
-                requiresGroundedFarmQuery: true,
-                hasGroundedFarmQuery: false
+                earTagEvidence: nil
             ),
-            .ungroundedFarmClaim
+            .actionClaimWithoutDraft
         )
-        XCTAssertNil(InsightAssistantResponseGuard.issue(
-            for: "本地查询结果将由 App 直接展示。",
-            createdDraftCount: 0,
-            successfulToolNames: [InsightFarmQueryEngine.toolName],
-            earTagEvidence: nil,
-            requiresGroundedFarmQuery: true,
-            hasGroundedFarmQuery: true
-        ))
     }
 
     func testFarmQueryCombinesFiltersAndProducesDeterministicEvidence() throws {
@@ -86,6 +1210,7 @@ final class InsightAssistantTests: XCTestCase {
         )
         let context = ModelContext(container)
         let farmID = UUID()
+        insertFarm(farmID, into: context)
         let pen = PenRecord(farmID: farmID, name: "一号圈")
         context.insert(pen)
         context.insert(SheepRecord(
@@ -135,6 +1260,7 @@ final class InsightAssistantTests: XCTestCase {
         )
         let context = ModelContext(container)
         let farmID = UUID()
+        insertFarm(farmID, into: context)
         let firstPen = PenRecord(farmID: farmID, name: "原圈")
         let secondPen = PenRecord(farmID: farmID, name: "新圈")
         let enteredAt = Date(timeIntervalSince1970: 1_700_000_000)
@@ -179,6 +1305,7 @@ final class InsightAssistantTests: XCTestCase {
         )
         let context = ModelContext(container)
         let farmID = UUID()
+        insertFarm(farmID, into: context)
         let january = Date(timeIntervalSince1970: 1_768_435_200) // 2026-01-15 UTC
         let priorYear = Date(timeIntervalSince1970: 1_736_899_200) // 2025-01-15 UTC
         context.insert(SheepRecord(
@@ -225,12 +1352,14 @@ final class InsightAssistantTests: XCTestCase {
             isStoredInMemoryOnly: true
         )
         let context = ModelContext(container)
+        let farmID = UUID()
+        insertFarm(farmID, into: context)
         var arguments = farmQueryArguments(subject: "sheep")
         arguments["date_from"] = "2026-01-01T00:00:00Z"
 
         XCTAssertThrowsError(try InsightFarmQueryEngine().execute(
             arguments: arguments,
-            farmID: UUID(),
+            farmID: farmID,
             context: context,
             now: Date(timeIntervalSince1970: 1_800_000_000)
         ))
@@ -243,6 +1372,7 @@ final class InsightAssistantTests: XCTestCase {
         )
         let context = ModelContext(container)
         let farmID = UUID()
+        insertFarm(farmID, into: context)
         let ewe = SheepRecord(
             farmID: farmID,
             earTag: "EWE-001",
@@ -292,6 +1422,7 @@ final class InsightAssistantTests: XCTestCase {
         )
         let context = ModelContext(container)
         let farmID = UUID()
+        insertFarm(farmID, into: context)
         let formatter = ISO8601DateFormatter()
         let enteredAt = try XCTUnwrap(formatter.date(from: "2025-12-01T00:00:00Z"))
         let birthAt = try XCTUnwrap(formatter.date(from: "2026-01-15T00:00:00Z"))
@@ -339,11 +1470,13 @@ final class InsightAssistantTests: XCTestCase {
             reason: "出售",
             occurredAt: try XCTUnwrap(formatter.date(from: "2026-06-01T00:00:00Z"))
         ))
+        soldLamb.statusRawValue = SheepStatus.removed.rawValue
+        soldLamb.currentPenID = nil
+        soldLamb.removedAt = try XCTUnwrap(formatter.date(from: "2026-06-01T00:00:00Z"))
         var arguments = farmQueryArguments(subject: "sheep")
         arguments["query_kind"] = FarmDataQuerySkill.QueryKind.bornLambLifecycle.rawValue
         arguments["date_from"] = "2026-01-01T00:00:00Z"
         arguments["date_to"] = "2026-08-27T23:59:59Z"
-        arguments["as_of"] = "2026-08-27T00:00:00Z"
 
         let output = try InsightFarmQueryEngine().execute(
             arguments: arguments,
@@ -354,7 +1487,7 @@ final class InsightAssistantTests: XCTestCase {
         let grounded = try XCTUnwrap(InsightFarmQueryEngine.GroundedOutput(toolOutput: output))
         XCTAssertEqual(grounded.queryKind, FarmDataQuerySkill.QueryKind.bornLambLifecycle.rawValue)
         XCTAssertEqual(grounded.totalMatchingCount, 3)
-        XCTAssertTrue(grounded.markdown.contains("| 2026-01 | 3 | 2 | 1 | 0 | 1 | 0 | 0 |"))
+        XCTAssertTrue(grounded.markdown.contains("| 2026-01 | 3 | 2 | 1 | 0 | 1 | 0 | 0 | 0 |"))
         XCTAssertTrue(grounded.markdown.contains("两者可能无法逐只对应"))
     }
 
@@ -386,6 +1519,64 @@ final class InsightAssistantTests: XCTestCase {
             "relations": [],
             "limit": 100,
         ]
+    }
+
+    private func farmCalculationArguments(
+        penName: String = "",
+        asOf: String = ""
+    ) -> [String: Any] {
+        [
+            "source": "weight_samples",
+            "sample_policy": "recorded_only",
+            "cohort": "current_in_herd",
+            "pen_membership": "at_cutoff",
+            "pen_name": penName,
+            "ear_tag": "",
+            "breed": "",
+            "sex": "",
+            "date_from": "",
+            "date_to": "",
+            "as_of": asOf,
+            "partition_by": "sheep",
+            "window": "none",
+            "transform": "value",
+            "analysis_scope": "focused",
+            "group_by": "none",
+            "reduce": "average",
+            "selection": "all",
+            "limit": 100,
+        ]
+    }
+
+    private func calculationObject(_ output: String) throws -> [String: Any] {
+        let data = try XCTUnwrap(output.data(using: .utf8))
+        return try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+    }
+
+    private func sectionGroup(
+        _ dimension: String,
+        key: String,
+        in sections: [[String: Any]]
+    ) throws -> [String: Any] {
+        let section = try XCTUnwrap(sections.first {
+            $0["dimension"] as? String == dimension
+        })
+        let groups = try XCTUnwrap(section["groups"] as? [[String: Any]])
+        return try XCTUnwrap(groups.first { $0["key"] as? String == key })
+    }
+
+    @discardableResult
+    private func insertFarm(
+        _ farmID: UUID,
+        into context: ModelContext,
+        timeZoneIdentifier: String = "Asia/Shanghai"
+    ) -> FarmRecord {
+        let farm = FarmRecord(id: farmID, ownerAccountID: UUID(), name: "查询测试牧场")
+        farm.timeZoneIdentifier = timeZoneIdentifier
+        context.insert(farm)
+        return farm
     }
 
     private func queryKind(for subject: String) -> String {
@@ -781,6 +1972,68 @@ final class InsightAssistantTests: XCTestCase {
         XCTAssertFalse(result.output.contains("B-001"))
     }
 
+    func testFindSheepReturnsExactProfileBirthDateAndUnifiedCurrentState() throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-find-sheep-profile-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let birthAt = try XCTUnwrap(
+            ISO8601DateFormatter().date(from: "2026-07-01T04:49:00Z")
+        )
+        context.insert(SheepRecord(
+            farmID: farmID,
+            earTag: "S2-U033-RELATED",
+            breed: "湖羊",
+            sex: .ram,
+            penID: nil,
+            enteredAt: birthAt,
+            birthAt: birthAt
+        ))
+        context.insert(SheepRecord(
+            farmID: farmID,
+            earTag: "S2-U033",
+            breed: "湖羊",
+            sex: .ram,
+            penID: nil,
+            enteredAt: birthAt,
+            birthAt: birthAt
+        ))
+        try context.save()
+        let agent = InsightAgentContext(
+            accountID: UUID(),
+            farmID: farmID,
+            role: .owner,
+            originDeviceID: UUID(),
+            conversationID: UUID()
+        )
+
+        let execution = try InsightToolRegistry().execute(
+            .init(
+                callID: "find-exact-profile",
+                name: "find_sheep",
+                argumentsJSON: #"{"query":"S2-U033"}"#
+            ),
+            agent: agent,
+            context: context
+        )
+        let data = try XCTUnwrap(execution.output.data(using: .utf8))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let rows = try XCTUnwrap(object["rows"] as? [[String: Any]])
+        let exact = try XCTUnwrap(rows.first)
+
+        XCTAssertEqual(exact["ear_tag"] as? String, "S2-U033")
+        let birthText = try XCTUnwrap(exact["birth_at"] as? String)
+        XCTAssertEqual(ISO8601DateFormatter().date(from: birthText), birthAt)
+        XCTAssertEqual(exact["status"] as? String, SheepStatus.active.rawValue)
+        XCTAssertEqual(exact["currently_present"] as? Bool, true)
+        XCTAssertEqual(exact["projection_matches_stored_state"] as? Bool, true)
+        XCTAssertEqual(object["contract_version"] as? String, FarmFactContract.version)
+    }
+
     func testAssistantInstructionsUseCurrentCalendarYearAndLocalTimeZone() throws {
         let formatter = ISO8601DateFormatter()
         let now = try XCTUnwrap(formatter.date(from: "2026-07-25T06:50:00Z"))
@@ -821,7 +2074,6 @@ final class InsightAssistantTests: XCTestCase {
             InsightAssistantResponseGuard.issue(
                 for: fakeSuccess,
                 createdDraftCount: 0,
-                successfulToolNames: [],
                 earTagEvidence: nil
             ),
             .actionClaimWithoutDraft
@@ -830,7 +2082,6 @@ final class InsightAssistantTests: XCTestCase {
             InsightAssistantResponseGuard.issue(
                 for: "好的，我重新批量生成。\n\n**第一批：断奶记录（18只）**",
                 createdDraftCount: 0,
-                successfulToolNames: [],
                 earTagEvidence: nil
             ),
             .incompleteResponse
@@ -862,7 +2113,6 @@ final class InsightAssistantTests: XCTestCase {
             InsightAssistantResponseGuard.issue(
                 for: "请确认 DH057 是否确实存在？我找不到对应信息。",
                 createdDraftCount: 0,
-                successfulToolNames: ["match_sheep_ear_tags"],
                 earTagEvidence: evidence
             ),
             .contradictedEarTagEvidence
@@ -871,7 +2121,6 @@ final class InsightAssistantTests: XCTestCase {
             InsightAssistantResponseGuard.issue(
                 for: "QA029 已匹配，但没有体重。",
                 createdDraftCount: 0,
-                successfulToolNames: ["match_sheep_ear_tags"],
                 earTagEvidence: evidence
             ),
             .contradictedEarTagEvidence
@@ -879,18 +2128,8 @@ final class InsightAssistantTests: XCTestCase {
         XCTAssertNil(InsightAssistantResponseGuard.issue(
             for: "DH057 与 DH058 已匹配。\nQA029 未匹配，请核对。",
             createdDraftCount: 0,
-            successfulToolNames: ["match_sheep_ear_tags"],
             earTagEvidence: evidence
         ))
-        XCTAssertEqual(
-            InsightAssistantResponseGuard.issue(
-                for: "系统中没有找到耳号 DH057。",
-                createdDraftCount: 0,
-                successfulToolNames: [],
-                earTagEvidence: nil
-            ),
-            .ungroundedEarTagClaim
-        )
     }
 
     func testConversationControllerRestoresOnlyTheBoundAccountAndFarm() throws {
@@ -1017,6 +2256,30 @@ final class InsightAssistantTests: XCTestCase {
         XCTAssertEqual(controller.drafts.map(\.id), [stardewDraft.id])
         XCTAssertTrue(controller.conversationScope.contains(stardewAttachment))
         XCTAssertFalse(controller.conversationScope.contains(foreignFarmAttachment))
+
+        let baselineContextUsage = controller.contextWindowUsage
+        let persistedEvidence = InsightMessageRecord(
+            conversationID: stardewConversation.id,
+            accountID: accountID,
+            farmID: stardewFarm.id,
+            role: .system,
+            text: String(repeating: "本地查询证据", count: 2_000),
+            createdAt: stardewMessage.createdAt.addingTimeInterval(1),
+            provider: "local",
+            model: FarmFactContract.version,
+            toolName: InsightFarmQueryEngine.persistedEvidenceToolName
+        )
+        context.insert(persistedEvidence)
+        try context.save()
+        controller.selectConversation(stardewConversation.id)
+        XCTAssertEqual(Set(controller.messages.map(\.id)), Set([stardewMessage.id, persistedEvidence.id]))
+        XCTAssertEqual(controller.visibleMessages.map(\.id), [stardewMessage.id])
+        XCTAssertLessThanOrEqual(
+            abs(controller.contextWindowUsage.estimatedTokens - baselineContextUsage.estimatedTokens),
+            8,
+            "隐藏证据不得进入模型上下文；这里仅允许当前时间文本造成的极小估算波动。"
+        )
+        XCTAssertEqual(controller.contextWindowUsage.lastCompressedAt, baselineContextUsage.lastCompressedAt)
 
         controller.selectConversation(jihaoConversation.id)
         XCTAssertNil(controller.currentConversationID)
@@ -2733,4 +3996,86 @@ final class InsightAssistantTests: XCTestCase {
         )
         XCTAssertNil(removed)
     }
+}
+
+private final class ScriptedMiMoResponder: MiMoResponding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var scripts: [[InsightModelEvent]]
+    private var requests: [MiMoConversationRequest] = []
+
+    init(scripts: [[InsightModelEvent]]) {
+        self.scripts = scripts
+    }
+
+    func stream(
+        request: MiMoConversationRequest,
+        credential: MiMoCredential
+    ) -> AsyncThrowingStream<InsightModelEvent, Error> {
+        let script: [InsightModelEvent]?
+        lock.lock()
+        requests.append(request)
+        script = scripts.isEmpty ? nil : scripts.removeFirst()
+        lock.unlock()
+
+        return AsyncThrowingStream { continuation in
+            guard let script else {
+                continuation.finish(throwing: MiMoClientError.invalidResponse)
+                return
+            }
+            for event in script {
+                continuation.yield(event)
+            }
+            continuation.finish()
+        }
+    }
+
+    func validate(credential: MiMoCredential) async throws {}
+
+    func capturedRequests() -> [MiMoConversationRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+}
+
+private final class FlakyMiMoResponder: MiMoResponding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var failures: [MiMoClientError]
+    private let events: [InsightModelEvent]
+    private var requests = 0
+
+    init(failures: [MiMoClientError], events: [InsightModelEvent]) {
+        self.failures = failures
+        self.events = events
+    }
+
+    var requestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+
+    func stream(
+        request: MiMoConversationRequest,
+        credential: MiMoCredential
+    ) -> AsyncThrowingStream<InsightModelEvent, Error> {
+        let failure: MiMoClientError?
+        lock.lock()
+        requests += 1
+        failure = failures.isEmpty ? nil : failures.removeFirst()
+        lock.unlock()
+
+        return AsyncThrowingStream { continuation in
+            if let failure {
+                continuation.finish(throwing: failure)
+                return
+            }
+            for event in events {
+                continuation.yield(event)
+            }
+            continuation.finish()
+        }
+    }
+
+    func validate(credential: MiMoCredential) async throws {}
 }

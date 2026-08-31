@@ -362,6 +362,83 @@ final class FarmRemoteRestoreAndStorageTests: XCTestCase {
         XCTAssertEqual(record.targetCursorRevision, 42)
     }
 
+    func testPostRecoveryProjectionRepairKeepsDuplicateTransferRowsNonFatal() throws {
+        let container = try AppSchema.makeContainer(
+            name: "PostRecoveryDuplicateTransferTests",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let accountID = UUID()
+        let farmID = UUID()
+        let sheepID = UUID()
+        let cutoff = Date().addingTimeInterval(-3_600)
+
+        context.insert(CloudFarmBinding(
+            farmID: farmID,
+            ownerAccountID: accountID,
+            state: .active
+        ))
+        let session = CloudRebuildSessionRecord(
+            farmID: farmID,
+            databaseScope: .privateDatabase,
+            reason: .manualVerification,
+            stagingRelativePath: "CloudRebuild/duplicate-transfer"
+        )
+        session.statusRawValue = CloudRebuildStatus.completed.rawValue
+        session.completedAt = cutoff
+        context.insert(session)
+
+        let sheep = SheepRecord(
+            id: sheepID,
+            farmID: farmID,
+            earTag: "DUP-001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: cutoff.addingTimeInterval(-86_400)
+        )
+        sheep.legacyStatusSnapshotIsAuthoritative = true
+        sheep.legacyPenSnapshotIsAuthoritative = true
+        context.insert(sheep)
+
+        // A recovery/import can leave two rows with the same cloud entity ID.
+        // Both rows must remain visible to the repair, but neither may crash
+        // startup while the tombstone index is built.
+        let duplicateTransferID = UUID()
+        let firstTransfer = TransferRecord(
+            id: duplicateTransferID,
+            farmID: farmID,
+            sheepID: sheepID,
+            fromPenID: nil,
+            toPenID: nil,
+            occurredAt: cutoff.addingTimeInterval(60)
+        )
+        firstTransfer.recordedAt = cutoff.addingTimeInterval(61)
+        let secondTransfer = TransferRecord(
+            id: duplicateTransferID,
+            farmID: farmID,
+            sheepID: sheepID,
+            fromPenID: nil,
+            toPenID: nil,
+            occurredAt: cutoff.addingTimeInterval(120)
+        )
+        secondTransfer.recordedAt = cutoff.addingTimeInterval(121)
+        context.insert(firstTransfer)
+        context.insert(secondTransfer)
+        try context.save()
+
+        XCTAssertNoThrow(
+            try PostRecoveryHistoryProjectionRepair.repair(container: container)
+        )
+        XCTAssertFalse(
+            try XCTUnwrap(
+                ModelContext(container)
+                    .fetch(FetchDescriptor<SheepRecord>())
+                    .first { $0.id == sheepID }
+            ).legacyStatusSnapshotIsAuthoritative ?? false
+        )
+    }
+
     func testInventoryOnlyCleansAllowlistedTerminalWorkspacesAfterBackupConfirmation() throws {
         let container = try AppSchema.makeContainer(
             name: "StorageInventoryTests",

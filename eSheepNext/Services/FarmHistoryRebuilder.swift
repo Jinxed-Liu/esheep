@@ -438,35 +438,15 @@ final class FarmHistoryRebuilder {
         transfers: [TransferRecord],
         removals: [RemovalRecord]
     ) {
-        let removal = FarmHistoryTimeline.removal(for: item.id, at: endDate, removals: removals)
-        let reconstructedStatus = removal?.kind.resultingStatus ?? .active
-        let projectedStatus: SheepStatus
-        if item.isHistoricalArchive {
-            projectedStatus = .removed
-        } else if item.legacyStatusSnapshotIsAuthoritative == true {
-            projectedStatus = item.status
-        } else {
-            projectedStatus = reconstructedStatus
-        }
-        let reconstructedPen = reconstructedStatus == .active
-            ? FarmHistoryTimeline.pen(for: item, at: endDate, transfers: transfers)
-            : nil
-        let projectedPen: UUID?
-        if projectedStatus != .active || item.isHistoricalArchive {
-            projectedPen = nil
-        } else if item.legacyPenSnapshotIsAuthoritative == true {
-            projectedPen = item.currentPenID
-        } else {
-            projectedPen = reconstructedPen
-        }
-        let projectedRemovedAt: Date?
-        if item.isHistoricalArchive {
-            projectedRemovedAt = item.removedAt
-        } else if item.legacyStatusSnapshotIsAuthoritative == true {
-            projectedRemovedAt = projectedStatus == .active ? nil : (removal?.occurredAt ?? item.removedAt)
-        } else {
-            projectedRemovedAt = removal?.occurredAt
-        }
+        let fact = FarmSheepStateResolver.current(
+            item,
+            at: endDate,
+            transfers: transfers,
+            removals: removals
+        )
+        guard let projectedStatus = fact.status else { return }
+        let projectedPen = fact.penID
+        let projectedRemovedAt = fact.removedAt
 
         if item.status != projectedStatus || item.currentPenID != projectedPen || item.removedAt != projectedRemovedAt {
             item.statusRawValue = projectedStatus.rawValue
@@ -552,7 +532,17 @@ final class FarmHistoryRebuilder {
         let orderedRemovals = removals.sorted { lhs, rhs in
             lhs.occurredAt == rhs.occurredAt ? lhs.recordedAt < rhs.recordedAt : lhs.occurredAt < rhs.occurredAt
         }
-        let sheepByID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id, $0) })
+        // The local store can contain duplicate legacy rows after a recovery.
+        // Select the newest materialized row deterministically instead of
+        // trapping while building the lookup.  The event arrays remain fully
+        // preserved and are still replayed below.
+        let sheepByID = Dictionary(grouping: sheep, by: \.id).compactMapValues { records in
+            records.max { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt < rhs.updatedAt }
+                if lhs.revision != rhs.revision { return lhs.revision < rhs.revision }
+                return lhs.createdAt < rhs.createdAt
+            }
+        }
         var latestTransfer: [UUID: TransferRecord] = [:]
         var activePens: [UUID: UUID] = [:]
         var activeCounts: [DailyPenCountKey: Int] = [:]
@@ -702,8 +692,15 @@ enum PostRecoveryHistoryProjectionRepair {
         let transfers = try context.fetch(FetchDescriptor<TransferRecord>())
         let removals = try context.fetch(FetchDescriptor<RemovalRecord>())
         let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>())
-        let transfersByID = Dictionary(uniqueKeysWithValues: transfers.map { ($0.id, $0) })
-        let removalsByID = Dictionary(uniqueKeysWithValues: removals.map { ($0.id, $0) })
+        // `id` is the cloud operation identity, but older imports/recovery
+        // paths did not enforce uniqueness in the local SwiftData store.  A
+        // duplicate row must not be allowed to crash startup (the previous
+        // `uniqueKeysWithValues` initializer traps with SIGTRAP).  Keep every
+        // row under the key so a tombstone can still invalidate all affected
+        // projections, including a malformed duplicate that points at a
+        // different sheep.
+        let transfersByID = Dictionary(grouping: transfers, by: \.id)
+        let removalsByID = Dictionary(grouping: removals, by: \.id)
         var repairedSheepCount = 0
 
         for (farmID, cutoff) in latestCutoffByFarmID {
@@ -731,12 +728,12 @@ enum PostRecoveryHistoryProjectionRepair {
                 }
                 switch CloudEntityType(rawValue: tombstone.entityType) {
                 case .transfer:
-                    if let transfer = transfersByID[tombstone.entityID] {
+                    for transfer in transfersByID[tombstone.entityID] ?? [] where transfer.farmID == farmID {
                         affectedPenSheepIDs.insert(transfer.sheepID)
                         changedDates.append(transfer.occurredAt)
                     }
                 case .removal:
-                    if let removal = removalsByID[tombstone.entityID] {
+                    for removal in removalsByID[tombstone.entityID] ?? [] where removal.farmID == farmID {
                         affectedStatusSheepIDs.insert(removal.sheepID)
                         changedDates.append(removal.occurredAt)
                     }

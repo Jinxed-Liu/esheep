@@ -49,6 +49,16 @@ enum LambingEntrySemantics {
         userOverrodeSuggestion ? currentBreed : suggestedBreed
     }
 
+    /// A pedigree lookup can contribute to the editable breed suggestion
+    /// without turning a historical co-pen candidate into a confirmed sire.
+    /// Multiple candidates remain ambiguous even when they share a breed.
+    static func soleSireCandidateBreedForSuggestion(
+        candidateBreeds: [String]
+    ) -> String? {
+        guard candidateBreeds.count == 1 else { return nil }
+        return normalizedBreed(candidateBreeds[0])
+    }
+
     private static func normalizedBreed(_ breed: String?) -> String? {
         guard let breed else { return nil }
         let normalized = breed.trimmingCharacters(in: .whitespacesAndNewlines)

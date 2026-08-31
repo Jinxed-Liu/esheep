@@ -241,11 +241,11 @@ enum InsightMediaError: LocalizedError {
         case .microphonePermissionDenied:
             "未获得麦克风权限。"
         case .audioRecordingFailed:
-            "录音失败，请重试。"
+            "录音没有完成；本条语音未发送。"
         case .audioTooLarge:
-            "录音文件过大，请缩短后重试。"
+            "录音文件过大；请缩短录音后再发送。"
         case .audioStorageFailed:
-            "无法保存本机语音消息，请重试。"
+            "无法保存本机语音消息；本条语音未发送。"
         }
     }
 }

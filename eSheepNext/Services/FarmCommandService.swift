@@ -16,6 +16,7 @@ enum FarmCommandError: LocalizedError {
     case invalidRemovalBatch(String)
     case duplicateBatchMembership
     case batchMembershipNotFound
+    case batchMembershipNotRestorable
     case inventoryLotNotFound
     case insufficientInventory
     case invalidReproductionRecord
@@ -65,8 +66,9 @@ enum FarmCommandError: LocalizedError {
         case .batchNotFound: "未找到当前牧场中的生产批次。"
         case .removalNotFound: "未找到可恢复的离场记录。"
         case .invalidRemovalBatch(let detail): "离场批次无效：\(detail)"
-        case .duplicateBatchMembership: "该羊已在此批次中。"
+        case .duplicateBatchMembership: "该羊已在未结束的生产批次中。"
         case .batchMembershipNotFound: "未找到可结束的批次成员关系。"
+        case .batchMembershipNotRestorable: "未找到可撤回的批次移出记录；它可能已被撤回或同步更新。"
         case .inventoryLotNotFound: "未找到当前牧场中的库存批次。"
         case .insufficientInventory: "库存余量不足，无法完成本次出库。"
         case .invalidReproductionRecord: "繁殖记录缺少必填信息。"
@@ -518,6 +520,7 @@ enum FarmCommand: Sendable {
     case createBatch(name: String, purpose: String, startedAt: Date, sheepIDs: [UUID], note: String)
     case assignSheepToBatch(batchID: UUID, sheepID: UUID, joinedAt: Date)
     case leaveBatch(batchID: UUID, sheepID: UUID, leftAt: Date, reason: String)
+    case restoreBatchMembership(membershipID: UUID, restoredAt: Date, reason: String)
     case addIngredient(name: String, unit: String, dryMatterText: String?)
     case createRecipe(name: String, note: String)
     case addRecipeComponent(recipeID: UUID, ingredientID: UUID, kilogramsText: String)
@@ -579,6 +582,7 @@ enum FarmCommand: Sendable {
         case .createBatch: .createBatch
         case .assignSheepToBatch: .assignBatchMembership
         case .leaveBatch: .leaveBatchMembership
+        case .restoreBatchMembership: .restoreBatchMembership
         case .addIngredient: .addIngredient
         case .createRecipe: .createRecipe
         case .addRecipeComponent: .addRecipeComponent
@@ -623,6 +627,7 @@ enum FarmCommand: Sendable {
         case .createBatch(let name, _, _, _, _): "新建生产批次：\(name)"
         case .assignSheepToBatch: "加入生产批次"
         case .leaveBatch: "离开生产批次"
+        case .restoreBatchMembership: "撤回移出生产批次"
         case .addIngredient(let name, _, _): "新增原料：\(name)"
         case .createRecipe(let name, _): "新建配方：\(name)"
         case .addRecipeComponent: "更新配方组成"
@@ -2581,6 +2586,37 @@ final class FarmCommandService {
             }
             guard leftAt >= membership.joinedAt else { throw FarmCommandError.missingRequiredValue("不早于批次开始时间的脱离时间") }
             _ = try required(reason, label: "脱离原因")
+        case .restoreBatchMembership(let membershipID, let restoredAt, let reason):
+            let memberships = try context.fetch(FetchDescriptor<BatchMembershipRecord>())
+            guard let membership = memberships.first(where: {
+                $0.id == membershipID &&
+                    $0.farmID == farmID &&
+                    $0.deletedAt == nil &&
+                    $0.leftAt != nil
+            }), let leftAt = membership.leftAt else {
+                throw FarmCommandError.batchMembershipNotRestorable
+            }
+            guard restoredAt >= leftAt else {
+                throw FarmCommandError.missingRequiredValue("不早于移出时间的撤回时间")
+            }
+            _ = try required(reason, label: "撤回原因")
+            let batches = try context.fetch(FetchDescriptor<ProductionBatchRecord>())
+            guard batches.contains(where: {
+                $0.id == membership.batchID && $0.farmID == farmID && $0.deletedAt == nil
+            }) else {
+                throw FarmCommandError.batchNotFound
+            }
+            let sheep = try sheepRecord(membership.sheepID, farmID: farmID, context: context)
+            guard sheep.isCurrentlyPresent else { throw FarmCommandError.sheepNotFound }
+            guard !memberships.contains(where: {
+                $0.id != membership.id &&
+                    $0.farmID == farmID &&
+                    $0.sheepID == membership.sheepID &&
+                    $0.deletedAt == nil &&
+                    $0.leftAt == nil
+            }) else {
+                throw FarmCommandError.duplicateBatchMembership
+            }
         case .addIngredient(let name, let unit, let dryMatterText):
             _ = try required(name, label: "原料名称")
             _ = try required(unit, label: "单位")
@@ -3207,11 +3243,43 @@ final class FarmCommandService {
             guard let membership = memberships.first(where: { $0.farmID == farm.farmID && $0.batchID == batchID && $0.sheepID == sheepID && $0.deletedAt == nil && $0.leftAt == nil }) else {
                 throw FarmCommandError.batchMembershipNotFound
             }
+            let baseRevision = try latestRevision(
+                entityType: .batchMembership,
+                entityID: membership.id,
+                farmID: farm.farmID,
+                context: context
+            )
             membership.leftAt = leftAt
             membership.leaveReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
             membership.updatedAt = .now
             try ProductionBatchLifecycle.reconcile(batchID: batchID, farmID: farm.farmID, context: context)
-            return appliedResult(.batchMembership, membership.id, baseRevision: 1, revision: 2)
+            return appliedResult(.batchMembership, membership.id, baseRevision: baseRevision, revision: baseRevision + 1)
+        case .restoreBatchMembership(let membershipID, let restoredAt, _):
+            let memberships = try context.fetch(FetchDescriptor<BatchMembershipRecord>())
+            guard let membership = memberships.first(where: {
+                $0.id == membershipID &&
+                    $0.farmID == farm.farmID &&
+                    $0.deletedAt == nil &&
+                    $0.leftAt != nil
+            }) else {
+                throw FarmCommandError.batchMembershipNotRestorable
+            }
+            let baseRevision = try latestRevision(
+                entityType: .batchMembership,
+                entityID: membership.id,
+                farmID: farm.farmID,
+                context: context
+            )
+            membership.leftAt = nil
+            membership.leaveReason = nil
+            membership.updatedAt = .now
+            try ProductionBatchLifecycle.reconcile(
+                batchID: membership.batchID,
+                farmID: farm.farmID,
+                context: context,
+                changedAt: restoredAt
+            )
+            return appliedResult(.batchMembership, membership.id, baseRevision: baseRevision, revision: baseRevision + 1)
         case .addIngredient(let name, let unit, let dryMatterText):
             let record = FeedIngredientRecord(farmID: farm.farmID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), unit: unit.trimmingCharacters(in: .whitespacesAndNewlines), dryMatterText: dryMatterText.flatMap { $0.isEmpty ? nil : normalizedDecimal($0) })
             context.insert(record)

@@ -78,6 +78,135 @@ final class ProductionBatchLifecycleTests: XCTestCase {
         XCTAssertTrue(fixture.second.isCurrentlyPresent)
     }
 
+    func testRestoreBatchMembershipReopensOriginalBatchAndKeepsAuditTrail() throws {
+        let fixture = try makeFixture()
+        let startedAt = fixture.enteredAt.addingTimeInterval(86_400)
+        try fixture.service.execute(
+            .createBatch(
+                name: "误操作恢复批次",
+                purpose: "选育",
+                startedAt: startedAt,
+                sheepIDs: [fixture.first.id],
+                note: ""
+            ),
+            in: fixture.farmContext,
+            context: fixture.context
+        )
+        let batch = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ProductionBatchRecord>()).first {
+            $0.farmID == fixture.farm.id
+        })
+        let membership = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<BatchMembershipRecord>()).first {
+            $0.batchID == batch.id
+        })
+        let leftAt = startedAt.addingTimeInterval(86_400)
+        try fixture.service.execute(
+            .leaveBatch(
+                batchID: batch.id,
+                sheepID: fixture.first.id,
+                leftAt: leftAt,
+                reason: "误触移出"
+            ),
+            in: fixture.farmContext,
+            context: fixture.context
+        )
+        XCTAssertEqual(batch.status, .completed)
+        XCTAssertEqual(batch.endedAt, leftAt)
+
+        let restoredAt = leftAt.addingTimeInterval(60)
+        try fixture.service.execute(
+            .restoreBatchMembership(
+                membershipID: membership.id,
+                restoredAt: restoredAt,
+                reason: "用户撤回误操作"
+            ),
+            in: fixture.farmContext,
+            context: fixture.context
+        )
+
+        XCTAssertNil(membership.leftAt)
+        XCTAssertNil(membership.leaveReason)
+        XCTAssertEqual(batch.status, .active)
+        XCTAssertNil(batch.endedAt)
+        let membershipOperations = try fixture.context.fetch(FetchDescriptor<DomainOperation>())
+            .filter { $0.entityID == membership.id }
+            .sorted { $0.resultingRevision < $1.resultingRevision }
+        XCTAssertEqual(
+            membershipOperations.map(\.kindRawValue),
+            [
+                DomainOperationKind.leaveBatchMembership.rawValue,
+                DomainOperationKind.restoreBatchMembership.rawValue,
+            ]
+        )
+        XCTAssertEqual(membershipOperations.map(\.baseRevision), [1, 2])
+        XCTAssertEqual(membershipOperations.map(\.resultingRevision), [2, 3])
+        let restorePayload = try decodePayload(try XCTUnwrap(membershipOperations.last).payload)
+        XCTAssertEqual(restorePayload.kind, .restoreBatchMembership)
+        XCTAssertEqual(restorePayload.identifiers["membershipID"], membership.id)
+        XCTAssertEqual(restorePayload.strings["reason"], "用户撤回误操作")
+    }
+
+    func testRemoteRestoreBatchMembershipReopensArchivedBatch() throws {
+        let fixture = try makeFixture()
+        let startedAt = fixture.enteredAt.addingTimeInterval(86_400)
+        try fixture.service.execute(
+            .createBatch(
+                name: "远端恢复批次",
+                purpose: "育肥",
+                startedAt: startedAt,
+                sheepIDs: [fixture.first.id],
+                note: ""
+            ),
+            in: fixture.farmContext,
+            context: fixture.context
+        )
+        let batch = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ProductionBatchRecord>()).first {
+            $0.farmID == fixture.farm.id
+        })
+        let membership = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<BatchMembershipRecord>()).first {
+            $0.batchID == batch.id
+        })
+        let leftAt = startedAt.addingTimeInterval(86_400)
+        try fixture.service.execute(
+            .leaveBatch(batchID: batch.id, sheepID: fixture.first.id, leftAt: leftAt, reason: "误触移出"),
+            in: fixture.farmContext,
+            context: fixture.context
+        )
+        let restoredAt = leftAt.addingTimeInterval(120)
+        let payloadData = try FarmCommandCloudPayloadEncoder.encode(
+            .restoreBatchMembership(
+                membershipID: membership.id,
+                restoredAt: restoredAt,
+                reason: "另一台设备撤回"
+            )
+        )
+        let envelope = CloudOperationEnvelope(
+            farmID: fixture.farm.id,
+            entityID: membership.id,
+            entityType: CloudEntityType.batchMembership.rawValue,
+            schemaVersion: 2,
+            revision: 3,
+            baseRevision: 2,
+            operationID: UUID(),
+            modifiedAt: restoredAt,
+            modifiedByAccountID: fixture.account.id,
+            modifiedByDeviceID: UUID(),
+            payload: payloadData,
+            payloadDigest: CloudPayloadDigest.hex(for: payloadData),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+
+        XCTAssertEqual(
+            try RemoteDomainApplyService().apply(envelope, context: fixture.context),
+            .applied(rebuildHistoryFrom: leftAt)
+        )
+        XCTAssertNil(membership.leftAt)
+        XCTAssertNil(membership.leaveReason)
+        XCTAssertEqual(batch.status, .active)
+        XCTAssertNil(batch.endedAt)
+    }
+
     func testLeavingFarmDoesNotDetachSheepFromProductionBatch() throws {
         let fixture = try makeFixture()
         let startedAt = fixture.enteredAt.addingTimeInterval(86_400)

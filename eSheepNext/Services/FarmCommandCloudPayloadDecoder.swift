@@ -208,6 +208,12 @@ enum FarmCommandCloudPayloadDecoder {
                 leftAt: try date("leftAt", in: payload),
                 reason: try string("reason", in: payload)
             )
+        case .restoreBatchMembership:
+            return .restoreBatchMembership(
+                membershipID: try identifier("membershipID", in: payload),
+                restoredAt: try date("restoredAt", in: payload),
+                reason: try string("reason", in: payload)
+            )
         case .addIngredient:
             return .addIngredient(
                 name: try string("name", in: payload),

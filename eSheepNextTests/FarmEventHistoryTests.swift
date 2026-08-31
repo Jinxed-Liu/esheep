@@ -165,7 +165,130 @@ final class FarmEventHistoryTests: XCTestCase {
         XCTAssertEqual(events.map(\.entityType), [.note, .weight, .sheep])
         XCTAssertEqual(events.map(\.occurredAt), events.map(\.occurredAt).sorted(by: >))
         XCTAssertEqual(events.first?.subject, "E001")
+        XCTAssertTrue(events.allSatisfy { $0.relatedSheepIDs == [sheep.id] })
         XCTAssertFalse(events.contains { $0.detail.contains("其他牧场") || $0.detail.contains("已撤销") })
+    }
+
+    func testHealthAndReproductionEventsRetainEveryRelatedSheepID() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "event-related-sheep-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let ewe = SheepRecord(
+            farmID: farmID,
+            earTag: "E001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: .now
+        )
+        let ram = SheepRecord(
+            farmID: farmID,
+            earTag: "R001",
+            breed: "杜泊",
+            isBreedingRam: true,
+            sex: .ram,
+            penID: nil,
+            enteredAt: .now
+        )
+        let health = HealthRecord(
+            farmID: farmID,
+            sheepID: nil,
+            penID: nil,
+            kind: .vaccination,
+            itemNameSnapshot: "三联四防",
+            occurredAt: .now
+        )
+        let reproduction = ReproductionRecord(
+            farmID: farmID,
+            eweID: ewe.id,
+            kind: .breeding,
+            occurredAt: .now,
+            sireID: ram.id
+        )
+        context.insert(ewe)
+        context.insert(ram)
+        context.insert(health)
+        context.insert(reproduction)
+        context.insert(HealthSubjectLink(
+            farmID: farmID,
+            healthRecordID: health.id,
+            sheepID: ewe.id
+        ))
+        context.insert(HealthSubjectLink(
+            farmID: farmID,
+            healthRecordID: health.id,
+            sheepID: ram.id
+        ))
+        try context.save()
+
+        let events = try await FarmEventHistoryActor(container: container).load(farmID: farmID)
+        let healthEvent = try XCTUnwrap(events.first { $0.id == health.id })
+        let reproductionEvent = try XCTUnwrap(events.first { $0.id == reproduction.id })
+
+        XCTAssertEqual(Set(healthEvent.relatedSheepIDs), Set([ewe.id, ram.id]))
+        XCTAssertEqual(Set(reproductionEvent.relatedSheepIDs), Set([ewe.id, ram.id]))
+    }
+
+    func testBatchDepartureAppearsAsRestorableEventUntilMembershipIsRestored() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "event-batch-departure-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let sheep = SheepRecord(
+            farmID: farmID,
+            earTag: "B001",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: Date(timeIntervalSince1970: 100)
+        )
+        let batch = ProductionBatchRecord(
+            farmID: farmID,
+            name: "春季育肥一批",
+            purpose: "育肥",
+            source: .manual,
+            startedAt: Date(timeIntervalSince1970: 200)
+        )
+        let membership = BatchMembershipRecord(
+            farmID: farmID,
+            batchID: batch.id,
+            sheepID: sheep.id,
+            joinedAt: batch.startedAt
+        )
+        let leftAt = Date(timeIntervalSince1970: 300)
+        membership.leftAt = leftAt
+        membership.leaveReason = "误触移出"
+        membership.updatedAt = Date(timeIntervalSince1970: 301)
+        context.insert(sheep)
+        context.insert(batch)
+        context.insert(membership)
+        try context.save()
+
+        var events = try await FarmEventHistoryActor(container: container).load(farmID: farmID)
+        let departure = try XCTUnwrap(events.first {
+            $0.entityType == .batchMembership && $0.id == membership.id
+        })
+        let fields = Dictionary(uniqueKeysWithValues: departure.fields.map { ($0.label, $0.value) })
+        XCTAssertEqual(departure.title, "移出批次")
+        XCTAssertEqual(departure.subject, "B001")
+        XCTAssertEqual(departure.occurredAt, leftAt)
+        XCTAssertEqual(departure.relatedSheepIDs, [sheep.id])
+        XCTAssertTrue(departure.isRestorableBatchDeparture)
+        XCTAssertEqual(fields["生产批次"], "春季育肥一批")
+        XCTAssertEqual(fields["移出原因"], "误触移出")
+
+        membership.leftAt = nil
+        membership.leaveReason = nil
+        membership.updatedAt = Date(timeIntervalSince1970: 400)
+        try context.save()
+
+        events = try await FarmEventHistoryActor(container: container).load(farmID: farmID)
+        XCTAssertFalse(events.contains { $0.entityType == .batchMembership && $0.id == membership.id })
     }
 
     func testTimelineAndExportIncludeIndependentBirthRecord() async throws {
@@ -199,6 +322,7 @@ final class FarmEventHistoryTests: XCTestCase {
 
         XCTAssertEqual(birth.occurredAt, birthAt)
         XCTAssertTrue(birth.isDerived)
+        XCTAssertEqual(birth.relatedSheepIDs, [lamb.id])
         XCTAssertNil(birth.editCapability)
         XCTAssertEqual(fields["初始圈舍"], "产房")
         XCTAssertEqual(fields["母本"], "D001")

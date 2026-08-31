@@ -237,6 +237,32 @@ private struct CreateProductionBatchView: View {
     }
 }
 
+private struct ProductionBatchMembershipAction: Identifiable {
+    enum Kind: String {
+        case leave
+        case restore
+    }
+
+    let kind: Kind
+    let membershipID: UUID
+    let sheepID: UUID
+    let earTag: String
+    let batchName: String
+
+    var id: String { "\(kind.rawValue)-\(membershipID.uuidString)" }
+    var title: String { kind == .leave ? "确认移出批次？" : "撤回移出批次？" }
+    var confirmButtonTitle: String { kind == .leave ? "移出批次" : "恢复到原批次" }
+    var buttonRole: ButtonRole? { kind == .leave ? .destructive : nil }
+    var message: String {
+        switch kind {
+        case .leave:
+            "将把耳号 \(earTag) 从“\(batchName)”移出。羊只不会离场；本次操作会写入事件记录，并可从本页或事件详情撤回。"
+        case .restore:
+            "将撤回耳号 \(earTag) 从“\(batchName)”移出的操作，恢复原加入时间。若该羊已加入其他未结束批次，系统会阻止恢复。"
+        }
+    }
+}
+
 private struct ProductionBatchDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \BatchMembershipRecord.joinedAt, order: .reverse) private var memberships: [BatchMembershipRecord]
@@ -247,6 +273,7 @@ private struct ProductionBatchDetailView: View {
     let batch: ProductionBatchRecord
     private let commandService = FarmCommandService()
     @State private var errorMessage: String?
+    @State private var pendingBatchAction: ProductionBatchMembershipAction?
 
     private var batchMemberships: [BatchMembershipRecord] {
         memberships.filter { $0.farmID == farm.id && $0.batchID == batch.id && $0.deletedAt == nil }
@@ -276,11 +303,16 @@ private struct ProductionBatchDetailView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         if let leftAt = membership.leftAt {
-                            Text("脱离于 \(leftAt.formatted(date: .abbreviated, time: .shortened)) · \(membership.leaveReason ?? "手工脱离")")
+                            Text("移出于 \(leftAt.formatted(date: .abbreviated, time: .shortened)) · \(membership.leaveReason ?? "手工移出批次")")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
+                            Button("撤回移出批次") {
+                                requestAction(.restore, membership: membership)
+                            }
                         } else if batch.status == .active {
-                            Button("移出批次", role: .destructive) { leave(membership) }
+                            Button("移出批次", role: .destructive) {
+                                requestAction(.leave, membership: membership)
+                            }
                         }
                     }
                 }
@@ -288,14 +320,62 @@ private struct ProductionBatchDetailView: View {
             }
         }
         .navigationTitle(batch.name)
+        .alert(
+            pendingBatchAction?.title ?? "确认批次操作",
+            isPresented: isPresentingBatchAction,
+            presenting: pendingBatchAction
+        ) { action in
+            Button(action.confirmButtonTitle, role: action.buttonRole) {
+                perform(action)
+            }
+            Button("取消", role: .cancel) {}
+        } message: { action in
+            Text(action.message)
+        }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["批次脱离"])
     }
 
-    private func leave(_ membership: BatchMembershipRecord) {
+    private var isPresentingBatchAction: Binding<Bool> {
+        Binding(
+            get: { pendingBatchAction != nil },
+            set: { if !$0 { pendingBatchAction = nil } }
+        )
+    }
+
+    private func requestAction(
+        _ kind: ProductionBatchMembershipAction.Kind,
+        membership: BatchMembershipRecord
+    ) {
+        pendingBatchAction = ProductionBatchMembershipAction(
+            kind: kind,
+            membershipID: membership.id,
+            sheepID: membership.sheepID,
+            earTag: sheepNames[membership.sheepID] ?? "已删除羊只",
+            batchName: batch.name
+        )
+    }
+
+    private func perform(_ action: ProductionBatchMembershipAction) {
+        defer { pendingBatchAction = nil }
         do {
+            let command: FarmCommand = switch action.kind {
+            case .leave:
+                .leaveBatch(
+                    batchID: batch.id,
+                    sheepID: action.sheepID,
+                    leftAt: .now,
+                    reason: "手工移出批次"
+                )
+            case .restore:
+                .restoreBatchMembership(
+                    membershipID: action.membershipID,
+                    restoredAt: .now,
+                    reason: "用户撤回误移出批次"
+                )
+            }
             try commandService.execute(
-                .leaveBatch(batchID: batch.id, sheepID: membership.sheepID, leftAt: .now, reason: "手工脱离批次"),
+                command,
                 in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
                 context: modelContext
             )

@@ -272,6 +272,21 @@ enum MiMoClientError: LocalizedError, Equatable {
         return reason == "max_output_tokens"
     }
 
+    /// Failures for which repeating the same model turn is safe and useful.
+    /// The harness owns this recovery; callers must not ask the user to resend
+    /// the same natural-language request.
+    var isAutomaticallyRecoverable: Bool {
+        switch self {
+        case .invalidResponse, .rateLimited, .networkUnavailable:
+            true
+        case .server(let status, _):
+            status == 200 || status == 408 || status == 409 || status == 425 ||
+                (500...599).contains(status)
+        case .invalidRequest, .authenticationFailed, .quotaExceeded, .incomplete:
+            false
+        }
+    }
+
     var errorDescription: String? {
         switch self {
         case .invalidRequest:
@@ -281,22 +296,27 @@ enum MiMoClientError: LocalizedError, Equatable {
         case .authenticationFailed:
             "MiMo API Key 无效或已失效，请重新配置。"
         case .rateLimited:
-            "MiMo 请求过于频繁，请稍后再试。"
+            "MiMo 当前限制了请求频率。"
         case .quotaExceeded:
             "当前 MiMo API Key 的额度不足。"
         case .incomplete(let reason):
             switch reason {
             case "max_output_tokens":
-                "本次回答或操作草案超过 MiMo 单次输出长度，已无法完整生成。请缩小范围后重试。"
+                "本次回答或操作草案超过 MiMo 单次输出长度，未能完整生成。"
             case "content_filter":
                 "MiMo 因内容安全限制未能完成本次回答。"
             case .some(let reason):
-                "MiMo 未能完成本次回答（\(reason)），请重试。"
+                "MiMo 未能完成本次回答（\(reason)）。"
             case .none:
-                "MiMo 未能完成本次回答，请重试。"
+                "MiMo 未能完成本次回答。"
             }
         case .server(_, let message):
             message
+                .replacingOccurrences(of: "请重试", with: "")
+                .replacingOccurrences(of: "重试", with: "")
+                .replacingOccurrences(of: "请稍后再试", with: "")
+                .replacingOccurrences(of: "稍后再试", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         case .networkUnavailable:
             "当前无法连接 MiMo，请检查网络。"
         }
