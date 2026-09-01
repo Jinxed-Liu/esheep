@@ -206,6 +206,40 @@ actor FarmEventHistoryActor {
             )
         })
 
+        let careKind = DomainOperationKind.care.rawValue
+        let purposeOperations = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID && $0.kindRawValue == careKind
+        }))
+        events.append(contentsOf: SheepPurposeTimeline.facts(from: purposeOperations).map { fact in
+            let previousPurpose = fact.previousPurpose?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return FarmEventSnapshot(
+                id: fact.id,
+                entityType: .sheep,
+                category: .herd,
+                relatedSheepIDs: [fact.sheepID],
+                occurredAt: fact.occurredAt,
+                recordedAt: fact.recordedAt,
+                title: "用途变更",
+                subject: sheepName[fact.sheepID] ?? "未知羊只",
+                detail: fact.transitionText,
+                note: fact.reason,
+                fields: [
+                    .init(
+                        label: "原用途",
+                        value: previousPurpose?.isEmpty == false
+                            ? previousPurpose ?? ""
+                            : "历史用途（未记录）"
+                    ),
+                    .init(label: "新用途", value: fact.purpose.displayName),
+                    .init(label: "变更原因", value: fact.reason),
+                    .init(label: "羊只修订", value: String(fact.resultingRevision)),
+                    .init(label: "操作账号ID", value: fact.changedByAccountID.uuidString.lowercased())
+                ],
+                isDerived: true
+            )
+        })
+
         events.append(contentsOf: sheep.compactMap { record in
             guard record.deletedAt == nil,
                   !record.isHistoricalArchive,

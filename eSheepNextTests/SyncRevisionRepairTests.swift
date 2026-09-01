@@ -817,6 +817,103 @@ final class SyncRevisionRepairTests: XCTestCase {
         XCTAssertEqual(fixture.sheep.breed, "后续本地权威品种")
     }
 
+    func testReceiptRepairQuarantinesInvalidPedigreeWithoutBlockingPendingOutbox() throws {
+        let fixture = try makeFixture()
+        let dam = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "DAM-VALID",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: .now.addingTimeInterval(-86_400)
+        )
+        let unqualifiedSire = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "RAM-NOT-QUALIFIED",
+            breed: "湖羊",
+            purpose: "种公羊",
+            isBreedingRam: false,
+            sex: .ram,
+            penID: nil,
+            enteredAt: .now.addingTimeInterval(-86_400)
+        )
+        fixture.context.insert(dam)
+        fixture.context.insert(unqualifiedSire)
+
+        // Model the production failure: the compact projection already
+        // reached revision 2, but replaying the missing pedigree receipt is
+        // invalid because the referenced ram was never explicitly qualified.
+        fixture.sheep.revision = 2
+        let payload = try FarmCommandCloudPayloadEncoder.encode(
+            .care(.updateSheepPedigree(.init(
+                id: UUID(),
+                sheepID: fixture.sheep.id,
+                damID: dam.id,
+                sireID: unqualifiedSire.id,
+                semenDonorID: nil,
+                reason: "旧设备录入",
+                expectedRevision: 1
+            )))
+        )
+        let envelope = remoteEnvelope(
+            fixture: fixture,
+            entityID: fixture.sheep.id,
+            entityType: .sheep,
+            baseRevision: 1,
+            resultingRevision: 2,
+            payload: payload,
+            modifiedAt: .now.addingTimeInterval(-3_600)
+        )
+        let conflict = SyncConflictRecord(
+            farmID: fixture.farm.id,
+            entityID: fixture.sheep.id,
+            entityType: CloudEntityType.sheep.rawValue,
+            localRevision: 2,
+            remoteRevision: 2,
+            localPayload: Data(),
+            remotePayload: payload,
+            remoteAccountID: fixture.account.id,
+            remoteDeviceID: envelope.modifiedByDeviceID,
+            reasonCode: "remotePedigreeParentQualificationMismatch"
+        )
+        conflict.remoteEnvelopeData = try JSONEncoder.cloud.encode(envelope)
+        fixture.context.insert(conflict)
+
+        let pending = insertOperation(
+            fixture: fixture,
+            kind: .addNote,
+            entityType: .note,
+            entityID: UUID(),
+            baseRevision: 0,
+            resultingRevision: 1,
+            payload: Data("{}".utf8),
+            status: .pending
+        )
+        try fixture.context.save()
+
+        XCTAssertEqual(
+            try RemoteProjectionReceiptRepair.repair(
+                farmID: fixture.farm.id,
+                context: fixture.context
+            ),
+            0
+        )
+        XCTAssertEqual(
+            conflict.statusRawValue,
+            SyncConflictStatus.unresolved.rawValue
+        )
+        XCTAssertTrue(
+            conflict.resolutionFailureReason?.contains("父本必须是已标记的种公羊") == true
+        )
+        XCTAssertNil(fixture.sheep.sireID)
+        XCTAssertEqual(pending.status, .pending)
+        XCTAssertEqual(pending.attemptCount, 0)
+        XCTAssertFalse(
+            try fixture.context.fetch(FetchDescriptor<DomainOperation>())
+                .contains(where: { $0.id == envelope.operationID })
+        )
+    }
+
     private func makeFixture() throws -> Fixture {
         let container = try AppSchema.makeContainer(
             name: "sync-revision-repair-\(UUID().uuidString)",

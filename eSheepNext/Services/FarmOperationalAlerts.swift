@@ -500,11 +500,11 @@ enum FarmOperationalAlertEngine {
         effectiveLambingOffspring: [LambingOffspring]
     ) -> String? {
         let purpose = sheep.purpose.trimmingCharacters(in: .whitespacesAndNewlines)
-        if purpose == "哺乳羔羊" {
+        if SheepPurpose.classify(storedValue: purpose) == .sucklingLamb {
             return "purpose:suckling:\(sheep.revision)"
         }
 
-        guard purpose.isEmpty || purpose == "未分类" else { return nil }
+        guard purpose.isEmpty || purpose == SheepPurpose.unclassified.rawValue else { return nil }
 
         if !effectiveLambingOffspring.isEmpty {
             return "lambing:\(factSignature(effectiveLambingOffspring)):\(sheep.revision)"

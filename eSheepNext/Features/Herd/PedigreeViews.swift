@@ -79,12 +79,17 @@ struct SheepPedigreeView: View {
 
                     if profile.record.sex == .ram {
                         Section("种公羊资格") {
-                            Toggle("纳入种公羊父本候选", isOn: Binding(
-                                get: { profile.record.isBreedingRam },
-                                set: { updateBreedingRam(profile.record, active: $0) }
-                            ))
+                            NavigationLink {
+                                SheepPurposeEditorEntryView(
+                                    account: account,
+                                    farm: farm,
+                                    sheepID: profile.record.id
+                                )
+                            } label: {
+                                Label("前往羊只用途界面", systemImage: "tag")
+                            }
                             .disabled(!canEdit)
-                            Text("已确认种公羊会参与候选；旧档用途只会作为待人工核实线索，普通公羊不会参与。")
+                            Text("种公羊资格统一由羊只用途管理；系谱页面不再直接修改用途。")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -249,17 +254,6 @@ struct SheepPedigreeView: View {
         session.selectedTab = .search
     }
 
-    private func updateBreedingRam(_ sheep: PedigreeSheepSnapshot, active: Bool) {
-        do {
-            try service.execute(
-                .care(.setBreedingRam(sheepID: sheep.id, isBreedingRam: active, expectedRevision: sheep.revision)),
-                in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
-                context: modelContext
-            )
-            Task { await reload() }
-        } catch { errorMessage = error.localizedDescription }
-    }
-
     @MainActor
     private func reload() async {
         isLoading = true
@@ -329,10 +323,13 @@ private struct PedigreeCandidateConfirmationView: View {
             }
 
             if !candidate.isConfirmedBreedingRam {
-                Section("资格确认") {
-                    Text("该记录目前不是已确认种公羊。保存时会先将这一个体明确标记为种公羊，再写入父本关系；不会批量修改其他旧档公羊。")
+                Section("无法录入父本") {
+                    Text("\(candidate.earTag) 当前不是已确认种公羊。请先在“羊只用途”中将它明确设为种公羊，保存成功后再返回录入父本关系。")
                         .font(.footnote)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.red)
+                    Text("父本录入不会再自动修改种公羊资格。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -350,38 +347,37 @@ private struct PedigreeCandidateConfirmationView: View {
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("保存", action: save)
-                    .disabled(reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        !candidate.isConfirmedBreedingRam ||
+                        reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
             }
         }
         .recordErrorAlert($errorMessage)
     }
 
     private func save() {
+        guard candidate.isConfirmedBreedingRam else {
+            errorMessage = "\(candidate.earTag) 当前不是已确认种公羊，不能录入为父本。请先单独确认种公羊资格。"
+            return
+        }
         let humanReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !humanReason.isEmpty else {
             errorMessage = "请填写人工核实原因。"
             return
         }
-        var commands: [FarmCommand] = []
-        if !candidate.isConfirmedBreedingRam {
-            commands.append(.care(.setBreedingRam(
-                sheepID: candidate.ramID,
-                isBreedingRam: true,
-                expectedRevision: candidate.ramRevision
-            )))
-        }
-        commands.append(.care(.updateSheepPedigree(.init(
+        let command = FarmCommand.care(.updateSheepPedigree(.init(
             sheepID: child.id,
             damID: child.damID,
             sireID: candidate.ramID,
             semenDonorID: nil,
             reason: candidate.auditReason(appendingTo: humanReason),
             expectedRevision: child.revision
-        ))))
+        )))
 
         do {
-            try service.executeBatch(
-                commands,
+            try service.execute(
+                command,
                 in: FarmContext(
                     accountID: account.effectiveAccountID,
                     farmID: farm.id,
@@ -489,6 +485,14 @@ struct SheepPedigreeEditorView: View {
                     }
                 }
 
+                if let selectedUnconfirmedCandidate {
+                    Section("无法保存") {
+                        Text("\(selectedUnconfirmedCandidate.earTag) 只是旧档父本线索，尚未确认种公羊资格。请先单独确认资格，再将它录入为父本。")
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                }
+
                 Section("审计") {
                     TextField("修改原因（必填）", text: $reason, axis: .vertical)
                     Text("保存后才会通过命令管道写入；候选本身永远不会自动确认父本。")
@@ -498,7 +502,12 @@ struct SheepPedigreeEditorView: View {
             }
         }
         .navigationTitle("编辑系谱")
-        .toolbar { EntrySaveToolbar(action: save) }
+        .toolbar {
+            EntrySaveToolbar(
+                action: save,
+                isDisabled: formValidationMessage != nil
+            )
+        }
         .recordErrorAlert($errorMessage)
         .onAppear(perform: load)
         .onChange(of: paternalSelection) { _, value in
@@ -525,6 +534,10 @@ struct SheepPedigreeEditorView: View {
 
     private func save() {
         guard let record else { return }
+        if let formValidationMessage {
+            errorMessage = formValidationMessage
+            return
+        }
         let humanReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !humanReason.isEmpty else {
             errorMessage = "请填写修改原因。"
@@ -539,22 +552,36 @@ struct SheepPedigreeEditorView: View {
             reason: recordedReason,
             expectedRevision: record.revision
         )))
-        let farmContext = FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role)
         do {
-            if paternalSelection == .breedingRam, let candidate = selectedUnconfirmedCandidate {
-                try service.executeBatch([
-                    .care(.setBreedingRam(
-                        sheepID: candidate.ramID,
-                        isBreedingRam: true,
-                        expectedRevision: candidate.ramRevision
-                    )),
-                    pedigreeCommand,
-                ], in: farmContext, context: modelContext)
-            } else {
-                try service.execute(pedigreeCommand, in: farmContext, context: modelContext)
-            }
+            try service.execute(
+                pedigreeCommand,
+                in: FarmContext(
+                    accountID: account.effectiveAccountID,
+                    farmID: farm.id,
+                    role: farm.role
+                ),
+                context: modelContext
+            )
             dismiss()
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    private var formValidationMessage: String? {
+        switch paternalSelection {
+        case .unknown:
+            break
+        case .breedingRam:
+            guard sireID != nil else { return "请选择已确认种公羊。" }
+            if let selectedUnconfirmedCandidate {
+                return "\(selectedUnconfirmedCandidate.earTag) 当前不是已确认种公羊，不能录入为父本。请先单独确认种公羊资格。"
+            }
+        case .semenDonor:
+            guard donorID != nil else { return "请选择冻精供体。" }
+        }
+        guard !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "请填写修改原因。"
+        }
+        return nil
     }
 }
 
@@ -580,9 +607,9 @@ struct PedigreeCheckView: View {
         List {
             Section {
                 NavigationLink {
-                    BreedingRamManagementView(account: account, farm: farm)
+                    SheepPurposeManagementView(account: account, farm: farm)
                 } label: {
-                    Label("种公羊管理", systemImage: "checklist")
+                    Label("羊只用途管理", systemImage: "tag")
                 }
                 Text("父本候选优先使用已确认种公羊；旧档用途仅作为待人工核实线索，普通公羊不参与。")
                     .font(.footnote)
@@ -764,7 +791,7 @@ private struct PedigreeBatchSireReviewView: View {
                                     Text("\(group.proposals.count) 只")
                                         .foregroundStyle(.secondary)
                                 }
-                                Text(group.isConfirmedBreedingRam ? LocalizedStringKey("已确认种公羊") : LocalizedStringKey("旧档种公羊线索 · 本批同时确认资格"))
+                                Text(group.isConfirmedBreedingRam ? LocalizedStringKey("已确认种公羊") : LocalizedStringKey("旧档种公羊线索 · 不能录入"))
                                     .font(.caption)
                                     .foregroundStyle(group.isConfirmedBreedingRam ? .green : .orange)
                                 if group.prematurityMatchCount > 0 {
@@ -826,8 +853,19 @@ private struct PedigreeBatchSireConfirmationView: View {
                 LabeledContent("本组后代", value: "\(group.proposals.count) 只")
                 LabeledContent(
                     "种公羊资格",
-                    value: group.isConfirmedBreedingRam ? "已确认" : "旧档线索，保存时一并确认"
+                    value: group.isConfirmedBreedingRam ? "已确认" : "旧档线索，尚未确认"
                 )
+            }
+
+            if !group.isConfirmedBreedingRam {
+                Section("无法批量录入") {
+                    Text("\(group.ramEarTag) 当前不是已确认种公羊。请先在羊只用途管理中将它设为种公羊，确认成功后重新检查系谱。")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                    Text("批量父本录入不会再自动修改种公羊资格。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section {
@@ -886,6 +924,7 @@ private struct PedigreeBatchSireConfirmationView: View {
                 }
                 .disabled(
                     !canEdit ||
+                    !group.isConfirmedBreedingRam ||
                     isSaving ||
                     selectedChildIDs.isEmpty ||
                     reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -920,18 +959,14 @@ private struct PedigreeBatchSireConfirmationView: View {
                 errorMessage = "候选种公羊档案已不存在，请重新检查。"
                 return
             }
-
-            var commands: [FarmCommand] = []
-            if !ram.isBreedingRam {
-                commands.append(.care(.setBreedingRam(
-                    sheepID: ram.id,
-                    isBreedingRam: true,
-                    expectedRevision: ram.revision
-                )))
+            guard ram.isBreedingRam else {
+                errorMessage = "\(ram.earTag) 当前不是已确认种公羊，不能批量录入为父本。请先单独确认种公羊资格。"
+                return
             }
+
             let batchReason = "\(humanReason)；本次批量确认 \(selectedProposals.count) 只"
-            commands.append(contentsOf: selectedProposals.map { proposal in
-                .care(.updateSheepPedigree(.init(
+            let commands: [FarmCommand] = selectedProposals.map { proposal in
+                FarmCommand.care(.updateSheepPedigree(.init(
                     sheepID: proposal.child.id,
                     damID: proposal.child.damID,
                     sireID: group.ramID,
@@ -939,7 +974,7 @@ private struct PedigreeBatchSireConfirmationView: View {
                     reason: proposal.candidate.auditReason(appendingTo: batchReason),
                     expectedRevision: proposal.child.revision
                 )))
-            })
+            }
 
             try service.executeBatch(
                 commands,
@@ -956,56 +991,6 @@ private struct PedigreeBatchSireConfirmationView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
-    }
-}
-
-private struct BreedingRamManagementView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
-    let account: AccountProfile
-    let farm: FarmRecord
-    @State private var errorMessage: String?
-    private let service = FarmCommandService()
-
-    private var rams: [SheepRecord] { sheep.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.sex == .ram } }
-    private var canEdit: Bool { CapabilitySet(role: farm.role).allows(.editHistoricalFacts) }
-
-    var body: some View {
-        List {
-            Section {
-                Text("只将实际用于繁殖的公羊标记为种公羊。这个标记决定父本候选集合。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Section("公羊档案") {
-                ForEach(rams, id: \.id) { ram in
-                    Toggle(isOn: Binding(
-                        get: { ram.isBreedingRam },
-                        set: { update(ram, active: $0) }
-                    )) {
-                        VStack(alignment: .leading) {
-                            Text(ram.earTag)
-                            Text(ram.isBreedingRam ? LocalizedStringKey("种公羊") : LocalizedStringKey("普通公羊"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .disabled(!canEdit)
-                }
-            }
-        }
-        .navigationTitle("种公羊管理")
-        .recordErrorAlert($errorMessage)
-    }
-
-    private func update(_ ram: SheepRecord, active: Bool) {
-        do {
-            try service.execute(
-                .care(.setBreedingRam(sheepID: ram.id, isBreedingRam: active, expectedRevision: ram.revision)),
-                in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
-                context: modelContext
-            )
-        } catch { errorMessage = error.localizedDescription }
     }
 }
 

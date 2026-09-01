@@ -146,6 +146,541 @@ struct EditSheepProfileView: View {
     }
 }
 
+struct SheepPurposeEditorEntryView: View {
+    @Query private var sheep: [SheepRecord]
+    let account: AccountProfile
+    let farm: FarmRecord
+
+    init(account: AccountProfile, farm: FarmRecord, sheepID: UUID) {
+        self.account = account
+        self.farm = farm
+        let farmID = farm.id
+        _sheep = Query(filter: #Predicate<SheepRecord> {
+            $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
+        })
+    }
+
+    var body: some View {
+        if let record = sheep.first {
+            SheepPurposeEditorView(account: account, farm: farm, sheep: record)
+        } else {
+            ContentUnavailableView("羊只档案不存在", systemImage: "exclamationmark.triangle")
+        }
+    }
+}
+
+struct SheepPurposeEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+
+    let account: AccountProfile
+    let farm: FarmRecord
+    let sheep: SheepRecord
+
+    @State private var selectedPurpose: SheepPurpose?
+    @State private var reason = ""
+    @State private var errorMessage: String?
+    private let commandService = FarmCommandService()
+
+    init(account: AccountProfile, farm: FarmRecord, sheep: SheepRecord) {
+        self.account = account
+        self.farm = farm
+        self.sheep = sheep
+        let initial = sheep.isBreedingRam && sheep.sex == .ram
+            ? SheepPurpose.breedingRam
+            : SheepPurpose(rawValue: sheep.purpose.trimmingCharacters(in: .whitespacesAndNewlines))
+        _selectedPurpose = State(initialValue: initial)
+    }
+
+    private var canEdit: Bool {
+        CapabilitySet(role: farm.role).allows(.editHistoricalFacts)
+    }
+
+    private var normalizedStoredPurpose: String {
+        let value = sheep.purpose.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? SheepPurpose.unclassified.rawValue : value
+    }
+
+    private var isUnchanged: Bool {
+        guard let selectedPurpose else { return true }
+        return normalizedStoredPurpose == selectedPurpose.rawValue &&
+            sheep.isBreedingRam == (selectedPurpose == .breedingRam)
+    }
+
+    private var validationMessage: String? {
+        guard canEdit else { return "当前账号没有修改羊只用途的权限。" }
+        guard let selectedPurpose else { return "请选择一个标准用途。" }
+        guard selectedPurpose.isAllowed(for: sheep.sex) else { return "所选用途与羊只性别不匹配。" }
+        guard !isUnchanged else { return "当前用途没有变化。" }
+        guard !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "请填写用途变更原因。"
+        }
+        return nil
+    }
+
+    var body: some View {
+        Form {
+            Section("当前档案") {
+                LabeledContent("耳号", value: sheep.earTag)
+                LabeledContent("性别", value: sheep.sex.displayName)
+                LabeledContent("已有用途", value: normalizedStoredPurpose)
+                if sheep.isBreedingRam {
+                    LabeledContent("父本资格", value: "已确认种公羊")
+                }
+            }
+
+            Section {
+                Picker("新用途", selection: $selectedPurpose) {
+                    if SheepPurpose(rawValue: normalizedStoredPurpose) == nil,
+                       !sheep.isBreedingRam {
+                        Text("保留现有用途 · \(normalizedStoredPurpose)")
+                            .tag(SheepPurpose?.none)
+                    }
+                    ForEach(SheepPurpose.choices(for: sheep.sex)) { purpose in
+                        Text(purpose.displayName).tag(SheepPurpose?.some(purpose))
+                    }
+                }
+            } header: {
+                Text("生产用途")
+            } footer: {
+                Text("已有用途不会自动改动。只有明确选择新用途并保存后才会写入；选择种公羊会同时建立父本资格，改为其他用途会取消该资格。")
+            }
+
+            Section("变更原因") {
+                TextField("例如：现场核对生产分群后确认（必填）", text: $reason, axis: .vertical)
+            }
+
+            if let validationMessage, !isUnchanged || selectedPurpose == nil {
+                Section("无法保存") {
+                    Text(validationMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+        .navigationTitle("羊只用途")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            EntrySaveToolbar(action: save, isDisabled: validationMessage != nil)
+        }
+        .recordErrorAlert($errorMessage)
+    }
+
+    private func save() {
+        if let validationMessage {
+            errorMessage = validationMessage
+            return
+        }
+        guard let selectedPurpose else { return }
+        do {
+            try commandService.execute(
+                .care(.setSheepPurpose(
+                    sheepID: sheep.id,
+                    purpose: selectedPurpose,
+                    reason: reason.trimmingCharacters(in: .whitespacesAndNewlines),
+                    expectedRevision: sheep.revision
+                )),
+                in: FarmContext(
+                    accountID: account.effectiveAccountID,
+                    farmID: farm.id,
+                    role: farm.role
+                ),
+                context: modelContext
+            )
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+struct SheepPurposeManagementView: View {
+    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
+    let account: AccountProfile
+    let farm: FarmRecord
+    @State private var query = ""
+    @State private var selection = Set<UUID>()
+    @State private var batchRequest: SheepPurposeBatchRequest?
+
+    private var records: [SheepRecord] {
+        let normalized = SearchText.normalized(query)
+        return sheep.filter {
+            $0.farmID == farm.id &&
+                $0.deletedAt == nil &&
+                (normalized.isEmpty ||
+                    SearchText.normalized($0.earTag).contains(normalized) ||
+                    SearchText.normalized($0.purpose).contains(normalized))
+        }
+    }
+
+    var body: some View {
+        List(selection: $selection) {
+            Section {
+                Text("这里是羊只用途的唯一人工修改入口。可以逐只修改、列表多选，或按舍整批修改；现有用途只有确认保存后才会改变。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                NavigationLink {
+                    SheepPurposePenBatchSelectionView(account: account, farm: farm)
+                } label: {
+                    Label("按舍批量修改", systemImage: "square.grid.3x3")
+                }
+            }
+            Section("羊只档案 · \(records.count)") {
+                ForEach(records, id: \.id) { record in
+                    NavigationLink {
+                        SheepPurposeEditorView(account: account, farm: farm, sheep: record)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(record.earTag)
+                            Text(record.isBreedingRam ? SheepPurpose.breedingRam.displayName : record.purpose)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .tag(record.id)
+                }
+            }
+        }
+        .navigationTitle("羊只用途管理")
+        .searchable(text: $query, prompt: "耳号或用途")
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                EditButton()
+            }
+            if !selection.isEmpty {
+                ToolbarItem(placement: .bottomBar) {
+                    Button("批量修改用途（\(selection.count)）", systemImage: "tag") {
+                        batchRequest = SheepPurposeBatchRequest(
+                            sheepIDs: selection,
+                            sourceLabel: "用途列表多选"
+                        )
+                    }
+                }
+            }
+        }
+        .sheet(item: $batchRequest, onDismiss: { selection.removeAll() }) { request in
+            NavigationStack {
+                SheepPurposeBatchEditorEntryView(
+                    account: account,
+                    farm: farm,
+                    request: request
+                )
+            }
+        }
+        .onChange(of: records.map(\.id)) { _, availableIDs in
+            selection.formIntersection(Set(availableIDs))
+        }
+    }
+}
+
+struct SheepPurposeBatchRequest: Identifiable {
+    let id = UUID()
+    let sheepIDs: Set<UUID>
+    let sourceLabel: String
+}
+
+private struct SheepPurposePenGroup: Identifiable {
+    let penID: UUID?
+    let name: String
+    let sheep: [SheepRecord]
+
+    var id: String { penID?.uuidString ?? "unassigned" }
+}
+
+struct SheepPurposePenBatchSelectionView: View {
+    @Query(sort: \PenRecord.name) private var pens: [PenRecord]
+    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
+
+    let account: AccountProfile
+    let farm: FarmRecord
+
+    private var groups: [SheepPurposePenGroup] {
+        let currentSheep = sheep.filter {
+            $0.farmID == farm.id &&
+                $0.deletedAt == nil &&
+                $0.isCurrentlyPresent
+        }
+        let penNames = Dictionary(uniqueKeysWithValues: pens.filter {
+            $0.farmID == farm.id && $0.deletedAt == nil
+        }.map { ($0.id, $0.name) })
+        return Dictionary(grouping: currentSheep, by: \.currentPenID)
+            .map { penID, records in
+                SheepPurposePenGroup(
+                    penID: penID,
+                    name: penID.flatMap { penNames[$0] } ?? (penID == nil ? "未分圈" : "未知圈舍"),
+                    sheep: records.sorted {
+                        $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending
+                    }
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.penID == nil { return false }
+                if rhs.penID == nil { return true }
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    var body: some View {
+        List(groups) { group in
+            NavigationLink {
+                SheepPurposeBatchEditorEntryView(
+                    account: account,
+                    farm: farm,
+                    request: SheepPurposeBatchRequest(
+                        sheepIDs: Set(group.sheep.map(\.id)),
+                        sourceLabel: "圈舍：\(group.name)"
+                    )
+                )
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(group.name)
+                    Text("当前在场 \(group.sheep.count) 只")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("按舍修改用途")
+        .overlay {
+            if groups.isEmpty {
+                ContentUnavailableView("没有可用圈舍羊只", systemImage: "square.grid.3x3")
+            }
+        }
+    }
+}
+
+struct SheepPurposeBatchEditorEntryView: View {
+    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
+
+    let account: AccountProfile
+    let farm: FarmRecord
+    let request: SheepPurposeBatchRequest
+
+    init(account: AccountProfile, farm: FarmRecord, request: SheepPurposeBatchRequest) {
+        self.account = account
+        self.farm = farm
+        self.request = request
+        let farmID = farm.id
+        _sheep = Query(filter: #Predicate<SheepRecord> {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }, sort: \SheepRecord.earTag)
+    }
+
+    var body: some View {
+        SheepPurposeBatchEditorView(
+            account: account,
+            farm: farm,
+            sourceLabel: request.sourceLabel,
+            requestedCount: request.sheepIDs.count,
+            sheep: sheep.filter { request.sheepIDs.contains($0.id) }
+        )
+    }
+}
+
+struct SheepPurposeBatchEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+
+    let account: AccountProfile
+    let farm: FarmRecord
+    let sourceLabel: String
+    let requestedCount: Int
+    let sheep: [SheepRecord]
+
+    @State private var selectedPurpose: SheepPurpose?
+    @State private var reason = ""
+    @State private var showsConfirmation = false
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    private let commandService = FarmCommandService()
+
+    private var canEdit: Bool {
+        CapabilitySet(role: farm.role).allows(.editHistoricalFacts)
+    }
+
+    private var missingCount: Int {
+        max(0, requestedCount - sheep.count)
+    }
+
+    private var invalidSheep: [SheepRecord] {
+        guard let selectedPurpose else { return [] }
+        return sheep.filter { !selectedPurpose.isAllowed(for: $0.sex) }
+    }
+
+    private var unchangedSheep: [SheepRecord] {
+        guard let selectedPurpose else { return [] }
+        return sheep.filter {
+            selectedPurpose.isAllowed(for: $0.sex) &&
+                $0.purpose.trimmingCharacters(in: .whitespacesAndNewlines) == selectedPurpose.rawValue &&
+                $0.isBreedingRam == (selectedPurpose == .breedingRam)
+        }
+    }
+
+    private var changedSheep: [SheepRecord] {
+        guard let selectedPurpose else { return [] }
+        let unchangedIDs = Set(unchangedSheep.map(\.id))
+        return sheep.filter {
+            selectedPurpose.isAllowed(for: $0.sex) && !unchangedIDs.contains($0.id)
+        }
+    }
+
+    private var validationMessage: String? {
+        guard canEdit else { return "当前账号没有修改羊只用途的权限。" }
+        guard !sheep.isEmpty else { return "没有可修改的羊只。" }
+        guard missingCount == 0 else { return "有 \(missingCount) 只羊的档案已经不存在或发生变化，请返回后重新选择。" }
+        guard let selectedPurpose else { return "请选择目标用途。" }
+        guard invalidSheep.isEmpty else {
+            return "有 \(invalidSheep.count) 只羊的性别不允许设置为\(selectedPurpose.displayName)，整批不能保存。"
+        }
+        guard !changedSheep.isEmpty else { return "所选羊只已经全部是该用途和资格状态。" }
+        guard !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "请填写批量用途变更原因。"
+        }
+        return nil
+    }
+
+    private var previewSheep: ArraySlice<SheepRecord> {
+        sheep.prefix(100)
+    }
+
+    var body: some View {
+        Form {
+            Section("批量范围") {
+                LabeledContent("选择来源", value: sourceLabel)
+                LabeledContent("已选羊只", value: "\(requestedCount) 只")
+                if missingCount > 0 {
+                    LabeledContent("档案已变化", value: "\(missingCount) 只")
+                        .foregroundStyle(.red)
+                }
+            }
+
+            Section {
+                Picker("目标用途", selection: $selectedPurpose) {
+                    Text("请选择").tag(SheepPurpose?.none)
+                    ForEach(SheepPurpose.allCases) { purpose in
+                        Text(purpose.displayName).tag(SheepPurpose?.some(purpose))
+                    }
+                }
+            } header: {
+                Text("目标用途")
+            } footer: {
+                Text("种公羊只允许公羊；后备母羊和繁殖母羊只允许母羊。批次中只要有一只不合法，整批都不会写入。")
+            }
+
+            if selectedPurpose != nil {
+                Section("写入预览") {
+                    LabeledContent("将修改", value: "\(changedSheep.count) 只")
+                    LabeledContent("用途未变，自动跳过", value: "\(unchangedSheep.count) 只")
+                    if !invalidSheep.isEmpty {
+                        LabeledContent("不合法，阻止整批", value: "\(invalidSheep.count) 只")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+
+            Section("变更原因") {
+                TextField("例如：按舍核对生产阶段后统一调整（必填）", text: $reason, axis: .vertical)
+            }
+
+            if let validationMessage {
+                Section("无法保存") {
+                    Text(validationMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+
+            Section("羊只明细") {
+                ForEach(previewSheep, id: \.id) { record in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(record.earTag)
+                            Text(record.purpose)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if invalidSheep.contains(where: { $0.id == record.id }) {
+                            Label("不合法", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        } else if unchangedSheep.contains(where: { $0.id == record.id }) {
+                            Text("跳过")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                if sheep.count > previewSheep.count {
+                    Text("另有 \(sheep.count - previewSheep.count) 只，将按相同规则处理。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("批量修改用途")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("取消") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存 \(changedSheep.count) 只") {
+                    showsConfirmation = true
+                }
+                .disabled(validationMessage != nil || isSaving)
+            }
+        }
+        .alert("确认批量修改用途？", isPresented: $showsConfirmation) {
+            Button("取消", role: .cancel) {}
+            Button("确认修改 \(changedSheep.count) 只") {
+                Task { await save() }
+            }
+        } message: {
+            Text("目标用途：\(selectedPurpose?.displayName ?? "未选择")。所有变更会在一个本地事务中提交；任一羊只校验失败，整批回滚。")
+        }
+        .recordErrorAlert($errorMessage)
+    }
+
+    @MainActor
+    private func save() async {
+        if let validationMessage {
+            errorMessage = validationMessage
+            return
+        }
+        guard let selectedPurpose else { return }
+        let normalizedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        let records = changedSheep
+        isSaving = true
+        await Task.yield()
+        defer { isSaving = false }
+
+        do {
+            let commands = records.map { record in
+                FarmCommand.care(.setSheepPurpose(
+                    sheepID: record.id,
+                    purpose: selectedPurpose,
+                    reason: "\(normalizedReason)；批量范围：\(sourceLabel)，共 \(records.count) 只",
+                    expectedRevision: record.revision
+                ))
+            }
+            try commandService.executeBatch(
+                commands,
+                in: FarmContext(
+                    accountID: account.effectiveAccountID,
+                    farmID: farm.id,
+                    role: farm.role
+                ),
+                context: modelContext
+            )
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
 struct SheepRecordHistoryView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var weights: [WeightRecord]

@@ -609,7 +609,27 @@ final class PedigreeWorkflowTests: XCTestCase {
         XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<PedigreeChangeRecord>()).filter { $0.sheepID == child.id }.count, 1)
 
         XCTAssertThrowsError(try fixture.service.execute(.care(.updateSheepPedigree(.init(sheepID: child.id, damID: child.id, sireID: sire.id, semenDonorID: nil, reason: "错误关系", expectedRevision: child.revision))), in: fixture.ownerContext, context: fixture.context))
+        let revisionBeforeUnqualifiedSire = child.revision
+        let sireBeforeUnqualifiedSire = child.sireID
+        let auditCountBeforeUnqualifiedSire = try fixture.context.fetch(
+            FetchDescriptor<PedigreeChangeRecord>()
+        ).filter { $0.sheepID == child.id }.count
+        let operationCountBeforeUnqualifiedSire = try fixture.context.fetch(
+            FetchDescriptor<DomainOperation>()
+        ).count
         XCTAssertThrowsError(try fixture.service.execute(.care(.updateSheepPedigree(.init(sheepID: child.id, damID: dam.id, sireID: ordinary.id, semenDonorID: nil, reason: "普通公羊", expectedRevision: child.revision))), in: fixture.ownerContext, context: fixture.context))
+        XCTAssertEqual(child.revision, revisionBeforeUnqualifiedSire)
+        XCTAssertEqual(child.sireID, sireBeforeUnqualifiedSire)
+        XCTAssertEqual(
+            try fixture.context.fetch(FetchDescriptor<PedigreeChangeRecord>())
+                .filter { $0.sheepID == child.id }.count,
+            auditCountBeforeUnqualifiedSire
+        )
+        XCTAssertEqual(
+            try fixture.context.fetch(FetchDescriptor<DomainOperation>()).count,
+            operationCountBeforeUnqualifiedSire,
+            "非法父本不能生成本地事实或待同步操作"
+        )
 
         let youngerDam = insertSheep(fixture, tag: "E002", sex: .ewe, birthAt: date("2026-02-01"))
         XCTAssertThrowsError(try fixture.service.execute(.care(.updateSheepPedigree(.init(sheepID: child.id, damID: youngerDam.id, sireID: sire.id, semenDonorID: nil, reason: "日期倒置", expectedRevision: child.revision))), in: fixture.ownerContext, context: fixture.context))

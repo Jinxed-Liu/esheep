@@ -810,7 +810,10 @@ enum PedigreeAnalysis {
             // 新资格标记是权威事实。旧库只有“用途”快照时，它只作为待人工核实的线索，
             // 不能在这里静默升级为已确认种公羊。
             breedingRamCandidates = input.sheep.filter {
-                $0.sex == .ram && ($0.isBreedingRam || $0.purpose == "种公羊")
+                $0.sex == .ram && (
+                    $0.isBreedingRam ||
+                    SheepPurpose.classify(storedValue: $0.purpose) == .breedingRam
+                )
             }
             transfersBySheep = Dictionary(grouping: input.transfers, by: \.sheepID).mapValues { values in
                 values.sorted {

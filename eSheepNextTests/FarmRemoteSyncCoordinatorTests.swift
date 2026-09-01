@@ -81,6 +81,204 @@ private actor TestFarmRemoteTransport: FarmRemoteTransport {
 }
 
 final class FarmRemoteSyncCoordinatorTests: XCTestCase {
+    func testPedigreeUploadIsQuarantinedWhenBreedingRamPrerequisiteConflicts() throws {
+        let farmID = UUID()
+        let ramID = UUID()
+        let childID = UUID()
+        let unrelatedSheepID = UUID()
+        let conflictID = UUID()
+        let pedigreeID = UUID()
+        let dependentProfileID = UUID()
+        let unrelatedID = UUID()
+
+        func pending(
+            id: UUID,
+            entityID: UUID,
+            sequence: Int64,
+            command: FarmCommand,
+            baseRevision: Int = 1,
+            resultingRevision: Int = 2
+        ) throws -> FarmRemotePendingOperation {
+            let payload = try FarmCommandCloudPayloadEncoder.encode(command)
+            return FarmRemotePendingOperation(
+                envelope: CloudOperationEnvelope(
+                    farmID: farmID,
+                    entityID: entityID,
+                    entityType: CloudEntityType.sheep.rawValue,
+                    schemaVersion: 2,
+                    revision: resultingRevision,
+                    baseRevision: baseRevision,
+                    operationID: id,
+                    modifiedAt: .now,
+                    modifiedByAccountID: UUID(),
+                    modifiedByDeviceID: UUID(),
+                    payload: payload,
+                    payloadDigest: CloudPayloadDigest.hex(for: payload),
+                    capabilityCertificate: "test",
+                    operationSignature: Data(),
+                    deletedAt: nil
+                ),
+                clientSequence: sequence
+            )
+        }
+
+        let operations = try [
+            pending(
+                id: conflictID,
+                entityID: ramID,
+                sequence: 96,
+                command: .care(.setBreedingRam(
+                    sheepID: ramID,
+                    isBreedingRam: true,
+                    expectedRevision: 1
+                ))
+            ),
+            pending(
+                id: pedigreeID,
+                entityID: childID,
+                sequence: 97,
+                command: .care(.updateSheepPedigree(.init(
+                    sheepID: childID,
+                    damID: nil,
+                    sireID: ramID,
+                    semenDonorID: nil,
+                    reason: "选择父本",
+                    expectedRevision: 1
+                )))
+            ),
+            pending(
+                id: dependentProfileID,
+                entityID: childID,
+                sequence: 98,
+                command: .updateSheepProfile(
+                    sheepID: childID,
+                    earTag: "CHILD",
+                    breed: "寒羊",
+                    sex: .ewe,
+                    birthAt: nil,
+                    currentParity: nil,
+                    parityRecordedAt: nil,
+                    note: "依赖系谱修订"
+                ),
+                baseRevision: 2,
+                resultingRevision: 3
+            ),
+            pending(
+                id: unrelatedID,
+                entityID: unrelatedSheepID,
+                sequence: 99,
+                command: .updateSheepProfile(
+                    sheepID: unrelatedSheepID,
+                    earTag: "UNRELATED",
+                    breed: "湖羊",
+                    sex: .ewe,
+                    birthAt: nil,
+                    currentParity: nil,
+                    parityRecordedAt: nil,
+                    note: ""
+                )
+            ),
+        ]
+
+        XCTAssertEqual(
+            FarmRemoteSyncCoordinator.causallyDependentOperationIDs(
+                afterConflict: conflictID,
+                in: operations
+            ),
+            [pedigreeID, dependentProfileID]
+        )
+    }
+
+    func testRebasedBreedingRamQualificationDoesNotPermanentlyBlockLaterPedigree() throws {
+        let farmID = UUID()
+        let ramID = UUID()
+        let childID = UUID()
+        let conflictID = UUID()
+        let rebasedQualificationID = UUID()
+        let pedigreeID = UUID()
+
+        func pending(
+            id: UUID,
+            entityID: UUID,
+            sequence: Int64,
+            command: FarmCommand,
+            baseRevision: Int,
+            resultingRevision: Int
+        ) throws -> FarmRemotePendingOperation {
+            let payload = try FarmCommandCloudPayloadEncoder.encode(command)
+            return FarmRemotePendingOperation(
+                envelope: CloudOperationEnvelope(
+                    farmID: farmID,
+                    entityID: entityID,
+                    entityType: CloudEntityType.sheep.rawValue,
+                    schemaVersion: 2,
+                    revision: resultingRevision,
+                    baseRevision: baseRevision,
+                    operationID: id,
+                    modifiedAt: .now,
+                    modifiedByAccountID: UUID(),
+                    modifiedByDeviceID: UUID(),
+                    payload: payload,
+                    payloadDigest: CloudPayloadDigest.hex(for: payload),
+                    capabilityCertificate: "test",
+                    operationSignature: Data(),
+                    deletedAt: nil
+                ),
+                clientSequence: sequence
+            )
+        }
+
+        let operations = try [
+            pending(
+                id: conflictID,
+                entityID: ramID,
+                sequence: 1,
+                command: .care(.setBreedingRam(
+                    sheepID: ramID,
+                    isBreedingRam: true,
+                    expectedRevision: 1
+                )),
+                baseRevision: 1,
+                resultingRevision: 2
+            ),
+            pending(
+                id: rebasedQualificationID,
+                entityID: ramID,
+                sequence: 2,
+                command: .care(.setBreedingRam(
+                    sheepID: ramID,
+                    isBreedingRam: true,
+                    expectedRevision: 5
+                )),
+                baseRevision: 5,
+                resultingRevision: 6
+            ),
+            pending(
+                id: pedigreeID,
+                entityID: childID,
+                sequence: 3,
+                command: .care(.updateSheepPedigree(.init(
+                    sheepID: childID,
+                    damID: nil,
+                    sireID: ramID,
+                    semenDonorID: nil,
+                    reason: "资格重建后录入",
+                    expectedRevision: 1
+                ))),
+                baseRevision: 1,
+                resultingRevision: 2
+            ),
+        ]
+
+        XCTAssertEqual(
+            FarmRemoteSyncCoordinator.causallyDependentOperationIDs(
+                afterConflict: conflictID,
+                in: operations
+            ),
+            []
+        )
+    }
+
     @MainActor
     func testConflictedPullAdvancesCursorWithoutForgingDurableReceipt() async throws {
         let container = try AppSchema.makeContainer(
@@ -780,6 +978,231 @@ final class FarmRemoteSyncCoordinatorTests: XCTestCase {
             try verification.fetch(FetchDescriptor<FarmRemoteBinding>())
                 .first?.lastPulledRevision,
             0
+        )
+    }
+
+    @MainActor
+    func testRestoreQuarantinesRemotePedigreeQualificationMismatchAndAdvancesCursor() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "remote-pedigree-qualification-conflict-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let farmID = UUID()
+        let ownerID = UUID()
+        let damID = UUID()
+        let sireID = UUID()
+        let childID = UUID()
+        let penID = UUID()
+        let operationID = UUID()
+        let photoID = UUID()
+        let photoOperationID = UUID()
+        let transferID = UUID()
+        let transferOperationID = UUID()
+        let occurredAt = Date(timeIntervalSince1970: 1_788_225_539)
+
+        context.insert(FarmRecord(
+            id: farmID,
+            ownerAccountID: ownerID,
+            name: "远端系谱冲突恢复场"
+        ))
+        context.insert(SheepRecord(
+            id: damID,
+            farmID: farmID,
+            earTag: "DAM-001",
+            breed: "寒羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: occurredAt.addingTimeInterval(-86_400)
+        ))
+        context.insert(SheepRecord(
+            id: sireID,
+            farmID: farmID,
+            earTag: "RAM-LEGACY",
+            breed: "寒羊",
+            purpose: "种公羊",
+            isBreedingRam: false,
+            sex: .ram,
+            penID: nil,
+            enteredAt: occurredAt.addingTimeInterval(-86_400)
+        ))
+        context.insert(SheepRecord(
+            id: childID,
+            farmID: farmID,
+            earTag: "LAMB-001",
+            breed: "寒羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: occurredAt,
+            birthAt: occurredAt,
+            damID: damID
+        ))
+        context.insert(PenRecord(
+            id: penID,
+            farmID: farmID,
+            name: "恢复验收舍"
+        ))
+        context.insert(FarmRemoteBinding(
+            farmID: farmID,
+            ownerAccountID: ownerID,
+            provider: .supabase,
+            state: .preparing,
+            authorityGeneration: 1,
+            remoteFarmID: farmID.uuidString.lowercased()
+        ))
+        try context.save()
+
+        let payload = try FarmCommandCloudPayloadEncoder.encode(
+            .care(.updateSheepPedigree(.init(
+                id: UUID(),
+                sheepID: childID,
+                damID: damID,
+                sireID: sireID,
+                semenDonorID: nil,
+                reason: "人工核对后确认",
+                expectedRevision: 1
+            )))
+        )
+        let envelope = CloudOperationEnvelope(
+            farmID: farmID,
+            entityID: childID,
+            entityType: CloudEntityType.sheep.rawValue,
+            schemaVersion: 2,
+            revision: 2,
+            baseRevision: 1,
+            operationID: operationID,
+            modifiedAt: occurredAt,
+            modifiedByAccountID: ownerID,
+            modifiedByDeviceID: UUID(),
+            payload: payload,
+            payloadDigest: CloudPayloadDigest.hex(for: payload),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+        let photoDigest = String(repeating: "a", count: 64)
+        var photoPayload = FarmCommandCloudPayload(kind: .addPhoto)
+        photoPayload.strings = [
+            "sha256": photoDigest,
+            "sourceSHA256": photoDigest,
+            "mimeType": "image/heic",
+            "originalEarTag": "LAMB-001"
+        ]
+        photoPayload.integers = ["byteCount": 518_884]
+        photoPayload.optionalIdentifiers = ["sheepID": childID]
+        let photoPayloadData = try JSONEncoder.cloud.encode(photoPayload)
+        let photoEnvelope = CloudOperationEnvelope(
+            farmID: farmID,
+            entityID: photoID,
+            entityType: CloudEntityType.photoAsset.rawValue,
+            schemaVersion: 2,
+            revision: 1,
+            baseRevision: 0,
+            operationID: photoOperationID,
+            modifiedAt: occurredAt.addingTimeInterval(1),
+            modifiedByAccountID: ownerID,
+            modifiedByDeviceID: UUID(),
+            payload: photoPayloadData,
+            payloadDigest: CloudPayloadDigest.hex(for: photoPayloadData),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+        var transferPayload = FarmCommandCloudPayload(kind: .transferSheep)
+        transferPayload.identifiers = ["sheepID": childID]
+        transferPayload.optionalIdentifiers = ["toPenID": penID]
+        transferPayload.dates = ["occurredAt": occurredAt.addingTimeInterval(2)]
+        transferPayload.strings = ["note": "冲突后的转群仍须落地"]
+        let transferPayloadData = try JSONEncoder.cloud.encode(transferPayload)
+        let transferEnvelope = CloudOperationEnvelope(
+            farmID: farmID,
+            entityID: transferID,
+            entityType: CloudEntityType.transfer.rawValue,
+            schemaVersion: 2,
+            revision: 1,
+            baseRevision: 0,
+            operationID: transferOperationID,
+            modifiedAt: occurredAt.addingTimeInterval(2),
+            modifiedByAccountID: ownerID,
+            modifiedByDeviceID: UUID(),
+            payload: transferPayloadData,
+            payloadDigest: CloudPayloadDigest.hex(for: transferPayloadData),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+        let transport = TestFarmRemoteTransport(endpoints: .init(
+            establishBaseline: { _ in },
+            pushOperations: { _, _ in [] },
+            pullOperations: { _, _, _, _ in
+                FarmRemotePullPage(
+                    operations: [envelope, photoEnvelope, transferEnvelope],
+                    cursorRevision: 4,
+                    hasMore: false
+                )
+            },
+            uploadAsset: { _, _, _, _, _, _ in
+                throw FarmRemoteTransportError.unsupportedOperation
+            },
+            downloadAsset: { _ in
+                throw FarmRemoteTransportError.unsupportedOperation
+            },
+            members: { _ in [] },
+            deactivate: { _, _, _ in }
+        ))
+
+        let result = try await FarmRemoteSyncCoordinator(
+            container: container,
+            transport: transport
+        ).catchUpRestoredFarm(farmID: farmID)
+
+        XCTAssertEqual(result.cursorRevision, 4)
+        XCTAssertEqual(result.conflictCount, 1)
+        let verification = ModelContext(container)
+        let child = try XCTUnwrap(
+            try verification.fetch(FetchDescriptor<SheepRecord>())
+                .first(where: { $0.id == childID })
+        )
+        XCTAssertNil(child.sireID)
+        let durableOperations = try verification.fetch(
+            FetchDescriptor<DomainOperation>()
+        )
+        XCTAssertEqual(
+            Set(durableOperations.map(\.id)),
+            Set([photoOperationID, transferOperationID])
+        )
+        let restoredPhoto = try XCTUnwrap(
+            try verification.fetch(FetchDescriptor<PhotoAssetRecord>())
+                .first(where: { $0.id == photoID })
+        )
+        XCTAssertEqual(restoredPhoto.sheepID, childID)
+        XCTAssertEqual(restoredPhoto.sha256, photoDigest)
+        let photoDownload = try XCTUnwrap(
+            try verification.fetch(FetchDescriptor<CloudAssetTransfer>())
+                .first(where: { $0.assetID == photoID })
+        )
+        XCTAssertEqual(photoDownload.direction, .download)
+        XCTAssertEqual(photoDownload.status, .pending)
+        XCTAssertEqual(photoDownload.byteCount, 518_884)
+        let restoredTransfer = try XCTUnwrap(
+            try verification.fetch(FetchDescriptor<TransferRecord>())
+                .first(where: { $0.id == transferID })
+        )
+        XCTAssertEqual(restoredTransfer.sheepID, childID)
+        XCTAssertEqual(restoredTransfer.toPenID, penID)
+        let conflict = try XCTUnwrap(
+            try verification.fetch(FetchDescriptor<SyncConflictRecord>()).first
+        )
+        XCTAssertEqual(
+            conflict.reasonCode,
+            "remotePedigreeParentQualificationMismatch"
+        )
+        XCTAssertEqual(conflict.remoteRevision, 2)
+        XCTAssertNotNil(conflict.remoteEnvelopeData)
+        XCTAssertEqual(
+            try verification.fetch(FetchDescriptor<FarmRemoteBinding>())
+                .first?.lastPulledRevision,
+            4
         )
     }
 

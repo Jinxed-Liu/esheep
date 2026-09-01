@@ -298,6 +298,12 @@ actor FarmRemoteSyncCoordinator {
             farmID: farmID,
             context: context
         )
+        try quarantineOperationsWhosePrerequisiteIsBlocked(
+            farmID: farmID,
+            generation: generation,
+            sequenceByOperationID: sequenceByOperationID,
+            context: context
+        )
         let eligible = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
             $0.farmID == farmID &&
                 $0.deliveryProviderRawValue == provider &&
@@ -503,6 +509,10 @@ actor FarmRemoteSyncCoordinator {
                 receiptByOperationID[receipt.operationID] = receipt
             }
         }
+        let causallyBlockedOperationIDs = Self.causallyDependentOperationIDs(
+            afterConflict: result.conflictOperationID,
+            in: prepared.operations
+        )
         for item in items {
             if let receipt = receiptByOperationID[item.operationID] {
                 item.statusRawValue = OutboxStatus.confirmed.rawValue
@@ -512,6 +522,12 @@ actor FarmRemoteSyncCoordinator {
             } else if item.operationID == result.conflictOperationID {
                 item.statusRawValue = OutboxStatus.blockedConflict.rawValue
                 item.errorMessage = result.conflictCode ?? "base_revision_mismatch"
+                item.nextRetryAt = nil
+            } else if let conflictOperationID = result.conflictOperationID,
+                      causallyBlockedOperationIDs.contains(item.operationID) {
+                item.statusRawValue = OutboxStatus.blockedConflict.rawValue
+                item.errorMessage = "blocked_by_predecessor_conflict:" +
+                    conflictOperationID.uuidString.lowercased()
                 item.nextRetryAt = nil
             }
         }
@@ -528,6 +544,191 @@ actor FarmRemoteSyncCoordinator {
             binding.updatedAt = .now
         }
         try context.save()
+    }
+
+    /// Once the server rejects an operation, every later operation whose base
+    /// revision is produced by that rejected lineage must be quarantined too.
+    /// Cross-entity business prerequisites are included explicitly; currently
+    /// a pedigree edit depends on an earlier legacy `setBreedingRam(true)` or
+    /// unified `setSheepPurpose(.breedingRam)` command.
+    /// This prevents a later sync pass from retrying a dependent operation by
+    /// itself after the server stopped at the first conflict.
+    nonisolated static func causallyDependentOperationIDs(
+        afterConflict conflictOperationID: UUID?,
+        in operations: [FarmRemotePendingOperation]
+    ) -> Set<UUID> {
+        guard let conflictOperationID,
+              let conflictIndex = operations.firstIndex(where: {
+                  $0.envelope.operationID == conflictOperationID
+              }) else {
+            return []
+        }
+
+        let conflict = operations[conflictIndex].envelope
+        var blockedOperationIDs = Set<UUID>()
+        var blockedResultingRevisionsByEntity: [String: Set<Int>] = [
+            entityRevisionKey(type: conflict.entityType, id: conflict.entityID): [conflict.revision]
+        ]
+        var blockedBreedingRamIDs = Set<UUID>()
+        if let ramID = breedingRamQualification(from: conflict.payload) {
+            blockedBreedingRamIDs.insert(ramID)
+        }
+
+        for pending in operations.suffix(from: operations.index(after: conflictIndex)) {
+            let envelope = pending.envelope
+            let entityKey = entityRevisionKey(type: envelope.entityType, id: envelope.entityID)
+            let followsBlockedEntityRevision = blockedResultingRevisionsByEntity[entityKey]?
+                .contains(envelope.baseRevision) == true
+            let followsBlockedQualification = pedigreeSire(from: envelope.payload)
+                .map(blockedBreedingRamIDs.contains) == true
+            guard followsBlockedEntityRevision || followsBlockedQualification else {
+                if let laterQualification = breedingRamCommand(from: envelope.payload) {
+                    // A separately rebased qualification command supersedes
+                    // the older blocked prerequisite for later pedigree edits.
+                    blockedBreedingRamIDs.remove(laterQualification.sheepID)
+                }
+                continue
+            }
+            blockedOperationIDs.insert(envelope.operationID)
+            blockedResultingRevisionsByEntity[entityKey, default: []].insert(envelope.revision)
+            if let ramID = breedingRamQualification(from: envelope.payload) {
+                blockedBreedingRamIDs.insert(ramID)
+            }
+        }
+        return blockedOperationIDs
+    }
+
+    /// The same dependency can cross the 25-operation upload boundary or
+    /// survive an app restart. Persistently quarantine it before selecting the
+    /// next batch, while leaving unrelated photos and transfers retryable.
+    private func quarantineOperationsWhosePrerequisiteIsBlocked(
+        farmID: UUID,
+        generation: Int,
+        sequenceByOperationID: [UUID: Int64],
+        context: ModelContext
+    ) throws {
+        let provider = FarmRemoteProvider.supabase.rawValue
+        let allItems = try context.fetch(FetchDescriptor<OutboxItem>()).filter {
+            $0.farmID == farmID &&
+                $0.deliveryProviderRawValue == provider &&
+                $0.authorityGeneration == generation
+        }
+        let blockedIDs = Set(allItems.compactMap {
+            $0.status == .blockedConflict ? $0.operationID : nil
+        })
+        let retryableIDs = Set(allItems.compactMap {
+            [.pending, .uploading, .awaitingConfirmation, .retryableFailure]
+                .contains($0.status) ? $0.operationID : nil
+        })
+        guard !blockedIDs.isEmpty, !retryableIDs.isEmpty else { return }
+
+        let relevantIDs = Set(allItems.map(\.operationID))
+        let operations = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            relevantIDs.contains($0.id)
+        }
+        var statusByOperationID: [UUID: OutboxStatus] = [:]
+        for item in allItems {
+            if item.status == .confirmed || statusByOperationID[item.operationID] == nil {
+                statusByOperationID[item.operationID] = item.status
+            }
+        }
+        let sequencedOperations = operations.compactMap { operation -> (operation: DomainOperation, sequence: Int64)? in
+            guard let sequence = sequenceByOperationID[operation.id] else { return nil }
+            return (operation, sequence)
+        }.sorted { $0.sequence < $1.sequence }
+        let ramCommands: [(id: UUID, ramID: UUID, active: Bool, sequence: Int64)] =
+            sequencedOperations.compactMap { item in
+                let operation = item.operation
+                guard let command = Self.breedingRamCommand(from: operation.payload) else {
+                    return nil
+                }
+                return (operation.id, command.sheepID, command.active, item.sequence)
+            }
+
+        var dependencyByOperationID: [UUID: UUID] = [:]
+        for item in sequencedOperations {
+            let operation = item.operation
+            guard retryableIDs.contains(operation.id) else { continue }
+
+            let sameEntityPredecessor = sequencedOperations.last(where: { candidate in
+                candidate.sequence < item.sequence &&
+                    candidate.operation.entityType == operation.entityType &&
+                    candidate.operation.entityID == operation.entityID &&
+                    candidate.operation.resultingRevision == operation.baseRevision &&
+                    statusByOperationID[candidate.operation.id] == .blockedConflict
+            })
+            let qualificationPredecessor: (
+                id: UUID,
+                ramID: UUID,
+                active: Bool,
+                sequence: Int64
+            )?
+            if let sireID = Self.pedigreeSire(from: operation.payload),
+               let latestQualification = ramCommands.last(where: {
+                   $0.ramID == sireID && $0.sequence < item.sequence
+               }),
+               latestQualification.active,
+               statusByOperationID[latestQualification.id] == .blockedConflict {
+                qualificationPredecessor = latestQualification
+            } else {
+                qualificationPredecessor = nil
+            }
+            guard let prerequisiteID = sameEntityPredecessor?.operation.id ?? qualificationPredecessor?.id else {
+                continue
+            }
+            dependencyByOperationID[operation.id] = prerequisiteID
+            statusByOperationID[operation.id] = .blockedConflict
+        }
+        guard !dependencyByOperationID.isEmpty else { return }
+        for item in allItems {
+            guard let prerequisiteID = dependencyByOperationID[item.operationID],
+                  retryableIDs.contains(item.operationID) else { continue }
+            item.statusRawValue = OutboxStatus.blockedConflict.rawValue
+            item.errorMessage = "blocked_by_predecessor_conflict:" +
+                prerequisiteID.uuidString.lowercased()
+            item.nextRetryAt = nil
+        }
+        try context.save()
+    }
+
+    nonisolated private static func breedingRamQualification(
+        from payloadData: Data
+    ) -> UUID? {
+        guard let command = breedingRamCommand(from: payloadData),
+              command.active else { return nil }
+        return command.sheepID
+    }
+
+    nonisolated private static func entityRevisionKey(type: String, id: UUID) -> String {
+        type + ":" + id.uuidString.lowercased()
+    }
+
+    nonisolated private static func breedingRamCommand(
+        from payloadData: Data
+    ) -> (sheepID: UUID, active: Bool)? {
+        guard let payload = try? decodeCloudPayload(payloadData),
+              payload.kind == .care,
+              let command = payload.careCommand else {
+            return nil
+        }
+        switch command {
+        case .setBreedingRam(let sheepID, let active, _):
+            return (sheepID, active)
+        case .setSheepPurpose(let sheepID, let purpose, _, _):
+            return (sheepID, purpose == .breedingRam)
+        default:
+            return nil
+        }
+    }
+
+    nonisolated private static func pedigreeSire(from payloadData: Data) -> UUID? {
+        guard let payload = try? decodeCloudPayload(payloadData),
+              payload.kind == .care,
+              let command = payload.careCommand,
+              case .updateSheepPedigree(let draft) = command else {
+            return nil
+        }
+        return draft.sireID
     }
 
     private func unblockProfileUpdatesAfterCreatedSheep(
@@ -879,16 +1080,28 @@ actor FarmRemoteSyncCoordinator {
                 }
 
                 let outcome: RemoteApplyOutcome
+                var conflictReasonCode = "supabaseBaseRevisionMismatch"
                 do {
                     outcome = try service.apply(envelope, context: context)
                 } catch {
-                    throw FarmRemoteSyncError.remoteOperationApplyFailed(
-                        operationID: envelope.operationID,
-                        entityID: envelope.entityID,
-                        baseRevision: envelope.baseRevision,
-                        resultingRevision: envelope.revision,
-                        detail: error.localizedDescription
-                    )
+                    if let recoverable = try Self.recoverableBusinessConflict(
+                        envelope: envelope,
+                        error: error,
+                        context: context
+                    ) {
+                        outcome = .conflict(
+                            localRevision: recoverable.localRevision
+                        )
+                        conflictReasonCode = recoverable.reasonCode
+                    } else {
+                        throw FarmRemoteSyncError.remoteOperationApplyFailed(
+                            operationID: envelope.operationID,
+                            entityID: envelope.entityID,
+                            baseRevision: envelope.baseRevision,
+                            resultingRevision: envelope.revision,
+                            detail: error.localizedDescription
+                        )
+                    }
                 }
                 let recordsDurableReceipt: Bool
                 switch outcome {
@@ -918,7 +1131,7 @@ actor FarmRemoteSyncCoordinator {
                         remotePayload: envelope.payload,
                         remoteAccountID: envelope.modifiedByAccountID,
                         remoteDeviceID: envelope.modifiedByDeviceID,
-                        reasonCode: "supabaseBaseRevisionMismatch"
+                        reasonCode: conflictReasonCode
                     )
                     conflict.remoteEnvelopeData = try JSONEncoder.cloud.encode(envelope)
                     context.insert(conflict)
@@ -981,6 +1194,49 @@ actor FarmRemoteSyncCoordinator {
             context.rollback()
             throw error
         }
+    }
+
+    /// A remote business command can be structurally valid yet no longer pass
+    /// the receiver's current domain rules. Quarantine only narrowly
+    /// identified, user-resolvable cases so one historical fact cannot make a
+    /// full compact-checkpoint restore permanently unavailable. Structural
+    /// corruption, missing references and malformed payloads still abort and
+    /// roll back the page.
+    private static func recoverableBusinessConflict(
+        envelope: CloudOperationEnvelope,
+        error: Error,
+        context: ModelContext
+    ) throws -> (localRevision: Int, reasonCode: String)? {
+        guard let commandError = error as? FarmCommandError else { return nil }
+        switch commandError {
+        case .pedigreeParentSexMismatch:
+            break
+        default:
+            return nil
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let payload = try decoder.decode(
+            FarmCommandCloudPayload.self,
+            from: envelope.payload
+        )
+        guard payload.kind == .care,
+              let command = payload.careCommand,
+              case .updateSheepPedigree(let draft) = command,
+              draft.sheepID == envelope.entityID,
+              let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+                .first(where: {
+                    $0.id == draft.sheepID &&
+                        $0.farmID == envelope.farmID &&
+                        $0.deletedAt == nil
+                }) else {
+            return nil
+        }
+        return (
+            localRevision: sheep.revision,
+            reasonCode: "remotePedigreeParentQualificationMismatch"
+        )
     }
 
     private func supersedeBlockedDeletionOperations(

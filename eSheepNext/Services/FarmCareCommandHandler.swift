@@ -178,6 +178,14 @@ enum FarmCareCommandHandler {
                     $0.isBreedingRam == active &&
                     $0.revision == expectedRevision + 1
             }
+        case .setSheepPurpose(let sheepID, let purpose, _, let expectedRevision):
+            return try context.fetch(FetchDescriptor<SheepRecord>()).contains {
+                $0.id == sheepID &&
+                    $0.farmID == farmID &&
+                    $0.purpose == purpose.rawValue &&
+                    $0.isBreedingRam == (purpose == .breedingRam) &&
+                    $0.revision == expectedRevision + 1
+            }
         case .restorePedigreeAudit(let snapshot):
             return try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).contains { $0.id == snapshot.id && $0.farmID == farmID }
         case .recordReproductionBatch(let draft), .correctReproduction(_, let draft, _):
@@ -284,6 +292,21 @@ enum FarmCareCommandHandler {
             guard let sheep else { throw FarmCommandError.sheepNotFound }
             guard sheep.revision == expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
             if active, sheep.sex != .ram { throw FarmCommandError.reproductionSireMustBeRam }
+
+        case .setSheepPurpose(let sheepID, let purpose, let reason, let expectedRevision):
+            let sheep = try context.fetch(
+                FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                    $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
+                })
+            ).first
+            guard let sheep else { throw FarmCommandError.sheepNotFound }
+            guard sheep.revision == expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
+            guard purpose.isAllowed(for: sheep.sex) else {
+                throw purpose == .breedingRam
+                    ? FarmCommandError.reproductionSireMustBeRam
+                    : FarmCommandError.missingRequiredValue("与羊只性别匹配的用途")
+            }
+            try require(reason, "用途变更原因")
 
         case .restorePedigreeAudit(let snapshot):
             let sheepIDs = Set(try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID }.map(\.id))
@@ -545,6 +568,20 @@ enum FarmCareCommandHandler {
             guard let sheep else { throw FarmCommandError.sheepNotFound }
             let base = sheep.revision
             sheep.isBreedingRam = active
+            sheep.updatedAt = modifiedAt
+            sheep.revision += 1
+            return .init(entityType: .sheep, entityID: sheep.id, baseRevision: base, resultingRevision: sheep.revision)
+
+        case .setSheepPurpose(let sheepID, let purpose, _, _):
+            let sheep = try context.fetch(
+                FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                    $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
+                })
+            ).first
+            guard let sheep else { throw FarmCommandError.sheepNotFound }
+            let base = sheep.revision
+            sheep.purpose = purpose.rawValue
+            sheep.isBreedingRam = purpose == .breedingRam
             sheep.updatedAt = modifiedAt
             sheep.revision += 1
             return .init(entityType: .sheep, entityID: sheep.id, baseRevision: base, resultingRevision: sheep.revision)

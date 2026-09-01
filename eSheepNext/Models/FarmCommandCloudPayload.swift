@@ -193,12 +193,20 @@ enum FarmCommandCloudPayloadEncoder {
     static func encode(
         _ command: FarmCommand,
         resolvedFeedLines: [FarmCommandCloudPayload.FeedLine]? = nil,
-        sheepAvatarUpdate: SheepAvatarPhotoUpdate? = nil
+        sheepAvatarUpdate: SheepAvatarPhotoUpdate? = nil,
+        previousSheepPurpose: String? = nil,
+        sheepPurposeChangedAt: Date? = nil
     ) throws -> Data {
         var payload = FarmCommandCloudPayload(kind: command.operationKind)
         switch command {
         case .care(let careCommand):
             payload.careCommand = careCommand
+            if case .setSheepPurpose = careCommand {
+                payload.optionalStrings[SheepPurposeTimeline.previousPurposeField] = previousSheepPurpose
+                if let sheepPurposeChangedAt {
+                    payload.dates[SheepPurposeTimeline.changedAtField] = sheepPurposeChangedAt
+                }
+            }
         case .tmr(let tmrCommand):
             payload.tmrCommand = tmrCommand
             payload.integers[TMRCloudDataProtocol.field] = TMRCloudDataProtocol.currentVersion

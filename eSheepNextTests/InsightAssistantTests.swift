@@ -3641,6 +3641,12 @@ final class InsightAssistantTests: XCTestCase {
             .setSemenDonor(semenID: ids[27], donorID: ids[32], expectedRevision: 1),
             .updateSheepPedigree(pedigreeDraft),
             .setBreedingRam(sheepID: ids[2], isBreedingRam: true, expectedRevision: 1),
+            .setSheepPurpose(
+                sheepID: ids[2],
+                purpose: .breedingRam,
+                reason: "统一用途测试",
+                expectedRevision: 1
+            ),
             .restorePedigreeAudit(pedigreeSnapshot),
             .recordReproductionBatch(reproductionDraft),
             .recordLambing(lambingDraft),
@@ -3691,7 +3697,7 @@ final class InsightAssistantTests: XCTestCase {
             .restoreTombstonedEntity(tombstoneID: ids[14]),
         ] + careCommands.map(FarmCommand.care)
 
-        XCTAssertEqual(commands.count, 49)
+        XCTAssertEqual(commands.count, 50)
         for (index, command) in commands.enumerated() {
             let encoded = try FarmCommandCloudPayloadEncoder.encode(command)
             let decoded = try FarmCommandCloudPayloadDecoder.decode(encoded)
@@ -3732,10 +3738,12 @@ final class InsightAssistantTests: XCTestCase {
         let careCommand = try XCTUnwrap(payloadRoot["careCommand"] as? [String: Any])
         let cases = try XCTUnwrap(careCommand["cases"] as? [String: Any])
 
-        XCTAssertEqual(cases.count, 20)
+        XCTAssertEqual(cases.count, 19)
         XCTAssertNotNil(cases["recordHealth"])
         XCTAssertNotNil(cases["recordLambing"])
         XCTAssertNotNil(cases["setReminderStatus"])
+        XCTAssertNil(cases["setBreedingRam"])
+        XCTAssertNil(cases["setSheepPurpose"])
     }
 
     func testGenericFarmDraftDerivesHighRiskPolicyAndRejectsCrossFarmReference() throws {

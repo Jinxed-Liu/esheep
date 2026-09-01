@@ -29,15 +29,17 @@ enum FeedAnalysisStage: String, Codable, Sendable, Hashable {
     }
 
     static func classify(purpose: String, sex: SheepSex, isBreedingRam: Bool = false) -> FeedAnalysisStage {
-        let value = purpose.trimmingCharacters(in: .whitespacesAndNewlines)
-        if value.contains("哺乳") { return .lactatingLamb }
-        if value.contains("断奶") && value.contains("羔") { return .weanedLamb }
-        if value.contains("后备") { return .replacement }
-        if value.contains("育成") { return .growing }
-        if value.contains("育肥") { return .fattening }
-        if value.contains("种公") || (sex == .ram && isBreedingRam) { return .breedingRam }
-        if value.contains("繁殖") && (value.contains("母") || sex == .ewe) { return .breedingEwe }
-        return .unknown
+        if sex == .ram, isBreedingRam { return .breedingRam }
+        return switch SheepPurpose.classify(storedValue: purpose) {
+        case .sucklingLamb: .lactatingLamb
+        case .weanedLamb: .weanedLamb
+        case .growing: .growing
+        case .replacementEwe: .replacement
+        case .fattening: .fattening
+        case .breedingEwe: .breedingEwe
+        case .breedingRam: .breedingRam
+        case .unclassified, nil: .unknown
+        }
     }
 }
 

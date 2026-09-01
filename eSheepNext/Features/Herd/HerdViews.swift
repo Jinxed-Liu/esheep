@@ -24,6 +24,7 @@ struct HerdManagementView: View {
     @State private var visibleLimit = 100
     @State private var selection = Set<UUID>()
     @State private var isBatchTransferring = false
+    @State private var purposeBatchRequest: SheepPurposeBatchRequest?
     @State private var sourceSheep: [HerdSheepRow] = []
     @State private var filteredSheep: [HerdSheepRow] = []
     @State private var penOptions: [HerdPenOption] = []
@@ -126,24 +127,39 @@ struct HerdManagementView: View {
                     if sexFilter != nil || statusFilter != nil || penFilter != nil {
                         Button("清除筛选") { sexFilter = nil; statusFilter = nil; penFilter = nil }
                     }
-                } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
-                .accessibilityLabel("筛选与排序")
+                    Divider()
+                    NavigationLink {
+                        SheepPurposeManagementView(account: account, farm: farm)
+                    } label: {
+                        Label("羊只用途管理", systemImage: "tag")
+                    }
+                    Menu("导出羊只", systemImage: "square.and.arrow.up") {
+                        Button("导出在群羊只 CSV", systemImage: "checkmark.circle") { exportSheep(.present) }
+                            .disabled(presentSheepCount == 0)
+                        Button("导出离群羊只 CSV", systemImage: "arrowshape.turn.up.right.circle") { exportSheep(.removed) }
+                            .disabled(removedSheepCount == 0)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("列表操作、筛选与排序")
             }
             if !selection.isEmpty {
                 ToolbarItem(placement: .bottomBar) {
-                    Button("批量转群（\(selection.count)）") { isBatchTransferring = true }
+                    Menu {
+                        Button("批量转群", systemImage: "arrow.left.arrow.right") {
+                            isBatchTransferring = true
+                        }
+                        Button("批量修改用途", systemImage: "tag") {
+                            purposeBatchRequest = SheepPurposeBatchRequest(
+                                sheepIDs: selection,
+                                sourceLabel: "羊只列表多选"
+                            )
+                        }
+                    } label: {
+                        Label("批量操作（\(selection.count)）", systemImage: "ellipsis.circle")
+                    }
                 }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button("导出在群羊只 CSV", systemImage: "checkmark.circle") { exportSheep(.present) }
-                        .disabled(presentSheepCount == 0)
-                    Button("导出离群羊只 CSV", systemImage: "arrowshape.turn.up.right.circle") { exportSheep(.removed) }
-                        .disabled(removedSheepCount == 0)
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                .accessibilityLabel("导出羊只 CSV")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { isAddingSheep = true } label: { Image(systemName: "plus") }
@@ -159,6 +175,18 @@ struct HerdManagementView: View {
                     selection.removeAll()
                     exportMessage = "已为 \(count) 只羊生成转群记录。"
                 }
+            }
+        }
+        .sheet(item: $purposeBatchRequest, onDismiss: {
+            selection.removeAll()
+            sheepSourceLoadRevision &+= 1
+        }) { request in
+            NavigationStack {
+                SheepPurposeBatchEditorEntryView(
+                    account: account,
+                    farm: farm,
+                    request: request
+                )
             }
         }
         .fileExporter(
@@ -550,11 +578,11 @@ struct SheepDetailView: View {
     @State private var detailSnapshot: SheepDetailSnapshot?
     @State private var isLoadingDetail = true
     @State private var detailLoadError: String?
-    @State private var isEditingProfile = false
     @State private var editingSheep: SheepRecord?
     @State private var editingPhotoTime: PhotoTimeDraft?
     @State private var previewingPhoto: SheepPhotoPreviewItem?
     @State private var pendingPhotoDeletion: PhotoDeletionDraft?
+    @State private var hasAppeared = false
     private let commandService = FarmCommandService()
 
     init(account: AccountProfile, farm: FarmRecord, screen: SheepDetailScreenSnapshot) {
@@ -612,12 +640,24 @@ struct SheepDetailView: View {
                     LabeledContent("当前胎次") { Text(LocalizedStringKey(currentParityDisplayName)) }
                 }
                 LabeledContent("状态") { Text(LocalizedStringKey(subject.status.displayName)) }
+                LabeledContent("用途") { Text(verbatim: subject.purpose) }
                 LabeledContent("当前圈舍") { Text(verbatim: subject.currentPenDisplayName(penName)) }
                 LabeledContent("入场时间") { Text(subject.enteredAt, format: .dateTime.year().month().day()) }
+                NavigationLink {
+                    SheepPurposeEditorEntryView(
+                        account: account,
+                        farm: farm,
+                        sheepID: subject.id
+                    )
+                } label: {
+                    Label("更改羊只用途", systemImage: "tag")
+                }
+                .disabled(!CapabilitySet(role: farm.role).allows(.editHistoricalFacts))
             }
             if !subject.note.isEmpty {
                 Section("备注") { Text(subject.note) }
             }
+            purposeTimelineSection
             Section("系谱") {
                 NavigationLink {
                     SheepPedigreeView(account: account, farm: farm, sheepID: subject.id)
@@ -730,14 +770,11 @@ struct SheepDetailView: View {
                 }
             }
         }
-        .sheet(isPresented: $isEditingProfile, onDismiss: {
-            editingSheep = nil
+        .sheet(item: $editingSheep, onDismiss: {
             Task { await reloadEntryAndDetail() }
-        }) {
-            if let editingSheep {
-                NavigationStack {
-                    EditSheepProfileView(account: account, farm: farm, sheep: editingSheep)
-                }
+        }) { editingSheep in
+            NavigationStack {
+                EditSheepProfileView(account: account, farm: farm, sheep: editingSheep)
             }
         }
         .sheet(item: $editingPhotoTime) { draft in
@@ -782,6 +819,13 @@ struct SheepDetailView: View {
         .onChange(of: selectedPhoto) { _, item in
             guard let item else { return }
             addPhoto(item, setAsAvatar: false)
+        }
+        .onAppear {
+            if hasAppeared {
+                Task { await reloadEntryAndDetail() }
+            } else {
+                hasAppeared = true
+            }
         }
         .alert("照片", isPresented: Binding(get: { photoMessage != nil }, set: { if !$0 { photoMessage = nil } })) {
             Button("完成", role: .cancel) {}
@@ -858,6 +902,45 @@ struct SheepDetailView: View {
                 Text(LocalizedStringKey(reproductionInsight.summary))
                 ForEach(reproductionInsight.details, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var purposeTimelineSection: some View {
+        let entries = detailSnapshot?.purposeTimeline ?? []
+        Section {
+            if isLoadingDetail, detailSnapshot == nil {
+                ProgressView("正在读取用途时间线")
+            } else if entries.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(verbatim: subject.purpose)
+                        .font(.subheadline.weight(.medium))
+                    Text("现有用途来自历史档案；此前没有可追溯的用途变更记录。今后每次修改都会保留时间、前后用途和原因。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            } else {
+                ForEach(entries, id: \.id) { entry in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(verbatim: entry.transitionText)
+                            .font(.subheadline.weight(.medium))
+                        Text(entry.occurredAt, format: .dateTime.year().month().day().hour().minute())
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                        if !entry.reason.isEmpty {
+                            Text(verbatim: entry.reason)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        } header: {
+            Text("用途时间线")
+        } footer: {
+            Text("档案中的“用途”是当前投影；这里保存每次明确变更的历史事实。")
         }
     }
 
@@ -945,7 +1028,6 @@ struct SheepDetailView: View {
                 return
             }
             editingSheep = record
-            isEditingProfile = true
         } catch {
             detailLoadError = error.localizedDescription
         }
@@ -1626,7 +1708,6 @@ struct PenDetailEntryView: View {
     @State private var isLoading = true
     @State private var hasLoaded = false
     @State private var loadError: String?
-    @State private var isEditing = false
     @State private var editingPen: PenRecord?
     @State private var actionError: String?
 
@@ -1664,14 +1745,11 @@ struct PenDetailEntryView: View {
         .refreshable {
             await reloadDetail()
         }
-        .sheet(isPresented: $isEditing, onDismiss: {
-            editingPen = nil
+        .sheet(item: $editingPen, onDismiss: {
             loadRevision &+= 1
-        }) {
-            if let editingPen {
-                NavigationStack {
-                    EditPenView(account: account, farm: farm, pen: editingPen)
-                }
+        }) { editingPen in
+            NavigationStack {
+                EditPenView(account: account, farm: farm, pen: editingPen)
             }
         }
         .alert("无法编辑圈舍", isPresented: Binding(
@@ -1743,7 +1821,6 @@ struct PenDetailEntryView: View {
                 return
             }
             editingPen = pen
-            isEditing = true
         } catch {
             actionError = error.localizedDescription
         }

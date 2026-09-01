@@ -262,6 +262,7 @@ enum CareCommand: Codable, Sendable, Equatable {
     case setSemenDonor(semenID: UUID, donorID: UUID?, expectedRevision: Int)
     case updateSheepPedigree(CarePedigreeUpdateDraft)
     case setBreedingRam(sheepID: UUID, isBreedingRam: Bool, expectedRevision: Int)
+    case setSheepPurpose(sheepID: UUID, purpose: SheepPurpose, reason: String, expectedRevision: Int)
     case restorePedigreeAudit(CarePedigreeAuditSnapshot)
     case recordReproductionBatch(CareReproductionBatchDraft)
     case recordLambing(CareLambingDraft)
@@ -287,6 +288,7 @@ enum CareCommand: Codable, Sendable, Equatable {
         case .setSemenDonor(let semenID, _, _): semenID
         case .updateSheepPedigree(let draft): draft.sheepID
         case .setBreedingRam(let sheepID, _, _): sheepID
+        case .setSheepPurpose(let sheepID, _, _, _): sheepID
         case .restorePedigreeAudit(let snapshot): snapshot.id
         case .recordReproductionBatch(let draft): draft.id
         case .recordLambing(let draft): draft.id
@@ -304,7 +306,7 @@ enum CareCommand: Codable, Sendable, Equatable {
         switch self {
         case .upsertHealthCatalog, .receiveInventory, .adjustInventory, .setInventoryLotActive, .adjustSemen, .upsertSemenDonor, .setSemenDonor, .updateRules, .updateOperationalAlertRules:
             .manageCatalogs
-        case .correctHealth, .correctReproduction, .updateSheepPedigree, .setBreedingRam, .restorePedigreeAudit, .correctLambing, .revokeLambing, .restoreLambing:
+        case .correctHealth, .correctReproduction, .updateSheepPedigree, .setBreedingRam, .setSheepPurpose, .restorePedigreeAudit, .correctLambing, .revokeLambing, .restoreLambing:
             .editHistoricalFacts
         case .recordHealth, .recordReproductionBatch, .recordLambing, .deferOperationalAlert, .setReminderStatus:
             .recordProduction
@@ -324,6 +326,7 @@ enum CareCommand: Codable, Sendable, Equatable {
         case .setSemenDonor: "关联冻精供体"
         case .updateSheepPedigree: "确认羊只系谱"
         case .setBreedingRam(_, let active, _): active ? "标记种公羊" : "取消种公羊标记"
+        case .setSheepPurpose(_, let purpose, _, _): "更改羊只用途：\(purpose.displayName)"
         case .restorePedigreeAudit: "恢复系谱审计"
         case .recordReproductionBatch(let draft): "批量记录\(draft.kind.displayName)"
         case .recordLambing: "记录产羔并建立羔羊档案"

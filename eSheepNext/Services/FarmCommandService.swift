@@ -3377,9 +3377,22 @@ final class FarmCommandService {
         sheepAvatarUpdate: SheepAvatarPhotoUpdate? = nil,
         removalBatchState: RemovalBatchExecutionState? = nil
     ) throws -> AppliedCommandResult {
+        let purposeTimelineContext: (previousPurpose: String, changedAt: Date)?
+        if case .care(.setSheepPurpose(let sheepID, _, _, _)) = command {
+            let sheep = try sheepRecord(
+                sheepID,
+                farmID: farm.farmID,
+                context: context
+            )
+            purposeTimelineContext = (sheep.purpose, .now)
+        } else {
+            purposeTimelineContext = nil
+        }
         let defaultPayload = try FarmCommandCloudPayloadEncoder.encode(
             command,
-            sheepAvatarUpdate: sheepAvatarUpdate
+            sheepAvatarUpdate: sheepAvatarUpdate,
+            previousSheepPurpose: purposeTimelineContext?.previousPurpose,
+            sheepPurposeChangedAt: purposeTimelineContext?.changedAt
         )
         func appliedResult(_ type: CloudEntityType, _ id: UUID, baseRevision: Int = 0, revision: Int = 1, payload: Data? = nil) -> AppliedCommandResult {
             AppliedCommandResult(entityType: type.rawValue, entityID: id, baseRevision: baseRevision, resultingRevision: revision, payload: payload ?? defaultPayload)
@@ -3392,6 +3405,7 @@ final class FarmCommandService {
                 farmID: farm.farmID,
                 accountID: farm.accountID,
                 context: context,
+                modifiedAt: purposeTimelineContext?.changedAt ?? .now,
                 pedigreeSheepByID: pedigreeSheepByID
             )
             return AppliedCommandResult(entityType: result.entityType.rawValue, entityID: result.entityID, baseRevision: result.baseRevision, resultingRevision: result.resultingRevision, payload: defaultPayload)

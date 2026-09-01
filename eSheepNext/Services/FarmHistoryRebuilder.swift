@@ -851,10 +851,26 @@ enum RemoteProjectionReceiptRepair {
                       let payload = try? decodePayload(envelope.payload) else {
                     continue
                 }
-                guard case .applied(let changedAt) = try service.apply(
-                    envelope,
-                    context: context
-                ) else {
+                let outcome: RemoteApplyOutcome
+                do {
+                    outcome = try service.apply(envelope, context: context)
+                } catch let error as FarmCommandError {
+                    // A quarantined legacy pedigree operation can remain
+                    // permanently invalid under today's business rules. Its
+                    // validation happens before mutation, so keep the conflict
+                    // unresolved and let independent Outbox work continue.
+                    // Other command failures still abort the transaction: they
+                    // may have partially changed this shared ModelContext.
+                    guard payload.kind == .care,
+                          let command = payload.careCommand,
+                          case .updateSheepPedigree = command else {
+                        throw error
+                    }
+                    conflict.resolutionFailureReason =
+                        "自动重放失败，异常仍待处理：\(error.localizedDescription)"
+                    continue
+                }
+                guard case .applied(let changedAt) = outcome else {
                     continue
                 }
                 let receipt = DomainOperation(

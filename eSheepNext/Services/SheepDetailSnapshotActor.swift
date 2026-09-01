@@ -122,6 +122,7 @@ struct SheepDetailTimelineEntry: Identifiable, Sendable, Hashable {
 struct SheepDetailSnapshot: Sendable {
     let weights: [SheepDetailWeightSnapshot]
     let photos: [SheepDetailPhotoSnapshot]
+    let purposeTimeline: [SheepPurposeTimelineFact]
     let timeline: [SheepDetailTimelineEntry]
     let currentParity: Int?
     let lifecycleInsight: FarmInsight
@@ -265,6 +266,14 @@ actor SheepDetailSnapshotActor {
             },
             sortBy: [SortDescriptor(\PhotoAssetRecord.createdAt, order: .reverse)]
         ))
+        let purposeOperations = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+            $0.farmID == farmID && $0.entityID == sheepID
+        }))
+        let purposeTimeline = SheepPurposeTimeline.facts(from: purposeOperations)
+            .sorted {
+                if $0.occurredAt != $1.occurredAt { return $0.occurredAt > $1.occurredAt }
+                return $0.id.uuidString > $1.id.uuidString
+            }
         let health = try healthRecords(
             context: context,
             farmID: farmID,
@@ -390,6 +399,7 @@ actor SheepDetailSnapshotActor {
         return SheepDetailSnapshot(
             weights: weightValues,
             photos: photoValues,
+            purposeTimeline: purposeTimeline,
             timeline: timeline,
             currentParity: LambingEntrySemantics.currentParity(
                 eweID: sheepID,

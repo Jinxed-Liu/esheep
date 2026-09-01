@@ -664,11 +664,17 @@ struct NoteEntryView: View {
 struct EntrySaveToolbar: ToolbarContent {
     let action: () -> Void
     let isSaving: Bool
+    let isDisabled: Bool
     @State private var isPerformingAction = false
 
-    init(action: @escaping () -> Void, isSaving: Bool = false) {
+    init(
+        action: @escaping () -> Void,
+        isSaving: Bool = false,
+        isDisabled: Bool = false
+    ) {
         self.action = action
         self.isSaving = isSaving
+        self.isDisabled = isDisabled
     }
 
     private var showsProgress: Bool {
@@ -685,13 +691,13 @@ struct EntrySaveToolbar: ToolbarContent {
                     Text("保存")
                 }
             }
-            .disabled(showsProgress)
+            .disabled(showsProgress || isDisabled)
             .accessibilityLabel(showsProgress ? "正在保存" : "保存")
         }
     }
 
     private func performAction() {
-        guard !showsProgress else { return }
+        guard !showsProgress, !isDisabled else { return }
         isPerformingAction = true
         Task { @MainActor in
             await Task.yield()

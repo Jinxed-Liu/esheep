@@ -212,7 +212,9 @@ final class SheepRecord {
         self.legacyPenSnapshotIsAuthoritative = false
         self.breed = breed
         self.purpose = purpose
-        self.isBreedingRam = isBreedingRam ?? (sex == .ram && purpose.contains("种公羊"))
+        self.isBreedingRam = isBreedingRam ?? (
+            sex == .ram && SheepPurpose.classify(storedValue: purpose) == .breedingRam
+        )
         self.sexRawValue = sex.rawValue
         self.statusRawValue = SheepStatus.active.rawValue
         self.currentPenID = penID
@@ -244,6 +246,58 @@ final class SheepRecord {
 
     func currentPenDisplayName(_ penName: String?) -> String {
         isCurrentlyPresent ? (penName ?? "未分圈") : "已离群"
+    }
+}
+
+/// 羊只当前生产用途的唯一标准目录。
+///
+/// `SheepRecord.purpose` 仍保存原始字符串，以兼容历史导入和自定义旧值；
+/// 只有用户在统一用途界面明确保存时，才会写入这里定义的标准值。
+enum SheepPurpose: String, Codable, CaseIterable, Sendable, Hashable, Identifiable {
+    case unclassified = "未分类"
+    case sucklingLamb = "哺乳羔羊"
+    case weanedLamb = "断奶羔羊"
+    case growing = "育成羊"
+    case replacementEwe = "后备母羊"
+    case breedingEwe = "繁殖母羊"
+    case breedingRam = "种公羊"
+    case fattening = "育肥羊"
+
+    var id: String { rawValue }
+    var displayName: String { rawValue }
+
+    static func choices(for sex: SheepSex) -> [SheepPurpose] {
+        allCases.filter { purpose in
+            switch purpose {
+            case .breedingRam:
+                sex == .ram
+            case .replacementEwe, .breedingEwe:
+                sex == .ewe
+            default:
+                true
+            }
+        }
+    }
+
+    func isAllowed(for sex: SheepSex) -> Bool {
+        Self.choices(for: sex).contains(self)
+    }
+
+    /// Reads standard values and selected historical aliases without mutating
+    /// the stored source string.
+    static func classify(storedValue: String) -> SheepPurpose? {
+        let value = storedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let exact = SheepPurpose(rawValue: value) { return exact }
+        if value.contains("哺乳") { return .sucklingLamb }
+        if value.contains("断奶"), value.contains("羔") { return .weanedLamb }
+        if value.contains("种公") { return .breedingRam }
+        if value.contains("后备"), value.contains("母") { return .replacementEwe }
+        if value.contains("繁殖"), value.contains("母") || value == "繁殖羊" || value == "繁殖" {
+            return .breedingEwe
+        }
+        if value.contains("育成") { return .growing }
+        if value.contains("育肥") { return .fattening }
+        return nil
     }
 }
 

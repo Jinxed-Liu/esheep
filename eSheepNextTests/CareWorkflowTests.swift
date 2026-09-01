@@ -4,6 +4,336 @@ import XCTest
 
 @MainActor
 final class CareWorkflowTests: XCTestCase {
+    func testUnifiedPurposeCommandUpdatesPurposeAndBreedingRamQualification() throws {
+        let fixture = try makeFixture()
+        let ram = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "PURPOSE-RAM",
+            breed: "杜泊",
+            purpose: "历史自定义用途",
+            isBreedingRam: false,
+            sex: .ram,
+            penID: nil,
+            enteredAt: .now
+        )
+        fixture.context.insert(ram)
+        try fixture.context.save()
+
+        try fixture.service.execute(
+            .care(.setSheepPurpose(
+                sheepID: ram.id,
+                purpose: .breedingRam,
+                reason: "现场确认配种用途",
+                expectedRevision: ram.revision
+            )),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+
+        XCTAssertEqual(ram.purpose, SheepPurpose.breedingRam.rawValue)
+        XCTAssertTrue(ram.isBreedingRam)
+        XCTAssertEqual(ram.revision, 2)
+        let operation = try XCTUnwrap(
+            try fixture.context.fetch(FetchDescriptor<DomainOperation>()).first {
+                $0.entityID == ram.id && $0.kindRawValue == DomainOperationKind.care.rawValue
+            }
+        )
+        guard case .care(.setSheepPurpose(let sheepID, let purpose, let reason, let expectedRevision)) =
+                try FarmCommandCloudPayloadDecoder.decode(operation.payload) else {
+            return XCTFail("用途操作没有通过统一 CareCommand 云载荷")
+        }
+        XCTAssertEqual(sheepID, ram.id)
+        XCTAssertEqual(purpose, .breedingRam)
+        XCTAssertEqual(reason, "现场确认配种用途")
+        XCTAssertEqual(expectedRevision, 1)
+        let operationPayloadDecoder = JSONDecoder()
+        operationPayloadDecoder.dateDecodingStrategy = .iso8601
+        let operationPayload = try operationPayloadDecoder.decode(
+            FarmCommandCloudPayload.self,
+            from: operation.payload
+        )
+        XCTAssertEqual(
+            operationPayload.optionalStrings[SheepPurposeTimeline.previousPurposeField] ?? nil,
+            "历史自定义用途"
+        )
+        XCTAssertNotNil(operationPayload.dates[SheepPurposeTimeline.changedAtField])
+
+        try fixture.service.execute(
+            .care(.setSheepPurpose(
+                sheepID: ram.id,
+                purpose: .growing,
+                reason: "退出配种用途",
+                expectedRevision: ram.revision
+            )),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+        XCTAssertEqual(ram.purpose, SheepPurpose.growing.rawValue)
+        XCTAssertFalse(ram.isBreedingRam)
+        XCTAssertEqual(ram.revision, 3)
+
+        let facts = SheepPurposeTimeline.facts(
+            from: try fixture.context.fetch(FetchDescriptor<DomainOperation>()).filter {
+                $0.entityID == ram.id
+            }
+        )
+        XCTAssertEqual(facts.count, 2)
+        XCTAssertEqual(facts[0].previousPurpose, "历史自定义用途")
+        XCTAssertEqual(facts[0].purpose, .breedingRam)
+        XCTAssertEqual(facts[1].previousPurpose, SheepPurpose.breedingRam.rawValue)
+        XCTAssertEqual(facts[1].purpose, .growing)
+        XCTAssertEqual(facts[1].reason, "退出配种用途")
+    }
+
+    func testPurposeChangeAppearsInUnifiedEventHistoryAndPurposeExportScope() async throws {
+        let fixture = try makeFixture()
+        let ewe = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "PURPOSE-EVENT",
+            breed: "湖羊",
+            purpose: SheepPurpose.growing.rawValue,
+            sex: .ewe,
+            penID: nil,
+            enteredAt: .now.addingTimeInterval(-86_400)
+        )
+        fixture.context.insert(ewe)
+        try fixture.context.save()
+
+        try fixture.service.execute(
+            .care(.setSheepPurpose(
+                sheepID: ewe.id,
+                purpose: .breedingEwe,
+                reason: "达到繁殖阶段",
+                expectedRevision: ewe.revision
+            )),
+            in: fixture.ownerContext,
+            context: fixture.context
+        )
+
+        let events = try await FarmEventHistoryActor(container: fixture.container)
+            .load(farmID: fixture.farm.id)
+        let purposeEvent = try XCTUnwrap(events.first {
+            $0.title == "用途变更" && $0.relatedSheepIDs.contains(ewe.id)
+        })
+        XCTAssertEqual(purposeEvent.subject, "PURPOSE-EVENT")
+        XCTAssertEqual(purposeEvent.detail, "育成羊 → 繁殖母羊")
+        XCTAssertEqual(purposeEvent.note, "达到繁殖阶段")
+        XCTAssertTrue(purposeEvent.isDerived)
+        XCTAssertTrue(FarmEventExportScope.purpose.includes(purposeEvent))
+        XCTAssertFalse(FarmEventExportScope.sheep.includes(purposeEvent))
+
+        let detail = try await SheepDetailSnapshotActor(container: fixture.container).load(
+            farmID: fixture.farm.id,
+            sheepID: ewe.id,
+            subject: SheepDetailSubjectSnapshot(record: ewe)
+        )
+        XCTAssertEqual(detail.purposeTimeline.count, 1)
+        XCTAssertEqual(detail.purposeTimeline[0].transitionText, "育成羊 → 繁殖母羊")
+    }
+
+    func testPurposeValidationRejectsSexMismatchAndMissingReasonWithoutSideEffects() throws {
+        let fixture = try makeFixture()
+        let ewe = try insertEwe(fixture, earTag: "PURPOSE-EWE")
+        ewe.purpose = "已有用途保持原样"
+        try fixture.context.save()
+        let revision = ewe.revision
+        let operationCount = try fixture.context.fetch(FetchDescriptor<DomainOperation>()).count
+
+        XCTAssertThrowsError(try fixture.service.execute(
+            .care(.setSheepPurpose(
+                sheepID: ewe.id,
+                purpose: .breedingRam,
+                reason: "错误性别",
+                expectedRevision: revision
+            )),
+            in: fixture.ownerContext,
+            context: fixture.context
+        ))
+        XCTAssertThrowsError(try fixture.service.execute(
+            .care(.setSheepPurpose(
+                sheepID: ewe.id,
+                purpose: .breedingEwe,
+                reason: "   ",
+                expectedRevision: revision
+            )),
+            in: fixture.ownerContext,
+            context: fixture.context
+        ))
+
+        XCTAssertEqual(ewe.purpose, "已有用途保持原样")
+        XCTAssertFalse(ewe.isBreedingRam)
+        XCTAssertEqual(ewe.revision, revision)
+        XCTAssertEqual(
+            try fixture.context.fetch(FetchDescriptor<DomainOperation>()).count,
+            operationCount,
+            "非法用途不能生成事实或待同步操作"
+        )
+    }
+
+    func testBatchPurposeCommandUpdatesEverySelectedSheepInOneCommit() throws {
+        let fixture = try makeFixture()
+        let first = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "BATCH-PURPOSE-1",
+            breed: "杜泊",
+            purpose: "育成羊",
+            sex: .ram,
+            penID: nil,
+            enteredAt: .now
+        )
+        let second = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "BATCH-PURPOSE-2",
+            breed: "杜泊",
+            purpose: "旧用途",
+            sex: .ram,
+            penID: nil,
+            enteredAt: .now
+        )
+        fixture.context.insert(first)
+        fixture.context.insert(second)
+        try fixture.context.save()
+
+        try fixture.service.executeBatch([
+            .care(.setSheepPurpose(
+                sheepID: first.id,
+                purpose: .breedingRam,
+                reason: "按舍批量确认",
+                expectedRevision: first.revision
+            )),
+            .care(.setSheepPurpose(
+                sheepID: second.id,
+                purpose: .breedingRam,
+                reason: "按舍批量确认",
+                expectedRevision: second.revision
+            )),
+        ], in: fixture.ownerContext, context: fixture.context)
+
+        XCTAssertEqual(first.purpose, SheepPurpose.breedingRam.rawValue)
+        XCTAssertEqual(second.purpose, SheepPurpose.breedingRam.rawValue)
+        XCTAssertTrue(first.isBreedingRam)
+        XCTAssertTrue(second.isBreedingRam)
+        XCTAssertEqual(first.revision, 2)
+        XCTAssertEqual(second.revision, 2)
+        XCTAssertEqual(
+            try fixture.context.fetch(FetchDescriptor<DomainOperation>()).filter {
+                $0.farmID == fixture.farm.id &&
+                    [first.id, second.id].contains($0.entityID) &&
+                    $0.kindRawValue == DomainOperationKind.care.rawValue
+            }.count,
+            2,
+            "批量用途仍应为每只羊生成可独立同步和定位冲突的标准操作"
+        )
+    }
+
+    func testBatchPurposeRollsBackEverySheepWhenOneSelectionIsIllegal() throws {
+        let fixture = try makeFixture()
+        let ram = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "BATCH-ROLLBACK-RAM",
+            breed: "杜泊",
+            purpose: "原公羊用途",
+            sex: .ram,
+            penID: nil,
+            enteredAt: .now
+        )
+        let ewe = SheepRecord(
+            farmID: fixture.farm.id,
+            earTag: "BATCH-ROLLBACK-EWE",
+            breed: "湖羊",
+            purpose: "原母羊用途",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: .now
+        )
+        fixture.context.insert(ram)
+        fixture.context.insert(ewe)
+        try fixture.context.save()
+        let operationCount = try fixture.context.fetch(FetchDescriptor<DomainOperation>()).count
+
+        XCTAssertThrowsError(try fixture.service.executeBatch([
+            .care(.setSheepPurpose(
+                sheepID: ram.id,
+                purpose: .breedingRam,
+                reason: "混合性别错误批次",
+                expectedRevision: ram.revision
+            )),
+            .care(.setSheepPurpose(
+                sheepID: ewe.id,
+                purpose: .breedingRam,
+                reason: "混合性别错误批次",
+                expectedRevision: ewe.revision
+            )),
+        ], in: fixture.ownerContext, context: fixture.context))
+
+        XCTAssertEqual(ram.purpose, "原公羊用途")
+        XCTAssertEqual(ewe.purpose, "原母羊用途")
+        XCTAssertFalse(ram.isBreedingRam)
+        XCTAssertFalse(ewe.isBreedingRam)
+        XCTAssertEqual(ram.revision, 1)
+        XCTAssertEqual(ewe.revision, 1)
+        XCTAssertEqual(
+            try fixture.context.fetch(FetchDescriptor<DomainOperation>()).count,
+            operationCount,
+            "任一羊只非法时，前面已经暂存的用途操作也必须整批回滚"
+        )
+        XCTAssertTrue(try fixture.context.fetch(FetchDescriptor<OutboxItem>()).isEmpty)
+    }
+
+    func testRemotePurposeReplayIsIdempotentAndPreservesExistingValuesUntilApplied() throws {
+        let fixture = try makeFixture()
+        let ewe = try insertEwe(fixture, earTag: "REMOTE-PURPOSE")
+        ewe.purpose = "旧用途"
+        try fixture.context.save()
+        let payload = try FarmCommandCloudPayloadEncoder.encode(
+            .care(.setSheepPurpose(
+                sheepID: ewe.id,
+                purpose: .breedingEwe,
+                reason: "远端人工确认",
+                expectedRevision: 1
+            ))
+        )
+        XCTAssertEqual(ewe.purpose, "旧用途", "仅编码或读取不能改动已有用途")
+        let envelope = CloudOperationEnvelope(
+            farmID: fixture.farm.id,
+            entityID: ewe.id,
+            entityType: CloudEntityType.sheep.rawValue,
+            schemaVersion: 2,
+            revision: 2,
+            baseRevision: 1,
+            operationID: UUID(),
+            modifiedAt: .now,
+            modifiedByAccountID: fixture.account.effectiveAccountID,
+            modifiedByDeviceID: UUID(),
+            payload: payload,
+            payloadDigest: CloudPayloadDigest.hex(for: payload),
+            capabilityCertificate: "test",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+
+        let service = RemoteDomainApplyService()
+        XCTAssertEqual(
+            try service.apply(envelope, context: fixture.context),
+            .applied(rebuildHistoryFrom: nil)
+        )
+        XCTAssertEqual(ewe.purpose, SheepPurpose.breedingEwe.rawValue)
+        XCTAssertFalse(ewe.isBreedingRam)
+        XCTAssertEqual(ewe.revision, 2)
+        XCTAssertEqual(try service.apply(envelope, context: fixture.context), .duplicate)
+    }
+
+    func testPurposeCatalogKeepsLegacyValuesReadableWithoutMigration() {
+        XCTAssertEqual(
+            SheepPurpose.classify(storedValue: "繁殖羊"),
+            .breedingEwe
+        )
+        XCTAssertNil(SheepPurpose.classify(storedValue: "历史试验用途"))
+        XCTAssertFalse(SheepPurpose.choices(for: .ewe).contains(.breedingRam))
+        XCTAssertFalse(SheepPurpose.choices(for: .ram).contains(.breedingEwe))
+        XCTAssertTrue(SheepPurpose.choices(for: .ram).contains(.weanedLamb))
+    }
+
     func testRemoteRedundantBreedingRamStateStillAdvancesRevisionBeforeNextToggle() throws {
         let fixture = try makeFixture()
         let ram = SheepRecord(

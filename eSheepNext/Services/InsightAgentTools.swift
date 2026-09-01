@@ -1280,7 +1280,7 @@ final class InsightToolRegistry {
                     "setSemenDonor", "updateRules",
                 ],
                 "editHistoricalFacts_high": [
-                    "correctHealth", "updateSheepPedigree", "setBreedingRam",
+                    "correctHealth", "updateSheepPedigree",
                     "restorePedigreeAudit", "correctReproduction", "correctLambing",
                     "revokeLambing", "restoreLambing",
                 ],
@@ -1304,7 +1304,6 @@ final class InsightToolRegistry {
                 "upsertSemenDonor": ["_0:CareSemenDonorDraft"],
                 "setSemenDonor": ["semenID", "donorID?", "expectedRevision"],
                 "updateSheepPedigree": ["_0:CarePedigreeUpdateDraft"],
-                "setBreedingRam": ["sheepID", "isBreedingRam", "expectedRevision"],
                 "restorePedigreeAudit": ["_0:CarePedigreeAuditSnapshot"],
                 "recordReproductionBatch": ["_0:CareReproductionBatchDraft"],
                 "recordLambing": ["_0:CareLambingDraft"],
@@ -2918,7 +2917,8 @@ final class InsightToolRegistry {
             add(draft.damID)
             add(draft.sireID)
             add(draft.semenDonorID)
-        case .setBreedingRam(let sheepID, _, _):
+        case .setBreedingRam(let sheepID, _, _),
+             .setSheepPurpose(let sheepID, _, _, _):
             result.insert(sheepID)
         case .restorePedigreeAudit(let snapshot):
             result.insert(snapshot.id)
