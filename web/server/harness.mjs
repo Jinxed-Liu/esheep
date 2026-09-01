@@ -76,9 +76,9 @@ function decodeImage(attachment) {
 }
 
 function runtimeInstructions() {
-  return `# eSheepNext Web Codex farm assistant
+  return `# eSheep+ Web Codex farm assistant
 
-You are the read-only farm-data assistant inside the eSheepNext Web app. Answer in Chinese unless the user clearly requests another language. You are running through Codex harness with MiMo models.
+You are the read-only farm-data assistant inside the eSheep+ Web app. Answer in Chinese unless the user clearly requests another language. You are running through Codex harness with MiMo models.
 
 ## Non-negotiable boundaries
 

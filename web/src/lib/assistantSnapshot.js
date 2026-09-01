@@ -25,7 +25,7 @@ function compactActiveSheep(sheep = []) {
 
 export function buildAssistantSnapshot(workspace) {
   if (!workspace || workspace.mode !== "cloud" || !workspace.farm?.id) {
-    throw new Error("Codex 助手只读取已登录的云端牧场，演示工作区不会生成牧场结论。");
+    throw new Error("Codex 助手只读取已登录用户有权访问的云端牧场。");
   }
   const events = Array.isArray(workspace.events) ? workspace.events : [];
   const analyticsSource = workspace.analyticsSource ?? {};
@@ -35,7 +35,7 @@ export function buildAssistantSnapshot(workspace) {
     capturedAt,
     source: {
       kind: "supabase-rls-browser-projection",
-      description: "登录用户经 Supabase RLS 读取后，按 eSheepNext App 基线、操作与当前投影语义重建的只读快照。",
+      description: "登录用户经 Supabase RLS 读取后，按 eSheep+ App 基线、操作与当前投影语义重建的只读快照。",
       automaticDecision: false,
     },
     farm: {

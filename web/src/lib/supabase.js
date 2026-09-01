@@ -12,6 +12,7 @@ import {
   workspaceEntityTypesForSections,
 } from "./workspaceDataSource.js";
 import {
+  buildEventSheepIndex,
   buildFarmInsightData,
   projectFarmOperationEvent,
   projectionToReproductionRecord,
@@ -32,7 +33,7 @@ export const supabase = isSupabaseConfigured
         persistSession: true,
       },
       global: {
-        headers: { "x-client-info": "esheepnext-web/0.1" },
+        headers: { "x-client-info": "esheepplus-web/0.1" },
       },
     }))
   : null;
@@ -42,6 +43,8 @@ const roleNames = {
   administrator: "管理员",
   worker: "成员",
 };
+
+export const NO_FARM_ACCESS_CODE = "NO_FARM_ACCESS";
 
 const entityRowSelect = "entity_id,entity_type,revision,operation_id,modified_at,deleted_at,payload_json,payload_base64";
 const entityPageSize = 1000;
@@ -773,6 +776,45 @@ export async function signInWithPassword(email, password) {
   return data.user;
 }
 
+export async function signUpWithPassword({ displayName, email, password }) {
+  if (!supabase) throw new Error("Supabase 尚未配置。");
+  const normalizedEmail = email.trim().toLowerCase();
+  const normalizedDisplayName = displayName.trim();
+  const redirectTo = `${window.location.origin}${window.location.pathname}`;
+  const { data, error } = await supabase.auth.signUp({
+    email: normalizedEmail,
+    password,
+    options: {
+      emailRedirectTo: redirectTo,
+      data: { display_name: normalizedDisplayName },
+    },
+  });
+  if (error) throw error;
+  if (data.session && data.user && normalizedDisplayName) {
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .update({ display_name: normalizedDisplayName, updated_at: new Date().toISOString() })
+      .eq("user_id", data.user.id);
+    if (profileError) throw profileError;
+  }
+  return { user: data.user ?? null, verificationRequired: !data.session };
+}
+
+export async function redeemFarmInvite(code) {
+  if (!supabase) throw new Error("Supabase 尚未配置。");
+  const normalizedCode = code.trim();
+  if (!normalizedCode) throw new Error("请输入牧场邀请码。");
+  const { data, error } = await supabase.rpc("redeem_farm_invite", { p_code: normalizedCode });
+  if (error) {
+    if (/farm_invite_invalid_or_expired/i.test(error.message || "")) throw new Error("邀请码无效、已使用或已过期，请联系场主重新生成。");
+    if (/farm_authority_not_available/i.test(error.message || "")) throw new Error("该牧场的云端服务当前不可用，请联系场主。");
+    throw error;
+  }
+  const redemption = data?.[0];
+  if (!redemption?.farm_id) throw new Error("邀请码已处理，但没有返回可访问的牧场。");
+  return redemption;
+}
+
 export async function signInWithApple() {
   if (!supabase) throw new Error("Supabase 尚未配置。");
 
@@ -819,7 +861,11 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
   ]);
   if (accessError) throw accessError;
   if (profileError) throw profileError;
-  if (!accessRows?.length) throw new Error("当前账号没有可访问的牧场。");
+  if (!accessRows?.length) {
+    const error = new Error("当前账号尚未加入任何云端牧场。");
+    error.code = NO_FARM_ACCESS_CODE;
+    throw error;
+  }
 
   const farms = accessRows.map(toFarm);
   const farm = farms.find((item) => item.id === preferredFarmID) ?? farms[0];
@@ -974,6 +1020,8 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
       status: openMemberships.length ? "进行中" : "已结束",
     };
   });
+  const batchNameByID = new Map(batches.map((batch) => [normalizedIdentifier(batch.id), batch.name]));
+  const membershipByID = new Map(batchMemberships.map((membership) => [normalizedIdentifier(membership.id), membership]));
   const ingredients = expandedIngredientRows.map(entityToIngredient);
   const recipes = uniqueByNormalizedIdentifier(
     expandedFormulaRows.map(entityToRecipe).filter(Boolean),
@@ -989,13 +1037,18 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
   const tmrMeals = [];
   const actorDirectory = await fetchActorDirectory(operationRows, user, profile, signal);
   signal?.throwIfAborted();
-  const events = operationRows
+  const decodedOperationRows = operationRows.map((row) => ({ ...row, payload_json: payloadForRow(row) }));
+  const sheepIDByEntityID = buildEventSheepIndex(decodedOperationRows);
+  const events = decodedOperationRows
     .map((row) => projectFarmOperationEvent({
       row,
-      payload: payloadForRow(row),
+      payload: row.payload_json,
       actorName: actorNameForOperation(row, actorDirectory),
       sheepByID: allSheepByID,
       penNameByID,
+      sheepIDByEntityID,
+      batchNameByID,
+      membershipByID,
     }))
     .sort((left, right) => new Date(right.at).getTime() - new Date(left.at).getTime() || right.revision - left.revision);
   const analyticsSource = {

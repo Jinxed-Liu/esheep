@@ -872,9 +872,10 @@ struct SheepDetailView: View {
     @ViewBuilder
     private var weightChartSection: some View {
         let records = Array((detailSnapshot?.weights ?? []).reversed())
+        let gainIntervals = detailSnapshot?.weightGainIntervals ?? []
         if let latest = records.last {
             Section("体重") {
-                LabeledContent("最近体重", value: "\(latest.kilogramsText) 千克")
+                LabeledContent("最近体重", value: "\(WeightPrecision.displayText(latest.kilogramsText)) 千克")
                 if records.count >= 2 {
                     Chart(records, id: \.id) { record in
                         LineMark(x: .value("日期", record.occurredAt), y: .value("体重", record.kilograms))
@@ -882,6 +883,17 @@ struct SheepDetailView: View {
                     }
                     .frame(height: 160)
                     .accessibilityLabel("\(subject.earTag)体重变化曲线，共\(records.count)个体重数据点")
+                }
+            }
+            if !gainIntervals.isEmpty {
+                Section {
+                    ForEach(gainIntervals.reversed()) { interval in
+                        SheepWeightGainRow(interval: interval)
+                    }
+                } header: {
+                    Text("阶段日增重")
+                } footer: {
+                    Text("按相邻日期的有效体重计算：（本次体重－上次体重）÷ 间隔天数；同一天只采用一个权威体重点。")
                 }
             }
         }
@@ -1210,6 +1222,24 @@ struct SheepDetailView: View {
         } catch {
             photoMessage = "删除失败：\(error.localizedDescription)"
         }
+    }
+}
+
+private struct SheepWeightGainRow: View {
+    let interval: SheepDetailWeightGainSnapshot
+
+    var body: some View {
+        LabeledContent {
+            Text("\(interval.kilogramsPerDay, format: .number.precision(.fractionLength(3))) 千克/天")
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("\(interval.startDate, format: .dateTime.year().month().day()) → \(interval.endDate, format: .dateTime.year().month().day())")
+                Text("\(WeightPrecision.displayText(interval.startKilogramsText)) → \(WeightPrecision.displayText(interval.endKilogramsText)) 千克 · \(interval.intervalDays) 天")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 

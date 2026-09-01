@@ -598,7 +598,7 @@ private struct FarmDataTaskView: View {
         .fileImporter(isPresented: $isImportingExcelTemplate, allowedContentTypes: [.officeOpenXMLSpreadsheet]) { result in
             importExcelTemplate(result)
         }
-        .fileExporter(isPresented: $isExportingExcelTemplate, document: excelTemplateDocument, contentType: .officeOpenXMLSpreadsheet, defaultFilename: "eSheepNext全功能录入模板_v\(FarmExcelImportService.templateVersion).xlsx") { result in
+        .fileExporter(isPresented: $isExportingExcelTemplate, document: excelTemplateDocument, contentType: .officeOpenXMLSpreadsheet, defaultFilename: "eSheepPlus_全功能录入模板_v\(FarmExcelImportService.templateVersion).xlsx") { result in
             if case .failure(let error) = result { message = .templateExportFailed(error.localizedDescription) }
             else { message = .templateExported }
         }

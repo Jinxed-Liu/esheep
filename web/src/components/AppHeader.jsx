@@ -3,7 +3,6 @@ import { BowlFood } from "@phosphor-icons/react/BowlFood";
 import { CaretDown } from "@phosphor-icons/react/CaretDown";
 import { Check } from "@phosphor-icons/react/Check";
 import { CloudCheck } from "@phosphor-icons/react/CloudCheck";
-import { CloudSlash } from "@phosphor-icons/react/CloudSlash";
 import { House } from "@phosphor-icons/react/House";
 import { MagnifyingGlass } from "@phosphor-icons/react/MagnifyingGlass";
 import { PencilSimpleLine } from "@phosphor-icons/react/PencilSimpleLine";
@@ -77,10 +76,10 @@ export function AppHeader({
 
   return (
     <>
-      <aside className="app-sidebar" aria-label="eSheepNext 主要导航">
+      <aside className="app-sidebar" aria-label="eSheep+ 主要导航">
         <button className="sidebar-brand" type="button" onClick={() => onNavigate("home")} aria-label="返回首页">
           <img src="/assets/esheepnext-mark.png" alt="" />
-          <span>eSheepNext</span>
+          <span>eSheep+</span>
         </button>
 
         <nav className="sidebar-nav">
@@ -98,9 +97,9 @@ export function AppHeader({
           ))}
         </nav>
 
-        <div className={`sidebar-sync ${workspace.mode === "cloud" ? "cloud" : "demo"}`}>
-          {workspace.mode === "cloud" ? <CloudCheck size={18} weight="fill" /> : <CloudSlash size={18} />}
-          <span>{workspace.mode === "cloud" ? "云端读取已连接" : "演示工作区"}</span>
+        <div className="sidebar-sync cloud">
+          <CloudCheck size={18} weight="fill" />
+          <span>云端读取已连接</span>
         </div>
       </aside>
 
@@ -113,7 +112,10 @@ export function AppHeader({
             onClick={() => setFarmMenuOpen((open) => !open)}
           >
             <House size={18} weight="duotone" />
-            <span>{workspace.farm.name}</span>
+            <span>
+              <b className="mobile-product-name">eSheep+</b>
+              {workspace.farm.name}
+            </span>
             <CaretDown size={16} weight="bold" />
           </button>
           {farmMenuOpen ? (
@@ -169,7 +171,7 @@ export function AppHeader({
                   <img src="/assets/mimo-assistant.png" alt="" />
                   <span>
                     <strong>{personName}</strong>
-                    <small>{workspace.profile?.email ?? "当前演示账户"}</small>
+                    <small>{workspace.profile?.email ?? "当前云端账户"}</small>
                   </span>
                 </div>
                 <button type="button" onClick={() => { onNavigate("settings"); setAccountMenuOpen(false); }}>

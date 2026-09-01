@@ -21,6 +21,14 @@ final class FarmDataInterchangeTests: XCTestCase {
         XCTAssertEqual(preview.errorCount, 0)
     }
 
+    func testWeightPrecisionRoundsStorageAndDisplaysExactlyTwoDecimals() {
+        XCTAssertEqual(WeightPrecision.storageText("17.600000000000001"), "17.6")
+        XCTAssertEqual(WeightPrecision.storageText("17.899999999999999"), "17.9")
+        XCTAssertEqual(WeightPrecision.storageText("21.255"), "21.26")
+        XCTAssertEqual(WeightPrecision.displayText("17.600000000000001"), "17.60")
+        XCTAssertEqual(WeightPrecision.displayText("21.255"), "21.26")
+    }
+
     func testCSVPreviewReportsExistingAndInFileDuplicates() throws {
         let csv = """
         耳号,品种,性别,圈舍,入场日期,出生日期,备注
@@ -461,7 +469,7 @@ final class FarmDataInterchangeTests: XCTestCase {
             ]),
             .init(name: "称重", rows: [
                 ["导入键", "耳号", "体重kg", "发生日期", "备注"],
-                ["weight-1", "N001", "31.5", "2026-07-19", "导入称重"]
+                ["weight-1", "N001", "31.500000000000001", "2026-07-19", "导入称重"]
             ])
         ])
         let preview = try FarmExcelImportService.preview(data: workbook, farm: farm, context: context)
@@ -471,7 +479,9 @@ final class FarmDataInterchangeTests: XCTestCase {
 
         XCTAssertEqual(imported, 2)
         let created = try XCTUnwrap(context.fetch(FetchDescriptor<SheepRecord>()).first { $0.farmID == farm.id && $0.earTag == "N001" })
-        XCTAssertEqual(try context.fetch(FetchDescriptor<WeightRecord>()).first { $0.sheepID == created.id }?.kilogramsText, "31.5")
+        let weight = try XCTUnwrap(try context.fetch(FetchDescriptor<WeightRecord>()).first { $0.sheepID == created.id })
+        XCTAssertEqual(weight.kilogramsText, "31.5")
+        XCTAssertEqual(weight.displayKilogramsText, "31.50")
         XCTAssertEqual(try context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.farmID == farm.id }.count, 2)
         XCTAssertEqual(try context.fetch(FetchDescriptor<OutboxItem>()).filter { $0.farmID == farm.id }.count, 2)
     }

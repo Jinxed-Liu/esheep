@@ -1,13 +1,14 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(55);
+select plan(56);
 
 select set_config('esheep.test.user_a', gen_random_uuid()::text, false);
 select set_config('esheep.test.user_b', gen_random_uuid()::text, false);
 select set_config('esheep.test.user_c', gen_random_uuid()::text, false);
 select set_config('esheep.test.user_d', gen_random_uuid()::text, false);
 select set_config('esheep.test.farm_a', gen_random_uuid()::text, false);
+select set_config('esheep.test.farm_b', gen_random_uuid()::text, false);
 select set_config('esheep.test.invite_code', encode(gen_random_bytes(32), 'hex'), false);
 
 insert into auth.users (
@@ -185,6 +186,16 @@ select set_config(
   true
 );
 set local role authenticated;
+
+select throws_ok(
+  format(
+    $$select public.register_farm_authority(%L::uuid, 'supabase', null)$$,
+    current_setting('esheep.test.farm_b')
+  ),
+  '42501',
+  'cloud_farm_entitlement_required',
+  'free account cannot create a cloud farm'
+);
 
 select is(
   (

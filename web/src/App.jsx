@@ -1,11 +1,12 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { CheckCircle } from "@phosphor-icons/react/CheckCircle";
 import { SpinnerGap } from "@phosphor-icons/react/SpinnerGap";
 import { WarningCircle } from "@phosphor-icons/react/WarningCircle";
 import { X } from "@phosphor-icons/react/X";
 import { AppHeader } from "./components/AppHeader.jsx";
 import { HomeDashboard } from "./components/HomeDashboard.jsx";
-import { makeDemoWorkspace } from "./data/demoData.js";
+import { InviteOnlyAccessScreen } from "./components/InviteOnlyAccessScreen.jsx";
+import { LoginScreen } from "./components/LoginScreen.jsx";
 import { isSupabaseConfigured } from "./lib/supabaseConfig.js";
 import {
   WorkspaceDataSource,
@@ -55,15 +56,29 @@ function explainAppleAuthError(error) {
   return rawMessage || "Apple 登录失败。";
 }
 
+function explainSessionRestoreError(error) {
+  const rawMessage = String(error?.message ?? "");
+  if (/jwt.*future|jwt.*expired|invalid.*jwt|auth session missing/i.test(rawMessage)) {
+    return "";
+  }
+  return rawMessage ? "暂时无法确认登录状态，请重新登录。" : "";
+}
+
+function isNoFarmAccessError(error) {
+  return error?.code === "NO_FARM_ACCESS";
+}
+
 export function App() {
   const [activePage, setActivePage] = useState("home");
   const [routeContext, setRouteContext] = useState({});
-  // Do not render the local demo while Supabase session restoration is in
-  // flight. The previous default made a signed-in user briefly see a
-  // completely different farm and mistake it for their cloud data.
+  const [routeRequest, setRouteRequest] = useState({ page: "home", context: {} });
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeTransitionPending, startRouteTransition] = useTransition();
+  // Cloud access is mandatory. Never render demo farm data while the real
+  // Supabase session is unknown or absent.
   const [workspace, setWorkspace] = useState(null);
   const [recordDialog, setRecordDialog] = useState({ open: false, type: "new" });
-  const [authState, setAuthState] = useState({ loading: true, error: "" });
+  const [authState, setAuthState] = useState({ loading: true, error: "", access: "checking", user: null });
   const [toast, setToast] = useState(null);
 
   const closeRecordDialog = useCallback(() => {
@@ -85,45 +100,38 @@ export function App() {
     let stopWatching = () => {};
     workspaceDataSource.invalidate();
 
-    // A local-only presentation route keeps visual QA deterministic without
-    // signing the user's real Supabase session out. The default route always
-    // restores the real session first.
-    if (new URLSearchParams(window.location.search).get("preview") === "demo") {
-      setWorkspace(makeDemoWorkspace());
-      setAuthState({ loading: false, error: "" });
-      return () => {
-        active = false;
-        workspaceDataSource.invalidate();
-      };
-    }
-
     async function restoreCloudSession() {
       if (!isSupabaseConfigured) {
         if (active) {
-          setWorkspace(makeDemoWorkspace());
-          setAuthState({ loading: false, error: "" });
+          setWorkspace(null);
+          setAuthState({ loading: false, error: "当前网页尚未配置 Supabase 登录环境。", access: "signed-out", user: null });
         }
         return;
       }
+      let verifiedUser = null;
       try {
         const cloud = await loadSupabaseModule();
-        const user = await cloud.getVerifiedUser();
-        if (!user) {
+        verifiedUser = await cloud.getVerifiedUser();
+        if (!verifiedUser) {
           if (active) {
-            setWorkspace(makeDemoWorkspace());
-            setAuthState({ loading: false, error: "" });
+            setWorkspace(null);
+            setAuthState({ loading: false, error: "", access: "signed-out", user: null });
           }
           return;
         }
         const cloudWorkspace = await workspaceDataSource.loadOverview();
         if (active) {
           setWorkspace(cloudWorkspace);
-          setAuthState({ loading: false, error: "" });
+          setAuthState({ loading: false, error: "", access: "member", user: verifiedUser });
         }
       } catch (error) {
         if (active && error?.name !== "AbortError") {
-          setWorkspace(makeDemoWorkspace());
-          setAuthState({ loading: false, error: error.message || "云端会话恢复失败。" });
+          setWorkspace(null);
+          if (isNoFarmAccessError(error)) {
+            setAuthState({ loading: false, error: "", access: "invite-only", user: verifiedUser });
+          } else {
+            setAuthState({ loading: false, error: explainSessionRestoreError(error), access: "signed-out", user: null });
+          }
         }
       }
     }
@@ -135,8 +143,8 @@ export function App() {
         stopWatching = cloud.watchAuth(({ event }) => {
           if (event === "SIGNED_OUT" && active) {
             workspaceDataSource.invalidate();
-            setWorkspace(makeDemoWorkspace());
-            setAuthState({ loading: false, error: "" });
+            setWorkspace(null);
+            setAuthState({ loading: false, error: "", access: "signed-out", user: null });
           }
         });
       });
@@ -182,41 +190,48 @@ export function App() {
     return sheep.concat(pens, events);
   }, [workspace]);
   const navigate = useCallback((page, context = {}) => {
-    setActivePage(page);
-    setRouteContext(context);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    setRouteRequest({ page, context });
   }, []);
 
   useEffect(() => {
-    if (!workspace || workspace.mode !== "cloud") return undefined;
-    const requiredSections = workspaceSectionsForPage(activePage);
-    if (workspaceHasSections(workspace, requiredSections)) return undefined;
+    if (!workspace) return undefined;
+    const { page, context } = routeRequest;
+    const commitRoute = () => {
+      startRouteTransition(() => {
+        setActivePage(page);
+        setRouteContext(context);
+      });
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+    const requiredSections = workspaceSectionsForPage(page);
+    if (workspaceHasSections(workspace, requiredSections)) {
+      setRouteLoading(false);
+      commitRoute();
+      return undefined;
+    }
 
     let active = true;
-    setAuthState({ loading: true, error: "" });
+    setRouteLoading(true);
     void workspaceDataSource.loadForPage(
-      activePage,
+      page,
       workspace.farm.id,
       { currentWorkspace: workspace },
     ).then((cloudWorkspace) => {
       if (!active) return;
       setWorkspace(cloudWorkspace);
-      setAuthState({ loading: false, error: "" });
+      commitRoute();
     }).catch((error) => {
       if (!active || error?.name === "AbortError") return;
       const message = error.message || "页面数据装载失败。";
-      setAuthState({ loading: false, error: message });
       showToast(message, "danger");
     }).finally(() => {
-      if (active) {
-        setAuthState((current) => ({ ...current, loading: false }));
-      }
+      if (active) setRouteLoading(false);
     });
 
     return () => {
       active = false;
     };
-  }, [activePage, showToast, workspace]);
+  }, [routeRequest, showToast, workspace]);
 
   function selectSearchResult(result) {
     if (result.kind === "event") {
@@ -252,51 +267,99 @@ export function App() {
 
   async function handleSignIn(email, password) {
     workspaceDataSource.invalidate();
-    setAuthState({ loading: true, error: "" });
+    setAuthState((current) => ({ ...current, loading: true, error: "" }));
     try {
       const cloud = await loadSupabaseModule();
-      await cloud.signInWithPassword(email, password);
-      const cloudWorkspace = await workspaceDataSource.loadOverview();
-      setWorkspace(cloudWorkspace);
-      setAuthState({ loading: false, error: "" });
-      showToast(`已连接 ${cloudWorkspace.farm.name}`);
+      const user = await cloud.signInWithPassword(email, password);
+      try {
+        const cloudWorkspace = await workspaceDataSource.loadOverview();
+        setWorkspace(cloudWorkspace);
+        setAuthState({ loading: false, error: "", access: "member", user });
+        showToast(`已连接 ${cloudWorkspace.farm.name}`);
+      } catch (error) {
+        if (!isNoFarmAccessError(error)) throw error;
+        setWorkspace(null);
+        setAuthState({ loading: false, error: "", access: "invite-only", user });
+      }
     } catch (error) {
       if (error?.name === "AbortError") return;
       const message = error.message || "登录失败。";
-      setAuthState({ loading: false, error: message });
+      setAuthState({ loading: false, error: message, access: "signed-out", user: null });
+      throw error;
+    }
+  }
+
+  async function handleSignUp({ displayName, email, password }) {
+    workspaceDataSource.invalidate();
+    setAuthState((current) => ({ ...current, loading: true, error: "" }));
+    try {
+      const cloud = await loadSupabaseModule();
+      const result = await cloud.signUpWithPassword({ displayName, email, password });
+      if (result.verificationRequired) {
+        setAuthState({ loading: false, error: "", access: "signed-out", user: null });
+        return result;
+      }
+      try {
+        const cloudWorkspace = await workspaceDataSource.loadOverview();
+        setWorkspace(cloudWorkspace);
+        setAuthState({ loading: false, error: "", access: "member", user: result.user });
+      } catch (error) {
+        if (!isNoFarmAccessError(error)) throw error;
+        setWorkspace(null);
+        setAuthState({ loading: false, error: "", access: "invite-only", user: result.user });
+      }
+      return result;
+    } catch (error) {
+      const message = error.message || "注册失败。";
+      setAuthState({ loading: false, error: message, access: "signed-out", user: null });
+      throw error;
+    }
+  }
+
+  async function handleRedeemInvite(code) {
+    workspaceDataSource.invalidate();
+    setAuthState((current) => ({ ...current, loading: true, error: "" }));
+    try {
+      const cloud = await loadSupabaseModule();
+      const redemption = await cloud.redeemFarmInvite(code);
+      const cloudWorkspace = await workspaceDataSource.loadOverview(redemption.farm_id, { bypassCache: true });
+      setWorkspace(cloudWorkspace);
+      setAuthState((current) => ({ ...current, loading: false, error: "", access: "member" }));
+      showToast(`已加入 ${cloudWorkspace.farm.name}`);
+    } catch (error) {
+      setAuthState((current) => ({ ...current, loading: false, error: error.message || "加入牧场失败。" }));
       throw error;
     }
   }
 
   async function handleAppleSignIn() {
-    setAuthState({ loading: true, error: "" });
+    setAuthState((current) => ({ ...current, loading: true, error: "" }));
     try {
       const cloud = await loadSupabaseModule();
       await cloud.signInWithApple();
       // Supabase redirects the browser to Apple. This fallback is useful for
       // environments that return from signInWithOAuth without navigating.
-      setAuthState({ loading: false, error: "" });
+      setAuthState((current) => ({ ...current, loading: false, error: "" }));
     } catch (error) {
       const message = explainAppleAuthError(error);
-      setAuthState({ loading: false, error: message });
+      setAuthState((current) => ({ ...current, loading: false, error: message }));
       throw new Error(message);
     }
   }
 
   async function handleSignOut() {
     workspaceDataSource.invalidate();
-    setAuthState({ loading: true, error: "" });
+    setAuthState((current) => ({ ...current, loading: true, error: "" }));
     try {
       const cloud = await loadSupabaseModule();
       await cloud.signOut();
-      setWorkspace(makeDemoWorkspace());
-      showToast("已退出云端账号，当前显示演示工作区。", "neutral");
+      setWorkspace(null);
     } catch (error) {
-      setAuthState({ loading: false, error: error.message || "退出失败。" });
+      setAuthState((current) => ({ ...current, loading: false, error: error.message || "退出失败。" }));
       showToast(error.message || "退出失败。", "danger");
       return;
     }
-    setAuthState({ loading: false, error: "" });
+    setAuthState({ loading: false, error: "", access: "signed-out", user: null });
   }
 
   async function reloadCloud() {
@@ -407,19 +470,38 @@ export function App() {
     });
 
     closeRecordDialog();
-    if (draft) {
-      showToast("已生成浏览器草稿；尚未提交云端。", "warning");
-    } else {
-      showToast("记录已写入演示台账。", "success");
-    }
+    showToast("已生成浏览器草稿；尚未提交云端。", "warning");
   }
 
   if (!workspace) {
+    if (!authState.loading) {
+      if (authState.access === "invite-only") {
+        return (
+          <InviteOnlyAccessScreen
+            accountEmail={authState.user?.email}
+            authState={authState}
+            isConfigured={isSupabaseConfigured}
+            onRedeemInvite={handleRedeemInvite}
+            onSignOut={handleSignOut}
+          />
+        );
+      }
+      return (
+        <LoginScreen
+          authState={authState}
+          isConfigured={isSupabaseConfigured}
+          onSignIn={handleSignIn}
+          onSignUp={handleSignUp}
+          onAppleSignIn={handleAppleSignIn}
+        />
+      );
+    }
     return (
       <div className="app-shell">
         <div className="route-loading session-loading" aria-live="polite">
           <SpinnerGap size={28} className="spin" />
-          正在恢复云端会话…
+          <strong>eSheep+</strong>
+          <span className="visually-hidden">正在准备工作区</span>
         </div>
       </div>
     );
@@ -454,7 +536,7 @@ export function App() {
   return (
     <div className="app-shell">
       <AppHeader
-        activePage={activePage}
+        activePage={routeRequest.page}
         onNavigate={navigate}
         workspace={workspace}
         onFarmChange={changeFarm}
@@ -464,6 +546,7 @@ export function App() {
         {content}
         {recordDialog.open ? <RecordDialog open requestedType={recordDialog.type} workspace={workspace} onClose={closeRecordDialog} onSubmit={submitRecord} /> : null}
       </Suspense>
+      {routeLoading || routeTransitionPending ? <div className="route-progress" role="status" aria-label="正在载入页面数据" /> : null}
       {authState.loading ? <div className="loading-scrim" aria-live="polite"><SpinnerGap size={28} className="spin" />正在连接云端…</div> : null}
       {toast ? (
         <div className={`toast ${toast.tone}`} role="status">

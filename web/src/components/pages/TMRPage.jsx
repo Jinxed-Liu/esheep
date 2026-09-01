@@ -24,7 +24,7 @@ const hubItems = Object.entries(routeMeta).map(([id, meta]) => ({ id, ...meta })
 function TMRNotice({ workspace, mode }) {
   if (workspace.mode !== "cloud") return null;
   const real = ["tmr-plans", "tmr-formulas"].includes(mode);
-  return <ProjectionNotice>{real ? "此页读取真实 tmrFeedingPlan / tmrFormula 云端投影；网页修改仍只形成浏览器草稿。" : "TMR 批次、顿次完成量和偏差监控尚未接入云端投影；不显示演示值或虚构完成状态。"}</ProjectionNotice>;
+  return <ProjectionNotice>{real ? "此页读取真实 tmrFeedingPlan / tmrFormula 云端投影；网页修改仍只形成浏览器草稿。" : "TMR 批次、顿次完成量和偏差监控尚未接入云端投影；不显示虚构数值或完成状态。"}</ProjectionNotice>;
 }
 
 function MealsMonitor({ workspace }) {
@@ -104,7 +104,7 @@ export default function TMRPage({ workspace, mode = "tmr", onCreateRecord, onNav
       <button className="text-button back-link standalone-back" type="button" onClick={() => onNavigate("tmr")}>返回 TMR 工作台</button>
       {mode === "tmr-feed" ? <section className="workspace-panel flat-panel"><div className="panel-heading"><h2>最近 TMR 投喂</h2><span>{workspace.feedRecords.length} 条</span></div><div className="tmr-feed-cards">{workspace.feedRecords.slice(0, 8).map((record) => <article key={record.id}><BowlFood size={23} /><span><strong>{record.pen} · {record.meal}</strong><small>{record.recipe} · {record.kilograms.toLocaleString("zh-CN")} kg</small></span></article>)}</div></section> : null}
       {mode === "tmr-produce" ? <ProduceDraft workspace={workspace} /> : null}
-      {mode === "tmr-batches" ? (workspace.tmrMeals.length ? <section className="workspace-panel flat-panel"><div className="panel-heading"><h2>今日批次视图</h2><span>演示顿次</span></div><MealsMonitor workspace={workspace} /></section> : <div className="open-empty-state page-empty"><strong>暂无可读取的 TMR 批次</strong><span>批次实体接入云端后会按生产时间显示。</span></div>) : null}
+      {mode === "tmr-batches" ? (workspace.tmrMeals.length ? <section className="workspace-panel flat-panel"><div className="panel-heading"><h2>今日批次视图</h2><span>云端顿次</span></div><MealsMonitor workspace={workspace} /></section> : <div className="open-empty-state page-empty"><strong>暂无可读取的 TMR 批次</strong><span>批次实体接入云端后会按生产时间显示。</span></div>) : null}
       {mode === "tmr-monitor" ? <section className="workspace-panel flat-panel"><div className="panel-heading"><h2>顿次完成与偏差</h2><span className="state-label warning">容差 ±{plan?.tolerancePercent ?? 5}%</span></div><MealsMonitor workspace={workspace} /></section> : null}
       {mode === "tmr-plans" ? <section className="workspace-panel flat-panel"><div className="panel-heading"><h2>当前投喂计划</h2><ClipboardText size={24} /></div>{plan ? <dl className="plan-detail-list"><div><dt>配方</dt><dd>{plan.formulaName}</dd></div><div><dt>覆盖圈舍</dt><dd>{plan.penCount} 个</dd></div><div><dt>分配方式</dt><dd>{plan.allocationMode}</dd></div><div><dt>顿次比例</dt><dd>早 {plan.morningShare == null ? "—" : `${plan.morningShare * 100}%`} · 中 {plan.noonShare == null ? "—" : `${plan.noonShare * 100}%`} · 晚 {plan.eveningShare == null ? "—" : `${plan.eveningShare * 100}%`}</dd></div><div><dt>允许偏差</dt><dd>±{plan.tolerancePercent ?? "—"}%</dd></div></dl> : <div className="empty-state">暂无有效计划。</div>}</section> : null}
       {mode === "tmr-formulas" ? <section className="workspace-panel flat-panel"><div className="panel-heading"><h2>配方目录</h2><span>{workspace.recipes.length} 套</span></div><FormulaTable workspace={workspace} /></section> : null}

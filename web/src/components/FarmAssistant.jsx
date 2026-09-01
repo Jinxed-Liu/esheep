@@ -60,7 +60,7 @@ function fileDataURL(file) {
 
 function introMessage(workspace, resumed = false) {
   if (workspace.mode !== "cloud") {
-    return "当前是演示工作区。Codex harness 不会把演示数字当作真实牧场结论；登录 Supabase 云端牧场后才能提问。";
+    return "请先登录并进入你有权访问的云端牧场，然后再使用牧场助手。";
   }
   return resumed
     ? "已恢复这座牧场的 Codex harness 上下文。纯文字由 mimo-v2.5-pro 回答；附加图片时自动切换到 mimo-v2.5。"
@@ -342,7 +342,7 @@ export default function FarmAssistant({ workspace, onBack }) {
       </div>
       {isCloud
         ? <ProjectionNotice>助手只读当前 Supabase 牧场快照。每个用户使用自己的 MiMo Key；所选图片只随本次提问进入 Codex harness，AI 结论不会自动写入牧场或替代人工判断。</ProjectionNotice>
-        : <ProjectionNotice>当前为演示工作区，助手已禁用，避免把演示数字冒充真实牧场事实。</ProjectionNotice>}
+        : <ProjectionNotice>当前没有已授权的云端牧场，助手已禁用。</ProjectionNotice>}
       {isCloud ? (
         <section className={`assistant-credential-card${credentialReady ? " saved" : ""}`} aria-label="个人 MiMo API Key">
           <div className="assistant-credential-copy">

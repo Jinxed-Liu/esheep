@@ -117,7 +117,7 @@ export default function SettingsPage({ workspace, authState, isConfigured, onSig
 
         <section className="workspace-panel farm-summary-card">
           <div className="panel-heading"><h2>当前牧场</h2><Barn size={24} /></div>
-          <dl className="farm-summary-list"><div><dt>名称</dt><dd>{workspace.farm.name}</dd></div><div><dt>数据来源</dt><dd>{workspace.mode === "cloud" ? "Supabase 基础投影；规则/TMR 为预览" : "本地演示数据"}</dd></div><div><dt>在场羊只</dt><dd>{workspace.metrics.activeSheep.toLocaleString("zh-CN")} 只</dd></div><div><dt>有效圈舍</dt><dd>{workspace.metrics.activePens.toLocaleString("zh-CN")} 个</dd></div>{workspace.mode === "cloud" && workspace.projectionCoverage?.incompleteSheep ? <div><dt>资料未展开</dt><dd>{workspace.projectionCoverage.incompleteSheep.toLocaleString("zh-CN")} 只</dd></div> : null}</dl>
+          <dl className="farm-summary-list"><div><dt>名称</dt><dd>{workspace.farm.name}</dd></div><div><dt>数据来源</dt><dd>Supabase 基础投影；规则/TMR 为预览</dd></div><div><dt>在场羊只</dt><dd>{workspace.metrics.activeSheep.toLocaleString("zh-CN")} 只</dd></div><div><dt>有效圈舍</dt><dd>{workspace.metrics.activePens.toLocaleString("zh-CN")} 个</dd></div>{workspace.projectionCoverage?.incompleteSheep ? <div><dt>资料未展开</dt><dd>{workspace.projectionCoverage.incompleteSheep.toLocaleString("zh-CN")} 只</dd></div> : null}</dl>
         </section>
       </div>
     </main>

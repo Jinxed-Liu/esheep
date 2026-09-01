@@ -4,6 +4,31 @@ import XCTest
 
 @MainActor
 final class SheepDetailSnapshotActorTests: XCTestCase {
+    func testStageDailyGainUsesAdjacentCanonicalDailyWeights() throws {
+        let sheepID = UUID()
+        let calendar = FarmAnalyticsDate.calendar
+        let firstDate = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 31, hour: 9)))
+        let sameDayLater = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 31, hour: 16)))
+        let secondDate = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 8, day: 20, hour: 9)))
+        let thirdDate = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 8, day: 30, hour: 9)))
+        let samples = [
+            SheepWeightSample(id: UUID(), sheepID: sheepID, kilogramsText: "17.00", kilograms: 17, occurredAt: firstDate, source: .weighing),
+            SheepWeightSample(id: UUID(), sheepID: sheepID, kilogramsText: "17.60", kilograms: 17.6, occurredAt: sameDayLater, source: .weighing),
+            SheepWeightSample(id: UUID(), sheepID: sheepID, kilogramsText: "21.60", kilograms: 21.6, occurredAt: secondDate, source: .weighing),
+            SheepWeightSample(id: UUID(), sheepID: sheepID, kilogramsText: "23.10", kilograms: 23.1, occurredAt: thirdDate, source: .weighing)
+        ]
+
+        let intervals = SheepDetailWeightGainBuilder.intervals(from: samples)
+
+        XCTAssertEqual(intervals.count, 2)
+        XCTAssertEqual(intervals[0].intervalDays, 20)
+        XCTAssertEqual(intervals[0].startKilogramsText, "17.60")
+        XCTAssertEqual(intervals[0].endKilogramsText, "21.60")
+        XCTAssertEqual(intervals[0].kilogramsPerDay, 0.2, accuracy: 0.000_001)
+        XCTAssertEqual(intervals[1].intervalDays, 10)
+        XCTAssertEqual(intervals[1].kilogramsPerDay, 0.15, accuracy: 0.000_001)
+    }
+
     func testDetailSnapshotLoadsTargetRecordsOnceAndIgnoresOtherSheep() async throws {
         let container = try AppSchema.makeContainer(
             name: "sheep-detail-\(UUID().uuidString)",
@@ -178,8 +203,8 @@ final class SheepDetailSnapshotActorTests: XCTestCase {
         XCTAssertEqual(snapshot.timeline.count, 9)
         XCTAssertEqual(snapshot.timeline.map(\.date), snapshot.timeline.map(\.date).sorted(by: >))
         XCTAssertEqual(snapshot.timeline.first?.id, photo.id)
-        XCTAssertTrue(snapshot.timeline.contains { $0.title == "断奶重" && $0.detail == "25 千克" })
-        XCTAssertTrue(snapshot.timeline.contains { $0.title == "初生重" && $0.detail == "3.2 千克" })
+        XCTAssertTrue(snapshot.timeline.contains { $0.title == "断奶重" && $0.detail == "25.00 千克" })
+        XCTAssertTrue(snapshot.timeline.contains { $0.title == "初生重" && $0.detail == "3.20 千克" })
         XCTAssertFalse(snapshot.timeline.contains { $0.detail.contains("其他羊治疗") })
         XCTAssertEqual(snapshot.lifecycleInsight.summary, "S3-SH030 湖羊")
         XCTAssertEqual(snapshot.reproductionInsight.summary, "S3-SH030 共1胎")

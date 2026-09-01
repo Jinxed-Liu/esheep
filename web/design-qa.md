@@ -1,23 +1,23 @@
-# eSheepNext Web redesign QA
+# eSheep+ Web redesign QA
 
 - Selected reference: `design-qa-assets/home-redesign-option-1.png` (1487 × 1058)
 - Browser implementation: `design-qa-assets/home-redesign-implementation.png` (1487 × 1058)
 - Combined comparison input: `design-qa-assets/home-redesign-comparison.png`
 - Mobile evidence: `design-qa-assets/home-redesign-mobile.png` (390 × 844)
-- Browser state: deterministic local demo preview at `?preview=demo`; the default URL still restores the real Supabase session.
+- Browser state: authenticated cloud workspace; unauthenticated users are held at the eSheep+ login screen and no demo route is available.
 
 ## Visual fidelity
 
 - P0: none. The App shell, navigation, home information hierarchy, primary action, alert/status groups, and TMR context all render and remain usable.
 - P1: none. The implementation matches the selected 142 px rail, 95 px top bar, 1487 × 1058 desktop canvas, main/right-column split, content edges, vertical rhythm, blue/white palette, thin separators, and compact row anatomy.
-- P2: none requiring correction. Intentional product-truth differences are the direct Phosphor `Tag` glyph in place of the generated sheep glyph and an explicit `演示工作区` / `云端读取已连接` state instead of falsely claiming that browser drafts are saved.
+- P2: none requiring correction. Intentional product-truth differences are the direct Phosphor `Tag` glyph in place of the generated sheep glyph and an explicit `云端读取已连接` state; unauthenticated visitors never enter a farm workspace.
 - Copy check: primary navigation, quick actions, alert labels/counts, production status, and TMR plan/actual labels match the selected direction. Dynamic farm/account/cloud values remain data-driven.
 - Responsive check: 390 × 844 has no page-level horizontal overflow; the rail becomes a five-item bottom navigation and tables keep their own horizontal scroll.
 
 ## Interaction acceptance
 
 - All five App destinations open: 首页、洞察、录入、投喂、搜索.
-- Demo weighing flow submits and appears in recent events.
+- Browser-only draft weighing flow submits and appears in recent events without claiming a cloud write.
 - Unified search opens the selected sheep detail.
 - Feeding opens TMR completion/deviation monitoring with three meal rows.
 - A fresh browser tab completed the primary-route sweep with no console errors or warnings.

@@ -48,7 +48,7 @@ struct FarmExcelEntryActions: View {
 
     private var fileName: String {
         let label = sheetNames.sorted().joined(separator: "_")
-        return "eSheepNext_\(label)_录入模板_v\(FarmExcelImportService.templateVersion).xlsx"
+        return "eSheepPlus_\(label)_录入模板_v\(FarmExcelImportService.templateVersion).xlsx"
     }
 
     private func exportTemplate() {

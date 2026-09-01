@@ -325,6 +325,39 @@ final class WeightRecord {
     }
 
     var kilograms: Decimal { Decimal.stable(kilogramsText) ?? 0 }
+    var displayKilogramsText: String { WeightPrecision.displayText(kilogramsText) }
+}
+
+enum WeightPrecision {
+    static let fractionDigits = 2
+
+    static func storageText(_ text: String) -> String {
+        guard let value = Decimal.stable(text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return rounded(value).stableText
+    }
+
+    static func displayText(_ text: String) -> String {
+        guard let value = Decimal.stable(text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let normalized = rounded(value).stableText
+        let parts = normalized.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        let whole = String(parts[0])
+        let fraction = parts.count == 2 ? String(parts[1]) : ""
+        return whole + "." + fraction + String(
+            repeating: "0",
+            count: max(0, fractionDigits - fraction.count)
+        )
+    }
+
+    private static func rounded(_ value: Decimal) -> Decimal {
+        var source = value
+        var result = Decimal()
+        NSDecimalRound(&result, &source, fractionDigits, .plain)
+        return result
+    }
 }
 
 @Model

@@ -226,7 +226,7 @@ function WeightAnalysis({ source, now, timeZone }) {
         { label: "最新均重", value: data.latestAverageWeight, unit: "千克", sample: `每只羊最新值 n=${numberText(data.latestAverageWeightSampleCount, 0)}` },
         { label: "首末 ADG", value: data.latestAverageADG, unit: "千克/天", digits: 3, sample: `首末有效配对 n=${numberText(data.latestAverageADGSampleCount, 0)}` },
       ]} />
-      {!data.canonicalSampleCount ? <EmptyAnalysis icon={Scales} title="当前筛选没有可计算体重" detail="需要普通称重、断奶重或有效出生重；网页不会补入演示曲线。" /> : (
+      {!data.canonicalSampleCount ? <EmptyAnalysis icon={Scales} title="当前筛选没有可计算体重" detail="需要普通称重、断奶重或有效出生重；网页不会补入虚构曲线。" /> : (
         <>
           <div className="analysis-layout">
             <section className="workspace-panel flat-panel"><div className="panel-heading"><h2>平均体重趋势</h2><span>每个记录日期的样本平均体重</span></div><LineChart series={data.weightTrend} emptyText="当前筛选没有体重趋势。" /></section>
@@ -412,7 +412,7 @@ export default function InsightsPage({ workspace, mode = "insights", onNavigate 
       <main className="page feature-page analysis-page">
         <PageTop title={currentView.title} description={currentView.detail} />
         <button className="text-button back-link standalone-back" type="button" onClick={() => setView("overview")}>返回洞察总览</button>
-        {isCloud ? <ProjectionNotice>结果直接使用云端 App 实体，采用与 iOS 相同的事件时间、自然日、固定群体、完整样本和营养覆盖规则。</ProjectionNotice> : <ProjectionNotice>当前为演示工作区；没有真实实体时不生成牧场结论。</ProjectionNotice>}
+        {isCloud ? <ProjectionNotice>结果直接使用云端 App 实体，采用与 iOS 相同的事件时间、自然日、固定群体、完整样本和营养覆盖规则。</ProjectionNotice> : <ProjectionNotice>当前没有已授权的云端牧场，不生成牧场结论。</ProjectionNotice>}
         {view === "weight" ? <WeightAnalysis source={source} now={now} timeZone={timeZone} /> : null}
         {view === "lamb" ? <LambAnalysis source={source} timeZone={timeZone} /> : null}
         {view === "reproduction" ? <ReproductionAnalysis source={source} now={now} timeZone={timeZone} /> : null}

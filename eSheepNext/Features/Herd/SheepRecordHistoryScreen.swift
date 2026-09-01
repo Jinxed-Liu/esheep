@@ -80,7 +80,7 @@ struct SheepRecordHistoryScreen: View {
                 emptyRow("暂无称重记录")
             } else {
                 ForEach(records) { record in
-                    historyRow(title: "\(record.kilogramsText) 千克", date: record.occurredAt, note: record.note) {
+                    historyRow(title: "\(WeightPrecision.displayText(record.kilogramsText)) 千克", date: record.occurredAt, note: record.note) {
                         Button("修正") { editingWeight = record }
                         Button("撤销", role: .destructive) {
                             pendingDelete = .init(type: .weight, id: record.id, title: "称重")
@@ -262,7 +262,7 @@ private struct SnapshotCorrectWeightView: View {
 
     init(account: AccountProfile, farm: FarmRecord, record: SheepHistoryWeight) {
         self.account = account; self.farm = farm; self.record = record
-        _kilograms = State(initialValue: record.kilogramsText)
+        _kilograms = State(initialValue: WeightPrecision.displayText(record.kilogramsText))
         _occurredAt = State(initialValue: record.occurredAt)
         _note = State(initialValue: record.note)
     }

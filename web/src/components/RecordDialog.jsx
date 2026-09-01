@@ -226,7 +226,7 @@ export function RecordDialog({ open, requestedType, workspace, onClose, onSubmit
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="record-dialog" role="dialog" aria-modal="true" aria-labelledby="record-dialog-title">
         <header>
-          <span><h2 id="record-dialog-title">{selected?.label ?? "新建记录"}</h2><p>{workspace.mode === "cloud" ? "先在网页形成可核对草稿；尚不会伪装成云端已提交。" : "保存后会立即出现在演示事件台账。"}</p></span>
+          <span><h2 id="record-dialog-title">{selected?.label ?? "新建记录"}</h2><p>先在网页形成可核对草稿；尚不会伪装成云端已提交。</p></span>
           <button type="button" className="icon-button" onClick={onClose} aria-label="关闭"><X size={23} /></button>
         </header>
 

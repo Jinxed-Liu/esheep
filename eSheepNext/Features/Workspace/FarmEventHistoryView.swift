@@ -287,8 +287,8 @@ actor FarmEventHistoryActor {
                 relatedSheepIDs: [record.sheepID],
                 occurredAt: record.occurredAt, recordedAt: record.recordedAt,
                 title: "称重", subject: sheepName[record.sheepID] ?? "未知羊只",
-                detail: "\(record.kilogramsText) 千克", note: record.note,
-                fields: [.init(label: "体重", value: "\(record.kilogramsText) 千克")]
+                detail: "\(record.displayKilogramsText) 千克", note: record.note,
+                fields: [.init(label: "体重", value: "\(record.displayKilogramsText) 千克")]
             )
         })
 

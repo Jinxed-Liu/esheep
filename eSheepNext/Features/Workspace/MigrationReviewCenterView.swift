@@ -82,7 +82,7 @@ private struct MigrationSheepReviewView: View {
                         if item.isHistoricalArchive { Text("历史归档羊只，仅用于还原时间线。") .font(.footnote).foregroundStyle(.secondary) }
                     }
                     Section("时间线") {
-                        ForEach(weights.filter { $0.farmID == farmID && $0.sheepID == item.id }, id: \.id) { Text("称重 · \($0.kilogramsText) 千克 · \($0.occurredAt.formatted(date: .numeric, time: .omitted))") }
+                        ForEach(weights.filter { $0.farmID == farmID && $0.sheepID == item.id }, id: \.id) { Text("称重 · \($0.displayKilogramsText) 千克 · \($0.occurredAt.formatted(date: .numeric, time: .omitted))") }
                         ForEach(transfers.filter { $0.farmID == farmID && $0.sheepID == item.id }, id: \.id) { Text("转群 · \($0.occurredAt.formatted(date: .numeric, time: .omitted))") }
                         ForEach(removals.filter { $0.farmID == farmID && $0.sheepID == item.id }, id: \.id) { Text("离场 · \($0.occurredAt.formatted(date: .numeric, time: .omitted))") }
                     }

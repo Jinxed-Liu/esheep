@@ -135,7 +135,7 @@ enum FarmExcelImportService {
         let selectedSchemas = schemas.filter { sheetNames.contains($0.name) }
         guard !selectedSchemas.isEmpty else { throw FarmDataInterchangeError.malformedFile("没有可导出的录入模板。") }
         let instructions = XLSXSheet(name: "填写说明", rows: [
-            ["eSheepNext 全功能录入模板", "版本 \(templateVersion)"],
+            ["eSheep+ 全功能录入模板", "版本 \(templateVersion)"],
             ["使用方法", "只填写需要导入的工作表；保留首行字段名；删除或覆盖示例行；日期统一使用 yyyy-MM-dd。"],
             ["导入键", "每行填写本文件内唯一、长期稳定的自定义编号，用于定位问题和生成稳定事实标识。"],
             ["新建羊只核对", "只核对当前牧场已有耳号和本文件内重复耳号；不会要求新耳号预先存在。"],

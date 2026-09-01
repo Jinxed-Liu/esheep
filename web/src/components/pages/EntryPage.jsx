@@ -1,14 +1,23 @@
+import { useRef, useState } from "react";
 import { ArrowsLeftRight } from "@phosphor-icons/react/ArrowsLeftRight";
 import { Baby } from "@phosphor-icons/react/Baby";
 import { CaretRight } from "@phosphor-icons/react/CaretRight";
+import { CheckCircle } from "@phosphor-icons/react/CheckCircle";
+import { DownloadSimple } from "@phosphor-icons/react/DownloadSimple";
 import { Factory } from "@phosphor-icons/react/Factory";
+import { FileXls } from "@phosphor-icons/react/FileXls";
 import { FirstAidKit } from "@phosphor-icons/react/FirstAidKit";
 import { Notebook } from "@phosphor-icons/react/Notebook";
 import { Scales } from "@phosphor-icons/react/Scales";
 import { SignOut } from "@phosphor-icons/react/SignOut";
 import { Tag } from "@phosphor-icons/react/Tag";
+import { UploadSimple } from "@phosphor-icons/react/UploadSimple";
 import { UsersThree } from "@phosphor-icons/react/UsersThree";
+import { WarningCircle } from "@phosphor-icons/react/WarningCircle";
 import { formatDateTime, PageTop } from "./FeaturePageShared.jsx";
+
+const excelTemplateVersion = 7;
+const excelTemplateBase = `${import.meta.env.BASE_URL || "/"}downloads/eSheepPlus_全功能录入模板_v${excelTemplateVersion}`;
 
 const recordGroups = [
   {
@@ -48,6 +57,23 @@ const managementItems = [
 
 export default function EntryPage({ workspace, onCreateRecord, onNavigate }) {
   const timeZone = workspace.farm?.timeZoneIdentifier || "Asia/Shanghai";
+  const workbookInput = useRef(null);
+  const [workbookState, setWorkbookState] = useState({ status: "idle", result: null, error: "" });
+
+  async function inspectWorkbook(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setWorkbookState({ status: "reading", result: null, error: "" });
+    try {
+      const { inspectExcelWorkbook } = await import("../../lib/excelWorkbook.js");
+      const result = await inspectExcelWorkbook(file, `${excelTemplateBase}.json`);
+      setWorkbookState({ status: result.issues.length ? "invalid" : "ready", result, error: "" });
+    } catch (error) {
+      setWorkbookState({ status: "invalid", result: null, error: error.message || "工作簿读取失败。" });
+    }
+  }
+
   return (
     <main className="page feature-page">
       <PageTop title="录入" description="与 App 一致：先选业务动作，再形成可追溯事件；云端写入边界会在确认前明确说明。" />
@@ -79,6 +105,29 @@ export default function EntryPage({ workspace, onCreateRecord, onNavigate }) {
                 </button>
               ))}
             </div>
+          </section>
+
+          <section className="record-hub-group excel-import-section">
+            <div className="group-heading"><span><h2>Excel 批量录入</h2><p>与 App 共用 v{excelTemplateVersion} 模板和字段契约</p></span><FileXls size={27} /></div>
+            <div className="excel-import-actions">
+              <a className="secondary-button" href={`${excelTemplateBase}.xlsx`} download={`eSheepPlus_全功能录入模板_v${excelTemplateVersion}.xlsx`}><DownloadSimple size={19} />下载 App 同源模板</a>
+              <button className="primary-button" type="button" onClick={() => workbookInput.current?.click()} disabled={workbookState.status === "reading"}><UploadSimple size={19} />{workbookState.status === "reading" ? "正在检查…" : "选择工作簿"}</button>
+              <input ref={workbookInput} className="visually-hidden" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={inspectWorkbook} />
+            </div>
+            <p className="excel-import-boundary">网页会先在本机检查模板版本、字段、必填项和重复导入键，不会把工作簿上传到第三方。生产云端提交仍必须经过与 App 等价的权限、业务校验、审计和 Outbox 管道。</p>
+            {workbookState.error ? <div className="excel-preflight-result invalid"><WarningCircle size={21} weight="fill" /><span><strong>无法读取工作簿</strong><small>{workbookState.error}</small></span></div> : null}
+            {workbookState.result ? (
+              <div className={`excel-preflight-result ${workbookState.status}`}>
+                {workbookState.status === "ready" ? <CheckCircle size={22} weight="fill" /> : <WarningCircle size={22} weight="fill" />}
+                <span>
+                  <strong>{workbookState.status === "ready" ? `结构预检通过 · App 模板 v${workbookState.result.version}` : "工作簿需要修正"}</strong>
+                  <small>{workbookState.result.fileName}</small>
+                  {workbookState.result.summaries.length ? <em>{workbookState.result.summaries.map((item) => `${item.name} ${item.rowCount} 行`).join(" · ")}</em> : null}
+                  {workbookState.result.issues.slice(0, 6).map((issue) => <em className="issue" key={issue}>{issue}</em>)}
+                  {workbookState.result.issues.length > 6 ? <em className="issue">另有 {workbookState.result.issues.length - 6} 项问题</em> : null}
+                </span>
+              </div>
+            ) : null}
           </section>
         </div>
 

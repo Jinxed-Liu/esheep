@@ -59,5 +59,5 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(port, host, () => {
-  process.stdout.write(`eSheepNext Web + Codex harness: http://127.0.0.1:${port}\n`);
+  process.stdout.write(`eSheep+ Web + Codex harness: http://127.0.0.1:${port}\n`);
 });

@@ -984,7 +984,7 @@ final class InsightToolRegistry {
         case "draft_record_weight":
             let value = try decodeEdited(RecordWeightToolPayload.self, from: data)
             draft.argumentsJSON = try encoder.encode(value)
-            draft.summary = "\(value.earTag) · \(value.kilogramsText) kg"
+            draft.summary = "\(value.earTag) · \(WeightPrecision.displayText(value.kilogramsText)) kg"
         case "draft_add_note":
             let value = try decodeEdited(AddNoteToolPayload.self, from: data)
             draft.argumentsJSON = try encoder.encode(value)

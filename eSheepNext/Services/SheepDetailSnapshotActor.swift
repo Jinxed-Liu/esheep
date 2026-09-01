@@ -103,6 +103,35 @@ struct SheepDetailWeightSnapshot: Identifiable, Sendable, Hashable {
     let source: SheepWeightSource
 }
 
+struct SheepDetailWeightGainSnapshot: Identifiable, Sendable, Hashable {
+    let id: UUID
+    let startDate: Date
+    let endDate: Date
+    let startKilogramsText: String
+    let endKilogramsText: String
+    let intervalDays: Int
+    let kilogramsPerDay: Double
+}
+
+enum SheepDetailWeightGainBuilder {
+    static func intervals(from samples: [SheepWeightSample]) -> [SheepDetailWeightGainSnapshot] {
+        let canonical = SheepWeightSampleBuilder.dailyCanonical(samples)
+        return zip(canonical, canonical.dropFirst()).compactMap { previous, current in
+            let intervalDays = FarmAnalyticsDate.days(from: previous.occurredAt, to: current.occurredAt)
+            guard intervalDays > 0 else { return nil }
+            return SheepDetailWeightGainSnapshot(
+                id: current.id,
+                startDate: previous.occurredAt,
+                endDate: current.occurredAt,
+                startKilogramsText: previous.kilogramsText,
+                endKilogramsText: current.kilogramsText,
+                intervalDays: intervalDays,
+                kilogramsPerDay: (current.kilograms - previous.kilograms) / Double(intervalDays)
+            )
+        }
+    }
+}
+
 struct SheepDetailPhotoSnapshot: Identifiable, Sendable, Hashable {
     let id: UUID
     let sha256: String
@@ -121,6 +150,7 @@ struct SheepDetailTimelineEntry: Identifiable, Sendable, Hashable {
 
 struct SheepDetailSnapshot: Sendable {
     let weights: [SheepDetailWeightSnapshot]
+    let weightGainIntervals: [SheepDetailWeightGainSnapshot]
     let photos: [SheepDetailPhotoSnapshot]
     let purposeTimeline: [SheepPurposeTimelineFact]
     let timeline: [SheepDetailTimelineEntry]
@@ -345,7 +375,7 @@ actor SheepDetailSnapshotActor {
         }.sorted { $0.displayedAt > $1.displayedAt }
 
         var timeline = weightValues.map {
-            SheepDetailTimelineEntry(id: $0.id, title: $0.source.displayName, detail: "\($0.kilogramsText) 千克", date: $0.occurredAt)
+            SheepDetailTimelineEntry(id: $0.id, title: $0.source.displayName, detail: "\(WeightPrecision.displayText($0.kilogramsText)) 千克", date: $0.occurredAt)
         }
         timeline.append(contentsOf: transfers.map {
             SheepDetailTimelineEntry(id: $0.id, title: "转群", detail: $0.note, date: $0.occurredAt)
@@ -398,6 +428,7 @@ actor SheepDetailSnapshotActor {
         )
         return SheepDetailSnapshot(
             weights: weightValues,
+            weightGainIntervals: SheepDetailWeightGainBuilder.intervals(from: weightSamples),
             photos: photoValues,
             purposeTimeline: purposeTimeline,
             timeline: timeline,

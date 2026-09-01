@@ -4,7 +4,6 @@ import { BowlFood } from "@phosphor-icons/react/BowlFood";
 import { CaretRight } from "@phosphor-icons/react/CaretRight";
 import { CheckCircle } from "@phosphor-icons/react/CheckCircle";
 import { CloudCheck } from "@phosphor-icons/react/CloudCheck";
-import { CloudSlash } from "@phosphor-icons/react/CloudSlash";
 import { DownloadSimple } from "@phosphor-icons/react/DownloadSimple";
 import { Plus } from "@phosphor-icons/react/Plus";
 import { Scales } from "@phosphor-icons/react/Scales";
@@ -95,9 +94,9 @@ export function HomeDashboard({ workspace, onNavigate, onCreateRecord }) {
                 )}
               </div>
             </div>
-            <div className={`sync-truth ${workspace.mode}`}>
-              {workspace.mode === "cloud" ? <CloudCheck size={20} weight="fill" /> : <CloudSlash size={20} />}
-              <span><strong>{workspace.mode === "cloud" ? "云端读取已连接" : "演示工作区"}</strong><small>{workspace.mode === "cloud" ? `最后读取 ${syncTime(workspace.lastSyncedAt, timeZone)}` : "操作只写入本次浏览器演示"}</small></span>
+            <div className="sync-truth cloud">
+              <CloudCheck size={20} weight="fill" />
+              <span><strong>云端读取已连接</strong><small>{`最后读取 ${syncTime(workspace.lastSyncedAt, timeZone)}`}</small></span>
             </div>
           </header>
 
@@ -130,7 +129,7 @@ export function HomeDashboard({ workspace, onNavigate, onCreateRecord }) {
               )) : (
                 <div className="open-empty-state">
                   <strong>没有可展示的网页规则结果</strong>
-                  <span>{workspace.mode === "cloud" ? "App 的规则计算尚未接入 Web，因此这里保持为空。" : "当前演示工作区没有待办。"}</span>
+                  <span>App 的规则计算尚未接入 Web，因此这里保持为空。</span>
                 </div>
               )}
             </div>

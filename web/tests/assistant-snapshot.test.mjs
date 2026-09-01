@@ -34,6 +34,6 @@ test("builds a JSON-safe cloud snapshot without account or owner secrets", () =>
   assert.equal(serialized.includes("account-1"), false);
 });
 
-test("refuses to build farm evidence from a demo workspace", () => {
-  assert.throws(() => buildAssistantSnapshot({ mode: "demo", farm: { id: "demo" } }), /演示工作区/);
+test("refuses to build farm evidence without an authorized cloud workspace", () => {
+  assert.throws(() => buildAssistantSnapshot({ mode: "unauthenticated", farm: null }), /已登录用户有权访问/);
 });

@@ -34,7 +34,7 @@ export default function EventsPage({ workspace, selectedID, exportHint = false }
     const blob = new Blob([`\ufeff${lines.join("\n")}`], { type: "text/csv;charset=utf-8" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `eSheepNext-${workspace.farm.name}-事件记录.csv`;
+    link.download = `eSheepPlus-${workspace.farm.name}-事件记录.csv`;
     link.click();
     URL.revokeObjectURL(link.href);
   }

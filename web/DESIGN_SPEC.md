@@ -1,4 +1,4 @@
-# eSheepNext Web — App-aligned Field Briefing
+# eSheep+ Web — App-aligned Field Briefing
 
 Source visual truth: `design-qa-assets/home-redesign-option-1.png`.
 

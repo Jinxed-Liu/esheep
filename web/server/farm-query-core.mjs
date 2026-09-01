@@ -137,7 +137,7 @@ function envelope(snapshot, kind, filters, rowCount, result, extraCompleteness =
     evidence_kind: "supabase_projection",
     query_id: `${farm.id ?? "unknown"}:${kind}:${snapshot.capturedAt ?? "unknown"}`,
     query_kind: kind,
-    source_description: snapshot.source?.description ?? "eSheepNext 只读牧场快照",
+    source_description: snapshot.source?.description ?? "eSheep+ 只读牧场快照",
     filters_applied: filters,
     as_of: snapshot.capturedAt ?? null,
     time_zone: farm.timeZoneIdentifier ?? "Asia/Shanghai",

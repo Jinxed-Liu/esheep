@@ -149,7 +149,7 @@ enum FarmDataInterchange {
             ["种公羊资格", sheep.isBreedingRam ? "种公羊" : "否", "", ""],
             ["备注", sheep.note, "", ""],
         ]
-        let weightRows = weights.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }.map { ["称重", formatter.string(from: $0.occurredAt), "\($0.kilogramsText) 千克", $0.note] }
+        let weightRows = weights.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }.map { ["称重", formatter.string(from: $0.occurredAt), "\($0.displayKilogramsText) 千克", $0.note] }
         let healthRows = health.filter { $0.farmID == sheep.farmID && ($0.sheepID == sheep.id || healthRecordIDs.contains($0.id)) && $0.deletedAt == nil }.map { [HealthRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "健康", formatter.string(from: $0.occurredAt), $0.itemNameSnapshot, $0.note] }
         let reproductionRows = reproduction.filter { $0.farmID == sheep.farmID && $0.eweID == sheep.id && $0.deletedAt == nil }.map { [ReproductionRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "繁殖", formatter.string(from: $0.occurredAt), $0.result, $0.note] }
         let transferRows = transfers.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }.map { ["转群", formatter.string(from: $0.occurredAt), "圈舍变更", $0.note] }

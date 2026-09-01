@@ -3518,7 +3518,7 @@ final class FarmCommandService {
             }
             return appliedResult(.sheep, record.id, baseRevision: baseRevision, revision: record.revision)
         case .recordWeight(let sheepID, let kilogramsText, let occurredAt, let note):
-            let record = WeightRecord(farmID: farm.farmID, sheepID: sheepID, kilogramsText: normalizedDecimal(kilogramsText), occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
+            let record = WeightRecord(farmID: farm.farmID, sheepID: sheepID, kilogramsText: WeightPrecision.storageText(kilogramsText), occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
             context.insert(record)
             return appliedResult(.weight, record.id)
         case .correctWeight(let originalID, let kilogramsText, let occurredAt, let note, let reason):
@@ -3528,7 +3528,7 @@ final class FarmCommandService {
             original.deletedAt = .now
             original.revision += 1
             context.insert(TombstoneRecord(farmID: farm.farmID, entityType: CloudEntityType.weight.rawValue, entityID: original.id, deletedByAccountID: farm.accountID, reason: "修正：\(reason.trimmingCharacters(in: .whitespacesAndNewlines))", revision: original.revision))
-            let replacement = WeightRecord(farmID: farm.farmID, sheepID: original.sheepID, kilogramsText: normalizedDecimal(kilogramsText), occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
+            let replacement = WeightRecord(farmID: farm.farmID, sheepID: original.sheepID, kilogramsText: WeightPrecision.storageText(kilogramsText), occurredAt: occurredAt, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
             context.insert(replacement)
             return appliedResult(.weight, replacement.id)
         case .recordWeaning(let sheepID, let weanWeightText, let occurredAt, let birthAt, let birthWeightText, _, let damID, let litterSize, let note):

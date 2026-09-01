@@ -774,7 +774,7 @@ struct SheepRecordHistoryView: View {
         Section("称重") {
             if records.isEmpty { Text("暂无称重记录").foregroundStyle(.secondary) }
             ForEach(records, id: \.id) { record in
-                historyRow(title: "\(record.kilogramsText) 千克", date: record.occurredAt, note: record.note) {
+                historyRow(title: "\(record.displayKilogramsText) 千克", date: record.occurredAt, note: record.note) {
                     Button("修正") { editingWeight = record }
                     Button("撤销", role: .destructive) { pendingDelete = .init(type: .weight, id: record.id, title: "称重") }
                 }
@@ -871,7 +871,7 @@ struct CorrectWeightView: View {
     @Environment(\.modelContext) private var modelContext
     let account: AccountProfile; let farm: FarmRecord; let record: WeightRecord
     @State private var kilograms: String; @State private var occurredAt: Date; @State private var note: String; @State private var reason = ""; @State private var errorMessage: String?
-    init(account: AccountProfile, farm: FarmRecord, record: WeightRecord) { self.account = account; self.farm = farm; self.record = record; _kilograms = State(initialValue: record.kilogramsText); _occurredAt = State(initialValue: record.occurredAt); _note = State(initialValue: record.note) }
+    init(account: AccountProfile, farm: FarmRecord, record: WeightRecord) { self.account = account; self.farm = farm; self.record = record; _kilograms = State(initialValue: record.displayKilogramsText); _occurredAt = State(initialValue: record.occurredAt); _note = State(initialValue: record.note) }
     var body: some View { correctionForm(title: "修正称重", fields: { TextField("体重（千克）", text: $kilograms).keyboardType(.decimalPad); DatePicker("发生时间", selection: $occurredAt); TextField("备注", text: $note) }, save: { .correctWeight(originalID: record.id, kilogramsText: kilograms, occurredAt: occurredAt, note: note, reason: reason) }) }
     private func correctionForm<Fields: View>(title: String, @ViewBuilder fields: () -> Fields, save: @escaping () -> FarmCommand) -> some View { Form { Section("替代记录") { fields() }; Section("修正原因") { TextField("必填", text: $reason, axis: .vertical) } }.navigationTitle(title).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { execute(save()) } } }.recordErrorAlert($errorMessage) }
     private func execute(_ command: FarmCommand) { do { try FarmCommandService().execute(command, in: .init(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); dismiss() } catch { errorMessage = error.localizedDescription } }
