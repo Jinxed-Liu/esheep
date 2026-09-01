@@ -31,6 +31,19 @@ values
     now()
   );
 
+insert into public.entitlements (
+  owner_user_id,
+  product_id,
+  state,
+  valid_until
+)
+values (
+  current_setting('esheep.test.owner')::uuid,
+  'transition-completion-test',
+  'active',
+  now() + interval '1 day'
+);
+
 insert into public.farm_registry (
   farm_id,
   owner_user_id,
@@ -113,6 +126,11 @@ values
     current_setting('esheep.test.owner')::uuid,
     null
   );
+
+-- Farm creation requires a writable entitlement, but completing an already
+-- committed transition must remain recoverable after that entitlement ends.
+delete from public.entitlements
+where owner_user_id = current_setting('esheep.test.owner')::uuid;
 
 select set_config(
   'request.jwt.claims',
