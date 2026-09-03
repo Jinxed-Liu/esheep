@@ -30,6 +30,12 @@ const SEED_SQL_PATH = path.join(OUTPUT_DIR, 'seed.sql');
 const CONFIRM_SQL_PATH = path.join(OUTPUT_DIR, 'confirm-assets.sql');
 const BATCH_DIR = path.join(OUTPUT_DIR, 'command-batches');
 
+// The owner confirmed these are newly added avatar photos whose avatar
+// relation was lost. They have no legacy avatar value to choose between, so
+// migration restores the relation from the Air photo asset and does not emit
+// an attention item.
+const NEW_AVATAR_REPAIR_EAR_TAGS = Object.freeze(['DH054', '256', '172545', '8062', 'A058']);
+
 function die(message) {
   throw new Error(message);
 }
@@ -170,15 +176,24 @@ function localPhotoPath(relativePath) {
 
 function buildPhotoAssets() {
   const rows = sqliteJSON(`
-    select hex(ZID) as id, hex(ZSHEEPID) as sheep, ZMIMETYPE as mime,
-      ZSHA256 as content, ZSOURCESHA256 as source,
-      ZSOURCEPIXELWIDTH as sourceWidth, ZSOURCEPIXELHEIGHT as sourceHeight,
-      ZCLOUDPIXELWIDTH as cloudWidth, ZCLOUDPIXELHEIGHT as cloudHeight,
-      ZCAPTUREDAT as captured, ZDELETEDAT as deleted,
-      ZRELATIVEPATH as relativePath, ZORIGINALEARTAG as earTag
-    from ZPHOTOASSETRECORD
-    where ZDELETEDAT is null and coalesce(ZRELATIVEPATH, '') <> ''
-    order by Z_PK
+    select photo.hexID as id, photo.hexSheepID as sheep, photo.mime,
+      photo.content, photo.source, photo.sourceWidth, photo.sourceHeight,
+      photo.cloudWidth, photo.cloudHeight, photo.captured, photo.deleted,
+      photo.relativePath, photo.earTag, sheep.ZEARTAG as sheepEarTag
+    from (
+      select hex(ZID) as hexID, hex(ZSHEEPID) as hexSheepID,
+        ZMIMETYPE as mime, ZSHA256 as content, ZSOURCESHA256 as source,
+        ZSOURCEPIXELWIDTH as sourceWidth, ZSOURCEPIXELHEIGHT as sourceHeight,
+        ZCLOUDPIXELWIDTH as cloudWidth, ZCLOUDPIXELHEIGHT as cloudHeight,
+        ZCAPTUREDAT as captured, ZDELETEDAT as deleted,
+        ZRELATIVEPATH as relativePath, ZORIGINALEARTAG as earTag,
+        ZSHEEPID as rawSheepID, ZFARMID as rawFarmID, Z_PK
+      from ZPHOTOASSETRECORD
+      where ZDELETEDAT is null and coalesce(ZRELATIVEPATH, '') <> ''
+    ) photo
+    left join ZSHEEPRECORD sheep
+      on sheep.ZID = photo.rawSheepID and sheep.ZFARMID = photo.rawFarmID
+    order by photo.Z_PK
   `);
   if (rows.length !== 27) die(`Air active photo count changed: expected 27, got ${rows.length}`);
   const seen = new Set();
@@ -247,7 +262,8 @@ function buildPhotoAssets() {
         avatar: `${FARM_ID}/${GENERATION}/${assetID}/${avatarSHA256}/avatar.jpg`,
         original: `${FARM_ID}/${GENERATION}/${assetID}/${originalSHA256}/original.bin`
       },
-      legacyEarTag: row.earTag || null
+      legacyEarTag: row.earTag || null,
+      sheepEarTag: row.sheepEarTag || null
     });
   }
   return assets;
@@ -393,6 +409,51 @@ function buildCommands(drafts, assets) {
     }
   }
 
+  const repairTagSQL = NEW_AVATAR_REPAIR_EAR_TAGS
+    .map((tag) => `'${tag.replaceAll("'", "''")}'`)
+    .join(',');
+  const repairRows = sqliteJSON(`
+    select trim(sheep.ZEARTAG) as earTag, hex(sheep.ZID) as sheep,
+      hex(photo.ZID) as photo, photo.ZCREATEDAT as created
+    from ZSHEEPRECORD sheep
+    join ZPHOTOASSETRECORD photo
+      on photo.ZSHEEPID = sheep.ZID and photo.ZFARMID = sheep.ZFARMID
+      and photo.ZDELETEDAT is null and coalesce(photo.ZRELATIVEPATH, '') <> ''
+    where upper(trim(sheep.ZEARTAG)) in (${repairTagSQL})
+    order by upper(trim(sheep.ZEARTAG)), photo.ZCREATEDAT, photo.Z_PK
+  `);
+  if (repairRows.length !== NEW_AVATAR_REPAIR_EAR_TAGS.length) {
+    die(`new avatar repair asset count changed: expected ${NEW_AVATAR_REPAIR_EAR_TAGS.length}, got ${repairRows.length}`);
+  }
+  const assetsByID = new Map(assets.map((asset) => [asset.assetID.toLowerCase(), asset]));
+  const repairsByTag = new Map();
+  const newAvatarRepairs = [];
+  for (const row of repairRows) {
+    const earTag = String(row.earTag || '').trim();
+    const normalizedTag = earTag.toUpperCase();
+    if (repairsByTag.has(normalizedTag)) die(`multiple active new avatar photos for ${earTag}`);
+    const sheepID = uuidFromHex(row.sheep);
+    const photoID = uuidFromHex(row.photo);
+    const asset = photoID ? assetsByID.get(photoID.toLowerCase()) : null;
+    if (!sheepID || !photoID || !asset || asset.sheepID?.toLowerCase() !== sheepID.toLowerCase()) {
+      die(`new avatar repair does not resolve to an active Air asset: ${earTag}`);
+    }
+    if (avatarBySheep.has(sheepID)) die(`new avatar repair already has a legacy avatar: ${earTag}`);
+    const repair = {
+      earTag,
+      sheepID,
+      photoID,
+      updatedMillis: millisFromCoreDataSeconds(row.created),
+      reason: 'new_avatar_without_legacy_avatar_record'
+    };
+    repairsByTag.set(normalizedTag, repair);
+    newAvatarRepairs.push(repair);
+    avatarBySheep.set(sheepID, repair);
+  }
+  for (const expectedTag of NEW_AVATAR_REPAIR_EAR_TAGS) {
+    if (!repairsByTag.has(expectedTag.toUpperCase())) die(`missing new avatar repair tag: ${expectedTag}`);
+  }
+
   // Photo registrations must follow sheep.add so the server can prove that a
   // sheep-linked asset has a valid sheep stream.  Avatar selections follow
   // registration because they require a verified asset variant.
@@ -513,10 +574,18 @@ function buildCommands(drafts, assets) {
       deviceSignatureBase64: signature.toString('base64'),
       requiredAssetIDs: [assetID],
       sourceRevision: 0,
-      replayOrder: 210
+      replayOrder: 210,
+      avatarRepairReason: avatar.reason || null,
+      avatarRepairEarTag: avatar.earTag || null
     });
   }
-  return { commands, avatarCount: avatarBySheep.size, createdAtMillis: sourceCreatedAt };
+  return {
+    commands,
+    avatarCount: avatarBySheep.size,
+    repairAvatarCount: newAvatarRepairs.length,
+    newAvatarRepairs,
+    createdAtMillis: sourceCreatedAt
+  };
 }
 
 function makeDeviceJWK() {
@@ -665,7 +734,9 @@ function main() {
     specialDraftCount: drafts.special.length,
     commandCount: built.commands.length,
     activeAssetCount: assets.length,
-    activeAssetDigests: assets.map((asset) => ({ assetID: asset.assetID, contentSHA256: asset.contentSHA256 })).sort((a, b) => a.assetID.localeCompare(b.assetID))
+    activeAssetDigests: assets.map((asset) => ({ assetID: asset.assetID, contentSHA256: asset.contentSHA256 })).sort((a, b) => a.assetID.localeCompare(b.assetID)),
+    newAvatarRepairTags: NEW_AVATAR_REPAIR_EAR_TAGS,
+    newAvatarRepairCount: built.repairAvatarCount
   };
   const sourceManifestDigest = sha256(Buffer.from(stableJSON(sourceManifest), 'utf8'));
   const batchPaths = writeBatches(built.commands);
@@ -688,6 +759,7 @@ function main() {
       commands: built.commands.length,
       activeAssets: assets.length,
       avatarCommands: built.avatarCount,
+      newAvatarRepairCommands: built.repairAvatarCount,
       commandBatches: batchPaths.length
     },
     farm: {
@@ -708,6 +780,7 @@ function main() {
       ...asset,
       localFiles: { sourcePath, thumbnailPath, avatarPath, originalPath }
     })),
+    newAvatarRepairs: built.newAvatarRepairs,
     commands: built.commands
   };
   fs.writeFileSync(PLAN_PATH, JSON.stringify(plan, null, 2));
