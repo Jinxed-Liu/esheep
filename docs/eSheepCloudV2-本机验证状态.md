@@ -1,10 +1,10 @@
 # eSheep+ 云 V2 本机验证状态
 
-更新时间：2026-09-03
+更新时间：2026-09-04
 
-这份记录只描述当前工作树和本机隔离环境的证据，不代表真实牧场已经切换，也不把模拟器或本地数据库结果写成现场验收结论。
+这份记录按源数据、远端账本、设备备份、服务端测试和现场验收分层记录。2026-09-04 已按 iPhone Air 的实时备份执行真实牧场 V1 → V2 影子迁移并完成服务端验证；这不等同于 authority generation 已切换，也不把模拟器或 Device Hub 失败写成现场验收通过。
 
-## 2026-09-03 本次执行记录
+## 2026-09-03 本机基线与准备记录（历史快照）
 
 - 已创建计划指定的 `codex/esheep-cloud-v2-cutover-rc` 分支。执行前将当前工作树（排除 `.git`、依赖和可重建产物）备份到 `/tmp/esheep-v2-source-backup.QdMDx0`，并用 `rsync` dry-run 校验无差异。
 - 两台指定真机的 `com.sheepfarm.next.dev` 完整 App container 已只读复制到 `/tmp/esheep-v2-device-backups-20260903`：iPhone Air 约 89 MB，iPhone 16 Pro 约 58 MB。两份 store 均以 WAL 兼容方式执行 `PRAGMA quick_check`，结果为 `ok`；未安装、卸载或清空任何设备内容。
@@ -16,7 +16,21 @@
 - 远端只读检查显示当前组织没有独立 Staging Supabase 项目；已关联的 Development 项目尚未应用 V2 migration `20260902041541`，也没有部署 `esheep-cloud-v2-writes`。因此本次没有执行远端 push、函数部署、验收牧场写入或真实牧场切换。
 - `use-device-hub` 的 Device Hub 读取连续因 AX `-10005 timeoutReached` 失败；没有改用 iPhone Mirroring，也没有把 `devicectl` 清单当作视觉验收证据。
 
-本次执行已安全停在“本机准备与证据收集”边界。进入专用验收牧场前仍必须提供独立 Staging 项目和本地公开配置、恢复 Device Hub 可读取路径、修复/豁免并审计 Web high 级依赖问题，并先解决两台真机 V1 基线差异。上述前置条件满足前，不得进入 25,000 条记录、200 张照片、双机并发或 authority generation 切换。
+截至 2026-09-03，本机准备阶段安全停在“本机准备与证据收集”边界；以上文字保留为当日快照。2026-09-04 的真实 Air 影子迁移记录如下。专用验收牧场、双机现场 staging 和 authority generation 切换仍不由本机自动化结果替代。
+
+## 2026-09-04 Air 真实牧场影子迁移与服务端测试
+
+- 数据源固定为 iPhone Air 的只读完整 container 备份 `/tmp/esheep-v2-device-backups-20260903/air`，store SHA-256 为 `76c813cd03774a49b98053a55d0341203e93a19fa09af1d224ea454a4093c1af`；iPhone 16 Pro 的旧 Build 5 没有参与数据源判断、命令生成或迁移覆盖。Air store 的 WAL 兼容 `PRAGMA quick_check` 为 `ok`。
+- 远端 V1 恢复备份已保留在 `/tmp/esheep-v2-remote-backup-20260903`：`v1-data.sql` SHA-256 为 `a0d18f2bbe7ebf74c563a7f9974f10c6261e6d140575addbf5aa19715e61e9c8`，`v1-schema.sql` SHA-256 为 `9b478e4fd797f47ce7ede933f70ae5d2f85ab51612131e47f9c95d0c6aacb53a`。
+- 目标为已登记的真实 Development Supabase 项目 `rnqrvthbunrzqtprquqx`、牧场 `8b0fa55e-2a34-4398-ae77-7d7d3701c5dd`。V2 schema 加法迁移以及真实数据探针发现的四个合同兼容修复已部署；V1 表未被重写。
+- Air 提取计划 `/tmp/esheep-v2-real-migration-20260904/migration-plan.json` 的 source manifest digest 为 `e77c8e81b2ad1e8d01aa876feae50136c86bb0a217da1d592adc46f9b23447ab`。实际写入目标 generation 2 的命令为 `23,360` 条，设备序号连续 `1–23,360`，全部 `accepted`，无 `needs_confirmation`、无 `rejected`；共生成 `34,377` 个事件，事件 head 为 `34,377`，无命令/事件/摘要重复。
+- Air 当前 27 个活动照片资产的原图、缩略图和头像共 81 个对象已上传并逐对象服务端确认；V2 资产表为 `27/27` fully verified，原图字节数合计 `18,055,559`。V2 快照为 `c8d6dce2-3ac8-437e-92ca-b942790a5746`，边界事件 `34,377`，126 个分块，`71,980,364` 字节，总摘要 `efb038c9517bc320c690788e74938cd9479579a19d9176980955c943d8a0ed23`。
+- Storage 侧的 `esheep-cloud-assets` 桶精确存在 81 个 generation 2 对象，metadata 字节数合计 `27,329,867`；旧 V1 `farm-assets` 桶仍为该牧场 28 个对象、`18,569,570` 字节，未与 V2 对象混用。
+- 真实远端测试已完成：完整性审计通过且全部 13 类检查为 0 mismatch；`openInitialSync` 返回同一快照；事件拉取首段返回 `1–500`，尾段返回 `33,378–34,377` 且 `has_more=false`；重复发送第一个命令返回 `duplicate`，event head 仍为 `34,377`；状态查询无 open attention。
+- 测试完成后 V2 `farm_state` 已设为 `read_only`，migration reconciliation 保持 `shadowing`；未调用 `mark_migration_ready_v2` 或 cutover。V1 registry 仍为 `provider=supabase`、authority generation `1`、current revision `2061`。迁移报告已将服务端通过项和未完成项写入远端 `parity_report`，不是把未做的设备验收标成通过。
+- 最终 V1 核对仍为：`farm_operations=2061`、`farm_entities=22967`、`farm_tombstones=234`、`farm_assets=27`、目标牧场 member rows `3`；registry 仍为 `supabase / generation 1 / revision 2061`。V1 备份、本机 Air 备份和设备 container 均未删除。
+- 计划指定的五个历史头像处理项（`DH054`、`256`、`172545`、`8062`、`A058`）在 Air 当前 `ZSHEEPAVATARRECORD` 中均没有对应原始头像记录；定点检查到的 Air `resolveConflict` 记录是既有开发用笔栏冲突，V1 远端也没有这五个头像的冲突载荷。因而没有凭空生成两侧值或替用户选择，V2 当前 `attention_items` 为 `0`，这五项仍是 authority 切换前的人工决策门。
+
 
 ## 已完成的可自动验证部分
 
