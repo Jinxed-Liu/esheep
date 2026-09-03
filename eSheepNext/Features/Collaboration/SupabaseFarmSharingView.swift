@@ -3,20 +3,21 @@ import SwiftUI
 import UIKit
 import VisionKit
 
-enum SupabaseFarmInvitationLink {
+enum ESheepCloudFarmInvitationLink {
     static func url(code: String) -> URL? {
         var components = URLComponents()
         components.scheme = AppEnvironment.current == .staging
             ? "esheep-staging"
             : "esheep"
-        components.host = "supabase-invite"
+        components.host = "join-farm"
         components.queryItems = [URLQueryItem(name: "code", value: code)]
         return components.url
     }
 
     static func code(from url: URL) -> String? {
+        let supportedHosts = ["join-farm", "supabase-invite"]
         guard ["esheep", "esheep-staging"].contains(url.scheme?.lowercased() ?? ""),
-              url.host == "supabase-invite",
+              supportedHosts.contains(url.host?.lowercased() ?? ""),
               let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                 .queryItems?.first(where: { $0.name == "code" })?.value else {
             return nil
@@ -33,8 +34,16 @@ struct FarmMembersAndSharingView: View {
     let farm: FarmRecord
 
     var body: some View {
-        if profiles.first(where: { $0.farmID == farm.id })?.mode == .supabase {
-            SupabaseFarmSharingView(account: account, farm: farm)
+        if profiles.first(where: { $0.farmID == farm.id })?.mode == .eSheepCloud {
+            ESheepCloudFarmSharingView(account: account, farm: farm)
+        } else if profiles.first(where: { $0.farmID == farm.id })?.mode == .supabase {
+            ContentUnavailableView(
+                "成员资料正在升级",
+                systemImage: "person.2.badge.gearshape",
+                description: Text("完成 eSheep+ 云安全迁移后，即可继续邀请和管理成员。现有成员关系不会被改动。")
+            )
+            .navigationTitle("成员与共享")
+            .navigationBarTitleDisplayMode(.inline)
         } else {
             ContentUnavailableView(
                 "成员与共享",
@@ -47,13 +56,15 @@ struct FarmMembersAndSharingView: View {
     }
 }
 
-struct SupabaseFarmSharingView: View {
+struct ESheepCloudFarmSharingView: View {
+    @Environment(CloudCollaborationStore.self) private var collaboration
+
     let account: AccountProfile
     let farm: FarmRecord
 
-    @State private var members: [FarmRemoteMember] = []
+    @State private var members: [ESheepCloudMemberV2] = []
     @State private var inviteRole: FarmRole = .worker
-    @State private var invite: SupabaseFarmInvite?
+    @State private var invite: ESheepCloudInvitationV2?
     @State private var isQRCodePresented = false
     @State private var isWorking = false
     @State private var errorMessage: String?
@@ -65,11 +76,13 @@ struct SupabaseFarmSharingView: View {
                     Text("正在读取成员…")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(members, id: \.accountID) { member in
+                    ForEach(members) { member in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(member.accountID.uuidString.lowercased())
-                                    .font(.footnote.monospaced())
+                                Text(member.displayName?.isEmpty == false
+                                    ? member.displayName!
+                                    : "牧场成员")
+                                    .font(.body)
                                     .lineLimit(1)
                                 Text(LocalizedStringKey(member.role.displayName))
                                     .font(.caption)
@@ -78,10 +91,9 @@ struct SupabaseFarmSharingView: View {
                             Spacer()
                             if farm.role == .owner,
                                member.role != .owner,
-                               member.status == .active,
-                               let userID = member.providerUserID {
+                               member.status == .active {
                                 Button("撤权", role: .destructive) {
-                                    revoke(userID)
+                                    revoke(member.id)
                                 }
                                 .disabled(isWorking)
                             }
@@ -105,7 +117,7 @@ struct SupabaseFarmSharingView: View {
                         Text(invite.code)
                             .font(.footnote.monospaced())
                             .textSelection(.enabled)
-                        if let invitationURL = SupabaseFarmInvitationLink.url(code: invite.code) {
+                        if let invitationURL = ESheepCloudFarmInvitationLink.url(code: invite.code) {
                             Button {
                                 isQRCodePresented = true
                             } label: {
@@ -137,8 +149,8 @@ struct SupabaseFarmSharingView: View {
         }
         .sheet(isPresented: $isQRCodePresented) {
             if let invite,
-               let invitationURL = SupabaseFarmInvitationLink.url(code: invite.code) {
-                SupabaseFarmInvitationQRCodeView(
+               let invitationURL = ESheepCloudFarmInvitationLink.url(code: invite.code) {
+                ESheepCloudFarmInvitationQRCodeView(
                     farmName: farm.name,
                     role: inviteRole,
                     expiresAt: invite.expiresAt,
@@ -157,57 +169,50 @@ struct SupabaseFarmSharingView: View {
     }
 
     private func refresh() async {
-        guard let client = AccountIdentityClients.supabaseClient else {
-            errorMessage = SupabaseFarmCloudError.notConfigured.localizedDescription
-            return
-        }
         do {
-            members = try await SupabaseFarmTransport(client: client)
-                .members(farmID: farm.id)
+            members = try await collaboration.eSheepCloudMembers(farmID: farm.id)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = naturalCloudMessage(for: error)
         }
     }
 
     private func createInvite() {
-        guard !isWorking,
-              let client = AccountIdentityClients.supabaseClient else {
-            return
-        }
+        guard !isWorking else { return }
         isWorking = true
         Task {
             defer { isWorking = false }
             do {
-                invite = try await SupabaseFarmInviteClient(client: client)
-                    .create(farmID: farm.id, role: inviteRole)
+                invite = try await collaboration.createESheepCloudInvitation(
+                    farmID: farm.id,
+                    role: inviteRole
+                )
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = naturalCloudMessage(for: error)
             }
         }
     }
 
-    private func revoke(_ userID: UUID) {
-        guard !isWorking,
-              let client = AccountIdentityClients.supabaseClient else {
-            return
-        }
+    private func revoke(_ memberID: UUID) {
+        guard !isWorking else { return }
         isWorking = true
         Task {
             defer { isWorking = false }
             do {
-                try await SupabaseFarmInviteClient(client: client)
-                    .revoke(farmID: farm.id, memberUserID: userID)
+                try await collaboration.revokeESheepCloudMember(
+                    farmID: farm.id,
+                    memberID: memberID
+                )
                 await refresh()
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = naturalCloudMessage(for: error)
             }
         }
     }
 }
 
-struct SupabaseJoinFarmView: View {
+struct ESheepCloudJoinFarmView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.modelContext) private var modelContext
+    @Environment(CloudCollaborationStore.self) private var collaboration
 
     let account: AccountProfile
     let onJoined: @MainActor (FarmRecord) -> Void
@@ -230,7 +235,7 @@ struct SupabaseJoinFarmView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Supabase 一次性邀请码") {
+                Section("eSheep+ 云一次性邀请码") {
                     TextField("粘贴邀请码", text: $code, axis: .vertical)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -258,13 +263,13 @@ struct SupabaseJoinFarmView: View {
                         }
                         isScannerPresented = true
                     } label: {
-                        Label("扫描 Supabase 邀请二维码", systemImage: "qrcode.viewfinder")
+                        Label("扫描 eSheep+ 云邀请二维码", systemImage: "qrcode.viewfinder")
                     }
                 } footer: {
-                    Text("扫码和粘贴长邀请码使用同一个 Supabase 兑换流程。")
+                    Text("扫码和粘贴邀请码的效果相同；邀请码只能使用一次。")
                 }
             }
-            .navigationTitle("加入 Supabase 牧场")
+            .navigationTitle("加入云端牧场")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -280,7 +285,7 @@ struct SupabaseJoinFarmView: View {
                 Text(LocalizedStringKey(errorMessage ?? ""))
             }
             .sheet(isPresented: $isScannerPresented) {
-                SupabaseFarmInvitationQRCodeScannerView { scannedCode in
+                ESheepCloudFarmInvitationQRCodeScannerView { scannedCode in
                     code = scannedCode
                 }
             }
@@ -288,29 +293,39 @@ struct SupabaseJoinFarmView: View {
     }
 
     private func redeem() {
-        guard !isWorking,
-              let client = AccountIdentityClients.supabaseClient else {
-            return
-        }
+        guard !isWorking else { return }
         isWorking = true
         Task { @MainActor in
             defer { isWorking = false }
             do {
-                let farm = try await SupabaseFarmJoinService(client: client).redeemAndInstall(
-                    code: code,
-                    accountID: account.effectiveAccountID,
-                    context: modelContext
+                let farm = try await collaboration.redeemAndReceiveESheepCloudFarm(
+                    code: code
                 )
                 onJoined(farm)
                 dismiss()
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = naturalCloudMessage(for: error)
             }
         }
     }
 }
 
-private struct SupabaseFarmInvitationQRCodeView: View {
+private func naturalCloudMessage(for error: Error) -> String {
+    switch error {
+    case let value as ESheepCloudMembershipError:
+        value.localizedDescription
+    case let value as ESheepCloudInitialSyncError:
+        value.localizedDescription
+    case let value as ESheepCloudRuntimeError:
+        value.localizedDescription
+    case is CancellationError:
+        "操作已暂停，重新打开后会从已完成的位置继续。"
+    default:
+        "eSheep+ 云暂时无法完成这项操作，请稍后再试。"
+    }
+}
+
+private struct ESheepCloudFarmInvitationQRCodeView: View {
     @Environment(\.dismiss) private var dismiss
 
     let farmName: String
@@ -341,7 +356,7 @@ private struct SupabaseFarmInvitationQRCodeView: View {
                         .frame(maxWidth: 320)
                         .padding(18)
                         .background(.white, in: .rect(cornerRadius: 20))
-                        .accessibilityLabel("加入\(farmName)的 Supabase 邀请二维码")
+                        .accessibilityLabel("加入\(farmName)的 eSheep+ 云邀请二维码")
                 } else {
                     ContentUnavailableView("二维码生成失败", systemImage: "qrcode")
                 }
@@ -365,7 +380,7 @@ private struct SupabaseFarmInvitationQRCodeView: View {
     }
 }
 
-private struct SupabaseFarmInvitationQRCodeScannerView: View {
+private struct ESheepCloudFarmInvitationQRCodeScannerView: View {
     @Environment(\.dismiss) private var dismiss
     let onScanned: (String) -> Void
     @State private var errorMessage: String?
@@ -375,15 +390,15 @@ private struct SupabaseFarmInvitationQRCodeScannerView: View {
             ZStack(alignment: .bottom) {
                 FarmInvitationDataScanner { value in
                     guard let url = URL(string: value),
-                          let code = SupabaseFarmInvitationLink.code(from: url) else {
-                        errorMessage = "这不是有效的 eSheep+ Supabase 邀请二维码。"
+                          let code = ESheepCloudFarmInvitationLink.code(from: url) else {
+                        errorMessage = "这不是有效的 eSheep+ 云邀请二维码。"
                         return
                     }
                     onScanned(code)
                     dismiss()
                 }
                 .ignoresSafeArea()
-                Label("将 Supabase 邀请二维码放入取景框", systemImage: "qrcode.viewfinder")
+                Label("将 eSheep+ 云邀请二维码放入取景框", systemImage: "qrcode.viewfinder")
                     .font(.headline)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 12)

@@ -46,6 +46,12 @@ actor SupabasePhotoTransferCoordinator {
         let context = ModelContext(container)
         guard let asset = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
             .first(where: { $0.id == assetID && $0.deletedAt == nil }),
+              try context.fetch(FetchDescriptor<FarmStorageProfile>())
+                .contains(where: {
+                    $0.farmID == asset.farmID &&
+                        $0.mode == .supabase &&
+                        $0.transitionState == .idle
+                }),
               try context.fetch(FetchDescriptor<FarmRemoteBinding>())
                 .contains(where: {
                     $0.farmID == asset.farmID &&
@@ -90,9 +96,17 @@ actor SupabasePhotoTransferCoordinator {
 
     func processPendingTransfers() async {
         let context = ModelContext(container)
+        let idleFarmIDs = Set(
+            ((try? context.fetch(FetchDescriptor<FarmStorageProfile>())) ?? [])
+                .filter { $0.mode == .supabase && $0.transitionState == .idle }
+                .map(\.farmID)
+        )
         let activeFarmIDs = Set(
             ((try? context.fetch(FetchDescriptor<FarmRemoteBinding>())) ?? [])
-                .filter { $0.provider == .supabase && $0.state == .active }
+                .filter {
+                    $0.provider == .supabase && $0.state == .active &&
+                        idleFarmIDs.contains($0.farmID)
+                }
                 .map(\.farmID)
         )
         guard !activeFarmIDs.isEmpty else { return }
@@ -163,6 +177,12 @@ actor SupabasePhotoTransferCoordinator {
                       $0.farmID == transfer.farmID &&
                           $0.provider == .supabase &&
                           $0.state == .active
+                  }),
+              try context.fetch(FetchDescriptor<FarmStorageProfile>())
+                  .contains(where: {
+                      $0.farmID == transfer.farmID &&
+                          $0.mode == .supabase &&
+                          $0.transitionState == .idle
                   }) else {
             throw PhotoTransferError.assetMissing
         }

@@ -148,7 +148,7 @@ struct FarmPortableBackupPreview: Sendable, Equatable {
         switch sourceStorageMode {
         case .localOnly: source = "仅本机"
         case .retiredAppleCloud: source = "已停用的旧云存储"
-        case .supabase: source = "eSheep 云"
+        case .eSheepCloud, .supabase: source = "eSheep+ 云"
         }
         return "来源：\(source) · 业务记录 \(entityCount) · 照片 \(photoCount)"
     }

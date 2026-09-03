@@ -36,10 +36,10 @@ final class AppSchemaMigrationTests: XCTestCase {
     }
 
     func testVersionedSchemaContainsEveryCurrentModel() {
-        let versioned = Schema(versionedSchema: AppSchemaV11.self)
+        let versioned = Schema(versionedSchema: AppSchemaV12.self)
         let current = AppSchema.makeSchema()
 
-        XCTAssertEqual(AppSchema.currentVersion, "11.0.0")
+        XCTAssertEqual(AppSchema.currentVersion, "12.0.0")
         XCTAssertEqual(versioned.entities.map(\.name).sorted(), current.entities.map(\.name).sorted())
         XCTAssertEqual(
             AppSchemaMigrationPlan.schemas.map { Schema(versionedSchema: $0).version },
@@ -56,9 +56,28 @@ final class AppSchemaMigrationTests: XCTestCase {
                 Schema.Version(9, 1, 0),
                 Schema.Version(10, 0, 0),
                 Schema.Version(11, 0, 0),
+                Schema.Version(12, 0, 0),
             ]
         )
-        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 11)
+        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 12)
+    }
+
+    func testV11DoesNotAbsorbESheepCloudV2LedgerModels() {
+        let v11Names = Set(Schema(versionedSchema: AppSchemaV11.self).entities.map(\.name))
+        let v12Names = Set(Schema(versionedSchema: AppSchemaV12.self).entities.map(\.name))
+        let v2Names: Set<String> = [
+            "ESheepCloudFarmState",
+            "ESheepCloudStreamState",
+            "ESheepCloudPendingIntent",
+            "ESheepCloudEventReceipt",
+            "ESheepCloudAttentionItem",
+            "ESheepCloudAssetState",
+            "ESheepCloudInitialSyncSession",
+            "ESheepCloudMigrationState",
+        ]
+
+        XCTAssertTrue(v11Names.isDisjoint(with: v2Names))
+        XCTAssertTrue(v2Names.isSubset(of: v12Names))
     }
 
     func testV10RecipesBecomeReviewableTMRProfilesWithoutInventingHistoricalBatchesOrPlans() throws {

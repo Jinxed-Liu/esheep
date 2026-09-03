@@ -49,11 +49,11 @@ private enum FarmDataTaskMessage {
         case .excelPreviewFailed(let error):
             Text("Excel 预检失败：\(error)")
         case .excelImported(let count):
-            Text("已原子导入 \(count) 条录入数据，并生成对应审计和待同步记录。")
+            Text("已完整导入 \(count) 条录入数据；需要保存到云端的内容会自动处理。")
         case .excelImportFailed(let error):
             Text("整批未写入：\(error)")
         case .imported(let imported, let skipped):
-            Text("已导入 \(imported) 条，跳过 \(skipped) 条。离线时操作会留在待同步队列。")
+            Text("已导入 \(imported) 条，跳过 \(skipped) 条。离线时可继续录入，联网后会自动保存。")
         case .writeFailed(let error):
             Text("写入失败：\(error)")
         case .exportFailed(let error):
@@ -65,7 +65,7 @@ private enum FarmDataTaskMessage {
         case .backupExported:
             Text("完整备份已导出。请把文件保存到另一台设备或独立存储位置。")
         case .backupPending(let count):
-            Text("仍有 \(count) 条记录等待上传。请联网同步完成后再导出完整备份。")
+            Text("仍有 \(count) 项内容等待保存。请联网完成保存后再导出完整备份。")
         case .backupValidationFailed(let error):
             Text("备份校验失败：\(error)")
         case .restored(let entityCount, let photoCount):
@@ -79,6 +79,8 @@ private enum FarmDataTaskMessage {
 struct FarmDataInterchangeView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SyncConflictRecord.detectedAt, order: .reverse) private var conflicts: [SyncConflictRecord]
+    @Query(sort: \ESheepCloudAttentionItem.createdAt, order: .reverse)
+    private var cloudAttentionItems: [ESheepCloudAttentionItem]
     @Query private var storageProfiles: [FarmStorageProfile]
 
     let account: AccountProfile
@@ -103,6 +105,11 @@ struct FarmDataInterchangeView: View {
         )
         _storageProfiles = Query(
             filter: #Predicate<FarmStorageProfile> { $0.farmID == farmID }
+        )
+        _cloudAttentionItems = Query(
+            filter: #Predicate<ESheepCloudAttentionItem> { $0.farmID == farmID },
+            sort: \.createdAt,
+            order: .reverse
         )
     }
 
@@ -137,12 +144,34 @@ struct FarmDataInterchangeView: View {
         }
     }
 
+    private var storageMode: FarmStorageMode {
+        storageProfiles.first?.mode ?? .localOnly
+    }
+
+    private var cloudAttentionCount: Int {
+        cloudAttentionItems.count {
+            $0.state == .open || $0.state == .resolving
+        }
+    }
+
+    private var pendingDecisionCount: Int {
+        switch storageMode {
+        case .eSheepCloud:
+            cloudAttentionCount
+        case .supabase:
+            // For legacy profile farms, surface V2 attention items when available.
+            cloudAttentionCount
+        case .localOnly, .retiredAppleCloud:
+            unresolvedConflictCount
+        }
+    }
+
     private var policy: SettingsVisibilityPolicy {
         SettingsVisibilityPolicy(
             role: farm.role,
-            cloudEnabled: SupabaseAccountConfiguration.isConfigured,
+            cloudEnabled: ESheepCloudAvailability.isConfigured,
             subscriptionEnabled: SubscriptionFeatureConfiguration.isEnabled,
-            unresolvedConflictCount: unresolvedConflictCount
+            unresolvedConflictCount: pendingDecisionCount
         )
     }
 
@@ -164,7 +193,7 @@ struct FarmDataInterchangeView: View {
                 }
                 .disabled(isClearingTemporaryData || storageSnapshot == nil)
 
-                Text("清理只会移除可重新生成的临时文件，不会删除牧场记录、照片、备份或未同步操作。")
+                Text("清理只会移除可重新生成的临时文件，不会删除牧场记录、照片、备份或等待保存的内容。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -191,7 +220,7 @@ struct FarmDataInterchangeView: View {
                     }
                     .disabled(isCleaningRebuilds)
 
-                    Text("先保留状态、牧场、错误、文件清单和 SHA-256 诊断归档，再移除可重建目录。SwiftData、WAL/SHM、照片、备份、Outbox 与云端回执不在候选范围。")
+                    Text("先生成可核验的诊断归档，再移除可重建目录。牧场数据库、照片、备份、等待保存的内容与云端回执不在候选范围。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -236,14 +265,26 @@ struct FarmDataInterchangeView: View {
                 }
 
                 if policy.shows(.dataConflicts) {
-                    NavigationLink {
-                        FarmConflictCenterView(account: account, farm: farm)
-                    } label: {
-                        SettingsRowLabel(
-                            title: "数据异常处理",
-                            subtitle: "\(unresolvedConflictCount) 条记录需要选择保留版本",
-                            systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90"
-                        )
+                    if storageMode == .eSheepCloud || storageMode == .supabase {
+                        NavigationLink {
+                            ESheepCloudCenterView(account: account, farm: farm)
+                        } label: {
+                            SettingsRowLabel(
+                                title: "需要确认",
+                                subtitle: "\(cloudAttentionCount) 项内容需要选择保留哪一边",
+                                systemImage: "exclamationmark.bubble.fill"
+                            )
+                        }
+                    } else {
+                        NavigationLink {
+                            FarmConflictCenterView(account: account, farm: farm)
+                        } label: {
+                            SettingsRowLabel(
+                                title: "数据异常处理",
+                                subtitle: "\(unresolvedConflictCount) 条记录需要选择保留版本",
+                                systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90"
+                            )
+                        }
                     }
                 }
             }
@@ -409,7 +450,7 @@ private struct LocalStorageCleanupReviewView: View {
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("不会删除业务库、WAL/SHM、照片、eSheep 云迁移备份、Outbox、Tombstone、回执或 Keychain。")
+                Text("不会删除牧场数据库、照片、eSheep+ 云迁移备份、等待保存的内容、删除与恢复记录、云端回执或安全凭据。")
             }
         }
     }
@@ -423,6 +464,8 @@ private struct FarmDataTaskView: View {
     @Query private var pens: [PenRecord]
     @Query private var storageProfiles: [FarmStorageProfile]
     @Query private var outboxItems: [OutboxItem]
+    @Query private var cloudFarmStates: [ESheepCloudFarmState]
+    @Query private var cloudIntents: [ESheepCloudPendingIntent]
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -465,6 +508,12 @@ private struct FarmDataTaskView: View {
         _outboxItems = Query(
             filter: #Predicate<OutboxItem> { $0.farmID == farmID }
         )
+        _cloudFarmStates = Query(
+            filter: #Predicate<ESheepCloudFarmState> { $0.farmID == farmID }
+        )
+        _cloudIntents = Query(
+            filter: #Predicate<ESheepCloudPendingIntent> { $0.farmID == farmID }
+        )
     }
 
     private var farmSheep: [SheepRecord] { sheep }
@@ -478,11 +527,35 @@ private struct FarmDataTaskView: View {
     }
 
     private var pendingCloudOperationCount: Int {
+        if storageMode == .eSheepCloud {
+            guard let generation = activeCloudState?.farmGeneration else { return 0 }
+            return cloudIntents.count {
+                $0.farmGeneration == generation &&
+                    $0.accountID == account.effectiveAccountID &&
+                    !$0.lifecycle.isTerminal
+            }
+        }
         guard let provider = storageMode.deliveryProvider else { return 0 }
         return outboxItems.count {
             $0.deliveryProvider == provider &&
                 !$0.status.isTerminalDelivery
         }
+    }
+
+    private var activeCloudState: ESheepCloudFarmState? {
+        cloudFarmStates
+            .filter { $0.activityState != .accessRevoked }
+            .max { $0.farmGeneration < $1.farmGeneration }
+    }
+
+    private var cloudBackupIsCurrentAndVerified: Bool {
+        guard storageMode == .eSheepCloud,
+              let state = activeCloudState else { return false }
+        return state.activityState == .active &&
+            state.integrityState == .passed &&
+            state.lastSafeSaveAt != nil &&
+            state.lastAppliedEventSequence >= state.cloudEventHead &&
+            pendingCloudOperationCount == 0
     }
 
     var body: some View {
@@ -572,7 +645,7 @@ private struct FarmDataTaskView: View {
                     if CapabilitySet(role: farm.role).allows(.recordProduction) {
                         Button("选择备份并检查") { isRestoringBackup = true }
                     }
-                    Text("备份包含生产记录、历史、删除记录、TMR 和照片。eSheep 云牧场会先同步；仍有待上传记录时不会生成“已同步”备份。")
+                    Text("备份包含生产记录、历史、删除记录、TMR 和照片。eSheep+ 云牧场会先完成保存和完整性检查；仍有内容等待保存时不会生成“已安全保存”的备份。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 if let backupPreview {
@@ -582,7 +655,7 @@ private struct FarmDataTaskView: View {
                         backupSummary(backupPreview)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-                        Text("文件恢复只会建立新的仅本机牧场，不会覆盖当前 eSheep 云牧场。恢复完成并核对后，可再从云存储页面显式迁移。")
+                        Text("文件恢复只会建立新的仅本机牧场，不会覆盖当前 eSheep+ 云牧场。恢复完成并核对后，可再从云端页面显式迁移。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         Button("恢复为新的仅本机牧场") { restoreBackup(backupPreview) }
@@ -632,8 +705,8 @@ private struct FarmDataTaskView: View {
             return Text("来源：仅本机 · 业务记录 \(preview.entityCount) · 照片 \(preview.photoCount)")
         case .retiredAppleCloud:
             return Text("来源：已停用的旧云备份 · 业务记录 \(preview.entityCount) · 照片 \(preview.photoCount)")
-        case .supabase:
-            return Text("来源：eSheep 云 · 业务记录 \(preview.entityCount) · 照片 \(preview.photoCount)")
+        case .eSheepCloud, .supabase:
+            return Text("来源：eSheep+ 云 · 业务记录 \(preview.entityCount) · 照片 \(preview.photoCount)")
         }
     }
 
@@ -697,19 +770,37 @@ private struct FarmDataTaskView: View {
                 message = .backupExportFailed("旧云端牧场已停用且正在删除，不能再生成云端一致性备份。")
                 return
             }
-            if storageMode == .supabase {
+            if storageMode == .supabase || storageMode == .eSheepCloud {
                 await collaboration.synchronizeNow()
                 guard pendingCloudOperationCount == 0 else {
                     message = .backupPending(pendingCloudOperationCount)
                     return
                 }
+                if storageMode == .eSheepCloud,
+                   !cloudBackupIsCurrentAndVerified {
+                    message = .backupValidationFailed(
+                        "牧场资料还没有完成云端完整性检查，请稍后再试。"
+                    )
+                    return
+                }
             }
             do {
+                let sourceWasFullySynchronized: Bool
+                switch storageMode {
+                case .localOnly:
+                    sourceWasFullySynchronized = true
+                case .eSheepCloud:
+                    sourceWasFullySynchronized = cloudBackupIsCurrentAndVerified
+                case .supabase:
+                    sourceWasFullySynchronized = pendingCloudOperationCount == 0
+                case .retiredAppleCloud:
+                    sourceWasFullySynchronized = false
+                }
                 let data = try FarmPortableBackupService.export(
                     farmID: farm.id,
                     sourceStorageMode: storageMode,
                     sourceAuthorityGeneration: storageProfile?.authorityGeneration ?? 0,
-                    sourceWasFullySynchronized: storageMode == .localOnly || pendingCloudOperationCount == 0,
+                    sourceWasFullySynchronized: sourceWasFullySynchronized,
                     context: modelContext
                 )
                 backupDocument = FarmInterchangeDocument(data: data)

@@ -463,6 +463,11 @@ enum AppSchemaV10: VersionedSchema {
 
 enum AppSchemaV11: VersionedSchema {
     static let versionIdentifier = Schema.Version(11, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.preV12ModelTypes }
+}
+
+enum AppSchemaV12: VersionedSchema {
+    static let versionIdentifier = Schema.Version(12, 0, 0)
     static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
 }
 
@@ -481,6 +486,7 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             AppSchemaV9.self,
             AppSchemaV10.self,
             AppSchemaV11.self,
+            AppSchemaV12.self,
         ]
     }
 
@@ -610,19 +616,25 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
                     try context.save()
                 }
             ),
+            // V12 only adds the eSheep+ Cloud V2 ledger. Existing V1 rows are
+            // deliberately preserved unchanged as migration/audit input; a
+            // farm switches authority only after server-side parity succeeds.
+            .lightweight(fromVersion: AppSchemaV11.self, toVersion: AppSchemaV12.self),
         ]
     }
 }
 
 enum AppSchema {
-    static let currentVersion = "11.0.0"
+    static let currentVersion = "12.0.0"
 
     static func defaultStoreURL(name: String = "eSheepNext") -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "\(name).store")
     }
 
-    static var businessModelTypes: [any PersistentModel.Type] {
+    /// Frozen model set that shipped as V11. Never append V2 models here or the
+    /// historical V11 schema hash changes underneath installed stores.
+    fileprivate static var preV12BusinessModelTypes: [any PersistentModel.Type] {
         [
             AccountProfile.self,
             FarmRecord.self,
@@ -705,6 +717,23 @@ enum AppSchema {
             TMRDeviationAcknowledgementRecord.self,
             TMRMonitoringRuleRecord.self,
         ]
+    }
+
+    fileprivate static var eSheepCloudV2ModelTypes: [any PersistentModel.Type] {
+        [
+            ESheepCloudFarmState.self,
+            ESheepCloudStreamState.self,
+            ESheepCloudPendingIntent.self,
+            ESheepCloudEventReceipt.self,
+            ESheepCloudAttentionItem.self,
+            ESheepCloudAssetState.self,
+            ESheepCloudInitialSyncSession.self,
+            ESheepCloudMigrationState.self,
+        ]
+    }
+
+    static var businessModelTypes: [any PersistentModel.Type] {
+        preV12BusinessModelTypes + eSheepCloudV2ModelTypes
     }
 
     /// V10 was the last schema before TMR. Historical schemas must derive from
@@ -935,8 +964,12 @@ enum AppSchema {
         preV11BusinessModelTypes + insightModelTypes
     }
 
+    fileprivate static var preV12ModelTypes: [any PersistentModel.Type] {
+        preV12BusinessModelTypes + insightModelTypes
+    }
+
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV11.self)
+        Schema(versionedSchema: AppSchemaV12.self)
     }
 
     static func makeConfiguration(

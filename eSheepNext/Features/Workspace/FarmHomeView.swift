@@ -6,6 +6,10 @@ struct FarmHomeView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
     @Environment(FarmNotificationService.self) private var notifications
+    @Query private var storageProfiles: [FarmStorageProfile]
+    @Query private var cloudFarmStates: [ESheepCloudFarmState]
+    @Query private var cloudIntents: [ESheepCloudPendingIntent]
+    @Query private var cloudAttentionItems: [ESheepCloudAttentionItem]
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -30,6 +34,19 @@ struct FarmHomeView: View {
     ) {
         self.account = account
         self.farm = farm
+        let farmID = farm.id
+        _storageProfiles = Query(
+            filter: #Predicate<FarmStorageProfile> { $0.farmID == farmID }
+        )
+        _cloudFarmStates = Query(
+            filter: #Predicate<ESheepCloudFarmState> { $0.farmID == farmID }
+        )
+        _cloudIntents = Query(
+            filter: #Predicate<ESheepCloudPendingIntent> { $0.farmID == farmID }
+        )
+        _cloudAttentionItems = Query(
+            filter: #Predicate<ESheepCloudAttentionItem> { $0.farmID == farmID }
+        )
         _isWeatherDetailPresented = isWeatherDetailPresented
         _isMetricDetailPresented = isMetricDetailPresented
         self.sharedFarmAdmissionStatus = sharedFarmAdmissionStatus
@@ -37,6 +54,49 @@ struct FarmHomeView: View {
 
     private var canExport: Bool { CapabilitySet(role: farm.role).allows(.exportFarm) }
     private var canManageAlertRules: Bool { CapabilitySet(role: farm.role).allows(.manageCatalogs) }
+    private var usesESheepCloudV2: Bool {
+        storageProfiles.first(where: { $0.farmID == farm.id })?.mode == .eSheepCloud
+    }
+    private var activeCloudState: ESheepCloudFarmState? {
+        cloudFarmStates
+            .filter { $0.farmID == farm.id }
+            .max { $0.farmGeneration < $1.farmGeneration }
+    }
+    private var activeCloudGeneration: Int? {
+        activeCloudState?.farmGeneration
+    }
+    private var cloudAttentionCount: Int {
+        guard let activeCloudGeneration else { return 0 }
+        return cloudAttentionItems.count {
+            $0.farmID == farm.id &&
+                $0.farmGeneration == activeCloudGeneration &&
+                ($0.state == .open || $0.state == .resolving)
+        }
+    }
+    private var cloudWaitingCount: Int {
+        guard let activeCloudGeneration else { return 0 }
+        return cloudIntents.count {
+            $0.farmID == farm.id &&
+                $0.farmGeneration == activeCloudGeneration &&
+                $0.accountID == account.effectiveAccountID &&
+                !$0.lifecycle.isTerminal &&
+                $0.lifecycle != .needsConfirmation
+        }
+    }
+    private var cloudIsSafelySaved: Bool {
+        guard let state = activeCloudState else { return false }
+        return state.activityState == .active &&
+            state.integrityState == .passed &&
+            state.lastAppliedEventSequence >= state.cloudEventHead &&
+            state.lastSafeSaveAt != nil &&
+            cloudWaitingCount == 0
+    }
+    private var cloudNeedsAttentionFromService: Bool {
+        guard let state = activeCloudState else { return false }
+        return state.activityState == .integrityHold ||
+            state.activityState == .accessRevoked ||
+            state.integrityState == .failed
+    }
     private var homeSnapshotTaskID: String {
         "\(farm.id.uuidString.lowercased()):\(homeSnapshotRefreshRevision)"
     }
@@ -119,6 +179,17 @@ struct FarmHomeView: View {
         if sharedFarmAdmissionStatus != nil {
             return "person.2.badge.gearshape"
         }
+        if usesESheepCloudV2 {
+            if cloudAttentionCount > 0 {
+                return "exclamationmark.bubble.fill"
+            }
+            if cloudNeedsAttentionFromService {
+                return "exclamationmark.triangle.fill"
+            }
+            return cloudIsSafelySaved
+                ? "checkmark.circle.fill"
+                : "arrow.triangle.2.circlepath"
+        }
         if homeSnapshot.conflictOutboxCount > 0 {
             return "exclamationmark.triangle.fill"
         }
@@ -131,12 +202,26 @@ struct FarmHomeView: View {
         if let sharedFarmAdmissionStatus {
             return "正在加入共享牧场 · \(sharedFarmAdmissionStatus.detailText)"
         }
+        if usesESheepCloudV2 {
+            if cloudAttentionCount > 0 {
+                return "有 \(cloudAttentionCount) 项内容需要你确认"
+            }
+            if cloudNeedsAttentionFromService {
+                return "部分内容尚未保存，请稍后再试"
+            }
+            if cloudIsSafelySaved {
+                return "业务数据已安全保存"
+            }
+            return cloudWaitingCount > 0
+                ? "有 \(cloudWaitingCount) 项内容等待保存"
+                : "正在检查牧场资料是否完整"
+        }
         if homeSnapshot.conflictOutboxCount > 0 {
-            return "有 \(homeSnapshot.conflictOutboxCount) 条同步冲突等待安全处理"
+            return "有 \(homeSnapshot.conflictOutboxCount) 条数据异常等待处理"
         }
         return homeSnapshot.pendingOutboxCount == 0
             ? "业务数据已保存"
-            : "有 \(homeSnapshot.pendingOutboxCount) 条本地记录等待同步"
+            : "有 \(homeSnapshot.pendingOutboxCount) 条本地记录等待保存"
     }
 
     private var metrics: some View {

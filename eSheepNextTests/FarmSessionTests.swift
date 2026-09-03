@@ -126,27 +126,41 @@ final class FarmSessionTests: XCTestCase {
         )
     }
 
-    func testSupabaseInvitationLinkRoundTripsTheOpaqueCode() throws {
+    func testESheepCloudInvitationLinkRoundTripsTheOpaqueCode() throws {
         let code = String(repeating: "a1", count: 32)
-        let url = try XCTUnwrap(SupabaseFarmInvitationLink.url(code: code))
+        let url = try XCTUnwrap(ESheepCloudFarmInvitationLink.url(code: code))
 
-        XCTAssertEqual(url.host, "supabase-invite")
-        XCTAssertEqual(SupabaseFarmInvitationLink.code(from: url), code)
+        XCTAssertEqual(url.host, "join-farm")
+        XCTAssertEqual(ESheepCloudFarmInvitationLink.code(from: url), code)
     }
 
-    func testSupabaseInvitationLinkRejectsLegacyAndUnrelatedURLs() throws {
+    func testESheepCloudInvitationLinkDecodesLegacyButNeverGeneratesIt() throws {
+        let legacy = try XCTUnwrap(
+            URL(string: "esheep://supabase-invite?code=legacy-compatible")
+        )
+        XCTAssertEqual(
+            ESheepCloudFarmInvitationLink.code(from: legacy),
+            "legacy-compatible"
+        )
+        XCTAssertNotEqual(
+            ESheepCloudFarmInvitationLink.url(code: "legacy-compatible")?.host,
+            "supabase-invite"
+        )
+    }
+
+    func testESheepCloudInvitationLinkRejectsUnrelatedURLs() throws {
         XCTAssertNil(
-            SupabaseFarmInvitationLink.code(
+            ESheepCloudFarmInvitationLink.code(
                 from: try XCTUnwrap(URL(string: "https://example.com/?code=secret"))
             )
         )
         XCTAssertNil(
-            SupabaseFarmInvitationLink.code(
+            ESheepCloudFarmInvitationLink.code(
                 from: try XCTUnwrap(URL(string: "esheep://join?code=legacy"))
             )
         )
         XCTAssertNil(
-            SupabaseFarmInvitationLink.code(
+            ESheepCloudFarmInvitationLink.code(
                 from: try XCTUnwrap(URL(string: "esheep://supabase-invite?code=%20%20"))
             )
         )

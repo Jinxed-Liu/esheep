@@ -33,9 +33,9 @@ struct SupabaseFarmRestoreProgressView: View {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.system(size: 42))
                             .foregroundStyle(.blue)
-                        Text("正在恢复云端牧场")
+                        Text("正在准备牧场资料")
                             .font(.title2.bold())
-                        Text("完整校验结束前不会显示半成品牧场。锁屏、强杀或断网后会从已保存的断点继续。")
+                        Text("资料检查完整前不会进入牧场。锁屏、关闭 App 或断网后，重新打开会自动继续。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -44,33 +44,30 @@ struct SupabaseFarmRestoreProgressView: View {
                     .padding(.vertical, 18)
                 }
 
-                Section("恢复状态") {
+                Section("接收进度") {
                     LabeledContent("阶段") {
-                        Text(LocalizedStringKey(record.state.displayName))
+                        Text(LocalizedStringKey(userStageTitle))
                     }
                     ProgressView(value: overallFraction)
                     LabeledContent(
-                        "业务实体",
+                        "业务记录",
                         value:
                             "\(record.restoredEntityCount.formatted()) / " +
                             record.totalEntityCount.formatted()
                     )
                     LabeledContent(
-                        "照片",
+                        "照片预览",
                         value:
                             "\(record.downloadedAssetCount.formatted()) / " +
                             record.totalAssetCount.formatted()
                     )
-                    LabeledContent(
-                        "Cursor",
-                        value:
-                            "\(record.currentCursorRevision) / " +
-                            "\(record.targetCursorRevision)"
-                    )
-                    if let error = record.lastErrorCode {
-                        LabeledContent("最近错误", value: error)
-                            .foregroundStyle(.orange)
-                        Text("系统会在下次前台恢复时继续，不会把当前半成品设为云端权威。")
+                    if record.lastErrorCode != nil {
+                        Label(
+                            "部分牧场资料没有接收完整",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .foregroundStyle(.orange)
+                        Text("联网后会从已经检查完成的位置继续；现有牧场资料不会被半成品替换。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -104,7 +101,20 @@ struct SupabaseFarmRestoreProgressView: View {
                 }
                 #endif
             }
-            .navigationTitle("Supabase 恢复")
+            .navigationTitle("eSheep+ 云")
+        }
+    }
+
+    private var userStageTitle: String {
+        switch record.state {
+        case .discovering:
+            "连接 eSheep+ 云"
+        case .downloadingCheckpoint, .rebuildingStaging, .downloadingAssets:
+            "接收牧场资料"
+        case .promoting, .catchingUp, .failed:
+            "检查资料是否完整"
+        case .completed:
+            "即将完成"
         }
     }
 

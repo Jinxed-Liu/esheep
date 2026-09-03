@@ -43,7 +43,7 @@ struct FarmCloudStorageSettingsView: View {
         switch profile?.mode ?? .localOnly {
         case .localOnly: "仅保存在此设备"
         case .retiredAppleCloud: "旧云存储已停用"
-        case .supabase: "eSheep 云"
+        case .eSheepCloud, .supabase: "eSheep+ 云"
         }
     }
 
@@ -102,6 +102,23 @@ struct FarmCloudStorageSettingsView: View {
     }
 
     var body: some View {
+        Group {
+            switch profile?.mode ?? .localOnly {
+            case .eSheepCloud, .supabase:
+                // A V1-backed farm is still shown through the V2 cloud center.
+                // Until the audited migration creates a V2 state, the center
+                // stays on the natural-language preparation flow instead of
+                // exposing the old compatibility page and its transport
+                // vocabulary. V1 remains reachable only by the migration
+                // reader/coordinator, never as a product-facing settings page.
+                ESheepCloudCenterView(account: account, farm: farm)
+            case .localOnly, .retiredAppleCloud:
+                legacyCloudStorageView
+            }
+        }
+    }
+
+    private var legacyCloudStorageView: some View {
         Form {
             Section("当前模式") {
                 LabeledContent("数据保存在") {
@@ -151,10 +168,10 @@ struct FarmCloudStorageSettingsView: View {
                     Label("当前版本免费使用", systemImage: "checkmark.seal")
                 }
             } else if profile?.mode == .supabase {
-                Section("同步状态") {
-                    LabeledContent("待同步记录", value: pendingOutboxCount.formatted())
+                Section("eSheep+ 云") {
+                    LabeledContent("正在等待保存", value: pendingOutboxCount.formatted())
                     if conflictOutboxCount > 0 {
-                        LabeledContent("同步冲突") {
+                        LabeledContent("需要确认") {
                             Label(
                                 conflictOutboxCount.formatted(),
                                 systemImage: "exclamationmark.triangle.fill"
@@ -174,8 +191,8 @@ struct FarmCloudStorageSettingsView: View {
                         )
                     )
                     Text(conflictOutboxCount == 0
-                        ? "同步中断不会丢失本机记录，恢复网络后会自动继续。"
-                        : "冲突记录已安全保留，但不会按普通网络重试处理；系统会先校验云端版本再修复。")
+                        ? "网络中断不会丢失本机记录，联网后会自动继续保存。"
+                        : "这些内容已安全保留，需要选择后才能继续保存；牧场其他内容不会受影响。")
                         .font(.footnote)
                         .foregroundStyle(
                             conflictOutboxCount == 0

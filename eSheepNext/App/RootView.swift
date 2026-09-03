@@ -1,12 +1,21 @@
 import SwiftData
 import SwiftUI
 
-enum SupabaseFarmVisibilityPolicy {
+enum ESheepCloudFarmVisibilityPolicy {
     static func isReadyForDisplay(
         bindingState: FarmRemoteBindingState?,
         membershipStatus: FarmMembershipStatus?
     ) -> Bool {
         bindingState == .active && membershipStatus == .active
+    }
+
+    static func isLegacyCompatibilityRestore(
+        profileMode: FarmStorageMode?,
+        transitionState: FarmStorageTransitionState?
+    ) -> Bool {
+        guard let profileMode else { return true }
+        return profileMode == .supabase &&
+            transitionState != .readOnlyMigration
     }
 }
 
@@ -16,12 +25,12 @@ import UIKit
 
 #if DEBUG
 private enum DevelopmentLocalAccountRecoveryError: LocalizedError {
-    case supabaseDevelopmentDisabled
+    case eSheepCloudDevelopmentDisabled
 
     var errorDescription: String? {
         switch self {
-        case .supabaseDevelopmentDisabled:
-            "只允许在已启用 Supabase 的 Development 构建中执行。"
+        case .eSheepCloudDevelopmentDisabled:
+            "只允许在已启用 eSheep+ 云的 Development 构建中执行。"
         }
     }
 }
@@ -40,6 +49,7 @@ struct RootView: View {
     @Query private var remoteBindings: [FarmRemoteBinding]
     @Query private var remoteRestoreRecords: [FarmRemoteRestoreRecord]
     @Query private var membershipBindings: [FarmMembershipBinding]
+    @Query private var storageProfiles: [FarmStorageProfile]
     @State private var lifecycleCoordinator = AppLifecycleCoordinator()
 
     var body: some View {
@@ -71,11 +81,11 @@ struct RootView: View {
         }
         .sheet(isPresented: $session.isJoinFarmPresented) {
             if let account = activeAccount {
-                SupabaseJoinFarmView(
+                ESheepCloudJoinFarmView(
                     account: account,
-                    initialCode: session.pendingSupabaseInvitationCode
+                    initialCode: session.pendingESheepCloudInvitationCode
                 ) { farm in
-                    session.pendingSupabaseInvitationCode = nil
+                    session.pendingESheepCloudInvitationCode = nil
                     session.selectedFarmID = farm.id
                 }
             }
@@ -127,9 +137,9 @@ struct RootView: View {
             lifecycleCoordinator.requestRefresh(.operationalAlerts)
         }
         .onOpenURL { url in
-            if let code = SupabaseFarmInvitationLink.code(from: url),
-               SupabaseAccountConfiguration.isConfigured {
-                session.pendingSupabaseInvitationCode = code
+            if let code = ESheepCloudFarmInvitationLink.code(from: url),
+               collaboration.isESheepCloudAvailable {
+                session.pendingESheepCloudInvitationCode = code
                 session.isJoinFarmPresented = true
                 return
             }
@@ -225,11 +235,35 @@ struct RootView: View {
     private var pendingRemoteRestore: FarmRemoteRestoreRecord? {
         guard let account = activeAccount else { return nil }
         return remoteRestoreRecords
-            .filter {
-                $0.accountID == account.effectiveAccountID &&
-                    $0.state != .completed
+            .filter { record in
+                record.accountID == account.effectiveAccountID &&
+                    record.state != .completed &&
+                    isLegacyCompatibilityRestore(record)
             }
             .max { $0.updatedAt < $1.updatedAt }
+    }
+
+    /// The old checkpoint restore screen is a compatibility escape hatch for
+    /// farms that are still on the legacy route.  A V2 farm (or a farm already
+    /// behind the read-only migration barrier) must never be sent back to that
+    /// screen: its only normal entry point is eSheep+ Cloud's initial receive
+    /// or migration center.
+    private func isLegacyCompatibilityRestore(
+        _ record: FarmRemoteRestoreRecord
+    ) -> Bool {
+        guard let profile = storageProfiles.first(where: {
+            $0.farmID == record.farmID
+        }) else {
+            // A discovery record can be created before the local profile is
+            // materialized.  Keep this narrow rescue path available until the
+            // profile is known, but never classify an explicit V2 profile as
+            // legacy below.
+            return true
+        }
+        return ESheepCloudFarmVisibilityPolicy.isLegacyCompatibilityRestore(
+            profileMode: profile.mode,
+            transitionState: profile.transitionState
+        )
     }
 
     @MainActor
@@ -238,12 +272,13 @@ struct RootView: View {
     ) async {
         let activeFarmIDs = Set(
             remoteBindings.filter {
-                $0.provider == .supabase && $0.state == .active
+                ($0.provider == .supabase || $0.provider == .eSheepCloud) &&
+                    $0.state == .active
             }.map(\.farmID)
         )
         guard scenePhase == .active,
               session.accountAccessStatus.allowsCloudOperations,
-              SupabaseAccountConfiguration.isConfigured,
+              ESheepCloudAvailability.isConfigured,
               activeAccount?.serverBindingState == .verified,
               !activeFarmIDs.isEmpty,
               lifecycleCoordinator.isCurrent(lease) else { return }
@@ -255,8 +290,9 @@ struct RootView: View {
         // before network reconciliation starts competing for CPU and model work.
         guard await waitForSecondaryLaunchWindow(.milliseconds(700)) else { return }
         guard lifecycleCoordinator.isCurrent(lease) else { return }
-        // `resumeSupabaseSynchronization` already reconnects realtime listeners
-        // and performs one complete reconciliation. A second synchronizeNow()
+        // The resume entry point reconciles both eSheep+ Cloud V2 and the
+        // remaining legacy farms, and reconnects the legacy realtime listeners.
+        // A second synchronizeNow()
         // here repeated the same work on every foreground transition.
         await collaboration.resumeSupabaseSynchronization()
     }
@@ -269,7 +305,7 @@ struct RootView: View {
               session.accountAccessStatus.allowsCloudOperations,
               let account = activeAccount,
               account.serverBindingState == .verified,
-              SupabaseAccountConfiguration.isConfigured ||
+              ESheepCloudAvailability.isConfigured ||
                 IdentityWorkerConfiguration.baseURL != nil,
               lifecycleCoordinator.isCurrent(lease) else { return }
         guard await waitForSecondaryLaunchWindow(.seconds(2)) else { return }
@@ -425,7 +461,8 @@ struct RootView: View {
                 : nil
         })
         let hasKnownRemoteFarmState = remoteBindings.contains { binding in
-            binding.provider == .supabase && knownAccountFarmIDs.contains(binding.farmID)
+            (binding.provider == .eSheepCloud || binding.provider == .supabase) &&
+                knownAccountFarmIDs.contains(binding.farmID)
         }
         if visibleFarms.isEmpty && !hasKnownRemoteFarmState {
             await recoverAccessibleFarms(
@@ -476,8 +513,8 @@ struct RootView: View {
         ).flatMap(Int.init) else {
             return nil
         }
-        guard SupabaseAccountConfiguration.isEnabled else {
-            throw DevelopmentLocalAccountRecoveryError.supabaseDevelopmentDisabled
+        guard ESheepCloudAvailability.isEnabled else {
+            throw DevelopmentLocalAccountRecoveryError.eSheepCloudDevelopmentDisabled
         }
         return try DevelopmentFarmCloneService.clone(
             sourceFarmID: sourceFarmID,
@@ -505,9 +542,10 @@ struct RootView: View {
         guard let account = activeAccount else { return [] }
         let hiddenRestoringFarmIDs = Set(
             remoteRestoreRecords
-                .filter {
-                    $0.accountID == account.effectiveAccountID &&
-                        $0.state != .completed
+                .filter { record in
+                    record.accountID == account.effectiveAccountID &&
+                        record.state != .completed &&
+                        isLegacyCompatibilityRestore(record)
                 }
                 .map(\.farmID)
         )
@@ -528,9 +566,11 @@ struct RootView: View {
                 return false
             }
             if let remoteBinding = remoteBindingsByFarmID[farm.id]?.first(
-                where: { $0.provider == .supabase }
+                where: {
+                    $0.provider == .eSheepCloud || $0.provider == .supabase
+                }
             ) {
-                return SupabaseFarmVisibilityPolicy.isReadyForDisplay(
+                return ESheepCloudFarmVisibilityPolicy.isReadyForDisplay(
                     bindingState: remoteBinding.state,
                     membershipStatus: membershipsByFarmID[farm.id]
                 )
@@ -539,16 +579,17 @@ struct RootView: View {
         }
     }
 
-    /// System surfaces follow the active Supabase authority. Local-only
+    /// System surfaces follow an active eSheep+ Cloud authority. Local-only
     /// recovery farms remain available inside the app until explicitly
     /// audited, but they must not leak back into Spotlight, widgets or intents.
     private var cloudSystemFarms: [FarmRecord] {
-        let activeSupabaseFarmIDs = Set(remoteBindings.compactMap { binding -> UUID? in
-            binding.provider == .supabase && binding.state == .active
+        let activeCloudFarmIDs = Set(remoteBindings.compactMap { binding -> UUID? in
+            (binding.provider == .supabase || binding.provider == .eSheepCloud) &&
+                binding.state == .active
                 ? binding.farmID
                 : nil
         })
-        return visibleFarms.filter { activeSupabaseFarmIDs.contains($0.id) }
+        return visibleFarms.filter { activeCloudFarmIDs.contains($0.id) }
     }
 
     private var cloudSystemSelectedFarmID: UUID? {
@@ -566,9 +607,11 @@ struct RootView: View {
     private var foregroundCloudSyncTaskID: String {
         let accountPart = activeAccount?.effectiveAccountID.uuidString ?? "none"
         let bindingPart = remoteBindings
-            .filter { $0.provider == .supabase }
+            .filter {
+                $0.provider == .supabase || $0.provider == .eSheepCloud
+            }
             .map {
-                "\($0.farmID.uuidString):supabase:\($0.authorityGeneration):\($0.state.rawValue)"
+                "\($0.farmID.uuidString):\($0.provider.rawValue):\($0.authorityGeneration):\($0.state.rawValue)"
             }
             .sorted()
             .joined(separator: ",")

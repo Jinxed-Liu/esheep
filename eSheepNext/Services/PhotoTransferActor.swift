@@ -41,6 +41,12 @@ struct OptimizedPhoto: Sendable {
     let byteCount: Int64
 }
 
+private struct ESheepCloudPhotoVariant: Sendable {
+    let relativePath: String
+    let digest: String
+    let byteCount: Int64
+}
+
 actor PhotoTransferActor {
     private let modelContainer: ModelContainer
 
@@ -60,6 +66,9 @@ actor PhotoTransferActor {
     func enqueue(sourceURL: URL, farmID: UUID, entityID: UUID?) throws -> UUID {
         let context = ModelContext(modelContainer)
         let route = try FarmStorageRouter.route(farmID: farmID, context: context)
+        guard route.transitionState != .readOnlyMigration else {
+            throw FarmCommandError.cloudMigrationInProgress
+        }
         guard route.mode != .retiredAppleCloud else {
             throw PhotoTransferError.bindingMissing
         }
@@ -81,6 +90,16 @@ actor PhotoTransferActor {
             if FileManager.default.fileExists(atPath: existingURL.path),
                (try? Self.digest(existingURL)) == optimized.payloadDigest {
                 try? FileManager.default.removeItem(at: optimized.fileURL)
+                if route.deliveryProvider == .eSheepCloud {
+                    try stageESheepCloudTransferIfNeeded(
+                        asset: duplicate,
+                        byteCount: Self.fileSize(existingURL),
+                        route: route,
+                        context: context
+                    )
+                    try context.save()
+                    CloudRuntimeNotification.postSyncWake(farmID: farmID)
+                }
                 return duplicate.id
             }
 
@@ -106,8 +125,14 @@ actor PhotoTransferActor {
                 route: route,
                 context: context
             )
+            try stageESheepCloudTransferIfNeeded(
+                asset: duplicate,
+                byteCount: optimized.byteCount,
+                route: route,
+                context: context
+            )
             try context.save()
-            if route.deliveryProvider == .supabase {
+            if route.deliveryProvider == .supabase || route.deliveryProvider == .eSheepCloud {
                 CloudRuntimeNotification.postSyncWake(farmID: farmID)
             }
             return duplicate.id
@@ -184,9 +209,16 @@ actor PhotoTransferActor {
                     authorityGeneration: route.deliveryAuthorityGeneration
                 ))
             }
+        } else if route.deliveryProvider == .eSheepCloud {
+            try stageESheepCloudTransferIfNeeded(
+                asset: asset,
+                byteCount: optimized.byteCount,
+                route: route,
+                context: context
+            )
         }
         try context.save()
-        if route.deliveryProvider == .supabase {
+        if route.deliveryProvider == .supabase || route.deliveryProvider == .eSheepCloud {
             CloudRuntimeNotification.postSyncWake(farmID: farmID)
         }
         return assetID
@@ -229,6 +261,9 @@ actor PhotoTransferActor {
             throw PhotoTransferError.assetMissing
         }
         let route = try FarmStorageRouter.route(farmID: asset.farmID, context: context)
+        guard route.transitionState != .readOnlyMigration else {
+            throw FarmCommandError.cloudMigrationInProgress
+        }
         guard route.mode != .retiredAppleCloud else {
             throw PhotoTransferError.bindingMissing
         }
@@ -297,6 +332,240 @@ actor PhotoTransferActor {
                     : asset.sourceSHA256
             ))
         }
+    }
+
+    /// Stages the optimistic photo projection, all resource variants and the
+    /// immutable registration command in the caller's single ModelContext
+    /// save. A process cannot expose a photo without its matching intent, or
+    /// enqueue an intent whose photo projection was never saved.
+    private func stageESheepCloudTransferIfNeeded(
+        asset: PhotoAssetRecord,
+        byteCount: Int64,
+        route: FarmStorageRoute,
+        context: ModelContext
+    ) throws {
+        guard route.deliveryProvider == .eSheepCloud else { return }
+        guard let farmState = try context.fetch(FetchDescriptor<ESheepCloudFarmState>())
+            .first(where: {
+                $0.farmID == asset.farmID &&
+                    $0.farmGeneration == route.deliveryAuthorityGeneration &&
+                    $0.activityState == .active
+            }) else {
+            throw ESheepCloudIntentWriterError.farmStateMissing
+        }
+
+        let originalURL = Self.absoluteURL(for: asset.relativePath)
+        guard FileManager.default.fileExists(atPath: originalURL.path),
+              try Self.digest(originalURL) == asset.sha256 else {
+            throw PhotoTransferError.checksumMismatch
+        }
+        let thumbnail = try Self.makeJPEGVariant(
+            sourceURL: originalURL,
+            farmID: asset.farmID,
+            assetID: asset.id,
+            variant: .thumbnail,
+            maximumPixelSize: 512,
+            quality: 0.78
+        )
+        let avatar = try Self.makeJPEGVariant(
+            sourceURL: originalURL,
+            farmID: asset.farmID,
+            assetID: asset.id,
+            variant: .avatar,
+            maximumPixelSize: 1024,
+            quality: 0.84
+        )
+        let metadata = Self.eSheepCloudMetadata(for: asset)
+        let metadataDigest = try ESheepCloudCanonicalCodec.digest(metadata)
+        let states = try context.fetch(FetchDescriptor<ESheepCloudAssetState>())
+            .filter { $0.id == asset.id && $0.farmID == asset.farmID }
+        guard states.count <= 1 else {
+            throw ESheepCloudContractError.malformedPayload
+        }
+        let state = states.first ?? ESheepCloudAssetState(
+            assetID: asset.id,
+            farmID: asset.farmID,
+            farmGeneration: route.deliveryAuthorityGeneration,
+            sheepID: asset.sheepID,
+            contentSHA256: asset.sha256,
+            metadataDigest: metadataDigest,
+            originalByteCount: byteCount
+        )
+        if states.isEmpty { context.insert(state) }
+        guard state.farmGeneration == route.deliveryAuthorityGeneration,
+              state.contentSHA256 == asset.sha256 else {
+            throw ESheepCloudContractError.malformedPayload
+        }
+        state.sheepID = asset.sheepID
+        state.metadataDigest = metadataDigest
+        state.metadataData = try ESheepCloudCanonicalCodec.encode(metadata)
+        state.thumbnailSHA256 = thumbnail.digest
+        state.avatarSHA256 = avatar.digest
+        state.originalSHA256 = asset.sha256
+        state.thumbnailRelativePath = thumbnail.relativePath
+        state.avatarRelativePath = avatar.relativePath
+        state.originalRelativePath = asset.relativePath
+        state.thumbnailByteCount = thumbnail.byteCount
+        state.avatarByteCount = avatar.byteCount
+        state.originalByteCount = max(0, byteCount)
+        if state.thumbnailStateRawValue != ESheepCloudAssetTransferState.verified.rawValue {
+            state.thumbnailStateRawValue = ESheepCloudAssetTransferState.queued.rawValue
+            state.thumbnailTransferredByteCount = 0
+        }
+        if state.avatarStateRawValue != ESheepCloudAssetTransferState.verified.rawValue {
+            state.avatarStateRawValue = ESheepCloudAssetTransferState.queued.rawValue
+            state.avatarTransferredByteCount = 0
+        }
+        if state.originalStateRawValue != ESheepCloudAssetTransferState.verified.rawValue {
+            state.originalStateRawValue = ESheepCloudAssetTransferState.queued.rawValue
+            state.originalTransferredByteCount = 0
+        }
+        state.updatedAt = .now
+
+        if try hasPhotoRegistration(
+            assetID: asset.id,
+            farmID: asset.farmID,
+            farmGeneration: route.deliveryAuthorityGeneration,
+            context: context
+        ) {
+            farmState.lastSafeSaveAt = nil
+            return
+        }
+        guard let accountID = try context.fetch(FetchDescriptor<AccountProfile>())
+            .first?.effectiveAccountID else {
+            throw PhotoTransferError.bindingMissing
+        }
+        let commandID = UUID()
+        let sequence = try FarmStorageRouter.takeNextOperationSequence(
+            farmID: asset.farmID,
+            operationID: commandID,
+            context: context
+        )
+        _ = try ESheepCloudIntentWriter.stage(
+            draft: ESheepCloudCommandFactoryV2.registerPhoto(
+                assetID: asset.id,
+                sheepID: asset.sheepID,
+                capturedAt: asset.capturedAt,
+                mimeType: asset.mimeType,
+                contentSHA256: asset.sha256,
+                metadata: metadata,
+                metadataDigest: metadataDigest,
+                thumbnailSHA256: thumbnail.digest,
+                avatarSHA256: avatar.digest,
+                originalSHA256: asset.sha256,
+                thumbnailByteCount: thumbnail.byteCount,
+                avatarByteCount: avatar.byteCount,
+                originalByteCount: byteCount,
+                occurredAt: asset.capturedAt ?? .now
+            ),
+            commandID: commandID,
+            sourceRequestID: commandID,
+            farmID: asset.farmID,
+            farmGeneration: route.deliveryAuthorityGeneration,
+            accountID: accountID,
+            deviceID: try ESheepCloudDeviceIdentityStore.deviceID(accountID: accountID),
+            deviceSequence: sequence,
+            context: context
+        )
+    }
+
+    private func hasPhotoRegistration(
+        assetID: UUID,
+        farmID: UUID,
+        farmGeneration: Int,
+        context: ModelContext
+    ) throws -> Bool {
+        if try context.fetch(FetchDescriptor<ESheepCloudStreamState>()).contains(where: {
+            $0.farmID == farmID && $0.farmGeneration == farmGeneration &&
+                $0.streamType == "photoAsset" && $0.streamID == assetID
+        }) {
+            return true
+        }
+        for intent in try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
+            where intent.farmID == farmID && intent.farmGeneration == farmGeneration &&
+                intent.commandKind == "photoAsset.register" {
+            guard let envelope = try? ESheepCloudCanonicalCodec.decode(
+                ESheepCloudCommandEnvelopeV2.self,
+                from: intent.commandEnvelopeData
+            ) else { continue }
+            if envelope.affectedStreams == [
+                ESheepCloudStreamReferenceV2(type: "photoAsset", id: assetID),
+            ] {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func eSheepCloudMetadata(
+        for asset: PhotoAssetRecord
+    ) -> [String: String] {
+        var metadata: [String: String] = [
+            "mimeType": asset.mimeType,
+            "sourceSHA256": asset.sourceSHA256,
+            "sourcePixelWidth": String(asset.sourcePixelWidth),
+            "sourcePixelHeight": String(asset.sourcePixelHeight),
+            "cloudPixelWidth": String(asset.cloudPixelWidth),
+            "cloudPixelHeight": String(asset.cloudPixelHeight),
+        ]
+        if let capturedAt = asset.capturedAt {
+            metadata["capturedAtMillis"] = String(
+                Int64((capturedAt.timeIntervalSince1970 * 1_000).rounded())
+            )
+        }
+        return metadata
+    }
+
+    private static func makeJPEGVariant(
+        sourceURL: URL,
+        farmID: UUID,
+        assetID: UUID,
+        variant: ESheepCloudAssetVariantV2,
+        maximumPixelSize: Int,
+        quality: Double
+    ) throws -> ESheepCloudPhotoVariant {
+        guard let source = CGImageSourceCreateWithURL(
+            sourceURL as CFURL,
+            [kCGImageSourceShouldCache: false] as CFDictionary
+        ), let image = CGImageSourceCreateThumbnailAtIndex(
+            source,
+            0,
+            [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize,
+                kCGImageSourceShouldCacheImmediately: true,
+            ] as CFDictionary
+        ) else {
+            throw PhotoTransferError.imageDecodeFailed
+        }
+        let destinationURL = try assetVariantURL(
+            farmID: farmID,
+            assetID: assetID,
+            variant: variant,
+            fileExtension: "jpg"
+        )
+        guard let destination = CGImageDestinationCreateWithURL(
+            destinationURL as CFURL,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
+        ) else {
+            throw PhotoTransferError.imageEncodeFailed
+        }
+        CGImageDestinationAddImage(
+            destination,
+            image,
+            [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary
+        )
+        guard CGImageDestinationFinalize(destination) else {
+            throw PhotoTransferError.imageEncodeFailed
+        }
+        return ESheepCloudPhotoVariant(
+            relativePath: relativePath(for: destinationURL),
+            digest: try digest(destinationURL),
+            byteCount: fileSize(destinationURL)
+        )
     }
 
     static func optimize(
@@ -431,6 +700,23 @@ actor PhotoTransferActor {
         return directory.appending(
             path: "\(assetID.uuidString.lowercased()).\(fileExtension)"
         )
+    }
+
+    static func assetVariantURL(
+        farmID: UUID,
+        assetID: UUID,
+        variant: ESheepCloudAssetVariantV2,
+        fileExtension: String
+    ) throws -> URL {
+        let directory = try baseDirectory().appending(
+            path: "FarmAssets/\(farmID.uuidString.lowercased())/\(assetID.uuidString.lowercased())",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        return directory.appending(path: "\(variant.rawValue).\(fileExtension)")
     }
 
     static func absoluteURL(for path: String) -> URL {

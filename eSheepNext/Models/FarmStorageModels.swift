@@ -7,12 +7,16 @@ enum FarmStorageMode: String, Codable, CaseIterable, Sendable {
     /// removed. Startup cleanup deletes farms carrying this raw value before
     /// any storage route can use it.
     case retiredAppleCloud = "iCloud"
+    /// Current eSheep+ Cloud protocol. The legacy provider value remains
+    /// decodable only so V1 farms can be migrated and audited safely.
+    case eSheepCloud
     case supabase
 
     var deliveryProvider: FarmRemoteProvider? {
         switch self {
         case .localOnly: nil
         case .retiredAppleCloud: nil
+        case .eSheepCloud: .eSheepCloud
         case .supabase: .supabase
         }
     }
@@ -21,6 +25,7 @@ enum FarmStorageMode: String, Codable, CaseIterable, Sendable {
 enum FarmRemoteProvider: String, Codable, CaseIterable, Sendable {
     /// Legacy persisted value used only to identify records for deletion.
     case retiredAppleCloud = "iCloud"
+    case eSheepCloud
     case supabase
 }
 

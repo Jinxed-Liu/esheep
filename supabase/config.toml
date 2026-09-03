@@ -389,6 +389,12 @@ deno_version = 2
 entrypoint = "./functions/account-deletion-worker/index.ts"
 verify_jwt = false
 
+[functions.esheep-cloud-v2-writes]
+# Authentication and registered-device P-256 verification are both performed
+# inside the function before the service-only transaction RPC can be reached.
+entrypoint = "./functions/esheep-cloud-v2-writes/index.ts"
+verify_jwt = false
+
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 

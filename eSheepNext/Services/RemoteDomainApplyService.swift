@@ -265,8 +265,62 @@ struct RemoteDomainApplyService {
             envelope,
             context: context,
             preservesLegacySnapshotAuthority: false,
-            allowsBaselineProjection: false
+            allowsBaselineProjection: false,
+            v2Authority: false
         )
+    }
+
+    /// Apply a command carried by an authoritative eSheep+ Cloud V2 event.
+    ///
+    /// V2 events are ordered by the server event sequence and are already
+    /// accepted by the server's business transaction.  They must therefore
+    /// never be rejected because a retained V1 entity revision is different.
+    /// The legacy writer below is reused only as a domain-model adapter; V2
+    /// itself never serializes or compares the legacy `baseRevision` field.
+    @MainActor
+    func applyV2(
+        _ envelope: CloudOperationEnvelope,
+        context: ModelContext
+    ) throws -> RemoteApplyOutcome {
+        try applyDecoded(
+            envelope,
+            context: context,
+            preservesLegacySnapshotAuthority: true,
+            allowsBaselineProjection: false,
+            v2Authority: true
+        )
+    }
+
+    /// Local projection entry point used after a V2 event has been accepted and
+    /// verified. The existing business writer still consumes its historical
+    /// internal envelope shape, so construction stays inside this service and
+    /// never crosses the V2 gateway, persistence, or UI boundaries.
+    @MainActor
+    func applyV2AuthoritativeCommand(
+        _ command: FarmCommand,
+        event: ESheepCloudEventEnvelopeV2,
+        entityType: String,
+        context: ModelContext
+    ) throws -> RemoteApplyOutcome {
+        let payloadData = try FarmCommandCloudPayloadEncoder.encode(command)
+        let envelope = CloudOperationEnvelope(
+            farmID: event.farmID,
+            entityID: event.stream.id,
+            entityType: entityType,
+            schemaVersion: event.schemaVersion,
+            revision: 1,
+            baseRevision: 0,
+            operationID: event.commandID,
+            modifiedAt: event.occurredAt,
+            modifiedByAccountID: event.actorAccountID,
+            modifiedByDeviceID: event.sourceDeviceID,
+            payload: payloadData,
+            payloadDigest: CloudPayloadDigest.hex(for: payloadData),
+            capabilityCertificate: "esheep-cloud-v2-event",
+            operationSignature: Data(),
+            deletedAt: command.isAuthoritativeDeletion ? event.occurredAt : nil
+        )
+        return try applyV2(envelope, context: context)
     }
 
     func applyBaselineProjection(
@@ -285,7 +339,8 @@ struct RemoteDomainApplyService {
         _ envelope: CloudOperationEnvelope,
         context: ModelContext,
         preservesLegacySnapshotAuthority: Bool,
-        allowsBaselineProjection: Bool
+        allowsBaselineProjection: Bool,
+        v2Authority: Bool = false
     ) throws -> RemoteApplyOutcome {
         let payload = try decoder.decode(FarmCommandCloudPayload.self, from: envelope.payload)
         if let expected = expectedEntityType(for: payload.kind), expected.rawValue != envelope.entityType {
@@ -367,7 +422,7 @@ struct RemoteDomainApplyService {
                   TMRCloudDataProtocol.isSupported(by: payload) else {
                 throw RemoteDomainApplyError.invalidPayload("tmrCommand")
             }
-            if let localRevision = try Self.tmrLocalRevision(
+            if !v2Authority, let localRevision = try Self.tmrLocalRevision(
                 entityType: envelope.entityType,
                 entityID: envelope.entityID,
                 farmID: envelope.farmID,
@@ -389,13 +444,20 @@ struct RemoteDomainApplyService {
                     modifiedAt: envelope.modifiedAt
                 )
                 guard result.entityType.rawValue == envelope.entityType,
-                      result.entityID == envelope.entityID,
-                      result.baseRevision == envelope.baseRevision,
-                      result.resultingRevision == envelope.revision else {
+                      result.entityID == envelope.entityID else {
                     throw RemoteDomainApplyError.invalidPayload("tmrCommand.target")
+                }
+                if !v2Authority {
+                    guard result.baseRevision == envelope.baseRevision,
+                          result.resultingRevision == envelope.revision else {
+                        throw RemoteDomainApplyError.invalidPayload("tmrCommand.revision")
+                    }
                 }
                 return .applied(rebuildHistoryFrom: nil)
             } catch TMRCommandApplyError.revisionConflict(let current) {
+                if v2Authority {
+                    throw RemoteDomainApplyError.invalidPayload("tmrCommand.revision")
+                }
                 return .conflict(localRevision: current)
             }
         case .createFarm:
@@ -421,7 +483,9 @@ struct RemoteDomainApplyService {
                     .map(\.resultingRevision)
                     .max() ?? 1
             }
-            guard localRevision == envelope.baseRevision else { return .conflict(localRevision: localRevision) }
+            if !v2Authority {
+                guard localRevision == envelope.baseRevision else { return .conflict(localRevision: localRevision) }
+            }
             guard let latitude = Double(try string("latitude", payload)),
                   let longitude = Double(try string("longitude", payload)),
                   (-90...90).contains(latitude), (-180...180).contains(longitude),
@@ -448,18 +512,30 @@ struct RemoteDomainApplyService {
             return .applied(rebuildHistoryFrom: nil)
         case .updatePen:
             guard let record = try fetch(PenRecord.self, id: try identifier("penID", payload), context: context) else { throw RemoteDomainApplyError.missingReference("penID") }
-            guard record.revision == envelope.baseRevision else { return .conflict(localRevision: record.revision) }
+            if !v2Authority {
+                guard record.revision == envelope.baseRevision else { return .conflict(localRevision: record.revision) }
+            }
             record.name = try string("name", payload)
             record.note = payload.strings["note"] ?? ""
             record.updatedAt = envelope.modifiedAt
-            record.revision = envelope.revision
+            record.revision = projectionRevision(
+                current: record.revision,
+                envelope: envelope,
+                v2Authority: v2Authority
+            )
             return .applied(rebuildHistoryFrom: nil)
         case .setPenActive:
             guard let record = try fetch(PenRecord.self, id: try identifier("penID", payload), context: context) else { throw RemoteDomainApplyError.missingReference("penID") }
-            guard record.revision == envelope.baseRevision else { return .conflict(localRevision: record.revision) }
+            if !v2Authority {
+                guard record.revision == envelope.baseRevision else { return .conflict(localRevision: record.revision) }
+            }
             record.isActive = payload.integers["isActive"] == 1
             record.updatedAt = envelope.modifiedAt
-            record.revision = envelope.revision
+            record.revision = projectionRevision(
+                current: record.revision,
+                envelope: envelope,
+                v2Authority: v2Authority
+            )
             return .applied(rebuildHistoryFrom: nil)
         case .addSheep:
             if try exists(SheepRecord.self, id: envelope.entityID, context: context) { return .duplicate }
@@ -566,7 +642,7 @@ struct RemoteDomainApplyService {
                 record.revision == envelope.revision &&
                     hasMatchingAcceptedReceipt &&
                     !hasLaterEntityOperation
-            guard record.revision == envelope.baseRevision ||
+            guard v2Authority || record.revision == envelope.baseRevision ||
                     canAdoptBaselineAlignedRevision ||
                     canRepairAcceptedRemoteProjection else {
                 return .conflict(localRevision: record.revision)
@@ -587,6 +663,9 @@ struct RemoteDomainApplyService {
                 })
             }
             guard !hasEarTagConflict else {
+                if v2Authority {
+                    throw RemoteDomainApplyError.invalidPayload("sheep.earTag")
+                }
                 return .conflict(localRevision: record.revision)
             }
             replayIndex?.replaceEarTag(for: record, with: normalized)
@@ -597,7 +676,11 @@ struct RemoteDomainApplyService {
             record.birthAt = optionalDate("birthAt", payload)
             record.note = payload.strings["note"] ?? ""
             record.updatedAt = envelope.modifiedAt
-            record.revision = envelope.revision
+            record.revision = projectionRevision(
+                current: record.revision,
+                envelope: envelope,
+                v2Authority: v2Authority
+            )
             if let currentParity = payload.integers["currentParity"] {
                 guard currentParity >= 0, record.sex == .ewe else {
                     throw RemoteDomainApplyError.invalidPayload("currentParity")
@@ -730,8 +813,10 @@ struct RemoteDomainApplyService {
                 context: context
             ) {
                 guard existing.deletedAt != nil else { return .duplicate }
-                guard existing.revision == envelope.baseRevision else {
-                    return .conflict(localRevision: existing.revision)
+                if !v2Authority {
+                    guard existing.revision == envelope.baseRevision else {
+                        return .conflict(localRevision: existing.revision)
+                    }
                 }
                 existing.sheepID = sheepID
                 existing.kindRawValue =
@@ -747,7 +832,11 @@ struct RemoteDomainApplyService {
                 existing.note = payload.strings["note"] ?? ""
                 existing.recordedAt = envelope.modifiedAt
                 existing.deletedAt = nil
-                existing.revision = envelope.revision
+                existing.revision = projectionRevision(
+                    current: existing.revision,
+                    envelope: envelope,
+                    v2Authority: v2Authority
+                )
                 return .applied(rebuildHistoryFrom: occurredAt)
             }
             insertIndexed(RemovalRecord(
@@ -794,7 +883,11 @@ struct RemoteDomainApplyService {
             return .applied(rebuildHistoryFrom: occurredAt)
         case .restoreSheep:
             guard let record = try fetch(RemovalRecord.self, id: envelope.entityID, context: context) else { throw RemoteDomainApplyError.missingReference("removalID") }
-            guard record.revision == envelope.baseRevision else { return .conflict(localRevision: record.revision) }
+            if !v2Authority {
+                guard record.revision == envelope.baseRevision else {
+                    return .conflict(localRevision: record.revision)
+                }
+            }
             guard let sheep = try fetch(SheepRecord.self, id: record.sheepID, context: context) else {
                 throw RemoteDomainApplyError.missingReference("sheepID")
             }
@@ -802,7 +895,11 @@ struct RemoteDomainApplyService {
                 releaseLegacyHistoryProjectionAuthority(for: sheep)
             }
             record.deletedAt = envelope.modifiedAt
-            record.revision = envelope.revision
+            record.revision = projectionRevision(
+                current: record.revision,
+                envelope: envelope,
+                v2Authority: v2Authority
+            )
             return .applied(rebuildHistoryFrom: .distantPast)
         case .createBatch:
             if try exists(ProductionBatchRecord.self, id: envelope.entityID, context: context) { return .duplicate }
@@ -951,8 +1048,10 @@ struct RemoteDomainApplyService {
                 throw RemoteDomainApplyError.missingReference("ingredientID")
             }
             let record: FeedIngredientBatchRecord
+            var wasExisting = false
             if let existing = try fetch(FeedIngredientBatchRecord.self, id: envelope.entityID, context: context) {
                 record = existing
+                wasExisting = true
             } else {
                 record = FeedIngredientBatchRecord(id: envelope.entityID, farmID: envelope.farmID, ingredientID: ingredient.id, batchName: payload.strings["batchName"] ?? "", purchaseDate: optionalDate("purchaseDate", payload), supplier: payload.strings["supplier"] ?? "", storageLocation: payload.strings["storageLocation"] ?? "", pricePerKilogramText: payload.strings["pricePerKilogramText"] ?? "0", purchasedKilogramsText: payload.optionalStrings["purchasedKilogramsText"] ?? nil, packagingKind: FeedPackagingKind(rawValue: payload.strings["packagingKind"] ?? FeedPackagingKind.bulk.rawValue) ?? .bulk, packageCountText: payload.optionalStrings["packageCountText"] ?? nil, nominalPackageKilogramsText: payload.optionalStrings["nominalPackageKilogramsText"] ?? nil, stockWeightConfirmed: (payload.strings["stockWeightConfirmed"] ?? "0") == "1", initialKilogramsText: payload.optionalStrings["initialKilogramsText"] ?? nil, remainingKilogramsText: payload.optionalStrings["remainingKilogramsText"] ?? nil, note: payload.strings["note"] ?? "", isActive: (payload.strings["isActive"] ?? "1") != "0")
                 insertIndexed(record, context: context)
@@ -973,7 +1072,13 @@ struct RemoteDomainApplyService {
             record.note = payload.strings["note"] ?? ""
             record.isActive = (payload.strings["isActive"] ?? "1") != "0"
             record.updatedAt = envelope.modifiedAt
-            record.revision = envelope.revision
+            record.revision = wasExisting
+                ? projectionRevision(
+                    current: record.revision,
+                    envelope: envelope,
+                    v2Authority: v2Authority
+                )
+                : envelope.revision
             return .applied(rebuildHistoryFrom: nil)
         case .adjustFeedStock:
             guard let batch = try fetch(FeedIngredientBatchRecord.self, id: try identifier("batchID", payload), context: context), batch.farmID == envelope.farmID else {
@@ -1393,12 +1498,20 @@ struct RemoteDomainApplyService {
                     context: context
                 )
             }
+            let tombstoneRevision = try projectionRevision(
+                for: entityType,
+                id: entityID,
+                farmID: envelope.farmID,
+                envelope: envelope,
+                v2Authority: v2Authority,
+                context: context
+            )
             try DomainEntityDeletionService.setDeletedAt(
                 envelope.deletedAt ?? envelope.modifiedAt,
                 type: entityType,
                 id: entityID,
                 farmID: envelope.farmID,
-                revision: envelope.revision,
+                revision: tombstoneRevision,
                 context: context
             )
             let tombstone = TombstoneRecord(
@@ -1407,7 +1520,7 @@ struct RemoteDomainApplyService {
                 entityID: entityID,
                 deletedByAccountID: envelope.modifiedByAccountID,
                 reason: payload.strings["reason"] ?? "远端删除",
-                revision: envelope.revision,
+                revision: tombstoneRevision,
                 operationID: envelope.operationID
             )
             tombstone.deletedAt = envelope.deletedAt ?? envelope.modifiedAt
@@ -1432,12 +1545,20 @@ struct RemoteDomainApplyService {
                     context: context
                 )
             }
+            let restoredRevision = try projectionRevision(
+                for: entityType,
+                id: tombstone.entityID,
+                farmID: envelope.farmID,
+                envelope: envelope,
+                v2Authority: v2Authority,
+                context: context
+            )
             try DomainEntityDeletionService.setDeletedAt(
                 nil,
                 type: entityType,
                 id: tombstone.entityID,
                 farmID: envelope.farmID,
-                revision: envelope.revision,
+                revision: restoredRevision,
                 context: context
             )
             tombstone.restoredAt = envelope.modifiedAt
@@ -1479,7 +1600,8 @@ struct RemoteDomainApplyService {
                 sourceEnvelope,
                 context: context,
                 preservesLegacySnapshotAuthority: preservesLegacySnapshotAuthority,
-                allowsBaselineProjection: allowsBaselineProjection
+                allowsBaselineProjection: allowsBaselineProjection,
+                v2Authority: v2Authority
             )
         case .bootstrapEntity:
             guard let snapshotData = payload.dataValues["snapshot"] else {
@@ -1508,7 +1630,8 @@ struct RemoteDomainApplyService {
                 sourceEnvelope,
                 context: context,
                 preservesLegacySnapshotAuthority: true,
-                allowsBaselineProjection: true
+                allowsBaselineProjection: true,
+                v2Authority: v2Authority
             )
         }
     }
@@ -1531,6 +1654,104 @@ struct RemoteDomainApplyService {
             receipt.occurredAt == envelope.modifiedAt &&
             receipt.capabilityCertificate == envelope.capabilityCertificate &&
             receipt.operationSignature == envelope.operationSignature
+    }
+
+    /// V2 events are ordered by the cloud event ledger, not by the legacy
+    /// entity revision carried by a V1 envelope.  The in-process domain
+    /// adapter still has to populate SwiftData's historical revision field,
+    /// but it must never move that field backwards when an event is replayed
+    /// onto a store that already contains a retained V1 projection.
+    private func projectionRevision(
+        current: Int,
+        envelope: CloudOperationEnvelope,
+        v2Authority: Bool
+    ) -> Int {
+        v2Authority ? max(1, current + 1) : envelope.revision
+    }
+
+    /// Return the next monotonic local revision for a tombstone/restore.  A
+    /// V2 event has no entity-wide base revision; the event sequence and
+    /// command ledger provide ordering.  Keeping this calculation local makes
+    /// deletion replay safe without reintroducing a client-authored baseline.
+    private func projectionRevision(
+        for entityType: CloudEntityType,
+        id: UUID,
+        farmID: UUID,
+        envelope: CloudOperationEnvelope,
+        v2Authority: Bool,
+        context: ModelContext
+    ) throws -> Int {
+        guard v2Authority else { return envelope.revision }
+        let current: Int?
+        switch entityType {
+        case .pen:
+            current = try context.fetch(FetchDescriptor<PenRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .sheep:
+            current = try context.fetch(FetchDescriptor<SheepRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .weight:
+            current = try context.fetch(FetchDescriptor<WeightRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .weaning:
+            current = try context.fetch(FetchDescriptor<WeaningRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .breedingProgram:
+            current = try context.fetch(FetchDescriptor<BreedingProgramRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .breedingProgramStep:
+            current = try context.fetch(FetchDescriptor<BreedingProgramStepRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .transfer:
+            current = try context.fetch(FetchDescriptor<TransferRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .removal:
+            current = try context.fetch(FetchDescriptor<RemovalRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .feed:
+            current = try context.fetch(FetchDescriptor<FeedRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .feedTroughObservation:
+            current = try context.fetch(FetchDescriptor<FeedTroughObservationRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .reproduction:
+            current = try context.fetch(FetchDescriptor<ReproductionRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .semen:
+            current = try context.fetch(FetchDescriptor<SemenRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .semenDonor:
+            current = try context.fetch(FetchDescriptor<SemenDonorRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .note:
+            current = try context.fetch(FetchDescriptor<NoteRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .feedIngredientBatch:
+            current = try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        case .careReminder:
+            current = try context.fetch(FetchDescriptor<CareReminderRecord>()).first {
+                $0.id == id && $0.farmID == farmID
+            }?.revision
+        default:
+            current = nil
+        }
+        return max(1, (current ?? 0) + 1)
     }
 
     private func expectedEntityType(for kind: DomainOperationKind) -> CloudEntityType? {
@@ -1836,6 +2057,18 @@ struct RemoteDomainApplyService {
         var descriptor = descriptor
         descriptor.fetchLimit = 1
         return try context.fetch(descriptor).first
+    }
+}
+
+private extension FarmCommand {
+    var isAuthoritativeDeletion: Bool {
+        switch self {
+        case .tombstoneEntity, .restoreTombstonedEntity, .correctWeight,
+             .correctTransfer, .correctRemoval, .restoreSheep:
+            true
+        default:
+            false
+        }
     }
 }
 

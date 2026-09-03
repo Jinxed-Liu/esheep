@@ -160,6 +160,16 @@ verify_static() {
   (cd "$repo_root" && git diff --check && git diff --cached --check)
   python3 "$repo_root/tools/check_product_emoji.py" "$repo_root/eSheepNext" "$repo_root/eSheepNextTests"
   python3 "$repo_root/tools/check_localizations.py"
+  python3 "$repo_root/tools/verify_esheep_cloud_brand_boundary.py"
+  if [[ "${ALLOW_V2_INCOMPLETE:-0}" == "1" ]]; then
+    python3 "$repo_root/tools/verify_esheep_cloud_v2_completeness.py" "$repo_root" --allow-incomplete
+  else
+    # A build that can be installed or switched against a real farm must not
+    # silently ship a partial protocol. The script derives this matrix from
+    # the catalogue, typed contracts, transactions, reducer, migration and
+    # tests; it is intentionally a hard failure until every command is wired.
+    python3 "$repo_root/tools/verify_esheep_cloud_v2_completeness.py" "$repo_root"
+  fi
   lint_plist "$repo_root/eSheepNext/PrivacyInfo.xcprivacy"
   lint_plist "$repo_root/eSheepNextWidget/PrivacyInfo.xcprivacy"
 

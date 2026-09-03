@@ -74,7 +74,9 @@ actor DeviceIdentityActor {
         return "\(base).account.\(accountID.uuidString.lowercased())"
     }
 
-    private nonisolated static func currentAccountScope() -> UUID? {
+    /// Shared by command staging so the immutable command carries the same
+    /// device identifier whose private key will sign it later.
+    nonisolated static func currentAccountScope() -> UUID? {
         if AccountIdentityClients.activeProvider == .supabase,
            let authUserID = SecureAccountStore.supabaseSession()?.authUserID {
             return authUserID

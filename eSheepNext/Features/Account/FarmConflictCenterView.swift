@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import SwiftUI
+import UIKit
 
 struct FarmConflictCenterView: View {
     @Query(sort: \SyncConflictRecord.detectedAt, order: .reverse)
@@ -26,16 +27,22 @@ struct FarmConflictCenterView: View {
                     conflict: conflict
                 )
             } label: {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(verbatim: conflict.displayName)
-                        .font(.headline)
-                    Text(LocalizedStringKey(conflict.businessTypeName))
-                        .foregroundStyle(.secondary)
-                    Text(
-                        conflict.detectedAt,
-                        format: .dateTime.year().month().day().hour().minute()
-                    )
-                    .font(.caption)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(verbatim: conflict.displayName)
+                            .font(.headline)
+                        Text(LocalizedStringKey(conflict.businessTypeName))
+                            .foregroundStyle(.secondary)
+                        Text("冲突原因：\(conflict.reasonCodeDescription)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("版本：本地 \(conflict.localRevision) / 云端 \(conflict.remoteRevision)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(
+                            conflict.detectedAt,
+                            format: .dateTime.year().month().day().hour().minute()
+                        )
+                        .font(.caption)
                     .foregroundStyle(.secondary)
                 }
             }
@@ -74,15 +81,54 @@ private struct FarmConflictDetailView: View {
                 LabeledContent("业务类型") {
                     Text(LocalizedStringKey(conflict.businessTypeName))
                 }
+                LabeledContent("冲突原因") {
+                    Text(conflict.reasonCodeDescription)
+                }
+                LabeledContent("本地版本") {
+                    Text(verbatim: "v\(conflict.localRevision)")
+                }
+                LabeledContent("云端版本") {
+                    Text(verbatim: "v\(conflict.remoteRevision)")
+                }
+                LabeledContent("本地版本哈希") {
+                    Text(conflict.localPayloadDigest)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                LabeledContent("云端版本哈希") {
+                    Text(conflict.remotePayloadDigest)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
                 LabeledContent("发现时间") {
                     Text(
                         conflict.detectedAt,
                         format: .dateTime.year().month().day().hour().minute()
                     )
                 }
+                LabeledContent("远端设备") {
+                    Text(conflict.remoteDeviceString)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text("这条记录在本机和 eSheep 云都发生过更改，请选择要保留的版本。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                Button("复制冲突证据") {
+                    UIPasteboard.general.string = conflict.exportText
+                    message = "冲突证据已复制到剪贴板。"
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+            }
+            Section("数据摘要") {
+                Text(conflict.localPayloadSummary)
+                    .font(.footnote)
+                    .textSelection(.enabled)
+                Text(conflict.remotePayloadSummary)
+                    .font(.footnote)
+                    .textSelection(.enabled)
             }
             Section("选择保留版本") {
                 TextField("处理说明（可选）", text: $note, axis: .vertical)
@@ -155,6 +201,26 @@ private struct FarmConflictDetailView: View {
 }
 
 private extension SyncConflictRecord {
+    var exportText: String {
+        let note = resolutionNote
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return """
+冲突ID: \(id.uuidString.lowercased())
+实体类型: \(entityType)
+实体ID: \(entityID.uuidString.lowercased())
+本地版本: \(localRevision)
+云端版本: \(remoteRevision)
+原因: \(reasonCodeDescription)（\(reasonCode)）
+本地哈希: \(localPayloadDigest)
+云端哈希: \(remotePayloadDigest)
+检测时间: \(detectedAt.formatted(date: .numeric, time: .standard))
+本地摘要: \(localPayloadSummary)
+云端摘要: \(remotePayloadSummary)
+远端设备: \(remoteDeviceString)
+备注: \(note.isEmpty ? "无" : note)
+"""
+    }
+
     var displayName: String {
         for payload in [localPayload, remotePayload] {
             guard let object = try? JSONSerialization.jsonObject(with: payload),
@@ -209,5 +275,62 @@ private extension SyncConflictRecord {
         case CloudEntityType.photoAsset.rawValue: "照片"
         default: "牧场业务"
         }
+    }
+
+    var reasonCodeDescription: String {
+        switch reasonCode {
+        case "supabaseBaseRevisionMismatch":
+            return "云端版本基线不匹配"
+        case "remotePedigreeParentQualificationMismatch":
+            return "父源信息发生冲突"
+        case "blocked_by_predecessor_conflict":
+            return "先前操作冲突阻断"
+        default:
+            return reasonCode.isEmpty ? "未知原因" : reasonCode
+        }
+    }
+
+    var remoteDeviceString: String {
+        if let accountID = remoteAccountID, let deviceID = remoteDeviceID {
+            return "\(accountID.uuidString.lowercased()) / \(deviceID.uuidString.lowercased())"
+        }
+        if let accountID = remoteAccountID {
+            return accountID.uuidString.lowercased()
+        }
+        return "未知设备"
+    }
+
+    var localPayloadSummary: String {
+        payloadSummary(for: localPayload)
+    }
+
+    var remotePayloadSummary: String {
+        payloadSummary(for: remotePayload)
+    }
+
+    private func payloadSummary(for payload: Data) -> String {
+        guard let decoded = try? JSONSerialization.jsonObject(with: payload) else {
+            return "当前记录为二进制数据（长度：\(payload.count) 字节）"
+        }
+        if let dictionary = decoded as? [String: Any] {
+            var parts: [String] = []
+            for key in ["name", "earTag", "title", "displayName", "subject", "revision", "entityType", "payloadType"] {
+                if let value = dictionary[key] {
+                    parts.append("\(key): \(value)")
+                }
+            }
+            if !parts.isEmpty {
+                return parts.joined(separator: " · ")
+            }
+            if let data = try? JSONSerialization.data(withJSONObject: dictionary, options: [.sortedKeys]),
+               let raw = String(data: data, encoding: .utf8) {
+                return raw
+            }
+        }
+        if let array = decoded as? [Any], let data = try? JSONSerialization.data(withJSONObject: array, options: [.sortedKeys]),
+           let raw = String(data: data, encoding: .utf8) {
+            return raw
+        }
+        return "解析后内容无法展示"
     }
 }

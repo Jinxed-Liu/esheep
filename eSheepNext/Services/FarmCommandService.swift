@@ -44,6 +44,7 @@ enum FarmCommandError: LocalizedError {
     case weaningDamMustBeEwe
     case transferDestinationUnchanged
     case cloudIdentityLocked
+    case cloudMigrationInProgress
     case invalidFarmCoordinate
     case invalidFarmTimeZone
     case penHasCurrentSheep
@@ -97,6 +98,7 @@ enum FarmCommandError: LocalizedError {
         case .weaningDamMustBeEwe: "断奶记录中的母本必须是母羊。"
         case .transferDestinationUnchanged: "目标圈舍与羊只当时所在圈舍相同，请选择实际调入的圈舍。"
         case .cloudIdentityLocked: "当前云端牧场缺少有效的账号绑定或能力证书，已锁定写入。"
+        case .cloudMigrationInProgress: "正在安全升级 eSheep+ 云，检查完成前暂不写入这座牧场。"
         case .invalidFarmCoordinate: "牧场坐标必须位于有效的经纬度范围内。"
         case .invalidFarmTimeZone: "请选择有效的 IANA 时区。"
         case .penHasCurrentSheep: "圈舍内仍有在场羊只，请先转群后再停用。"
@@ -109,7 +111,7 @@ enum FarmCommandError: LocalizedError {
     }
 }
 
-struct FeedLineDraft: Sendable, Hashable, Identifiable {
+struct FeedLineDraft: Codable, Sendable, Hashable, Identifiable {
     let id: UUID
     let ingredientID: UUID
     let ingredientBatchID: UUID?
@@ -123,7 +125,7 @@ struct FeedLineDraft: Sendable, Hashable, Identifiable {
     }
 }
 
-struct FeedIngredientDraft: Sendable, Hashable {
+struct FeedIngredientDraft: Codable, Sendable, Hashable {
     let id: UUID?
     let name: String
     let unit: String
@@ -151,7 +153,7 @@ struct FeedIngredientDraft: Sendable, Hashable {
     }
 }
 
-struct FeedBatchDraft: Sendable, Hashable {
+struct FeedBatchDraft: Codable, Sendable, Hashable {
     let id: UUID?
     let ingredientID: UUID
     let batchName: String
@@ -189,7 +191,7 @@ struct FeedBatchDraft: Sendable, Hashable {
     }
 }
 
-struct FeedRecipeComponentDraft: Sendable, Hashable {
+struct FeedRecipeComponentDraft: Codable, Sendable, Hashable {
     let id: UUID
     let ingredientID: UUID
     let ingredientBatchID: UUID?
@@ -207,7 +209,7 @@ struct FeedRecipeComponentDraft: Sendable, Hashable {
     }
 }
 
-struct FeedRecipeDraft: Sendable, Hashable {
+struct FeedRecipeDraft: Codable, Sendable, Hashable {
     let id: UUID?
     let name: String
     let targetPenID: UUID?
@@ -229,7 +231,7 @@ struct FeedRecipeDraft: Sendable, Hashable {
     }
 }
 
-struct FeedEntryDraft: Sendable, Hashable {
+struct FeedEntryDraft: Codable, Sendable, Hashable {
     let id: UUID
     let penID: UUID
     let recipeID: UUID?
@@ -267,7 +269,7 @@ struct FeedEntryDraft: Sendable, Hashable {
     }
 }
 
-struct FeedTroughObservationDraft: Sendable, Hashable {
+struct FeedTroughObservationDraft: Codable, Sendable, Hashable {
     let id: UUID
     let penID: UUID
     let relatedFeedRecordID: UUID?
@@ -304,7 +306,7 @@ struct FeedTroughObservationDraft: Sendable, Hashable {
     }
 }
 
-struct HistoricalFeedLineDraft: Sendable, Hashable, Identifiable {
+struct HistoricalFeedLineDraft: Codable, Sendable, Hashable, Identifiable {
     let id: UUID
     let ingredientID: UUID
     let kilogramsText: String
@@ -328,7 +330,7 @@ struct HistoricalFeedLineDraft: Sendable, Hashable, Identifiable {
     }
 }
 
-struct HistoricalFeedEntryDraft: Sendable, Hashable {
+struct HistoricalFeedEntryDraft: Codable, Sendable, Hashable {
     let id: UUID
     let legacySourceKey: String
     let penID: UUID
@@ -458,7 +460,7 @@ enum FeedExclusionRecommendation {
     }
 }
 
-struct BreedingProgramStepDraft: Sendable, Hashable, Identifiable {
+struct BreedingProgramStepDraft: Codable, Sendable, Hashable, Identifiable {
     let id: UUID
     var dayOffset: Int
     var action: String
@@ -470,14 +472,14 @@ struct BreedingProgramStepDraft: Sendable, Hashable, Identifiable {
     }
 }
 
-enum LambSex: String, CaseIterable, Sendable, Hashable {
+enum LambSex: String, CaseIterable, Codable, Sendable, Hashable {
     case male = "公"
     case female = "母"
 
     var displayName: String { rawValue }
 }
 
-struct LambingOffspringDraft: Sendable, Hashable, Identifiable {
+struct LambingOffspringDraft: Codable, Sendable, Hashable, Identifiable {
     let id: UUID
     let sheepID: UUID?
     let earTag: String
@@ -728,7 +730,10 @@ final class FarmCommandService {
 
     private struct StagedCommandResult {
         let historyImpact: HistoryImpact?
-        let operation: DomainOperation
+        let commandID: UUID
+        let entityType: String
+        let entityID: UUID?
+        let legacyOperation: DomainOperation?
     }
 
     /// A command batch owns one storage route and one sequence counter. The
@@ -762,11 +767,12 @@ final class FarmCommandService {
             }
         }
 
+        @discardableResult
         func stageSequence(
             farmID: UUID,
             operationID: UUID,
             context: ModelContext
-        ) {
+        ) -> Int64 {
             let sequence = max(1, sequenceCounter.nextSequence)
             sequenceCounter.nextSequence = sequence + 1
             context.insert(FarmOperationSequenceRecord(
@@ -774,6 +780,7 @@ final class FarmCommandService {
                 operationID: operationID,
                 clientSequence: sequence
             ))
+            return sequence
         }
     }
 
@@ -928,6 +935,42 @@ final class FarmCommandService {
             farmID: farm.farmID,
             context: context
         )
+        let route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
+        if route.mode == .eSheepCloud {
+            let commandID = UUID()
+            let deviceSequence = try FarmStorageRouter.takeNextOperationSequence(
+                farmID: farm.farmID,
+                operationID: commandID,
+                context: context
+            )
+            let occurredAt = Date.now
+            try SheepAvatarSelectionStore.apply(
+                update,
+                sheepID: sheepID,
+                farmID: farm.farmID,
+                updatedAt: occurredAt,
+                context: context
+            )
+            _ = try ESheepCloudIntentWriter.stage(
+                draft: ESheepCloudCommandFactoryV2.avatar(
+                    sheepID: sheepID,
+                    photoAssetID: photoAssetID,
+                    occurredAt: occurredAt
+                ),
+                commandID: commandID,
+                sourceRequestID: commandID,
+                farmID: farm.farmID,
+                farmGeneration: route.deliveryAuthorityGeneration,
+                accountID: farm.accountID,
+                deviceID: ESheepCloudDeviceIdentityStore.deviceID(accountID: farm.accountID),
+                deviceSequence: deviceSequence,
+                context: context
+            )
+            try context.save()
+            committed = true
+            CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
+            return
+        }
         let command = FarmCommand.updateSheepProfile(
             sheepID: sheep.id,
             earTag: sheep.earTag,
@@ -1035,7 +1078,7 @@ final class FarmCommandService {
                         context: context
                     )
                     photoRevisionByID[photo.id] = baseRevision + 1
-                case .retiredAppleCloud:
+                case .eSheepCloud, .retiredAppleCloud:
                     throw FarmCommandError.cloudIdentityLocked
                 case nil:
                     break
@@ -1177,7 +1220,7 @@ final class FarmCommandService {
 
         var pendingHistory: [HistoryImpact] = []
         var receiptBySourceRequestID: [UUID: FarmCommandExecutionReceipt] = [:]
-        var operationBySourceRequestID: [UUID: DomainOperation] = [:]
+        var stagedBySourceRequestID: [UUID: StagedCommandResult] = [:]
         let requestedSourceIDs = Set(requests.map(\.sourceRequestID))
         let farmID = farm.farmID
         let accountID = farm.accountID
@@ -1245,7 +1288,7 @@ final class FarmCommandService {
                 removalBatchState: removalBatchState,
                 batchState: batchState
             )
-            operationBySourceRequestID[request.sourceRequestID] = staged.operation
+            stagedBySourceRequestID[request.sourceRequestID] = staged
             if let impact = staged.historyImpact {
                 pendingHistory.append(impact)
             }
@@ -1253,23 +1296,23 @@ final class FarmCommandService {
         try flushHistory()
 
         for request in requests where receiptBySourceRequestID[request.sourceRequestID] == nil {
-            guard let operation = operationBySourceRequestID[request.sourceRequestID] else {
+            guard let staged = stagedBySourceRequestID[request.sourceRequestID] else {
                 throw FarmCommandError.sourceRecordNotFound
             }
             let record = InsightExecutionReceiptRecord(
                 sourceRequestID: request.sourceRequestID,
                 accountID: farm.accountID,
                 farmID: farm.farmID,
-                operationID: operation.id,
-                entityType: operation.entityType,
-                entityID: operation.entityID
+                operationID: staged.commandID,
+                entityType: staged.entityType,
+                entityID: staged.entityID
             )
             context.insert(record)
             receiptBySourceRequestID[request.sourceRequestID] = FarmCommandExecutionReceipt(
                 sourceRequestID: request.sourceRequestID,
-                operationID: operation.id,
-                entityType: operation.entityType,
-                entityID: operation.entityID,
+                operationID: staged.commandID,
+                entityType: staged.entityType,
+                entityID: staged.entityID,
                 createdAt: record.createdAt
             )
         }
@@ -1512,8 +1555,26 @@ final class FarmCommandService {
     private func validateStorageRoute(in farm: FarmContext, context: ModelContext) throws {
         let farmID = farm.farmID
         let route = try FarmStorageRouter.route(farmID: farmID, context: context)
+        guard route.transitionState != .readOnlyMigration else {
+            throw FarmCommandError.cloudMigrationInProgress
+        }
         switch route.mode {
         case .localOnly:
+            return
+        case .eSheepCloud:
+            let remoteBinding = try context.fetch(FetchDescriptor<FarmRemoteBinding>()).first {
+                $0.farmID == farmID &&
+                $0.provider == .eSheepCloud
+            }
+            let farmState = try context.fetch(FetchDescriptor<ESheepCloudFarmState>()).first {
+                $0.farmID == farmID &&
+                $0.farmGeneration == route.deliveryAuthorityGeneration
+            }
+            guard remoteBinding?.state == .active,
+                  farmState?.activityState == .active,
+                  farmState?.integrityState != .failed else {
+                throw FarmCommandError.cloudIdentityLocked
+            }
             return
         case .supabase:
             let remoteBinding = try context.fetch(FetchDescriptor<FarmRemoteBinding>()).first {
@@ -1568,11 +1629,19 @@ final class FarmCommandService {
             context: context,
             removalBatchState: removalBatchState
         )
-        let compositeChildrenBefore = try compositeChildSnapshot(
-            for: command,
-            farmID: farm.farmID,
-            context: context
-        )
+        let route: FarmStorageRoute
+        if let batchState {
+            route = batchState.route
+        } else {
+            route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
+        }
+        let compositeChildrenBefore = route.mode == .eSheepCloud
+            ? CompositeChildSnapshot.empty
+            : try compositeChildSnapshot(
+                for: command,
+                farmID: farm.farmID,
+                context: context
+            )
         let result = try apply(
             command,
             farm: farm,
@@ -1583,19 +1652,87 @@ final class FarmCommandService {
         )
         let projectedHistoryImpact = try historyImpact(for: command, result: result, farmID: farm.farmID, context: context)
         let operationID = UUID()
+        let deviceSequence: Int64
         if let batchState {
-            batchState.stageSequence(
+            deviceSequence = batchState.stageSequence(
                 farmID: farm.farmID,
                 operationID: operationID,
                 context: context
             )
         } else {
-            _ = try FarmStorageRouter.takeNextOperationSequence(
+            deviceSequence = try FarmStorageRouter.takeNextOperationSequence(
                 farmID: farm.farmID,
                 operationID: operationID,
                 context: context
             )
         }
+        switch command {
+        case .tombstoneEntity(_, let entityID, _):
+            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.entityID == entityID && $0.operationID == nil
+            }))
+            if let tombstone = tombstones.first {
+                tombstone.operationID = operationID
+            }
+        case .restoreTombstonedEntity(let tombstoneID):
+            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                $0.id == tombstoneID
+            }))
+            if let tombstone = tombstones.first {
+                tombstone.restoredByOperationID = operationID
+                tombstone.restoredAt = Date.now
+            }
+        case .correctWeight(let originalID, _, _, _, _),
+             .correctTransfer(let originalID, _, _, _, _),
+             .correctRemoval(let originalID, _, _, _, _, _, _):
+            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.entityID == originalID && $0.operationID == nil
+            }))
+            if let tombstone = tombstones.first {
+                tombstone.operationID = operationID
+            }
+        case .care(let careCommand):
+            let originalID: UUID?
+            switch careCommand {
+            case .correctHealth(let id, _, _), .correctReproduction(let id, _, _): originalID = id
+            default: originalID = nil
+            }
+            if let originalID {
+                let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                    $0.farmID == farmID && $0.entityID == originalID && $0.operationID == nil
+                }))
+                if let tombstone = tombstones.first { tombstone.operationID = operationID }
+            }
+        default:
+            break
+        }
+        if route.mode == .eSheepCloud {
+            let draft = try ESheepCloudCommandFactoryV2.make(
+                command: command,
+                farmID: farm.farmID,
+                primaryEntityType: result.entityType,
+                primaryEntityID: result.entityID
+            )
+            _ = try ESheepCloudIntentWriter.stage(
+                draft: draft,
+                commandID: operationID,
+                sourceRequestID: sourceRequestID ?? operationID,
+                farmID: farm.farmID,
+                farmGeneration: route.deliveryAuthorityGeneration,
+                accountID: farm.accountID,
+                deviceID: ESheepCloudDeviceIdentityStore.deviceID(accountID: farm.accountID),
+                deviceSequence: deviceSequence,
+                context: context
+            )
+            return StagedCommandResult(
+                historyImpact: projectedHistoryImpact,
+                commandID: operationID,
+                entityType: result.entityType,
+                entityID: result.entityID,
+                legacyOperation: nil
+            )
+        }
+
         let operation = DomainOperation(
             id: operationID,
             farmID: farm.farmID,
@@ -1610,52 +1747,6 @@ final class FarmCommandService {
             sourceRequestID: sourceRequestID
         )
         context.insert(operation)
-        switch command {
-        case .tombstoneEntity(_, let entityID, _):
-            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
-                $0.farmID == farmID && $0.entityID == entityID && $0.operationID == nil
-            }))
-            if let tombstone = tombstones.first {
-                tombstone.operationID = operation.id
-            }
-        case .restoreTombstonedEntity(let tombstoneID):
-            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
-                $0.id == tombstoneID
-            }))
-            if let tombstone = tombstones.first {
-                tombstone.restoredByOperationID = operation.id
-                tombstone.restoredAt = Date.now
-            }
-        case .correctWeight(let originalID, _, _, _, _),
-             .correctTransfer(let originalID, _, _, _, _),
-             .correctRemoval(let originalID, _, _, _, _, _, _):
-            let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
-                $0.farmID == farmID && $0.entityID == originalID && $0.operationID == nil
-            }))
-            if let tombstone = tombstones.first {
-                tombstone.operationID = operation.id
-            }
-        case .care(let careCommand):
-            let originalID: UUID?
-            switch careCommand {
-            case .correctHealth(let id, _, _), .correctReproduction(let id, _, _): originalID = id
-            default: originalID = nil
-            }
-            if let originalID {
-                let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
-                    $0.farmID == farmID && $0.entityID == originalID && $0.operationID == nil
-                }))
-                if let tombstone = tombstones.first { tombstone.operationID = operation.id }
-            }
-        default:
-            break
-        }
-        let route: FarmStorageRoute
-        if let batchState {
-            route = batchState.route
-        } else {
-            route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
-        }
         if let deliveryProvider = route.deliveryProvider {
             context.insert(OutboxItem(
                 farmID: farm.farmID,
@@ -1680,7 +1771,10 @@ final class FarmCommandService {
         )
         return StagedCommandResult(
             historyImpact: projectedHistoryImpact,
-            operation: operation
+            commandID: operation.id,
+            entityType: operation.entityType,
+            entityID: operation.entityID,
+            legacyOperation: operation
         )
     }
 

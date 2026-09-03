@@ -18,7 +18,7 @@ private enum WelcomeAuthError: LocalizedError {
         switch self {
         case .passwordMismatch: "两次输入的密码不一致。"
         case .legacyAccountClaimRequired:
-            "Apple 身份已通过 Supabase 验证，但云端账号尚未认领原 appAccountID。原本地牧场未被改写，请完成旧账号认领后重试。"
+            "Apple 身份已经验证，但云端账号尚未关联原有账户。本机牧场没有被改写，请先完成旧账号认领后再试。"
         }
     }
 }
@@ -185,7 +185,7 @@ struct WelcomeView: View {
                         )
 
                     if !identityIsConfigured {
-                        Text("账号注册、密码登录和 Apple 登录需要配置 Supabase。")
+                        Text("eSheep+ 云账号服务尚未配置，暂时无法注册或登录。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -318,7 +318,7 @@ struct WelcomeView: View {
     }
 
     private var identityIsConfigured: Bool {
-        SupabaseAccountConfiguration.isConfigured || IdentityWorkerConfiguration.baseURL != nil
+        ESheepCloudAvailability.isConfigured || IdentityWorkerConfiguration.baseURL != nil
     }
 
     private var emailLooksValid: Bool {

@@ -68,7 +68,7 @@ final class AppSession {
     var pendingSheepID: UUID?
     var pendingCareReminderID: UUID?
     var pendingOperationalAlertsRequestID: UUID?
-    var pendingSupabaseInvitationCode: String?
+    var pendingESheepCloudInvitationCode: String?
 
     init(
         activeAccountProfileID: UUID? = SecureAccountStore.activeAccountProfileID(),

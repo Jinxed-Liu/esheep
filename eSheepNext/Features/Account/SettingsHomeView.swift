@@ -7,6 +7,8 @@ struct SettingsHomeView: View {
     @Environment(FarmNotificationService.self) private var notifications
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Query(sort: \SyncConflictRecord.detectedAt, order: .reverse) private var conflicts: [SyncConflictRecord]
+    @Query(sort: \ESheepCloudAttentionItem.createdAt, order: .reverse)
+    private var cloudAttentionItems: [ESheepCloudAttentionItem]
     @Query private var storageProfiles: [FarmStorageProfile]
 
     let account: AccountProfile
@@ -24,12 +26,32 @@ struct SettingsHomeView: View {
         }
     }
 
+    private var cloudAttentionCount: Int {
+        cloudAttentionItems.count {
+            $0.farmID == farm.id &&
+                ($0.state == .open || $0.state == .resolving)
+        }
+    }
+
+    private var pendingDecisionCount: Int {
+        switch storageMode {
+        case .eSheepCloud:
+            cloudAttentionCount
+        case .supabase:
+            // Migration-aware: surface V2 attention items for a legacy-profile
+            // farm when present.
+            cloudAttentionCount
+        case .localOnly, .retiredAppleCloud:
+            unresolvedConflictCount
+        }
+    }
+
     private var policy: SettingsVisibilityPolicy {
         SettingsVisibilityPolicy(
             role: farm.role,
-            cloudEnabled: SupabaseAccountConfiguration.isConfigured,
+            cloudEnabled: ESheepCloudAvailability.isConfigured,
             subscriptionEnabled: SubscriptionFeatureConfiguration.isEnabled,
-            unresolvedConflictCount: unresolvedConflictCount
+            unresolvedConflictCount: pendingDecisionCount
         )
     }
 
@@ -99,7 +121,7 @@ struct SettingsHomeView: View {
                 SettingsCard(title: "当前牧场") {
                     if farm.role == .owner {
                         SettingsNavigationRow(
-                            title: "云存储",
+                            title: "eSheep+ 云",
                             subtitle: cloudStorageSubtitle,
                             systemImage: "externaldrive.connected.to.line.below",
                             iconColor: .teal
@@ -151,9 +173,7 @@ struct SettingsHomeView: View {
                     SettingsCardDivider()
                     SettingsNavigationRow(
                         title: "数据与存储",
-                        subtitle: policy.shows(.dataConflicts)
-                            ? "有待处理的数据冲突"
-                            : "空间占用、导入导出与备份",
+                        subtitle: dataStorageSubtitle,
                         systemImage: "internaldrive.fill",
                         iconColor: .green
                     ) {
@@ -280,8 +300,25 @@ struct SettingsHomeView: View {
         switch storageMode {
         case .localOnly: "仅保存在此设备"
         case .retiredAppleCloud: "旧云存储已停用"
-        case .supabase: "当前使用 eSheep 云"
+        case .eSheepCloud:
+            cloudAttentionCount > 0
+                ? "\(cloudAttentionCount) 项需要你确认"
+                : "当前使用 eSheep+ 云"
+        case .supabase: "当前使用 eSheep+ 云"
         }
+    }
+
+    private var dataStorageSubtitle: String {
+        if storageMode == .eSheepCloud, cloudAttentionCount > 0 {
+            return "有 \(cloudAttentionCount) 项内容需要确认"
+        }
+        if storageMode == .supabase {
+            return "准备 eSheep+ 云"
+        }
+        if storageMode != .eSheepCloud, policy.shows(.dataConflicts) {
+            return "有待处理的数据异常"
+        }
+        return "空间占用、导入导出与备份"
     }
 
     private var accountHeader: some View {
