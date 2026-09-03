@@ -11,7 +11,7 @@
 - 备份副本显示同一真实牧场的当前 V1 基线仍未收敛：iPhone Air 为 generation 1、已拉取到 revision 2061、3271 只羊、32 张照片、2149 条本地操作和 705 条已确认 Outbox；iPhone 16 Pro 为 generation 1、已拉取到 revision 856、3082 只羊、15 张照片、946 条本地操作和 0 条 Outbox。该差异直接阻断双机 staging，不能用其中一台覆盖另一台。
 - `devicectl` 只读安装清单确认：两台设备的开发包均为 `3.1.0`，iPhone Air 为 Bundle Version 13，iPhone 16 Pro 为 Bundle Version 5；本次没有安装新的 Build 14，因为构建号上限尚未完成 App Store Connect 复核。
 - 当前自动门禁新证据：静态门禁（本地显式允许法律占位符）通过，V2 静态覆盖 `80/80`；本地 Colima/Supabase pgTAP 为 9 个文件、`planned=262, todo=1, failed=0`；Debug 全量 XCTest 为应用 `539/539`、性能 `6/6`，均为 0 failures。对应日志分别为 `/tmp/esheep-v2-current-static-20260903.log`、`/tmp/esheep-v2-current-db-20260903.log` 和 `/tmp/esheep-v2-current-debug-tests-20260903.log`。
-- Web 锁文件已升级 Browserslist 相关传递依赖（未改 `package.json`）；复跑后主测试 `50/50`、Sites 测试 `6/6`、`npm audit` 均通过且报告 `0 vulnerabilities`。对应日志为 `/tmp/esheep-v2-current-web-after-audit-fix-20260903.log`。Backend 门禁通过，测试 `33/33`，仅有 1 个 moderate 级 `qs` advisory，尚未达到当前 high 级失败阈值。
+- Web 锁文件已升级 Browserslist 相关传递依赖（未改 `package.json`）；复跑后主测试 `50/50`、Sites 测试 `6/6`、`npm audit` 均通过且报告 `0 vulnerabilities`。对应日志为 `/tmp/esheep-v2-current-web-after-audit-fix-20260903.log`。Backend 锁文件也完成 `qs` 传递依赖修复；复跑测试 `33/33`，安全审计为 `0 vulnerabilities`，对应日志为 `/tmp/esheep-v2-current-backend-after-audit-fix-20260903.log`。
 - 三配置 iOS 门禁没有完成：Debug 构建成功后，Staging 构建设置解析因缺少 `Config/StagingEnvironment.local.xcconfig` 停止。不会把 Release/Development 的远端配置复制成 Staging 配置。
 - 远端只读检查显示当前组织没有独立 Staging Supabase 项目；已关联的 Development 项目尚未应用 V2 migration `20260902041541`，也没有部署 `esheep-cloud-v2-writes`。因此本次没有执行远端 push、函数部署、验收牧场写入或真实牧场切换。
 - `use-device-hub` 的 Device Hub 读取连续因 AX `-10005 timeoutReached` 失败；没有改用 iPhone Mirroring，也没有把 `devicectl` 清单当作视觉验收证据。
