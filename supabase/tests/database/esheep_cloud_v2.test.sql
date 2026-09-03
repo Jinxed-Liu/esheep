@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(147);
+select plan(150);
 
 select set_config('esheep.test.user_a', gen_random_uuid()::text, false);
 select set_config('esheep.test.user_b', gen_random_uuid()::text, false);
@@ -37,6 +37,7 @@ select set_config('esheep.test.photo_register_request', gen_random_uuid()::text,
 select set_config('esheep.test.bundle_command', gen_random_uuid()::text, false);
 select set_config('esheep.test.multistream_command', gen_random_uuid()::text, false);
 select set_config('esheep.test.multistream_primary', gen_random_uuid()::text, false);
+select set_config('esheep.test.archive_marker_command', gen_random_uuid()::text, false);
 select set_config('esheep.test.same_device_first_command', gen_random_uuid()::text, false);
 select set_config('esheep.test.same_device_newer_command', gen_random_uuid()::text, false);
 select set_config('esheep.test.same_device_older_command', gen_random_uuid()::text, false);
@@ -2882,6 +2883,56 @@ select is(
   (select count(*)::integer from esheep_cloud.events),
   12,
   'retrying photo registration cannot append a second photo event'
+);
+
+select set_config(
+  'request.jwt.claims',
+  json_build_object(
+    'sub', current_setting('esheep.test.user_b'),
+    'role', 'authenticated'
+  )::text,
+  true
+);
+set local role authenticated;
+
+select set_config(
+  'esheep.test.archive_marker_result',
+  pg_temp.esheep_cloud_submit_commands_v2(
+    current_setting('esheep.test.farm')::uuid,
+    2,
+    jsonb_build_array(pg_temp.esheep_cloud_test_command(
+      current_setting('esheep.test.archive_marker_command')::uuid,
+      gen_random_uuid(), current_setting('esheep.test.farm')::uuid, 2,
+      current_setting('esheep.test.account_b')::uuid,
+      current_setting('esheep.test.device_b')::uuid,
+      31,
+      'sheep.patchProfile', 'sheepProfile',
+      current_setting('esheep.test.sheep')::uuid,
+      'isHistoricalArchive', 0, current_setting('esheep.test.null_digest'),
+      '{"type":"boolean","value":true}'::jsonb
+    ))
+  )::text,
+  false
+);
+
+select is(
+  current_setting('esheep.test.archive_marker_result')::jsonb #>> '{results,0,type}',
+  'accepted',
+  'the historical archive marker is accepted as a typed sheep profile field'
+);
+
+reset role;
+select ok(
+  (
+    select canonical_state #>> '{isHistoricalArchive,value}' = 'true'
+      and (field_versions #>> '{isHistoricalArchive,version}')::bigint = 1
+    from esheep_cloud.streams
+    where farm_id = current_setting('esheep.test.farm')::uuid
+      and farm_generation = 2
+      and stream_type = 'sheepProfile'
+      and stream_id = current_setting('esheep.test.sheep')::uuid
+  ),
+  'the historical archive marker is durable in the profile stream'
 );
 
 select ok(

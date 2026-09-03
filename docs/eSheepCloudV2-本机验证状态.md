@@ -23,14 +23,14 @@
 - 数据源固定为 iPhone Air 的只读完整 container 备份 `/tmp/esheep-v2-device-backups-20260903/air`，store SHA-256 为 `76c813cd03774a49b98053a55d0341203e93a19fa09af1d224ea454a4093c1af`；iPhone 16 Pro 的旧 Build 5 没有参与数据源判断、命令生成或迁移覆盖。Air store 的 WAL 兼容 `PRAGMA quick_check` 为 `ok`。
 - 远端 V1 恢复备份已保留在 `/tmp/esheep-v2-remote-backup-20260903`：`v1-data.sql` SHA-256 为 `a0d18f2bbe7ebf74c563a7f9974f10c6261e6d140575addbf5aa19715e61e9c8`，`v1-schema.sql` SHA-256 为 `9b478e4fd797f47ce7ede933f70ae5d2f85ab51612131e47f9c95d0c6aacb53a`。
 - 目标为已登记的真实 Development Supabase 项目 `rnqrvthbunrzqtprquqx`、牧场 `8b0fa55e-2a34-4398-ae77-7d7d3701c5dd`。V2 schema 加法迁移以及真实数据探针发现的四个合同兼容修复已部署；V1 表未被重写。
-- Air 提取计划 `/tmp/esheep-v2-real-migration-20260904/migration-plan.json` 的 source manifest digest 为 `8392bfd4317a61b290364698767f44281a28410ce7cb15cd2b4fc2e0c23f3201`。实际写入目标 generation 2 的命令为 `23,365` 条，设备序号连续 `1–23,365`，全部 `accepted`，无 `needs_confirmation`、无 `rejected`；共生成 `34,382` 个事件，事件 head 为 `34,382`，无命令/事件/摘要重复。新增头像修复的 5 条命令均为 `sheepAvatar.set`，直接把 Air 的新照片资产恢复到对应羊只关系。
-- Air 当前 27 个活动照片资产的原图、缩略图和头像共 81 个对象已上传并逐对象服务端确认；V2 资产表为 `27/27` fully verified，原图字节数合计 `18,055,559`。新增 5 条头像关系修复后，V2 快照为 `aefb829f-de5d-46a8-90f6-ed9f7f844a50`，边界事件 `34,382`，126 个分块，`71,992,257` 字节，总摘要 `afb50ab7bf7be986b1e92a538ba60d8b20e95f081589a1ef69a3b205725c08fb`；投影摘要为 `428065740e35d058356818246360fcd629a655e082ed6fd677e0a07e0138077a`。
+- Air 提取计划 `/tmp/esheep-v2-real-migration-20260904/migration-plan.json` 的 source manifest digest 为 `55f694ef9ae1e4ebe71b12a83a8ddd24aee67b9ee2103ec6bc0ae9d5bcc20899`。实际写入目标 generation 2 的命令为 `23,825` 条，设备序号连续 `1–23,825`，全部 `accepted`，无 `needs_confirmation`、无 `rejected`；共生成 `34,842` 个事件，事件 head 为 `34,842`，无命令/事件/摘要重复。其中 `18` 条为 `sheepAvatar.set`（含 5 条新增头像关系修复），`460` 条为 `sheep.patchProfile` 的 `isHistoricalArchive=true` 归档投影补丁。
+- Air 当前 27 个活动照片资产的原图、缩略图和头像共 81 个对象已上传并逐对象服务端确认；V2 资产表为 `27/27` fully verified，原图字节数合计 `18,055,559`。归档补丁完成后，V2 最新快照为 `3f8bcaee-0e8a-4c62-a8dd-4caebe8e9838`，边界事件 `34,842`，128 个分块，`73,098,932` 字节，总摘要 `fb366ab75bb5ac83715f93e704add14d640fef7f2417f432cb65f5de8f457ec0`；投影摘要为 `1850a6bc8d52cd6b6ede91bca1a58dbda5c818d7913c80677b8886334d11e472`。
 - Storage 侧的 `esheep-cloud-assets` 桶精确存在 81 个 generation 2 对象，metadata 字节数合计 `27,329,867`；旧 V1 `farm-assets` 桶仍为该牧场 28 个对象、`18,569,570` 字节，未与 V2 对象混用。
-- 真实远端测试已完成：完整性审计通过且全部 13 类检查为 0 mismatch；`openInitialSync` 返回同一快照；事件拉取首段返回 `1–500`，尾段返回 `33,383–34,382` 且 `has_more=false`；重复发送最后一条新增头像命令返回 `duplicate`，event head 仍为 `34,382`；状态查询无 open attention。V2 当前共有 `18` 条 `sheepAvatar` 流，5 个新增头像处理项均已闭合，不需要人工选择旧头像。
+- 真实远端测试已完成：完整性审计通过且全部 13 类检查为 0 mismatch；`openInitialSync` 返回同一最新快照；事件拉取首段返回 `1–500`，尾段返回 `33,843–34,842` 且 `has_more=false`；重复发送最后一条归档补丁命令返回 `duplicate`，其原始事件序号为 `34,842` 且 event head 仍为 `34,842`；状态查询无 open attention。V2 当前共有 `18` 条 `sheepAvatar` 流，5 个新增头像处理项均已闭合，不需要人工选择旧头像；`460/460` 条活动历史归档投影均为 `isHistoricalArchive=true`。
 - 测试完成后 V2 `farm_state` 已设为 `read_only`，migration reconciliation 保持 `shadowing`；未调用 `mark_migration_ready_v2` 或 cutover。V1 registry 仍为 `provider=supabase`、authority generation `1`、current revision `2061`。迁移报告已将服务端通过项和未完成项写入远端 `parity_report`，不是把未做的设备验收标成通过。
 - 最终 V1 核对仍为：`farm_operations=2061`、`farm_entities=22967`、`farm_tombstones=234`、`farm_assets=27`、目标牧场 member rows `3`；registry 仍为 `supabase / generation 1 / revision 2061`。V1 备份、本机 Air 备份和设备 container 均未删除。
 - `DH054`、`256`、`172545`、`8062`、`A058` 在 Air 当前 `ZSHEEPAVATARRECORD` 中均没有旧头像记录，但各自都有一张 Air 新增的活动照片资产和对应 `addPhoto` 原始操作。五条 `sheepAvatar.set` 修复命令已接受并纳入上述快照；V2 当前 `sheepAvatar` 流为 `18` 条、`attention_items` 为 `0`，这五项不再是人工决策门。定点检查到的唯一 Air `resolveConflict` 记录是既有开发用笔栏冲突，V1 远端也没有这五个头像的冲突载荷。
-- 历史归档行共 `467` 条：其中 `460` 条未删除行已由现有 `sheep.add` 事实代表，另有 `7` 条已删除的旧 `.jpg` 遗留照片行没有业务 `sheep.add`；归档标记在新鲜设备投影中的完整语义对账仍未完成，因此不能把这部分写成 fresh-device parity 已通过。
+- 历史归档行共 `467` 条：其中 `460` 条未删除行已由现有 `sheep.add` 事实代表，并已用 `460` 条 `sheep.patchProfile` 补齐 `isHistoricalArchive=true`；另有 `7` 条已删除的旧 `.jpg` 遗留照片行没有业务 `sheep.add`，只保留为审计遗留，不伪造业务羊只。服务端归档投影语义已完成并通过；整体 fresh-device parity 仍保持未通过，原因是物理新设备 UI 验收尚未完成。
 
 
 ## 已完成的可自动验证部分
@@ -86,6 +86,17 @@
 | `/tmp/esheep-v2-final-static4.log` | 通过（本地占位符模式） | 清理 V2 SQL 局部变量后的静态重检；80/80、品牌/本地化/Privacy Manifest/diff 全部通过，正式发布仍需先补齐法律占位内容。 |
 | `/tmp/esheep-v2-static-semantic-hardening.log` | 通过（本地占位符模式） | 服务端语义合同测试和照片生命周期校验后的静态重检；80/80、品牌边界、本地化、Privacy Manifest 和 diff 检查通过。正式发布仍需补齐法律占位内容。 |
 | `/tmp/esheep-v2-real-static-avatar-fix-20260904.log` | 通过（本地占位符模式） | 五个新增头像关系恢复后的静态重检；80/80、品牌边界、本地化、Privacy Manifest 和 diff 检查通过。正式发布仍需补齐法律占位内容。 |
+| `/tmp/esheep-v2-historical-archive-static-20260904.log` | 通过（本地占位符模式） | 460 条历史归档投影补丁及客户端 reducer 变更后的静态重检；80/80、品牌边界、本地化、Privacy Manifest 和 diff 检查通过。正式发布仍需补齐法律占位内容。 |
+| `/tmp/esheep-v2-historical-archive-pgtap-20260904.log` | 通过 | 增加 `isHistoricalArchive` 字段合同后的本地 Supabase pgTAP：9 个文件、`planned=265, todo=1, failed=0`；lint 仅有既有非阻断 advisory，advisors 无问题。 |
+| `/tmp/esheep-v2-historical-archive-remote-migration-20260904.log` | 通过 | 远端只加法迁移 `20260904034500_allow_historical_archive_profile_field.sql` 已应用；未重写 V1 表。 |
+| `/tmp/esheep-v2-historical-archive-reconciliation-update-20260904.log` | 通过 | 迁移对账记录更新为新 source/target manifest digest，并保留 `status=shadowing`；parity digest 为 `c587e4f77a36db55b3f3ddc918466145b3a09a12b0eed31fe827021b562db6f8`。 |
+| `/tmp/esheep-v2-historical-archive-snapshot-20260904.log` | 通过 | 归档投影完成后服务端完整性审计通过并构建验证快照 `3f8bcaee-0e8a-4c62-a8dd-4caebe8e9838`，事件边界 `34842`。 |
+| `/tmp/esheep-v2-historical-archive-verification-20260904.log` | 通过 | 远端命令/事件/流/快照/状态核对：命令 `23825`、事件 `34842`、流 `28954`、资产 `27`、归档补丁命令和事件各 `460`、归档 true 流 `460`、open attention `0`。 |
+| `/tmp/esheep-v2-historical-archive-rpc-verification-20260904.log` | 通过 | 最新快照 `openInitialSync` 返回边界 `34842`；首段拉取 `1–500`；尾段拉取 `33843–34842` 且 `has_more=false`。 |
+| `/tmp/esheep-v2-historical-archive-idempotency-20260904.log` | 通过 | 最后一条 `isHistoricalArchive` 补丁重复提交返回 `duplicate`，原始事件序号 `34842`，未增加 head。 |
+| `/tmp/esheep-v2-historical-archive-focused-tests-20260904.xcresult` | 通过 | 使用独立 DerivedData 编译当前 Swift 代码并执行 `ESheepCloudV2Tests`；`Executed 37 tests, with 0 failures`。 |
+| `/tmp/esheep-v2-historical-archive-ios-20260904.log` | 部分通过（Debug） | 三配置门禁的 Debug 无签名构建成功并包含当前 reducer；Staging 在既有 `StagingEnvironment.local.xcconfig` 缺失、解析 URL 为空处停止，未把该次运行记为三配置全通过。 |
+| `/tmp/esheep-v2-historical-archive-devicectl-20260904.log` | 只读诊断 | `devicectl` 显示 iPhone 16 Pro 仍为 connected，命名 iPhone Air 当前为 unavailable；本次未安装、卸载、覆盖或修改任何真机容器，物理 UI 验收继续保持未完成。 |
 | `/tmp/esheep-v2-final-focused3-20260903.xcresult` | 通过 | 最新 V2 聚焦 XCTest：`Executed 35 tests, with 0 failures`。日志仍有迁移测试夹具清理时 SQLite vnode unlink 警告（测试生命周期噪声，未导致测试失败或活动牧场数据被修改），因此不宣称“无警告”。 |
 | `/tmp/esheep-v2-final-focused5-20260903.xcresult` | 通过 | 两处响应边界保护后的增量编译与 V2 聚焦 XCTest；`Executed 35 tests, with 0 failures`。编译目的地使用当前存在的测试模拟器 ID；迁移夹具的 SQLite vnode unlink 警告仍仅属于测试清理生命周期噪声。 |
 | `/var/folders/dh/kmxczty56xv16q83g8nkf_300000gn/T/esheep-v2-pause-tests.XXXXXX.nNSIcAqRgj/V2Tests.xcresult` | 通过 | 首次接收暂停/恢复语义、头像处理项、安全保存状态、命令路由等 V2 聚焦 XCTest；`Executed 37 tests, with 0 failures, 0 skipped`。包含取消后会话保持 paused、失败次数不增加且活动牧场不被污染的回归；日志仍有既有 SQLite vnode unlink 测试清理警告。 |
@@ -132,7 +143,7 @@ ALLOW_LOCAL_DB_RESET=1 VERIFY_PUBLIC_CONFIG=0 \
 
 1. 只读备份本地 store、WAL/SHM、资源 manifest，并做 `quick_check`。
 2. 服务端影子转换 V1 数据，完成分类数量、摘要、关联、事件 head 和资源哈希对账。
-3. 五个新加头像关系已从 Air 照片资产恢复并纳入快照，不再作为人工决策门；继续完成历史归档行的资产/投影对账。
+3. 五个新加头像关系已从 Air 照片资产恢复并纳入快照，不再作为人工决策门；460 条活动历史归档的 `isHistoricalArchive` 投影也已完成，7 条已删除旧照片仅保留审计遗留。
 4. 新客户端 staging 接收并校验完整快照；通过后才能进入最后确认页。
 5. 现场确认一次后，才允许服务端事务锁定牧场、关闭旧写入口并启用 V2 authority generation。
 

@@ -733,6 +733,7 @@ enum ESheepCloudEventReducer {
             case "note": sheep.note = try string(value, field: field)
             case "purpose": sheep.purpose = try string(value, field: field)
             case "isBreedingRam": sheep.isBreedingRam = try boolean(value, field: field)
+            case "isHistoricalArchive": sheep.isHistoricalArchive = try boolean(value, field: field)
             case "currentParity":
                 if case .integer(let parity) = value {
                     guard parity >= 0, sheep.sex == .ewe else {

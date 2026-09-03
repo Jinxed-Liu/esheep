@@ -29,6 +29,7 @@ const PLAN_PATH = path.join(OUTPUT_DIR, 'migration-plan.json');
 const SEED_SQL_PATH = path.join(OUTPUT_DIR, 'seed.sql');
 const CONFIRM_SQL_PATH = path.join(OUTPUT_DIR, 'confirm-assets.sql');
 const BATCH_DIR = path.join(OUTPUT_DIR, 'command-batches');
+const HISTORICAL_ARCHIVE_PATCH_FIELD = 'isHistoricalArchive';
 
 // The owner confirmed these are newly added avatar photos whose avatar
 // relation was lost. They have no legacy avatar value to choose between, so
@@ -579,11 +580,120 @@ function buildCommands(drafts, assets) {
       avatarRepairEarTag: avatar.earTag || null
     });
   }
+
+  const archiveRows = sqliteJSON(`
+    select trim(ZEARTAG) as earTag, hex(ZID) as sheep,
+      ZCREATEDAT as created, ZLEGACYSOURCEKEY as sourceKey,
+      ZDELETEDAT as deleted
+    from ZSHEEPRECORD
+    where ZISHISTORICALARCHIVE = 1
+    order by Z_PK
+  `);
+  const archiveActiveRows = archiveRows.filter((row) => row.deleted === null || row.deleted === undefined || row.deleted === '');
+  const archiveDeletedRows = archiveRows.length - archiveActiveRows.length;
+  if (archiveRows.length !== 467 || archiveActiveRows.length !== 460 || archiveDeletedRows !== 7) {
+    die(`historical archive row counts changed: total=${archiveRows.length}, active=${archiveActiveRows.length}, deleted=${archiveDeletedRows}`);
+  }
+  const sheepAdds = new Map(
+    commands
+      .filter((command) => command.kind === 'sheep.add')
+      .map((command) => [String(command.entityID).toLowerCase(), command])
+  );
+  const historicalArchivePatches = [];
+  for (const row of archiveActiveRows) {
+    const sheepID = uuidFromHex(row.sheep);
+    if (!sheepID) die(`invalid historical archive sheep ID: ${row.sheep}`);
+    const sheepAdd = sheepAdds.get(sheepID.toLowerCase());
+    if (!sheepAdd) die(`historical archive sheep is missing a sheep.add command: ${sheepID}`);
+    const stateKey = `sheepProfile:${sheepID.toLowerCase()}`;
+    const state = fieldState.get(stateKey) || new Map();
+    const current = state.get(HISTORICAL_ARCHIVE_PATCH_FIELD) || { version: 0, digest: nullDigest };
+    const desiredValue = { type: 'boolean', value: true };
+    const desiredDigest = valueDigest(desiredValue);
+    if (current.digest === desiredDigest) die(`historical archive flag already represented in source drafts: ${sheepID}`);
+    const streams = [{ type: 'sheepProfile', id: sheepID }];
+    const fields = [{
+      stream: streams[0],
+      field: HISTORICAL_ARCHIVE_PATCH_FIELD,
+      observedVersion: current.version,
+      baseValueDigest: current.digest
+    }];
+    const changes = [{
+      field: HISTORICAL_ARCHIVE_PATCH_FIELD,
+      mutation: { action: 'set', value: desiredValue }
+    }];
+    const payload = {
+      kind: 'sheep.patchProfile',
+      body: {
+        patchProfile: {
+          sheepID,
+          fields: changes
+        }
+      }
+    };
+    const ordinal = commands.length + 1;
+    const commandID = uuidFromHash(`air-v2-historical-archive-profile:${ordinal}:${sheepID}`);
+    const sourceRequestID = uuidFromHash(`air-v2-historical-archive-profile-source-request:${ordinal}:${sheepID}`);
+    const occurredAtMillis = millisFromCoreDataSeconds(row.created) ?? sourceCreatedAt;
+    const unsigned = makeUnsigned({
+      commandID,
+      sourceRequestID,
+      occurredAtMillis,
+      kind: 'sheep.patchProfile',
+      payload,
+      streams,
+      fields,
+      changes,
+      requiredAssetIDs: []
+    });
+    unsigned.deviceSequence = ordinal;
+    unsigned.createdAt = sourceCreatedAt;
+    const unsignedBytes = Buffer.from(stableJSON(unsigned), 'utf8');
+    const contentDigest = sha256(unsignedBytes);
+    const signature = Buffer.concat([
+      crypto.createHash('sha256').update(unsignedBytes).digest(),
+      crypto.createHash('sha256').update(Buffer.concat([unsignedBytes, Buffer.from('eSheep-Air-V2-migration', 'utf8')])).digest()
+    ]);
+    const patch = {
+      ordinal,
+      kind: 'sheep.patchProfile',
+      entityType: 'sheepProfile',
+      entityID: sheepID,
+      commandID,
+      sourceRequestID,
+      occurredAtMillis,
+      unsigned,
+      unsignedCommandBase64: unsignedBytes.toString('base64'),
+      contentDigest,
+      deviceSignatureBase64: signature.toString('base64'),
+      requiredAssetIDs: [],
+      sourceRevision: 0,
+      replayOrder: 220,
+      historicalArchive: {
+        earTag: row.earTag || null,
+        sourceKey: row.sourceKey || null,
+        sheepAddCommandID: sheepAdd.commandID,
+        field: HISTORICAL_ARCHIVE_PATCH_FIELD
+      }
+    };
+    commands.push(patch);
+    historicalArchivePatches.push(patch.historicalArchive);
+    state.set(HISTORICAL_ARCHIVE_PATCH_FIELD, {
+      version: current.version + 1,
+      digest: desiredDigest
+    });
+    fieldState.set(stateKey, state);
+  }
   return {
     commands,
     avatarCount: avatarBySheep.size,
     repairAvatarCount: newAvatarRepairs.length,
     newAvatarRepairs,
+    historicalArchiveRowCount: archiveRows.length,
+    historicalArchiveActiveRowCount: archiveActiveRows.length,
+    historicalArchiveDeletedRowCount: archiveDeletedRows,
+    historicalArchivePatchCount: historicalArchivePatches.length,
+    historicalArchivePatches,
     createdAtMillis: sourceCreatedAt
   };
 }
@@ -736,7 +846,11 @@ function main() {
     activeAssetCount: assets.length,
     activeAssetDigests: assets.map((asset) => ({ assetID: asset.assetID, contentSHA256: asset.contentSHA256 })).sort((a, b) => a.assetID.localeCompare(b.assetID)),
     newAvatarRepairTags: NEW_AVATAR_REPAIR_EAR_TAGS,
-    newAvatarRepairCount: built.repairAvatarCount
+    newAvatarRepairCount: built.repairAvatarCount,
+    historicalArchiveRows: built.historicalArchiveRowCount,
+    historicalArchiveActiveRows: built.historicalArchiveActiveRowCount,
+    historicalArchiveDeletedRows: built.historicalArchiveDeletedRowCount,
+    historicalArchivePatchCount: built.historicalArchivePatchCount
   };
   const sourceManifestDigest = sha256(Buffer.from(stableJSON(sourceManifest), 'utf8'));
   const batchPaths = writeBatches(built.commands);
@@ -760,6 +874,7 @@ function main() {
       activeAssets: assets.length,
       avatarCommands: built.avatarCount,
       newAvatarRepairCommands: built.repairAvatarCount,
+      historicalArchivePatchCommands: built.historicalArchivePatchCount,
       commandBatches: batchPaths.length
     },
     farm: {
@@ -781,6 +896,7 @@ function main() {
       localFiles: { sourcePath, thumbnailPath, avatarPath, originalPath }
     })),
     newAvatarRepairs: built.newAvatarRepairs,
+    historicalArchivePatches: built.historicalArchivePatches,
     commands: built.commands
   };
   fs.writeFileSync(PLAN_PATH, JSON.stringify(plan, null, 2));
