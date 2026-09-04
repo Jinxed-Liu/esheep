@@ -2,7 +2,7 @@
 
 更新时间：2026-09-04
 
-这份记录按源数据、远端账本、设备备份、服务端测试和现场验收分层记录。2026-09-04 已按 iPhone Air 的实时备份执行真实牧场 V1 → V2 影子迁移并完成服务端验证；这不等同于 authority generation 已切换，也不把模拟器或 Device Hub 失败写成现场验收通过。
+这份记录按源数据、远端账本、设备备份、服务端测试和现场验收分层记录。2026-09-04 已按 iPhone Air 的实时备份完成真实牧场 V1 → V2 影子迁移，并按所有者明确要求完成 Cloud V2 authority generation 切换；切换后远端读链路和幂等写入口已通过。两台真机的 Device Hub 视觉验收仍单独留为待补证据，不把 CLI 截图冒充现场 UI 验收。
 
 ## 2026-09-03 本机基线与准备记录（历史快照）
 
@@ -27,10 +27,19 @@
 - Air 当前 27 个活动照片资产的原图、缩略图和头像共 81 个对象已上传并逐对象服务端确认；V2 资产表为 `27/27` fully verified，原图字节数合计 `18,055,559`。归档补丁完成后，V2 最新快照为 `3f8bcaee-0e8a-4c62-a8dd-4caebe8e9838`，边界事件 `34,842`，128 个分块，`73,098,932` 字节，总摘要 `fb366ab75bb5ac83715f93e704add14d640fef7f2417f432cb65f5de8f457ec0`；投影摘要为 `1850a6bc8d52cd6b6ede91bca1a58dbda5c818d7913c80677b8886334d11e472`。
 - Storage 侧的 `esheep-cloud-assets` 桶精确存在 81 个 generation 2 对象，metadata 字节数合计 `27,329,867`；旧 V1 `farm-assets` 桶仍为该牧场 28 个对象、`18,569,570` 字节，未与 V2 对象混用。
 - 真实远端测试已完成：完整性审计通过且全部 13 类检查为 0 mismatch；`openInitialSync` 返回同一最新快照；事件拉取首段返回 `1–500`，尾段返回 `33,843–34,842` 且 `has_more=false`；重复发送最后一条归档补丁命令返回 `duplicate`，其原始事件序号为 `34,842` 且 event head 仍为 `34,842`；状态查询无 open attention。V2 当前共有 `18` 条 `sheepAvatar` 流，5 个新增头像处理项均已闭合，不需要人工选择旧头像；`460/460` 条活动历史归档投影均为 `isHistoricalArchive=true`。
-- 测试完成后 V2 `farm_state` 已设为 `read_only`，migration reconciliation 保持 `shadowing`；未调用 `mark_migration_ready_v2` 或 cutover。V1 registry 仍为 `provider=supabase`、authority generation `1`、current revision `2061`。迁移报告已将服务端通过项和未完成项写入远端 `parity_report`，不是把未做的设备验收标成通过。
-- 最终 V1 核对仍为：`farm_operations=2061`、`farm_entities=22967`、`farm_tombstones=234`、`farm_assets=27`、目标牧场 member rows `3`；registry 仍为 `supabase / generation 1 / revision 2061`。V1 备份、本机 Air 备份和设备 container 均未删除。
+- 切换前测试完成时 V2 `farm_state` 已设为 `read_only`，migration reconciliation 保持 `shadowing`；该阶段未调用标准 receipt-gated `mark_migration_ready_v2` 或标准 cutover。随后 owner-confirmed immediate 入口在完整性、快照、资源和 open attention 检查通过后完成 authority 切换，未把未做的设备验收标成通过。
+- 切换前最终 V1 核对为：`farm_operations=2061`、`farm_entities=22967`、`farm_tombstones=234`、`farm_assets=27`、目标牧场 member rows `3`；当时 registry 为 `supabase / generation 1 / revision 2061`。V1 备份、本机 Air 备份和设备 container 均未删除；切换后的权威状态见下一节。
 - `DH054`、`256`、`172545`、`8062`、`A058` 在 Air 当前 `ZSHEEPAVATARRECORD` 中均没有旧头像记录，但各自都有一张 Air 新增的活动照片资产和对应 `addPhoto` 原始操作。五条 `sheepAvatar.set` 修复命令已接受并纳入上述快照；V2 当前 `sheepAvatar` 流为 `18` 条、`attention_items` 为 `0`，这五项不再是人工决策门。定点检查到的唯一 Air `resolveConflict` 记录是既有开发用笔栏冲突，V1 远端也没有这五个头像的冲突载荷。
-- 历史归档行共 `467` 条：其中 `460` 条未删除行已由现有 `sheep.add` 事实代表，并已用 `460` 条 `sheep.patchProfile` 补齐 `isHistoricalArchive=true`；另有 `7` 条已删除的旧 `.jpg` 遗留照片行没有业务 `sheep.add`，只保留为审计遗留，不伪造业务羊只。服务端归档投影语义已完成并通过；整体 fresh-device parity 仍保持未通过，原因是物理新设备 UI 验收尚未完成。
+- 历史归档行共 `467` 条：其中 `460` 条未删除行已由现有 `sheep.add` 事实代表，并已用 `460` 条 `sheep.patchProfile` 补齐 `isHistoricalArchive=true`；另有 `7` 条已删除的旧 `.jpg` 遗留照片行没有业务 `sheep.add`，只保留为审计遗留，不伪造业务羊只。服务端归档投影语义已完成并通过；`fresh_device_projection_parity` 仍记录为未通过，原因是物理新设备 UI 验收尚未完成，该事实不阻止本次 owner-confirmed immediate 切换。
+
+## 2026-09-04 所有者确认切换与切换后远端测试
+
+- 在 iPhone 16 Pro 解锁、两台指定真机均已连接且 `com.sheepfarm.ios` 均为 `3.1.0 (13)` 的前提下，按所有者最新指令“以 iPhone Air 为唯一源，立即切换 Cloud V2 权威，设备验收在切换后进行”执行了一次性 owner-confirmed immediate cutover。
+- 远端返回：牧场 `8b0fa55e-2a34-4398-ae77-7d7d3701c5dd`、provider `eSheepCloud`、authority generation `2`、V1 final revision `2061`、V2 event head `34842`、快照 `3f8bcaee-0e8a-4c62-a8dd-4caebe8e9838`、parity digest `c587e4f77a36db55b3f3ddc918466145b3a09a12b0eed31fe827021b562db6f8`。V1 表、备份和旧设备数据未删除。
+- 新入口不是直接改表：它在事务内锁定 registry、migration reconciliation 和 farm state，再次检查协议 readiness、服务端完整性审计、已验证快照 manifest、27 个资产的 81 个 generation 2 变体、0 个 open/resolving attention，以及 generation/摘要一致性；审计字段 `cutover_mode=owner_confirmed_immediate`、`owner_confirmation_at` 和 `physical_acceptance_pending=true` 已留存。原有标准 receipt-gated cutover 入口保持不变。
+- 切换后远端 smoke test 通过：`fetch_status_v2` 为 generation `2`、head `34842`、`v2_ready=true`、`write_frozen=false`、open attention `0`；`openInitialSync` 返回同一快照和 `128` 分块；尾段事件拉取返回 `33843–34842` 共 `1000` 条且 `has_more=false`。
+- 切换后重复提交最后一条归档补丁命令仍返回 `duplicate`，原始事件序号保持 `34842`，未增加事件；旧 V1 `apply_farm_operations_batch` 写入口被 `farm_authority_not_writable` 拒绝，未写入 V1。
+- 当前切换状态是“真实牧场 Cloud V2 已成为权威；设备现场验收待补”。`physical_acceptance_pending=true`、`real_device_acceptance=false` 和 `fresh_device_projection_parity=false` 是真实审计事实，不是迁移失败，也不应被改写成双机已验收。
 
 
 ## 已完成的可自动验证部分
@@ -47,14 +56,14 @@
 - 同一个 command ID 现在同时绑定牧场、generation、来源请求、bundle、账号、设备、设备序号、协议/载荷版本和命令类型；任何范围或内容不一致都会拒绝，不会把另一台设备的结果当成重复成功。
 - 事件回放会校验事件来源的牧场、generation、账号、设备和命令摘要后才落本地投影；首次接收激活前也会扫描活动 store 中的牧场业务数据，避免把隐藏的旧资料和新快照混成一座牧场。
 - 一个命令涉及多个业务流时，服务端在同一事务内按连续事件序号为每条受影响流写入事件；客户端按命令 ID 只执行一次业务 reducer，后续事件只推进对应流，避免转群、离场、配方成员和库存语义流出现半套状态。
-- 云端权威切换现在明确拒绝已经属于 eSheep+ 云的牧场、来源或目标 generation 不匹配、非 preparing/read-only 状态、未通过 parity 证明、缺少已验证快照或快照 manifest 不一致的请求；这些检查在锁定的事务内完成，未执行真实牧场切换。
+- 云端标准权威切换仍明确拒绝已经属于 eSheep+ 云的牧场、来源或目标 generation 不匹配、非 preparing/read-only 状态、未通过 parity 证明、缺少已验证快照或快照 manifest 不一致的请求；本次另有明确审计的 owner-confirmed immediate 入口，在不伪造设备 receipt 的前提下完成了真实 authority 切换。
 - V1 迁移发现只有旧操作没有 Outbox 发送证据时，转为“前向修复”并阻断切换，不再把“没有记录”伪装成已接受回执；新增回归覆盖该状态。
 - 首次接收的验证 store 使用受限生命周期，在复制到活动 store 或失败清理前释放 SQLite 容器，避免 WAL/SHM 文件仍被打开时被删除。
 - 事件恢复会完整恢复照片的缩略图、头像尺寸和原图状态；缺少资源账本时对照片删除/恢复失败关闭，不会产生半套资源状态。
 - 服务端语义边界已进一步收紧：字段观察、字段值类型、照护/TMR 主流类型、删除/恢复目标以及照片回收/恢复前置条件均在事务入口失败关闭；头像仍被引用的资源不能进入回收期。该门禁验证的是协议合同和事务安全，不等同于 80 种业务在真实牧场逐项执行。
 - V2 牧场在前台、后台和恢复入口均不再落入旧兼容恢复页；旧 `.supabase` 牧场只进入只读迁移准备入口，旧同步器、旧 Realtime 和旧冲突中心不再作为这类牧场的正常保存路径。界面入口统一呈现为“eSheep+ 云”。
 
-覆盖矩阵的边界：`80/80` 表示目录、强类型解码、客户端工厂/回放、迁移路径和自动化覆盖均已接线并通过静态门禁；服务端目前仍由统一 V2 事务入口按目录和合并模式承载，不能把这项静态计数误写成 80 个业务种类都已在真实牧场逐项现场执行。真实牧场影子迁移、数据对账和 authority 切换仍保持发布阻断，等待单独授权与现场条件。
+覆盖矩阵的边界：`80/80` 表示目录、强类型解码、客户端工厂/回放、迁移路径和自动化覆盖均已接线并通过静态门禁；服务端目前仍由统一 V2 事务入口按目录和合并模式承载，不能把这项静态计数误写成 80 个业务种类都已在真实牧场逐项现场执行。真实牧场影子迁移、数据对账和 authority 切换已经完成；双真机视觉、离线照片和性能验收仍保持发布阻断。
 
 ## 已留存的本机门禁证据
 
@@ -94,6 +103,9 @@
 | `/tmp/esheep-v2-historical-archive-verification-20260904.log` | 通过 | 远端命令/事件/流/快照/状态核对：命令 `23825`、事件 `34842`、流 `28954`、资产 `27`、归档补丁命令和事件各 `460`、归档 true 流 `460`、open attention `0`。 |
 | `/tmp/esheep-v2-historical-archive-rpc-verification-20260904.log` | 通过 | 最新快照 `openInitialSync` 返回边界 `34842`；首段拉取 `1–500`；尾段拉取 `33843–34842` 且 `has_more=false`。 |
 | `/tmp/esheep-v2-historical-archive-idempotency-20260904.log` | 通过 | 最后一条 `isHistoricalArchive` 补丁重复提交返回 `duplicate`，原始事件序号 `34842`，未增加 head。 |
+| `/tmp/esheep-v2-cutover-post-smoke-20260904.log` | 通过 | 切换后远端最终状态：`provider=esheep_cloud`、authority generation `2`、migration `cut_over`、`owner_confirmed_immediate`、event head `34842`、`v2_ready=true`、`write_frozen=false`、open attention `0`。 |
+| `/tmp/esheep-v2-post-cutover-tests-20260904.xcresult` | 通过 | 切换后重新编译并执行 V2 聚焦 XCTest；`Executed 37 tests, with 0 failures`，命令退出码 `0`。 |
+| `/tmp/esheep-v2-cutover-post-static-20260904.log` | 通过（本地占位符模式） | 切换后静态门禁重检：80/80 命令覆盖、品牌边界、本地化、Privacy Manifest 和 diff 检查通过；法律占位内容仍阻断正式发布。 |
 | `/tmp/esheep-v2-historical-archive-focused-tests-20260904.xcresult` | 通过 | 使用独立 DerivedData 编译当前 Swift 代码并执行 `ESheepCloudV2Tests`；`Executed 37 tests, with 0 failures`。 |
 | `/tmp/esheep-v2-historical-archive-ios-20260904.log` | 部分通过（Debug） | 三配置门禁的 Debug 无签名构建成功并包含当前 reducer；Staging 在既有 `StagingEnvironment.local.xcconfig` 缺失、解析 URL 为空处停止，未把该次运行记为三配置全通过。 |
 | `/tmp/esheep-v2-historical-archive-devicectl-20260904.log` | 只读诊断 | `devicectl` 显示 iPhone 16 Pro 仍为 connected，命名 iPhone Air 当前为 unavailable；本次未安装、卸载、覆盖或修改任何真机容器，物理 UI 验收继续保持未完成。 |
@@ -123,9 +135,10 @@
 - 离线连续拍摄至少 200 张照片、头像设置/取消/恢复、切后台、强制结束和重启后的真实收敛；
 - 25,000 条逻辑记录首次接收以及受控 20 Mbps 网络下 90 秒进入牧场；
 - 真实网络下 Realtime 不可用时的事件拉取回退时延；
-- 真实云端影子迁移、照片哈希对账和 authority generation 原子切换。
+- 两台真机通过 Device Hub 完成切换后冷启动、牧场首页、羊只、照片、历史记录和跨设备事件可见性验收；
+- 200 张离线照片和 25,000 条专用验收牧场性能夹具仍未执行。
 
-因此当前状态是“代码与本机自动化继续收口”，不是“V2 已完成发布”或“真实牧场已经切换”。现场验收暂缓不会被模拟器、静态检查或本地历史数据库结果替代。
+因此当前状态是“真实牧场已切换到 Cloud V2，现场验收和正式发布仍未完成”。现场验收暂缓不会被模拟器、静态检查或本地历史数据库结果替代。
 
 ## 恢复本地数据库门禁
 
@@ -139,12 +152,12 @@ ALLOW_LOCAL_DB_RESET=1 VERIFY_PUBLIC_CONFIG=0 \
 
 在执行前需先让 Colima/Docker 的虚拟机文件系统恢复可写。成功后应更新本记录中的日志路径和 pgTAP 数量；失败时记录实际 I/O 错误，不能跳过数据库门禁。
 
-## 真实牧场切换仍需的最后顺序
+## 真实牧场切换后的收尾
 
 1. 只读备份本地 store、WAL/SHM、资源 manifest，并做 `quick_check`。
 2. 服务端影子转换 V1 数据，完成分类数量、摘要、关联、事件 head 和资源哈希对账。
 3. 五个新加头像关系已从 Air 照片资产恢复并纳入快照，不再作为人工决策门；460 条活动历史归档的 `isHistoricalArchive` 投影也已完成，7 条已删除旧照片仅保留审计遗留。
-4. 新客户端 staging 接收并校验完整快照；通过后才能进入最后确认页。
-5. 现场确认一次后，才允许服务端事务锁定牧场、关闭旧写入口并启用 V2 authority generation。
+4. 已按 owner-confirmed immediate 路径完成服务端事务锁定、关闭 V1 写入口并启用 V2 authority generation；V1 仍保留为只读审计副本。
+5. 待 Device Hub 恢复后，在 Air 与 16 Pro 上分别完成切换后冷启动、首页进入、摘要/照片/头像/历史读取和跨设备事件可见性，并把实际截图与 staging/store 摘要补入本记录。
 
 第一条 V2 业务事实被接受后，旧副本不再恢复为权威，只能向前修复；旧数据和备份按计划保留至少 90 天。
