@@ -5,6 +5,7 @@ repo_root="${0:A:h:h}"
 developer_dir="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
 expected_xcode_build="${EXPECTED_XCODE_BUILD:-27A5252f}"
 expected_app_build="${EXPECTED_APP_BUILD:-4}"
+expected_app_version="${EXPECTED_APP_VERSION:-3.1.1}"
 release_config="$repo_root/Config/ReleaseEnvironment.local.xcconfig"
 test_destination="${TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 17 Pro}"
 derived_data="${TESTFLIGHT_DERIVED_DATA:-$(mktemp -d -t esheep-testflight.XXXXXX)}"
@@ -36,7 +37,7 @@ DEVELOPER_DIR="$developer_dir" xcodebuild -showBuildSettings \
   -scheme eSheepNext \
   -configuration Release > "$settings_file"
 
-rg -q 'MARKETING_VERSION = 3\.1\.0' "$settings_file" || fail "MARKETING_VERSION must be 3.1.0"
+rg -Fq "MARKETING_VERSION = ${expected_app_version}" "$settings_file" || fail "MARKETING_VERSION must be ${expected_app_version}"
 rg -q "CURRENT_PROJECT_VERSION = ${expected_app_build}$" "$settings_file" || \
   fail "CURRENT_PROJECT_VERSION must be ${expected_app_build}"
 rg -q 'PRODUCT_BUNDLE_IDENTIFIER = com\.sheepfarm\.ios' "$settings_file" || fail "Release App bundle identifier is incorrect"
