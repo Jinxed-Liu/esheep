@@ -277,7 +277,6 @@ struct RemoteDomainApplyService {
     /// never be rejected because a retained V1 entity revision is different.
     /// The legacy writer below is reused only as a domain-model adapter; V2
     /// itself never serializes or compares the legacy `baseRevision` field.
-    @MainActor
     func applyV2(
         _ envelope: CloudOperationEnvelope,
         context: ModelContext
@@ -295,7 +294,6 @@ struct RemoteDomainApplyService {
     /// verified. The existing business writer still consumes its historical
     /// internal envelope shape, so construction stays inside this service and
     /// never crosses the V2 gateway, persistence, or UI boundaries.
-    @MainActor
     func applyV2AuthoritativeCommand(
         _ command: FarmCommand,
         event: ESheepCloudEventEnvelopeV2,

@@ -123,7 +123,7 @@ actor ESheepCloudInitialSyncCoordinator {
         gateway: any ESheepCloudGateway,
         fileManager: FileManager = .default,
         applicationSupportURL: URL? = nil
-    ) async {
+    ) {
         self.farmID = farmID
         self.gateway = gateway
         self.fileManager = fileManager
@@ -131,7 +131,7 @@ actor ESheepCloudInitialSyncCoordinator {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0]
-        self.localStore = await ESheepCloudInitialSyncLocalStore(container: container)
+        self.localStore = ESheepCloudInitialSyncLocalStore(container: container)
     }
 
     func prepareNewInstallation(
@@ -194,7 +194,7 @@ actor ESheepCloudInitialSyncCoordinator {
                 throw ESheepCloudInitialSyncError.manifestMismatch
             }
 
-            let session = try await localStore.beginOrResume(
+            let session = try localStore.beginOrResume(
                 manifest: manifest,
                 stagingStoreRelativePath: relativeStagingStorePath(
                     farmID: farmID,
@@ -218,7 +218,7 @@ actor ESheepCloudInitialSyncCoordinator {
             )
             try verifyWholeSnapshot(manifest: manifest, stagingRoot: stagingRoot)
 
-            try await localStore.updateSession(sessionID: session.id, state: .verifying)
+            try localStore.updateSession(sessionID: session.id, state: .verifying)
             let verificationURL = stagingRoot.appending(path: "verification.store")
             var recentEvents: [ESheepCloudEventEnvelopeV2] = []
             let verifiedSummary: ESheepCloudVerifiedProjectionSummary
@@ -227,7 +227,7 @@ actor ESheepCloudInitialSyncCoordinator {
             // alive; releasing it before the activation copy or a failed
             // staging cleanup prevents deleting an open store file.
             do {
-                let projection = try await ESheepCloudStagingProjection(
+                let projection = try ESheepCloudStagingProjection(
                     seed: seed,
                     farmGeneration: manifest.farmGeneration,
                     storeURL: verificationURL
@@ -238,11 +238,11 @@ actor ESheepCloudInitialSyncCoordinator {
                         manifest: manifest,
                         stagingRoot: stagingRoot
                     )
-                    try await projection.applySnapshotRecords(records)
+                    try projection.applySnapshotRecords(records)
                 }
-                try await projection.verifySnapshotBoundary(manifest)
+                try projection.verifySnapshotBoundary(manifest)
 
-                try await localStore.updateSession(
+                try localStore.updateSession(
                     sessionID: session.id,
                     state: .applyingRecentChanges
                 )
@@ -258,7 +258,7 @@ actor ESheepCloudInitialSyncCoordinator {
                         throw ESheepCloudInitialSyncError.eventBoundaryMismatch
                     }
                     if !page.events.isEmpty {
-                        try await projection.applyRecentEvents(page.events)
+                        try projection.applyRecentEvents(page.events)
                         recentEvents.append(contentsOf: page.events)
                         after = page.events.last!.eventSequence
                     }
@@ -273,10 +273,10 @@ actor ESheepCloudInitialSyncCoordinator {
                     }
                 }
 
-                try await localStore.updateSession(sessionID: session.id, state: .buildingIndexes)
-                verifiedSummary = try await projection.finishVerification()
+                try localStore.updateSession(sessionID: session.id, state: .buildingIndexes)
+                verifiedSummary = try projection.finishVerification()
             }
-            let activation = try await localStore.beginNewFarmActivation(
+            let activation = try localStore.beginNewFarmActivation(
                 seed: seed,
                 farmGeneration: manifest.farmGeneration
             )
@@ -287,15 +287,15 @@ actor ESheepCloudInitialSyncCoordinator {
                         manifest: manifest,
                         stagingRoot: stagingRoot
                     )
-                    try await activation.applySnapshotRecords(records)
+                    try activation.applySnapshotRecords(records)
                 }
-                try await activation.applyRecentEvents(recentEvents)
-                try await activation.commit(
+                try activation.applyRecentEvents(recentEvents)
+                try activation.commit(
                     ifMatching: verifiedSummary,
                     sessionID: session.id
                 )
             } catch {
-                await activation.rollback()
+                activation.rollback()
                 throw error
             }
             return ESheepCloudInitialSyncReport(
@@ -309,9 +309,9 @@ actor ESheepCloudInitialSyncCoordinator {
         } catch {
             if let sessionID {
                 if shouldPauseInitialSync(for: error) {
-                    try? await localStore.markPaused(sessionID: sessionID)
+                    try? localStore.markPaused(sessionID: sessionID)
                 } else {
-                    try? await localStore.markFailed(sessionID: sessionID)
+                    try? localStore.markFailed(sessionID: sessionID)
                 }
             }
             throw error
@@ -354,7 +354,7 @@ actor ESheepCloudInitialSyncCoordinator {
                 }
             }
             while let descriptor = try await group.next() {
-                try await localStore.markChunkVerified(
+                try localStore.markChunkVerified(
                     sessionID: sessionID,
                     descriptor: descriptor
                 )
@@ -501,7 +501,6 @@ private struct ESheepCloudVerifiedFieldSummary: Sendable, Equatable {
     let valueDigest: String
 }
 
-@MainActor
 private final class ESheepCloudInitialSyncLocalStore {
     private let container: ModelContainer
 
@@ -845,7 +844,6 @@ private final class ESheepCloudInitialSyncLocalStore {
 
 }
 
-@MainActor
 private class ESheepCloudProjectionTransaction {
     let context: ModelContext
     let farmID: UUID
@@ -1235,7 +1233,6 @@ private class ESheepCloudProjectionTransaction {
     }
 }
 
-@MainActor
 private final class ESheepCloudStagingProjection: ESheepCloudProjectionTransaction {
     private let container: ModelContainer
 
@@ -1278,7 +1275,6 @@ private final class ESheepCloudStagingProjection: ESheepCloudProjectionTransacti
     }
 }
 
-@MainActor
 private final class ESheepCloudActivationTransaction: ESheepCloudProjectionTransaction {
     func commit(
         ifMatching expected: ESheepCloudVerifiedProjectionSummary,

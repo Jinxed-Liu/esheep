@@ -8,7 +8,6 @@ import SwiftData
 /// command; this adapter only invokes the deterministic local business writer
 /// with the event's actor and ordering metadata.
 enum ESheepCloudV2DomainAdapter {
-    @MainActor
     static func apply(
         event: ESheepCloudEventEnvelopeV2,
         context: ModelContext

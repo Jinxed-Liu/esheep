@@ -6,6 +6,23 @@ import XCTest
 
 @MainActor
 final class ESheepCloudV2Tests: XCTestCase {
+    func testInfrastructureBase64DecoderAcceptsPostgreSQLLineWrapping() {
+        let expected = Data(repeating: 0xAB, count: 128)
+        let wrapped = expected.base64EncodedString(options: [
+            .lineLength64Characters,
+            .endLineWithLineFeed,
+        ])
+
+        XCTAssertTrue(wrapped.contains("\n"))
+        XCTAssertEqual(
+            ESheepCloudInfrastructureGateway.decodeLineWrappedBase64(wrapped),
+            expected
+        )
+        XCTAssertNil(
+            ESheepCloudInfrastructureGateway.decodeLineWrappedBase64(wrapped + "!")
+        )
+    }
+
     func testInitialSyncUsesImmutableServerFarmIdentityAndActivatesAtomically() async throws {
         let container = try AppSchema.makeContainer(
             name: "ESheepCloudInitialSyncTests-\(UUID().uuidString)",
@@ -77,7 +94,7 @@ final class ESheepCloudV2Tests: XCTestCase {
             at: temporaryRoot,
             withIntermediateDirectories: true
         )
-        let coordinator = await ESheepCloudInitialSyncCoordinator(
+        let coordinator = ESheepCloudInitialSyncCoordinator(
             farmID: farmID,
             container: container,
             gateway: gateway,
@@ -200,7 +217,7 @@ final class ESheepCloudV2Tests: XCTestCase {
             .appending(path: "ESheepCloudInitialSyncFailure-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
         try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
-        let coordinator = await ESheepCloudInitialSyncCoordinator(
+        let coordinator = ESheepCloudInitialSyncCoordinator(
             farmID: farmID,
             container: container,
             gateway: gateway,
@@ -308,7 +325,7 @@ final class ESheepCloudV2Tests: XCTestCase {
             at: temporaryRoot,
             withIntermediateDirectories: true
         )
-        let coordinator = await ESheepCloudInitialSyncCoordinator(
+        let coordinator = ESheepCloudInitialSyncCoordinator(
             farmID: farmID,
             container: container,
             gateway: gateway,
@@ -432,7 +449,7 @@ final class ESheepCloudV2Tests: XCTestCase {
             at: temporaryRoot,
             withIntermediateDirectories: true
         )
-        let coordinator = await ESheepCloudInitialSyncCoordinator(
+        let coordinator = ESheepCloudInitialSyncCoordinator(
             farmID: farmID,
             container: container,
             gateway: gateway,

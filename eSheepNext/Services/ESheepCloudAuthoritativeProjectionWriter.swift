@@ -11,7 +11,6 @@ import SwiftData
 /// completed; its internal envelope is an implementation detail of the local
 /// projection writer, never a V2 transport contract.
 enum ESheepCloudAuthoritativeProjectionWriter {
-    @MainActor
     static func apply(
         command: FarmCommand,
         route: String,

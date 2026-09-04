@@ -41,7 +41,6 @@ struct ESheepCloudEventApplyOutcome: Sendable, Equatable {
 /// Deterministic V2 projection reducer. Event receipt, canonical stream state,
 /// business projection and the farm head are saved in one ModelContext commit.
 /// It never creates a V1 outbox row or a client-authored baseline.
-@MainActor
 enum ESheepCloudEventReducer {
     static func apply(
         _ event: ESheepCloudEventEnvelopeV2,

@@ -50,6 +50,7 @@ struct RootView: View {
     @Query private var remoteRestoreRecords: [FarmRemoteRestoreRecord]
     @Query private var membershipBindings: [FarmMembershipBinding]
     @Query private var storageProfiles: [FarmStorageProfile]
+    @Query private var initialSyncSessions: [ESheepCloudInitialSyncSession]
     @State private var lifecycleCoordinator = AppLifecycleCoordinator()
 
     var body: some View {
@@ -61,6 +62,8 @@ struct RootView: View {
                hasCurrentLegalConsent(for: account) {
                 if let restore = pendingRemoteRestore {
                     SupabaseFarmRestoreProgressView(record: restore)
+                } else if let initialSync = pendingESheepCloudInitialSync {
+                    ESheepCloudInitialSyncProgressView(session: initialSync)
                 } else if visibleFarms.isEmpty {
                     FarmSetupView(account: account)
                 } else {
@@ -241,6 +244,28 @@ struct RootView: View {
                     isLegacyCompatibilityRestore(record)
             }
             .max { $0.updatedAt < $1.updatedAt }
+    }
+
+    private var pendingESheepCloudInitialSync: ESheepCloudInitialSyncSession? {
+        guard let account = activeAccount else { return nil }
+        let accessibleFarmIDs = Set(
+            membershipBindings
+                .filter {
+                    $0.accountID == account.effectiveAccountID &&
+                        $0.status == .active
+                }
+                .map(\.farmID)
+        )
+        return initialSyncSessions
+            .filter {
+                accessibleFarmIDs.contains($0.farmID) && $0.state != .active
+            }
+            .max { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt {
+                    return lhs.updatedAt < rhs.updatedAt
+                }
+                return lhs.startedAt < rhs.startedAt
+            }
     }
 
     /// The old checkpoint restore screen is a compatibility escape hatch for

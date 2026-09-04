@@ -146,13 +146,18 @@ struct SupabaseOwnedFarmDiscoveryService {
                         "authority_generation,current_revision"
                 )
                 .eq("farm_id", value: membership.farmID)
-                .eq("provider", value: "supabase")
                 .eq("status", value: "active")
                 .limit(1)
                 .execute()
                 .value
             guard let row = rows.first else {
                 throw SupabaseOwnedFarmDiscoveryError.invalidCheckpoint
+            }
+            // A migrated farm remains in farm_members, but its registry row is
+            // now authoritative in eSheep Cloud. It must not be sent through
+            // the retired Supabase checkpoint restore path.
+            guard row.provider == FarmStorageMode.supabase.rawValue else {
+                continue
             }
             let farm = try await restoreRedeemedFarm(
                 farmID: row.farmID,

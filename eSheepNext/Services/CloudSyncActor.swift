@@ -375,7 +375,7 @@ final class CloudCollaborationStore {
             return try await existing.value
         }
         let task = Task<ESheepCloudInitialSyncReport, any Error> {
-            let coordinator = await ESheepCloudInitialSyncCoordinator(
+            let coordinator = ESheepCloudInitialSyncCoordinator(
                 farmID: farmID,
                 container: modelContainer,
                 gateway: eSheepCloudGateway

@@ -558,6 +558,62 @@ struct ESheepCloudCenterView: View {
     }
 }
 
+struct ESheepCloudInitialSyncProgressView: View {
+    @Environment(CloudCollaborationStore.self) private var collaboration
+
+    let session: ESheepCloudInitialSyncSession
+
+    @State private var isRetrying = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("登录已成功。牧场资料正在从 eSheep+ 云端接收，完成完整性检查后才会打开牧场。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                ESheepCloudPreparationSection(
+                    session: session,
+                    isRetrying: isRetrying,
+                    onRetry: retry
+                )
+            }
+            .navigationTitle("下载牧场资料")
+            .navigationBarTitleDisplayMode(.inline)
+            .alert("牧场资料接收失败", isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )) {
+                Button("知道了", role: .cancel) {}
+            } message: {
+                Text(errorMessage ?? "")
+            }
+        }
+    }
+
+    private func retry() {
+        guard !isRetrying else { return }
+        isRetrying = true
+        errorMessage = nil
+        Task { @MainActor in
+            defer { isRetrying = false }
+            do {
+                _ = try await collaboration.receiveESheepCloudFarm(
+                    farmID: session.farmID,
+                    expectedFarmGeneration: session.farmGeneration
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
 private struct ESheepCloudPreparationSection: View {
     let session: ESheepCloudInitialSyncSession?
     let isRetrying: Bool

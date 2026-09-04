@@ -11,6 +11,14 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
         self.client = client
     }
 
+    /// PostgreSQL's `encode(bytea, 'base64')` inserts line breaks into long
+    /// values.  Normalize only whitespace so malformed non-Base64 characters
+    /// are still rejected by Foundation's strict decoder.
+    static func decodeLineWrappedBase64(_ value: String) -> Data? {
+        let normalized = value.filter { !$0.isWhitespace }
+        return Data(base64Encoded: normalized)
+    }
+
     func openInitialSync(
         farmID: UUID,
         farmGeneration: Int?
@@ -28,7 +36,7 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
               wire.farmGeneration == wire.manifest.farmGeneration,
               wire.boundaryEventSequence == wire.manifest.boundaryEventSequence,
               wire.schemaVersion == ESheepCloudProtocolV2.schemaVersion,
-              let profileData = Data(base64Encoded: wire.farmProfileBase64),
+              let profileData = Self.decodeLineWrappedBase64(wire.farmProfileBase64),
               Self.sha256(profileData) == manifest.farmProfileDigest,
               let memberRole = FarmRole(rawValue: wire.memberRole),
               wire.membershipStatus == "active" else {
@@ -65,7 +73,7 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
         ).execute().value
         guard wire.snapshotID == snapshotID,
               wire.chunkIndex == chunkIndex,
-              let data = Data(base64Encoded: wire.contentBase64),
+              let data = Self.decodeLineWrappedBase64(wire.contentBase64),
               data.count == wire.byteCount,
               Self.sha256(data) == wire.contentSHA256,
               byteOffset >= 0,
