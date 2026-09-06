@@ -115,6 +115,59 @@ final class FeedRebuildTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(try FeedStockLedger.balance(for: fixture.batch, context: fixture.context)), 10)
     }
 
+    func testAuthoritativeReplayKeepsFeedFactWhenBatchWasLaterDeactivated() throws {
+        let fixture = try makeFixture(initialKilograms: "10")
+        fixture.batch.isActive = false
+        try fixture.context.save()
+
+        let command = FarmCommand.recordFeedV2(
+            FeedEntryDraft(
+                penID: fixture.pen.id,
+                mode: .limited,
+                occurredAt: .now,
+                lines: [FeedLineDraft(
+                    ingredientID: fixture.ingredient.id,
+                    ingredientBatchID: fixture.batch.id,
+                    kilogramsText: "3"
+                )]
+            )
+        )
+        let payload = try FarmCommandCloudPayloadEncoder.encode(command)
+        let envelope = CloudOperationEnvelope(
+            farmID: fixture.farmContext.farmID,
+            entityID: UUID(),
+            entityType: CloudEntityType.feed.rawValue,
+            schemaVersion: 2,
+            revision: 1,
+            baseRevision: 0,
+            operationID: UUID(),
+            modifiedAt: .now,
+            modifiedByAccountID: fixture.farmContext.accountID,
+            modifiedByDeviceID: UUID(),
+            payload: payload,
+            payloadDigest: CloudPayloadDigest.hex(for: payload),
+            capabilityCertificate: "esheep-cloud-v2-event",
+            operationSignature: Data(),
+            deletedAt: nil
+        )
+        let remote = RemoteDomainApplyService(replayAssumesEmptyBusinessStore: true)
+        try remote.prepareResumableReplay(
+            farmID: fixture.farmContext.farmID,
+            context: fixture.context
+        )
+
+        XCTAssertEqual(
+            try remote.applyV2(envelope, context: fixture.context),
+            .applied(rebuildHistoryFrom: nil)
+        )
+        XCTAssertEqual(try fixture.context.fetchCount(FetchDescriptor<FeedRecord>()), 1)
+        XCTAssertEqual(try fixture.context.fetchCount(FetchDescriptor<FeedStockTransactionRecord>()), 1)
+        XCTAssertEqual(
+            try XCTUnwrap(try FeedStockLedger.balance(for: fixture.batch, context: fixture.context)),
+            7
+        )
+    }
+
     func testFeedPersistsExplicitExcludedSheepIdentifiersAndHeadCountSnapshot() throws {
         let fixture = try makeFixture(initialKilograms: "10")
         try fixture.service.execute(

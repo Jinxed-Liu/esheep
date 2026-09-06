@@ -1,4 +1,3 @@
-"CFBundleDisplayName" = "eSheep+";
 "CFBundleName" = "eSheepNext";
 "NSCalendarsWriteOnlyAccessUsageDescription" = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
 "NSCameraUsageDescription" = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号、文档与牧场邀请二维码。";

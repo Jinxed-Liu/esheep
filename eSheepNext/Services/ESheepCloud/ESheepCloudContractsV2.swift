@@ -371,6 +371,7 @@ enum ESheepCloudPhotoCommandV2: Codable, Sendable, Equatable {
 /// Exhaustive, versioned business payload. Unknown enum cases or schemas fail
 /// decoding, so no command can silently fall back to an untyped key/value bag.
 enum ESheepCloudCommandPayloadV2: Codable, Sendable, Equatable {
+    case historyRepair(ESheepCloudHistoryRepairCommandV2)
     case farm(ESheepCloudFarmMutationV2)
     case pen(ESheepCloudPenCommandV2)
     case sheep(ESheepCloudSheepCommandV2)
@@ -384,6 +385,12 @@ enum ESheepCloudCommandPayloadV2: Codable, Sendable, Equatable {
 
     var kind: String {
         switch self {
+        case .historyRepair(let command):
+            switch command {
+            case .restoreSheepBaseline: "migration.restoreSheepBaseline"
+            case .restoreRemoval: "migration.restoreRemoval"
+            case .restoreBusinessBaseline: "migration.restoreBusinessBaseline"
+            }
         case .farm: "farm.updateLocation"
         case .pen(let command):
             switch command {
@@ -468,6 +475,8 @@ enum ESheepCloudCommandPayloadV2: Codable, Sendable, Equatable {
         let decoded: Self
 
         switch declaredKind {
+        case "migration.restoreSheepBaseline", "migration.restoreRemoval", "migration.restoreBusinessBaseline":
+            decoded = .historyRepair(try container.decode(ESheepCloudHistoryRepairCommandV2.self, forKey: .body))
         case "farm.updateLocation":
             decoded = .farm(try container.decode(ESheepCloudFarmMutationV2.self, forKey: .body))
         case "pen.create", "pen.update", "pen.setActive":
@@ -518,6 +527,7 @@ enum ESheepCloudCommandPayloadV2: Codable, Sendable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(kind, forKey: .kind)
         switch self {
+        case .historyRepair(let value): try container.encode(value, forKey: .body)
         case .farm(let value): try container.encode(value, forKey: .body)
         case .pen(let value): try container.encode(value, forKey: .body)
         case .sheep(let value): try container.encode(value, forKey: .body)
@@ -976,6 +986,9 @@ struct ESheepCloudEventEnvelopeV2: Codable, Sendable, Equatable {
     let occurredAt: Date
     let receivedAt: Date
     let eventDigest: String
+    /// Preserve authority JSON spelling (notably UUID case) when rebuilding
+    /// field-stream digests. Older local fixtures may omit these bytes.
+    var eventBodyCanonical: String? = nil
 
     func validateDigest() throws {
         guard protocolVersion == ESheepCloudProtocolV2.protocolVersion,

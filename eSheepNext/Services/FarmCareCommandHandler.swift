@@ -114,7 +114,11 @@ enum FarmCareCommandHandler {
         return true
     }
 
-    static func isApplied(_ command: CareCommand, farmID: UUID, context: ModelContext) throws -> Bool {
+    static func isApplied(
+        _ command: CareCommand, farmID: UUID, context: ModelContext,
+        pedigreeSheepByID: [UUID: SheepRecord]? = nil,
+        pedigreeAuditRecords: [PedigreeChangeRecord]? = nil
+    ) throws -> Bool {
         switch command {
         case .upsertHealthCatalog(let id, let kind, let name, let category, let unit, let dose, let route, let interval, let note, let active):
             return try context.fetch(FetchDescriptor<HealthCatalogItemRecord>()).contains { $0.id == id && $0.farmID == farmID && $0.kindRawValue == kind && $0.name == name.trimmed && $0.category == category.trimmed && $0.unit == unit.trimmed && $0.defaultDoseText == dose?.trimmed.nilIfEmpty && $0.defaultRoute == route.trimmed && $0.reminderIntervalDays == interval && $0.note == note.trimmed && $0.isActive == active }
@@ -137,14 +141,14 @@ enum FarmCareCommandHandler {
         case .setSemenDonor(let semenID, let donorID, _):
             return try context.fetch(FetchDescriptor<SemenRecord>()).contains { $0.id == semenID && $0.farmID == farmID && $0.donorID == donorID }
         case .updateSheepPedigree(let draft):
-            if try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).contains(where: {
+            if try (pedigreeAuditRecords ?? context.fetch(FetchDescriptor<PedigreeChangeRecord>())).contains(where: {
                 $0.id == draft.id &&
                     $0.farmID == farmID &&
                     $0.sheepID == draft.sheepID
             }) {
                 return true
             }
-            guard let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+            guard let sheep = try (pedigreeSheepByID.map { Array($0.values) } ?? context.fetch(FetchDescriptor<SheepRecord>()))
                 .first(where: {
                     $0.id == draft.sheepID &&
                         $0.farmID == farmID &&
@@ -172,14 +176,14 @@ enum FarmCareCommandHandler {
             }
             return sheep.sireID == expectedSireID
         case .setBreedingRam(let sheepID, let active, let expectedRevision):
-            return try context.fetch(FetchDescriptor<SheepRecord>()).contains {
+            return try (pedigreeSheepByID.map { Array($0.values) } ?? context.fetch(FetchDescriptor<SheepRecord>())).contains {
                 $0.id == sheepID &&
                     $0.farmID == farmID &&
                     $0.isBreedingRam == active &&
                     $0.revision == expectedRevision + 1
             }
         case .setSheepPurpose(let sheepID, let purpose, _, let expectedRevision):
-            return try context.fetch(FetchDescriptor<SheepRecord>()).contains {
+            return try (pedigreeSheepByID.map { Array($0.values) } ?? context.fetch(FetchDescriptor<SheepRecord>())).contains {
                 $0.id == sheepID &&
                     $0.farmID == farmID &&
                     $0.purpose == purpose.rawValue &&
@@ -187,7 +191,7 @@ enum FarmCareCommandHandler {
                     $0.revision == expectedRevision + 1
             }
         case .restorePedigreeAudit(let snapshot):
-            return try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).contains { $0.id == snapshot.id && $0.farmID == farmID }
+            return try (pedigreeAuditRecords ?? context.fetch(FetchDescriptor<PedigreeChangeRecord>())).contains { $0.id == snapshot.id && $0.farmID == farmID }
         case .recordReproductionBatch(let draft), .correctReproduction(_, let draft, _):
             return try context.fetch(FetchDescriptor<CareBatchRecord>()).contains { $0.id == draft.id && $0.farmID == farmID }
         case .recordLambing(let draft):
@@ -227,7 +231,8 @@ enum FarmCareCommandHandler {
         _ command: CareCommand,
         farmID: UUID,
         context: ModelContext,
-        pedigreeSheepByID: [UUID: SheepRecord]? = nil
+        pedigreeSheepByID: [UUID: SheepRecord]? = nil,
+        enforcesExpectedRevision: Bool = true
     ) throws {
         switch command {
         case .upsertHealthCatalog(_, let kindRawValue, let name, _, let unit, let dose, _, let interval, _, _):
@@ -268,11 +273,11 @@ enum FarmCareCommandHandler {
             guard try semenBalance(semen, context: context) + delta >= 0 else { throw FarmCommandError.insufficientInventory }
 
         case .upsertSemenDonor(let draft):
-            try validateSemenDonor(draft, farmID: farmID, context: context)
+            try validateSemenDonor(draft, farmID: farmID, context: context, enforcesExpectedRevision: enforcesExpectedRevision)
 
         case .setSemenDonor(let semenID, let donorID, let expectedRevision):
             let record = try semen(semenID, farmID: farmID, context: context)
-            guard record.revision == expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
+            guard !enforcesExpectedRevision || record.revision == expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
             if let donorID { _ = try semenDonor(donorID, farmID: farmID, context: context, requiresActive: false) }
 
         case .updateSheepPedigree(let draft):
@@ -280,7 +285,8 @@ enum FarmCareCommandHandler {
                 draft,
                 farmID: farmID,
                 context: context,
-                sheepByID: pedigreeSheepByID
+                sheepByID: pedigreeSheepByID,
+                enforcesExpectedRevision: enforcesExpectedRevision
             )
 
         case .setBreedingRam(let sheepID, let active, let expectedRevision):
@@ -290,17 +296,17 @@ enum FarmCareCommandHandler {
                 })
             ).first
             guard let sheep else { throw FarmCommandError.sheepNotFound }
-            guard sheep.revision == expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
+            guard !enforcesExpectedRevision || sheep.revision == expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
             if active, sheep.sex != .ram { throw FarmCommandError.reproductionSireMustBeRam }
 
         case .setSheepPurpose(let sheepID, let purpose, let reason, let expectedRevision):
-            let sheep = try context.fetch(
+            let sheep = try pedigreeSheepByID?[sheepID] ?? context.fetch(
                 FetchDescriptor<SheepRecord>(predicate: #Predicate {
                     $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
                 })
             ).first
             guard let sheep else { throw FarmCommandError.sheepNotFound }
-            guard sheep.revision == expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
+            guard !enforcesExpectedRevision || sheep.revision == expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
             guard purpose.isAllowed(for: sheep.sex) else {
                 throw purpose == .breedingRam
                     ? FarmCommandError.reproductionSireMustBeRam
@@ -309,11 +315,14 @@ enum FarmCareCommandHandler {
             try require(reason, "用途变更原因")
 
         case .restorePedigreeAudit(let snapshot):
-            let sheepIDs = Set(try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            let sheepIDs = Set(try (pedigreeSheepByID.map { Array($0.values) } ?? context.fetch(FetchDescriptor<SheepRecord>())).filter { $0.farmID == farmID }.map(\.id))
             guard sheepIDs.contains(snapshot.sheepID) else { throw FarmCommandError.sheepNotFound }
             for id in [snapshot.beforeDamID, snapshot.afterDamID, snapshot.beforeSireID, snapshot.afterSireID].compactMap({ $0 }) where !sheepIDs.contains(id) { throw FarmCommandError.sheepNotFound }
-            let donorIDs = Set(try context.fetch(FetchDescriptor<SemenDonorRecord>()).filter { $0.farmID == farmID }.map(\.id))
-            for id in [snapshot.beforeSemenDonorID, snapshot.afterSemenDonorID].compactMap({ $0 }) where !donorIDs.contains(id) { throw FarmCommandError.semenDonorNotFound }
+            let referencedDonors = [snapshot.beforeSemenDonorID, snapshot.afterSemenDonorID].compactMap { $0 }
+            if !referencedDonors.isEmpty {
+                let donorIDs = Set(try context.fetch(FetchDescriptor<SemenDonorRecord>()).filter { $0.farmID == farmID }.map(\.id))
+                for id in referencedDonors where !donorIDs.contains(id) { throw FarmCommandError.semenDonorNotFound }
+            }
 
         case .recordReproductionBatch(let draft):
             try validateReproductionBatch(draft, farmID: farmID, semenCreditSourceID: nil, context: context)
@@ -368,7 +377,10 @@ enum FarmCareCommandHandler {
         accountID: UUID,
         context: ModelContext,
         modifiedAt: Date = .now,
-        pedigreeSheepByID: [UUID: SheepRecord]? = nil
+        pedigreeSheepByID: [UUID: SheepRecord]? = nil,
+        enforcesExpectedRevision: Bool = true,
+        pedigreeAuditRecords: [PedigreeChangeRecord]? = nil,
+        onPedigreeAuditInserted: ((PedigreeChangeRecord) -> Void)? = nil
     ) throws -> CareApplyResult {
         switch command {
         case .recordHealth(let draft):
@@ -414,7 +426,8 @@ enum FarmCareCommandHandler {
                 command,
                 farmID: farmID,
                 context: context,
-                pedigreeSheepByID: pedigreeSheepByID
+                pedigreeSheepByID: pedigreeSheepByID,
+                enforcesExpectedRevision: enforcesExpectedRevision
             )
             return try apply(
                 command,
@@ -422,7 +435,9 @@ enum FarmCareCommandHandler {
                 accountID: accountID,
                 context: context,
                 modifiedAt: modifiedAt,
-                pedigreeSheepByID: pedigreeSheepByID
+                pedigreeSheepByID: pedigreeSheepByID,
+                pedigreeAuditRecords: pedigreeAuditRecords,
+                onPedigreeAuditInserted: onPedigreeAuditInserted
             )
         }
     }
@@ -433,7 +448,9 @@ enum FarmCareCommandHandler {
         accountID: UUID,
         context: ModelContext,
         modifiedAt: Date = .now,
-        pedigreeSheepByID: [UUID: SheepRecord]? = nil
+        pedigreeSheepByID: [UUID: SheepRecord]? = nil,
+        pedigreeAuditRecords: [PedigreeChangeRecord]? = nil,
+        onPedigreeAuditInserted: ((PedigreeChangeRecord) -> Void)? = nil
     ) throws -> CareApplyResult {
         switch command {
         case .upsertHealthCatalog(let id, let kindRawValue, let name, let category, let unit, let dose, let route, let interval, let note, let isActive):
@@ -528,7 +545,7 @@ enum FarmCareCommandHandler {
             let donor = try draft.semenDonorID.map { try semenDonor($0, farmID: farmID, context: context, requiresActive: false) }
             let resolvedSireID = donor?.linkedRamID ?? draft.sireID
             let base = sheep.revision
-            context.insert(PedigreeChangeRecord(
+            let audit = PedigreeChangeRecord(
                 id: draft.id,
                 farmID: farmID,
                 sheepID: sheep.id,
@@ -546,7 +563,9 @@ enum FarmCareCommandHandler {
                 changedByAccountID: accountID,
                 sheepRevision: base + 1,
                 occurredAt: modifiedAt
-            ))
+            )
+            context.insert(audit)
+            onPedigreeAuditInserted?(audit)
             sheep.damID = draft.damID
             sheep.sireID = resolvedSireID
             sheep.damProvenanceRawValue = draft.damID == nil ? nil : PedigreeRelationSource.manual.rawValue
@@ -573,7 +592,7 @@ enum FarmCareCommandHandler {
             return .init(entityType: .sheep, entityID: sheep.id, baseRevision: base, resultingRevision: sheep.revision)
 
         case .setSheepPurpose(let sheepID, let purpose, _, _):
-            let sheep = try context.fetch(
+            let sheep = try pedigreeSheepByID?[sheepID] ?? context.fetch(
                 FetchDescriptor<SheepRecord>(predicate: #Predicate {
                     $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil
                 })
@@ -587,10 +606,12 @@ enum FarmCareCommandHandler {
             return .init(entityType: .sheep, entityID: sheep.id, baseRevision: base, resultingRevision: sheep.revision)
 
         case .restorePedigreeAudit(let snapshot):
-            if try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).contains(where: { $0.id == snapshot.id && $0.farmID == farmID }) {
+            if try (pedigreeAuditRecords ?? context.fetch(FetchDescriptor<PedigreeChangeRecord>())).contains(where: { $0.id == snapshot.id && $0.farmID == farmID }) {
                 return .init(entityType: .pedigreeChange, entityID: snapshot.id, baseRevision: 0, resultingRevision: 1)
             }
-            context.insert(PedigreeChangeRecord(id: snapshot.id, farmID: farmID, sheepID: snapshot.sheepID, beforeDamID: snapshot.beforeDamID, afterDamID: snapshot.afterDamID, beforeSireID: snapshot.beforeSireID, afterSireID: snapshot.afterSireID, beforeSemenDonorID: snapshot.beforeSemenDonorID, afterSemenDonorID: snapshot.afterSemenDonorID, beforeDamSourceRawValue: snapshot.beforeDamSourceRawValue, afterDamSourceRawValue: snapshot.afterDamSourceRawValue, beforeSireSourceRawValue: snapshot.beforeSireSourceRawValue, afterSireSourceRawValue: snapshot.afterSireSourceRawValue, reason: snapshot.reason, changedByAccountID: snapshot.changedByAccountID, sheepRevision: snapshot.sheepRevision, occurredAt: snapshot.occurredAt))
+            let audit = PedigreeChangeRecord(id: snapshot.id, farmID: farmID, sheepID: snapshot.sheepID, beforeDamID: snapshot.beforeDamID, afterDamID: snapshot.afterDamID, beforeSireID: snapshot.beforeSireID, afterSireID: snapshot.afterSireID, beforeSemenDonorID: snapshot.beforeSemenDonorID, afterSemenDonorID: snapshot.afterSemenDonorID, beforeDamSourceRawValue: snapshot.beforeDamSourceRawValue, afterDamSourceRawValue: snapshot.afterDamSourceRawValue, beforeSireSourceRawValue: snapshot.beforeSireSourceRawValue, afterSireSourceRawValue: snapshot.afterSireSourceRawValue, reason: snapshot.reason, changedByAccountID: snapshot.changedByAccountID, sheepRevision: snapshot.sheepRevision, occurredAt: snapshot.occurredAt)
+            context.insert(audit)
+            onPedigreeAuditInserted?(audit)
             return .init(entityType: .pedigreeChange, entityID: snapshot.id, baseRevision: 0, resultingRevision: 1)
 
         case .recordReproductionBatch(let draft):
@@ -1070,14 +1091,14 @@ enum FarmCareCommandHandler {
         return breeding
     }
 
-    private static func validateSemenDonor(_ draft: CareSemenDonorDraft, farmID: UUID, context: ModelContext) throws {
+    private static func validateSemenDonor(_ draft: CareSemenDonorDraft, farmID: UUID, context: ModelContext, enforcesExpectedRevision: Bool = true) throws {
         try require(draft.name, "供体名称")
         try require(draft.breed, "供体品种")
         let donors = try context.fetch(FetchDescriptor<SemenDonorRecord>())
         if let existing = donors.first(where: { $0.id == draft.id && $0.farmID == farmID }) {
-            guard existing.revision == draft.expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
+            guard !enforcesExpectedRevision || existing.revision == draft.expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
         } else {
-            guard draft.expectedRevision == 0 else { throw FarmCommandError.pedigreeRevisionConflict }
+            guard !enforcesExpectedRevision || draft.expectedRevision == 0 else { throw FarmCommandError.pedigreeRevisionConflict }
         }
         let registration = draft.registrationNumber.trimmed
         if !registration.isEmpty, donors.contains(where: { $0.id != draft.id && $0.farmID == farmID && $0.deletedAt == nil && $0.registrationNumber.caseInsensitiveCompare(registration) == .orderedSame }) {
@@ -1100,7 +1121,8 @@ enum FarmCareCommandHandler {
         _ draft: CarePedigreeUpdateDraft,
         farmID: UUID,
         context: ModelContext,
-        sheepByID cachedSheepByID: [UUID: SheepRecord]? = nil
+        sheepByID cachedSheepByID: [UUID: SheepRecord]? = nil,
+        enforcesExpectedRevision: Bool = true
     ) throws {
         guard !draft.reason.trimmed.isEmpty else { throw FarmCommandError.pedigreeReasonRequired }
         let sheepByID: [UUID: SheepRecord]
@@ -1114,7 +1136,7 @@ enum FarmCareCommandHandler {
             ).map { ($0.id, $0) })
         }
         guard let child = sheepByID[draft.sheepID] else { throw FarmCommandError.sheepNotFound }
-        guard child.revision == draft.expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
+        guard !enforcesExpectedRevision || child.revision == draft.expectedRevision else { throw FarmCommandError.pedigreeRevisionConflict }
         guard draft.damID != child.id, draft.sireID != child.id else { throw FarmCommandError.pedigreeSelfReference }
         let dam = draft.damID.flatMap { sheepByID[$0] }
         if draft.damID != nil, dam?.sex != .ewe { throw FarmCommandError.pedigreeParentSexMismatch }

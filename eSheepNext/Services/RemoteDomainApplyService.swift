@@ -35,11 +35,16 @@ private final class RemoteDomainReplayIndex {
     /// keep their revision lineage here instead of consulting the retained
     /// local DomainOperation audit log from the cache being replaced.
     private var farmRevisions: [UUID: Int] = [:]
+    private var registeredPendingObjects = Set<ObjectIdentifier>()
     func rebuildFromPendingInserts(in context: ModelContext) {
-        entities.removeAll(keepingCapacity: true)
-        transfersBySheep.removeAll(keepingCapacity: true)
-        normalizedEarTagOwners.removeAll(keepingCapacity: true)
-        for model in context.insertedModelsArray {
+        let inserted = context.insertedModelsArray
+        // Pending models are not an append-only ordered collection. The
+        // object identity set, not an array suffix, determines what is new.
+        for model in inserted {
+            let objectID = ObjectIdentifier(model as AnyObject)
+            guard registeredPendingObjects.insert(objectID).inserted else {
+                continue
+            }
             register(model)
         }
     }
@@ -52,7 +57,12 @@ private final class RemoteDomainReplayIndex {
         transfersBySheep.removeAll(keepingCapacity: true)
         normalizedEarTagOwners.removeAll(keepingCapacity: true)
         farmRevisions.removeAll(keepingCapacity: true)
+        registeredPendingObjects.removeAll(keepingCapacity: true)
 
+        for value in try context.fetch(FetchDescriptor<FarmRecord>())
+            where value.id == farmID {
+            register(value)
+        }
         for value in try context.fetch(FetchDescriptor<PenRecord>())
             where value.farmID == farmID {
             register(value)
@@ -150,12 +160,111 @@ private final class RemoteDomainReplayIndex {
             where value.farmID == farmID {
             register(value)
         }
+        for value in try context.fetch(FetchDescriptor<SheepAvatarRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<BreedingProgramStepRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<SemenDonorRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<LambingOffspringRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<InventoryTransactionRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<SemenTransactionRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TombstoneRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<DomainOperation>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TMRFeedingPlanRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TMRFeedingPlanPenRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TMRBatchRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TMRBatchIngredientRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TMRBatchLoadLineRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TMRBatchMovementRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TMRFeedingRunRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TMRMealCompletionRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TMRDeviationAcknowledgementRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<TMRMonitoringRuleRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<CareBatchRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<PedigreeChangeRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<FarmCareRuleRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
+        for value in try context.fetch(FetchDescriptor<CareReminderRecord>())
+            where value.farmID == farmID {
+            register(value)
+        }
 
-        let farmOperations = try context.fetch(FetchDescriptor<DomainOperation>())
-            .filter {
-                $0.farmID == farmID &&
-                    $0.entityType == CloudEntityType.farm.rawValue
-            }
+        let farmOperations = values(DomainOperation.self).filter {
+            $0.farmID == farmID &&
+                $0.entityType == CloudEntityType.farm.rawValue
+        }
         setFarmRevision(
             max(1, farmOperations.map(\.resultingRevision).max() ?? 1),
             for: farmID
@@ -184,6 +293,61 @@ private final class RemoteDomainReplayIndex {
 
     func setFarmRevision(_ revision: Int, for farmID: UUID) {
         farmRevisions[farmID] = revision
+    }
+
+    func revision(for entityType: CloudEntityType, id: UUID) -> Int? {
+        switch entityType {
+        case .pen:
+            return fetch(PenRecord.self, id: id)?.revision
+        case .sheep:
+            return fetch(SheepRecord.self, id: id)?.revision
+        case .weight:
+            return fetch(WeightRecord.self, id: id)?.revision
+        case .weaning:
+            return fetch(WeaningRecord.self, id: id)?.revision
+        case .breedingProgram:
+            return fetch(BreedingProgramRecord.self, id: id)?.revision
+        case .breedingProgramStep:
+            return fetch(BreedingProgramStepRecord.self, id: id)?.revision
+        case .transfer:
+            return fetch(TransferRecord.self, id: id)?.revision
+        case .removal:
+            return fetch(RemovalRecord.self, id: id)?.revision
+        case .feed:
+            return fetch(FeedRecord.self, id: id)?.revision
+        case .feedTroughObservation:
+            return fetch(FeedTroughObservationRecord.self, id: id)?.revision
+        case .reproduction:
+            return fetch(ReproductionRecord.self, id: id)?.revision
+        case .semen:
+            return fetch(SemenRecord.self, id: id)?.revision
+        case .semenDonor:
+            return fetch(SemenDonorRecord.self, id: id)?.revision
+        case .note:
+            return fetch(NoteRecord.self, id: id)?.revision
+        case .feedIngredientBatch:
+            return fetch(FeedIngredientBatchRecord.self, id: id)?.revision
+        case .careReminder:
+            return fetch(CareReminderRecord.self, id: id)?.revision
+        case .tmrFormula:
+            return fetch(TMRFormulaProfileRecord.self, id: id)?.formulaRevision
+        case .tmrMonitoringRule:
+            return fetch(TMRMonitoringRuleRecord.self, id: id)?.revision
+        case .tmrFeedingPlan:
+            return fetch(TMRFeedingPlanRecord.self, id: id)?.revision
+        case .tmrBatch:
+            return fetch(TMRBatchRecord.self, id: id)?.revision
+        case .tmrMealCompletion:
+            return fetch(TMRMealCompletionRecord.self, id: id)?.revision
+        case .tmrDeviationAcknowledgement:
+            return fetch(TMRDeviationAcknowledgementRecord.self, id: id)?.revision
+        case .careRule:
+            return fetch(FarmCareRuleRecord.self, id: id)?.revision
+        case .alertDeferral:
+            return fetch(FarmAlertDeferralRecord.self, id: id)?.revision
+        default:
+            return nil
+        }
     }
 
     func replaceEarTag(for sheep: SheepRecord, with normalizedEarTag: String) {
@@ -225,6 +389,32 @@ private final class RemoteDomainReplayIndex {
         case let value as SemenRecord: register(value, id: value.id)
         case let value as NoteRecord: register(value, id: value.id)
         case let value as PhotoAssetRecord: register(value, id: value.id)
+        case let value as FarmRecord: register(value, id: value.id)
+        case let value as SheepAvatarRecord: register(value, id: value.id)
+        case let value as BreedingProgramStepRecord: register(value, id: value.id)
+        case let value as SemenDonorRecord: register(value, id: value.id)
+        case let value as LambingOffspringRecord: register(value, id: value.id)
+        case let value as InventoryTransactionRecord: register(value, id: value.id)
+        case let value as SemenTransactionRecord: register(value, id: value.id)
+        case let value as TombstoneRecord: register(value, id: value.id)
+        case let value as DomainOperation: register(value, id: value.id)
+        case let value as TMRFormulaProfileRecord: register(value, id: value.id)
+        case let value as TMRFeedingPlanRecord: register(value, id: value.id)
+        case let value as TMRFeedingPlanPenRecord: register(value, id: value.id)
+        case let value as TMRBatchRecord: register(value, id: value.id)
+        case let value as TMRBatchIngredientRecord: register(value, id: value.id)
+        case let value as TMRBatchLoadLineRecord: register(value, id: value.id)
+        case let value as TMRBatchMovementRecord: register(value, id: value.id)
+        case let value as TMRFeedingRunRecord: register(value, id: value.id)
+        case let value as TMRFeedingAllocationRecord: register(value, id: value.id)
+        case let value as TMRMealCompletionRecord: register(value, id: value.id)
+        case let value as TMRDeviationAcknowledgementRecord: register(value, id: value.id)
+        case let value as TMRMonitoringRuleRecord: register(value, id: value.id)
+        case let value as CareBatchRecord: register(value, id: value.id)
+        case let value as PedigreeChangeRecord: register(value, id: value.id)
+        case let value as FarmCareRuleRecord: register(value, id: value.id)
+        case let value as FarmAlertDeferralRecord: register(value, id: value.id)
+        case let value as CareReminderRecord: register(value, id: value.id)
         default: break
         }
     }
@@ -239,15 +429,21 @@ private final class RemoteDomainReplayIndex {
 }
 
 struct RemoteDomainApplyService {
+    private var authoritativeRecordingDate: Date?
     private let replayIndex: RemoteDomainReplayIndex?
+    private let replayContext: ESheepCloudProjectionReplayContext?
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }()
 
-    init(replayAssumesEmptyBusinessStore: Bool = false) {
+    init(
+        replayAssumesEmptyBusinessStore: Bool = false,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
+    ) {
         replayIndex = replayAssumesEmptyBusinessStore ? RemoteDomainReplayIndex() : nil
+        self.replayContext = replayContext
     }
 
     func prepareResumableReplay(
@@ -258,6 +454,13 @@ struct RemoteDomainApplyService {
             farmID: farmID,
             in: context
         )
+    }
+
+    /// Registers models inserted by a bulk projection pass without rebuilding
+    /// the entire replay index. The method is intentionally a no-op for the
+    /// ordinary single-event service.
+    func rebuildPendingReplayIndex(in context: ModelContext) {
+        replayIndex?.rebuildFromPendingInserts(in: context)
     }
 
     func apply(_ envelope: CloudOperationEnvelope, context: ModelContext) throws -> RemoteApplyOutcome {
@@ -318,7 +521,9 @@ struct RemoteDomainApplyService {
             operationSignature: Data(),
             deletedAt: command.isAuthoritativeDeletion ? event.occurredAt : nil
         )
-        return try applyV2(envelope, context: context)
+        var projection = self
+        projection.authoritativeRecordingDate = event.receivedAt
+        return try projection.applyV2(envelope, context: context)
     }
 
     func applyBaselineProjection(
@@ -348,7 +553,19 @@ struct RemoteDomainApplyService {
         switch payload.kind {
         case .care:
             guard let command = payload.careCommand else { throw RemoteDomainApplyError.invalidPayload("careCommand") }
-            if try FarmCareCommandHandler
+            let includesDeletedSheep: Bool
+            if case .restorePedigreeAudit = command {
+                includesDeletedSheep = true
+            } else {
+                includesDeletedSheep = false
+            }
+            let replaySheep = replayIndex.map {
+                Dictionary(uniqueKeysWithValues: $0.values(SheepRecord.self)
+                    .filter { $0.farmID == envelope.farmID && (includesDeletedSheep || $0.deletedAt == nil) }
+                    .map { ($0.id, $0) })
+            }
+            let replayAudits = replayIndex?.values(PedigreeChangeRecord.self)
+            if !v2Authority, try FarmCareCommandHandler
                 .repairRemotePedigreeCheckpointOverlapIfNeeded(
                     command,
                     farmID: envelope.farmID,
@@ -359,7 +576,13 @@ struct RemoteDomainApplyService {
                 ) {
                 return .applied(rebuildHistoryFrom: command.rebuildHistoryFrom)
             }
-            if try FarmCareCommandHandler.isApplied(command, farmID: envelope.farmID, context: context) {
+            // Imported pedigree audit IDs can already represent this exact
+            // domain change even when its V2 command receipt is new. Preserve
+            // that business-level idempotency for both protocols.
+            if try FarmCareCommandHandler.isApplied(
+                command, farmID: envelope.farmID, context: context,
+                pedigreeSheepByID: replaySheep, pedigreeAuditRecords: replayAudits
+            ) {
                 if try alignCareProjectionRevision(for: envelope, context: context) {
                     return .applied(rebuildHistoryFrom: command.rebuildHistoryFrom)
                 }
@@ -370,9 +593,18 @@ struct RemoteDomainApplyService {
                 farmID: envelope.farmID,
                 accountID: envelope.modifiedByAccountID,
                 context: context,
-                modifiedAt: envelope.modifiedAt
+                modifiedAt: envelope.modifiedAt,
+                pedigreeSheepByID: replaySheep,
+                // The reducer has already verified the V2 event sequence and
+                // command receipt. A V1 optimistic entity revision cannot
+                // reject that accepted event after other V2 streams advanced
+                // the local sheep revision. All business validation remains.
+                enforcesExpectedRevision: !v2Authority,
+                pedigreeAuditRecords: replayAudits,
+                onPedigreeAuditInserted: { [self] audit in
+                    replayIndex?.register(audit)
+                }
             )
-            replayIndex?.rebuildFromPendingInserts(in: context)
             guard result.entityType.rawValue == envelope.entityType, result.entityID == envelope.entityID else { throw RemoteDomainApplyError.invalidPayload("careCommand.target") }
             _ = try alignCareProjectionRevision(for: envelope, context: context)
             return .applied(rebuildHistoryFrom: command.rebuildHistoryFrom)
@@ -387,19 +619,27 @@ struct RemoteDomainApplyService {
             if try matchesExistingTMRBaseline(snapshot, farmID: envelope.farmID, context: context) {
                 return .duplicate
             }
-            guard try !Self.containsAnyTMRProjection(farmID: envelope.farmID, context: context) else {
+            guard try !containsAnyTMRProjectionCached(farmID: envelope.farmID, context: context) else {
                 throw RemoteDomainApplyError.invalidPayload("tmrBaseline.partialProjection")
             }
-            let recipes = Set(try context.fetch(FetchDescriptor<FeedRecipeRecord>())
-                .filter { $0.farmID == envelope.farmID }.map(\.id))
-            let ingredients = Set(try context.fetch(FetchDescriptor<FeedIngredientRecord>())
-                .filter { $0.farmID == envelope.farmID }.map(\.id))
-            let ingredientBatches = Set(try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>())
-                .filter { $0.farmID == envelope.farmID }.map(\.id))
-            let feeds = Set(try context.fetch(FetchDescriptor<FeedRecord>())
-                .filter { $0.farmID == envelope.farmID }.map(\.id))
-            let pens = Set(try context.fetch(FetchDescriptor<PenRecord>())
-                .filter { $0.farmID == envelope.farmID }.map(\.id))
+            let recipes: Set<UUID>
+            let ingredients: Set<UUID>
+            let ingredientBatches: Set<UUID>
+            let feeds: Set<UUID>
+            let pens: Set<UUID>
+            if let replayIndex {
+                recipes = Set(replayIndex.values(FeedRecipeRecord.self).filter { $0.farmID == envelope.farmID }.map(\.id))
+                ingredients = Set(replayIndex.values(FeedIngredientRecord.self).filter { $0.farmID == envelope.farmID }.map(\.id))
+                ingredientBatches = Set(replayIndex.values(FeedIngredientBatchRecord.self).filter { $0.farmID == envelope.farmID }.map(\.id))
+                feeds = Set(replayIndex.values(FeedRecord.self).filter { $0.farmID == envelope.farmID }.map(\.id))
+                pens = Set(replayIndex.values(PenRecord.self).filter { $0.farmID == envelope.farmID }.map(\.id))
+            } else {
+                recipes = Set(try context.fetch(FetchDescriptor<FeedRecipeRecord>()).filter { $0.farmID == envelope.farmID }.map(\.id))
+                ingredients = Set(try context.fetch(FetchDescriptor<FeedIngredientRecord>()).filter { $0.farmID == envelope.farmID }.map(\.id))
+                ingredientBatches = Set(try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>()).filter { $0.farmID == envelope.farmID }.map(\.id))
+                feeds = Set(try context.fetch(FetchDescriptor<FeedRecord>()).filter { $0.farmID == envelope.farmID }.map(\.id))
+                pens = Set(try context.fetch(FetchDescriptor<PenRecord>()).filter { $0.farmID == envelope.farmID }.map(\.id))
+            }
             try snapshot.validate(
                 recipeIDs: recipes,
                 ingredientIDs: ingredients,
@@ -408,7 +648,14 @@ struct RemoteDomainApplyService {
                 penIDs: pens
             )
             snapshot.insert(farmID: envelope.farmID, context: context)
+            // `FarmTMRBackupPayload.insert` inserts a graph of related
+            // records directly rather than going through `insertIndexed`.
+            // Keep the long-lived replay index in sync immediately so a
+            // second baseline envelope in the same service is recognized as
+            // a duplicate (and later events can resolve the new rows without
+            // falling back to a per-event table scan).
             replayIndex?.rebuildFromPendingInserts(in: context)
+            replayContext?.registerInsertedModels(in: context)
             return .applied(rebuildHistoryFrom: nil)
         case .saveTMRFormula, .saveTMRMonitoringRule, .saveTMRFeedingPlan,
              .produceTMRBatch, .recordTMRFeeding, .correctTMRFeedingRun,
@@ -462,11 +709,9 @@ struct RemoteDomainApplyService {
             return .duplicate
         case .updateFarmLocation:
             let farmID = envelope.farmID
-            var farmDescriptor = FetchDescriptor<FarmRecord>(
-                predicate: #Predicate<FarmRecord> { $0.id == farmID && $0.deletedAt == nil }
-            )
-            farmDescriptor.fetchLimit = 1
-            guard let farm = try context.fetch(farmDescriptor).first else {
+            guard let farm = try fetch(FarmRecord.self, id: farmID, context: context),
+                  farm.id == farmID,
+                  farm.deletedAt == nil else {
                 throw RemoteDomainApplyError.missingReference("farmID")
             }
             let localRevision: Int
@@ -600,7 +845,8 @@ struct RemoteDomainApplyService {
                     sheepID: record.id,
                     farmID: envelope.farmID,
                     updatedAt: envelope.modifiedAt,
-                    context: context
+                    context: context,
+                    replayContext: replayContext
                 )
             }
             insertIndexed(record, context: context)
@@ -610,7 +856,7 @@ struct RemoteDomainApplyService {
                 }
                 let parityID = LambingEntrySemantics.entryParityBaselineID(sheepID: record.id)
                 if !(try exists(ReproductionRecord.self, id: parityID, context: context)) {
-                    context.insert(ReproductionRecord(
+                    insertIndexed(ReproductionRecord(
                         id: parityID,
                         farmID: envelope.farmID,
                         eweID: record.id,
@@ -618,14 +864,21 @@ struct RemoteDomainApplyService {
                         occurredAt: record.enteredAt,
                         parity: currentParity,
                         note: "建档时当前胎次"
-                    ))
+                    ), context: context)
                 }
             }
             return .applied(rebuildHistoryFrom: record.enteredAt)
         case .updateSheepProfile:
             guard let record = try fetch(SheepRecord.self, id: try identifier("sheepID", payload), context: context) else { throw RemoteDomainApplyError.missingReference("sheepID") }
-            let entityOperations = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
-                $0.farmID == envelope.farmID && $0.entityID == envelope.entityID
+            let entityOperations: [DomainOperation]
+            if let replayIndex {
+                entityOperations = replayIndex.values(DomainOperation.self).filter {
+                    $0.farmID == envelope.farmID && $0.entityID == envelope.entityID
+                }
+            } else {
+                entityOperations = try context.fetch(FetchDescriptor<DomainOperation>()).filter {
+                    $0.farmID == envelope.farmID && $0.entityID == envelope.entityID
+                }
             }
             let hasEntityOperation = !entityOperations.isEmpty
             let hasMatchingAcceptedReceipt = entityOperations.contains {
@@ -685,7 +938,7 @@ struct RemoteDomainApplyService {
                 }
                 let parityID = LambingEntrySemantics.parityCorrectionID(sheepID: record.id, sheepRevision: record.revision)
                 if !(try exists(ReproductionRecord.self, id: parityID, context: context)) {
-                    context.insert(ReproductionRecord(
+                    insertIndexed(ReproductionRecord(
                         id: parityID,
                         farmID: envelope.farmID,
                         eweID: record.id,
@@ -693,7 +946,7 @@ struct RemoteDomainApplyService {
                         occurredAt: payload.dates["parityRecordedAt"] ?? envelope.modifiedAt,
                         parity: currentParity,
                         note: "档案确认当前胎次"
-                    ))
+                    ), context: context)
                 }
             }
             if let avatarUpdate = SheepAvatarCloudPayload.update(from: payload) {
@@ -702,7 +955,8 @@ struct RemoteDomainApplyService {
                     sheepID: record.id,
                     farmID: envelope.farmID,
                     updatedAt: envelope.modifiedAt,
-                    context: context
+                    context: context,
+                    replayContext: replayContext
                 )
             }
             return .applied(rebuildHistoryFrom: nil)
@@ -716,7 +970,7 @@ struct RemoteDomainApplyService {
             guard let original = try fetch(WeightRecord.self, id: originalID, context: context), original.deletedAt == nil else { throw RemoteDomainApplyError.missingReference("originalID") }
             original.deletedAt = envelope.modifiedAt
             original.revision += 1
-            context.insert(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.weight.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["reason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID))
+            insertIndexed(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.weight.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["reason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID), context: context)
             insertIndexed(WeightRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: original.sheepID, kilogramsText: try string("kilogramsText", payload), occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? ""), context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .recordWeaning:
@@ -744,7 +998,7 @@ struct RemoteDomainApplyService {
                 guard step.dayOffset >= 0, !step.action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw RemoteDomainApplyError.invalidPayload("breedingProgramSteps")
                 }
-                context.insert(BreedingProgramStepRecord(id: step.id, farmID: envelope.farmID, programID: envelope.entityID, dayOffset: step.dayOffset, action: step.action, sortOrder: step.sortOrder, createdAt: createdAt))
+                insertIndexed(BreedingProgramStepRecord(id: step.id, farmID: envelope.farmID, programID: envelope.entityID, dayOffset: step.dayOffset, action: step.action, sortOrder: step.sortOrder, createdAt: createdAt), context: context)
             }
             return .applied(rebuildHistoryFrom: nil)
         case .transferSheep:
@@ -779,7 +1033,7 @@ struct RemoteDomainApplyService {
             }
             original.deletedAt = envelope.modifiedAt
             original.revision += 1
-            context.insert(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.transfer.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["reason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID))
+            insertIndexed(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.transfer.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["reason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID), context: context)
             let occurredAt = try date("occurredAt", payload)
             let sheepID = original.sheepID
             let transfers: [TransferRecord]
@@ -862,7 +1116,7 @@ struct RemoteDomainApplyService {
             }
             original.deletedAt = envelope.modifiedAt
             original.revision += 1
-            context.insert(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.removal.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["correctionReason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID))
+            insertIndexed(TombstoneRecord(farmID: envelope.farmID, entityType: CloudEntityType.removal.rawValue, entityID: originalID, deletedByAccountID: envelope.modifiedByAccountID, reason: payload.strings["correctionReason"] ?? "远端修正", revision: original.revision, operationID: envelope.operationID), context: context)
             let occurredAt = try date("occurredAt", payload)
             let replacementKind = RemovalKind(rawValue: try string("kind", payload)) ?? .culled
             let retainsBatch = original.removalBatchID != nil && replacementKind == original.kind
@@ -921,12 +1175,21 @@ struct RemoteDomainApplyService {
                 id: envelope.entityID,
                 context: context
             ) {
-                let hasMembershipOperation = try context.fetch(
-                    FetchDescriptor<DomainOperation>()
-                ).contains {
-                    $0.farmID == envelope.farmID &&
-                        $0.entityID == envelope.entityID &&
-                        $0.entityType == CloudEntityType.batchMembership.rawValue
+                let hasMembershipOperation: Bool
+                if let replayIndex {
+                    hasMembershipOperation = replayIndex.values(DomainOperation.self).contains {
+                        $0.farmID == envelope.farmID &&
+                            $0.entityID == envelope.entityID &&
+                            $0.entityType == CloudEntityType.batchMembership.rawValue
+                    }
+                } else {
+                    hasMembershipOperation = try context.fetch(
+                        FetchDescriptor<DomainOperation>()
+                    ).contains {
+                        $0.farmID == envelope.farmID &&
+                            $0.entityID == envelope.entityID &&
+                            $0.entityType == CloudEntityType.batchMembership.rawValue
+                    }
                 }
                 guard !hasMembershipOperation else { return .duplicate }
                 let batchID = try identifier("batchID", payload)
@@ -1002,7 +1265,7 @@ struct RemoteDomainApplyService {
                       ingredient.farmID == envelope.farmID else {
                     throw RemoteDomainApplyError.missingReference("ingredientID")
                 }
-                context.insert(FeedRecordLine(
+                insertIndexed(FeedRecordLine(
                     id: line.id,
                     farmID: envelope.farmID,
                     feedRecordID: record.id,
@@ -1015,7 +1278,7 @@ struct RemoteDomainApplyService {
                     nutrientSnapshotJSON: line.nutrientSnapshotJSON ?? ingredient.nutrientSnapshotJSON,
                     unitSnapshot: line.unitSnapshot ?? ingredient.unit,
                     dryMatterTextSnapshot: line.dryMatterTextSnapshot ?? ingredient.dryMatterText
-                ))
+                ), context: context)
             }
             return .applied(rebuildHistoryFrom: nil)
         case .saveFeedIngredient:
@@ -1214,7 +1477,22 @@ struct RemoteDomainApplyService {
             }
             recipe.updatedAt = envelope.modifiedAt
             recipe.deletedAt = nil
-            let existingComponents = try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>()).filter { $0.farmID == envelope.farmID && $0.recipeID == recipe.id && $0.deletedAt == nil }
+            let existingComponents: [FeedRecipeComponentRecord]
+            if let replayIndex {
+                existingComponents = replayIndex.values(FeedRecipeComponentRecord.self).filter {
+                    $0.farmID == envelope.farmID &&
+                        $0.recipeID == recipe.id &&
+                        $0.deletedAt == nil
+                }
+            } else {
+                existingComponents = try context.fetch(
+                    FetchDescriptor<FeedRecipeComponentRecord>()
+                ).filter {
+                    $0.farmID == envelope.farmID &&
+                        $0.recipeID == recipe.id &&
+                        $0.deletedAt == nil
+                }
+            }
             let incomingIDs = Set(payload.recipeComponents.map(\.id))
             for component in existingComponents where !incomingIDs.contains(component.id) { component.deletedAt = envelope.modifiedAt }
             for item in payload.recipeComponents {
@@ -1223,7 +1501,9 @@ struct RemoteDomainApplyService {
                     guard let batch = try fetch(FeedIngredientBatchRecord.self, id: batchID, context: context), batch.ingredientID == ingredient.id else { throw RemoteDomainApplyError.missingReference("ingredientBatchID") }
                 }
                 let component = existingComponents.first(where: { $0.id == item.id }) ?? FeedRecipeComponentRecord(id: item.id, farmID: envelope.farmID, recipeID: recipe.id, ingredientID: ingredient.id, kilogramsText: item.kilogramsText, ingredientBatchID: item.ingredientBatchID, pricePerKilogramText: item.pricePerKilogramText, nutrientSnapshotJSON: item.nutrientSnapshotJSON)
-                if existingComponents.first(where: { $0.id == item.id }) == nil { context.insert(component) }
+                if existingComponents.first(where: { $0.id == item.id }) == nil {
+                    insertIndexed(component, context: context)
+                }
                 component.ingredientID = ingredient.id
                 component.ingredientBatchID = item.ingredientBatchID
                 component.kilogramsText = item.kilogramsText
@@ -1236,22 +1516,37 @@ struct RemoteDomainApplyService {
         case .recordFeedV2:
             if try exists(FeedRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let lines = payload.feedLines.map { FeedLineDraft(id: $0.id, ingredientID: $0.ingredientID, ingredientBatchID: $0.ingredientBatchID, kilogramsText: $0.kilogramsText) }
-            do {
-                if let replayIndex {
-                    try FeedStockLedger.validateConsumption(
-                        lines: lines,
-                        farmID: envelope.farmID,
-                        batches: replayIndex.values(FeedIngredientBatchRecord.self),
-                        transactions: replayIndex.values(FeedStockTransactionRecord.self)
-                    )
-                } else {
-                    try FeedStockLedger.validateConsumption(lines: lines, farmID: envelope.farmID, context: context)
+            if v2Authority {
+                // The server has already accepted this event.  Replaying it
+                // must not re-run the live-device rule that a batch is active
+                // and still has enough *current* stock: a later authoritative
+                // event may have closed the batch, while this earlier feed
+                // fact remains part of the immutable history.  We still fail
+                // closed for malformed quantities and cross-ingredient or
+                // cross-farm references below.
+                try validateAuthoritativeFeedReferences(
+                    lines: lines,
+                    farmID: envelope.farmID,
+                    context: context
+                )
+            } else {
+                do {
+                    if let replayIndex {
+                        try FeedStockLedger.validateConsumption(
+                            lines: lines,
+                            farmID: envelope.farmID,
+                            batches: replayIndex.values(FeedIngredientBatchRecord.self),
+                            transactions: replayIndex.values(FeedStockTransactionRecord.self)
+                        )
+                    } else {
+                        try FeedStockLedger.validateConsumption(lines: lines, farmID: envelope.farmID, context: context)
+                    }
+                } catch FeedStockLedgerError.insufficient {
+                    // Two offline devices may both have seen the same balance. Do
+                    // not clamp or overwrite the ledger; surface the feed command
+                    // as a deterministic sync conflict for user reconciliation.
+                    return .conflict(localRevision: envelope.baseRevision)
                 }
-            } catch FeedStockLedgerError.insufficient {
-                // Two offline devices may both have seen the same balance. Do
-                // not clamp or overwrite the ledger; surface the feed command
-                // as a deterministic sync conflict for user reconciliation.
-                return .conflict(localRevision: envelope.baseRevision)
             }
             let feed = FeedRecord(id: envelope.entityID, farmID: envelope.farmID, penID: try identifier("penID", payload), recipeID: optionalID("recipeID", payload), mode: FeedMode(rawValue: try string("mode", payload)) ?? .limited, occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? "", mealName: payload.strings["mealName"] ?? "", feederName: payload.strings["feederName"] ?? "", remainingKilogramsText: payload.optionalStrings["remainingKilogramsText"] ?? nil, discardedKilogramsText: payload.optionalStrings["discardedKilogramsText"] ?? nil, recipeHeadCountSnapshot: payload.integers["recipeHeadCountSnapshot"], actualHeadCountSnapshot: payload.integers["actualHeadCountSnapshot"], scaleFactorText: payload.optionalStrings["scaleFactorText"] ?? nil, remainingCompositionJSON: payload.optionalStrings["remainingCompositionJSON"] ?? nil, excludedSheepIDs: FeedExcludedSheepCodec.decode(optionalString("excludedSheepIDsJSON", payload)))
             feed.recordedAt = envelope.modifiedAt
@@ -1352,7 +1647,7 @@ struct RemoteDomainApplyService {
                 guard let ingredient = try fetch(FeedIngredientRecord.self, id: line.ingredientID, context: context), ingredient.farmID == envelope.farmID else {
                     throw RemoteDomainApplyError.missingReference("ingredientID")
                 }
-                context.insert(FeedRecordLine(id: line.id, farmID: envelope.farmID, feedRecordID: feed.id, ingredientID: ingredient.id, kilogramsText: line.kilogramsText, ingredientNameSnapshot: line.ingredientNameSnapshot ?? ingredient.name, ingredientBatchNameSnapshot: line.ingredientBatchNameSnapshot, pricePerKilogramTextSnapshot: line.pricePerKilogramTextSnapshot, nutrientSnapshotJSON: line.nutrientSnapshotJSON ?? ingredient.nutrientSnapshotJSON, unitSnapshot: line.unitSnapshot ?? ingredient.unit, dryMatterTextSnapshot: line.dryMatterTextSnapshot ?? ingredient.dryMatterText))
+                insertIndexed(FeedRecordLine(id: line.id, farmID: envelope.farmID, feedRecordID: feed.id, ingredientID: ingredient.id, kilogramsText: line.kilogramsText, ingredientNameSnapshot: line.ingredientNameSnapshot ?? ingredient.name, ingredientBatchNameSnapshot: line.ingredientBatchNameSnapshot, pricePerKilogramTextSnapshot: line.pricePerKilogramTextSnapshot, nutrientSnapshotJSON: line.nutrientSnapshotJSON ?? ingredient.nutrientSnapshotJSON, unitSnapshot: line.unitSnapshot ?? ingredient.unit, dryMatterTextSnapshot: line.dryMatterTextSnapshot ?? ingredient.dryMatterText), context: context)
             }
             return .applied(rebuildHistoryFrom: nil)
         case .recordHealth:
@@ -1360,14 +1655,14 @@ struct RemoteDomainApplyService {
             let record = HealthRecord(id: envelope.entityID, farmID: envelope.farmID, sheepID: optionalID("sheepID", payload), penID: optionalID("penID", payload), kind: HealthRecordKind(rawValue: try string("kind", payload)) ?? .treatment, itemNameSnapshot: try string("itemName", payload), occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? "", inventoryLotID: optionalID("inventoryLotID", payload), quantityText: optionalString("quantityText", payload))
             insertIndexed(record, context: context)
             if let inventoryLotID = record.inventoryLotID, let quantity = record.quantityText {
-                context.insert(InventoryTransactionRecord(id: StableCloudUUID.derived(namespace: record.id, name: "inventory-consumption"), farmID: envelope.farmID, inventoryLotID: inventoryLotID, kind: .consumption, quantityText: quantity, occurredAt: record.occurredAt, sourceRecordID: record.id, note: record.itemNameSnapshot))
+                insertIndexed(InventoryTransactionRecord(id: StableCloudUUID.derived(namespace: record.id, name: "inventory-consumption"), farmID: envelope.farmID, inventoryLotID: inventoryLotID, kind: .consumption, quantityText: quantity, occurredAt: record.occurredAt, sourceRecordID: record.id, note: record.itemNameSnapshot), context: context)
             }
             return .applied(rebuildHistoryFrom: nil)
         case .receiveInventory:
             if try exists(InventoryLotRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             let lot = InventoryLotRecord(id: envelope.entityID, farmID: envelope.farmID, catalogName: try string("catalogName", payload), kind: HealthRecordKind(rawValue: try string("kind", payload)) ?? .treatment, expiresAt: optionalDate("expiresAt", payload), startingQuantityText: try string("quantityText", payload))
             insertIndexed(lot, context: context)
-            context.insert(InventoryTransactionRecord(id: StableCloudUUID.derived(namespace: lot.id, name: "inventory-receipt"), farmID: envelope.farmID, inventoryLotID: lot.id, kind: .receipt, quantityText: lot.startingQuantityText, occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? ""))
+            insertIndexed(InventoryTransactionRecord(id: StableCloudUUID.derived(namespace: lot.id, name: "inventory-receipt"), farmID: envelope.farmID, inventoryLotID: lot.id, kind: .receipt, quantityText: lot.startingQuantityText, occurredAt: try date("occurredAt", payload), note: payload.strings["note"] ?? ""), context: context)
             FarmCareCommandHandler.refreshInventoryExpiryReminder(for: lot, context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .addSemen:
@@ -1376,7 +1671,7 @@ struct RemoteDomainApplyService {
             record.revision = envelope.revision
             record.updatedAt = envelope.modifiedAt
             insertIndexed(record, context: context)
-            context.insert(SemenTransactionRecord(id: StableCloudUUID.derived(namespace: record.id, name: "semen-receipt"), farmID: envelope.farmID, semenID: record.id, kind: .receipt, quantityText: try string("quantityText", payload), occurredAt: envelope.modifiedAt, sourceRecordID: record.id, note: "冻精入库"))
+            insertIndexed(SemenTransactionRecord(id: StableCloudUUID.derived(namespace: record.id, name: "semen-receipt"), farmID: envelope.farmID, semenID: record.id, kind: .receipt, quantityText: try string("quantityText", payload), occurredAt: envelope.modifiedAt, sourceRecordID: record.id, note: "冻精入库"), context: context)
             return .applied(rebuildHistoryFrom: nil)
         case .recordReproduction:
             if try exists(ReproductionRecord.self, id: envelope.entityID, context: context) { return .duplicate }
@@ -1398,7 +1693,7 @@ struct RemoteDomainApplyService {
                 offspring.revision = detail.revision ?? 1
                 offspring.updatedAt = detail.updatedAt ?? envelope.modifiedAt
                 offspring.deletedAt = detail.deletedAt
-                context.insert(offspring)
+                insertIndexed(offspring, context: context)
             }
             return .applied(rebuildHistoryFrom: nil)
         case .addNote:
@@ -1412,11 +1707,11 @@ struct RemoteDomainApplyService {
                 throw RemoteDomainApplyError.invalidPayload("sha256")
             }
             let existing: PhotoAssetRecord?
-            if let indexed = replayIndex?.fetch(
-                PhotoAssetRecord.self,
-                id: envelope.entityID
-            ) {
-                existing = indexed
+            if let replayIndex {
+                existing = replayIndex.fetch(
+                    PhotoAssetRecord.self,
+                    id: envelope.entityID
+                )
             } else {
                 existing = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
                     .first(where: {
@@ -1484,11 +1779,18 @@ struct RemoteDomainApplyService {
             let entityID = try identifier("entityID", payload)
             guard entityID == envelope.entityID else { throw RemoteDomainApplyError.invalidPayload("entityID") }
             let operationID = envelope.operationID
-            var tombstoneDescriptor = FetchDescriptor<TombstoneRecord>(
-                predicate: #Predicate<TombstoneRecord> { $0.operationID == operationID }
-            )
-            tombstoneDescriptor.fetchLimit = 1
-            if try context.fetch(tombstoneDescriptor).first != nil { return .duplicate }
+            let existingTombstone: TombstoneRecord?
+            if let replayIndex {
+                existingTombstone = replayIndex.values(TombstoneRecord.self)
+                    .first { $0.operationID == operationID }
+            } else {
+                var tombstoneDescriptor = FetchDescriptor<TombstoneRecord>(
+                    predicate: #Predicate<TombstoneRecord> { $0.operationID == operationID }
+                )
+                tombstoneDescriptor.fetchLimit = 1
+                existingTombstone = try context.fetch(tombstoneDescriptor).first
+            }
+            if existingTombstone != nil { return .duplicate }
             if !preservesLegacySnapshotAuthority {
                 try releaseLegacyHistoryProjectionAuthority(
                     affectedBy: entityType,
@@ -1522,16 +1824,24 @@ struct RemoteDomainApplyService {
                 operationID: envelope.operationID
             )
             tombstone.deletedAt = envelope.deletedAt ?? envelope.modifiedAt
-            context.insert(tombstone)
+            insertIndexed(tombstone, context: context)
             return .applied(rebuildHistoryFrom: .distantPast)
         case .restoreTombstonedEntity:
             let tombstoneID = try identifier("tombstoneID", payload)
             let farmID = envelope.farmID
-            var tombstoneDescriptor = FetchDescriptor<TombstoneRecord>(
-                predicate: #Predicate<TombstoneRecord> { $0.id == tombstoneID && $0.farmID == farmID }
-            )
-            tombstoneDescriptor.fetchLimit = 1
-            guard let tombstone = try context.fetch(tombstoneDescriptor).first,
+            let tombstone: TombstoneRecord?
+            if let replayIndex {
+                tombstone = replayIndex.values(TombstoneRecord.self).first {
+                    $0.id == tombstoneID && $0.farmID == farmID
+                }
+            } else {
+                var tombstoneDescriptor = FetchDescriptor<TombstoneRecord>(
+                    predicate: #Predicate<TombstoneRecord> { $0.id == tombstoneID && $0.farmID == farmID }
+                )
+                tombstoneDescriptor.fetchLimit = 1
+                tombstone = try context.fetch(tombstoneDescriptor).first
+            }
+            guard let tombstone,
                   let entityType = CloudEntityType(rawValue: tombstone.entityType) else {
                 throw RemoteDomainApplyError.missingReference("tombstoneID")
             }
@@ -1567,7 +1877,6 @@ struct RemoteDomainApplyService {
                 throw RemoteDomainApplyError.invalidPayload("resolvedPayload")
             }
             let changedAt = try ConflictDomainMergeService.apply(payload: resolvedPayload, entityType: entityType, entityID: envelope.entityID, farmID: envelope.farmID, revision: envelope.revision, context: context)
-            replayIndex?.rebuildFromPendingInserts(in: context)
             return .applied(rebuildHistoryFrom: changedAt)
         case .recoverEntity:
             guard let sourcePayload = payload.dataValues["resolvedPayload"],
@@ -1680,6 +1989,9 @@ struct RemoteDomainApplyService {
         context: ModelContext
     ) throws -> Int {
         guard v2Authority else { return envelope.revision }
+        if let replayIndex {
+            return max(1, (replayIndex.revision(for: entityType, id: id) ?? 0) + 1)
+        }
         let current: Int?
         switch entityType {
         case .pen:
@@ -1833,6 +2145,39 @@ struct RemoteDomainApplyService {
         }
     }
 
+    private func containsAnyTMRProjectionCached(farmID: UUID, context: ModelContext) throws -> Bool {
+        if let replayIndex {
+            return replayIndex.values(TMRFormulaProfileRecord.self).contains { $0.farmID == farmID }
+                || replayIndex.values(TMRFeedingPlanRecord.self).contains { $0.farmID == farmID }
+                || replayIndex.values(TMRFeedingPlanPenRecord.self).contains { $0.farmID == farmID }
+                || replayIndex.values(TMRBatchRecord.self).contains { $0.farmID == farmID }
+                || replayIndex.values(TMRBatchIngredientRecord.self).contains { $0.farmID == farmID }
+                || replayIndex.values(TMRBatchLoadLineRecord.self).contains { $0.farmID == farmID }
+                || replayIndex.values(TMRBatchMovementRecord.self).contains { $0.farmID == farmID }
+                || replayIndex.values(TMRFeedingRunRecord.self).contains { $0.farmID == farmID }
+                || replayIndex.values(TMRFeedingAllocationRecord.self).contains { $0.farmID == farmID }
+                || replayIndex.values(TMRMealCompletionRecord.self).contains { $0.farmID == farmID }
+                || replayIndex.values(TMRDeviationAcknowledgementRecord.self).contains { $0.farmID == farmID }
+                || replayIndex.values(TMRMonitoringRuleRecord.self).contains { $0.farmID == farmID }
+        }
+        return try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRFeedingPlanRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRFeedingPlanPenRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRBatchRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRBatchIngredientRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRBatchLoadLineRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRBatchMovementRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRFeedingRunRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRMealCompletionRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRDeviationAcknowledgementRecord>()).contains { $0.farmID == farmID }
+            || context.fetch(FetchDescriptor<TMRMonitoringRuleRecord>()).contains { $0.farmID == farmID }
+    }
+
+    /// Compatibility helper for migration/baseline callers that do not own a
+    /// replay index. Bulk V2 replay uses the instance method above so these
+    /// checks read the already-preloaded model arrays instead of issuing a
+    /// table scan for every event.
     static func containsAnyTMRProjection(farmID: UUID, context: ModelContext) throws -> Bool {
         try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>()).contains { $0.farmID == farmID }
             || context.fetch(FetchDescriptor<TMRFeedingPlanRecord>()).contains { $0.farmID == farmID }
@@ -1853,30 +2198,45 @@ struct RemoteDomainApplyService {
         farmID: UUID,
         context: ModelContext
     ) throws -> Bool {
-        let profileIDs = Set(try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>())
-            .filter { $0.farmID == farmID }.map(\.id))
-        let planIDs = Set(try context.fetch(FetchDescriptor<TMRFeedingPlanRecord>())
-            .filter { $0.farmID == farmID }.map(\.id))
-        let planPenIDs = Set(try context.fetch(FetchDescriptor<TMRFeedingPlanPenRecord>())
-            .filter { $0.farmID == farmID }.map(\.id))
-        let batchIDs = Set(try context.fetch(FetchDescriptor<TMRBatchRecord>())
-            .filter { $0.farmID == farmID }.map(\.id))
-        let batchIngredientIDs = Set(try context.fetch(FetchDescriptor<TMRBatchIngredientRecord>())
-            .filter { $0.farmID == farmID }.map(\.id))
-        let loadLineIDs = Set(try context.fetch(FetchDescriptor<TMRBatchLoadLineRecord>())
-            .filter { $0.farmID == farmID }.map(\.id))
-        let movementIDs = Set(try context.fetch(FetchDescriptor<TMRBatchMovementRecord>())
-            .filter { $0.farmID == farmID }.map(\.id))
-        let runIDs = Set(try context.fetch(FetchDescriptor<TMRFeedingRunRecord>())
-            .filter { $0.farmID == farmID }.map(\.id))
-        let allocationIDs = Set(try context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>())
-            .filter { $0.farmID == farmID }.map(\.id))
-        let completionIDs = Set(try context.fetch(FetchDescriptor<TMRMealCompletionRecord>())
-            .filter { $0.farmID == farmID }.map(\.id))
-        let acknowledgementIDs = Set(try context.fetch(FetchDescriptor<TMRDeviationAcknowledgementRecord>())
-            .filter { $0.farmID == farmID }.map(\.id))
-        let ruleIDs = Set(try context.fetch(FetchDescriptor<TMRMonitoringRuleRecord>())
-            .filter { $0.farmID == farmID }.map(\.id))
+        let profileIDs: Set<UUID>
+        let planIDs: Set<UUID>
+        let planPenIDs: Set<UUID>
+        let batchIDs: Set<UUID>
+        let batchIngredientIDs: Set<UUID>
+        let loadLineIDs: Set<UUID>
+        let movementIDs: Set<UUID>
+        let runIDs: Set<UUID>
+        let allocationIDs: Set<UUID>
+        let completionIDs: Set<UUID>
+        let acknowledgementIDs: Set<UUID>
+        let ruleIDs: Set<UUID>
+        if let replayIndex {
+            profileIDs = Set(replayIndex.values(TMRFormulaProfileRecord.self).filter { $0.farmID == farmID }.map(\.id))
+            planIDs = Set(replayIndex.values(TMRFeedingPlanRecord.self).filter { $0.farmID == farmID }.map(\.id))
+            planPenIDs = Set(replayIndex.values(TMRFeedingPlanPenRecord.self).filter { $0.farmID == farmID }.map(\.id))
+            batchIDs = Set(replayIndex.values(TMRBatchRecord.self).filter { $0.farmID == farmID }.map(\.id))
+            batchIngredientIDs = Set(replayIndex.values(TMRBatchIngredientRecord.self).filter { $0.farmID == farmID }.map(\.id))
+            loadLineIDs = Set(replayIndex.values(TMRBatchLoadLineRecord.self).filter { $0.farmID == farmID }.map(\.id))
+            movementIDs = Set(replayIndex.values(TMRBatchMovementRecord.self).filter { $0.farmID == farmID }.map(\.id))
+            runIDs = Set(replayIndex.values(TMRFeedingRunRecord.self).filter { $0.farmID == farmID }.map(\.id))
+            allocationIDs = Set(replayIndex.values(TMRFeedingAllocationRecord.self).filter { $0.farmID == farmID }.map(\.id))
+            completionIDs = Set(replayIndex.values(TMRMealCompletionRecord.self).filter { $0.farmID == farmID }.map(\.id))
+            acknowledgementIDs = Set(replayIndex.values(TMRDeviationAcknowledgementRecord.self).filter { $0.farmID == farmID }.map(\.id))
+            ruleIDs = Set(replayIndex.values(TMRMonitoringRuleRecord.self).filter { $0.farmID == farmID }.map(\.id))
+        } else {
+            profileIDs = Set(try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            planIDs = Set(try context.fetch(FetchDescriptor<TMRFeedingPlanRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            planPenIDs = Set(try context.fetch(FetchDescriptor<TMRFeedingPlanPenRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            batchIDs = Set(try context.fetch(FetchDescriptor<TMRBatchRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            batchIngredientIDs = Set(try context.fetch(FetchDescriptor<TMRBatchIngredientRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            loadLineIDs = Set(try context.fetch(FetchDescriptor<TMRBatchLoadLineRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            movementIDs = Set(try context.fetch(FetchDescriptor<TMRBatchMovementRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            runIDs = Set(try context.fetch(FetchDescriptor<TMRFeedingRunRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            allocationIDs = Set(try context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            completionIDs = Set(try context.fetch(FetchDescriptor<TMRMealCompletionRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            acknowledgementIDs = Set(try context.fetch(FetchDescriptor<TMRDeviationAcknowledgementRecord>()).filter { $0.farmID == farmID }.map(\.id))
+            ruleIDs = Set(try context.fetch(FetchDescriptor<TMRMonitoringRuleRecord>()).filter { $0.farmID == farmID }.map(\.id))
+        }
         let hasAny = !profileIDs.isEmpty || !planIDs.isEmpty || !planPenIDs.isEmpty ||
             !batchIDs.isEmpty || !batchIngredientIDs.isEmpty || !loadLineIDs.isEmpty ||
             !movementIDs.isEmpty || !runIDs.isEmpty || !allocationIDs.isEmpty ||
@@ -1911,15 +2271,21 @@ struct RemoteDomainApplyService {
     ) throws -> Bool {
         switch CloudEntityType(rawValue: envelope.entityType) {
         case .careRule:
-            guard let record = try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first(where: {
-                $0.id == envelope.entityID && $0.farmID == envelope.farmID
-            }), record.revision < envelope.revision else { return false }
+            guard let record = try fetch(
+                FarmCareRuleRecord.self,
+                id: envelope.entityID,
+                context: context
+            ), record.farmID == envelope.farmID,
+                record.revision < envelope.revision else { return false }
             record.revision = envelope.revision
             return true
         case .alertDeferral:
-            guard let record = try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).first(where: {
-                $0.id == envelope.entityID && $0.farmID == envelope.farmID
-            }), record.revision < envelope.revision else { return false }
+            guard let record = try fetch(
+                FarmAlertDeferralRecord.self,
+                id: envelope.entityID,
+                context: context
+            ), record.farmID == envelope.farmID,
+                record.revision < envelope.revision else { return false }
             record.revision = envelope.revision
             return true
         default:
@@ -1975,9 +2341,61 @@ struct RemoteDomainApplyService {
         payload.optionalDates[key] ?? nil
     }
 
+    /// Validate only the identity and shape needed to materialize a server-
+    /// accepted feed event.  `isActive` and the current ledger balance are
+    /// intentionally not part of this check: both are mutable projections and
+    /// can legitimately differ by the time a historical event is replayed.
+    private func validateAuthoritativeFeedReferences(
+        lines: [FeedLineDraft],
+        farmID: UUID,
+        context: ModelContext
+    ) throws {
+        guard !lines.isEmpty else {
+            throw FarmCommandError.missingRequiredValue("投喂明细")
+        }
+        for line in lines {
+            guard let quantity = Decimal.stable(line.kilogramsText), quantity > 0 else {
+                throw FeedStockLedgerError.invalidQuantity
+            }
+            guard let ingredient = try fetch(
+                FeedIngredientRecord.self,
+                id: line.ingredientID,
+                context: context
+            ), ingredient.farmID == farmID else {
+                throw RemoteDomainApplyError.missingReference("ingredientID")
+            }
+            if let batchID = line.ingredientBatchID {
+                guard let batch = try fetch(
+                    FeedIngredientBatchRecord.self,
+                    id: batchID,
+                    context: context
+                ), batch.farmID == farmID,
+                    batch.ingredientID == ingredient.id else {
+                    throw RemoteDomainApplyError.missingReference("ingredientBatchID")
+                }
+            }
+        }
+    }
+
     private func insertIndexed<T: PersistentModel>(_ model: T, context: ModelContext) {
+        // These constructors otherwise stamp the replay machine's wall clock.
+        // Historical approved values are restored by the controlled builder;
+        // newly received facts use the immutable cloud receipt time.
+        if let date = authoritativeRecordingDate {
+            switch model {
+            case let value as WeightRecord: value.recordedAt = date
+            case let value as WeaningRecord: value.recordedAt = date
+            case let value as RemovalRecord: value.recordedAt = date
+            default: break
+            }
+        }
         context.insert(model)
         replayIndex?.register(model)
+        // Most domain handlers insert through this helper. Register the
+        // object in the protocol replay cache at the insertion site so later
+        // events in the same batch can resolve it without scanning every
+        // pending object at the end of each event.
+        replayContext?.register(model)
     }
 
     private func exists<T: PersistentModel>(_ type: T.Type, id: UUID, context: ModelContext) throws -> Bool where T: AnyObject {
@@ -1992,8 +2410,14 @@ struct RemoteDomainApplyService {
     }
 
     private func fetch<T: PersistentModel>(_ type: T.Type, id: UUID, context: ModelContext) throws -> T? where T: AnyObject {
-        if let cached = replayIndex?.fetch(type, id: id) {
-            return cached
+        if let replayIndex {
+            // A preloaded replay index is authoritative for the whole batch.
+            // Falling through to SwiftData on a cache miss would turn a
+            // missing-reference check into a per-event SQL query and would
+            // also hide an incomplete preload. New rows are registered at
+            // their insertion site (or at the event boundary) before the
+            // next event is accepted.
+            return replayIndex.fetch(type, id: id)
         }
         let fetched: T? = switch type {
         case is PenRecord.Type:
@@ -2042,6 +2466,56 @@ struct RemoteDomainApplyService {
             try fetchFirst(FetchDescriptor<SemenRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
         case is NoteRecord.Type:
             try fetchFirst(FetchDescriptor<NoteRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is FarmRecord.Type:
+            try fetchFirst(FetchDescriptor<FarmRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is SheepAvatarRecord.Type:
+            try fetchFirst(FetchDescriptor<SheepAvatarRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is BreedingProgramStepRecord.Type:
+            try fetchFirst(FetchDescriptor<BreedingProgramStepRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is SemenDonorRecord.Type:
+            try fetchFirst(FetchDescriptor<SemenDonorRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is LambingOffspringRecord.Type:
+            try fetchFirst(FetchDescriptor<LambingOffspringRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is InventoryTransactionRecord.Type:
+            try fetchFirst(FetchDescriptor<InventoryTransactionRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is SemenTransactionRecord.Type:
+            try fetchFirst(FetchDescriptor<SemenTransactionRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TombstoneRecord.Type:
+            try fetchFirst(FetchDescriptor<TombstoneRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is DomainOperation.Type:
+            try fetchFirst(FetchDescriptor<DomainOperation>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TMRFormulaProfileRecord.Type:
+            try fetchFirst(FetchDescriptor<TMRFormulaProfileRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TMRFeedingPlanRecord.Type:
+            try fetchFirst(FetchDescriptor<TMRFeedingPlanRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TMRFeedingPlanPenRecord.Type:
+            try fetchFirst(FetchDescriptor<TMRFeedingPlanPenRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TMRBatchRecord.Type:
+            try fetchFirst(FetchDescriptor<TMRBatchRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TMRBatchIngredientRecord.Type:
+            try fetchFirst(FetchDescriptor<TMRBatchIngredientRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TMRBatchLoadLineRecord.Type:
+            try fetchFirst(FetchDescriptor<TMRBatchLoadLineRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TMRBatchMovementRecord.Type:
+            try fetchFirst(FetchDescriptor<TMRBatchMovementRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TMRFeedingRunRecord.Type:
+            try fetchFirst(FetchDescriptor<TMRFeedingRunRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TMRFeedingAllocationRecord.Type:
+            try fetchFirst(FetchDescriptor<TMRFeedingAllocationRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TMRMealCompletionRecord.Type:
+            try fetchFirst(FetchDescriptor<TMRMealCompletionRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TMRDeviationAcknowledgementRecord.Type:
+            try fetchFirst(FetchDescriptor<TMRDeviationAcknowledgementRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is TMRMonitoringRuleRecord.Type:
+            try fetchFirst(FetchDescriptor<TMRMonitoringRuleRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is CareBatchRecord.Type:
+            try fetchFirst(FetchDescriptor<CareBatchRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is FarmCareRuleRecord.Type:
+            try fetchFirst(FetchDescriptor<FarmCareRuleRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is FarmAlertDeferralRecord.Type:
+            try fetchFirst(FetchDescriptor<FarmAlertDeferralRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
+        case is CareReminderRecord.Type:
+            try fetchFirst(FetchDescriptor<CareReminderRecord>(predicate: #Predicate { $0.id == id }), context: context) as? T
         default:
             nil
         }

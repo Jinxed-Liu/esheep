@@ -1,3 +1,4 @@
+import Combine
 import SwiftData
 import SwiftUI
 import UIKit
@@ -5,11 +6,10 @@ import UIKit
 /// The user-facing V2 cloud center. It intentionally presents business state
 /// rather than transport, queue, database, or provider implementation details.
 struct ESheepCloudCenterView: View {
+    @Environment(\.modelContext) private var modelContext
     @Environment(CloudCollaborationStore.self) private var collaboration
     @Query private var farmStates: [ESheepCloudFarmState]
-    @Query private var pendingIntents: [ESheepCloudPendingIntent]
     @Query private var attentionItems: [ESheepCloudAttentionItem]
-    @Query private var assetStates: [ESheepCloudAssetState]
     @Query private var initialSessions: [ESheepCloudInitialSyncSession]
     @Query private var migrationStates: [ESheepCloudMigrationState]
     @Query private var storageProfiles: [FarmStorageProfile]
@@ -17,6 +17,10 @@ struct ESheepCloudCenterView: View {
     let account: AccountProfile
     let farm: FarmRecord
 
+    @State private var summary = ESheepCloudCenterSummary()
+    @State private var summaryLoaded = false
+    @State private var summaryRevision = 0
+    @State private var localSpace: ESheepCloudLocalSpace?
     @State private var engineState: ESheepCloudViewState?
     @State private var refreshMessage: String?
     @State private var isRefreshing = false
@@ -33,19 +37,9 @@ struct ESheepCloudCenterView: View {
             sort: \ESheepCloudFarmState.updatedAt,
             order: .reverse
         )
-        _pendingIntents = Query(
-            filter: #Predicate<ESheepCloudPendingIntent> { $0.farmID == farmID },
-            sort: \ESheepCloudPendingIntent.occurredAt,
-            order: .reverse
-        )
         _attentionItems = Query(
-            filter: #Predicate<ESheepCloudAttentionItem> { $0.farmID == farmID },
+            filter: #Predicate<ESheepCloudAttentionItem> { $0.farmID == farmID && ($0.stateRawValue == "open" || $0.stateRawValue == "resolving") },
             sort: \ESheepCloudAttentionItem.createdAt,
-            order: .reverse
-        )
-        _assetStates = Query(
-            filter: #Predicate<ESheepCloudAssetState> { $0.farmID == farmID },
-            sort: \ESheepCloudAssetState.updatedAt,
             order: .reverse
         )
         _initialSessions = Query(
@@ -78,23 +72,10 @@ struct ESheepCloudCenterView: View {
         currentFarmState?.farmGeneration
     }
 
-    private var currentIntents: [ESheepCloudPendingIntent] {
-        guard let activeGeneration else { return [] }
-        return pendingIntents.filter {
-            $0.farmGeneration == activeGeneration &&
-                $0.accountID == account.effectiveAccountID
-        }
-    }
-
-    private var waitingIntents: [ESheepCloudPendingIntent] {
-        currentIntents.filter {
-            !$0.lifecycle.isTerminal && $0.lifecycle != .needsConfirmation
-        }
-    }
-
-    private var rejectedIntentCount: Int {
-        currentIntents.count { $0.lifecycle == .rejected }
-    }
+    private var waitingIntents: [ESheepCloudCenterSummary.WaitingItem] { summary.waitingItems }
+    private var rejectedIntentCount: Int { summary.rejectedCount }
+    private var pendingAssetCount: Int { summary.pendingAssetCount }
+    private var failedAssetCount: Int { summary.failedAssetCount }
 
     private var activeAttentionItems: [ESheepCloudAttentionItem] {
         guard let activeGeneration else { return [] }
@@ -104,40 +85,10 @@ struct ESheepCloudCenterView: View {
         }
     }
 
-    private var currentAssets: [ESheepCloudAssetState] {
-        guard let activeGeneration else { return [] }
-        return assetStates.filter { $0.farmGeneration == activeGeneration }
-    }
-
-    private var pendingAssetCount: Int {
-        currentAssets.count { asset in
-            [asset.thumbnailStateRawValue, asset.avatarStateRawValue,
-             asset.originalStateRawValue].contains { value in
-                value == ESheepCloudAssetTransferState.localOnly.rawValue ||
-                    value == ESheepCloudAssetTransferState.queued.rawValue ||
-                    value == ESheepCloudAssetTransferState.transferring.rawValue ||
-                    value == ESheepCloudAssetTransferState.failed.rawValue
-            }
-        }
-    }
-
-    private var failedAssetCount: Int {
-        currentAssets.count { asset in
-            [asset.thumbnailStateRawValue, asset.avatarStateRawValue,
-             asset.originalStateRawValue].contains {
-                $0 == ESheepCloudAssetTransferState.failed.rawValue
-            }
-        }
-    }
-
-    private var localPhotoBytes: Int64 {
-        currentAssets.reduce(into: Int64(0)) { total, asset in
-            total += max(0, asset.originalByteCount)
-        }
-    }
-
     private var latestInitialSession: ESheepCloudInitialSyncSession? {
-        initialSessions.first
+        initialSessions.first {
+            $0.accountID == account.effectiveAccountID && $0.state != .active
+        }
     }
 
     private var storageProfile: FarmStorageProfile? {
@@ -226,8 +177,12 @@ struct ESheepCloudCenterView: View {
         if engineReportsOffline, !waitingIntents.isEmpty {
             return "离线，联网后自动保存"
         }
+        if let failure = engineState?.failure {
+            return failure.kind == .serviceUnavailable
+                ? "云端保存服务暂不可用" : engineState!.statusTitle
+        }
         if !waitingIntents.isEmpty {
-            return "正在保存 \(waitingIntents.count) 项"
+            return "正在保存 \(summary.waitingCount) 项"
         }
         if pendingAssetCount > 0 {
             return "正在保存 \(pendingAssetCount) 项"
@@ -313,11 +268,13 @@ struct ESheepCloudCenterView: View {
             }
 
             Section("正在等待保存的内容") {
-                if waitingIntents.isEmpty {
+                if !summaryLoaded {
+                    Text("正在读取本机保存状态")
+                } else if waitingIntents.isEmpty {
                     Label("没有等待保存的内容", systemImage: "checkmark")
                         .foregroundStyle(.secondary)
                 } else {
-                    LabeledContent("合计", value: "\(waitingIntents.count) 项")
+                    LabeledContent("合计", value: "\(summary.waitingCount) 项")
                     ForEach(waitingIntents.prefix(5)) { intent in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(ESheepCloudCommandPresentation.title(for: intent.commandKind))
@@ -327,8 +284,8 @@ struct ESheepCloudCenterView: View {
                         }
                         .accessibilityElement(children: .combine)
                     }
-                    if waitingIntents.count > 5 {
-                        Text("另有 \(waitingIntents.count - 5) 项正在依次保存")
+                    if summary.waitingCount > 5 {
+                        Text("另有 \(summary.waitingCount - 5) 项正在依次保存")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -371,14 +328,14 @@ struct ESheepCloudCenterView: View {
             }
 
             Section {
-                LabeledContent("照片资料", value: "\(currentAssets.count) 张")
-                LabeledContent(
-                    "本机照片空间",
-                    value: ByteCountFormatter.string(
-                        fromByteCount: localPhotoBytes,
-                        countStyle: .file
-                    )
-                )
+                LabeledContent("照片资料", value: "\(summary.assetCount) 张")
+                if let localSpace {
+                    LabeledContent("本机业务及同步数据", value: spaceText(localSpace.database))
+                    LabeledContent("可重建接收文件", value: spaceText(localSpace.receiving))
+                    LabeledContent("照片空间", value: spaceText(localSpace.photos))
+                    Text("业务库与接收文件按整个 App 统计，照片按当前牧场统计；显示内容大小和实际磁盘占用。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 if pendingAssetCount > 0 {
                     LabeledContent("正在准备保存", value: "\(pendingAssetCount) 张")
                 }
@@ -412,8 +369,37 @@ struct ESheepCloudCenterView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task(id: farm.id) {
             engineState = collaboration.eSheepCloudViewState(farmID: farm.id)
+            await loadSummary()
+            await loadSpace()
             await refreshFromCloudIfNeeded()
         }
+        .task(id: summaryRevision) { await loadSummary() }
+        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)
+            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)) { _ in
+                summaryRevision &+= 1
+            }
+    }
+
+    private func loadSummary() async {
+        guard let generation = activeGeneration else { return }
+        do {
+            let result = try await ESheepCloudCenterSummaryReader(container: modelContext.container)
+                .load(farmID: farm.id, accountID: account.effectiveAccountID, generation: generation)
+            try Task.checkCancellation()
+            if summary != result { summary = result }
+            summaryLoaded = true
+        } catch { if !(error is CancellationError) { refreshMessage = "本机保存状态暂未读取完成" } }
+    }
+
+    private func loadSpace() async {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        localSpace = try? await ESheepCloudSpaceReader().load(
+            databaseURLs: modelContext.container.configurations.map(\.url), support: support, farmID: farm.id)
+    }
+
+    private func spaceText(_ bytes: ESheepCloudLocalSpace.Bytes) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes.logical, countStyle: .file) + " / 占用 " +
+            ByteCountFormatter.string(fromByteCount: bytes.allocated, countStyle: .file)
     }
 
     private func refreshFromCloud() {
@@ -425,7 +411,8 @@ struct ESheepCloudCenterView: View {
             do {
                 _ = try await collaboration.synchronizeESheepCloudFarm(
                     farmID: farm.id,
-                    accountID: account.effectiveAccountID
+                    accountID: account.effectiveAccountID,
+                    force: true
                 )
             } catch {
                 refreshMessage = ESheepCloudUserMessage.text(for: error)
@@ -469,7 +456,8 @@ struct ESheepCloudCenterView: View {
             do {
                 _ = try await collaboration.receiveESheepCloudFarm(
                     farmID: farm.id,
-                    expectedFarmGeneration: session.farmGeneration
+                    expectedFarmGeneration: session.farmGeneration,
+                    accountID: account.effectiveAccountID
                 )
                 refreshMessage = "牧场资料已准备完成，可以进入牧场了。"
             } catch {
@@ -560,6 +548,7 @@ struct ESheepCloudCenterView: View {
 
 struct ESheepCloudInitialSyncProgressView: View {
     @Environment(CloudCollaborationStore.self) private var collaboration
+    @Environment(\.scenePhase) private var scenePhase
 
     let session: ESheepCloudInitialSyncSession
 
@@ -591,6 +580,15 @@ struct ESheepCloudInitialSyncProgressView: View {
             } message: {
                 Text(errorMessage ?? "")
             }
+            .onAppear {
+                UIApplication.shared.isIdleTimerDisabled = scenePhase == .active
+            }
+            .onDisappear {
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
+            .onChange(of: scenePhase) { _, phase in
+                UIApplication.shared.isIdleTimerDisabled = phase == .active
+            }
         }
     }
 
@@ -603,7 +601,8 @@ struct ESheepCloudInitialSyncProgressView: View {
             do {
                 _ = try await collaboration.receiveESheepCloudFarm(
                     farmID: session.farmID,
-                    expectedFarmGeneration: session.farmGeneration
+                    expectedFarmGeneration: session.farmGeneration,
+                    accountID: session.accountID
                 )
             } catch is CancellationError {
                 return
@@ -622,19 +621,56 @@ private struct ESheepCloudPreparationSection: View {
     private var currentStep: Int {
         guard let session else { return 1 }
         switch session.state {
-        case .connecting, .paused, .failed: return 1
+        case .connecting: return 1
         case .receiving: return 2
-        case .verifying, .applyingRecentChanges, .buildingIndexes: return 3
-        case .readyToActivate, .active: return 4
+        case .verifying: return 3
+        case .applyingRecentChanges, .buildingIndexes, .readyToActivate: return 4
+        case .activating, .active: return 5
+        case .paused, .failed:
+            if isActivationPhase(session) {
+                return 5
+            }
+            // Activation is all-or-nothing and resets its visible counter on
+            // interruption. A completed verifier with no activation prefix
+            // therefore means the pause/failure happened at the final
+            // activation boundary, not during event verification.
+            let target = max(session.targetEventHead, session.verifiedProjectionEventSequence)
+            if target > 0 && session.verifiedProjectionEventSequence >= target {
+                return 5
+            }
+            if session.verifiedProjectionEventSequence > 0 ||
+                session.receivedByteCount >= session.expectedByteCount {
+                return 3
+            }
+            return session.receivedByteCount > 0 ? 2 : 1
         }
     }
 
-    private let titles = [
+    private func isActivationPhase(_ session: ESheepCloudInitialSyncSession) -> Bool {
+        if session.state == .activating || session.activationProjectionEventSequence > 0 {
+            return true
+        }
+        // A pause/failure resets the atomic activation counter to zero. Once
+        // the verifier has reached the cloud head, the only remaining work is
+        // replaying that trusted projection into the main store, so keep the
+        // page on the activation step instead of showing a completed verify.
+        return (session.state == .paused || session.state == .failed) &&
+            session.targetEventHead > 0 &&
+            session.verifiedProjectionEventSequence >= session.targetEventHead
+    }
+
+    private var titles: [String] {
+        if session?.usesBusinessCheckpoint == true {
+            return ["连接 eSheep+ 云", "接收并导入业务历史", "核对离线业务资料", "接收最近的变更", "打开牧场"]
+        }
+        return [
         "连接 eSheep+ 云",
         "接收牧场资料",
-        "检查资料是否完整",
-        "即将完成",
-    ]
+        "校验事件和资料",
+        "追赶增量并建立索引",
+        "一次性打开云端牧场",
+        ]
+    }
 
     var body: some View {
         Section {
@@ -654,12 +690,27 @@ private struct ESheepCloudPreparationSection: View {
                 .accessibilityLabel("第 \(index + 1) 步，\(title)\(index + 1 == currentStep ? "，正在进行" : "")")
             }
 
-            if let session, session.expectedByteCount > 0 {
-                ProgressView(
-                    value: Double(session.receivedByteCount),
-                    total: Double(session.expectedByteCount)
-                )
-                .accessibilityLabel("牧场资料接收进度")
+            if let session {
+                switch session.state {
+                case .receiving, .connecting, .paused, .failed:
+                    if session.expectedByteCount > 0 &&
+                        session.receivedByteCount < session.expectedByteCount &&
+                        session.verifiedProjectionEventSequence == 0 {
+                        ProgressView(
+                            value: Double(session.receivedByteCount),
+                            total: Double(session.expectedByteCount)
+                        )
+                        .accessibilityLabel(downloadAccessibilityLabel(session))
+                        Text(downloadProgressDescription(session))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        eventProgress(session)
+                    }
+                case .verifying, .applyingRecentChanges, .buildingIndexes,
+                     .readyToActivate, .activating, .active:
+                    eventProgress(session)
+                }
             } else {
                 ProgressView()
                     .accessibilityLabel("正在准备牧场资料")
@@ -675,9 +726,17 @@ private struct ESheepCloudPreparationSection: View {
                     )
                     .font(.footnote)
                     .foregroundStyle(.orange)
+                    if let traceID = session.lastErrorTraceID,
+                       !traceID.isEmpty {
+                        Text("诊断编号：\(traceID)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .accessibilityLabel("诊断编号 \(traceID)")
+                    }
                 } else if session.state == .paused {
                     Label(
-                        "接收已暂时停下，已完成的部分会继续使用。",
+                        "接收已安全暂停，回到前台后会从最后检查点继续。",
                         systemImage: "pause.circle"
                     )
                     .font(.footnote)
@@ -694,8 +753,105 @@ private struct ESheepCloudPreparationSection: View {
         } header: {
             Text("正在准备牧场资料")
         } footer: {
-            Text("可以返回牧场列表，准备工作会在后台继续。资料完整之前不会打开半成品牧场。")
+            Text("校验和写入需要保持 eSheep+ 在前台；离开后会安全暂停，返回时继续。资料完整之前不会打开半成品牧场。")
         }
+    }
+
+    @ViewBuilder
+    private func eventProgress(_ session: ESheepCloudInitialSyncSession) -> some View {
+        let target = max(session.targetEventHead, session.verifiedProjectionEventSequence)
+        let current = isActivationPhase(session)
+            ? session.activationProjectionEventSequence
+            : session.verifiedProjectionEventSequence
+        if session.usesBusinessCheckpoint {
+            if session.state == .applyingRecentChanges, target > session.boundaryEventSequence {
+                ProgressView(value: Double(max(0, current - session.boundaryEventSequence)),
+                             total: Double(target - session.boundaryEventSequence))
+                Text("正在接收最近的变更：\(max(0, current - session.boundaryEventSequence)) / \(target - session.boundaryEventSequence)")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                ProgressView()
+                Text(isActivationPhase(session) ? "正在启用已核对的离线牧场资料" : "正在核对全部业务历史；已接收的资料会保留")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        } else if target > 0 {
+            ProgressView(value: Double(current), total: Double(target))
+                .accessibilityLabel(
+                    isActivationPhase(session)
+                        ? "激活进度，已处理 \(current) / \(target) 个事件"
+                        : "校验进度，已处理 \(current) / \(target) 个事件"
+                )
+            Text(progressDescription(session, current: current, target: target))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } else {
+            ProgressView()
+                .accessibilityLabel("正在准备事件校验")
+        }
+    }
+
+    private func progressDescription(
+        _ session: ESheepCloudInitialSyncSession,
+        current: Int64,
+        target: Int64
+    ) -> String {
+        switch session.state {
+        case .applyingRecentChanges:
+            return "追赶增量：当前 \(current) / 云端 \(target)"
+        case .buildingIndexes:
+            return "正在建立本地索引（已校验 \(current) / \(target)）"
+        case .readyToActivate:
+            return "资料校验完成：\(current) / \(target)，即将一次性写入主库"
+        case .activating:
+            return "正在写入本机：已处理 \(current) / \(target) 个事件"
+        case .paused:
+            return "已暂停：上次检查点 \(current) / \(target)"
+        case .failed:
+            return "上次停止在 \(current) / \(target)，可保留快照后重试"
+        default:
+            return "已校验 \(current) / \(target) 个事件"
+        }
+    }
+
+    private func formattedBytes(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+    }
+
+    private func downloadProgressDescription(
+        _ session: ESheepCloudInitialSyncSession
+    ) -> String {
+        let chunks = downloadChunkProgress(session)
+        let chunkText = chunks.map { "已接收 \($0.completed) / \($0.total) 个分片，" } ?? ""
+        return "\(chunkText)已下载 \(formattedBytes(session.receivedByteCount))；本次预计下载 \(formattedBytes(session.expectedByteCount))。尚未计入后续新增变更。"
+    }
+
+    private func downloadAccessibilityLabel(
+        _ session: ESheepCloudInitialSyncSession
+    ) -> String {
+        "牧场资料接收进度，\(downloadProgressDescription(session))"
+    }
+
+    private func downloadChunkProgress(
+        _ session: ESheepCloudInitialSyncSession
+    ) -> (completed: Int, total: Int)? {
+        if session.usesBusinessCheckpoint,
+           let data = session.manifestData,
+           let manifest = try? ESheepCloudCanonicalCodec.decode(ESheepCloudCheckpointManifest.self, from: data),
+           let indexes = try? ESheepCloudCanonicalCodec.decode([Int].self, from: session.verifiedChunkIndexesData) {
+            return (Set(indexes).intersection(Set(manifest.chunks.indices)).count, manifest.chunks.count)
+        }
+        guard let manifestData = session.manifestData,
+              let manifest = try? ESheepCloudCanonicalCodec.decode(
+                  ESheepCloudSnapshotManifestV2.self,
+                  from: manifestData
+              ),
+              let indexes = try? ESheepCloudCanonicalCodec.decode(
+                  [Int].self,
+                  from: session.verifiedChunkIndexesData
+              ) else {
+            return nil
+        }
+        return (Set(indexes).intersection(Set(manifest.chunks.map(\.index))).count, manifest.chunks.count)
     }
 }
 
@@ -985,6 +1141,7 @@ private enum ESheepCloudCommandPresentation {
 
 private enum ESheepCloudUserMessage {
     static func text(for error: Error) -> String {
+        if let value = error as? ESheepCloudSyncFailure { return value.localizedDescription }
         if let value = error as? ESheepCloudCoreError {
             return value.localizedDescription
         }

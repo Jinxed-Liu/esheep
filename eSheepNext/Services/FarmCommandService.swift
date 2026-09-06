@@ -1713,7 +1713,7 @@ final class FarmCommandService {
                 primaryEntityType: result.entityType,
                 primaryEntityID: result.entityID
             )
-            _ = try ESheepCloudIntentWriter.stage(
+            let intent = try ESheepCloudIntentWriter.stage(
                 draft: draft,
                 commandID: operationID,
                 sourceRequestID: sourceRequestID ?? operationID,
@@ -1724,6 +1724,13 @@ final class FarmCommandService {
                 deviceSequence: deviceSequence,
                 context: context
             )
+            if case .care(.setSheepPurpose) = command {
+                try ESheepCloudPurposeHistory.record(command: command, commandID: operationID,
+                    farmID: farm.farmID, accountID: farm.accountID, deviceID: intent.deviceID,
+                    occurredAt: draft.occurredAt, recordedAt: intent.createdAt,
+                    previousPurpose: ESheepCloudPurposeHistory.previousPurpose(from: result.payload),
+                    context: context)
+            }
             return StagedCommandResult(
                 historyImpact: projectedHistoryImpact,
                 commandID: operationID,

@@ -1,0 +1,76 @@
+name: Cloud checkpoint candidate
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 18 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: cloud-checkpoint-candidate
+  cancel-in-progress: false
+jobs:
+  candidate:
+    # Current MacBook Air: launch an ephemeral runner only for a reviewed job.
+    # The environment admits main only and requires the owner review.
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    runs-on: [self-hosted, macOS, esheep-checkpoints]
+    environment: esheep-cloud-checkpoints
+    timeout-minutes: 90
+    steps:
+      - name: Require protected worker configuration
+        env:
+          SOURCE_PROJECT: ${{ vars.ESHEEP_PRODUCTION_PROJECT_REF }}
+          SOURCE_FARM: ${{ vars.ESHEEP_CHECKPOINT_FARM_ID }}
+          DESTINATION: ${{ vars.ESHEEP_CHECKPOINT_SIMULATOR_DESTINATION }}
+          APPROVED_SOURCE: ${{ vars.ESHEEP_APPROVED_HISTORY_SOURCE }}
+          MOTION_REPOSITORY: ${{ vars.ESMOTION_REPOSITORY }}
+          MOTION_COMMIT: ${{ vars.ESMOTION_COMMIT }}
+        run: |
+          test -n "$SOURCE_PROJECT" && test -n "$SOURCE_FARM" && test -n "$DESTINATION"
+          test -n "$APPROVED_SOURCE"
+          test -n "$MOTION_REPOSITORY" && test -n "$MOTION_COMMIT"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: eSheepNext
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: ${{ vars.ESMOTION_REPOSITORY }}
+          ref: ${{ vars.ESMOTION_COMMIT }}
+          token: ${{ github.token }}
+          path: ESMotion
+          persist-credentials: false
+      - name: Build and independently reconcile candidate
+        working-directory: eSheepNext
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.ESHEEP_CHECKPOINT_SOURCE_TOKEN }}
+          SOURCE_PROJECT: ${{ vars.ESHEEP_PRODUCTION_PROJECT_REF }}
+          SOURCE_FARM: ${{ vars.ESHEEP_CHECKPOINT_FARM_ID }}
+          DESTINATION: ${{ vars.ESHEEP_CHECKPOINT_SIMULATOR_DESTINATION }}
+          APPROVED_SOURCE: ${{ vars.ESHEEP_APPROVED_HISTORY_SOURCE }}
+          RUN_ROOT: ${{ runner.temp }}/esheep-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}
+          TRIGGER: ${{ github.event_name }}
+        run: |
+          umask 077
+          args=()
+          if [[ "$TRIGGER" == "schedule" ]]; then args+=(--only-if-due); fi
+          python3 tools/build_esheep_cloud_checkpoint.py --project "$SOURCE_PROJECT" --farm "$SOURCE_FARM" --destination "$DESTINATION" --output "$RUN_ROOT" --approved-source "$APPROVED_SOURCE" "${args[@]}"
+      - name: Record non-business verification outcome
+        if: ${{ always() }}
+        env:
+          RUN_ROOT: ${{ runner.temp }}/esheep-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, pathlib
+          root = pathlib.Path(os.environ['RUN_ROOT'])
+          # This repository is public. Detailed discrepancies can contain real
+          # farm values; keep them on the protected Mac, never upload artifacts.
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              for name in ('independent-reconciliation', 'approved-history-reconciliation', 'purpose-history-reconciliation'):
+                  path = root / 'candidate' / (name + '.json')
+                  status = 'not produced'
+                  if path.exists():
+                      status = 'passed' if json.loads(path.read_text()).get('passed') is True else 'failed'
+                  summary.write(f'{name}: {status}\n\n')
+              summary.write('Detailed evidence remains in the protected worker output directory.\n')
+          PYCODE

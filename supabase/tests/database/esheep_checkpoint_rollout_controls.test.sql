@@ -1,0 +1,12 @@
+begin;
+create extension if not exists pgtap with schema extensions;
+select plan(7);
+select has_table('esheep_cloud','checkpoint_rollout_controls','checkpoint rollout controls exist');
+select ok(not has_table_privilege('authenticated','esheep_cloud.checkpoint_rollout_controls','UPDATE'),'members cannot change rollout');
+select ok(not has_table_privilege('anon','esheep_cloud.checkpoint_rollout_controls','SELECT'),'anonymous callers cannot read rollout controls');
+select ok(has_table_privilege('service_role','esheep_cloud.checkpoint_rollout_controls','UPDATE'),'protected server can pause rollout');
+select ok(not has_function_privilege('service_role','public.esheep_cloud_publish_checkpoint_content_v1(jsonb,text,text)','EXECUTE'),'publisher cannot bypass pause wrapper');
+select ok(not has_function_privilege('authenticated','public.esheep_cloud_publish_checkpoint_content_v1(jsonb,text,text)','EXECUTE'),'members cannot call internal publisher');
+select ok(has_function_privilege('authenticated','public.esheep_cloud_checkpoint_manifest_v1(uuid,integer,uuid)','EXECUTE'),'migration preserves caller-scoped discovery entry');
+select * from finish();
+rollback;

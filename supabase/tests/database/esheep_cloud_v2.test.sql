@@ -463,19 +463,19 @@ select has_column(
 
 select is(
   (esheep_cloud.protocol_readiness_report_v2() ->> 'implemented_command_count')::integer,
-  80,
-  'the readiness report accounts for all 80 declared commands'
+  83,
+  'the readiness report accounts for all 83 declared commands'
 );
 
 select is(
   (esheep_cloud.protocol_readiness_report_v2() ->> 'server_implemented_command_count')::integer,
-  80,
+  83,
   'server readiness is computed from the executable dispatcher, not a catalogue flag'
 );
 
 select is(
   (esheep_cloud.protocol_readiness_report_v2() ->> 'client_projected_command_count')::integer,
-  80,
+  83,
   'client readiness is computed from the explicit projection route inventory'
 );
 
@@ -498,7 +498,7 @@ select is(
 
 select lives_ok(
   $$select esheep_cloud.assert_protocol_ready_v2()$$,
-  'the protocol completeness assertion passes at the 80/80 gate'
+  'the protocol completeness assertion passes at the 83/83 gate'
 );
 
 select is(
@@ -511,8 +511,14 @@ select is(
       and table_class.relkind = 'r'
       and table_class.relrowsecurity
   ),
-  12,
+  (select count(*)::integer from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='esheep_cloud' and c.relkind='r'),
   'every V2 private table has row-level security enabled as defense in depth'
+);
+
+select ok(
+  not has_table_privilege('anon', 'esheep_cloud.history_repair_approvals', 'INSERT')
+  and not has_table_privilege('authenticated', 'esheep_cloud.history_repair_approvals', 'INSERT'),
+  'ordinary clients cannot approve their own historical projection repair'
 );
 
 select is(

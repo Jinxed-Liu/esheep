@@ -6,6 +6,326 @@ import XCTest
 
 @MainActor
 final class ESheepCloudV2Tests: XCTestCase {
+    func testBusinessBaselineHasClosedTypedCodecForEveryRestorationShape() throws {
+        let id = UUID(), related = UUID(), date = Date(timeIntervalSince1970: 1_800_000_000)
+        let values: [ESheepCloudBusinessBaselineValueV2] = [
+            .pen(id: id, isActive: false),
+            .productionBatch(id: id, status: .completed, endedAt: date),
+            .batchMembership(id: id, batchID: related, sheepID: UUID(), joinedAt: date, leftAt: nil, leaveReason: nil),
+            .lambingOffspring(id: id, lambingRecordID: related, sheepID: nil, sexRawValue: "公死亡",
+                isStillborn: true, autoCreatedSheep: false, autoBirthWeightRecordID: nil),
+            .reproduction(id: id, eweID: related, kind: .abortion, occurredAt: date,
+                batchID: nil, paternalSourceRawValue: "unknown", duplicateProjectionID: nil),
+            .transfer(id: id, sheepID: related, occurredAt: date, fromPenID: nil, recordedAt: date)
+        ]
+        for value in values {
+            let payload = ESheepCloudCommandPayloadV2.historyRepair(.restoreBusinessBaseline(
+                .init(sourceDigest: String(repeating: "a", count: 64), projection: value)))
+            XCTAssertEqual(payload.kind, "migration.restoreBusinessBaseline")
+            let data = try ESheepCloudCanonicalCodec.encode(payload)
+            XCTAssertEqual(try ESheepCloudCanonicalCodec.decode(ESheepCloudCommandPayloadV2.self, from: data), payload)
+        }
+    }
+
+    func testBusinessBaselineRejectsForeignIdentityButPreservesConfirmedHistoricalIntervals() throws {
+        let fixture = try makeFixture()
+        let event = try makeProfileNoteEvent(fixture: fixture, note: "source-only fixture")
+        let otherPen = PenRecord(farmID: UUID(), name: "Other farm")
+        fixture.context.insert(otherPen)
+        let sheep = SheepRecord(farmID: fixture.farmID, earTag: "guard", breed: "湖羊", sex: .ewe,
+                                penID: nil, enteredAt: .distantPast)
+        let joinedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let batch = ProductionBatchRecord(farmID: fixture.farmID, name: "guard", purpose: "育肥", startedAt: joinedAt)
+        let membership = BatchMembershipRecord(farmID: fixture.farmID, batchID: batch.id, sheepID: sheep.id, joinedAt: joinedAt)
+        fixture.context.insert(sheep); fixture.context.insert(batch); fixture.context.insert(membership)
+        try fixture.context.save()
+        let index = ESheepCloudProjectionReplayContext()
+        func apply(_ value: ESheepCloudBusinessBaselineValueV2) throws {
+            _ = try ESheepCloudBusinessBaselineProjection.apply(
+                .init(sourceDigest: String(repeating: "a", count: 64), projection: value),
+                event: event, context: fixture.context, index: index)
+        }
+        XCTAssertThrowsError(try apply(.pen(id: otherPen.id, isActive: false)))
+        XCTAssertTrue(otherPen.isActive)
+        XCTAssertThrowsError(try apply(.batchMembership(id: membership.id, batchID: batch.id, sheepID: sheep.id,
+            joinedAt: joinedAt.addingTimeInterval(1), leftAt: joinedAt.addingTimeInterval(-1), leaveReason: "invalid identity")))
+        XCTAssertNil(membership.leftAt); XCTAssertNil(membership.leaveReason)
+        try apply(.batchMembership(id: membership.id, batchID: batch.id, sheepID: sheep.id,
+            joinedAt: joinedAt, leftAt: joinedAt.addingTimeInterval(-1), leaveReason: "来源确认"))
+        XCTAssertEqual(membership.leaveReason, "来源确认")
+        XCTAssertEqual(membership.leftAt, joinedAt.addingTimeInterval(-1))
+        XCTAssertEqual(index.historyRepairIndex.preloadCount, 1)
+    }
+
+    func testBusinessBaselineDoesNotDeduplicateByDateWithoutMatchingSourceIdentity() throws {
+        let fixture = try makeFixture()
+        let event = try makeProfileNoteEvent(fixture: fixture, note: "source-only fixture")
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let ewe = SheepRecord(farmID: fixture.farmID, earTag: "guard", breed: "湖羊", sex: .ewe,
+                              penID: nil, enteredAt: .distantPast)
+        let original = ReproductionRecord(farmID: fixture.farmID, eweID: ewe.id, kind: .abortion, occurredAt: date)
+        let unrelated = ReproductionRecord(farmID: fixture.farmID, eweID: UUID(), kind: .abortion, occurredAt: date)
+        fixture.context.insert(ewe); fixture.context.insert(original); fixture.context.insert(unrelated)
+        try fixture.context.save()
+        XCTAssertThrowsError(try ESheepCloudBusinessBaselineProjection.apply(
+            .init(sourceDigest: String(repeating: "a", count: 64), projection:
+                .reproduction(id: original.id, eweID: ewe.id, kind: .abortion, occurredAt: date,
+                    batchID: nil, paternalSourceRawValue: "unknown", duplicateProjectionID: unrelated.id)),
+            event: event, context: fixture.context, index: ESheepCloudProjectionReplayContext()))
+        XCTAssertNil(original.deletedAt); XCTAssertNil(unrelated.deletedAt)
+        XCTAssertTrue(try fixture.context.fetch(FetchDescriptor<TombstoneRecord>()).isEmpty)
+    }
+
+    func testRealFarmForwardHistoryRepairMatchesEverySheepInIncrementalAndFreshReplay() async throws {
+        let extended = URL(fileURLWithPath: "/tmp/esheep-cloud-v2-extended-acceptance")
+        let hasExtended = FileManager.default.fileExists(atPath: extended.appending(path: "summary.json").path)
+        let root = hasExtended ? extended : URL(fileURLWithPath: "/tmp/esheep-cloud-v2-baseline-acceptance")
+        let expectedHead: Int64 = hasExtended ? 49_344 : 38_164
+        guard FileManager.default.fileExists(atPath: root.appending(path: "tail.json").path) else {
+            throw XCTSkip("Private owner-approved baseline fixture not installed")
+        }
+        let snapshotRoot = URL(fileURLWithPath: "/tmp/esheep-cloud-v2-repair-acceptance")
+        let ticket = try ESheepCloudCanonicalCodec.decode(ESheepCloudInitialSyncTicketV2.self,
+            from: Data(contentsOf: snapshotRoot.appending(path: "ticket.json")))
+        let tail = try ESheepCloudSnapshotCodec.decode(Data(contentsOf: root.appending(path: "tail.json")),
+            farmID: ticket.manifest.farmID, farmGeneration: 3).compactMap { record -> ESheepCloudEventEnvelopeV2? in
+                if case .event(let event) = record { return event }; return nil
+            }
+        XCTAssertEqual(tail.count, Int(expectedHead - 34_842))
+        XCTAssertEqual(tail.last?.eventSequence, expectedHead)
+        let expected = try ESheepCloudCanonicalCodec.decode([ESheepCloudSheepBaselineRepairV2].self,
+            from: Data(contentsOf: root.appending(path: "expected-sheep.json")))
+        let run = root.appending(path: "run-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
+        for suffix in ["", "-wal", "-shm"] {
+            let source = root.appending(path: "air.store\(suffix)")
+            if FileManager.default.fileExists(atPath: source.path) {
+                try FileManager.default.copyItem(at: source, to: run.appending(path: "air.store\(suffix)"))
+            }
+        }
+        let incremental = try AppSchema.makeContainer(name: "AirRepair", url: run.appending(path: "air.store"))
+        let context = ModelContext(incremental)
+        context.autosaveEnabled = false
+        let index = ESheepCloudProjectionReplayContext()
+        try index.preload(in: context)
+        let writer = RemoteDomainApplyService(replayAssumesEmptyBusinessStore: true, replayContext: index)
+        try writer.prepareResumableReplay(farmID: ticket.manifest.farmID, context: context)
+        let started = Date()
+        for (offset, event) in tail.enumerated() {
+            _ = try ESheepCloudEventReducer.apply(event, context: context, savesChanges: false,
+                replayContext: index, domainApplyService: writer)
+            if (offset + 1).isMultiple(of: 256) {
+                index.registerInsertedModels(in: context)
+                writer.rebuildPendingReplayIndex(in: context)
+                try context.save()
+            }
+        }
+        try FarmHistoryRebuilder().rebuild(farmID: ticket.manifest.farmID, context: context, from: .distantPast)
+        try context.save()
+        try assertRepairedSheep(incremental, expected: expected, farmID: ticket.manifest.farmID)
+        if hasExtended {
+            try assertRepairedBusiness(incremental, root: root)
+            XCTAssertEqual(index.historyRepairIndex.preloadCount, 1)
+        }
+        // A duplicate delivery must leave both receipts and business state unchanged.
+        for event in tail.suffix(10) {
+            XCTAssertTrue(try ESheepCloudEventReducer.apply(event, context: context).wasAlreadyApplied)
+        }
+        let fresh = try AppSchema.makeContainer(name: "FreshBaseline-\(UUID())", isStoredInMemoryOnly: true)
+        var chunks: [Int:Data] = [:]
+        for chunk in ticket.manifest.chunks {
+            chunks[chunk.index] = try Data(contentsOf: snapshotRoot.appending(path: String(format: "chunk-%05d.json", chunk.index)))
+        }
+        let gateway = InitialSyncGatewayStub(ticket: ticket, chunkDataByIndex: chunks, tailEvents: tail)
+        let coordinator = ESheepCloudInitialSyncCoordinator(farmID: ticket.manifest.farmID,
+            container: fresh, gateway: gateway, applicationSupportURL: run.appending(path: "fresh"))
+        let report = try await coordinator.prepareNewInstallation(expectedFarmGeneration: 3,
+            expectedAccountID: ticket.memberAccountID)
+        XCTAssertEqual(report.appliedEventHead, expectedHead)
+        try assertRepairedSheep(fresh, expected: expected, farmID: ticket.manifest.farmID)
+        if hasExtended { try assertRepairedBusiness(fresh, root: root) }
+        try JSONSerialization.data(withJSONObject: ["incrementalPassed":true,"freshPassed":true,
+            "comparedSheep":expected.count,"businessProjectionPassed":hasExtended,"eventHead":expectedHead,"elapsedSeconds":Date().timeIntervalSince(started)],
+            options:[.sortedKeys]).write(to:run.appending(path:"baseline-acceptance.json"))
+    }
+
+    private func assertRepairedSheep(_ container: ModelContainer,
+                                    expected: [ESheepCloudSheepBaselineRepairV2], farmID: UUID) throws {
+        let context = ModelContext(container)
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let byID = Dictionary(uniqueKeysWithValues: sheep.map { ($0.id,$0) })
+        XCTAssertEqual(sheep.count, 3264)
+        for value in expected {
+            let actual = try XCTUnwrap(byID[value.sheepID])
+            XCTAssertEqual(actual.status, value.status, actual.earTag)
+            XCTAssertEqual(actual.currentPenID, value.currentPenID, actual.earTag)
+            XCTAssertEqual(actual.purpose, value.purpose, actual.earTag)
+            XCTAssertEqual(actual.damID, value.damID, actual.earTag)
+            XCTAssertEqual(actual.sireID, value.sireID, actual.earTag)
+            XCTAssertEqual(actual.damProvenance, value.damProvenance, actual.earTag)
+            XCTAssertEqual(actual.sireProvenance, value.sireProvenance, actual.earTag)
+            XCTAssertEqual(actual.isBreedingRam, value.isBreedingRam, actual.earTag)
+            XCTAssertEqual(actual.legacyEarTag, value.legacyEarTag, actual.earTag)
+            XCTAssertEqual(actual.legacySourceKey, value.legacySourceKey, actual.earTag)
+            XCTAssertEqual(actual.legacyStatusSnapshotIsAuthoritative == true, value.legacyStatusSnapshotIsAuthoritative, actual.earTag)
+            XCTAssertEqual(actual.legacyPenSnapshotIsAuthoritative == true, value.legacyPenSnapshotIsAuthoritative, actual.earTag)
+        }
+        XCTAssertEqual(sheep.filter(\.isCurrentlyPresent).count, 560)
+        let pens = try context.fetch(FetchDescriptor<PenRecord>())
+        XCTAssertEqual(CurrentFarmOccupancy.occupiedPens(farmID: farmID, sheep: sheep, pens: pens).count, 19)
+        let removals = try context.fetch(FetchDescriptor<RemovalRecord>()).filter { $0.deletedAt == nil }
+        XCTAssertEqual(removals.count, 2163)
+        let deadIDs = Set(sheep.filter { ["8115","8116","8117","8118","8119","8120","8121","8122"].contains($0.earTag) }.map(\.id))
+        XCTAssertEqual(deadIDs.count, 8)
+        XCTAssertEqual(removals.filter { deadIDs.contains($0.sheepID) && $0.kind == .deceased }.count, 8)
+    }
+
+    func testFieldStreamDigestPreservesAuthorityIdentifierSpelling() throws {
+        let fixture = try makeFixture()
+        let identifier = UUID(uuidString: "55c73a5f-0717-41b5-a56c-3e84a6c1cacd")!
+        let value = ESheepCloudValueV2.identifier(identifier)
+        for spelling in [identifier.uuidString.lowercased(), identifier.uuidString] {
+            let rawValue = "{\"type\":\"identifier\",\"value\":\"\(spelling)\"}"
+            let body = "{\"changes\":[{\"field\":\"avatar\",\"value\":\(rawValue)}]}"
+            let event = ESheepCloudEventEnvelopeV2(
+                protocolVersion: 2, schemaVersion: 1,
+                farmID: fixture.farmID, farmGeneration: fixture.generation,
+                eventSequence: 1, eventID: UUID(), commandID: UUID(),
+                sourceCommandDigest: String(repeating: "a", count: 64),
+                stream: .init(type: "sheepAvatar", id: fixture.sharedSheepID),
+                payload: .fieldsPatched(
+                    stream: .init(type: "sheepAvatar", id: fixture.sharedSheepID),
+                    changes: [.init(field: "avatar", value: value, valueDigest: value.digest, fieldVersion: 1)]
+                ),
+                affectedFields: ["avatar"],
+                eventBodyDigest: ESheepCloudEventBodyIntegrityV2.digest(canonicalJSON: body),
+                beforeDigest: String(repeating: "0", count: 64),
+                afterDigest: String(repeating: "0", count: 64),
+                actorAccountID: fixture.accountID, sourceDeviceID: fixture.deviceID,
+                sourceDeviceSequence: 1, occurredAt: .now, receivedAt: .now,
+                eventDigest: "", eventBodyCanonical: body
+            )
+            let actual = try ESheepCloudEventReducer.canonicalFieldStateData(
+                previous: Data("{}".utf8), updates: ["avatar": value], event: event
+            )
+            XCTAssertEqual(String(decoding: actual, as: UTF8.self), "{\"avatar\":\(rawValue)}")
+            XCTAssertThrowsError(try ESheepCloudEventReducer.canonicalFieldStateData(
+                previous: Data("{}".utf8), updates: ["avatar": .identifier(UUID())], event: event
+            ))
+        }
+    }
+
+    func testAuthoritativeCareReplayUsesEventOrderButKeepsBusinessValidation() throws {
+        let fixture = try makeFixture()
+        let sheep = SheepRecord(
+            farmID: fixture.farmID, earTag: "V2-CARE-REVISION",
+            breed: "湖羊", sex: .ewe, penID: nil, enteredAt: .now
+        )
+        sheep.revision = 7
+        fixture.context.insert(sheep)
+        try fixture.context.save()
+        func envelope(_ care: CareCommand) throws -> CloudOperationEnvelope {
+            let data = try FarmCommandCloudPayloadEncoder.encode(.care(care))
+            return .init(
+                farmID: fixture.farmID, entityID: sheep.id,
+                entityType: CloudEntityType.sheep.rawValue, schemaVersion: 2,
+                revision: 1, baseRevision: 0, operationID: UUID(),
+                modifiedAt: .now, modifiedByAccountID: fixture.accountID,
+                modifiedByDeviceID: fixture.deviceID, payload: data,
+                payloadDigest: CloudPayloadDigest.hex(for: data),
+                capabilityCertificate: "esheep-cloud-v2-event",
+                operationSignature: Data(), deletedAt: nil
+            )
+        }
+        let purpose = try envelope(.setSheepPurpose(
+            sheepID: sheep.id, purpose: .fattening,
+            reason: "历史用途回放", expectedRevision: 1
+        ))
+        let writer = RemoteDomainApplyService(replayAssumesEmptyBusinessStore: true)
+        try writer.prepareResumableReplay(farmID: fixture.farmID, context: fixture.context)
+        XCTAssertThrowsError(try writer.apply(purpose, context: fixture.context)) {
+            guard case FarmCommandError.pedigreeRevisionConflict = $0 else {
+                return XCTFail("Expected V1 revision conflict, got \($0)")
+            }
+        }
+        _ = try writer.applyV2(purpose, context: fixture.context)
+        XCTAssertEqual(sheep.purpose, SheepPurpose.fattening.rawValue)
+        XCTAssertEqual(sheep.revision, 8)
+        let invalid = try envelope(.setBreedingRam(
+            sheepID: sheep.id, isBreedingRam: true, expectedRevision: 1
+        ))
+        XCTAssertThrowsError(try writer.applyV2(invalid, context: fixture.context)) {
+            guard case FarmCommandError.reproductionSireMustBeRam = $0 else {
+                return XCTFail("Expected sex validation failure, got \($0)")
+            }
+        }
+        XCTAssertFalse(sheep.isBreedingRam)
+        XCTAssertEqual(sheep.revision, 8)
+    }
+
+    /// Opt-in acceptance against the complete, privately exported farm. The
+    /// fixture is never checked into Git and cannot access the live gateway.
+    func testRealFarmRepairSnapshotVerifiesAndActivatesFromEmptyStore() async throws {
+        let root = URL(fileURLWithPath:
+            ProcessInfo.processInfo.environment["ESHEEP_V2_REPLAY_FIXTURE"]
+                ?? "/tmp/esheep-cloud-v2-repair-acceptance")
+        guard FileManager.default.fileExists(atPath: root.appending(path: "ticket.json").path) else {
+            throw XCTSkip("Set ESHEEP_V2_REPLAY_FIXTURE to a private full-scale repair fixture")
+        }
+        let ticket = try ESheepCloudCanonicalCodec.decode(
+            ESheepCloudInitialSyncTicketV2.self,
+            from: Data(contentsOf: root.appending(path: "ticket.json"))
+        )
+        XCTAssertEqual(ticket.manifest.boundaryEventSequence, 34_842)
+        XCTAssertEqual(ticket.manifest.chunks.count, 128)
+        let container = try AppSchema.makeContainer(
+            name: "ESheepCloudRealRepair-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        var chunks: [Int: Data] = [:]
+        for chunk in ticket.manifest.chunks {
+            chunks[chunk.index] = try Data(contentsOf: root.appending(
+                path: String(format: "chunk-%05d.json", chunk.index)
+            ))
+        }
+        let gateway = InitialSyncGatewayStub(ticket: ticket, chunkDataByIndex: chunks)
+        let runRoot = root.appending(path: "run-\(UUID().uuidString)")
+        let coordinator = ESheepCloudInitialSyncCoordinator(
+            farmID: ticket.manifest.farmID, container: container,
+            gateway: gateway, applicationSupportURL: runRoot
+        )
+        let context = ModelContext(container)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<FarmRecord>()), 0)
+        let started = Date()
+        let report = try await coordinator.prepareNewInstallation(
+            expectedFarmGeneration: ticket.manifest.farmGeneration,
+            expectedAccountID: ticket.memberAccountID
+        )
+        let verify = ModelContext(container)
+        XCTAssertEqual(report.appliedEventHead, 34_842)
+        XCTAssertEqual(report.streamCount, 28_954)
+        XCTAssertEqual(report.assetCount, 27)
+        XCTAssertEqual(try verify.fetchCount(FetchDescriptor<FarmRecord>()), 1)
+        XCTAssertEqual(try verify.fetchCount(FetchDescriptor<ESheepCloudEventReceipt>()), 34_842)
+        XCTAssertEqual(try verify.fetchCount(FetchDescriptor<FeedRecord>()), 1_208)
+        XCTAssertEqual(try verify.fetchCount(FetchDescriptor<FeedIngredientBatchRecord>()), 0)
+        XCTAssertEqual(try verify.fetchCount(FetchDescriptor<FeedStockTransactionRecord>()), 0)
+        let session = try XCTUnwrap(verify.fetch(FetchDescriptor<ESheepCloudInitialSyncSession>()).first)
+        XCTAssertEqual(session.state, .active)
+        XCTAssertNotNil(session.activatedAt)
+        let evidence: [String: Any] = [
+            "snapshotID": ticket.manifest.snapshotID.uuidString,
+            "generation": ticket.manifest.farmGeneration,
+            "eventHead": report.appliedEventHead,
+            "streamCount": report.streamCount,
+            "assetCount": report.assetCount,
+            "elapsedSeconds": Date().timeIntervalSince(started),
+            "activated": session.state == .active,
+        ]
+        try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
+            .write(to: runRoot.appending(path: "acceptance.json"), options: .atomic)
+    }
+
     func testInfrastructureBase64DecoderAcceptsPostgreSQLLineWrapping() {
         let expected = Data(repeating: 0xAB, count: 128)
         let wrapped = expected.base64EncodedString(options: [
@@ -20,6 +340,29 @@ final class ESheepCloudV2Tests: XCTestCase {
         )
         XCTAssertNil(
             ESheepCloudInfrastructureGateway.decodeLineWrappedBase64(wrapped + "!")
+        )
+    }
+
+    func testBusinessReplayErrorsDoNotQuarantineVerifiedCheckpoint() {
+        XCTAssertFalse(
+            ESheepCloudInitialSyncCoordinator.shouldQuarantineVerificationStore(
+                for: FarmCommandError.feedIngredientBatchNotFound
+            )
+        )
+        XCTAssertFalse(
+            ESheepCloudInitialSyncCoordinator.shouldQuarantineVerificationStore(
+                for: RemoteDomainApplyError.missingReference("ingredientBatchID")
+            )
+        )
+        XCTAssertTrue(
+            ESheepCloudInitialSyncCoordinator.shouldQuarantineVerificationStore(
+                for: ESheepCloudInitialSyncError.verificationStoreIntegrity("quick_check")
+            )
+        )
+        XCTAssertTrue(
+            ESheepCloudInitialSyncCoordinator.shouldQuarantineVerificationStore(
+                for: ESheepCloudInitialSyncError.existingVerificationCheckpointMismatch
+            )
         )
     }
 
@@ -533,7 +876,7 @@ final class ESheepCloudV2Tests: XCTestCase {
     /// payload and a deterministic replay route.
     func testV2CommandRegistryIsExhaustiveAndEveryKindHasTypedRoute() {
         let kinds = ESheepCloudCommandRegistryV2.allKinds
-        XCTAssertEqual(kinds.count, 80)
+        XCTAssertEqual(kinds.count, 83)
         XCTAssertEqual(Set(kinds).count, kinds.count)
         XCTAssertEqual(ESheepCloudCommandRegistryV2.kindSet, Set(kinds))
         for kind in kinds {
@@ -871,7 +1214,7 @@ final class ESheepCloudV2Tests: XCTestCase {
         XCTAssertEqual(dependent.lifecycle, .ready)
     }
 
-    func testCorruptedDependencyLedgerNeverDegradesToNoDependencies() throws {
+    func testCorruptedDependencyLedgerNeverDegradesToNoDependencies() async throws {
         let fixture = try makeFixture()
         let commandID = UUID()
         let intent = try ESheepCloudIntentWriter.stage(
@@ -893,10 +1236,10 @@ final class ESheepCloudV2Tests: XCTestCase {
         try fixture.context.save()
         let store = ESheepCloudLocalStore(container: fixture.container)
 
-        XCTAssertThrowsError(try store.prepareCycle(
-            farmID: fixture.farmID,
-            accountID: fixture.accountID
-        ))
+        do {
+            _ = try await store.prepareCycle(farmID: fixture.farmID, accountID: fixture.accountID)
+            XCTFail("Malformed dependency must fail closed")
+        } catch { /* Expected: the durable integrity hold is checked below. */ }
         let verification = ModelContext(fixture.container)
         let state = try XCTUnwrap(
             verification.fetch(FetchDescriptor<ESheepCloudFarmState>()).first
@@ -1083,7 +1426,7 @@ final class ESheepCloudV2Tests: XCTestCase {
         )
     }
 
-    func testTemporaryAssetRejectionPreservesImmutableIntentForRetry() throws {
+    func testTemporaryAssetRejectionPreservesImmutableIntentForRetry() async throws {
         let fixture = try makeFixture()
         let assetID = UUID()
         fixture.context.insert(verifiedAsset(
@@ -1110,11 +1453,14 @@ final class ESheepCloudV2Tests: XCTestCase {
         try fixture.context.save()
         let store = ESheepCloudLocalStore(container: fixture.container)
 
-        try store.recordCommandResults(
+        try await store.recordCommandResults(
             [commandID: .rejected(.resourceUnavailable(assetID: assetID))],
             farmID: fixture.farmID,
             farmGeneration: fixture.generation
         )
+        // A partial batch transport failure must not reset this already
+        // acknowledged dependency result along with the unknown commands.
+        try await store.markTransportUncertain(commandIDs: [commandID], message: "partial batch")
 
         let verificationContext = ModelContext(fixture.container)
         let updated = try XCTUnwrap(
@@ -1125,6 +1471,24 @@ final class ESheepCloudV2Tests: XCTestCase {
         XCTAssertNotNil(updated.nextRetryAt)
         XCTAssertEqual(updated.commandEnvelopeData, originalBytes)
         XCTAssertEqual(updated.id, commandID)
+
+        do {
+            try await store.recordCommandResults([commandID: .duplicate(original: .init(commandID: UUID(),
+                events: [], attention: nil, rejection: nil, cloudHead: 0))],
+                farmID: fixture.farmID, farmGeneration: fixture.generation)
+            XCTFail("A receipt for a different original command must never finish this intent")
+        } catch ESheepCloudContractError.malformedPayload { }
+
+        updated.lifecycle = .sending
+        try verificationContext.save()
+        let failedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        try await store.markTransportUncertain(commandIDs: [commandID], message: "service unavailable",
+            failure: .init(kind: .serviceUnavailable), now: failedAt)
+        let retryContext = ModelContext(fixture.container)
+        let persisted = try XCTUnwrap(try retryContext.fetch(FetchDescriptor<ESheepCloudPendingIntent>()).first)
+        XCTAssertEqual(persisted.lifecycle, .awaitingResult)
+        XCTAssertEqual(persisted.nextRetryAt, failedAt.addingTimeInterval(900))
+        XCTAssertEqual(persisted.commandEnvelopeData, originalBytes)
     }
 
     func testAttentionResolutionSigningDataUsesStableWireChoice() {
@@ -1156,7 +1520,7 @@ final class ESheepCloudV2Tests: XCTestCase {
         )
     }
 
-    func testAttentionResolutionSurvivesTimeoutAndQueriesBeforeRetry() throws {
+    func testAttentionResolutionSurvivesTimeoutAndQueriesBeforeRetry() async throws {
         let fixture = try makeFixture()
         let attentionID = UUID()
         fixture.context.insert(makeAttention(
@@ -1168,24 +1532,24 @@ final class ESheepCloudV2Tests: XCTestCase {
         ))
         try fixture.context.save()
         let store = ESheepCloudLocalStore(container: fixture.container)
-        let first = try store.beginAttentionResolution(
+        let first = try await store.beginAttentionResolution(
             attentionID: attentionID,
             choice: .useThisDevice,
             farmID: fixture.farmID,
             accountID: fixture.accountID,
             deviceID: fixture.deviceID
         )
-        try store.markAttentionResolutionAttempted(
+        try await store.markAttentionResolutionAttempted(
             commandID: first.resolutionCommandID
         )
         let timeoutAt = Date(timeIntervalSince1970: 1_800_000_000)
-        try store.markAttentionResolutionTransportUncertain(
+        try await store.markAttentionResolutionTransportUncertain(
             commandID: first.resolutionCommandID,
             message: "timeout",
             now: timeoutAt
         )
 
-        let awaiting = try store.prepareCycle(
+        let awaiting = try await store.prepareCycle(
             farmID: fixture.farmID,
             accountID: fixture.accountID,
             now: timeoutAt.addingTimeInterval(10_000)
@@ -1196,10 +1560,10 @@ final class ESheepCloudV2Tests: XCTestCase {
         )
         XCTAssertTrue(awaiting.readyAttentionResolutions.isEmpty)
 
-        try store.markUnknownAttentionResolutionsReadyToRetry([
+        try await store.markUnknownAttentionResolutionsReadyToRetry([
             first.resolutionCommandID,
         ])
-        let retry = try store.prepareCycle(
+        let retry = try await store.prepareCycle(
             farmID: fixture.farmID,
             accountID: fixture.accountID,
             now: timeoutAt.addingTimeInterval(10_001)
@@ -1212,7 +1576,7 @@ final class ESheepCloudV2Tests: XCTestCase {
         XCTAssertEqual(restored.canonicalSigningData, first.canonicalSigningData)
     }
 
-    func testCloudStatusRemovesAnAttentionItemThatNoLongerNeedsAChoice() throws {
+    func testCloudStatusRemovesAnAttentionItemThatNoLongerNeedsAChoice() async throws {
         let fixture = try makeFixture()
         let attention = makeAttention(
             id: UUID(),
@@ -1225,7 +1589,7 @@ final class ESheepCloudV2Tests: XCTestCase {
         try fixture.context.save()
         let store = ESheepCloudLocalStore(container: fixture.container)
 
-        try store.applyCloudStatus(
+        try await store.applyCloudStatus(
             ESheepCloudStatusV2(
                 farmID: fixture.farmID,
                 farmGeneration: fixture.generation,
@@ -1327,6 +1691,7 @@ final class ESheepCloudV2Tests: XCTestCase {
         let duplicate = try ESheepCloudEventReducer.apply(event, context: fixture.context)
 
         XCTAssertFalse(first.wasAlreadyApplied)
+        XCTAssertNil(first.historyChangedAt, "Descriptive profile edits must not rebuild occupancy history")
         XCTAssertTrue(duplicate.wasAlreadyApplied)
         let photo = try XCTUnwrap(
             fixture.context.fetch(FetchDescriptor<PhotoAssetRecord>()).first
@@ -1562,6 +1927,8 @@ final class ESheepCloudV2Tests: XCTestCase {
         let first = try ESheepCloudEventReducer.apply(signed, context: fixture.context)
         XCTAssertFalse(first.wasAlreadyApplied)
         XCTAssertEqual(try fixture.context.fetchCount(FetchDescriptor<WeightRecord>()), 1)
+        XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<WeightRecord>()).first?.recordedAt,
+                       receivedAt, "Replaying a fact must not replace its recording metadata with this machine's current time")
         XCTAssertEqual(try fixture.context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
         XCTAssertEqual(try fixture.context.fetchCount(FetchDescriptor<OutboxItem>()), 0)
         XCTAssertEqual(try fixture.context.fetchCount(FetchDescriptor<ESheepCloudEventReceipt>()), 1)
@@ -1571,6 +1938,108 @@ final class ESheepCloudV2Tests: XCTestCase {
         XCTAssertTrue(duplicate.wasAlreadyApplied)
         XCTAssertEqual(try fixture.context.fetchCount(FetchDescriptor<WeightRecord>()), 1)
         XCTAssertEqual(try fixture.context.fetchCount(FetchDescriptor<ESheepCloudEventReceipt>()), 1)
+    }
+
+    func testPurposeHistorySurvivesMultipleStreamsAndRepeatedEvents() throws {
+        let fixture = try makeFixture()
+        let commandID = UUID()
+        let sheep = SheepRecord(id: fixture.sharedSheepID, farmID: fixture.farmID,
+            earTag: "purpose-history", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: .distantPast)
+        sheep.purpose = "繁殖母羊"
+        sheep.revision = 1
+        fixture.context.insert(sheep)
+        try fixture.context.save()
+        let command = FarmCommand.care(.setSheepPurpose(sheepID: sheep.id, purpose: .fattening,
+            reason: "用途变更历史", expectedRevision: 1))
+        let payload = try ESheepCloudCommandFactoryV2.make(command: command,
+            farmID: fixture.farmID, primaryEntityType: CloudEntityType.sheep.rawValue,
+            primaryEntityID: sheep.id).payload
+        let sourceDigest = String(repeating: "a", count: 64)
+        let emptyDigest = try ESheepCloudCanonicalCodec.digest(
+            [String: ESheepCloudValueV2]()
+        )
+
+        func event(
+            sequence: Int64,
+            stream: ESheepCloudStreamReferenceV2,
+            digest: String
+        ) -> ESheepCloudEventEnvelopeV2 {
+            let afterDigest = try! ESheepCloudCanonicalCodec.digest(
+                ESheepCloudNonFieldStreamStateV2(
+                    eventCount: 1,
+                    lastCommandDigest: sourceDigest,
+                    lastCommandID: commandID.uuidString.lowercased(),
+                    lastCommandKind: payload.kind
+                )
+            )
+            return ESheepCloudEventEnvelopeV2(
+                protocolVersion: ESheepCloudProtocolV2.protocolVersion,
+                schemaVersion: ESheepCloudProtocolV2.schemaVersion,
+                farmID: fixture.farmID,
+                farmGeneration: fixture.generation,
+                eventSequence: sequence,
+                eventID: UUID(uuidString: String(format: "00000000-0000-0000-0000-%012lld", sequence))!,
+                commandID: commandID,
+                sourceCommandDigest: sourceDigest,
+                stream: stream,
+                payload: .businessCommandApplied(
+                    commandKind: payload.kind,
+                    payload: payload
+                ),
+                affectedFields: [],
+                eventBodyDigest: String(repeating: "b", count: 64),
+                beforeDigest: emptyDigest,
+                afterDigest: afterDigest,
+                actorAccountID: fixture.accountID,
+                sourceDeviceID: fixture.deviceID,
+                sourceDeviceSequence: 1,
+                occurredAt: Date(timeIntervalSince1970: 1_800_000_000),
+                receivedAt: Date(timeIntervalSince1970: 1_800_000_001),
+                eventDigest: digest
+            )
+        }
+
+        let primaryStream = ESheepCloudStreamReferenceV2(
+            type: "sheep",
+            id: sheep.id
+        )
+        let semanticStream = ESheepCloudStreamReferenceV2(
+            type: "sheepProfile",
+            id: fixture.sharedSheepID
+        )
+        let firstUnsigned = event(sequence: 1, stream: primaryStream, digest: "")
+        let first = event(
+            sequence: 1,
+            stream: primaryStream,
+            digest: ESheepCloudEventDigestV2.hex(for: firstUnsigned)
+        )
+        let secondUnsigned = event(sequence: 2, stream: semanticStream, digest: "")
+        let second = event(
+            sequence: 2,
+            stream: semanticStream,
+            digest: ESheepCloudEventDigestV2.hex(for: secondUnsigned)
+        )
+
+        _ = try ESheepCloudEventReducer.apply(first, context: fixture.context)
+        _ = try ESheepCloudEventReducer.apply(second, context: fixture.context)
+
+        _ = try ESheepCloudEventReducer.apply(first, context: fixture.context)
+        let operations = try fixture.context.fetch(FetchDescriptor<DomainOperation>())
+        XCTAssertEqual(operations.count, 1)
+        let facts = SheepPurposeTimeline.facts(from: operations)
+        XCTAssertEqual(facts.count, 1)
+        XCTAssertEqual(facts.first?.id, commandID)
+        XCTAssertEqual(facts.first?.previousPurpose, "繁殖母羊")
+        XCTAssertEqual(facts.first?.purpose, .fattening)
+        XCTAssertEqual(facts.first?.reason, "用途变更历史")
+        XCTAssertEqual(facts.first?.recordedAt, first.receivedAt)
+        XCTAssertEqual(sheep.revision, 2)
+        XCTAssertEqual(try fixture.context.fetchCount(FetchDescriptor<ESheepCloudEventReceipt>()), 2)
+        XCTAssertEqual(try fixture.context.fetchCount(FetchDescriptor<ESheepCloudStreamState>()), 2)
+        let farmState = try XCTUnwrap(
+            fixture.context.fetch(FetchDescriptor<ESheepCloudFarmState>()).first
+        )
+        XCTAssertEqual(farmState.lastAppliedEventSequence, 2)
     }
 
     func testMultiStreamBusinessEventReplaysTypedPayloadOnlyOnce() throws {
@@ -1688,6 +2157,52 @@ final class ESheepCloudV2Tests: XCTestCase {
             fixture.context.fetch(FetchDescriptor<ESheepCloudFarmState>()).first
         )
         XCTAssertEqual(state.lastAppliedEventSequence, 0)
+    }
+
+    func testCheckpointPlusTailMatchesReplayAndDoesNotReapplyCoveredPrefix() async throws {
+        let fixture = try makeFixture()
+        fixture.context.insert(FarmRecord(id: fixture.farmID, ownerAccountID: fixture.accountID, name: "检查点增量"))
+        fixture.context.insert(SheepRecord(id: fixture.sharedSheepID, farmID: fixture.farmID, earTag: "TAIL-1",
+            breed: "湖羊", sex: .ewe, penID: nil, enteredAt: .distantPast))
+        let first = try makeProfileNoteEvent(fixture: fixture, note: "检查点内")
+        let tail = try makeProfileNoteEvent(fixture: fixture, note: "检查点后", sequence: 2, previousNote: "检查点内")
+        let commandID = UUID(), recordID = UUID(), eventID = UUID()
+        let recordedAt = Date(timeIntervalSince1970: 1_800_000_001)
+        let weightPayload = ESheepCloudCommandPayloadV2.fact(.recordWeight(sheepID: fixture.sharedSheepID,
+            kilogramsText: "42.5", occurredAt: recordedAt.addingTimeInterval(-1), note: "增量称重"))
+        let sourceDigest = String(repeating: "e", count: 64)
+        let afterDigest = try ESheepCloudCanonicalCodec.digest(ESheepCloudNonFieldStreamStateV2(eventCount: 1,
+            lastCommandDigest: sourceDigest, lastCommandID: commandID.uuidString.lowercased(), lastCommandKind: weightPayload.kind))
+        let beforeDigest = try ESheepCloudCanonicalCodec.digest([String: ESheepCloudValueV2]())
+        func weightEvent(digest: String) -> ESheepCloudEventEnvelopeV2 {
+            .init(protocolVersion: ESheepCloudProtocolV2.protocolVersion, schemaVersion: ESheepCloudProtocolV2.schemaVersion,
+                farmID: fixture.farmID, farmGeneration: fixture.generation, eventSequence: 3, eventID: eventID,
+                commandID: commandID, sourceCommandDigest: sourceDigest, stream: .init(type: "weight", id: recordID),
+                payload: .businessCommandApplied(commandKind: weightPayload.kind, payload: weightPayload), affectedFields: [],
+                eventBodyDigest: String(repeating: "d", count: 64), beforeDigest: beforeDigest, afterDigest: afterDigest,
+                actorAccountID: fixture.accountID, sourceDeviceID: fixture.deviceID, sourceDeviceSequence: 3,
+                occurredAt: recordedAt.addingTimeInterval(-1), receivedAt: recordedAt, eventDigest: digest)
+        }
+        let weight = weightEvent(digest: ESheepCloudEventDigestV2.hex(for: weightEvent(digest: "")))
+        _ = try ESheepCloudEventReducer.apply(first, context: fixture.context)
+        let root = FileManager.default.temporaryDirectory.appending(path: "CheckpointTail-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manifest = try ESheepCloudCheckpointArchive.export(farmID: fixture.farmID, context: fixture.context, directory: root.appending(path: "archive"))
+        _ = try ESheepCloudEventReducer.apply(tail, context: fixture.context)
+        _ = try ESheepCloudEventReducer.apply(weight, context: fixture.context)
+        let importer = try ESheepCloudCheckpointImporter(manifest: manifest, accountID: fixture.accountID, storeURL: root.appending(path: "import.store"))
+        for chunk in manifest.chunks {
+            try await importer.importChunk(Data(contentsOf: root.appending(path: "archive").appending(path: String(format: "%05d.json.gz", chunk.index))), index: chunk.index)
+        }
+        try await importer.finish()
+        try await importer.applyRecentPage(.init(events: [first, tail, weight], cloudHead: 3, hasMore: false))
+        for adapter in ESheepCloudCheckpointRegistry.adapters where adapter.disposition == .transfer {
+            let actual = try await importer.records(model: adapter.name)
+            XCTAssertEqual(actual, try adapter.exportRows(fixture.farmID, fixture.context), adapter.name)
+        }
+        let head = try await importer.currentHead()
+        XCTAssertEqual(head, 3)
     }
 
     func testFieldEventIsAppliedExactlyOnceWithVerifiedStreamDigest() throws {
@@ -1942,7 +2457,7 @@ final class ESheepCloudV2Tests: XCTestCase {
         XCTAssertEqual(state.statusTitle, "部分内容尚未保存，请稍后再试")
     }
 
-    func testFinishCycleNeverMarksSafeWhileAttentionNeedsAChoice() throws {
+    func testFinishCycleNeverMarksSafeWhileAttentionNeedsAChoice() async throws {
         let fixture = try makeFixture()
         let attention = makeAttention(
             id: UUID(),
@@ -1955,7 +2470,7 @@ final class ESheepCloudV2Tests: XCTestCase {
         try fixture.context.save()
 
         let store = ESheepCloudLocalStore(container: fixture.container)
-        let report = try store.finishCycle(
+        let report = try await store.finishCycle(
             farmID: fixture.farmID,
             accountID: fixture.accountID,
             now: Date(timeIntervalSince1970: 1_800_000_100)
@@ -2516,7 +3031,8 @@ final class ESheepCloudV2Tests: XCTestCase {
 
     private func makeProfileNoteEvent(
         fixture: Fixture,
-        note: String
+        note: String,
+        sequence: Int64 = 1, previousNote: String? = nil
     ) throws -> ESheepCloudEventEnvelopeV2 {
         let changed = ESheepCloudValueV2.string(note)
         let canonical = ["note": changed]
@@ -2529,7 +3045,7 @@ final class ESheepCloudV2Tests: XCTestCase {
                 id: fixture.sharedSheepID
             ),
             beforeDigest: try ESheepCloudCanonicalCodec.digest(
-                [String: ESheepCloudValueV2]()
+                previousNote.map { ["note": ESheepCloudValueV2.string($0)] } ?? [:]
             ),
             afterDigest: try ESheepCloudCanonicalCodec.digest(canonical),
             occurredAt: Date(timeIntervalSince1970: 1_800_000_000),
@@ -2541,7 +3057,7 @@ final class ESheepCloudV2Tests: XCTestCase {
                 schemaVersion: ESheepCloudProtocolV2.schemaVersion,
                 farmID: fixture.farmID,
                 farmGeneration: fixture.generation,
-                eventSequence: 1,
+                eventSequence: sequence,
                 eventID: common.eventID,
                 commandID: common.commandID,
                 sourceCommandDigest: common.sourceDigest,
@@ -2552,7 +3068,7 @@ final class ESheepCloudV2Tests: XCTestCase {
                         field: "note",
                         value: changed,
                         valueDigest: changed.digest,
-                        fieldVersion: 1
+                        fieldVersion: sequence
                     )]
                 ),
                 affectedFields: ["note"],
@@ -2561,7 +3077,7 @@ final class ESheepCloudV2Tests: XCTestCase {
                 afterDigest: common.afterDigest,
                 actorAccountID: fixture.accountID,
                 sourceDeviceID: fixture.deviceID,
-                sourceDeviceSequence: 1,
+                sourceDeviceSequence: sequence,
                 occurredAt: common.occurredAt,
                 receivedAt: common.receivedAt,
                 eventDigest: digest
@@ -2582,21 +3098,26 @@ final class ESheepCloudV2Tests: XCTestCase {
     }
 }
 
-private actor InitialSyncGatewayStub: ESheepCloudGateway {
+actor InitialSyncGatewayStub: ESheepCloudGateway {
     enum StubError: Error { case unexpectedCall }
 
     let ticket: ESheepCloudInitialSyncTicketV2
     let chunkDataByIndex: [Int: Data]
     let cancelChunkIndices: Set<Int>
+    let tailEvents: [ESheepCloudEventEnvelopeV2]
+    private var cancelNextPull = false
+    func cancelOnePull() { cancelNextPull = true }
 
     init(
         ticket: ESheepCloudInitialSyncTicketV2,
         chunkDataByIndex: [Int: Data] = [:],
-        cancelChunkIndices: Set<Int> = []
+        cancelChunkIndices: Set<Int> = [],
+        tailEvents: [ESheepCloudEventEnvelopeV2] = []
     ) {
         self.ticket = ticket
         self.chunkDataByIndex = chunkDataByIndex
         self.cancelChunkIndices = cancelChunkIndices
+        self.tailEvents = tailEvents
     }
 
     func openInitialSync(
@@ -2632,12 +3153,15 @@ private actor InitialSyncGatewayStub: ESheepCloudGateway {
         after eventSequence: Int64,
         limit: Int
     ) async throws -> ESheepCloudEventPageV2 {
+        if cancelNextPull { cancelNextPull = false; throw CancellationError() }
         guard farmID == ticket.manifest.farmID,
               farmGeneration == ticket.manifest.farmGeneration,
-              eventSequence == 0 else {
+              eventSequence >= ticket.manifest.boundaryEventSequence else {
             throw StubError.unexpectedCall
         }
-        return .init(events: [], cloudHead: 0, hasMore: false)
+        let head = tailEvents.last?.eventSequence ?? ticket.manifest.boundaryEventSequence
+        let page = Array(tailEvents.filter { $0.eventSequence > eventSequence }.prefix(limit))
+        return .init(events: page, cloudHead: head, hasMore: (page.last?.eventSequence ?? eventSequence) < head)
     }
 
     func submitCommands(

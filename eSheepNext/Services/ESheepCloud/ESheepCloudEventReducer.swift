@@ -2,6 +2,412 @@ import CryptoKit
 import Foundation
 import SwiftData
 
+/// Per-transaction lookup cache used by a snapshot replay.  The original
+/// reducer fetched an entire SwiftData table for every event; at production
+/// scale that turns a linear event stream into repeated full-table scans.  The
+/// cache is deliberately scoped to one ModelContext and is never shared with
+/// live account work or another farm generation.
+final class ESheepCloudProjectionReplayContext {
+    private let bulkReplay: Bool
+
+    init(bulkReplay: Bool = true) { self.bulkReplay = bulkReplay }
+
+    private struct FarmKey: Hashable {
+        let farmID: UUID
+        let generation: Int
+    }
+
+    private struct StreamKey: Hashable {
+        let farmID: UUID
+        let generation: Int
+        let type: String
+        let id: UUID
+    }
+
+    private struct AvatarKey: Hashable {
+        let farmID: UUID
+        let sheepID: UUID
+    }
+
+    private var farmStates: [FarmKey: ESheepCloudFarmState]?
+    private var streams: [StreamKey: ESheepCloudStreamState]?
+    private var pendingIntents: [UUID: ESheepCloudPendingIntent]?
+    private var receiptsByID: [UUID: ESheepCloudEventReceipt]?
+    private var receiptsByCommandID: [UUID: [ESheepCloudEventReceipt]]?
+    private var attentionItems: [UUID: ESheepCloudAttentionItem]?
+    private var assetStates: [UUID: ESheepCloudAssetState]?
+    private var farms: [UUID: FarmRecord]?
+    private var pens: [UUID: PenRecord]?
+    private var sheep: [UUID: SheepRecord]?
+    private var reproductions: [UUID: ReproductionRecord]?
+    private var photoAssets: [UUID: PhotoAssetRecord]?
+    private var avatarSelections: [AvatarKey: [SheepAvatarRecord]]?
+    private var registeredInsertedObjects = Set<ObjectIdentifier>()
+    let historyRepairIndex = ESheepCloudBusinessRepairIndex()
+
+    func farmState(
+        farmID: UUID,
+        generation: Int,
+        context: ModelContext
+    ) throws -> ESheepCloudFarmState? {
+        if !bulkReplay {
+            return try context.fetch(FetchDescriptor<ESheepCloudFarmState>(predicate: #Predicate { $0.farmID == farmID && $0.farmGeneration == generation })).first
+        }
+
+        try loadFarmStatesIfNeeded(context: context)
+        return farmStates?[FarmKey(farmID: farmID, generation: generation)]
+    }
+
+    func streamState(
+        stream: ESheepCloudStreamReferenceV2,
+        farmID: UUID,
+        generation: Int,
+        context: ModelContext
+    ) throws -> ESheepCloudStreamState? {
+        if !bulkReplay {
+            let streamType = stream.type, streamID = stream.id
+            return try context.fetch(FetchDescriptor<ESheepCloudStreamState>(predicate: #Predicate { $0.farmID == farmID && $0.farmGeneration == generation && $0.streamType == streamType && $0.streamID == streamID })).first
+        }
+
+        try loadStreamsIfNeeded(context: context)
+        return streams?[StreamKey(
+            farmID: farmID,
+            generation: generation,
+            type: stream.type,
+            id: stream.id
+        )]
+    }
+
+    func pendingIntent(
+        commandID: UUID,
+        context: ModelContext
+    ) throws -> ESheepCloudPendingIntent? {
+        if !bulkReplay {
+            return try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate { $0.id == commandID })).first
+        }
+
+        try loadPendingIntentsIfNeeded(context: context)
+        return pendingIntents?[commandID]
+    }
+
+    func eventReceipt(
+        eventID: UUID,
+        context: ModelContext
+    ) throws -> ESheepCloudEventReceipt? {
+        if !bulkReplay {
+            return try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>(predicate: #Predicate { $0.id == eventID })).first
+        }
+
+        try loadReceiptsIfNeeded(context: context)
+        return receiptsByID?[eventID]
+    }
+
+    func eventReceipts(
+        commandID: UUID,
+        context: ModelContext
+    ) throws -> [ESheepCloudEventReceipt] {
+        if !bulkReplay {
+            return try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>(predicate: #Predicate { $0.commandID == commandID }))
+        }
+
+        try loadReceiptsIfNeeded(context: context)
+        return receiptsByCommandID?[commandID] ?? []
+    }
+
+    func attentionItem(
+        id: UUID,
+        context: ModelContext
+    ) throws -> ESheepCloudAttentionItem? {
+        if !bulkReplay {
+            return try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>(predicate: #Predicate { $0.id == id })).first
+        }
+
+        try loadAttentionItemsIfNeeded(context: context)
+        return attentionItems?[id]
+    }
+
+    func assetState(
+        assetID: UUID,
+        farmID: UUID,
+        context: ModelContext
+    ) throws -> ESheepCloudAssetState? {
+        if !bulkReplay {
+            return try context.fetch(FetchDescriptor<ESheepCloudAssetState>(predicate: #Predicate { $0.id == assetID && $0.farmID == farmID })).first
+        }
+
+        try loadAssetStatesIfNeeded(context: context)
+        guard let asset = assetStates?[assetID], asset.farmID == farmID else {
+            return nil
+        }
+        return asset
+    }
+
+    func farm(id: UUID, context: ModelContext) throws -> FarmRecord? {
+        if !bulkReplay {
+            return try context.fetch(FetchDescriptor<FarmRecord>(predicate: #Predicate { $0.id == id })).first
+        }
+
+        try loadFarmsIfNeeded(context: context)
+        return farms?[id]
+    }
+
+    func pen(id: UUID, context: ModelContext) throws -> PenRecord? {
+        if !bulkReplay {
+            return try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate { $0.id == id })).first
+        }
+
+        try loadPensIfNeeded(context: context)
+        return pens?[id]
+    }
+
+    func sheep(id: UUID, context: ModelContext) throws -> SheepRecord? {
+        if !bulkReplay {
+            return try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate { $0.id == id })).first
+        }
+
+        try loadSheepIfNeeded(context: context)
+        return sheep?[id]
+    }
+
+    func reproduction(id: UUID, context: ModelContext) throws -> ReproductionRecord? {
+        if !bulkReplay {
+            return try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate { $0.id == id })).first
+        }
+
+        try loadReproductionsIfNeeded(context: context)
+        return reproductions?[id]
+    }
+
+    func photoAsset(id: UUID, context: ModelContext) throws -> PhotoAssetRecord? {
+        if !bulkReplay {
+            return try context.fetch(FetchDescriptor<PhotoAssetRecord>(predicate: #Predicate { $0.id == id })).first
+        }
+
+        try loadPhotoAssetsIfNeeded(context: context)
+        return photoAssets?[id]
+    }
+
+    func applyAvatarSelection(
+        _ update: SheepAvatarPhotoUpdate,
+        sheepID: UUID,
+        farmID: UUID,
+        updatedAt: Date,
+        context: ModelContext
+    ) throws {
+        if bulkReplay {
+            try loadAvatarSelectionsIfNeeded(context: context)
+        } else {
+            let matches = try context.fetch(FetchDescriptor<SheepAvatarRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.sheepID == sheepID
+            }))
+            avatarSelections = [AvatarKey(farmID: farmID, sheepID: sheepID): matches]
+        }
+        let key = AvatarKey(farmID: farmID, sheepID: sheepID)
+        var selections = avatarSelections?[key] ?? []
+        if let selection = selections.max(by: { $0.updatedAt < $1.updatedAt }) {
+            selection.photoAssetID = update.photoAssetID
+            selection.updatedAt = updatedAt
+            let duplicateIDs = Set(selections.filter { $0.id != selection.id }.map(\.id))
+            if !duplicateIDs.isEmpty {
+                for duplicate in selections where duplicateIDs.contains(duplicate.id) {
+                    context.delete(duplicate)
+                }
+                selections.removeAll { duplicateIDs.contains($0.id) }
+            }
+        } else {
+            let selection = SheepAvatarRecord(
+                farmID: farmID,
+                sheepID: sheepID,
+                photoAssetID: update.photoAssetID,
+                updatedAt: updatedAt
+            )
+            context.insert(selection)
+            register(selection)
+            selections = [selection]
+        }
+        avatarSelections?[key] = selections
+    }
+
+    /// Eagerly materialize every lookup table used by a bulk replay. Keeping
+    /// this explicit makes the query contract visible: each model category is
+    /// fetched at most once per transaction, before the event loop begins.
+    func preload(in context: ModelContext) throws {
+        guard bulkReplay else { return }
+        try loadFarmStatesIfNeeded(context: context)
+        try loadStreamsIfNeeded(context: context)
+        try loadPendingIntentsIfNeeded(context: context)
+        try loadReceiptsIfNeeded(context: context)
+        try loadAttentionItemsIfNeeded(context: context)
+        try loadAssetStatesIfNeeded(context: context)
+        try loadFarmsIfNeeded(context: context)
+        try loadPensIfNeeded(context: context)
+        try loadSheepIfNeeded(context: context)
+        try loadReproductionsIfNeeded(context: context)
+        try loadPhotoAssetsIfNeeded(context: context)
+        try loadAvatarSelectionsIfNeeded(context: context)
+        registerInsertedModels(in: context)
+    }
+
+    /// Register models created by a domain handler since the previous
+    /// checkpoint. This is called at chunk boundaries, not per event, so the
+    /// inserted-model list cannot reintroduce an O(events²) scan.
+    func registerInsertedModels(in context: ModelContext) {
+        let inserted = context.insertedModelsArray
+        // SwiftData does not promise insertion order for this collection.
+        // An array-position cursor can miss a new object after reordering.
+        for model in inserted {
+            let objectID = ObjectIdentifier(model as AnyObject)
+            guard registeredInsertedObjects.insert(objectID).inserted else {
+                continue
+            }
+            register(model)
+        }
+    }
+
+    func register(_ model: any PersistentModel) {
+        historyRepairIndex.register(model)
+        switch model {
+        case let value as ESheepCloudFarmState:
+            farmStates?[FarmKey(farmID: value.farmID, generation: value.farmGeneration)] = value
+        case let value as ESheepCloudStreamState:
+            streams?[StreamKey(
+                farmID: value.farmID,
+                generation: value.farmGeneration,
+                type: value.streamType,
+                id: value.streamID
+            )] = value
+        case let value as ESheepCloudPendingIntent:
+            pendingIntents?[value.id] = value
+        case let value as ESheepCloudEventReceipt:
+            receiptsByID?[value.id] = value
+            receiptsByCommandID?[value.commandID, default: []].append(value)
+        case let value as ESheepCloudAttentionItem:
+            attentionItems?[value.id] = value
+        case let value as ESheepCloudAssetState:
+            assetStates?[value.id] = value
+        case let value as FarmRecord:
+            farms?[value.id] = value
+        case let value as PenRecord:
+            pens?[value.id] = value
+        case let value as SheepRecord:
+            sheep?[value.id] = value
+        case let value as ReproductionRecord:
+            reproductions?[value.id] = value
+        case let value as PhotoAssetRecord:
+            photoAssets?[value.id] = value
+        case let value as SheepAvatarRecord:
+            let key = AvatarKey(farmID: value.farmID, sheepID: value.sheepID)
+            var values = avatarSelections?[key] ?? []
+            if !values.contains(where: { $0.id == value.id }) {
+                values.append(value)
+            }
+            avatarSelections?[key] = values
+        default:
+            break
+        }
+    }
+
+    private func loadFarmStatesIfNeeded(context: ModelContext) throws {
+        guard farmStates == nil else { return }
+        farmStates = [:]
+        for value in try context.fetch(FetchDescriptor<ESheepCloudFarmState>()) {
+            farmStates?[FarmKey(farmID: value.farmID, generation: value.farmGeneration)] = value
+        }
+    }
+
+    private func loadStreamsIfNeeded(context: ModelContext) throws {
+        guard streams == nil else { return }
+        streams = [:]
+        for value in try context.fetch(FetchDescriptor<ESheepCloudStreamState>()) {
+            streams?[StreamKey(
+                farmID: value.farmID,
+                generation: value.farmGeneration,
+                type: value.streamType,
+                id: value.streamID
+            )] = value
+        }
+    }
+
+    private func loadPendingIntentsIfNeeded(context: ModelContext) throws {
+        guard pendingIntents == nil else { return }
+        pendingIntents = Dictionary(
+            uniqueKeysWithValues: try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
+                .map { ($0.id, $0) }
+        )
+    }
+
+    private func loadReceiptsIfNeeded(context: ModelContext) throws {
+        guard receiptsByID == nil else { return }
+        let values = try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>())
+        receiptsByID = Dictionary(uniqueKeysWithValues: values.map { ($0.id, $0) })
+        receiptsByCommandID = Dictionary(grouping: values, by: \.commandID)
+    }
+
+    private func loadAttentionItemsIfNeeded(context: ModelContext) throws {
+        guard attentionItems == nil else { return }
+        attentionItems = Dictionary(
+            uniqueKeysWithValues: try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>())
+                .map { ($0.id, $0) }
+        )
+    }
+
+    private func loadAssetStatesIfNeeded(context: ModelContext) throws {
+        guard assetStates == nil else { return }
+        assetStates = Dictionary(
+            uniqueKeysWithValues: try context.fetch(FetchDescriptor<ESheepCloudAssetState>())
+                .map { ($0.id, $0) }
+        )
+    }
+
+    private func loadFarmsIfNeeded(context: ModelContext) throws {
+        guard farms == nil else { return }
+        farms = Dictionary(
+            uniqueKeysWithValues: try context.fetch(FetchDescriptor<FarmRecord>())
+                .map { ($0.id, $0) }
+        )
+    }
+
+    private func loadPensIfNeeded(context: ModelContext) throws {
+        guard pens == nil else { return }
+        pens = Dictionary(
+            uniqueKeysWithValues: try context.fetch(FetchDescriptor<PenRecord>())
+                .map { ($0.id, $0) }
+        )
+    }
+
+    private func loadSheepIfNeeded(context: ModelContext) throws {
+        guard sheep == nil else { return }
+        sheep = Dictionary(
+            uniqueKeysWithValues: try context.fetch(FetchDescriptor<SheepRecord>())
+                .map { ($0.id, $0) }
+        )
+    }
+
+    private func loadReproductionsIfNeeded(context: ModelContext) throws {
+        guard reproductions == nil else { return }
+        reproductions = Dictionary(
+            uniqueKeysWithValues: try context.fetch(FetchDescriptor<ReproductionRecord>())
+                .map { ($0.id, $0) }
+        )
+    }
+
+    private func loadPhotoAssetsIfNeeded(context: ModelContext) throws {
+        guard photoAssets == nil else { return }
+        photoAssets = Dictionary(
+            uniqueKeysWithValues: try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+                .map { ($0.id, $0) }
+        )
+    }
+
+    private func loadAvatarSelectionsIfNeeded(context: ModelContext) throws {
+        guard avatarSelections == nil else { return }
+        avatarSelections = Dictionary(
+            grouping: try context.fetch(FetchDescriptor<SheepAvatarRecord>()),
+            by: { AvatarKey(farmID: $0.farmID, sheepID: $0.sheepID) }
+        )
+    }
+}
+
 enum ESheepCloudProjectionError: LocalizedError, Equatable {
     case farmStateMissing
     case farmIdentityMismatch
@@ -45,13 +451,16 @@ enum ESheepCloudEventReducer {
     static func apply(
         _ event: ESheepCloudEventEnvelopeV2,
         context: ModelContext,
-        savesChanges: Bool = true
+        savesChanges: Bool = true,
+        replayContext: ESheepCloudProjectionReplayContext? = nil,
+        domainApplyService: RemoteDomainApplyService? = nil
     ) throws -> ESheepCloudEventApplyOutcome {
         try event.validateDigest()
         guard let farmState = try farmState(
             farmID: event.farmID,
             generation: event.farmGeneration,
-            context: context
+            context: context,
+            replayContext: replayContext
         ) else {
             throw ESheepCloudProjectionError.farmStateMissing
         }
@@ -60,12 +469,17 @@ enum ESheepCloudEventReducer {
             throw ESheepCloudProjectionError.farmIdentityMismatch
         }
 
-        if let receipt = try eventReceipt(eventID: event.eventID, context: context) {
+        if let receipt = try eventReceipt(
+            eventID: event.eventID,
+            context: context,
+            replayContext: replayContext
+        ) {
             guard receipt.farmID == event.farmID,
                   receipt.farmGeneration == event.farmGeneration,
                   receipt.eventSequence == event.eventSequence,
                   receipt.commandID == event.commandID,
-                  receipt.eventDigest == event.eventDigest else {
+                  receipt.eventDigest == event.eventDigest,
+                  receipt.appliedProjectionDigest == event.afterDigest else {
                 throw ESheepCloudProjectionError.duplicateEventMismatch
             }
             return ESheepCloudEventApplyOutcome(
@@ -73,6 +487,25 @@ enum ESheepCloudEventReducer {
                 wasAlreadyApplied: true,
                 historyChangedAt: nil
             )
+        }
+
+        if event.eventSequence <= farmState.lastAppliedEventSequence {
+            let farmID = event.farmID, generation = event.farmGeneration
+            let anchors = try context.fetch(FetchDescriptor<ESheepCloudCheckpointState>(predicate: #Predicate {
+                $0.farmID == farmID && $0.farmGeneration == generation
+            }))
+            if let anchor = anchors.first(where: { ["active", "verified"].contains($0.stateRawValue) &&
+                $0.boundaryEventSequence >= event.eventSequence }) {
+                if event.eventSequence == anchor.boundaryEventSequence,
+                   event.eventDigest != anchor.boundaryEventDigest {
+                    throw ESheepCloudProjectionError.duplicateEventMismatch
+                }
+                // The independently verified projection already covers this
+                // prefix. This is not a command acceptance receipt: unresolved
+                // local commands must still be queried by their original ID.
+                return ESheepCloudEventApplyOutcome(eventSequence: event.eventSequence,
+                    wasAlreadyApplied: true, historyChangedAt: nil)
+            }
         }
 
         let expected = farmState.lastAppliedEventSequence + 1
@@ -85,7 +518,8 @@ enum ESheepCloudEventReducer {
 
         let localIntent = try pendingIntent(
             commandID: event.commandID,
-            context: context
+            context: context,
+            replayContext: replayContext
         )
         if let localIntent {
             // A receipt is only safe to apply to the intent that created it.
@@ -110,9 +544,15 @@ enum ESheepCloudEventReducer {
             try applyFieldChanges(
                 changes,
                 event: event,
-                context: context
+                context: context,
+                replayContext: replayContext
             )
-            historyChangedAt = stream.type == "sheepProfile" ? event.occurredAt : nil
+            // Descriptive edits (ear tag, note, breed, pedigree display) do
+            // not change occupancy history. Only count-affecting profile
+            // fields need the daily projection rebuilt.
+            historyChangedAt = stream.type == "sheepProfile" &&
+                changes.contains(where: { ["purpose", "isHistoricalArchive"].contains($0.field) })
+                ? event.occurredAt : nil
 
         case .businessCommandApplied(let commandKind, let payload):
             guard commandKind == payload.kind else {
@@ -122,7 +562,8 @@ enum ESheepCloudEventReducer {
                 try applyPhoto(
                     photo,
                     event: event,
-                    context: context
+                    context: context,
+                    replayContext: replayContext
                 )
                 historyChangedAt = nil
             } else {
@@ -136,21 +577,19 @@ enum ESheepCloudEventReducer {
                 // The first event replays the typed business payload; later
                 // lane events carry the same payload but must not append the
                 // fact or mutate the business projection a second time.
-                let commandAlreadyApplied: Bool
-                if localIntent == nil {
-                    commandAlreadyApplied = try eventReceipt(
-                        commandID: event.commandID,
-                        farmID: event.farmID,
-                        farmGeneration: event.farmGeneration,
-                        context: context
-                    ) != nil
-                } else {
-                    commandAlreadyApplied = false
-                }
+                let commandAlreadyApplied = try eventReceipt(
+                    commandID: event.commandID, farmID: event.farmID,
+                    farmGeneration: event.farmGeneration, context: context,
+                    replayContext: replayContext) != nil
+                let purposeHistory = commandAlreadyApplied ? nil : try ESheepCloudPurposeHistory.capture(
+                    payload: payload, commandID: event.commandID, farmID: event.farmID,
+                    context: context, replayContext: replayContext)
                 if localIntent == nil && !commandAlreadyApplied {
                     let outcome = try ESheepCloudV2DomainAdapter.apply(
                         event: event,
-                        context: context
+                        context: context,
+                        domainApplyService: domainApplyService,
+                        replayContext: replayContext
                     )
                     switch outcome {
                     case .applied(let rebuildHistoryFrom):
@@ -166,11 +605,19 @@ enum ESheepCloudEventReducer {
                 } else {
                     historyChangedAt = nil
                 }
+                if let purposeHistory {
+                    try ESheepCloudPurposeHistory.record(command: purposeHistory.command,
+                        commandID: event.commandID, farmID: event.farmID,
+                        accountID: event.actorAccountID, deviceID: event.sourceDeviceID,
+                        occurredAt: event.occurredAt, recordedAt: event.receivedAt,
+                        previousPurpose: purposeHistory.previousPurpose, context: context)
+                }
             }
             try advanceNonFieldStream(
                 event: event,
                 commandKind: commandKind,
-                context: context
+                context: context,
+                replayContext: replayContext
             )
 
         case .attentionResolved(let attentionID, let field, let choice, let chosenValue):
@@ -181,21 +628,25 @@ enum ESheepCloudEventReducer {
                 farmID: event.farmID,
                 changedAt: event.receivedAt,
                 stableFactID: event.eventID,
-                context: context
+                context: context,
+                replayContext: replayContext
             )
             try resolveLocalAttention(
                 attentionID: attentionID,
                 event: event,
                 choice: choice,
-                context: context
+                context: context,
+                replayContext: replayContext
             )
             try advanceResolvedFieldStream(
                 event: event,
                 field: field,
                 value: chosenValue,
-                context: context
+                context: context,
+                replayContext: replayContext
             )
-            historyChangedAt = event.stream.type == "sheepProfile" ? event.occurredAt : nil
+            historyChangedAt = event.stream.type == "sheepProfile" &&
+                ["purpose", "isHistoricalArchive"].contains(field) ? event.occurredAt : nil
 
         case .factAppended, .relationshipChanged, .stateTransitioned,
              .assetChanged:
@@ -212,7 +663,7 @@ enum ESheepCloudEventReducer {
             eventDigest: event.eventDigest
         )
         farmState.updatedAt = .now
-        context.insert(ESheepCloudEventReceipt(
+        let receipt = ESheepCloudEventReceipt(
             eventID: event.eventID,
             farmID: event.farmID,
             farmGeneration: event.farmGeneration,
@@ -220,7 +671,20 @@ enum ESheepCloudEventReducer {
             commandID: event.commandID,
             eventDigest: event.eventDigest,
             appliedProjectionDigest: event.afterDigest
-        ))
+        )
+        context.insert(receipt)
+        replayContext?.register(receipt)
+        // Most V2 domain routes register new models at the insertion site.
+        // Care/TMR handlers are older graph writers that still call
+        // `context.insert` internally, so publish their pending suffix before
+        // the next event can reference a child projection. Avoiding this scan
+        // for ordinary field/fact events is important: SwiftData's
+        // `insertedModelsArray` grows with the transaction and reading it for
+        // all 34,842 events would itself recreate an event-sized copy cost.
+        if Self.requiresPendingDomainIndexRefresh(event) {
+            replayContext?.registerInsertedModels(in: context)
+            domainApplyService?.rebuildPendingReplayIndex(in: context)
+        }
         if savesChanges {
             try context.save()
         }
@@ -361,7 +825,8 @@ enum ESheepCloudEventReducer {
     private static func applyFieldChanges(
         _ changes: [ESheepCloudAppliedFieldChangeV2],
         event: ESheepCloudEventEnvelopeV2,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws {
         guard !changes.isEmpty,
               Set(changes.map(\.field)).count == changes.count,
@@ -372,13 +837,15 @@ enum ESheepCloudEventReducer {
             stream: event.stream,
             farmID: event.farmID,
             farmGeneration: event.farmGeneration,
-            context: context
+            creationEventID: event.eventID,
+            creationDate: event.receivedAt,
+            context: context,
+            replayContext: replayContext
         )
         if !state.contentDigest.isEmpty,
            state.contentDigest != event.beforeDigest {
             throw ESheepCloudProjectionError.streamDigestMismatch
         }
-        var canonical = try decodeCanonicalState(state.canonicalStateData)
         var versions = try decodeFieldVersions(state.fieldVersionsData)
 
         for change in changes.sorted(by: { $0.field < $1.field }) {
@@ -389,7 +856,6 @@ enum ESheepCloudEventReducer {
             guard change.fieldVersion == currentVersion + 1 else {
                 throw ESheepCloudProjectionError.streamDigestMismatch
             }
-            canonical[change.field] = change.value
             versions[change.field] = ESheepCloudFieldVersionEntryV2(
                 field: change.field,
                 version: change.fieldVersion,
@@ -408,10 +874,15 @@ enum ESheepCloudEventReducer {
                 farmID: event.farmID,
                 changedAt: event.occurredAt,
                 stableFactID: event.eventID,
-                context: context
+                context: context,
+                replayContext: replayContext
             )
         }
-        let canonicalData = try ESheepCloudCanonicalCodec.encode(canonical)
+        let canonicalData = try canonicalFieldStateData(
+            previous: state.canonicalStateData,
+            updates: Dictionary(uniqueKeysWithValues: changes.map { ($0.field, $0.value) }),
+            event: event
+        )
         guard sha256Hex(canonicalData) == event.afterDigest else {
             throw ESheepCloudProjectionError.streamDigestMismatch
         }
@@ -422,19 +893,23 @@ enum ESheepCloudEventReducer {
         state.streamVersion += 1
         state.contentDigest = event.afterDigest
         state.lastEventSequence = event.eventSequence
-        state.updatedAt = .now
+        state.updatedAt = event.receivedAt
     }
 
     private static func advanceNonFieldStream(
         event: ESheepCloudEventEnvelopeV2,
         commandKind: String,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws {
         let state = try streamState(
             stream: event.stream,
             farmID: event.farmID,
             farmGeneration: event.farmGeneration,
-            context: context
+            creationEventID: event.eventID,
+            creationDate: event.receivedAt,
+            context: context,
+            replayContext: replayContext
         )
         if !state.contentDigest.isEmpty,
            state.contentDigest != event.beforeDigest {
@@ -455,30 +930,33 @@ enum ESheepCloudEventReducer {
         state.streamVersion += 1
         state.contentDigest = event.afterDigest
         state.lastEventSequence = event.eventSequence
-        state.updatedAt = .now
+        state.updatedAt = event.receivedAt
     }
 
     private static func advanceResolvedFieldStream(
         event: ESheepCloudEventEnvelopeV2,
         field: String,
         value: ESheepCloudValueV2,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws {
         let state = try streamState(
             stream: event.stream,
             farmID: event.farmID,
             farmGeneration: event.farmGeneration,
-            context: context
+            creationEventID: event.eventID,
+            creationDate: event.receivedAt,
+            context: context,
+            replayContext: replayContext
         )
         guard state.contentDigest.isEmpty || state.contentDigest == event.beforeDigest else {
             throw ESheepCloudProjectionError.streamDigestMismatch
         }
-        var canonical = try decodeCanonicalState(state.canonicalStateData)
+        let canonical = try decodeCanonicalState(state.canonicalStateData)
         var versions = try decodeFieldVersions(state.fieldVersionsData)
         let old = versions[field]
         let fieldChanged = event.beforeDigest != event.afterDigest
         if fieldChanged {
-            canonical[field] = value
             versions[field] = ESheepCloudFieldVersionEntryV2(
                 field: field,
                 version: (old?.version ?? 0) + 1,
@@ -501,7 +979,12 @@ enum ESheepCloudEventReducer {
                 throw ESheepCloudProjectionError.streamDigestMismatch
             }
         }
-        let canonicalData = try ESheepCloudCanonicalCodec.encode(canonical)
+        let canonicalData = fieldChanged
+            ? try canonicalFieldStateData(
+                previous: state.canonicalStateData,
+                updates: [field: value], event: event
+            )
+            : state.canonicalStateData
         guard sha256Hex(canonicalData) == event.afterDigest else {
             throw ESheepCloudProjectionError.streamDigestMismatch
         }
@@ -512,13 +995,14 @@ enum ESheepCloudEventReducer {
         if fieldChanged { state.streamVersion += 1 }
         state.contentDigest = event.afterDigest
         state.lastEventSequence = event.eventSequence
-        state.updatedAt = .now
+        state.updatedAt = event.receivedAt
     }
 
     private static func applyPhoto(
         _ payload: ESheepCloudPhotoCommandV2,
         event: ESheepCloudEventEnvelopeV2,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws {
         switch payload {
         case .register(
@@ -568,11 +1052,17 @@ enum ESheepCloudEventReducer {
                   try ESheepCloudCanonicalCodec.digest(metadata) == metadataDigest else {
                 throw ESheepCloudContractError.malformedPayload
             }
-            let existing = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
-                .first { $0.id == assetID && $0.farmID == event.farmID }
+            let existing: PhotoAssetRecord?
+            if let replayContext {
+                existing = try replayContext.photoAsset(id: assetID, context: context)
+            } else {
+                existing = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+                    .first { $0.id == assetID && $0.farmID == event.farmID }
+            }
             let record: PhotoAssetRecord
             if let existing {
                 guard existing.sha256 == contentSHA256,
+                      existing.farmID == event.farmID,
                       existing.sheepID == sheepID else {
                     throw ESheepCloudProjectionError.duplicateEventMismatch
                 }
@@ -589,6 +1079,7 @@ enum ESheepCloudEventReducer {
                     mimeType: mimeType
                 )
                 context.insert(record)
+                replayContext?.register(record)
             }
             record.capturedAt = capturedAt
             record.mimeType = mimeType
@@ -606,7 +1097,8 @@ enum ESheepCloudEventReducer {
                 sheepID: sheepID,
                 contentSHA256: contentSHA256,
                 byteCount: originalByteCount,
-                context: context
+                context: context,
+                replayContext: replayContext
             )
             asset.metadataDigest = metadataDigest
             asset.metadataData = try ESheepCloudCanonicalCodec.encode(metadata)
@@ -621,14 +1113,28 @@ enum ESheepCloudEventReducer {
             asset.originalStateRawValue = ESheepCloudAssetTransferState.verified.rawValue
             asset.verifiedRemoteByteCount = thumbnailByteCount + avatarByteCount + originalByteCount
             asset.lastVerifiedAt = event.receivedAt
-            asset.updatedAt = .now
+            asset.updatedAt = event.receivedAt
 
         case .moveToRecycleBin(let assetID, _):
+            let record: PhotoAssetRecord?
+            let asset: ESheepCloudAssetState?
+            if let replayContext {
+                record = try replayContext.photoAsset(id: assetID, context: context)
+                asset = try replayContext.assetState(
+                    assetID: assetID,
+                    farmID: event.farmID,
+                    context: context
+                )
+            } else {
+                record = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+                    .first(where: { $0.id == assetID && $0.farmID == event.farmID })
+                asset = try context.fetch(FetchDescriptor<ESheepCloudAssetState>())
+                    .first(where: { $0.id == assetID && $0.farmID == event.farmID })
+            }
             guard assetID == event.stream.id,
-                  let record = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
-                    .first(where: { $0.id == assetID && $0.farmID == event.farmID }),
-                  let asset = try context.fetch(FetchDescriptor<ESheepCloudAssetState>())
-                    .first(where: { $0.id == assetID && $0.farmID == event.farmID }) else {
+                  let record,
+                  record.farmID == event.farmID,
+                  let asset else {
                 throw ESheepCloudProjectionError.invalidFieldValue("照片")
             }
             record.deletedAt = event.receivedAt
@@ -637,14 +1143,28 @@ enum ESheepCloudEventReducer {
             asset.avatarStateRawValue = ESheepCloudAssetTransferState.recycleBin.rawValue
             asset.recycleExpiresAt = Calendar(identifier: .gregorian)
                 .date(byAdding: .day, value: 30, to: event.receivedAt)
-            asset.updatedAt = .now
+            asset.updatedAt = event.receivedAt
 
         case .restore(let assetID):
+            let record: PhotoAssetRecord?
+            let asset: ESheepCloudAssetState?
+            if let replayContext {
+                record = try replayContext.photoAsset(id: assetID, context: context)
+                asset = try replayContext.assetState(
+                    assetID: assetID,
+                    farmID: event.farmID,
+                    context: context
+                )
+            } else {
+                record = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+                    .first(where: { $0.id == assetID && $0.farmID == event.farmID })
+                asset = try context.fetch(FetchDescriptor<ESheepCloudAssetState>())
+                    .first(where: { $0.id == assetID && $0.farmID == event.farmID })
+            }
             guard assetID == event.stream.id,
-                  let record = try context.fetch(FetchDescriptor<PhotoAssetRecord>())
-                    .first(where: { $0.id == assetID && $0.farmID == event.farmID }),
-                  let asset = try context.fetch(FetchDescriptor<ESheepCloudAssetState>())
-                    .first(where: { $0.id == assetID && $0.farmID == event.farmID }) else {
+                  let record,
+                  record.farmID == event.farmID,
+                  let asset else {
                 throw ESheepCloudProjectionError.invalidFieldValue("照片")
             }
             record.deletedAt = nil
@@ -656,7 +1176,7 @@ enum ESheepCloudEventReducer {
             asset.thumbnailStateRawValue = ESheepCloudAssetTransferState.verified.rawValue
             asset.avatarStateRawValue = ESheepCloudAssetTransferState.verified.rawValue
             asset.recycleExpiresAt = nil
-            asset.updatedAt = .now
+            asset.updatedAt = event.receivedAt
         }
     }
 
@@ -667,13 +1187,22 @@ enum ESheepCloudEventReducer {
         farmID: UUID,
         changedAt: Date,
         stableFactID: UUID,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws {
         switch stream.type {
         case "farm":
+            let farm: FarmRecord?
+            if let replayContext {
+                farm = try replayContext.farm(id: farmID, context: context)
+            } else {
+                farm = try context.fetch(FetchDescriptor<FarmRecord>())
+                    .first(where: { $0.id == farmID && $0.deletedAt == nil })
+            }
             guard stream.id == farmID,
-                  let farm = try context.fetch(FetchDescriptor<FarmRecord>())
-                    .first(where: { $0.id == farmID && $0.deletedAt == nil }) else {
+                  let farm,
+                  farm.id == farmID,
+                  farm.deletedAt == nil else {
                 throw ESheepCloudProjectionError.invalidFieldValue("牧场")
             }
             switch field {
@@ -701,8 +1230,16 @@ enum ESheepCloudEventReducer {
             farm.updatedAt = changedAt
 
         case "pen":
-            guard let pen = try context.fetch(FetchDescriptor<PenRecord>())
-                .first(where: { $0.id == stream.id && $0.farmID == farmID && $0.deletedAt == nil }) else {
+            let pen: PenRecord?
+            if let replayContext {
+                pen = try replayContext.pen(id: stream.id, context: context)
+            } else {
+                pen = try context.fetch(FetchDescriptor<PenRecord>())
+                    .first(where: { $0.id == stream.id && $0.farmID == farmID && $0.deletedAt == nil })
+            }
+            guard let pen,
+                  pen.farmID == farmID,
+                  pen.deletedAt == nil else {
                 throw ESheepCloudProjectionError.invalidFieldValue("圈舍")
             }
             switch field {
@@ -714,8 +1251,16 @@ enum ESheepCloudEventReducer {
             pen.updatedAt = changedAt
 
         case "sheepProfile":
-            guard let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
-                .first(where: { $0.id == stream.id && $0.farmID == farmID && $0.deletedAt == nil }) else {
+            let sheep: SheepRecord?
+            if let replayContext {
+                sheep = try replayContext.sheep(id: stream.id, context: context)
+            } else {
+                sheep = try context.fetch(FetchDescriptor<SheepRecord>())
+                    .first(where: { $0.id == stream.id && $0.farmID == farmID && $0.deletedAt == nil })
+            }
+            guard let sheep,
+                  sheep.farmID == farmID,
+                  sheep.deletedAt == nil else {
                 throw ESheepCloudProjectionError.invalidFieldValue("羊只")
             }
             switch field {
@@ -742,9 +1287,15 @@ enum ESheepCloudEventReducer {
                         namespace: stableFactID,
                         name: "esheep-cloud-profile-parity"
                     )
-                    if try context.fetch(FetchDescriptor<ReproductionRecord>())
-                        .first(where: { $0.id == recordID }) == nil {
-                        context.insert(ReproductionRecord(
+                    let existing: ReproductionRecord?
+                    if let replayContext {
+                        existing = try replayContext.reproduction(id: recordID, context: context)
+                    } else {
+                        existing = try context.fetch(FetchDescriptor<ReproductionRecord>())
+                            .first(where: { $0.id == recordID })
+                    }
+                    if existing == nil {
+                        let record = ReproductionRecord(
                             id: recordID,
                             farmID: farmID,
                             eweID: sheep.id,
@@ -752,7 +1303,9 @@ enum ESheepCloudEventReducer {
                             occurredAt: changedAt,
                             parity: parity,
                             note: "档案确认当前胎次"
-                        ))
+                        )
+                        context.insert(record)
+                        replayContext?.register(record)
                     }
                 } else if value != .null {
                     throw ESheepCloudProjectionError.invalidFieldValue(field)
@@ -780,7 +1333,8 @@ enum ESheepCloudEventReducer {
                 sheepID: stream.id,
                 farmID: farmID,
                 updatedAt: changedAt,
-                context: context
+                context: context,
+                replayContext: replayContext
             )
 
         default:
@@ -792,9 +1346,14 @@ enum ESheepCloudEventReducer {
         attentionID: UUID,
         event: ESheepCloudEventEnvelopeV2,
         choice: ESheepCloudAttentionResolutionChoiceV2,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws {
-        guard let item = try attentionItem(id: attentionID, context: context) else {
+        guard let item = try attentionItem(
+            id: attentionID,
+            context: context,
+            replayContext: replayContext
+        ) else {
             // A second device can resolve an item before this device fetched
             // its detail. The event still remains authoritative and complete.
             return
@@ -808,7 +1367,11 @@ enum ESheepCloudEventReducer {
         item.resolutionLastErrorMessage = nil
         item.resolvedAt = event.receivedAt
         item.updatedAt = .now
-        if let source = try pendingIntent(commandID: item.commandID, context: context) {
+        if let source = try pendingIntent(
+            commandID: item.commandID,
+            context: context,
+            replayContext: replayContext
+        ) {
             source.lifecycle = .accepted
         }
     }
@@ -817,26 +1380,44 @@ enum ESheepCloudEventReducer {
         stream: ESheepCloudStreamReferenceV2,
         farmID: UUID,
         farmGeneration: Int,
-        context: ModelContext
+        creationEventID: UUID,
+        creationDate: Date,
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws -> ESheepCloudStreamState {
-        let matches = try context.fetch(FetchDescriptor<ESheepCloudStreamState>())
-            .filter {
-                $0.farmID == farmID &&
-                $0.farmGeneration == farmGeneration &&
-                $0.streamType == stream.type &&
-                $0.streamID == stream.id
-            }
-        guard matches.count <= 1 else {
-            throw ESheepCloudProjectionError.duplicateEventMismatch
+        if let replayContext,
+           let existing = try replayContext.streamState(
+               stream: stream,
+               farmID: farmID,
+               generation: farmGeneration,
+               context: context
+           ) {
+            return existing
         }
-        if let existing = matches.first { return existing }
+        if replayContext == nil {
+            let streamType = stream.type, streamID = stream.id
+            let matches = try context.fetch(FetchDescriptor<ESheepCloudStreamState>(predicate: #Predicate {
+                    $0.farmID == farmID &&
+                    $0.farmGeneration == farmGeneration &&
+                    $0.streamType == streamType &&
+                    $0.streamID == streamID
+                }))
+            guard matches.count <= 1 else {
+                throw ESheepCloudProjectionError.duplicateEventMismatch
+            }
+            if let existing = matches.first { return existing }
+        }
         let created = ESheepCloudStreamState(
+            id: creationEventID,
             farmID: farmID,
             farmGeneration: farmGeneration,
             streamType: stream.type,
             streamID: stream.id
         )
+        created.createdAt = creationDate
+        created.updatedAt = creationDate
         context.insert(created)
+        replayContext?.register(created)
         return created
     }
 
@@ -847,14 +1428,26 @@ enum ESheepCloudEventReducer {
         sheepID: UUID?,
         contentSHA256: String,
         byteCount: Int64,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws -> ESheepCloudAssetState {
-        let matches = try context.fetch(FetchDescriptor<ESheepCloudAssetState>())
-            .filter { $0.id == assetID && $0.farmID == farmID }
-        guard matches.count <= 1 else {
-            throw ESheepCloudProjectionError.duplicateEventMismatch
+        let existing: ESheepCloudAssetState?
+        if let replayContext {
+            existing = try replayContext.assetState(
+                assetID: assetID,
+                farmID: farmID,
+                context: context
+            )
+        } else {
+            let matches = try context.fetch(FetchDescriptor<ESheepCloudAssetState>(predicate: #Predicate {
+                $0.id == assetID && $0.farmID == farmID
+            }))
+            guard matches.count <= 1 else {
+                throw ESheepCloudProjectionError.duplicateEventMismatch
+            }
+            existing = matches.first
         }
-        if let existing = matches.first {
+        if let existing {
             guard existing.farmGeneration == farmGeneration,
                   existing.contentSHA256 == contentSHA256 else {
                 throw ESheepCloudProjectionError.duplicateEventMismatch
@@ -871,7 +1464,60 @@ enum ESheepCloudEventReducer {
             originalByteCount: byteCount
         )
         context.insert(created)
+        replayContext?.register(created)
         return created
+    }
+
+    /// A typed UUID round-trip uppercases its text. JSON stream digests bind
+    /// the original spelling, so retain the authenticated wire value while
+    /// separately checking it represents the exact typed business change.
+    static func canonicalFieldStateData(
+        previous: Data,
+        updates: [String: ESheepCloudValueV2],
+        event: ESheepCloudEventEnvelopeV2
+    ) throws -> Data {
+        var state: [String: Any] = [:]
+        if !previous.isEmpty {
+            guard let decoded = try JSONSerialization.jsonObject(with: previous) as? [String: Any] else {
+                throw ESheepCloudContractError.malformedPayload
+            }
+            state = decoded
+        }
+        var wireValues: [String: Any] = [:]
+        if let body = event.eventBodyCanonical {
+            try ESheepCloudEventBodyIntegrityV2.validate(
+                canonicalJSON: body, expectedDigest: event.eventBodyDigest
+            )
+            guard let object = try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any] else {
+                throw ESheepCloudContractError.malformedPayload
+            }
+            if let changes = object["changes"] as? [[String: Any]] {
+                for change in changes {
+                    guard let field = change["field"] as? String,
+                          let value = change["value"], wireValues[field] == nil else {
+                        throw ESheepCloudContractError.malformedPayload
+                    }
+                    wireValues[field] = value
+                }
+            } else if let field = object["field"] as? String,
+                      let value = object["chosen_value"] {
+                wireValues[field] = value
+            }
+            guard Set(wireValues.keys) == Set(updates.keys) else {
+                throw ESheepCloudContractError.malformedPayload
+            }
+        }
+        for (field, value) in updates {
+            let raw = try wireValues[field] ?? JSONSerialization.jsonObject(
+                with: ESheepCloudCanonicalCodec.encode(value)
+            )
+            let data = try JSONSerialization.data(withJSONObject: raw, options: [.sortedKeys, .withoutEscapingSlashes])
+            guard try ESheepCloudCanonicalCodec.decode(ESheepCloudValueV2.self, from: data) == value else {
+                throw ESheepCloudContractError.malformedPayload
+            }
+            state[field] = raw
+        }
+        return try JSONSerialization.data(withJSONObject: state, options: [.sortedKeys, .withoutEscapingSlashes])
     }
 
     private static func decodeCanonicalState(
@@ -900,37 +1546,75 @@ enum ESheepCloudEventReducer {
     private static func farmState(
         farmID: UUID,
         generation: Int,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws -> ESheepCloudFarmState? {
-        try context.fetch(FetchDescriptor<ESheepCloudFarmState>()).first {
-            $0.farmID == farmID && $0.farmGeneration == generation
+        if let replayContext {
+            return try replayContext.farmState(
+                farmID: farmID,
+                generation: generation,
+                context: context
+            )
         }
+        return try context.fetch(FetchDescriptor<ESheepCloudFarmState>(predicate: #Predicate {
+            $0.farmID == farmID && $0.farmGeneration == generation
+        })).first
     }
 
     private static func pendingIntent(
         commandID: UUID,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws -> ESheepCloudPendingIntent? {
-        try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
-            .first { $0.id == commandID }
+        if let replayContext {
+            return try replayContext.pendingIntent(
+                commandID: commandID,
+                context: context
+            )
+        }
+        return try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+            $0.id == commandID
+        })).first
     }
 
     private static func eventReceipt(
         eventID: UUID,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws -> ESheepCloudEventReceipt? {
-        try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>())
-            .first { $0.id == eventID }
+        if let replayContext {
+            return try replayContext.eventReceipt(
+                eventID: eventID,
+                context: context
+            )
+        }
+        return try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>(predicate: #Predicate {
+            $0.id == eventID
+        })).first
     }
 
     private static func eventReceipt(
         commandID: UUID,
         farmID: UUID,
         farmGeneration: Int,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws -> ESheepCloudEventReceipt? {
-        let matches = try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>())
-            .filter { $0.commandID == commandID }
+        if let replayContext {
+            let matches = try replayContext.eventReceipts(
+                commandID: commandID,
+                context: context
+            )
+            guard matches.allSatisfy({
+                $0.farmID == farmID && $0.farmGeneration == farmGeneration
+            }) else {
+                throw ESheepCloudProjectionError.duplicateEventMismatch
+            }
+            return matches.first
+        }
+        let matches = try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>(predicate: #Predicate {
+            $0.commandID == commandID
+        }))
         guard matches.allSatisfy({
             $0.farmID == farmID && $0.farmGeneration == farmGeneration
         }) else {
@@ -941,10 +1625,15 @@ enum ESheepCloudEventReducer {
 
     private static func attentionItem(
         id: UUID,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws -> ESheepCloudAttentionItem? {
-        try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>())
-            .first { $0.id == id }
+        if let replayContext {
+            return try replayContext.attentionItem(id: id, context: context)
+        }
+        return try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>(predicate: #Predicate {
+            $0.id == id
+        })).first
     }
 
     private static func receiptChainDigest(
@@ -954,6 +1643,33 @@ enum ESheepCloudEventReducer {
         SHA256.hash(data: Data("\(previous)\n\(eventDigest)".utf8))
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+
+    private static func requiresPendingDomainIndexRefresh(
+        _ event: ESheepCloudEventEnvelopeV2
+    ) -> Bool {
+        guard case .businessCommandApplied(_, let payload) = event.payload else {
+            return false
+        }
+        if case .care(let command) = payload {
+            switch command {
+            case .setSheepPurpose, .setBreedingRam, .updateSheepPedigree,
+                 .restorePedigreeAudit:
+                // These mutate already-indexed sheep, or append audit rows
+                // registered directly by the domain writer. Scanning every pending
+                // object here costs O(events * store size) during atomic
+                // activation while contributing no cache entries.
+                return false
+            default:
+                break
+            }
+        }
+        // The protocol payload exposes the stable wire strings (for example
+        // `care.health.recordBatch` and `tmr.produceTMRBatch`), while the
+        // legacy domain writer owns the corresponding enum cases. Prefixes
+        // cover the complete care/TMR command families, including any future
+        // operation added under those namespaces.
+        return payload.kind.hasPrefix("care.") || payload.kind.hasPrefix("tmr.")
     }
 
     private static func sha256Hex(_ data: Data) -> String {

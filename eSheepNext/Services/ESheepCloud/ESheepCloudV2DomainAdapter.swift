@@ -10,7 +10,9 @@ import SwiftData
 enum ESheepCloudV2DomainAdapter {
     static func apply(
         event: ESheepCloudEventEnvelopeV2,
-        context: ModelContext
+        context: ModelContext,
+        domainApplyService: RemoteDomainApplyService? = nil,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws -> RemoteApplyOutcome {
         guard case .businessCommandApplied(_, let payload) = event.payload else {
             throw ESheepCloudProjectionError.unsupportedEvent
@@ -24,6 +26,10 @@ enum ESheepCloudV2DomainAdapter {
         }
 
         switch payload {
+        case .historyRepair(let repair):
+            return try ESheepCloudHistoryRepairProjection.apply(
+                repair, event: event, context: context, replayContext: replayContext
+            )
         case .sheep(.setAvatar(let sheepID, let photoAssetID)):
             guard sheepID == event.stream.id else {
                 throw ESheepCloudProjectionError.invalidFieldValue("头像")
@@ -33,7 +39,8 @@ enum ESheepCloudV2DomainAdapter {
                 sheepID: sheepID,
                 farmID: event.farmID,
                 updatedAt: event.occurredAt,
-                context: context
+                context: context,
+                replayContext: replayContext
             )
             return .applied(rebuildHistoryFrom: nil)
 
@@ -46,7 +53,8 @@ enum ESheepCloudV2DomainAdapter {
                 sheepID: sheepID,
                 farmID: event.farmID,
                 updatedAt: event.occurredAt,
-                context: context
+                context: context,
+                replayContext: replayContext
             )
             return .applied(rebuildHistoryFrom: nil)
 
@@ -75,7 +83,8 @@ enum ESheepCloudV2DomainAdapter {
                 route: route,
                 event: event,
                 entityType: projectionEntityType(for: event.stream.type),
-                context: context
+                context: context,
+                domainApplyService: domainApplyService
             )
         }
     }
@@ -107,6 +116,8 @@ private extension ESheepCloudCommandPayloadV2 {
     var domainCommand: FarmCommand? {
         get throws {
             switch self {
+            case .historyRepair:
+                return nil // Dedicated, audited projection; never a normal V1 command.
             case .farm(let value):
                 guard case .updateLocation(
                     let displayName,

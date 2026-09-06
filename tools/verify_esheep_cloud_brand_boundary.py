@@ -12,6 +12,15 @@ ROOT = Path(__file__).resolve().parents[1]
 V2_ROOT = ROOT / "eSheepNext" / "Services" / "ESheepCloud"
 INFRASTRUCTURE = V2_ROOT / "Infrastructure"
 MIGRATION_READER = V2_ROOT / "ESheepCloudMigrationCoordinator.swift"
+# The approved resumable replay reuses the deterministic business writer, not
+# its V1 transport. Restrict the shared service type to the four replay owners;
+# envelopes, outbox, V1 revisions and sync coordinators remain forbidden there.
+SHARED_PROJECTION_OWNERS = {
+    V2_ROOT / name for name in (
+        "ESheepCloudCore.swift", "ESheepCloudEventReducer.swift",
+        "ESheepCloudInitialSyncCoordinator.swift", "ESheepCloudV2DomainAdapter.swift",
+    )
+}
 UI_FILES = (
     ROOT / "eSheepNext" / "Features" / "Account" / "ESheepCloudCenterView.swift",
     ROOT / "eSheepNext" / "Features" / "Collaboration" / "SupabaseFarmSharingView.swift",
@@ -65,8 +74,28 @@ def check_v1_runtime_boundary() -> int:
     for path in sorted(V2_ROOT.rglob("*.swift")):
         if path == MIGRATION_READER:
             continue
+        local_metadata_model = None
         for line_number, line in enumerate(path.read_text().splitlines(), 1):
+            # Checkpoint coverage explicitly classifies every old model as
+            # local-only. Permit only these declarative key-path lines; no
+            # V1 fetch, method call, or transfer adapter is exempted.
+            metadata_only = False
+            if path == V2_ROOT / "ESheepCloudCheckpointRegistry.swift":
+                opening = re.fullmatch(r"\s*ESheepCloudCheckpointModelAdapter\((\w+)\.self, disposition: \.localOnly, fields: \[", line)
+                if opening:
+                    local_metadata_model = opening[1]
+                    metadata_only = True
+                elif local_metadata_model:
+                    model = re.escape(local_metadata_model)
+                    metadata_only = bool(re.fullmatch(rf'\s*\.init\("\w+", \\{model}\.\w+\),', line) or
+                                         re.fullmatch(rf'\s*\], farmID: (nil|\\{model}\.farmID), recordID: \\{model}\.id\),', line))
+                    if not metadata_only or line.strip().startswith("],"):
+                        local_metadata_model = None
             for symbol in FORBIDDEN_V1_RUNTIME_SYMBOLS:
+                if metadata_only:
+                    continue
+                if symbol == "RemoteDomainApplyService" and path in SHARED_PROJECTION_OWNERS:
+                    continue
                 if re.search(rf"\b{re.escape(symbol)}\b", line):
                     report(
                         path,

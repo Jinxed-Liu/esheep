@@ -160,6 +160,8 @@ verify_static() {
   (cd "$repo_root" && git diff --check && git diff --cached --check)
   python3 "$repo_root/tools/check_product_emoji.py" "$repo_root/eSheepNext" "$repo_root/eSheepNextTests"
   python3 "$repo_root/tools/check_localizations.py"
+  python3 "$repo_root/tools/check_esheep_checkpoint_schema.py"
+  python3 "$repo_root/tools/check_esheep_history_consumers.py"
   python3 "$repo_root/tools/verify_esheep_cloud_brand_boundary.py"
   if [[ "${ALLOW_V2_INCOMPLETE:-0}" == "1" ]]; then
     python3 "$repo_root/tools/verify_esheep_cloud_v2_completeness.py" "$repo_root" --allow-incomplete

@@ -68,6 +68,7 @@ const response = (status: number, body: unknown): Response =>
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
+      "x-esheep-service-version": "integrated-v1",
     },
   });
 
@@ -356,10 +357,16 @@ Deno.serve(async (request) => {
     return response(200, result);
   } catch (error) {
     const code = error instanceof Error ? error.message : "write_verification_failed";
-    const status = code === "authentication_required" ? 401
-      : code.includes("signature") || code.includes("identity") ? 403
-      : code.startsWith("transaction_") ? 409
-      : 400;
-    return response(status, { error: code });
+    const category = code === "authentication_required" ? "authentication"
+      : code.includes("signature") || code.includes("identity") || code === "transaction_42501" ? "permission"
+      : code.startsWith("missing_") || code === "transaction_PGRST202" || code === "transaction_42883" ? "serviceUnavailable"
+      : /^transaction_(08|53|57|XX)/.test(code) || code === "transaction_40001" || code === "transaction_40P01" ? "server"
+      : code.startsWith("transaction_") ? "conflict" : "integrity";
+    const status = category === "authentication" ? 401 : category === "permission" ? 403
+      : category === "serviceUnavailable" || category === "server" ? 503
+      : category === "conflict" ? 409 : 400;
+    const trace_id = crypto.randomUUID();
+    console.error(JSON.stringify({ trace_id, category, code }));
+    return response(status, { error: code, category, trace_id });
   }
 });

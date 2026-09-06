@@ -2242,6 +2242,40 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertEqual(cloudLine.nutrientSnapshotJSON, #"{"crudeProtein":9,"dryMatter":88}"#)
     }
 
+    func testBaselineTreatsFeedWithMissingBatchAsHistorical() {
+        let staleBatchID = UUID()
+        let presentBatchID = UUID()
+
+        XCTAssertTrue(
+            FarmBaselineSnapshotService.shouldImportHistoricalFeed(
+                legacySourceKey: nil,
+                ingredientBatchIDs: [staleBatchID],
+                availableBatchIDs: []
+            )
+        )
+        XCTAssertTrue(
+            FarmBaselineSnapshotService.shouldImportHistoricalFeed(
+                legacySourceKey: nil,
+                ingredientBatchIDs: [nil],
+                availableBatchIDs: [presentBatchID]
+            )
+        )
+        XCTAssertFalse(
+            FarmBaselineSnapshotService.shouldImportHistoricalFeed(
+                legacySourceKey: nil,
+                ingredientBatchIDs: [presentBatchID],
+                availableBatchIDs: [presentBatchID]
+            )
+        )
+        XCTAssertTrue(
+            FarmBaselineSnapshotService.shouldImportHistoricalFeed(
+                legacySourceKey: "legacy-feed",
+                ingredientBatchIDs: [presentBatchID],
+                availableBatchIDs: [presentBatchID]
+            )
+        )
+    }
+
     private func configureSupabaseStorage(
         farmID: UUID,
         ownerAccountID: UUID,

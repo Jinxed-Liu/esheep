@@ -44,8 +44,19 @@ enum SheepAvatarSelectionStore {
         sheepID: UUID,
         farmID: UUID,
         updatedAt: Date = .now,
-        context: ModelContext
+        context: ModelContext,
+        replayContext: ESheepCloudProjectionReplayContext? = nil
     ) throws {
+        if let replayContext {
+            try replayContext.applyAvatarSelection(
+                update,
+                sheepID: sheepID,
+                farmID: farmID,
+                updatedAt: updatedAt,
+                context: context
+            )
+            return
+        }
         let selections = try context.fetch(FetchDescriptor<SheepAvatarRecord>(predicate: #Predicate {
             $0.sheepID == sheepID && $0.farmID == farmID
         }))

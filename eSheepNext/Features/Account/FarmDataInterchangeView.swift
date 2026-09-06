@@ -87,6 +87,7 @@ struct FarmDataInterchangeView: View {
     let farm: FarmRecord
 
     @State private var storageSnapshot: AppStorageSnapshot?
+    @State private var cloudLocalSpace: ESheepCloudLocalSpace?
     @State private var isClearingTemporaryData = false
     @State private var isCleaningRebuilds = false
     @State private var isReviewingRebuildCleanup = false
@@ -180,6 +181,9 @@ struct FarmDataInterchangeView: View {
             Section("设备存储") {
                 if let storageSnapshot {
                     LabeledContent("牧场资料", value: formatted(storageSnapshot.protectedDataBytes))
+                    Text("本机占用，包含业务库、照片和接收副本；不是云端下载大小。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     LabeledContent("导出与文档", value: formatted(storageSnapshot.documentBytes))
                     LabeledContent("临时文件", value: formatted(storageSnapshot.temporaryBytes))
                     LabeledContent("合计", value: formatted(storageSnapshot.totalBytes))
@@ -196,6 +200,16 @@ struct FarmDataInterchangeView: View {
                 Text("清理只会移除可重新生成的临时文件，不会删除牧场记录、照片、备份或等待保存的内容。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+
+            if let cloudLocalSpace {
+                Section("本机牧场资料构成") {
+                    LabeledContent("本机业务及同步数据", value: formatted(cloudLocalSpace.database.allocated))
+                    LabeledContent("可重建接收文件", value: formatted(cloudLocalSpace.receiving.allocated))
+                    LabeledContent("照片空间", value: formatted(cloudLocalSpace.photos.allocated))
+                    Text("业务库与接收文件按整个 App 统计，照片按当前牧场统计；此处显示实际磁盘占用，另有少量配置文件未单列。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
 
             #if DEBUG && ESHEEP_INTERNAL_ACCEPTANCE_UI
@@ -342,6 +356,12 @@ struct FarmDataInterchangeView: View {
         let updatedSnapshot = await AppStorageUsageService.shared.snapshot()
         if storageSnapshot != updatedSnapshot {
             storageSnapshot = updatedSnapshot
+        }
+        if storageMode == .eSheepCloud || storageMode == .supabase {
+            let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            let result = try? await ESheepCloudSpaceReader().load(
+                databaseURLs: modelContext.container.configurations.map(\.url), support: support, farmID: farm.id)
+            if cloudLocalSpace != result { cloudLocalSpace = result }
         }
         do {
             let updatedInventory = try LocalStorageInventoryService().inventory(

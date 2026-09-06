@@ -36,11 +36,37 @@ final class AppSchemaMigrationTests: XCTestCase {
     }
 
     func testVersionedSchemaContainsEveryCurrentModel() {
-        let versioned = Schema(versionedSchema: AppSchemaV12.self)
+        let historicalV12 = Schema(versionedSchema: AppSchemaV12.self)
+        let versioned = Schema(versionedSchema: AppSchemaV14.self)
         let current = AppSchema.makeSchema()
 
-        XCTAssertEqual(AppSchema.currentVersion, "12.0.0")
+        XCTAssertEqual(AppSchema.currentVersion, "14.0.0")
         XCTAssertEqual(versioned.entities.map(\.name).sorted(), current.entities.map(\.name).sorted())
+        XCTAssertTrue(
+            Set(historicalV12.entities.map(\.name)).isSuperset(
+                of: Set([
+                    "InsightConversationRecord",
+                    "InsightMessageRecord",
+                    "InsightAttachmentRecord",
+                    "InsightActionDraftRecord",
+                    "InsightExecutionReceiptRecord",
+                    "InsightSyncStateRecord",
+                ])
+            )
+        )
+        XCTAssertTrue(historicalV12.entities.map(\.name).contains("ESheepCloudInitialSyncSession"))
+        XCTAssertFalse(
+            historicalV12.entities
+                .first(where: { $0.name == "ESheepCloudInitialSyncSession" })?
+                .attributes
+                .contains(where: { $0.name == "accountID" }) ?? false
+        )
+        XCTAssertTrue(
+            versioned.entities
+                .first(where: { $0.name == "ESheepCloudInitialSyncSession" })?
+                .attributes
+                .contains(where: { $0.name == "accountID" }) ?? false
+        )
         XCTAssertEqual(
             AppSchemaMigrationPlan.schemas.map { Schema(versionedSchema: $0).version },
             [
@@ -57,9 +83,57 @@ final class AppSchemaMigrationTests: XCTestCase {
                 Schema.Version(10, 0, 0),
                 Schema.Version(11, 0, 0),
                 Schema.Version(12, 0, 0),
+                Schema.Version(13, 0, 0),
+                Schema.Version(14, 0, 0),
             ]
         )
-        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 12)
+        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 14)
+    }
+
+    func testV13ToV14PreservesOriginalPendingCommandAndIdentity() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "V14Queue-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "queue.store")
+        let commandID = UUID(), accountID = UUID(), deviceID = UUID(), farmID = UUID(), prerequisiteID = UUID()
+        let originalBytes = Data("immutable signed command bytes".utf8)
+        let dependencies = try ESheepCloudCanonicalCodec.encode([prerequisiteID])
+        let retry = Date(timeIntervalSince1970: 1_800_000_000)
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV13.self)
+            XCTAssertFalse(schema.entities.contains { $0.name == "ESheepCloudCheckpointState" })
+            let config = ModelConfiguration("queue", schema: schema, url: url, cloudKitDatabase: .none)
+            let old = try ModelContainer(for: schema, configurations: [config])
+            let context = ModelContext(old)
+            let intent = ESheepCloudPendingIntent(commandID: commandID, farmID: farmID, farmGeneration: 3,
+                accountID: accountID, deviceID: deviceID, deviceSequence: 87, sourceRequestID: UUID(),
+                commandKind: "record.revoke", commandEnvelopeData: originalBytes,
+                commandDigest: String(repeating: "a", count: 64), affectedStreamsData: Data("[]".utf8),
+                affectedFieldsData: Data("[]".utf8), prerequisiteCommandIDsData: dependencies,
+                requiredAssetIDsData: Data("[]".utf8), lifecycle: .awaitingResult,
+                createdAt: retry, occurredAt: retry)
+            intent.attemptCount = 12
+            intent.nextRetryAt = retry
+            intent.lastTransportMessage = "404"
+            context.insert(intent)
+            try context.save()
+        }
+        let migrated = try AppSchema.makeContainer(name: "queue", url: url)
+        let context = ModelContext(migrated)
+        let rows = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(row.id, commandID)
+        XCTAssertEqual(row.accountID, accountID)
+        XCTAssertEqual(row.deviceID, deviceID)
+        XCTAssertEqual(row.deviceSequence, 87)
+        XCTAssertEqual(row.commandEnvelopeData, originalBytes)
+        XCTAssertEqual(row.prerequisiteCommandIDsData, dependencies)
+        XCTAssertEqual(row.lifecycle, .awaitingResult)
+        XCTAssertEqual(row.nextRetryAt, retry)
+        XCTAssertEqual(row.attemptCount, 12)
+        XCTAssertEqual(row.lastTransportMessage, "404")
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<ESheepCloudCheckpointState>()), 0)
     }
 
     func testV11DoesNotAbsorbESheepCloudV2LedgerModels() {
@@ -78,6 +152,57 @@ final class AppSchemaMigrationTests: XCTestCase {
 
         XCTAssertTrue(v11Names.isDisjoint(with: v2Names))
         XCTAssertTrue(v2Names.isSubset(of: v12Names))
+    }
+
+    func testInstalledV12InitialSyncSessionLightweightMigratesToV13ProgressFields() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "AppSchemaV12InitialSync-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "V12.store")
+        let farmID = UUID()
+
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV12.self)
+            let configuration = ModelConfiguration(
+                "V12InitialSync",
+                schema: schema,
+                url: storeURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+            let session = AppSchemaV12.ESheepCloudInitialSyncSession(
+                farmID: farmID,
+                farmGeneration: 2,
+                stagingGeneration: 2,
+                stagingStoreRelativePath: "ESheepCloud/Staging/v12/verification.store"
+            )
+            session.snapshotID = UUID()
+            session.boundaryEventSequence = 2_546
+            session.targetEventHead = 34_842
+            session.stateRawValue = "verifying"
+            session.receivedByteCount = 73_098_932
+            session.expectedByteCount = 73_098_932
+            context.insert(session)
+            try context.save()
+        }
+
+        let migrated = try AppSchema.makeContainer(name: "V12InitialSync", url: storeURL)
+        let context = ModelContext(migrated)
+        let session = try XCTUnwrap(
+            try context.fetch(FetchDescriptor<ESheepCloudInitialSyncSession>())
+                .first(where: { $0.farmID == farmID })
+        )
+        XCTAssertEqual(session.state, .verifying)
+        XCTAssertEqual(session.boundaryEventSequence, 2_546)
+        XCTAssertEqual(session.targetEventHead, 34_842)
+        XCTAssertEqual(session.receivedByteCount, 73_098_932)
+        XCTAssertNil(session.accountID)
+        XCTAssertEqual(session.verifiedProjectionEventSequence, 0)
+        XCTAssertEqual(session.activationProjectionEventSequence, 0)
+        XCTAssertNil(session.lastProgressAt)
     }
 
     func testV10RecipesBecomeReviewableTMRProfilesWithoutInventingHistoricalBatchesOrPlans() throws {

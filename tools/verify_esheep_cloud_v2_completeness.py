@@ -176,6 +176,7 @@ def make_report(root: Path) -> dict[str, object]:
     test_path = root / "eSheepNextTests/ESheepCloudV2Tests.swift"
 
     sql = migration_path.read_text(encoding="utf-8")
+    repair_sql = (root / "supabase/migrations/20260905043413_esheep_cloud_owner_history_repair.sql").read_text(encoding="utf-8")
     contracts = contracts_path.read_text(encoding="utf-8")
     factory = factory_path.read_text(encoding="utf-8")
     reducer = reducer_path.read_text(encoding="utf-8")
@@ -185,9 +186,22 @@ def make_report(root: Path) -> dict[str, object]:
     tests = test_path.read_text(encoding="utf-8")
 
     catalog = extract_catalog(sql)
+    repair_kinds = set(re.findall(r"\('([^']+)'\s*,\s*'append_fact'\s*,\s*array\['owner'\]", repair_sql))
+    catalog = sorted(set(catalog) | repair_kinds)
     registry_kinds = extract_registry_kinds(registry)
     registry_native_routes = extract_registry_native_routes(registry)
     server_dispatch_kinds = extract_server_dispatch_kinds(sql)
+    # The additive migration extends installed functions by checked, exact
+    # replacement. Require explicit dispatcher arms AND approval enforcement;
+    # catalogue insertion alone must not mark an extension implemented.
+    if all(marker in repair_sql for marker in (
+        "esheep_cloud.dispatch_command_v2(text,jsonb,text,jsonb)",
+        "execute replace(d,before_text,after_text)",
+        "approval.content_digest=v_digest", "approval.expected_event_head=v_farm_state.event_head",
+        "v_role <> 'owner'", "esheep_cloud_history_repair_not_approved"
+    )):
+        server_dispatch_kinds.update(kind for kind in repair_kinds
+            if f"when ''{kind}'' then ''{kind}''" in repair_sql)
     # Implementation readiness is executable capability, not catalogue data.
     # The server set is taken from the explicit dispatcher; the client set is
     # taken from the product-target native projection registry below.
@@ -206,7 +220,7 @@ def make_report(root: Path) -> dict[str, object]:
     registry_tested = (
         "testV2CommandRegistryIsExhaustiveAndEveryKindHasTypedRoute" in tests
         and "ESheepCloudCommandRegistryV2.allKinds" in tests
-        and registry_kinds == sorted(catalog)
+        and sorted(registry_kinds) == sorted(catalog)
     )
     if registry_tested:
         test_kinds.update(registry_kinds)
@@ -225,6 +239,11 @@ def make_report(root: Path) -> dict[str, object]:
         # resolver path is implemented by ESheepCloudCore instead of the
         # business command factory.
         factory = (
+            kind in repair_kinds
+            # Restricted repair uses its reviewed offline producer, not FarmCommand.
+            and "approvedCurrentProjection" in (root / "tools/build_esheep_cloud_v2_baseline_repair.py").read_text()
+            and kind in payload_kinds
+        ) or (
             kind == "attention.resolve"
             and "resolveAttention" in core
         ) or (
@@ -242,7 +261,7 @@ def make_report(root: Path) -> dict[str, object]:
         client = kind in client_ready
         client_native_route = kind in registry_native_routes
         migration = (
-            kind == "attention.resolve"
+            kind in repair_kinds or kind == "attention.resolve"
             or (
                 "prepareV1Migration" in migration_text
                 and "convertAfterSnapshot" in migration_text

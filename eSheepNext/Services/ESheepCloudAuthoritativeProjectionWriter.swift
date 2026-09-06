@@ -16,12 +16,14 @@ enum ESheepCloudAuthoritativeProjectionWriter {
         route: String,
         event: ESheepCloudEventEnvelopeV2,
         entityType: String,
-        context: ModelContext
+        context: ModelContext,
+        domainApplyService: RemoteDomainApplyService? = nil
     ) throws -> RemoteApplyOutcome {
         guard !route.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ESheepCloudProjectionError.unsupportedEvent
         }
-        return try RemoteDomainApplyService().applyV2AuthoritativeCommand(
+        let service = domainApplyService ?? RemoteDomainApplyService()
+        return try service.applyV2AuthoritativeCommand(
             command,
             event: event,
             entityType: entityType,

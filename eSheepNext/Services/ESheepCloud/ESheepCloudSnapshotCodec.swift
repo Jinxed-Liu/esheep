@@ -282,7 +282,8 @@ private struct EventWire: Decodable {
             sourceDeviceSequence: sourceDeviceSequence,
             occurredAt: Date(timeIntervalSince1970: Double(occurredAtMillis) / 1_000),
             receivedAt: Date(timeIntervalSince1970: Double(receivedAtMillis) / 1_000),
-            eventDigest: eventDigest
+            eventDigest: eventDigest,
+            eventBodyCanonical: eventBodyCanonical
         )
         try value.validateDigest()
         return value

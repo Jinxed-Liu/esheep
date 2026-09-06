@@ -468,6 +468,74 @@ enum AppSchemaV11: VersionedSchema {
 
 enum AppSchemaV12: VersionedSchema {
     static let versionIdentifier = Schema.Version(12, 0, 0)
+
+    /// Freeze the V12 initial-sync session shape. The live model gains
+    /// account-scoped and projection-progress fields in V13; referring to the
+    /// live type here would change the historical V12 schema hash and make an
+    /// installed Build 16 store impossible to recognise during migration.
+    @Model
+    final class ESheepCloudInitialSyncSession {
+        var id: UUID
+        var farmID: UUID
+        var farmGeneration: Int
+        var stagingGeneration: Int
+        var snapshotID: UUID?
+        var boundaryEventSequence: Int64
+        var targetEventHead: Int64
+        var manifestData: Data?
+        var manifestDigest: String
+        var verifiedChunkIndexesData: Data
+        var receivedByteCount: Int64
+        var expectedByteCount: Int64
+        var stateRawValue: String
+        var stagingStoreRelativePath: String
+        var retryCount: Int
+        var lastErrorTraceID: String?
+        var startedAt: Date
+        var updatedAt: Date
+        var activatedAt: Date?
+
+        init(
+            id: UUID = UUID(),
+            farmID: UUID,
+            farmGeneration: Int,
+            stagingGeneration: Int,
+            stagingStoreRelativePath: String
+        ) {
+            self.id = id
+            self.farmID = farmID
+            self.farmGeneration = farmGeneration
+            self.stagingGeneration = stagingGeneration
+            self.snapshotID = nil
+            self.boundaryEventSequence = 0
+            self.targetEventHead = 0
+            self.manifestData = nil
+            self.manifestDigest = ""
+            self.verifiedChunkIndexesData = Data("[]".utf8)
+            self.receivedByteCount = 0
+            self.expectedByteCount = 0
+            self.stateRawValue = "connecting"
+            self.stagingStoreRelativePath = stagingStoreRelativePath
+            self.retryCount = 0
+            self.lastErrorTraceID = nil
+            self.startedAt = .now
+            self.updatedAt = .now
+            self.activatedAt = nil
+        }
+    }
+
+    static var models: [any PersistentModel.Type] {
+        AppSchema.v12ModelTypes
+    }
+}
+
+enum AppSchemaV13: VersionedSchema {
+    static let versionIdentifier = Schema.Version(13, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.v13ModelTypes }
+}
+
+enum AppSchemaV14: VersionedSchema {
+    static let versionIdentifier = Schema.Version(14, 0, 0)
     static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
 }
 
@@ -487,6 +555,8 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             AppSchemaV10.self,
             AppSchemaV11.self,
             AppSchemaV12.self,
+            AppSchemaV13.self,
+            AppSchemaV14.self,
         ]
     }
 
@@ -620,12 +690,18 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             // deliberately preserved unchanged as migration/audit input; a
             // farm switches authority only after server-side parity succeeds.
             .lightweight(fromVersion: AppSchemaV11.self, toVersion: AppSchemaV12.self),
+            // V13 adds account scoping and durable projection checkpoints to
+            // an existing initial-sync session. All new fields are optional or
+            // have a scalar default, so an installed Build 16 store can be
+            // upgraded without replaying business data.
+            .lightweight(fromVersion: AppSchemaV12.self, toVersion: AppSchemaV13.self),
+            .lightweight(fromVersion: AppSchemaV13.self, toVersion: AppSchemaV14.self),
         ]
     }
 }
 
 enum AppSchema {
-    static let currentVersion = "12.0.0"
+    static let currentVersion = "14.0.0"
 
     static func defaultStoreURL(name: String = "eSheepNext") -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -732,8 +808,29 @@ enum AppSchema {
         ]
     }
 
+    fileprivate static var v12ESheepCloudV2ModelTypes: [any PersistentModel.Type] {
+        [
+            ESheepCloudFarmState.self,
+            ESheepCloudStreamState.self,
+            ESheepCloudPendingIntent.self,
+            ESheepCloudEventReceipt.self,
+            ESheepCloudAttentionItem.self,
+            ESheepCloudAssetState.self,
+            AppSchemaV12.ESheepCloudInitialSyncSession.self,
+            ESheepCloudMigrationState.self,
+        ]
+    }
+
     static var businessModelTypes: [any PersistentModel.Type] {
         preV12BusinessModelTypes + eSheepCloudV2ModelTypes
+    }
+
+    fileprivate static var v12ModelTypes: [any PersistentModel.Type] {
+        // V12 shipped the same insight records as the current schema. Keep
+        // them in the historical model set so an installed Build 16 store is
+        // recognised as V12 instead of looking like it lost six entities
+        // during the V12 -> V13 session-field migration.
+        preV12BusinessModelTypes + v12ESheepCloudV2ModelTypes + insightModelTypes
     }
 
     /// V10 was the last schema before TMR. Historical schemas must derive from
@@ -924,8 +1021,12 @@ enum AppSchema {
         ]
     }
 
-    static var modelTypes: [any PersistentModel.Type] {
+    fileprivate static var v13ModelTypes: [any PersistentModel.Type] {
         businessModelTypes + insightModelTypes
+    }
+
+    static var modelTypes: [any PersistentModel.Type] {
+        v13ModelTypes + [ESheepCloudCheckpointState.self]
     }
 
     fileprivate static var preV4ModelTypes: [any PersistentModel.Type] {
@@ -969,7 +1070,7 @@ enum AppSchema {
     }
 
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV12.self)
+        Schema(versionedSchema: AppSchemaV14.self)
     }
 
     static func makeConfiguration(

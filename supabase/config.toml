@@ -395,6 +395,11 @@ verify_jwt = false
 entrypoint = "./functions/esheep-cloud-v2-writes/index.ts"
 verify_jwt = false
 
+[functions.esheep-cloud-checkpoints]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/esheep-cloud-checkpoints/index.ts"
+
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 

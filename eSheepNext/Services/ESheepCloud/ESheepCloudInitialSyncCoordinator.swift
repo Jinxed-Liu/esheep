@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Observation
+import SQLite3
 import SwiftData
 
 struct ESheepCloudFarmSeedV2: Sendable, Equatable {
@@ -77,14 +78,23 @@ enum ESheepCloudInitialSyncError: LocalizedError {
     case countMismatch(String)
     case streamMismatch(String)
     case eventBoundaryMismatch
+    /// The persisted verifier prefix (receipts, event sequence, or digest)
+    /// disagrees with the immutable snapshot prefix. This is distinct from a
+    /// business projection error raised while applying a new event: only this
+    /// case is allowed to quarantine the existing verification store.
+    case existingVerificationCheckpointMismatch
     case associationMismatch(String)
+    case verificationStoreIntegrity(String)
     case existingFarmRequiresMigration
     case farmGenerationChanged
+    case accountMismatch
 
     var errorDescription: String? {
         switch self {
         case .manifestMismatch, .chunkDigestMismatch, .streamMismatch,
-             .eventBoundaryMismatch, .countMismatch, .associationMismatch:
+             .eventBoundaryMismatch, .existingVerificationCheckpointMismatch,
+             .countMismatch, .associationMismatch,
+             .verificationStoreIntegrity:
             "部分牧场资料没有接收完整。"
         case .insufficientSpace(let bytes):
             "本机空间不足，至少还需要 \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))。"
@@ -94,6 +104,8 @@ enum ESheepCloudInitialSyncError: LocalizedError {
             "这座牧场已有本机资料，需要先完成安全迁移，不能按新安装方式覆盖。"
         case .farmGenerationChanged:
             "牧场云端身份已经更新，需要重新接收完整资料。"
+        case .accountMismatch:
+            "当前登录账号与这次牧场资料接收不一致，已停止继续写入。"
         }
     }
 }
@@ -107,11 +119,12 @@ struct ESheepCloudInitialSyncReport: Sendable, Equatable {
     let receivedByteCount: Int64
 }
 
-/// Downloads immutable chunks off the main actor, verifies an isolated V12
+/// Downloads immutable chunks off the main actor, verifies an isolated V13
 /// store, catches up from the snapshot boundary, then commits the same
 /// verified event sequence to the active store in one ModelContext save.
 actor ESheepCloudInitialSyncCoordinator {
     private let farmID: UUID
+    private let checkpointContainer: ModelContainer
     private let gateway: any ESheepCloudGateway
     private let localStore: ESheepCloudInitialSyncLocalStore
     private let fileManager: FileManager
@@ -125,19 +138,46 @@ actor ESheepCloudInitialSyncCoordinator {
         applicationSupportURL: URL? = nil
     ) {
         self.farmID = farmID
+        self.checkpointContainer = container
         self.gateway = gateway
         self.fileManager = fileManager
         self.applicationSupportURL = applicationSupportURL ?? fileManager.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0]
-        self.localStore = ESheepCloudInitialSyncLocalStore(container: container)
+        self.localStore = ESheepCloudInitialSyncLocalStore(
+            container: container,
+            fileManager: self.fileManager,
+            applicationSupportURL: self.applicationSupportURL
+        )
     }
 
     func prepareNewInstallation(
-        expectedFarmGeneration: Int? = nil
+        expectedFarmGeneration: Int? = nil,
+        expectedAccountID: UUID? = nil
     ) async throws -> ESheepCloudInitialSyncReport {
+        try await prepareInstallation(expectedFarmGeneration: expectedFarmGeneration,
+            expectedAccountID: expectedAccountID, preferCheckpoint: true)
+    }
+
+    private func resumableCheckpointID(accountID: UUID, generation: Int) throws -> UUID? {
+        let context = ModelContext(checkpointContainer)
+        let id = farmID
+        let rows = try context.fetch(FetchDescriptor<ESheepCloudInitialSyncSession>(predicate: #Predicate {
+            $0.farmID == id && $0.accountID == accountID && $0.farmGeneration == generation
+        }))
+        return rows.filter { $0.state != .active && $0.stagingStoreRelativePath.hasPrefix("ESheepCloud/Checkpoints/") }
+            .sorted { ($0.lastProgressAt ?? $0.startedAt) > ($1.lastProgressAt ?? $1.startedAt) }.first?.snapshotID
+    }
+
+    private func prepareLegacyInstallation(expectedFarmGeneration: Int?, expectedAccountID: UUID?) async throws -> ESheepCloudInitialSyncReport {
+        try await prepareInstallation(expectedFarmGeneration: expectedFarmGeneration,
+            expectedAccountID: expectedAccountID, preferCheckpoint: false)
+    }
+
+    private func prepareInstallation(expectedFarmGeneration: Int?, expectedAccountID: UUID?, preferCheckpoint: Bool) async throws -> ESheepCloudInitialSyncReport {
         var sessionID: UUID?
+        var verificationStoreTrusted = false
         do {
             let ticket = try await gateway.openInitialSync(
                 farmID: farmID,
@@ -193,13 +233,52 @@ actor ESheepCloudInitialSyncCoordinator {
                       manifest.businessHistoryStartedAt! <= manifest.businessHistoryEndedAt! else {
                 throw ESheepCloudInitialSyncError.manifestMismatch
             }
+            if let expectedFarmGeneration,
+               manifest.farmGeneration != expectedFarmGeneration {
+                throw ESheepCloudInitialSyncError.farmGenerationChanged
+            }
+            if let expectedAccountID,
+               ticket.memberAccountID != expectedAccountID {
+                throw ESheepCloudInitialSyncError.accountMismatch
+            }
+
+            // A stale retry can arrive after activation. Current admission was
+            // checked above; return the durable result without importing again.
+            let completedContext = ModelContext(checkpointContainer)
+            completedContext.autosaveEnabled = false
+            if let completed = try ESheepCloudCompletedCheckpointReceive.reconcile(
+                farmID: farmID, generation: manifest.farmGeneration,
+                accountID: seed.memberAccountID, context: completedContext) {
+                try completedContext.save()
+                return completed
+            }
+
+            if preferCheckpoint, let transport = gateway as? any ESheepCloudCheckpointGateway {
+                let checkpointTicket: ESheepCloudCheckpointTicket
+                do {
+                    checkpointTicket = try await transport.openCheckpoint(farmID: farmID,
+                        farmGeneration: manifest.farmGeneration, checkpointID: try resumableCheckpointID(accountID: seed.memberAccountID, generation: manifest.farmGeneration))
+                } catch ESheepCloudCheckpointError.unsupportedVersion {
+                    // An explicitly unsupported format may use the legacy
+                    // protocol. Integrity/authorization errors never do.
+                    return try await prepareLegacyInstallation(expectedFarmGeneration: expectedFarmGeneration,
+                                                               expectedAccountID: expectedAccountID)
+                }
+                if checkpointTicket.manifest != nil {
+                    return try await ESheepCloudCheckpointReceiver(container: checkpointContainer,
+                        support: applicationSupportURL, gateway: gateway, transport: transport)
+                        .receive(ticket: checkpointTicket, seed: seed)
+                }
+            }
 
             let session = try localStore.beginOrResume(
                 manifest: manifest,
                 stagingStoreRelativePath: relativeStagingStorePath(
                     farmID: farmID,
-                    snapshotID: manifest.snapshotID
-                )
+                    snapshotID: manifest.snapshotID,
+                    accountID: seed.memberAccountID
+                ),
+                accountID: seed.memberAccountID
             )
             sessionID = session.id
             let stagingRoot = applicationSupportURL.appending(
@@ -218,7 +297,11 @@ actor ESheepCloudInitialSyncCoordinator {
             )
             try verifyWholeSnapshot(manifest: manifest, stagingRoot: stagingRoot)
 
-            try localStore.updateSession(sessionID: session.id, state: .verifying)
+            try localStore.updateProjectionProgress(
+                sessionID: session.id,
+                state: .verifying,
+                activationProjectionEventSequence: 0
+            )
             let verificationURL = stagingRoot.appending(path: "verification.store")
             var recentEvents: [ESheepCloudEventEnvelopeV2] = []
             let verifiedSummary: ESheepCloudVerifiedProjectionSummary
@@ -227,27 +310,132 @@ actor ESheepCloudInitialSyncCoordinator {
             // alive; releasing it before the activation copy or a failed
             // staging cleanup prevents deleting an open store file.
             do {
+                let previousStateAllowsResume = [
+                    ESheepCloudInitialSyncState.verifying,
+                    .applyingRecentChanges,
+                    .buildingIndexes,
+                    .readyToActivate,
+                    .activating,
+                    .failed,
+                    .paused,
+                ].contains(session.previousState)
+                let hasExistingVerificationFiles = LocalStoreRecoveryService
+                    .relatedStoreURLs(for: verificationURL)
+                    .contains { fileManager.fileExists(atPath: $0.path) }
+                if previousStateAllowsResume {
+                    try validateExistingVerificationStore(at: verificationURL)
+                }
+                // A resumable session row may outlive a verifier directory
+                // (for example after an interrupted restore or manual file
+                // recovery). Rebuild from the immutable chunks in that case;
+                // never compare a stale V13 checkpoint with a newly-created
+                // empty store and strand the session in `.failed` forever.
+                let canResumeProjection = previousStateAllowsResume &&
+                    hasExistingVerificationFiles
+                if previousStateAllowsResume && !hasExistingVerificationFiles &&
+                    (session.verifiedProjectionEventSequence > 0 ||
+                        session.activationProjectionEventSequence > 0) {
+                    try localStore.updateProjectionProgress(
+                        sessionID: session.id,
+                        state: .verifying,
+                        verifiedProjectionEventSequence: 0,
+                        activationProjectionEventSequence: 0
+                    )
+                }
                 let projection = try ESheepCloudStagingProjection(
                     seed: seed,
                     farmGeneration: manifest.farmGeneration,
-                    storeURL: verificationURL
+                    storeURL: verificationURL,
+                    resumeExistingStore: canResumeProjection
                 )
+                let existingProjectionSequence = canResumeProjection
+                    ? try projection.lastAppliedEventSequence()
+                    : 0
+                let existingProjectionDigest = canResumeProjection
+                    ? try projection.currentProjectionDigest()
+                    : nil
+                // A durable V13 checkpoint and the verifier's farm state must
+                // describe the same prefix. A migrated Build 16 session has
+                // zero in the new field by design, so enforce this invariant
+                // only once a V13 checkpoint has actually been persisted.
+                if canResumeProjection,
+                   session.verifiedProjectionEventSequence > 0,
+                   session.verifiedProjectionEventSequence != existingProjectionSequence {
+                    throw ESheepCloudInitialSyncError.existingVerificationCheckpointMismatch
+                }
+                if canResumeProjection {
+                    // Build 16 did not persist the V13 projection sequence.
+                    // Recover the durable SQLite checkpoint before replaying
+                    // the next record so a later business error is reported
+                    // at the real prefix (for example 2,546), never as 0.
+                    try localStore.updateProjectionProgress(
+                        sessionID: session.id,
+                        state: .verifying,
+                        verifiedProjectionEventSequence: existingProjectionSequence,
+                        activationProjectionEventSequence: 0
+                    )
+                }
+                let resumeWithoutSnapshotReplay = canResumeProjection &&
+                    existingProjectionSequence >= manifest.boundaryEventSequence
                 for descriptor in manifest.chunks.sorted(by: { $0.index < $1.index }) {
+                    try Task.checkCancellation()
                     let records = try decodeChunk(
                         descriptor: descriptor,
                         manifest: manifest,
                         stagingRoot: stagingRoot
                     )
-                    try projection.applySnapshotRecords(records)
+                    if resumeWithoutSnapshotReplay {
+                        // A ready-to-activate/activating verifier already has
+                        // the snapshot prefix applied. Re-read immutable
+                        // records only to rebuild expected stream/asset
+                        // metadata and validate receipts; never run the
+                        // business reducer over the same prefix again.
+                        try projection.inspectSnapshotRecords(
+                            records,
+                            validatingReceiptsThrough: manifest.boundaryEventSequence
+                        )
+                    } else {
+                        try projection.applySnapshotRecords(
+                            records,
+                            skippingEventsThrough: existingProjectionSequence
+                        )
+                    }
+                    try localStore.updateProjectionProgress(
+                        sessionID: session.id,
+                        state: .verifying,
+                        verifiedProjectionEventSequence: try projection.lastAppliedEventSequence()
+                    )
                 }
-                try projection.verifySnapshotBoundary(manifest)
+                if resumeWithoutSnapshotReplay {
+                    try projection.verifySnapshotBoundary(
+                        manifest,
+                        stateMustBeAtBoundary: existingProjectionSequence ==
+                            manifest.boundaryEventSequence
+                    )
+                } else {
+                    if canResumeProjection {
+                        // The replay has advanced the farm state beyond a
+                        // partial checkpoint by this point. Validate the
+                        // checkpoint against the digest captured before
+                        // replay, rather than incorrectly requiring the
+                        // post-replay farm state to still be at that prefix.
+                        try projection.validateExistingProjectionPrefix(
+                            through: existingProjectionSequence,
+                            persistedProjectionDigest: existingProjectionDigest
+                        )
+                    }
+                    try projection.verifySnapshotBoundary(manifest)
+                }
 
-                try localStore.updateSession(
+                try localStore.updateProjectionProgress(
                     sessionID: session.id,
-                    state: .applyingRecentChanges
+                    state: .applyingRecentChanges,
+                    verifiedProjectionEventSequence: try projection.lastAppliedEventSequence()
                 )
                 var after = manifest.boundaryEventSequence
+                var verifierAlreadyThrough = existingProjectionSequence
                 while true {
+                    try Task.checkCancellation()
                     let page = try await gateway.pullEvents(
                         farmID: farmID,
                         farmGeneration: manifest.farmGeneration,
@@ -258,9 +446,32 @@ actor ESheepCloudInitialSyncCoordinator {
                         throw ESheepCloudInitialSyncError.eventBoundaryMismatch
                     }
                     if !page.events.isEmpty {
-                        try projection.applyRecentEvents(page.events)
+                        var unapplied: [ESheepCloudEventEnvelopeV2] = []
+                        for event in page.events {
+                            if event.eventSequence <= verifierAlreadyThrough {
+                                // A verifier that was interrupted after the
+                                // snapshot boundary may already contain a
+                                // tail of recent events. Validate that tail
+                                // against the immutable event page before
+                                // skipping it; otherwise a damaged receipt
+                                // chain could be mistaken for a checkpoint.
+                                try projection.validateExistingEvent(event)
+                            } else {
+                                unapplied.append(event)
+                            }
+                        }
+                        if !unapplied.isEmpty {
+                            try projection.applyRecentEvents(unapplied)
+                            verifierAlreadyThrough = try projection.lastAppliedEventSequence()
+                        }
                         recentEvents.append(contentsOf: page.events)
                         after = page.events.last!.eventSequence
+                        try localStore.updateProjectionProgress(
+                            sessionID: session.id,
+                            state: .applyingRecentChanges,
+                            verifiedProjectionEventSequence: try projection.lastAppliedEventSequence(),
+                            targetEventHead: page.cloudHead
+                        )
                     }
                     if !page.hasMore {
                         guard after == page.cloudHead else {
@@ -273,23 +484,61 @@ actor ESheepCloudInitialSyncCoordinator {
                     }
                 }
 
-                try localStore.updateSession(sessionID: session.id, state: .buildingIndexes)
+                if canResumeProjection,
+                   existingProjectionSequence > manifest.boundaryEventSequence {
+                    // Validation walks only the durable prefix that existed
+                    // before this attempt.  Any tail applied after that
+                    // checkpoint is new work and must not be compared with
+                    // the persisted prefix digest after the replay advances.
+                    try projection.validateExistingProjectionPrefix(
+                        through: existingProjectionSequence,
+                        persistedProjectionDigest: existingProjectionDigest
+                    )
+                }
+
+                try localStore.updateProjectionProgress(
+                    sessionID: session.id,
+                    state: .buildingIndexes,
+                    verifiedProjectionEventSequence: try projection.lastAppliedEventSequence()
+                )
                 verifiedSummary = try projection.finishVerification()
+                try localStore.updateProjectionProgress(
+                    sessionID: session.id,
+                    state: .readyToActivate,
+                    verifiedProjectionEventSequence: verifiedSummary.eventHead
+                )
+                verificationStoreTrusted = true
             }
+            try localStore.updateProjectionProgress(
+                sessionID: session.id,
+                state: .activating,
+                activationProjectionEventSequence: 0
+            )
             let activation = try localStore.beginNewFarmActivation(
                 seed: seed,
                 farmGeneration: manifest.farmGeneration
             )
             do {
                 for descriptor in manifest.chunks.sorted(by: { $0.index < $1.index }) {
+                    try Task.checkCancellation()
                     let records = try decodeChunk(
                         descriptor: descriptor,
                         manifest: manifest,
                         stagingRoot: stagingRoot
                     )
                     try activation.applySnapshotRecords(records)
+                    try localStore.updateProjectionProgress(
+                        sessionID: session.id,
+                        state: .activating,
+                        activationProjectionEventSequence: try activation.lastAppliedEventSequence()
+                    )
                 }
                 try activation.applyRecentEvents(recentEvents)
+                try localStore.updateProjectionProgress(
+                    sessionID: session.id,
+                    state: .activating,
+                    activationProjectionEventSequence: try activation.lastAppliedEventSequence()
+                )
                 try activation.commit(
                     ifMatching: verifiedSummary,
                     sessionID: session.id
@@ -311,10 +560,44 @@ actor ESheepCloudInitialSyncCoordinator {
                 if shouldPauseInitialSync(for: error) {
                     try? localStore.markPaused(sessionID: sessionID)
                 } else {
+                    if !verificationStoreTrusted &&
+                        Self.shouldQuarantineVerificationStore(for: error) {
+                        try? localStore.quarantineVerificationStore(
+                            sessionID: sessionID
+                        )
+                    }
                     try? localStore.markFailed(sessionID: sessionID)
                 }
             }
             throw error
+        }
+    }
+
+    /// A business reducer failure must leave the last durable verifier
+    /// checkpoint in place so the UI can identify where replay stopped and a
+    /// later fixed client can resume from that prefix. Quarantine is reserved
+    /// for evidence that the SQLite/WAL/SHM set or the persisted receipt
+    /// prefix itself is corrupt.
+    static func shouldQuarantineVerificationStore(for error: Error) -> Bool {
+        guard let syncError = error as? ESheepCloudInitialSyncError else {
+            return false
+        }
+        switch syncError {
+        case .verificationStoreIntegrity,
+             .existingVerificationCheckpointMismatch:
+            return true
+        case .manifestMismatch,
+             .insufficientSpace,
+             .chunkMissing,
+             .chunkDigestMismatch,
+             .countMismatch,
+             .streamMismatch,
+             .eventBoundaryMismatch,
+             .associationMismatch,
+             .existingFarmRequiresMigration,
+             .farmGenerationChanged,
+             .accountMismatch:
+            return false
         }
     }
 
@@ -330,6 +613,83 @@ actor ESheepCloudInitialSyncCoordinator {
         }
         let nsError = error as NSError
         return nsError.domain == NSURLErrorDomain
+    }
+
+    /// SwiftData will normally open a healthy verifier for us, but an
+    /// interrupted process can leave a malformed SQLite/WAL/SHM trio that
+    /// fails only after replay has started. Validate the existing store before
+    /// touching it so the catch path can quarantine the trio and reuse every
+    /// already verified immutable chunk. The read-only pragma is applied after
+    /// opening read-write, which lets SQLite coordinate an active WAL safely.
+    private func validateExistingVerificationStore(at url: URL) throws {
+        let relatedURLs = LocalStoreRecoveryService.relatedStoreURLs(for: url)
+        let existingRelatedURLs = relatedURLs.filter {
+            fileManager.fileExists(atPath: $0.path)
+        }
+        // A WAL/SHM without its primary database is not a resumable store.
+        // Treat it as an integrity failure so the entire set is quarantined
+        // together instead of allowing SwiftData to create a fresh database
+        // beside orphaned sidecars and silently losing the checkpoint.
+        guard fileManager.fileExists(atPath: url.path) else {
+            guard existingRelatedURLs.isEmpty else {
+                throw ESheepCloudInitialSyncError.verificationStoreIntegrity(
+                    "missing_main_store"
+                )
+            }
+            return
+        }
+        var database: OpaquePointer?
+        let openResult = sqlite3_open_v2(
+            url.path,
+            &database,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard openResult == SQLITE_OK, let database else {
+            let message = database.map { String(cString: sqlite3_errmsg($0)) }
+                ?? "no_database_handle"
+            if let database { sqlite3_close_v2(database) }
+            throw ESheepCloudInitialSyncError.verificationStoreIntegrity(
+                "open_\(openResult)_\(message)"
+            )
+        }
+        defer { sqlite3_close_v2(database) }
+        sqlite3_busy_timeout(database, 5_000)
+        guard sqlite3_exec(database, "PRAGMA query_only=ON;", nil, nil, nil) == SQLITE_OK else {
+            throw ESheepCloudInitialSyncError.verificationStoreIntegrity(
+                "query_only_\(String(cString: sqlite3_errmsg(database)))"
+            )
+        }
+        var statement: OpaquePointer?
+        let prepareResult = sqlite3_prepare_v2(
+            database,
+            "PRAGMA quick_check;",
+            -1,
+            &statement,
+            nil
+        )
+        guard prepareResult == SQLITE_OK, let statement else {
+            throw ESheepCloudInitialSyncError.verificationStoreIntegrity(
+                "prepare_\(prepareResult)_\(String(cString: sqlite3_errmsg(database)))"
+            )
+        }
+        defer { sqlite3_finalize(statement) }
+        var result = ""
+        var stepResult = sqlite3_step(statement)
+        while stepResult == SQLITE_ROW {
+            if let value = sqlite3_column_text(statement, 0) {
+                result = String(cString: value)
+            }
+            stepResult = sqlite3_step(statement)
+        }
+        guard stepResult == SQLITE_DONE, result == "ok" else {
+            let detail = result.isEmpty
+                ? String(cString: sqlite3_errmsg(database))
+                : result
+            throw ESheepCloudInitialSyncError.verificationStoreIntegrity(
+                "quick_check_\(detail)"
+            )
+        }
     }
 
     private func downloadChunks(
@@ -376,13 +736,18 @@ actor ESheepCloudInitialSyncCoordinator {
         snapshotID: UUID,
         stagingRoot: URL
     ) async throws -> ESheepCloudSnapshotChunkDescriptorV2 {
+        try Task.checkCancellation()
         let url = chunkURL(index: descriptor.index, stagingRoot: stagingRoot)
         var existing = (try? Data(contentsOf: url, options: .mappedIfSafe)) ?? Data()
         if Int64(existing.count) == descriptor.byteCount,
            sha256(existing) == descriptor.contentSHA256 {
             return descriptor
         }
-        if Int64(existing.count) > descriptor.byteCount {
+        // A full-size file with a mismatched digest is not resumable: asking
+        // the gateway for bytes at the end of that file would append nothing
+        // and fail forever. Reset the exact-size corrupt chunk so only this
+        // descriptor is fetched again; verified sibling chunks stay intact.
+        if Int64(existing.count) >= descriptor.byteCount {
             existing = Data()
         }
         let remainder = try await gateway.downloadSnapshotChunk(
@@ -390,13 +755,31 @@ actor ESheepCloudInitialSyncCoordinator {
             chunkIndex: descriptor.index,
             byteOffset: Int64(existing.count)
         )
+        try Task.checkCancellation()
         var complete = existing
         complete.append(remainder)
-        guard Int64(complete.count) == descriptor.byteCount,
-              sha256(complete) == descriptor.contentSHA256 else {
+        if Int64(complete.count) == descriptor.byteCount,
+           sha256(complete) == descriptor.contentSHA256 {
+            try complete.write(to: url, options: [.atomic])
+            return descriptor
+        }
+
+        // A partial file may contain a corrupt prefix, so appending the
+        // gateway's remainder can never repair it. Retry this exact chunk
+        // from byte zero once; verified sibling chunks remain untouched. The
+        // retry is deliberately bounded so a bad server response still
+        // produces a durable failed/diagnostic session rather than a loop.
+        let retried = try await gateway.downloadSnapshotChunk(
+            snapshotID: snapshotID,
+            chunkIndex: descriptor.index,
+            byteOffset: 0
+        )
+        try Task.checkCancellation()
+        guard Int64(retried.count) == descriptor.byteCount,
+              sha256(retried) == descriptor.contentSHA256 else {
             throw ESheepCloudInitialSyncError.chunkDigestMismatch(descriptor.index)
         }
-        try complete.write(to: url, options: [.atomic])
+        try retried.write(to: url, options: [.atomic])
         return descriptor
     }
 
@@ -462,10 +845,12 @@ actor ESheepCloudInitialSyncCoordinator {
 
     private func relativeStagingStorePath(
         farmID: UUID,
-        snapshotID: UUID
+        snapshotID: UUID,
+        accountID: UUID
     ) -> String {
         "ESheepCloud/Staging/\(farmID.uuidString.lowercased())/" +
-            "\(snapshotID.uuidString.lowercased())/verification.store"
+            "\(snapshotID.uuidString.lowercased())/" +
+            "\(accountID.uuidString.lowercased())/verification.store"
     }
 
     private func chunkURL(index: Int, stagingRoot: URL) -> URL {
@@ -480,52 +865,97 @@ actor ESheepCloudInitialSyncCoordinator {
 private struct ESheepCloudInitialSyncSessionSnapshot: Sendable {
     let id: UUID
     let stagingDirectoryRelativePath: String
+    let previousState: ESheepCloudInitialSyncState
+    let verifiedProjectionEventSequence: Int64
+    let activationProjectionEventSequence: Int64
 }
 
-private struct ESheepCloudVerifiedProjectionSummary: Sendable {
+struct ESheepCloudVerifiedProjectionSummary: Sendable {
     let eventHead: Int64
     let projectionDigest: String
     let streams: [ESheepCloudStreamReferenceV2: ESheepCloudVerifiedStreamSummary]
     let assetCount: Int
 }
 
-private struct ESheepCloudVerifiedStreamSummary: Sendable, Equatable {
+struct ESheepCloudVerifiedStreamSummary: Sendable, Equatable {
     let streamVersion: Int64
     let contentDigest: String
     let lastEventSequence: Int64
     let fields: [String: ESheepCloudVerifiedFieldSummary]
 }
 
-private struct ESheepCloudVerifiedFieldSummary: Sendable, Equatable {
+struct ESheepCloudVerifiedFieldSummary: Sendable, Equatable {
     let version: Int64
     let valueDigest: String
 }
 
 private final class ESheepCloudInitialSyncLocalStore {
     private let container: ModelContainer
+    private let fileManager: FileManager
+    private let applicationSupportURL: URL
 
-    init(container: ModelContainer) {
+    init(
+        container: ModelContainer,
+        fileManager: FileManager = .default,
+        applicationSupportURL: URL? = nil
+    ) {
         self.container = container
+        self.fileManager = fileManager
+        self.applicationSupportURL = applicationSupportURL ?? fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
     }
 
     func beginOrResume(
         manifest: ESheepCloudSnapshotManifestV2,
-        stagingStoreRelativePath: String
+        stagingStoreRelativePath: String,
+        accountID: UUID? = nil
     ) throws -> ESheepCloudInitialSyncSessionSnapshot {
         let context = ModelContext(container)
-        let sessions = try context.fetch(FetchDescriptor<ESheepCloudInitialSyncSession>())
+        let allSessions = try context.fetch(FetchDescriptor<ESheepCloudInitialSyncSession>())
             .filter { $0.farmID == manifest.farmID && $0.state != .active }
+        let legacyStagingStoreRelativePath =
+            "ESheepCloud/Staging/\(manifest.farmID.uuidString.lowercased())/" +
+            "\(manifest.snapshotID.uuidString.lowercased())/verification.store"
+        // A session row is not an authorization record.  Once the server has
+        // authenticated this manifest, only a row already owned by that
+        // account or the deliberately claimable V12 `nil` row may be used.
+        // Foreign rows remain untouched so a shared device cannot pause or
+        // resume another account's receive attempt.
+        let sessions = allSessions.filter { session in
+            guard let accountID else { return true }
+            return session.accountID == nil || session.accountID == accountID
+        }
         let session: ESheepCloudInitialSyncSession
+        let previousState: ESheepCloudInitialSyncState
         let matching = sessions.filter { $0.snapshotID == manifest.snapshotID }
         let admissions = sessions.filter {
             $0.snapshotID == nil && $0.farmGeneration == manifest.farmGeneration
+        }
+        if let accountID,
+           matching.isEmpty,
+           allSessions.contains(where: {
+               $0.snapshotID == manifest.snapshotID &&
+                   $0.accountID != nil && $0.accountID != accountID
+           }) {
+            throw ESheepCloudInitialSyncError.accountMismatch
         }
         guard matching.count <= 1, admissions.count <= 1 else {
             throw ESheepCloudInitialSyncError.manifestMismatch
         }
         if let existing = matching.first {
+            previousState = existing.state
             guard existing.farmGeneration == manifest.farmGeneration else {
                 throw ESheepCloudInitialSyncError.farmGenerationChanged
+            }
+            if let accountID,
+               let existingAccountID = existing.accountID,
+               existingAccountID != accountID {
+                throw ESheepCloudInitialSyncError.accountMismatch
+            }
+            if existing.accountID == nil {
+                existing.accountID = accountID
             }
             if let previousData = existing.manifestData {
                 let previous = try ESheepCloudCanonicalCodec.decode(
@@ -537,17 +967,54 @@ private final class ESheepCloudInitialSyncLocalStore {
                     throw ESheepCloudInitialSyncError.manifestMismatch
                 }
             }
+            // The staging path is part of the snapshot identity. A stale row
+            // that points at another snapshot directory must not be allowed to
+            // combine that directory's files with this manifest, even when a
+            // gateway happens to reuse the same farm generation.
+            guard existing.stagingStoreRelativePath == stagingStoreRelativePath ||
+                existing.stagingStoreRelativePath == legacyStagingStoreRelativePath else {
+                throw ESheepCloudInitialSyncError.manifestMismatch
+            }
             session = existing
         } else if let admission = admissions.first {
+            previousState = admission.state
+            if let accountID,
+               let existingAccountID = admission.accountID,
+               existingAccountID != accountID {
+                throw ESheepCloudInitialSyncError.accountMismatch
+            }
+            if let accountID,
+               allSessions.contains(where: {
+                   $0.id != admission.id &&
+                       $0.accountID != nil &&
+                       $0.accountID != accountID &&
+                       $0.stagingStoreRelativePath == admission.stagingStoreRelativePath
+               }) {
+                // A legacy account-less admission may point at the old shared
+                // pending directory. Never move or reuse that directory when
+                // another account has already claimed the same path.
+                throw ESheepCloudInitialSyncError.accountMismatch
+            }
             session = admission
+            if session.accountID == nil {
+                session.accountID = accountID
+            }
+            if session.stagingStoreRelativePath != stagingStoreRelativePath {
+                try relocateStagingDirectory(
+                    from: session.stagingStoreRelativePath,
+                    to: stagingStoreRelativePath
+                )
+            }
             session.snapshotID = manifest.snapshotID
             session.stagingStoreRelativePath = stagingStoreRelativePath
         } else {
+            previousState = .connecting
             session = ESheepCloudInitialSyncSession(
                 farmID: manifest.farmID,
                 farmGeneration: manifest.farmGeneration,
                 stagingGeneration: manifest.farmGeneration,
-                stagingStoreRelativePath: stagingStoreRelativePath
+                stagingStoreRelativePath: stagingStoreRelativePath,
+                accountID: accountID
             )
             session.snapshotID = manifest.snapshotID
             context.insert(session)
@@ -560,6 +1027,9 @@ private final class ESheepCloudInitialSyncLocalStore {
         session.expectedByteCount = manifest.chunks.reduce(0) { $0 + $1.byteCount }
         session.manifestData = try ESheepCloudCanonicalCodec.encode(manifest)
         session.manifestDigest = manifest.totalDigest
+        if session.accountID == nil {
+            session.accountID = accountID
+        }
         let verifiedIndexes = try ESheepCloudCanonicalCodec.decode(
             [Int].self,
             from: session.verifiedChunkIndexesData
@@ -580,8 +1050,53 @@ private final class ESheepCloudInitialSyncLocalStore {
         return .init(
             id: session.id,
             stagingDirectoryRelativePath: (session.stagingStoreRelativePath as NSString)
-                .deletingLastPathComponent
+                .deletingLastPathComponent,
+            previousState: previousState,
+            verifiedProjectionEventSequence: session.verifiedProjectionEventSequence,
+            activationProjectionEventSequence: session.activationProjectionEventSequence
         )
+    }
+
+    /// Move a legacy/account-less admission's complete staging directory into
+    /// the account-scoped snapshot path before the manifest is attached. This
+    /// keeps chunks, verifier SQLite sidecars, and rejected evidence together;
+    /// no bytes are overwritten and a destination collision fails closed.
+    private func relocateStagingDirectory(
+        from sourceRelativePath: String,
+        to destinationRelativePath: String
+    ) throws {
+        guard sourceRelativePath != destinationRelativePath else { return }
+        let sourceStoreURL = applicationSupportURL.appending(path: sourceRelativePath)
+        guard fileManager.fileExists(atPath: sourceStoreURL.path) else { return }
+        let destinationStoreURL = applicationSupportURL.appending(
+            path: destinationRelativePath
+        )
+        let sourceDirectory = sourceStoreURL.deletingLastPathComponent()
+        let destinationDirectory = destinationStoreURL.deletingLastPathComponent()
+        if fileManager.fileExists(atPath: destinationDirectory.path) {
+            let existing = try fileManager.contentsOfDirectory(
+                at: destinationDirectory,
+                includingPropertiesForKeys: nil
+            )
+            guard existing.isEmpty else {
+                throw ESheepCloudInitialSyncError.manifestMismatch
+            }
+        } else {
+            try fileManager.createDirectory(
+                at: destinationDirectory,
+                withIntermediateDirectories: true
+            )
+        }
+        for item in try fileManager.contentsOfDirectory(
+            at: sourceDirectory,
+            includingPropertiesForKeys: nil
+        ) {
+            let destination = destinationDirectory.appending(path: item.lastPathComponent)
+            guard !fileManager.fileExists(atPath: destination.path) else {
+                throw ESheepCloudInitialSyncError.manifestMismatch
+            }
+            try fileManager.moveItem(at: item, to: destination)
+        }
     }
 
     func markChunkVerified(
@@ -629,6 +1144,8 @@ private final class ESheepCloudInitialSyncLocalStore {
         }
         session.verifiedChunkIndexesData = try ESheepCloudCanonicalCodec.encode(indexes)
         session.state = .receiving
+        session.lastProgressAt = .now
+        session.updatedAt = .now
         try context.save()
     }
 
@@ -645,6 +1162,42 @@ private final class ESheepCloudInitialSyncLocalStore {
         try context.save()
     }
 
+    func updateProjectionProgress(
+        sessionID: UUID,
+        state: ESheepCloudInitialSyncState? = nil,
+        verifiedProjectionEventSequence: Int64? = nil,
+        activationProjectionEventSequence: Int64? = nil,
+        targetEventHead: Int64? = nil
+    ) throws {
+        let context = ModelContext(container)
+        guard let session = try context.fetch(FetchDescriptor<ESheepCloudInitialSyncSession>())
+            .first(where: { $0.id == sessionID }) else {
+            throw ESheepCloudInitialSyncError.manifestMismatch
+        }
+        if let state {
+            session.state = state
+        }
+        if let verifiedProjectionEventSequence {
+            session.verifiedProjectionEventSequence = max(0, verifiedProjectionEventSequence)
+        }
+        if let activationProjectionEventSequence {
+            session.activationProjectionEventSequence = max(0, activationProjectionEventSequence)
+        }
+        if let targetEventHead {
+            session.targetEventHead = max(session.targetEventHead, targetEventHead)
+        }
+        session.lastProgressAt = .now
+        session.updatedAt = .now
+        try context.save()
+    }
+
+    func resetActivationProgress(sessionID: UUID) throws {
+        try updateProjectionProgress(
+            sessionID: sessionID,
+            activationProjectionEventSequence: 0
+        )
+    }
+
     /// A failed receive is a resumable session, not an implicit success and
     /// not a reason to touch the active farm.  Keep a short opaque trace token
     /// for support diagnostics while retaining the verified chunk ledger.
@@ -658,6 +1211,11 @@ private final class ESheepCloudInitialSyncLocalStore {
         session.state = .failed
         session.retryCount += 1
         session.lastErrorTraceID = UUID().uuidString.lowercased()
+        // Activation is an all-or-nothing main-store transaction. A failed
+        // attempt never leaves a resumable prefix in the active store, so the
+        // next attempt must expose activation progress as zero and replay the
+        // isolated projection again from its trusted checkpoint.
+        session.activationProjectionEventSequence = 0
         try context.save()
     }
 
@@ -673,6 +1231,48 @@ private final class ESheepCloudInitialSyncLocalStore {
         guard session.state != .active else { return }
         session.state = .paused
         session.lastErrorTraceID = nil
+        session.activationProjectionEventSequence = 0
+        session.lastProgressAt = .now
+        try context.save()
+    }
+
+    /// Move an invalid partial verifier as one unit so the immutable chunks
+    /// remain reusable and support can inspect the exact rejected SQLite/WAL/
+    /// SHM set. The active main store is never part of this operation.
+    func quarantineVerificationStore(sessionID: UUID) throws {
+        let context = ModelContext(container)
+        guard let session = try context.fetch(
+            FetchDescriptor<ESheepCloudInitialSyncSession>()
+        ).first(where: { $0.id == sessionID }) else {
+            throw ESheepCloudInitialSyncError.manifestMismatch
+        }
+        let storeURL = applicationSupportURL.appending(
+            path: session.stagingStoreRelativePath
+        )
+        let related = LocalStoreRecoveryService.relatedStoreURLs(for: storeURL)
+            .filter { fileManager.fileExists(atPath: $0.path) }
+        if !related.isEmpty {
+            let stamp = String(Int(Date().timeIntervalSince1970)) + "-" +
+                UUID().uuidString.lowercased()
+            let rejectedRoot = storeURL.deletingLastPathComponent()
+                .appending(path: "Rejected/\(stamp)", directoryHint: .isDirectory)
+            try fileManager.createDirectory(
+                at: rejectedRoot,
+                withIntermediateDirectories: true
+            )
+            for source in related {
+                let destination = rejectedRoot.appending(path: source.lastPathComponent)
+                try fileManager.moveItem(at: source, to: destination)
+            }
+        }
+        // The quarantined SQLite prefix is no longer a resumable source. Reset
+        // only the verifier checkpoint; immutable snapshot chunks and the
+        // manifest ledger stay intact and the next attempt can rebuild from
+        // them without tripping the old-sequence consistency check.
+        session.verifiedProjectionEventSequence = 0
+        session.activationProjectionEventSequence = 0
+        session.lastProgressAt = .now
+        session.updatedAt = .now
         try context.save()
     }
 
@@ -727,6 +1327,8 @@ private final class ESheepCloudInitialSyncLocalStore {
             ("FarmStorageProfile", try context.fetch(FetchDescriptor<FarmStorageProfile>())
                 .contains { $0.farmID == farmID }),
             ("FarmRemoteBinding", try context.fetch(FetchDescriptor<FarmRemoteBinding>())
+                .contains { $0.farmID == farmID }),
+            ("FarmMembershipBinding", try context.fetch(FetchDescriptor<FarmMembershipBinding>())
                 .contains { $0.farmID == farmID }),
             ("FarmRemoteRestoreRecord", try context.fetch(FetchDescriptor<FarmRemoteRestoreRecord>())
                 .contains { $0.farmID == farmID }),
@@ -844,33 +1446,62 @@ private final class ESheepCloudInitialSyncLocalStore {
 
 }
 
-private class ESheepCloudProjectionTransaction {
+class ESheepCloudProjectionTransaction {
     let context: ModelContext
     let farmID: UUID
     let farmGeneration: Int
+    let replayContext: ESheepCloudProjectionReplayContext
+    let domainApplyService: RemoteDomainApplyService
     var expectedStreams: [ESheepCloudStreamReferenceV2: ESheepCloudSnapshotStreamV2] = [:]
     var snapshotStreamCount = 0
     var snapshotEventCount = 0
     var snapshotAssetCount = 0
     var earliestHistoryChange: Date?
+    private var validatedPrefixEventSequence: Int64 = 0
+    private var validatedPrefixDigest = String(repeating: "0", count: 64)
+    private var eventsSinceCancellationCheck = 0
 
     init(
         context: ModelContext,
         seed: ESheepCloudFarmSeedV2,
-        farmGeneration: Int
+        farmGeneration: Int,
+        seedEmptyStore: Bool = true
     ) throws {
         self.context = context
         farmID = seed.id
         self.farmGeneration = farmGeneration
-        try Self.seedFarm(seed, context: context)
-        context.insert(ESheepCloudFarmState(
-            farmID: seed.id,
-            farmGeneration: farmGeneration,
-            activityState: .preparing
-        ))
+        replayContext = ESheepCloudProjectionReplayContext()
+        domainApplyService = RemoteDomainApplyService(
+            replayAssumesEmptyBusinessStore: seedEmptyStore,
+            replayContext: replayContext
+        )
+        if seedEmptyStore {
+            try Self.seedFarm(seed, context: context)
+            let state = ESheepCloudFarmState(
+                farmID: seed.id,
+                farmGeneration: farmGeneration,
+                activityState: .preparing
+            )
+            context.insert(state)
+            replayContext.register(state)
+            // The domain adapter's index is separate from the protocol
+            // ledger cache. Register the freshly seeded farm shell before
+            // the first event so a farm-location event can resolve it
+            // without falling back to a SQL lookup.
+            domainApplyService.rebuildPendingReplayIndex(in: context)
+        } else {
+            try domainApplyService.prepareResumableReplay(
+                farmID: seed.id,
+                context: context
+            )
+        }
+        try replayContext.preload(in: context)
     }
 
-    func applySnapshotRecords(_ records: [ESheepCloudSnapshotRecordV2]) throws {
+    func applySnapshotRecords(
+        _ records: [ESheepCloudSnapshotRecordV2],
+        skippingEventsThrough: Int64 = 0
+    ) throws {
         for record in records {
             switch record {
             case .stream(let value):
@@ -880,15 +1511,62 @@ private class ESheepCloudProjectionTransaction {
                 expectedStreams[value.stream] = value
                 snapshotStreamCount += 1
             case .event(let event):
-                let outcome = try ESheepCloudEventReducer.apply(
+                snapshotEventCount += 1
+                try checkCancellationAfterEvent()
+                if event.eventSequence <= skippingEventsThrough {
+                    try validateExistingEvent(event)
+                    continue
+                }
+                let outcome: ESheepCloudEventApplyOutcome
+                do {
+                    outcome = try ESheepCloudEventReducer.apply(
                     event,
                     context: context,
-                    savesChanges: false
-                )
+                    savesChanges: false,
+                    replayContext: replayContext,
+                    domainApplyService: domainApplyService
+                    )
+                } catch {
+                    NSLog("V2 snapshot replay failed at event %lld, stream %@: %@",
+                          event.eventSequence, event.stream.type, String(describing: error))
+                    throw error
+                }
                 if let changedAt = outcome.historyChangedAt {
                     earliestHistoryChange = min(earliestHistoryChange ?? changedAt, changedAt)
                 }
+            case .asset(let asset):
+                try upsert(asset: asset)
+                snapshotAssetCount += 1
+            }
+        }
+        // Child projections created inside a business handler are registered
+        // once per immutable chunk. This keeps the cache current for the next
+        // chunk without turning insertion bookkeeping into an event-sized
+        // scan.
+        replayContext.registerInsertedModels(in: context)
+        domainApplyService.rebuildPendingReplayIndex(in: context)
+    }
+
+    /// Rebuilds the immutable snapshot expectations without invoking the
+    /// business reducer. This is the fast resume path for a verifier that has
+    /// already reached the snapshot boundary (or the full event head).
+    func inspectSnapshotRecords(
+        _ records: [ESheepCloudSnapshotRecordV2],
+        validatingReceiptsThrough sequence: Int64
+    ) throws {
+        for record in records {
+            switch record {
+            case .stream(let value):
+                guard expectedStreams[value.stream] == nil else {
+                    throw ESheepCloudInitialSyncError.streamMismatch(value.stream.type)
+                }
+                expectedStreams[value.stream] = value
+                snapshotStreamCount += 1
+            case .event(let event):
                 snapshotEventCount += 1
+                guard event.eventSequence <= sequence else { continue }
+                try checkCancellationAfterEvent()
+                try validateExistingEvent(event)
             case .asset(let asset):
                 try upsert(asset: asset)
                 snapshotAssetCount += 1
@@ -896,20 +1574,91 @@ private class ESheepCloudProjectionTransaction {
         }
     }
 
+    func lastAppliedEventSequence() throws -> Int64 {
+        try farmState()?.lastAppliedEventSequence ?? 0
+    }
+
+    func currentProjectionDigest() throws -> String? {
+        try farmState()?.projectionDigest
+    }
+
+    func validateExistingProjectionPrefix(
+        through sequence: Int64,
+        persistedProjectionDigest: String? = nil
+    ) throws {
+        let actualDigest: String?
+        if let persistedProjectionDigest {
+            actualDigest = persistedProjectionDigest
+        } else {
+            actualDigest = try farmState()?.projectionDigest
+        }
+        guard sequence == 0 || validatedPrefixEventSequence == sequence,
+              actualDigest ==
+                  (sequence == 0
+                      ? String(repeating: "0", count: 64)
+                      : validatedPrefixDigest) else {
+            throw ESheepCloudInitialSyncError.existingVerificationCheckpointMismatch
+        }
+        if persistedProjectionDigest == nil {
+            guard let state = try farmState(), state.lastAppliedEventSequence == sequence else {
+                throw ESheepCloudInitialSyncError.existingVerificationCheckpointMismatch
+            }
+        }
+    }
+
+    func validateExistingEvent(
+        _ event: ESheepCloudEventEnvelopeV2
+    ) throws {
+        guard event.eventSequence == validatedPrefixEventSequence + 1,
+              let receipt = try replayContext.eventReceipt(
+                  eventID: event.eventID,
+                  context: context
+              ),
+              receipt.farmID == event.farmID,
+              receipt.farmGeneration == event.farmGeneration,
+              receipt.eventSequence == event.eventSequence,
+              receipt.commandID == event.commandID,
+              receipt.eventDigest == event.eventDigest,
+              receipt.appliedProjectionDigest == event.afterDigest else {
+            throw ESheepCloudInitialSyncError.existingVerificationCheckpointMismatch
+        }
+        validatedPrefixEventSequence = event.eventSequence
+        validatedPrefixDigest = receiptChainDigest(
+            previous: validatedPrefixDigest,
+            eventDigest: event.eventDigest
+        )
+    }
+
     func applyRecentEvents(_ events: [ESheepCloudEventEnvelopeV2]) throws {
         for event in events {
+            try checkCancellationAfterEvent()
             let outcome = try ESheepCloudEventReducer.apply(
                 event,
                 context: context,
-                savesChanges: false
+                savesChanges: false,
+                replayContext: replayContext,
+                domainApplyService: domainApplyService
             )
             if let changedAt = outcome.historyChangedAt {
                 earliestHistoryChange = min(earliestHistoryChange ?? changedAt, changedAt)
             }
         }
+        replayContext.registerInsertedModels(in: context)
+        domainApplyService.rebuildPendingReplayIndex(in: context)
     }
 
-    func verifySnapshotBoundary(_ manifest: ESheepCloudSnapshotManifestV2) throws {
+    private func checkCancellationAfterEvent() throws {
+        eventsSinceCancellationCheck += 1
+        if eventsSinceCancellationCheck >= 256 {
+            eventsSinceCancellationCheck = 0
+            try Task.checkCancellation()
+        }
+    }
+
+    func verifySnapshotBoundary(
+        _ manifest: ESheepCloudSnapshotManifestV2,
+        stateMustBeAtBoundary: Bool = true
+    ) throws {
         let counts = Dictionary(uniqueKeysWithValues: manifest.recordCounts.map {
             ($0.recordType, $0.count)
         })
@@ -922,10 +1671,17 @@ private class ESheepCloudProjectionTransaction {
         guard snapshotAssetCount == (counts["assets"] ?? 0) else {
             throw ESheepCloudInitialSyncError.countMismatch("assets")
         }
-        guard let state = try farmState(),
-              state.lastAppliedEventSequence == manifest.boundaryEventSequence,
-              state.projectionDigest == manifest.relationshipDigest else {
-            throw ESheepCloudInitialSyncError.eventBoundaryMismatch
+        if stateMustBeAtBoundary {
+            guard let state = try farmState(),
+                  state.lastAppliedEventSequence == manifest.boundaryEventSequence,
+                  state.projectionDigest == manifest.relationshipDigest else {
+                throw ESheepCloudInitialSyncError.eventBoundaryMismatch
+            }
+        } else {
+            guard let state = try farmState(),
+                  state.lastAppliedEventSequence >= manifest.boundaryEventSequence else {
+                throw ESheepCloudInitialSyncError.eventBoundaryMismatch
+            }
         }
 
         // A stream can legitimately have no historical event yet (for
@@ -978,7 +1734,7 @@ private class ESheepCloudProjectionTransaction {
     /// This is shared by the verification store and the activation transaction
     /// so a stream cannot pass staging verification and then disappear during
     /// the final atomic copy into the active store.
-    fileprivate func materializeZeroEventStreamsIfNeeded() throws {
+    func materializeZeroEventStreamsIfNeeded() throws {
         let emptyCanonical: [String: ESheepCloudValueV2] = [:]
         let emptyCanonicalData = try ESheepCloudCanonicalCodec.encode(emptyCanonical)
         let emptyCanonicalDigest = SHA256.hash(data: emptyCanonicalData)
@@ -1002,7 +1758,7 @@ private class ESheepCloudProjectionTransaction {
                 throw ESheepCloudInitialSyncError.streamMismatch(expected.stream.type)
             }
             if matches.isEmpty {
-                context.insert(ESheepCloudStreamState(
+                let state = ESheepCloudStreamState(
                     farmID: farmID,
                     farmGeneration: farmGeneration,
                     streamType: expected.stream.type,
@@ -1014,7 +1770,9 @@ private class ESheepCloudProjectionTransaction {
                     canonicalStateData: emptyCanonicalData,
                     contentDigest: expected.contentDigest,
                     lastEventSequence: expected.lastEventSequence
-                ))
+                )
+                context.insert(state)
+                replayContext.register(state)
             }
         }
     }
@@ -1101,8 +1859,11 @@ private class ESheepCloudProjectionTransaction {
     }
 
     private func upsert(asset: ESheepCloudSnapshotAssetV2) throws {
-        let existing = try context.fetch(FetchDescriptor<ESheepCloudAssetState>())
-            .first { $0.id == asset.assetID && $0.farmID == farmID }
+        let existing = try replayContext.assetState(
+            assetID: asset.assetID,
+            farmID: farmID,
+            context: context
+        )
         let value = existing ?? ESheepCloudAssetState(
             assetID: asset.assetID,
             farmID: farmID,
@@ -1113,6 +1874,7 @@ private class ESheepCloudProjectionTransaction {
             originalByteCount: asset.originalByteCount
         )
         if existing == nil { context.insert(value) }
+        replayContext.register(value)
         guard value.contentSHA256 == asset.contentSHA256 else {
             throw ESheepCloudInitialSyncError.associationMismatch("asset")
         }
@@ -1128,15 +1890,35 @@ private class ESheepCloudProjectionTransaction {
         value.thumbnailByteCount = asset.thumbnailByteCount
         value.avatarByteCount = asset.avatarByteCount
         value.originalByteCount = asset.originalByteCount
+        if asset.originalState == "verified",
+           let originalSHA256 = asset.originalSHA256,
+           let photo = try replayContext.photoAsset(id: asset.assetID, context: context) {
+            // Asset confirmation is outside the event stream. Reconstruct its
+            // verified locator from the same immutable Storage key contract.
+            guard photo.farmID == farmID else { throw ESheepCloudInitialSyncError.associationMismatch("asset") }
+            photo.cloudRecordName = "\(farmID.uuidString.lowercased())/\(farmGeneration)/\(asset.assetID.uuidString.lowercased())/\(originalSHA256)/original.bin"
+        }
         value.updatedAt = .now
     }
 
     private func farmState() throws -> ESheepCloudFarmState? {
-        try context.fetch(FetchDescriptor<ESheepCloudFarmState>())
-            .first { $0.farmID == farmID && $0.farmGeneration == farmGeneration }
+        try replayContext.farmState(
+            farmID: farmID,
+            generation: farmGeneration,
+            context: context
+        )
     }
 
-    private static func seedFarm(
+    private func receiptChainDigest(
+        previous: String,
+        eventDigest: String
+    ) -> String {
+        SHA256.hash(data: Data("\(previous)\n\(eventDigest)".utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    static func seedFarm(
         _ seed: ESheepCloudFarmSeedV2,
         context: ModelContext
     ) throws {
@@ -1239,27 +2021,46 @@ private final class ESheepCloudStagingProjection: ESheepCloudProjectionTransacti
     init(
         seed: ESheepCloudFarmSeedV2,
         farmGeneration: Int,
-        storeURL: URL
+        storeURL: URL,
+        resumeExistingStore: Bool = false
     ) throws {
         let directory = storeURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        for url in LocalStoreRecoveryService.relatedStoreURLs(for: storeURL)
-            where FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
+        let hasExistingFiles = LocalStoreRecoveryService.relatedStoreURLs(for: storeURL)
+            .contains { FileManager.default.fileExists(atPath: $0.path) }
+        let shouldResume = resumeExistingStore && hasExistingFiles
+        if !shouldResume {
+            for url in LocalStoreRecoveryService.relatedStoreURLs(for: storeURL)
+                where FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
         }
         container = try AppSchema.makeContainer(
             name: "ESheepCloudInitialVerification",
             url: storeURL
         )
+        let projectionContext = ModelContext(container)
+        // The only durable verifier checkpoints are complete snapshot chunks
+        // or event pages. Disabling SwiftData's autosave prevents a scene
+        // suspension halfway through a chunk from publishing a projection
+        // prefix that is ahead of the session's persisted checkpoint.
+        projectionContext.autosaveEnabled = false
         try super.init(
-            context: ModelContext(container),
+            context: projectionContext,
             seed: seed,
-            farmGeneration: farmGeneration
+            farmGeneration: farmGeneration,
+            seedEmptyStore: !shouldResume
         )
     }
 
-    override func applySnapshotRecords(_ records: [ESheepCloudSnapshotRecordV2]) throws {
-        try super.applySnapshotRecords(records)
+    override func applySnapshotRecords(
+        _ records: [ESheepCloudSnapshotRecordV2],
+        skippingEventsThrough: Int64 = 0
+    ) throws {
+        try super.applySnapshotRecords(
+            records,
+            skippingEventsThrough: skippingEventsThrough
+        )
         try context.save()
     }
 

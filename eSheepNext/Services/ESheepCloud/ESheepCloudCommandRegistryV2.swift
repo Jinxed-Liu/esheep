@@ -9,6 +9,9 @@ import Foundation
 /// editing a CI fixture while its runtime route is still missing.
 enum ESheepCloudCommandRegistryV2 {
     static let allKinds: [String] = [
+        "migration.restoreRemoval",
+        "migration.restoreBusinessBaseline",
+        "migration.restoreSheepBaseline",
         "attention.resolve",
         "batchMembership.assign",
         "batchMembership.leave",
@@ -101,6 +104,9 @@ enum ESheepCloudCommandRegistryV2 {
     /// discriminator table, so a schema addition must update both sides.
     static func expectedPayloadCase(for kind: String) -> String? {
         switch kind {
+        case "migration.restoreSheepBaseline": "restoreSheepBaseline"
+        case "migration.restoreRemoval": "restoreRemoval"
+        case "migration.restoreBusinessBaseline": "restoreBusinessBaseline"
         case "farm.updateLocation": "updateLocation"
         case "pen.create": "create"
         case "pen.update": "update"
@@ -185,6 +191,7 @@ enum ESheepCloudCommandRegistryV2 {
 
     static func mergeMode(for kind: String) -> String? {
         switch kind {
+        case "migration.restoreSheepBaseline", "migration.restoreRemoval", "migration.restoreBusinessBaseline": "append_fact"
         case "farm.updateLocation", "pen.update", "pen.setActive",
              "sheep.patchProfile", "sheepAvatar.set", "sheepAvatar.clear":
             "field_patch"
@@ -237,6 +244,9 @@ enum ESheepCloudCommandRegistryV2 {
     /// compilation/tests until its domain route is named here.
     static func nativeProjectionRoute(for kind: String) -> String? {
         switch kind {
+        case "migration.restoreSheepBaseline": "migration.restoreSheepBaseline"
+        case "migration.restoreRemoval": "migration.restoreRemoval"
+        case "migration.restoreBusinessBaseline": "migration.restoreBusinessBaseline"
         case "attention.resolve": "attention.resolve"
         case "farm.updateLocation": "farm.location"
         case "pen.create": "pen.create"

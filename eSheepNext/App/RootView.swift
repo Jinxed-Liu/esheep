@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import UIKit
 
 enum ESheepCloudFarmVisibilityPolicy {
     static func isReadyForDisplay(
@@ -18,10 +19,6 @@ enum ESheepCloudFarmVisibilityPolicy {
             transitionState != .readOnlyMigration
     }
 }
-
-#if DEBUG
-import UIKit
-#endif
 
 #if DEBUG
 private enum DevelopmentLocalAccountRecoveryError: LocalizedError {
@@ -105,24 +102,73 @@ struct RootView: View {
             PerformanceTrace.event(.farmSwitch, count: visibleFarms.count)
         }
         .onChange(of: scenePhase) { _, phase in
-#if DEBUG
-            // Keep the debug device awake while the farm workflow is being
-            // exercised; backgrounding the app restores normal system lock.
-            UIApplication.shared.isIdleTimerDisabled = phase == .active
-#endif
+            // Only a visible first-receive page may keep the device awake.
+            // All other screens retain the system's normal auto-lock policy.
+            updateInitialSyncIdleTimer()
             if phase == .active {
                 preferences.refreshSystemPowerState()
                 session.consumePendingNavigationRequest()
                 session.consumeSystemNavigationTarget()
-            } else if phase == .background {
-                FarmBackgroundRefresh.schedule()
+                // Re-resolve account access before resuming a paused receive.
+                // The previous foreground's status may be stale after token
+                // expiry or membership revocation; setting `.checking` also
+                // gives the authentication task a deterministic boundary.
+                session.requestAuthenticationRefresh()
+            } else {
+                if let account = activeAccount {
+                    Task { @MainActor in
+                        await collaboration.pauseESheepCloudInitialSyncSessions(
+                            accountID: account.effectiveAccountID
+                        )
+                    }
+                }
+                if phase == .background {
+                    FarmBackgroundRefresh.schedule()
+                }
             }
         }
-#if DEBUG
-        .onAppear {
-            UIApplication.shared.isIdleTimerDisabled = scenePhase == .active
+        .onChange(of: initialSyncIdleTimerKey) { _, _ in
+            // A query update can replace the first-receive page without a
+            // scene transition (for example when a legacy restore record is
+            // inserted or completed). Keep the system lock policy tied to the
+            // page that is actually visible.
+            updateInitialSyncIdleTimer()
         }
-#endif
+        .onChange(of: session.authenticationRevision) { _, _ in
+            // A login switch or explicit sign-out is not guaranteed to change
+            // the scene phase. Stop any receive that was admitted under the
+            // previous identity before allowing the new account to discover
+            // and claim its own session.
+            Task { @MainActor in
+                await collaboration.pauseAllESheepCloudInitialSyncSessions()
+                guard scenePhase == .active,
+                      session.accountAccessStatus.allowsCloudOperations,
+                      let account = activeAccount else { return }
+                await collaboration.resumeESheepCloudInitialSyncSessions(
+                    accountID: account.effectiveAccountID
+                )
+            }
+        }
+        .onChange(of: session.accountAccessStatus) { _, status in
+            // Token expiry/permission revocation updates access status without
+            // necessarily incrementing authenticationRevision. Treat that as
+            // the same account boundary: pause safely, and resume only after
+            // the resolver has verified the current account again.
+            Task { @MainActor in
+                if status.allowsCloudOperations,
+                   scenePhase == .active,
+                   let account = activeAccount {
+                    await collaboration.resumeESheepCloudInitialSyncSessions(
+                        accountID: account.effectiveAccountID
+                    )
+                } else {
+                    await collaboration.pauseAllESheepCloudInitialSyncSessions()
+                }
+            }
+        }
+        .onAppear {
+            updateInitialSyncIdleTimer()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
             preferences.refreshSystemPowerState()
         }
@@ -220,6 +266,19 @@ struct RootView: View {
         return accounts.first(where: { $0.id == profileID })
     }
 
+    private var initialSyncIdleTimerKey: String {
+        let restoreID = pendingRemoteRestore?.id.uuidString ?? "none"
+        let initialSyncID = pendingESheepCloudInitialSync?.id.uuidString ?? "none"
+        return "\(scenePhase)|\(restoreID)|\(initialSyncID)"
+    }
+
+    private func updateInitialSyncIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled =
+            scenePhase == .active &&
+                pendingRemoteRestore == nil &&
+                pendingESheepCloudInitialSync != nil
+    }
+
     private func hasPersistedLocalAccount(for account: AccountProfile) -> Bool {
         // The selected profile is the local-data isolation boundary. A remote
         // provider session may expire or temporarily resolve to a different
@@ -248,17 +307,18 @@ struct RootView: View {
 
     private var pendingESheepCloudInitialSync: ESheepCloudInitialSyncSession? {
         guard let account = activeAccount else { return nil }
-        let accessibleFarmIDs = Set(
-            membershipBindings
-                .filter {
-                    $0.accountID == account.effectiveAccountID &&
-                        $0.status == .active
-                }
-                .map(\.farmID)
-        )
+        guard collaboration.isESheepCloudInitialSyncAccessValidated(
+            accountID: account.effectiveAccountID
+        ) else {
+            // A V12/V13 local row is only a resumable artifact. The cloud
+            // membership discovery must confirm this account can access the
+            // same farm/generation before the page is rendered or resumed.
+            return nil
+        }
         return initialSyncSessions
             .filter {
-                accessibleFarmIDs.contains($0.farmID) && $0.state != .active
+                $0.accountID == account.effectiveAccountID &&
+                    $0.state != .active
             }
             .max { lhs, rhs in
                 if lhs.updatedAt != rhs.updatedAt {

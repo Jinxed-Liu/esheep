@@ -9,6 +9,27 @@ struct FarmBootstrapEntitySnapshot: Sendable, Equatable {
     let replayOrder: Int
 }
 
+extension FarmBaselineSnapshotService {
+    /// A feed line may retain a legacy batch UUID even after the corresponding
+    /// batch was not migrated into the local baseline.  Such a line is still
+    /// useful historical evidence, but it is not a valid ``recordFeedV2``
+    /// command: replaying that command into an empty store would require a
+    /// batch object which the snapshot cannot provide.  Classify the whole
+    /// feed as historical unless every referenced batch is present in the
+    /// baseline.  This check is deliberately pure so migration tests and
+    /// offline tooling can exercise it without a SwiftData container.
+    static func shouldImportHistoricalFeed(
+        legacySourceKey: String?,
+        ingredientBatchIDs: [UUID?],
+        availableBatchIDs: Set<UUID>
+    ) -> Bool {
+        legacySourceKey != nil || ingredientBatchIDs.contains { batchID in
+            guard let batchID else { return true }
+            return !availableBatchIDs.contains(batchID)
+        }
+    }
+}
+
 enum FarmBaselineSnapshotError: LocalizedError {
     case farmMissing
     case duplicateEarTag
@@ -313,7 +334,11 @@ struct FarmBaselineSnapshotService {
             let records = feedLines.filter { $0.feedRecordID == value.id }
             let lines = records.map { FarmCommandCloudPayload.FeedLine(id: $0.id, ingredientID: $0.ingredientID, kilogramsText: $0.kilogramsText, ingredientBatchID: $0.ingredientBatchID, ingredientNameSnapshot: $0.ingredientNameSnapshot, ingredientBatchNameSnapshot: $0.ingredientBatchNameSnapshot, pricePerKilogramTextSnapshot: $0.pricePerKilogramTextSnapshot, nutrientSnapshotJSON: $0.nutrientSnapshotJSON, unitSnapshot: $0.unitSnapshot, dryMatterTextSnapshot: $0.dryMatterTextSnapshot) }
             let payload: Data
-            if value.legacySourceKey != nil || records.contains(where: { $0.ingredientBatchID == nil }) {
+            if Self.shouldImportHistoricalFeed(
+                legacySourceKey: value.legacySourceKey,
+                ingredientBatchIDs: records.map(\.ingredientBatchID),
+                availableBatchIDs: feedBatchIDs
+            ) {
                 payload = try FarmCommandCloudPayloadEncoder.encode(.importHistoricalFeed(HistoricalFeedEntryDraft(
                     id: value.id,
                     legacySourceKey: value.legacySourceKey ?? "baseline:\(value.id.uuidString.lowercased())",

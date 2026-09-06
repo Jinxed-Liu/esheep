@@ -111,6 +111,7 @@ final class CloudCollaborationStore {
     private var eSheepCloudInitialSyncTasks: [
         UUID: Task<ESheepCloudInitialSyncReport, any Error>
     ] = [:]
+    private var eSheepCloudInitialSyncTaskAccountIDsByFarmID: [UUID: UUID] = [:]
     private var syncWakeObserver: NSObjectProtocol?
     private var pendingSyncWakeFarmIDs = Set<UUID>()
     private var syncWakeDebounceTask: Task<Void, Never>?
@@ -119,6 +120,13 @@ final class CloudCollaborationStore {
     private var supabaseRealtimeTasks: [UUID: Task<Void, Never>] = [:]
     private var supabaseAccessibleFarmDiscoveryAccountIDs = Set<UUID>()
     private var eSheepCloudFarmDiscoveryAccountIDs = Set<UUID>()
+    /// A local initial-sync row is not enough to render or resume a receive.
+    /// This set is populated only after the current account's authoritative
+    /// membership list has been fetched successfully in this process. It is
+    /// intentionally cleared at the start of every discovery pass so a
+    /// revoked account cannot keep seeing a stale verifier while a refresh is
+    /// in flight.
+    private var eSheepCloudInitialSyncAccessValidatedAccountIDs = Set<UUID>()
     private var photoDataLoadTasks: [UUID: Task<Data, any Error>] = [:]
 
     nonisolated static func prepareStartup(
@@ -201,7 +209,6 @@ final class CloudCollaborationStore {
         startSupabaseCursorPollingIfNeeded()
         if AccountIdentityClients.supabaseClient != nil {
             Task { @MainActor [weak self] in
-                await self?.resumeESheepCloudInitialSyncSessions()
                 await self?.resumeSupabaseAuthorityTransitions()
             }
         }
@@ -274,16 +281,21 @@ final class CloudCollaborationStore {
         guard let eSheepCloudMembershipGateway else {
             throw ESheepCloudRuntimeError.unavailable
         }
+        guard let accountID = activeESheepCloudAccountID() else {
+            throw ESheepCloudRuntimeError.accountMismatch
+        }
         let redemption = try await eSheepCloudMembershipGateway.redeemInvitation(
             code: code
         )
         try persistInitialSyncAdmission(
             farmID: redemption.farmID,
-            farmGeneration: redemption.farmGeneration
+            farmGeneration: redemption.farmGeneration,
+            accountID: accountID
         )
         _ = try await receiveESheepCloudFarm(
             farmID: redemption.farmID,
-            expectedFarmGeneration: redemption.farmGeneration
+            expectedFarmGeneration: redemption.farmGeneration,
+            accountID: accountID
         )
         let context = ModelContext(modelContainer)
         guard let farm = try context.fetch(FetchDescriptor<FarmRecord>())
@@ -295,13 +307,14 @@ final class CloudCollaborationStore {
 
     func synchronizeESheepCloudFarm(
         farmID: UUID,
-        accountID: UUID
+        accountID: UUID,
+        force: Bool = false
     ) async throws -> ESheepCloudSyncCycleReport {
         guard !DevelopmentSupabaseNetworkGate.isForcedOffline else {
             throw ESheepCloudRuntimeError.offline
         }
         let core = try eSheepCloudCore(farmID: farmID, accountID: accountID)
-        let report = try await core.synchronize()
+        let report = try await core.synchronize(force: force)
         lastSuccessfulSyncAt = report.safelySavedAt ?? .now
         return report
     }
@@ -363,7 +376,8 @@ final class CloudCollaborationStore {
     /// checks have all passed in one activation save.
     func receiveESheepCloudFarm(
         farmID: UUID,
-        expectedFarmGeneration: Int? = nil
+        expectedFarmGeneration: Int? = nil,
+        accountID: UUID? = nil
     ) async throws -> ESheepCloudInitialSyncReport {
         guard !DevelopmentSupabaseNetworkGate.isForcedOffline else {
             throw ESheepCloudRuntimeError.offline
@@ -371,7 +385,22 @@ final class CloudCollaborationStore {
         guard let eSheepCloudGateway else {
             throw ESheepCloudRuntimeError.unavailable
         }
+        guard let scopedAccountID = accountID ?? activeESheepCloudAccountID() else {
+            throw ESheepCloudRuntimeError.accountMismatch
+        }
+        // An explicit account is used by retry/discovery callers, but it is
+        // still subordinate to the authenticated local session. Never let a
+        // stale view or a shared-device caller start a receive for another
+        // account while this process is logged in as someone else.
+        if let activeAccountID = activeESheepCloudAccountID(),
+           activeAccountID != scopedAccountID {
+            throw ESheepCloudInitialSyncError.accountMismatch
+        }
         if let existing = eSheepCloudInitialSyncTasks[farmID] {
+            if let existingAccountID = eSheepCloudInitialSyncTaskAccountIDsByFarmID[farmID],
+               scopedAccountID != existingAccountID {
+                throw ESheepCloudInitialSyncError.accountMismatch
+            }
             return try await existing.value
         }
         let task = Task<ESheepCloudInitialSyncReport, any Error> {
@@ -381,11 +410,16 @@ final class CloudCollaborationStore {
                 gateway: eSheepCloudGateway
             )
             return try await coordinator.prepareNewInstallation(
-                expectedFarmGeneration: expectedFarmGeneration
+                expectedFarmGeneration: expectedFarmGeneration,
+                expectedAccountID: scopedAccountID
             )
         }
         eSheepCloudInitialSyncTasks[farmID] = task
-        defer { eSheepCloudInitialSyncTasks.removeValue(forKey: farmID) }
+        eSheepCloudInitialSyncTaskAccountIDsByFarmID[farmID] = scopedAccountID
+        defer {
+            eSheepCloudInitialSyncTasks.removeValue(forKey: farmID)
+            eSheepCloudInitialSyncTaskAccountIDsByFarmID.removeValue(forKey: farmID)
+        }
         let report = try await task.value
         eSheepCloudCoresByFarmID.removeValue(forKey: farmID)
         eSheepCloudCoreAccountIDsByFarmID.removeValue(forKey: farmID)
@@ -473,6 +507,62 @@ final class CloudCollaborationStore {
             accountID: accountID,
             client: client
         )
+    }
+
+    /// Resume only the authenticated account's incomplete first receives. The
+    /// authoritative membership discovery runs before any legacy V12 session
+    /// is claimed, so a shared device can never resume another account's
+    /// snapshot merely because a local session row exists.
+    func resumeESheepCloudInitialSyncSessions(accountID: UUID) async {
+        eSheepCloudInitialSyncAccessValidatedAccountIDs.remove(accountID)
+        await discoverAndReceiveESheepCloudFarms(accountID: accountID)
+    }
+
+    /// RootView uses this as an admission gate. A persisted session can be
+    /// rendered only after this process has received a successful, account-
+    /// scoped server access list; local rows alone never grant access.
+    func isESheepCloudInitialSyncAccessValidated(accountID: UUID) -> Bool {
+        eSheepCloudInitialSyncAccessValidatedAccountIDs.contains(accountID)
+    }
+
+    /// Cancel active first-receive tasks for the authenticated account. The
+    /// coordinator observes cancellation at a chunk/event checkpoint and
+    /// persists `.paused`; no active farm rows are touched.
+    func pauseESheepCloudInitialSyncSessions(accountID: UUID) async {
+        let context = ModelContext(modelContainer)
+        let persistedFarmIDs = (try? context.fetch(
+            FetchDescriptor<ESheepCloudInitialSyncSession>()
+        ))?.filter {
+            $0.accountID == accountID && $0.state != .active
+        }.map(\.farmID) ?? []
+        // Include tasks admitted in the small window before their session row
+        // is claimed. This closes the scene-background race without ever
+        // cancelling another account's receive task.
+        let taskFarmIDs = eSheepCloudInitialSyncTaskAccountIDsByFarmID.compactMap {
+            $0.value == accountID ? $0.key : nil
+        }
+        let farmIDs = Set(persistedFarmIDs).union(taskFarmIDs)
+        let tasks = farmIDs.compactMap { farmID -> Task<ESheepCloudInitialSyncReport, any Error>? in
+            eSheepCloudInitialSyncTasks[farmID]
+        }
+        tasks.forEach { $0.cancel() }
+        for task in tasks {
+            _ = try? await task.value
+        }
+    }
+
+    /// Authentication and account-access changes can happen without a scene
+    /// transition (for example, an expired token discovered while the app is
+    /// foregrounded). Cancel every in-flight initial receive at that boundary;
+    /// the coordinator will persist `.paused` and the next verified account
+    /// discovery can resume only its own session. This intentionally affects
+    /// receive tasks only, never active farm data or cloud authority.
+    func pauseAllESheepCloudInitialSyncSessions() async {
+        let tasks = Array(eSheepCloudInitialSyncTasks.values)
+        tasks.forEach { $0.cancel() }
+        for task in tasks {
+            _ = try? await task.value
+        }
     }
 
     /// Kept for the settings health screen; it no longer probes any Apple cloud
@@ -835,46 +925,6 @@ final class CloudCollaborationStore {
         }
     }
 
-    private func resumeESheepCloudInitialSyncSessions() async {
-        guard eSheepCloudGateway != nil,
-              !DevelopmentSupabaseNetworkGate.isForcedOffline else {
-            return
-        }
-        let context = ModelContext(modelContainer)
-        let sessions = (try? context.fetch(
-            FetchDescriptor<ESheepCloudInitialSyncSession>()
-        )) ?? []
-        var generationsByFarmID: [UUID: Int] = [:]
-        for session in sessions where session.state != .active {
-            // `paused` is a durable, resumable state (for example after a
-            // cancelled task or a transport interruption).  It must be
-            // retried on the next launch; otherwise a verified chunk ledger
-            // can remain stranded forever with no UI action that resumes it.
-            // A farm can have more than one historical paused snapshot.  The
-            // coordinator will reuse the matching snapshot and safely create
-            // a new session when the server has issued a newer manifest.
-            // Prefer the highest generation so recovery never depends on the
-            // undefined ordering of a SwiftData fetch.
-            if let current = generationsByFarmID[session.farmID],
-               current >= session.farmGeneration {
-                continue
-            }
-            generationsByFarmID[session.farmID] = session.farmGeneration
-        }
-        for (farmID, generation) in generationsByFarmID {
-            do {
-                _ = try await receiveESheepCloudFarm(
-                    farmID: farmID,
-                    expectedFarmGeneration: generation
-                )
-            } catch is CancellationError {
-                return
-            } catch {
-                lastErrorMessage = error.localizedDescription
-            }
-        }
-    }
-
     /// Reconstructs new-install admissions from the authoritative membership
     /// list. This closes the process-death window between invitation redemption
     /// and the first local initial-sync save without treating list data as a
@@ -885,6 +935,7 @@ final class CloudCollaborationStore {
               !DevelopmentSupabaseNetworkGate.isForcedOffline else {
             return
         }
+        eSheepCloudInitialSyncAccessValidatedAccountIDs.remove(accountID)
         defer { eSheepCloudFarmDiscoveryAccountIDs.remove(accountID) }
         do {
             let accesses = try await eSheepCloudMembershipGateway.accessibleFarms()
@@ -892,6 +943,20 @@ final class CloudCollaborationStore {
                 throw ESheepCloudMembershipError.accountMismatch
             }
             try reconcileESheepCloudAccesses(accesses, accountID: accountID)
+            // Heal Build 20's empty admission rows before opening RootView's
+            // pending-receive gate. Keep other accounts/generations untouched.
+            let completionContext = ModelContext(modelContainer)
+            completionContext.autosaveEnabled = false
+            for access in accesses {
+                _ = try ESheepCloudCompletedCheckpointReceive.reconcile(
+                    farmID: access.farmID, generation: access.farmGeneration,
+                    accountID: accountID, context: completionContext)
+            }
+            try completionContext.save()
+            // Only a successful, account-consistent response opens the UI and
+            // resume gate. An empty list is still authoritative and therefore
+            // intentionally marks the account as validated.
+            eSheepCloudInitialSyncAccessValidatedAccountIDs.insert(accountID)
             for access in accesses where access.initialSyncReady {
                 if try isActiveESheepCloudFarm(
                     farmID: access.farmID,
@@ -902,12 +967,14 @@ final class CloudCollaborationStore {
                 }
                 try persistInitialSyncAdmission(
                     farmID: access.farmID,
-                    farmGeneration: access.farmGeneration
+                    farmGeneration: access.farmGeneration,
+                    accountID: accountID
                 )
                 do {
                     _ = try await receiveESheepCloudFarm(
                         farmID: access.farmID,
-                        expectedFarmGeneration: access.farmGeneration
+                        expectedFarmGeneration: access.farmGeneration,
+                        accountID: accountID
                     )
                 } catch ESheepCloudInitialSyncError.existingFarmRequiresMigration {
                     // Existing V1 business data must enter through the audited
@@ -961,6 +1028,9 @@ final class CloudCollaborationStore {
         let bindings = try context.fetch(FetchDescriptor<FarmRemoteBinding>())
             .filter { $0.provider == .eSheepCloud }
         let farms = try context.fetch(FetchDescriptor<FarmRecord>())
+        let initialSessions = try context.fetch(
+            FetchDescriptor<ESheepCloudInitialSyncSession>()
+        )
 
         for membership in memberships {
             guard bindings.contains(where: { $0.farmID == membership.farmID }) else {
@@ -988,30 +1058,89 @@ final class CloudCollaborationStore {
                 }
             }
         }
+
+        // A first receive deliberately has no membership/binding in the main
+        // store until atomic activation. Reconcile those account-scoped
+        // sessions directly as well; otherwise a revoked account could keep a
+        // verifier task running merely because its membership row does not
+        // exist yet. Clearing the scope hides the row from both RootView and
+        // the cloud center while retaining its snapshot/checkpoint as
+        // recovery evidence. A later server-authorized discovery creates a
+        // separate session for the current generation.
+        for initialSession in initialSessions where
+            initialSession.accountID == accountID &&
+            initialSession.state != .active {
+            let access = byFarmID[initialSession.farmID]
+            let isRevoked = access == nil
+            let isGenerationChanged = access.map {
+                $0.farmGeneration != initialSession.farmGeneration
+            } ?? false
+            guard isRevoked || isGenerationChanged else { continue }
+
+            // A session is never allowed to cross an authoritative generation
+            // boundary. Keep the old manifest/chunks as recovery evidence, but
+            // remove its account claim so RootView cannot display it or a retry
+            // can accidentally combine it with the new generation. The next
+            // successful discovery creates/claims a separate session for the
+            // server-provided generation.
+            initialSession.accountID = nil
+            initialSession.state = .paused
+            initialSession.activationProjectionEventSequence = 0
+            initialSession.lastErrorTraceID = isGenerationChanged
+                ? "generation-changed"
+                : nil
+            initialSession.updatedAt = .now
+            if eSheepCloudInitialSyncTaskAccountIDsByFarmID[initialSession.farmID] == accountID {
+                eSheepCloudInitialSyncTasks[initialSession.farmID]?.cancel()
+            }
+        }
         try context.save()
     }
 
     private func persistInitialSyncAdmission(
         farmID: UUID,
-        farmGeneration: Int
+        farmGeneration: Int,
+        accountID: UUID? = nil
     ) throws {
         let context = ModelContext(modelContainer)
-        let existing = try context.fetch(
+        let sessions = try context.fetch(
             FetchDescriptor<ESheepCloudInitialSyncSession>()
-        ).contains {
+        )
+        if let existing = sessions.first(where: {
             $0.farmID == farmID &&
                 $0.farmGeneration == farmGeneration &&
-                $0.state != .active
+                $0.state != .active &&
+                (accountID == nil || $0.accountID == nil || $0.accountID == accountID)
+        }) {
+            if existing.accountID == nil {
+                existing.accountID = accountID
+                existing.updatedAt = .now
+                try context.save()
+            }
+            return
         }
-        guard !existing else { return }
-        let relativePath = "ESheepCloud/Staging/" +
-            farmID.uuidString.lowercased() +
-            "/pending/verification.store"
+        let relativePath: String
+        if let accountID {
+            relativePath = "ESheepCloud/Staging/" +
+                farmID.uuidString.lowercased() +
+                "/pending/" +
+                accountID.uuidString.lowercased() +
+                "/verification.store"
+        } else {
+            // Retain the historical path for callers that have not yet
+            // authenticated; such a row can only be claimed after the server
+            // returns an account-scoped membership and is relocated before a
+            // manifest is attached.
+            relativePath = "ESheepCloud/Staging/" +
+                farmID.uuidString.lowercased() +
+                "/pending/verification.store"
+        }
         context.insert(ESheepCloudInitialSyncSession(
             farmID: farmID,
             farmGeneration: farmGeneration,
             stagingGeneration: farmGeneration,
-            stagingStoreRelativePath: relativePath
+            stagingStoreRelativePath: relativePath,
+            accountID: accountID
         ))
         try context.save()
     }

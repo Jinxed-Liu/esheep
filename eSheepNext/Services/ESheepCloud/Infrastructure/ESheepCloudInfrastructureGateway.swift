@@ -4,11 +4,55 @@ import Supabase
 
 /// The only V2 client component that knows which database and object-storage
 /// SDK backs eSheep+ Cloud. No SDK type crosses this adapter boundary.
-actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTransferTransport {
+actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTransferTransport, ESheepCloudCheckpointGateway {
     private let client: SupabaseClient
 
     init(client: SupabaseClient) {
         self.client = client
+    }
+
+    func openCheckpoint(farmID: UUID, farmGeneration: Int, checkpointID: UUID?) async throws -> ESheepCloudCheckpointTicket {
+        struct Request: Encodable { let farm_id: UUID; let farm_generation: Int; let checkpoint_id: UUID? }
+        do {
+            let ticket: ESheepCloudCheckpointTicket = try await client.functions.invoke(
+                "esheep-cloud-checkpoints", options: FunctionInvokeOptions(
+                    body: Request(farm_id: farmID, farm_generation: farmGeneration, checkpoint_id: checkpointID)))
+            guard let manifest = ticket.manifest else { return ticket }
+            try manifest.validate()
+            guard manifest.farmID == farmID, manifest.farmGeneration == farmGeneration,
+                  checkpointID == nil || checkpointID == manifest.checkpointID,
+                  ticket.downloads.map(\.index) == Array(manifest.chunks.indices),
+                  ticket.downloads.allSatisfy({ $0.url.scheme == "https" }) else {
+                throw ESheepCloudCheckpointError.malformedRecord
+            }
+            return ticket
+        } catch FunctionsError.httpError(code: 404, data: _) {
+            // Only a missing optional checkpoint endpoint is an old-server
+            // capability fallback. A corrupt manifest must never downgrade.
+            return ESheepCloudCheckpointTicket(manifest: nil, downloads: [])
+        }
+    }
+
+    func downloadCheckpointChunk(_ download: ESheepCloudCheckpointTicket.Download,
+                                 descriptor: ESheepCloudCheckpointManifest.Chunk) async throws -> Data {
+        guard download.index == descriptor.index, download.url.scheme == "https" else {
+            throw ESheepCloudCheckpointError.malformedRecord
+        }
+        // Stream into a bounded buffer rather than allocating an unbounded
+        // response before checking the advertised compressed byte length.
+        let (bytes, response) = try await URLSession.shared.bytes(from: download.url)
+        _ = try Self.requireSuccess(response, allowed: [200])
+        var data = Data()
+        data.reserveCapacity(descriptor.compressedBytes)
+        for try await byte in bytes {
+            guard data.count < descriptor.compressedBytes else { throw ESheepCloudCheckpointError.sizeLimit }
+            data.append(byte)
+        }
+        guard data.count == descriptor.compressedBytes,
+              ESheepCloudCheckpointArchive.digest(data) == descriptor.compressedSHA256 else {
+            throw ESheepCloudCheckpointError.digestMismatch
+        }
+        return data
     }
 
     /// PostgreSQL's `encode(bytea, 'base64')` inserts line breaks into long
@@ -618,7 +662,7 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
     }
 }
 
-private enum ESheepCloudInfrastructureError: LocalizedError {
+enum ESheepCloudInfrastructureError: LocalizedError {
     case malformedResponse
     case invalidSnapshotChunk
     case commandBatchTooLarge
@@ -967,7 +1011,8 @@ private struct EventWire: Decodable, Sendable {
             sourceDeviceSequence: sourceDeviceSequence,
             occurredAt: Date(timeIntervalSince1970: Double(occurredAtMillis) / 1_000),
             receivedAt: Date(timeIntervalSince1970: Double(receivedAtMillis) / 1_000),
-            eventDigest: eventDigest
+            eventDigest: eventDigest,
+            eventBodyCanonical: eventBodyCanonical
         )
     }
 }

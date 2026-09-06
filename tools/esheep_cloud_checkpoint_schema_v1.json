@@ -1,0 +1,1806 @@
+{
+  "AccountProfile": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "serverAccountID": "UUID?",
+      "appleSubjectHash": "String",
+      "displayName": "String",
+      "avatarCloudRevision": "Int64?",
+      "avatarCloudDigest": "String?",
+      "serverBindingStateRaw": "String",
+      "authenticationMethodRawValue": "String",
+      "acceptedTermsVersion": "String",
+      "acceptedPrivacyVersion": "String",
+      "statusRawValue": "String",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "avatarImageData": "Data?"
+    }
+  },
+  "BatchMembershipRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "batchID": "UUID",
+      "sheepID": "UUID",
+      "joinedAt": "Date",
+      "leftAt": "Date?",
+      "leaveReason": "String?",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "BreedingProgramRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "name": "String",
+      "createdAt": "Date",
+      "legacySourceKey": "String?",
+      "revision": "Int",
+      "deletedAt": "Date?"
+    }
+  },
+  "BreedingProgramStepRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "programID": "UUID",
+      "dayOffset": "Int",
+      "action": "String",
+      "sortOrder": "Int",
+      "legacySourceKey": "String?",
+      "createdAt": "Date",
+      "revision": "Int",
+      "deletedAt": "Date?"
+    }
+  },
+  "CapabilityCertificateRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "serverCertificateID": "String",
+      "accountID": "UUID",
+      "farmID": "UUID",
+      "deviceID": "UUID",
+      "roleRawValue": "String",
+      "capabilitiesJSON": "String",
+      "certificateJWS": "String",
+      "issuedAt": "Date",
+      "expiresAt": "Date",
+      "revokedAt": "Date?"
+    }
+  },
+  "CareBatchRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "kindRawValue": "String",
+      "occurredAt": "Date",
+      "note": "String",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "CareReminderRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "kindRawValue": "String",
+      "sourceEntityType": "String",
+      "sourceEntityID": "UUID",
+      "sheepID": "UUID?",
+      "inventoryLotID": "UUID?",
+      "dueAt": "Date",
+      "title": "String",
+      "statusRawValue": "String",
+      "createdAt": "Date",
+      "completedAt": "Date?",
+      "deletedAt": "Date?",
+      "revision": "Int"
+    }
+  },
+  "CloudAssetTransfer": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "assetID": "UUID",
+      "localRelativePath": "String",
+      "payloadDigest": "String",
+      "byteCount": "Int64",
+      "transferredByteCount": "Int64",
+      "statusRawValue": "String",
+      "attemptCount": "Int",
+      "lastErrorCode": "String?",
+      "updatedAt": "Date",
+      "directionRawValue": "String",
+      "sourceDigest": "String",
+      "remoteRecordName": "String?",
+      "recoveryStatusRawValue": "String",
+      "nextRetryAt": "Date?"
+    }
+  },
+  "CloudFarmBinding": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "ownerAccountID": "UUID",
+      "zoneName": "String",
+      "zoneOwnerName": "String",
+      "databaseScopeRawValue": "String",
+      "shareRecordName": "String?",
+      "stateRawValue": "String",
+      "lastSuccessfulSyncAt": "Date?",
+      "lastErrorCode": "String?",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "securityGeneration": "Int",
+      "lastMembershipSnapshotAt": "Date?"
+    }
+  },
+  "CloudOperationReceipt": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "operationID": "UUID",
+      "recordName": "String",
+      "serverChangeTag": "String?",
+      "databaseScopeRawValue": "String",
+      "zoneName": "String?",
+      "zoneOwnerName": "String?",
+      "confirmedAt": "Date"
+    }
+  },
+  "CloudRebuildIssueRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "sessionID": "UUID",
+      "farmID": "UUID",
+      "severityRawValue": "String",
+      "code": "String",
+      "recordName": "String?",
+      "detail": "String",
+      "rawPayload": "Data?",
+      "createdAt": "Date"
+    }
+  },
+  "CloudRebuildSessionRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "databaseScopeRawValue": "String",
+      "reasonRawValue": "String",
+      "statusRawValue": "String",
+      "stagingRelativePath": "String",
+      "pageCount": "Int",
+      "fetchedRecordCount": "Int",
+      "fetchedOperationCount": "Int",
+      "fetchedAssetCount": "Int",
+      "downloadedAssetCount": "Int",
+      "appliedOperationCount": "Int",
+      "preservedOutboxCount": "Int",
+      "highestRevision": "Int",
+      "entityDigest": "String",
+      "progress": "Double",
+      "lastErrorCode": "String?",
+      "lastErrorMessage": "String?",
+      "retryAt": "Date?",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "completedAt": "Date?"
+    }
+  },
+  "CloudSyncDiagnosticSnapshotRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "workerHealth": "String",
+      "cloudAccount": "String",
+      "zoneName": "String",
+      "databaseScopeRawValue": "String",
+      "engineStateModifiedAt": "Date?",
+      "pendingOutboxCount": "Int",
+      "uploadingOutboxCount": "Int",
+      "blockedOutboxCount": "Int",
+      "membershipGeneration": "Int",
+      "authoritativeEntityCount": "Int",
+      "assetCount": "Int",
+      "entityDigest": "String",
+      "assetDigest": "String",
+      "capturedAt": "Date"
+    }
+  },
+  "CloudZoneState": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "databaseScopeRawValue": "String",
+      "serializedState": "Data?",
+      "lastFetchAt": "Date?",
+      "lastSendAt": "Date?",
+      "lastErrorCode": "String?",
+      "updatedAt": "Date"
+    }
+  },
+  "DailyPenCountRecord": {
+    "disposition": "rebuild",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "penID": "UUID",
+      "purpose": "String",
+      "date": "Date",
+      "count": "Int",
+      "rebuiltAt": "Date"
+    }
+  },
+  "DeviceIdentityRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "accountID": "UUID",
+      "publicKeyX963": "Data",
+      "usesSecureEnclave": "Bool",
+      "isRegistered": "Bool",
+      "createdAt": "Date",
+      "lastRegisteredAt": "Date?"
+    }
+  },
+  "DomainOperation": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "accountID": "UUID",
+      "kindRawValue": "String",
+      "occurredAt": "Date",
+      "createdAt": "Date",
+      "summary": "String",
+      "schemaVersion": "Int",
+      "entityType": "String",
+      "entityID": "UUID?",
+      "baseRevision": "Int",
+      "resultingRevision": "Int",
+      "payload": "Data",
+      "payloadDigest": "String",
+      "modifiedByDeviceID": "UUID?",
+      "capabilityCertificate": "String",
+      "operationSignature": "Data?",
+      "sourceRequestID": "UUID?"
+    },
+    "scope": "Only typed sheep-purpose business history; raw technical audit operations are rejected."
+  },
+  "ESheepCloudAssetState": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "farmGeneration": "Int",
+      "sheepID": "UUID?",
+      "contentSHA256": "String",
+      "metadataDigest": "String",
+      "metadataData": "Data",
+      "thumbnailSHA256": "String?",
+      "avatarSHA256": "String?",
+      "originalSHA256": "String?",
+      "thumbnailRelativePath": "String?",
+      "avatarRelativePath": "String?",
+      "originalRelativePath": "String?",
+      "thumbnailStateRawValue": "String",
+      "avatarStateRawValue": "String",
+      "originalStateRawValue": "String",
+      "thumbnailRemoteObjectKey": "String?",
+      "avatarRemoteObjectKey": "String?",
+      "originalRemoteObjectKey": "String?",
+      "thumbnailByteCount": "Int64",
+      "avatarByteCount": "Int64",
+      "originalByteCount": "Int64",
+      "thumbnailTransferredByteCount": "Int64",
+      "avatarTransferredByteCount": "Int64",
+      "originalTransferredByteCount": "Int64",
+      "thumbnailUploadSessionURL": "String?",
+      "avatarUploadSessionURL": "String?",
+      "originalUploadSessionURL": "String?",
+      "thumbnailUploadSessionExpiresAt": "Date?",
+      "avatarUploadSessionExpiresAt": "Date?",
+      "originalUploadSessionExpiresAt": "Date?",
+      "verifiedRemoteByteCount": "Int64",
+      "uploadedByteCount": "Int64",
+      "downloadedByteCount": "Int64",
+      "recycleExpiresAt": "Date?",
+      "lastVerifiedAt": "Date?",
+      "lastErrorTraceID": "String?",
+      "transferAttemptCount": "Int",
+      "nextTransferRetryAt": "Date?",
+      "createdAt": "Date",
+      "updatedAt": "Date"
+    }
+  },
+  "ESheepCloudAttentionItem": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "farmGeneration": "Int",
+      "commandID": "UUID",
+      "streamType": "String",
+      "streamID": "UUID",
+      "recordType": "String",
+      "recordID": "UUID",
+      "recordDisplayName": "String",
+      "fieldKey": "String",
+      "fieldDisplayName": "String",
+      "deviceValueData": "Data",
+      "cloudValueData": "Data",
+      "baseValueDigest": "String",
+      "deviceAccountID": "UUID",
+      "deviceAccountDisplayName": "String?",
+      "deviceID": "UUID",
+      "deviceDisplayName": "String?",
+      "deviceOccurredAt": "Date",
+      "cloudAccountID": "UUID?",
+      "cloudAccountDisplayName": "String?",
+      "cloudDeviceID": "UUID?",
+      "cloudDeviceDisplayName": "String?",
+      "cloudReceivedAt": "Date?",
+      "explanation": "String",
+      "dependentCommandIDsData": "Data",
+      "stateRawValue": "String",
+      "resolutionRawValue": "String?",
+      "resolutionCommandID": "UUID?",
+      "resolutionExpectedCloudValueDigest": "String?",
+      "resolverAccountID": "UUID?",
+      "resolverDeviceID": "UUID?",
+      "resolutionDeviceSequence": "Int64?",
+      "resolutionAttemptCount": "Int",
+      "resolutionAwaitingStatus": "Bool",
+      "resolutionNextRetryAt": "Date?",
+      "resolutionLastErrorMessage": "String?",
+      "resolutionServerResultData": "Data?",
+      "resolutionStartedAt": "Date?",
+      "resolutionEventID": "UUID?",
+      "createdAt": "Date",
+      "resolvedAt": "Date?",
+      "updatedAt": "Date"
+    }
+  },
+  "ESheepCloudEventReceipt": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "farmGeneration": "Int",
+      "eventSequence": "Int64",
+      "commandID": "UUID",
+      "eventDigest": "String",
+      "appliedProjectionDigest": "String",
+      "appliedAt": "Date"
+    }
+  },
+  "ESheepCloudFarmState": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "farmGeneration": "Int",
+      "protocolVersion": "Int",
+      "schemaVersion": "Int",
+      "cloudEventHead": "Int64",
+      "lastAppliedEventSequence": "Int64",
+      "lastVerifiedEventSequence": "Int64",
+      "activityStateRawValue": "String",
+      "integrityStateRawValue": "String",
+      "projectionDigest": "String",
+      "lastIntegrityCheckAt": "Date?",
+      "lastSafeSaveAt": "Date?",
+      "integrityFailureTraceID": "String?",
+      "createdAt": "Date",
+      "updatedAt": "Date"
+    }
+  },
+  "ESheepCloudInitialSyncSession": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "farmGeneration": "Int",
+      "accountID": "UUID?",
+      "stagingGeneration": "Int",
+      "snapshotID": "UUID?",
+      "boundaryEventSequence": "Int64",
+      "targetEventHead": "Int64",
+      "manifestData": "Data?",
+      "manifestDigest": "String",
+      "verifiedChunkIndexesData": "Data",
+      "receivedByteCount": "Int64",
+      "expectedByteCount": "Int64",
+      "stateRawValue": "String",
+      "stagingStoreRelativePath": "String",
+      "retryCount": "Int",
+      "lastErrorTraceID": "String?",
+      "startedAt": "Date",
+      "updatedAt": "Date",
+      "activatedAt": "Date?",
+      "verifiedProjectionEventSequence": "Int64",
+      "activationProjectionEventSequence": "Int64",
+      "lastProgressAt": "Date?"
+    }
+  },
+  "ESheepCloudMigrationState": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "sourceFarmGeneration": "Int",
+      "targetFarmGeneration": "Int",
+      "phaseRawValue": "String",
+      "sourceBackupDirectoryRelativePath": "String",
+      "sourceStoreQuickCheck": "String",
+      "sourceBackupManifestDigest": "String",
+      "sourceManifestDigest": "String",
+      "targetManifestDigest": "String",
+      "targetProjectionDigest": "String",
+      "mappingData": "Data",
+      "parityReportData": "Data?",
+      "parityDigest": "String",
+      "v1FinalEventBoundary": "Int64?",
+      "firstAcceptedV2CommandID": "UUID?",
+      "irreversibleCutoverAt": "Date?",
+      "createdAt": "Date",
+      "updatedAt": "Date"
+    }
+  },
+  "ESheepCloudPendingIntent": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "farmGeneration": "Int",
+      "accountID": "UUID",
+      "deviceID": "UUID",
+      "deviceSequence": "Int64",
+      "sourceRequestID": "UUID",
+      "bundleID": "UUID?",
+      "commandKind": "String",
+      "commandEnvelopeData": "Data",
+      "commandDigest": "String",
+      "affectedStreamsData": "Data",
+      "affectedFieldsData": "Data",
+      "prerequisiteCommandIDsData": "Data",
+      "requiredAssetIDsData": "Data",
+      "lifecycleRawValue": "String",
+      "createdAt": "Date",
+      "occurredAt": "Date",
+      "firstAttemptAt": "Date?",
+      "lastAttemptAt": "Date?",
+      "nextRetryAt": "Date?",
+      "attemptCount": "Int",
+      "lastTransportMessage": "String?",
+      "acceptedEventSequence": "Int64?",
+      "attentionItemID": "UUID?",
+      "serverResultData": "Data?",
+      "updatedAt": "Date"
+    }
+  },
+  "ESheepCloudStreamState": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "farmGeneration": "Int",
+      "streamType": "String",
+      "streamID": "UUID",
+      "streamVersion": "Int64",
+      "fieldVersionsData": "Data",
+      "canonicalStateData": "Data",
+      "contentDigest": "String",
+      "lastEventSequence": "Int64",
+      "createdAt": "Date",
+      "updatedAt": "Date"
+    }
+  },
+  "FarmActivity": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "title": "String",
+      "detail": "String",
+      "occurredAt": "Date",
+      "createdAt": "Date"
+    }
+  },
+  "FarmAlertDeferralRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "alertID": "UUID",
+      "alertKindRawValue": "String",
+      "subjectID": "UUID?",
+      "sourceEntityID": "UUID?",
+      "conditionFingerprint": "String",
+      "deferredUntil": "Date",
+      "deferredByAccountID": "UUID",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "revision": "Int"
+    }
+  },
+  "FarmBaselineMigrationRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "migrationID": "UUID",
+      "frozenOperationSequence": "Int64",
+      "packageRelativePath": "String",
+      "packageDigest": "String",
+      "confirmedBatchCount": "Int",
+      "confirmedOperationCount": "Int",
+      "uploadedAssetCount": "Int",
+      "serverRevision": "Int",
+      "checkpointID": "UUID?",
+      "operationCount": "Int",
+      "entityCount": "Int",
+      "tombstoneCount": "Int",
+      "assetCount": "Int",
+      "createdAt": "Date",
+      "updatedAt": "Date"
+    }
+  },
+  "FarmCareRuleRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "pregnancyCheckDays": "Int",
+      "gestationDays": "Int",
+      "weaningAgeDays": "Int?",
+      "warningLeadDays": "Int",
+      "operationalAlertsConfiguredAt": "Date?",
+      "alertDigestEnabled": "Bool",
+      "alertDigestMinuteOfDay": "Int",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "revision": "Int"
+    }
+  },
+  "FarmCheckpointRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "reasonRawValue": "String",
+      "operationWatermark": "Date",
+      "manifestDigest": "String",
+      "encryptedRelativePath": "String",
+      "byteCount": "Int64",
+      "entityCount": "Int",
+      "assetCount": "Int",
+      "securityGeneration": "Int",
+      "cloudRecordName": "String?",
+      "createdAt": "Date",
+      "verifiedAt": "Date?",
+      "restoredAt": "Date?"
+    }
+  },
+  "FarmMembershipBinding": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "serverMembershipID": "String",
+      "farmID": "UUID",
+      "accountID": "UUID",
+      "displayName": "String?",
+      "roleRawValue": "String",
+      "statusRawValue": "String",
+      "shareParticipantRecordName": "String?",
+      "createdAt": "Date",
+      "updatedAt": "Date"
+    }
+  },
+  "FarmMembershipSnapshotRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "generation": "Int",
+      "issuedAt": "Date",
+      "payload": "Data",
+      "payloadDigest": "String",
+      "signedByAccountID": "UUID",
+      "signedByDeviceID": "UUID",
+      "capabilityCertificate": "String",
+      "signature": "Data",
+      "cloudRecordName": "String?",
+      "validatedAt": "Date?"
+    }
+  },
+  "FarmOperationSequenceCounter": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "nextSequence": "Int64"
+    }
+  },
+  "FarmOperationSequenceRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "operationID": "UUID",
+      "clientSequence": "Int64"
+    }
+  },
+  "FarmRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "ownerAccountID": "UUID",
+      "name": "String",
+      "roleRawValue": "String",
+      "membershipStatusRawValue": "String",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?",
+      "isLocalOnlyMigration": "Bool",
+      "locationDisplayName": "String?",
+      "latitude": "Double?",
+      "longitude": "Double?",
+      "coordinateReferenceSystem": "String",
+      "addressSnapshot": "String?",
+      "timeZoneIdentifier": "String",
+      "locationSourceRawValue": "String?",
+      "horizontalAccuracyMeters": "Double?",
+      "locationUpdatedAt": "Date?"
+    }
+  },
+  "FarmRecoveryAssetRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "assetID": "UUID",
+      "payloadDigest": "String",
+      "encryptedRelativePath": "String",
+      "byteCount": "Int64",
+      "cloudRecordName": "String?",
+      "createdAt": "Date",
+      "verifiedAt": "Date?",
+      "eligibleForDeletionAt": "Date?"
+    }
+  },
+  "FarmRemoteBinding": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "ownerAccountID": "UUID",
+      "providerRawValue": "String",
+      "stateRawValue": "String",
+      "authorityGeneration": "Int",
+      "remoteFarmID": "String?",
+      "remoteLocatorData": "Data?",
+      "lastPulledRevision": "Int",
+      "lastSuccessfulSyncAt": "Date?",
+      "lastErrorCode": "String?",
+      "createdAt": "Date",
+      "updatedAt": "Date"
+    }
+  },
+  "FarmRemoteRestoreRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "accountID": "UUID",
+      "ownerAccountID": "UUID?",
+      "memberRoleRawValue": "String?",
+      "serverMembershipID": "String?",
+      "farmID": "UUID",
+      "authorityGeneration": "Int",
+      "stateRawValue": "String",
+      "checkpointID": "UUID?",
+      "checkpointMigrationID": "UUID?",
+      "checkpointRelativePath": "String?",
+      "checkpointDigest": "String?",
+      "checkpointRevision": "Int",
+      "targetCursorRevision": "Int",
+      "currentCursorRevision": "Int",
+      "totalEntityCount": "Int",
+      "restoredEntityCount": "Int",
+      "totalAssetCount": "Int",
+      "downloadedAssetCount": "Int",
+      "promotedAssetCount": "Int",
+      "lastErrorCode": "String?",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "completedAt": "Date?"
+    }
+  },
+  "FarmStorageProfile": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "modeRawValue": "String",
+      "transitionStateRawValue": "String",
+      "authorityGeneration": "Int",
+      "migrationID": "UUID?",
+      "sourceModeRawValue": "String?",
+      "targetModeRawValue": "String?",
+      "createdAt": "Date",
+      "updatedAt": "Date"
+    }
+  },
+  "FeedIngredientBatchRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "ingredientID": "UUID",
+      "legacySourceKey": "String",
+      "batchName": "String",
+      "purchaseDate": "Date?",
+      "supplier": "String",
+      "storageLocation": "String",
+      "pricePerKilogramText": "String",
+      "purchasedKilogramsText": "String?",
+      "packagingKindRawValue": "String",
+      "packageCountText": "String?",
+      "nominalPackageKilogramsText": "String?",
+      "stockWeightConfirmed": "Bool",
+      "initialKilogramsText": "String?",
+      "remainingKilogramsText": "String?",
+      "note": "String",
+      "isActive": "Bool",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "revision": "Int",
+      "deletedAt": "Date?"
+    }
+  },
+  "FeedIngredientRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "name": "String",
+      "category": "String",
+      "legacySourceKey": "String?",
+      "kindRawValue": "String",
+      "sourceTemplateID": "String?",
+      "sourceTemplateCode": "String?",
+      "mixtureComponentsJSON": "String?",
+      "note": "String",
+      "nutrientSnapshotJSON": "String",
+      "unit": "String",
+      "dryMatterText": "String?",
+      "isActive": "Bool",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "FeedRecipeComponentRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "recipeID": "UUID",
+      "ingredientID": "UUID",
+      "ingredientBatchID": "UUID?",
+      "kilogramsText": "String",
+      "legacyBatchID": "String?",
+      "pricePerKilogramText": "String?",
+      "nutrientSnapshotJSON": "String",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "FeedRecipeRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "name": "String",
+      "targetPenID": "UUID?",
+      "targetPenName": "String?",
+      "stageRawValue": "String",
+      "headCount": "Int?",
+      "legacySourceKey": "String?",
+      "note": "String",
+      "isActive": "Bool",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "FeedRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "penID": "UUID",
+      "recipeID": "UUID?",
+      "modeRawValue": "String",
+      "occurredAt": "Date",
+      "recordedAt": "Date",
+      "note": "String",
+      "mealName": "String",
+      "feederName": "String",
+      "remainingKilogramsText": "String?",
+      "discardedKilogramsText": "String?",
+      "recipeHeadCountSnapshot": "Int?",
+      "actualHeadCountSnapshot": "Int?",
+      "scaleFactorText": "String?",
+      "remainingCompositionJSON": "String?",
+      "excludedSheepIDsJSON": "String",
+      "legacySourceKey": "String?",
+      "revision": "Int",
+      "deletedAt": "Date?"
+    }
+  },
+  "FeedRecordLine": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "feedRecordID": "UUID",
+      "ingredientID": "UUID",
+      "kilogramsText": "String",
+      "stockQuantityText": "String?",
+      "ingredientNameSnapshot": "String",
+      "ingredientBatchID": "UUID?",
+      "ingredientBatchNameSnapshot": "String?",
+      "pricePerKilogramTextSnapshot": "String?",
+      "nutrientSnapshotJSON": "String?",
+      "unitSnapshot": "String?",
+      "dryMatterTextSnapshot": "String?",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "FeedStockCountRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "ingredientBatchID": "UUID",
+      "bookBalanceText": "String",
+      "actualKilogramsText": "String?",
+      "differenceText": "String?",
+      "methodRawValue": "String",
+      "occurredAt": "Date",
+      "note": "String",
+      "adjustmentTransactionID": "UUID?",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "FeedStockTransactionRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "ingredientBatchID": "UUID",
+      "kindRawValue": "String",
+      "quantityText": "String",
+      "occurredAt": "Date",
+      "sourceRecordID": "UUID?",
+      "sourceLineID": "UUID?",
+      "note": "String",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "FeedTroughObservationRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "penID": "UUID",
+      "relatedFeedRecordID": "UUID?",
+      "feederName": "String",
+      "observedAt": "Date",
+      "actualRemainingKilogramsText": "String",
+      "discardedKilogramsText": "String?",
+      "measurementMethodRawValue": "String",
+      "compositionSnapshotJSON": "String?",
+      "note": "String",
+      "recordedAt": "Date",
+      "revision": "Int",
+      "deletedAt": "Date?"
+    }
+  },
+  "HealthCatalogItemRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "legacySourceKey": "String",
+      "legacyCatalogID": "String",
+      "kindRawValue": "String",
+      "name": "String",
+      "category": "String",
+      "unit": "String",
+      "defaultDoseText": "String?",
+      "defaultRoute": "String",
+      "reminderIntervalDays": "Int?",
+      "note": "String",
+      "isActive": "Bool",
+      "createdAt": "Date"
+    }
+  },
+  "HealthRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "sheepID": "UUID?",
+      "penID": "UUID?",
+      "kindRawValue": "String",
+      "itemNameSnapshot": "String",
+      "occurredAt": "Date",
+      "note": "String",
+      "inventoryLotID": "UUID?",
+      "catalogItemID": "UUID?",
+      "batchID": "UUID?",
+      "quantityText": "String?",
+      "unit": "String",
+      "route": "String",
+      "legacySourceKey": "String?",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "HealthSubjectLink": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "healthRecordID": "UUID",
+      "sheepID": "UUID",
+      "createdAt": "Date"
+    }
+  },
+  "InsightActionDraftRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "conversationID": "UUID",
+      "messageID": "UUID?",
+      "accountID": "UUID",
+      "farmID": "UUID",
+      "originDeviceID": "UUID",
+      "toolName": "String",
+      "title": "String",
+      "summary": "String",
+      "argumentsJSON": "Data",
+      "riskRawValue": "String",
+      "requiredCapabilityRawValue": "String",
+      "expectedEntityID": "UUID?",
+      "expectedRevision": "Int?",
+      "reason": "String",
+      "statusRawValue": "String",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "executedOperationID": "UUID?",
+      "errorMessage": "String?"
+    }
+  },
+  "InsightAttachmentRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "conversationID": "UUID",
+      "messageID": "UUID?",
+      "accountID": "UUID",
+      "farmID": "UUID",
+      "mimeType": "String",
+      "imageData": "Data?",
+      "pixelWidth": "Int",
+      "pixelHeight": "Int",
+      "byteCount": "Int",
+      "digest": "String",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "InsightConversationRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "accountID": "UUID",
+      "farmID": "UUID",
+      "title": "String",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?",
+      "revision": "Int64"
+    }
+  },
+  "InsightExecutionReceiptRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "sourceRequestID": "UUID",
+      "accountID": "UUID",
+      "farmID": "UUID",
+      "operationID": "UUID",
+      "entityType": "String",
+      "entityID": "UUID?",
+      "createdAt": "Date"
+    }
+  },
+  "InsightMessageRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "conversationID": "UUID",
+      "accountID": "UUID",
+      "farmID": "UUID",
+      "roleRawValue": "String",
+      "text": "String",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "statusRawValue": "String",
+      "provider": "String",
+      "model": "String",
+      "errorMessage": "String?",
+      "providerResponseID": "String?",
+      "toolName": "String?"
+    }
+  },
+  "InsightSyncStateRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "accountID": "UUID",
+      "cursor": "String?",
+      "lastPulledAt": "Date?",
+      "lastPushedAt": "Date?",
+      "lastErrorMessage": "String?"
+    }
+  },
+  "InventoryLotRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "catalogName": "String",
+      "catalogItemID": "UUID?",
+      "legacySourceKey": "String?",
+      "batchNumber": "String",
+      "supplier": "String",
+      "receivedAt": "Date?",
+      "unit": "String",
+      "kindRawValue": "String",
+      "expiresAt": "Date?",
+      "startingQuantityText": "String",
+      "createdAt": "Date",
+      "isActive": "Bool",
+      "deletedAt": "Date?"
+    }
+  },
+  "InventoryTransactionRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "inventoryLotID": "UUID",
+      "kindRawValue": "String",
+      "quantityText": "String",
+      "occurredAt": "Date",
+      "sourceRecordID": "UUID?",
+      "note": "String",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "LambingOffspringRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "lambingRecordID": "UUID",
+      "sheepID": "UUID?",
+      "legacyEarTag": "String",
+      "sexRawValue": "String",
+      "birthWeightText": "String",
+      "isStillborn": "Bool",
+      "autoCreatedSheep": "Bool",
+      "autoBirthWeightRecordID": "UUID?",
+      "autoPedigreeRevokedByLambing": "Bool",
+      "autoBirthWeightRevokedByLambing": "Bool",
+      "deletedByLambingRevocation": "Bool",
+      "revision": "Int",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "MigrationAuditRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "sessionID": "UUID",
+      "sourceKey": "String",
+      "entityType": "String",
+      "targetEntityIDsJSON": "String",
+      "rawPayloadJSON": "String",
+      "resolution": "String",
+      "exclusionReason": "String?",
+      "createdAt": "Date"
+    }
+  },
+  "MigrationCommitRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "sessionID": "UUID",
+      "sourceChecksum": "String",
+      "farmID": "UUID",
+      "ownerAccountID": "UUID",
+      "statusRawValue": "String",
+      "recordCountsJSON": "String",
+      "assetsRelativeDirectory": "String",
+      "committedAt": "Date",
+      "cloudStateRawValue": "String",
+      "baselineDigest": "String",
+      "baselineEntityCount": "Int",
+      "baselinePhotoCount": "Int",
+      "cloudRetryCount": "Int",
+      "cloudLastError": "String?",
+      "cloudUpgradedAt": "Date?",
+      "cloudSyncedAt": "Date?"
+    }
+  },
+  "NoteRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "sheepID": "UUID?",
+      "penID": "UUID?",
+      "text": "String",
+      "occurredAt": "Date",
+      "createdAt": "Date",
+      "deletedAt": "Date?",
+      "revision": "Int"
+    }
+  },
+  "OutboxItem": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "accountID": "UUID",
+      "operationID": "UUID",
+      "createdAt": "Date",
+      "lastAttemptAt": "Date?",
+      "attemptCount": "Int",
+      "statusRawValue": "String",
+      "errorMessage": "String?",
+      "entityType": "String",
+      "entityID": "UUID?",
+      "baseRevision": "Int",
+      "payloadDigest": "String",
+      "operationSignature": "Data?",
+      "capabilityCertificate": "String",
+      "nextRetryAt": "Date?",
+      "cloudRecordName": "String?",
+      "deliveryProviderRawValue": "String?",
+      "authorityGeneration": "Int",
+      "remoteReceiptData": "Data?"
+    }
+  },
+  "PedigreeChangeRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "sheepID": "UUID",
+      "beforeDamID": "UUID?",
+      "afterDamID": "UUID?",
+      "beforeSireID": "UUID?",
+      "afterSireID": "UUID?",
+      "beforeSemenDonorID": "UUID?",
+      "afterSemenDonorID": "UUID?",
+      "beforeDamSourceRawValue": "String?",
+      "afterDamSourceRawValue": "String?",
+      "beforeSireSourceRawValue": "String?",
+      "afterSireSourceRawValue": "String?",
+      "reason": "String",
+      "changedByAccountID": "UUID",
+      "sheepRevision": "Int",
+      "occurredAt": "Date"
+    }
+  },
+  "PenRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "name": "String",
+      "note": "String",
+      "isActive": "Bool",
+      "revision": "Int",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "PhotoAssetRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "sheepID": "UUID?",
+      "legacySourceKey": "String",
+      "originalEarTag": "String",
+      "relativePath": "String",
+      "sha256": "String",
+      "mimeType": "String",
+      "sourceSHA256": "String",
+      "sourcePixelWidth": "Int",
+      "sourcePixelHeight": "Int",
+      "cloudPixelWidth": "Int",
+      "cloudPixelHeight": "Int",
+      "capturedAt": "Date?",
+      "cloudRecordName": "String?",
+      "recoveryRecordName": "String?",
+      "isCloudAuthoritative": "Bool",
+      "recoveryBackedUpAt": "Date?",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "ProductionBatchRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "name": "String",
+      "purpose": "String",
+      "sourceRawValue": "String",
+      "statusRawValue": "String",
+      "startedAt": "Date",
+      "endedAt": "Date?",
+      "note": "String",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "RemovalRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "sheepID": "UUID",
+      "kindRawValue": "String",
+      "reason": "String",
+      "amountText": "String?",
+      "removalBatchID": "UUID?",
+      "batchTotalAmountText": "String?",
+      "occurredAt": "Date",
+      "recordedAt": "Date",
+      "note": "String",
+      "revision": "Int",
+      "deletedAt": "Date?"
+    }
+  },
+  "ReproductionRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "eweID": "UUID",
+      "kindRawValue": "String",
+      "occurredAt": "Date",
+      "sireID": "UUID?",
+      "semenID": "UUID?",
+      "batchID": "UUID?",
+      "relatedBreedingRecordID": "UUID?",
+      "semenNameSnapshot": "String?",
+      "semenDonorID": "UUID?",
+      "semenDonorNameSnapshot": "String?",
+      "semenDonorRegistrationNumberSnapshot": "String?",
+      "semenDonorBreedSnapshot": "String?",
+      "paternalSourceRawValue": "String?",
+      "result": "String",
+      "lambCount": "Int",
+      "parity": "Int?",
+      "birthDeadCount": "Int?",
+      "note": "String",
+      "legacySourceKey": "String?",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "revision": "Int",
+      "deletedAt": "Date?"
+    }
+  },
+  "RevokedCapabilityCertificateRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "serverCertificateID": "String",
+      "farmID": "UUID",
+      "revokedAt": "Date"
+    }
+  },
+  "SecurityIncidentRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID?",
+      "incidentType": "String",
+      "recordName": "String?",
+      "accountID": "UUID?",
+      "deviceID": "UUID?",
+      "detail": "String",
+      "rawPayload": "Data?",
+      "detectedAt": "Date",
+      "reviewedAt": "Date?"
+    }
+  },
+  "SemenDonorRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "name": "String",
+      "registrationNumber": "String",
+      "breed": "String",
+      "linkedRamID": "UUID?",
+      "note": "String",
+      "statusRawValue": "String",
+      "revision": "Int",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "SemenRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "code": "String",
+      "breed": "String",
+      "source": "String",
+      "batchNumber": "String",
+      "quantityText": "String",
+      "donorID": "UUID?",
+      "revision": "Int",
+      "legacySourceKey": "String?",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "SemenTransactionRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "semenID": "UUID",
+      "kindRawValue": "String",
+      "quantityText": "String",
+      "occurredAt": "Date",
+      "sourceRecordID": "UUID?",
+      "note": "String",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "SheepAvatarRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "sheepID": "UUID",
+      "photoAssetID": "UUID?",
+      "updatedAt": "Date"
+    }
+  },
+  "SheepRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "earTag": "String",
+      "legacyEarTag": "String?",
+      "legacySourceKey": "String?",
+      "isHistoricalArchive": "Bool",
+      "legacyStatusSnapshotIsAuthoritative": "Bool?",
+      "legacyPenSnapshotIsAuthoritative": "Bool?",
+      "breed": "String",
+      "purpose": "String",
+      "isBreedingRam": "Bool",
+      "sexRawValue": "String",
+      "statusRawValue": "String",
+      "currentPenID": "UUID?",
+      "initialPenID": "UUID?",
+      "damID": "UUID?",
+      "sireID": "UUID?",
+      "damProvenanceRawValue": "String?",
+      "sireProvenanceRawValue": "String?",
+      "semenDonorID": "UUID?",
+      "semenDonorNameSnapshot": "String?",
+      "semenDonorRegistrationNumberSnapshot": "String?",
+      "semenDonorBreedSnapshot": "String?",
+      "enteredAt": "Date",
+      "birthAt": "Date?",
+      "removedAt": "Date?",
+      "note": "String",
+      "revision": "Int",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "SyncConflictRecord": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "entityID": "UUID",
+      "entityType": "String",
+      "localRevision": "Int",
+      "remoteRevision": "Int",
+      "localPayload": "Data",
+      "remotePayload": "Data",
+      "remoteEnvelopeData": "Data?",
+      "remoteAccountID": "UUID?",
+      "remoteDeviceID": "UUID?",
+      "reasonCode": "String",
+      "statusRawValue": "String",
+      "detectedAt": "Date",
+      "resolvedAt": "Date?",
+      "resolutionNote": "String",
+      "resolutionOperationID": "UUID?",
+      "resolvedByAccountID": "UUID?",
+      "resolvedByDeviceID": "UUID?",
+      "localPayloadDigest": "String",
+      "remotePayloadDigest": "String",
+      "resolutionFailureReason": "String?"
+    }
+  },
+  "TMRBatchIngredientRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "batchID": "UUID",
+      "ingredientID": "UUID",
+      "ingredientNameSnapshot": "String",
+      "plannedKilogramsText": "String",
+      "actualKilogramsText": "String",
+      "unitSnapshot": "String",
+      "pricePerKilogramTextSnapshot": "String?",
+      "nutrientSnapshotJSON": "String",
+      "dryMatterTextSnapshot": "String?",
+      "sortOrder": "Int",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "TMRBatchLoadLineRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "batchID": "UUID",
+      "batchIngredientID": "UUID",
+      "ingredientID": "UUID",
+      "ingredientBatchID": "UUID",
+      "ingredientBatchNameSnapshot": "String",
+      "actualKilogramsText": "String",
+      "sortOrder": "Int",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "TMRBatchMovementRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "batchID": "UUID",
+      "kindRawValue": "String",
+      "deltaKilogramsText": "String",
+      "occurredAt": "Date",
+      "sourceRecordID": "UUID?",
+      "sourceMovementID": "UUID?",
+      "note": "String",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "TMRBatchRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "batchCode": "String",
+      "formulaID": "UUID",
+      "formulaRevision": "Int",
+      "formulaNameSnapshot": "String",
+      "quantityBasisRawValue": "String",
+      "referenceHeadCountSnapshot": "Int?",
+      "componentSnapshotJSON": "String",
+      "sourcePlanID": "UUID?",
+      "sourcePlanRevision": "Int?",
+      "sourcePlanDate": "Date?",
+      "sourcePlanMealsJSON": "String?",
+      "producedAt": "Date",
+      "producedKilogramsText": "String",
+      "statusRawValue": "String",
+      "note": "String",
+      "revision": "Int",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "closedAt": "Date?",
+      "deletedAt": "Date?"
+    }
+  },
+  "TMRDeviationAcknowledgementRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "planID": "UUID",
+      "planRevision": "Int",
+      "penID": "UUID",
+      "localDay": "Date",
+      "mealRawValue": "String",
+      "fingerprint": "String",
+      "note": "String",
+      "acknowledgedAt": "Date",
+      "acknowledgedByAccountID": "String",
+      "revision": "Int",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "TMRFeedingAllocationRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "runID": "UUID",
+      "batchID": "UUID",
+      "feedRecordID": "UUID",
+      "planID": "UUID?",
+      "planRevision": "Int?",
+      "penID": "UUID",
+      "penNameSnapshot": "String",
+      "actualHeadCountSnapshot": "Int",
+      "actualKilogramsText": "String",
+      "targetKilogramsTextSnapshot": "String?",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "TMRFeedingPlanPenRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "planID": "UUID",
+      "penID": "UUID",
+      "penNameSnapshot": "String",
+      "fixedShareText": "String?",
+      "sortOrder": "Int",
+      "revision": "Int",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "TMRFeedingPlanRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "formulaID": "UUID",
+      "formulaRevision": "Int",
+      "formulaNameSnapshot": "String",
+      "quantityBasisRawValue": "String",
+      "referenceHeadCountSnapshot": "Int?",
+      "formulaDailyTotalKilogramsText": "String",
+      "componentSnapshotJSON": "String",
+      "scheduleKindRawValue": "String",
+      "effectiveStartDate": "Date",
+      "effectiveEndDate": "Date?",
+      "scaleModeRawValue": "String",
+      "allocationModeRawValue": "String",
+      "granularityRawValue": "String",
+      "morningShareText": "String",
+      "noonShareText": "String",
+      "eveningShareText": "String",
+      "tolerancePercentText": "String",
+      "morningCutoffMinute": "Int",
+      "noonCutoffMinute": "Int",
+      "eveningCutoffMinute": "Int",
+      "allDayCutoffMinute": "Int",
+      "monitoringEnabled": "Bool",
+      "note": "String",
+      "revision": "Int",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "TMRFeedingRunRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "batchID": "UUID",
+      "batchCodeSnapshot": "String",
+      "formulaID": "UUID",
+      "formulaRevision": "Int",
+      "formulaNameSnapshot": "String",
+      "mealRawValue": "String",
+      "occurredAt": "Date",
+      "note": "String",
+      "batchRevisionBefore": "Int",
+      "batchRevisionAfter": "Int",
+      "revision": "Int",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "TMRFormulaProfileRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "recipeID": "UUID",
+      "quantityBasisRawValue": "String",
+      "referenceHeadCount": "Int?",
+      "defaultScaleModeRawValue": "String",
+      "morningShareText": "String",
+      "noonShareText": "String",
+      "eveningShareText": "String",
+      "formulaRevision": "Int",
+      "needsReview": "Bool",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "TMRMealCompletionRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "planID": "UUID",
+      "planRevision": "Int",
+      "penID": "UUID",
+      "localDay": "Date",
+      "mealRawValue": "String",
+      "completedAt": "Date",
+      "note": "String",
+      "revision": "Int",
+      "createdAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "TMRMonitoringRuleRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "tolerancePercentText": "String",
+      "morningCutoffMinute": "Int",
+      "noonCutoffMinute": "Int",
+      "eveningCutoffMinute": "Int",
+      "allDayCutoffMinute": "Int",
+      "monitoringEnabledAt": "Date?",
+      "revision": "Int",
+      "createdAt": "Date",
+      "updatedAt": "Date",
+      "deletedAt": "Date?"
+    }
+  },
+  "TombstoneRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "entityType": "String",
+      "entityID": "UUID",
+      "deletedAt": "Date",
+      "deletedByAccountID": "UUID",
+      "reason": "String",
+      "revision": "Int",
+      "operationID": "UUID?",
+      "restoredByOperationID": "UUID?",
+      "restoredAt": "Date?"
+    }
+  },
+  "TransferRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "sheepID": "UUID",
+      "fromPenID": "UUID?",
+      "toPenID": "UUID?",
+      "occurredAt": "Date",
+      "recordedAt": "Date",
+      "note": "String",
+      "revision": "Int",
+      "deletedAt": "Date?"
+    }
+  },
+  "WeaningRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "sheepID": "UUID",
+      "occurredAt": "Date",
+      "weanWeightText": "String",
+      "birthAt": "Date?",
+      "birthWeightText": "String?",
+      "averageDailyGainText": "String?",
+      "damID": "UUID?",
+      "legacyDamEarTag": "String?",
+      "litterSize": "Int?",
+      "note": "String",
+      "legacySourceKey": "String?",
+      "recordedAt": "Date",
+      "revision": "Int",
+      "deletedAt": "Date?"
+    }
+  },
+  "WeightRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "sheepID": "UUID",
+      "kilogramsText": "String",
+      "occurredAt": "Date",
+      "recordedAt": "Date",
+      "note": "String",
+      "revision": "Int",
+      "deletedAt": "Date?"
+    }
+  },
+  "ESheepCloudCheckpointState": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "farmGeneration": "Int",
+      "accountID": "UUID",
+      "boundaryEventSequence": "Int64",
+      "boundaryEventDigest": "String",
+      "receiptChainDigest": "String",
+      "manifestDigest": "String",
+      "importedChunkCount": "Int",
+      "stateRawValue": "String",
+      "createdAt": "Date"
+    }
+  }
+}

@@ -1,6 +1,54 @@
 {
   "sourceLanguage" : "zh-Hans",
   "strings" : {
+    "本机占用，包含业务库、照片和接收副本；不是云端下载大小。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local storage including business data, photos, and receiving files. This is not the cloud download size."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机占用，包含业务库、照片和接收副本；不是云端下载大小。"
+          }
+        }
+      }
+    },
+    "本机牧场资料构成" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local farm storage breakdown"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本机牧场资料构成"
+          }
+        }
+      }
+    },
+    "业务库与接收文件按整个 App 统计，照片按当前牧场统计；此处显示实际磁盘占用，另有少量配置文件未单列。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Business and receiving files cover the entire app; photos cover this farm. Values show disk space used. Small configuration files are not listed separately."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "业务库与接收文件按整个 App 统计，照片按当前牧场统计；此处显示实际磁盘占用，另有少量配置文件未单列。"
+          }
+        }
+      }
+    },
     "" : {
       "localizations" : {
         "en" : {
@@ -584,6 +632,38 @@
         }
       }
     },
+    "%@ → %@" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ → %2$@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ → %@"
+          }
+        }
+      }
+    },
+    "%@ → %@ 千克 · %lld 天" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ → %2$@ 千克 · %3$lld 天"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ → %@ kg · %lld days"
+          }
+        }
+      }
+    },
     "%@ g/天" : {
       "localizations" : {
         "en" : {
@@ -690,6 +770,26 @@
         }
       }
     },
+    "%@ 千克/天" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ kg/day"
+          }
+        }
+      }
+    },
+    "%@ 只是旧档父本线索，尚未确认种公羊资格。请先单独确认资格，再将它录入为父本。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is only a sire reference from a legacy record, not a confirmed breeding ram. Confirm its breeding eligibility separately before recording it as the sire."
+          }
+        }
+      }
+    },
     "%@ 已创建，共导入 %lld 条记录和 %lld 张照片。%@" : {
       "localizations" : {
         "en" : {
@@ -718,6 +818,26 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "%1$@ 已补齐缺失的 eSheep+ 历史数据。当前共核对 %2$lld 条记录。%3$@"
+          }
+        }
+      }
+    },
+    "%@ 当前不是已确认种公羊。请先在“羊只用途”中将它明确设为种公羊，保存成功后再返回录入父本关系。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is not a confirmed breeding ram. Set its purpose to Breeding Ram in Sheep Purpose, save, then return to record the sire relationship."
+          }
+        }
+      }
+    },
+    "%@ 当前不是已确认种公羊。请先在羊只用途管理中将它设为种公羊，确认成功后重新检查系谱。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is not a confirmed breeding ram. Set its purpose to Breeding Ram in Sheep Purpose Management, confirm the change, then check the pedigree again."
           }
         }
       }
@@ -926,6 +1046,16 @@
         }
       }
     },
+    "%@需要选择保留哪一边" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose which version of %@ to keep"
+          }
+        }
+      }
+    },
     "%@顿（%@%%）" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1057,6 +1187,16 @@
         }
       }
     },
+    "%lld 张照片只做资料核对，不会重复上传" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld photos will only be verified, not uploaded again"
+          }
+        }
+      }
+    },
     "%lld 条" : {
       "localizations" : {
         "en" : {
@@ -1182,12 +1322,42 @@
         }
       }
     },
+    "%lld 项内容需要选择保留哪一边" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose which version to keep for %lld items"
+          }
+        }
+      }
+    },
     "%lld 项待处理" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld items pending"
+          }
+        }
+      }
+    },
+    "%lld 项正在等待原始处理结果" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld items are awaiting their original processing results"
+          }
+        }
+      }
+    },
+    "%lld 项需要完成后选择" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld items require a choice after processing completes"
           }
         }
       }
@@ -1793,6 +1963,7 @@
       }
     },
     "Cursor" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1949,6 +2120,56 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "eSheep+3.1 Launch is free of charge and does not provide subscriptions purchased or automatically renewed in App."
+          }
+        }
+      }
+    },
+    "eSheep+ 云" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "eSheep+ Cloud"
+          }
+        }
+      }
+    },
+    "eSheep+ 云一次性邀请码" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "eSheep+ Cloud single-use invite code"
+          }
+        }
+      }
+    },
+    "eSheep+ 云状态，%@" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "eSheep+ Cloud status, %@"
+          }
+        }
+      }
+    },
+    "eSheep+ 云确认处理完成之前，这项内容仍会显示为正在处理。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This item remains in progress until eSheep+ Cloud confirms completion."
+          }
+        }
+      }
+    },
+    "eSheep+ 云账号服务尚未配置，暂时无法注册或登录。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The eSheep+ Cloud account service is not configured. Registration and sign-in are unavailable."
           }
         }
       }
@@ -2620,6 +2841,7 @@
       }
     },
     "Supabase 一次性邀请码" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -2641,6 +2863,7 @@
       }
     },
     "Supabase 恢复" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -3223,6 +3446,26 @@
         }
       }
     },
+    "一张照片，预览尚未准备好" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "One photo, preview not yet ready"
+          }
+        }
+      }
+    },
+    "一张照片（正在准备预览）" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "One photo (preparing preview)"
+          }
+        }
+      }
+    },
     "一次为 1 到 50 只羊生成完整断奶卡片。整批使用同一个断奶日期、目标圈舍和备注；每张卡片在一次用户确认后原子写入断奶事实并调入目标圈舍。必须整批校验成功后才生成，不能拆成称重卡片和转群卡片。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -3545,6 +3788,16 @@
         }
       }
     },
+    "下载牧场资料" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download Farm Data"
+          }
+        }
+      }
+    },
     "下限" : {
       "localizations" : {
         "en" : {
@@ -3567,11 +3820,22 @@
       }
     },
     "不会删除业务库、WAL/SHM、照片、eSheep 云迁移备份、Outbox、Tombstone、回执或 Keychain。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "This does not delete the business database, WAL/SHM files, photos, eSheep Cloud migration backups, Outbox, Tombstones, receipts, or Keychain data."
+          }
+        }
+      }
+    },
+    "不会删除牧场数据库、照片、eSheep+ 云迁移备份、等待保存的内容、删除与恢复记录、云端回执或安全凭据。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The farm database, photos, eSheep+ Cloud migration backups, pending changes, deletion and restoration history, cloud receipts, and credentials will not be deleted."
           }
         }
       }
@@ -3634,6 +3898,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Not qualified %@"
+          }
+        }
+      }
+    },
+    "不合法" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invalid"
+          }
+        }
+      }
+    },
+    "不合法，阻止整批" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invalid; blocks the entire batch"
           }
         }
       }
@@ -3739,6 +4023,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "ZIP files using data descriptors are not supported."
+          }
+        }
+      }
+    },
+    "不改变 eSheep+ 云当前内容" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep the current eSheep+ Cloud content unchanged"
           }
         }
       }
@@ -3903,6 +4197,7 @@
       }
     },
     "业务实体" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -3933,6 +4228,16 @@
         }
       }
     },
+    "业务数据已安全保存" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Farm data safely saved"
+          }
+        }
+      }
+    },
     "业务类型" : {
       "localizations" : {
         "en" : {
@@ -3949,6 +4254,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Business rules"
+          }
+        }
+      }
+    },
+    "业务记录" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Business records"
           }
         }
       }
@@ -4800,6 +5115,26 @@
         }
       }
     },
+    "云端版本" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cloud revision"
+          }
+        }
+      }
+    },
+    "云端版本哈希" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cloud revision hash"
+          }
+        }
+      }
+    },
     "云端牧场恢复失败" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -5442,11 +5777,22 @@
       }
     },
     "仍有 %lld 条记录等待上传。请联网同步完成后再导出完整备份。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld records are still waiting to upload. Connect and finish syncing before exporting a full backup."
+          }
+        }
+      }
+    },
+    "仍有 %lld 项内容等待保存。请联网完成保存后再导出完整备份。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld items are still waiting to save. Connect to the network and finish saving before exporting a complete backup."
           }
         }
       }
@@ -5864,6 +6210,26 @@
         }
       }
     },
+    "你的选择" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your choice"
+          }
+        }
+      }
+    },
+    "你的选择和两边原始内容会保留在操作记录中。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your choice and both original versions will be retained in the operation history."
+          }
+        }
+      }
+    },
     "使用 Supabase 一次性邀请码" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -5947,6 +6313,16 @@
         }
       }
     },
+    "使用默认头像" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use default avatar"
+          }
+        }
+      }
+    },
     "例如 -2 或 1.5" : {
       "localizations" : {
         "en" : {
@@ -5977,12 +6353,32 @@
         }
       }
     },
+    "例如：按舍核对生产阶段后统一调整（必填）" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Example: Adjust after checking production stages by pen (required)"
+          }
+        }
+      }
+    },
     "例如：核对配种舍记录后确认（必填）" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "For example: Check the record of breeding and confirm (required)"
+          }
+        }
+      }
+    },
+    "例如：现场核对生产分群后确认（必填）" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Example: Confirm after checking production groups on site (required)"
           }
         }
       }
@@ -6090,6 +6486,16 @@
         }
       }
     },
+    "保存 %lld 只" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save %lld sheep"
+          }
+        }
+      }
+    },
     "保存 TMR 投喂计划" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -6172,6 +6578,16 @@
         }
       }
     },
+    "保存时间" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved at"
+          }
+        }
+      }
+    },
     "保存调整" : {
       "localizations" : {
         "en" : {
@@ -6203,6 +6619,16 @@
         }
       }
     },
+    "保留云端内容" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep cloud content"
+          }
+        }
+      }
+    },
     "保留关联提醒" : {
       "localizations" : {
         "en" : {
@@ -6229,6 +6655,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Keep native version"
+          }
+        }
+      }
+    },
+    "保留现有用途 · %@" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep current purpose · %@"
           }
         }
       }
@@ -7584,6 +8020,7 @@
       }
     },
     "公羊档案" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -7868,6 +8305,16 @@
         }
       }
     },
+    "具体项目" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Specific item"
+          }
+        }
+      }
+    },
     "养殖分析用于生产辅助，不替代兽医诊断、法规要求或用户的现场判断。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -7889,6 +8336,16 @@
         }
       }
     },
+    "内容暂时无法显示" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Content is temporarily unavailable"
+          }
+        }
+      }
+    },
     "再次读取当前牧场数据" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -7906,6 +8363,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Enter the same password again"
+          }
+        }
+      }
+    },
+    "再看一下" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review again"
           }
         }
       }
@@ -7984,6 +8451,16 @@
         }
       }
     },
+    "最近安全保存" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last safely saved"
+          }
+        }
+      }
+    },
     "最近完成" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -8017,6 +8494,7 @@
       }
     },
     "最近错误" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -8057,6 +8535,16 @@
         }
       }
     },
+    "写入预览" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change preview"
+          }
+        }
+      }
+    },
     "冰雹" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -8080,21 +8568,12 @@
       }
     },
     "冲突" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Conflict"
-          }
-        }
-      }
-    },
-    "冲突记录已安全保留，但不会按普通网络重试处理；系统会先校验云端版本再修复。" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Conflicting records are safely retained. They are verified against the cloud version before repair instead of being retried as ordinary network failures."
           }
         }
       }
@@ -8106,6 +8585,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Conflict and security"
+          }
+        }
+      }
+    },
+    "冲突原因" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conflict reason"
+          }
+        }
+      }
+    },
+    "冲突原因：%@" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conflict reason: %@"
           }
         }
       }
@@ -8139,6 +8638,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Conflict records do not exist."
+          }
+        }
+      }
+    },
+    "冲突记录已安全保留，但不会按普通网络重试处理；系统会先校验云端版本再修复。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conflicting records are safely retained. They are verified against the cloud version before repair instead of being retried as ordinary network failures."
           }
         }
       }
@@ -8353,6 +8863,16 @@
         }
       }
     },
+    "准备 eSheep+ 云" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prepare eSheep+ Cloud"
+          }
+        }
+      }
+    },
     "准备临时数据库" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -8360,6 +8880,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Prepare ad hoc databases"
+          }
+        }
+      }
+    },
+    "准备期间只锁定这座牧场的旧云端写入；不会覆盖本机资料，也不会在没有现场确认时切换云端。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparation only locks legacy cloud writes for this farm. It will not overwrite local data or switch cloud authority without on-site confirmation."
           }
         }
       }
@@ -8769,6 +9299,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Switch status"
+          }
+        }
+      }
+    },
+    "列表操作、筛选与排序" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "List actions, filters, and sorting"
           }
         }
       }
@@ -9339,6 +9879,16 @@
         }
       }
     },
+    "前往羊只用途界面" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go to Sheep Purpose"
+          }
+        }
+      }
+    },
     "前次体重" : {
       "localizations" : {
         "en" : {
@@ -9457,6 +10007,7 @@
       }
     },
     "加入 Supabase 牧场" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -9466,7 +10017,18 @@
         }
       }
     },
+    "加入%@的 eSheep+ 云邀请二维码" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "eSheep+ Cloud invitation QR code to join %@"
+          }
+        }
+      }
+    },
     "加入%@的 Supabase 邀请二维码" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -9504,6 +10066,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Joined in %@"
+          }
+        }
+      }
+    },
+    "加入云端牧场" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Join Cloud Farm"
           }
         }
       }
@@ -10601,6 +11173,16 @@
         }
       }
     },
+    "变更原因" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reason for change"
+          }
+        }
+      }
+    },
     "变更审计" : {
       "localizations" : {
         "en" : {
@@ -10611,12 +11193,32 @@
         }
       }
     },
+    "另有 %lld 只，将按相同规则处理。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Another %lld sheep will follow the same rules."
+          }
+        }
+      }
+    },
     "另有 %lld 条匹配，请继续输入耳号缩小范围。" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "There are %lld matches, please continue to enter ear tag to narrow the range."
+          }
+        }
+      }
+    },
+    "另有 %lld 项正在依次保存" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Another %lld items are being saved in order"
           }
         }
       }
@@ -10685,6 +11287,7 @@
       }
     },
     "只将实际用于繁殖的公羊标记为种公羊。这个标记决定父本候选集合。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -10978,6 +11581,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Temporary farm can be created"
+          }
+        }
+      }
+    },
+    "可恢复操作" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recoverable operations"
           }
         }
       }
@@ -11353,17 +11966,8 @@
         }
       }
     },
-    "同步冲突" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sync conflicts"
-          }
-        }
-      }
-    },
     "同步中断不会丢失本机记录，恢复网络后会自动继续。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -11373,7 +11977,19 @@
         }
       }
     },
+    "同步冲突" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sync conflicts"
+          }
+        }
+      }
+    },
     "同步状态" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -12679,6 +13295,16 @@
         }
       }
     },
+    "备份、导出和诊断" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Backup, export, and diagnostics"
+          }
+        }
+      }
+    },
     "备份中的业务标识已被其他牧场使用，已停止恢复。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -12713,11 +13339,22 @@
       }
     },
     "备份包含生产记录、历史、删除记录、TMR 和照片。eSheep 云牧场会先同步；仍有待上传记录时不会生成“已同步”备份。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "The backup includes production records, history, deletion records, TMR data, and photos. eSheep Cloud farms sync first; a “synced” backup will not be created while uploads are still pending."
+          }
+        }
+      }
+    },
+    "备份包含生产记录、历史、删除记录、TMR 和照片。eSheep+ 云牧场会先完成保存和完整性检查；仍有内容等待保存时不会生成“已安全保存”的备份。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Backups include production records, history, deletions, TMR, and photos. eSheep+ Cloud farms must finish saving and pass integrity checks first; a backup will not be marked safely saved while changes are pending."
           }
         }
       }
@@ -12910,6 +13547,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Copy shared links and invitations"
+          }
+        }
+      }
+    },
+    "复制冲突证据" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy conflict evidence"
+          }
+        }
+      }
+    },
+    "复制本次注意项证据" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy evidence for this attention item"
           }
         }
       }
@@ -13279,6 +13936,16 @@
         }
       }
     },
+    "头像和预览图优先准备；照片原图在后台保存，需要查看时可重新接收。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avatars and previews are prepared first. Original photos are saved in the background and can be received again when needed."
+          }
+        }
+      }
+    },
     "头像没有更新" : {
       "localizations" : {
         "en" : {
@@ -13521,6 +14188,16 @@
         }
       }
     },
+    "完成 eSheep+ 云安全迁移后，即可继续邀请和管理成员。现有成员关系不会被改动。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "After the safe eSheep+ Cloud migration, you can resume inviting and managing members. Existing memberships will remain unchanged."
+          }
+        }
+      }
+    },
     "完成 TMR 顿次" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -13612,6 +14289,7 @@
       }
     },
     "完整校验结束前不会显示半成品牧场。锁屏、强杀或断网后会从已保存的断点继续。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14255,6 +14933,7 @@
       }
     },
     "导出羊只 CSV" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14284,7 +14963,18 @@
         }
       }
     },
+    "将 eSheep+ 云邀请二维码放入取景框" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Place the eSheep+ Cloud invitation QR code in the frame"
+          }
+        }
+      }
+    },
     "将 Supabase 邀请二维码放入取景框" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14300,6 +14990,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sync and traceable transfer records will be created for %lld sheep respectively."
+          }
+        }
+      }
+    },
+    "将修改" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Will change"
           }
         }
       }
@@ -14334,6 +15034,16 @@
         }
       }
     },
+    "将恢复这只羊在原生产批次中的成员关系和原加入时间。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This sheep's original production batch membership and joining date will be restored."
+          }
+        }
+      }
+    },
     "将羊只调入目标圈舍" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -14351,6 +15061,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Will be executed"
+          }
+        }
+      }
+    },
+    "将这台设备准备保存的内容作为最终内容" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use the content this device is preparing to save as the final version"
           }
         }
       }
@@ -14907,6 +15627,7 @@
       }
     },
     "已原子导入 %lld 条录入数据，并生成对应审计和待同步记录。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -15067,7 +15788,34 @@
         }
       }
     },
+    "已完整导入 %lld 条录入数据；需要保存到云端的内容会自动处理。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld entries were fully imported. Any cloud saves will be handled automatically."
+          }
+        }
+      }
+    },
+    "已导入 %lld 条，跳过 %lld 条。离线时可继续录入，联网后会自动保存。" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "new",
+            "value": "已导入 %1$lld 条，跳过 %2$lld 条。离线时可继续录入，联网后会自动保存。"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imported %lld entries and skipped %lld. You can keep entering data offline; it will save automatically when connected."
+          }
+        }
+      }
+    },
     "已导入 %lld 条，跳过 %lld 条。离线时操作会留在待同步队列。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -15346,6 +16094,26 @@
         }
       }
     },
+    "已有用途" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Existing purpose"
+          }
+        }
+      }
+    },
+    "已有用途不会自动改动。只有明确选择新用途并保存后才会写入；选择种公羊会同时建立父本资格，改为其他用途会取消该资格。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The existing purpose will not change automatically. A new purpose is written only after you explicitly select and save it. Selecting Breeding Ram grants sire eligibility; selecting another purpose removes it."
+          }
+        }
+      }
+    },
     "已有迁移基线操作与当前已验证快照不一致，已停止自动覆盖。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -15375,6 +16143,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "The v2 baseline history was reconciled and projected again without change."
+          }
+        }
+      }
+    },
+    "已核对内容" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified content"
           }
         }
       }
@@ -15496,6 +16274,7 @@
       }
     },
     "已确认种公羊会参与候选；旧档用途只会作为待人工核实线索，普通公羊不会参与。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -15711,6 +16490,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Selected"
+          }
+        }
+      }
+    },
+    "已选羊只" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selected sheep"
           }
         }
       }
@@ -16317,6 +17106,16 @@
         }
       }
     },
+    "开始安全准备" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start safe preparation"
+          }
+        }
+      }
+    },
     "开始恢复" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -16760,6 +17559,16 @@
         }
       }
     },
+    "当前在场 %lld 只" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sheep currently on farm"
+          }
+        }
+      }
+    },
     "当前在场羊只尚未分圈。" : {
       "localizations" : {
         "en" : {
@@ -16883,6 +17692,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Development cloud collaboration is not enabled in the current construction."
+          }
+        }
+      }
+    },
+    "当前档案" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current record"
           }
         }
       }
@@ -17850,6 +18669,7 @@
       }
     },
     "待同步记录" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18295,6 +19115,16 @@
         }
       }
     },
+    "恢复到原批次" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restore to original batch"
+          }
+        }
+      }
+    },
     "恢复前会检查数据完整性；如发现异常，本次恢复不会写入。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -18346,6 +19176,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Restore original history"
+          }
+        }
+      }
+    },
+    "恢复后会保留原加入时间；移出事件将从当前事实时间线消失，但移出和撤回的审计操作都会保留。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The original joining date will be retained. The removal will disappear from the current factual timeline, but both the removal and its reversal will remain in the audit history."
           }
         }
       }
@@ -18503,6 +19343,7 @@
       }
     },
     "恢复状态" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18721,6 +19562,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Membership role updated."
+          }
+        }
+      }
+    },
+    "成员资料正在升级" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Upgrading member information"
           }
         }
       }
@@ -19324,7 +20175,18 @@
         }
       }
     },
+    "扫描 eSheep+ 云邀请二维码" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan eSheep+ Cloud invitation QR code"
+          }
+        }
+      }
+    },
     "扫描 Supabase 邀请二维码" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -19355,7 +20217,18 @@
         }
       }
     },
+    "扫码和粘贴邀请码的效果相同；邀请码只能使用一次。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scanning and pasting an invite code have the same effect. Each code can be used only once."
+          }
+        }
+      }
+    },
     "扫码和粘贴长邀请码使用同一个 Supabase 兑换流程。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -19645,6 +20518,26 @@
         }
       }
     },
+    "批量修改用途" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Batch change purpose"
+          }
+        }
+      }
+    },
+    "批量修改用途（%lld）" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Batch change purpose (%lld)"
+          }
+        }
+      }
+    },
     "批量列表" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -19662,6 +20555,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Batch processing"
+          }
+        }
+      }
+    },
+    "批量操作（%lld）" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Batch actions (%lld)"
+          }
+        }
+      }
+    },
+    "批量父本录入不会再自动修改种公羊资格。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Batch sire entry no longer changes breeding ram eligibility automatically."
           }
         }
       }
@@ -19696,6 +20609,16 @@
         }
       }
     },
+    "批量范围" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Batch scope"
+          }
+        }
+      }
+    },
     "批量转群" : {
       "localizations" : {
         "en" : {
@@ -19707,6 +20630,7 @@
       }
     },
     "批量转群（%lld）" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -20325,6 +21249,16 @@
         }
       }
     },
+    "按相邻日期的有效体重计算：（本次体重－上次体重）÷ 间隔天数；同一天只采用一个权威体重点。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Calculated from valid weights on adjacent dates: (current weight − previous weight) ÷ elapsed days. Only one authoritative weight is used per day."
+          }
+        }
+      }
+    },
     "按羊只、多选或圈舍记录健康事件" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -20379,6 +21313,26 @@
         }
       }
     },
+    "按舍修改用途" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change purpose by pen"
+          }
+        }
+      }
+    },
+    "按舍批量修改" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Batch change by pen"
+          }
+        }
+      }
+    },
     "按计划选择多顿只是本锅产量计算快捷方式，不会生成“全天汇总”投喂记录；实际投喂仍逐顿、逐舍录入。" : {
       "localizations" : {
         "en" : {
@@ -20425,6 +21379,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Troubleshooting causes"
+          }
+        }
+      }
+    },
+    "接收已安全暂停，回到前台后会从最后检查点继续。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Receiving is safely paused. It will resume from the last checkpoint when you return to the foreground."
+          }
+        }
+      }
+    },
+    "接收进度" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Receiving progress"
           }
         }
       }
@@ -20497,6 +21471,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Early warning days"
+          }
+        }
+      }
+    },
+    "提示" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notice"
           }
         }
       }
@@ -20756,6 +21740,26 @@
         }
       }
     },
+    "撤回移出批次" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Undo batch removal"
+          }
+        }
+      }
+    },
+    "撤回移出批次？" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Undo batch removal?"
+          }
+        }
+      }
+    },
     "撤权" : {
       "localizations" : {
         "en" : {
@@ -20995,6 +21999,16 @@
         }
       }
     },
+    "操作时间" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Operation time"
+          }
+        }
+      }
+    },
     "操作未完成" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -21013,6 +22027,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Operation Type"
+          }
+        }
+      }
+    },
+    "操作者" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Operator"
           }
         }
       }
@@ -21089,6 +22113,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Use QR codes instead"
+          }
+        }
+      }
+    },
+    "放弃本次操作" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard this operation"
+          }
+        }
+      }
+    },
+    "放弃这台设备的这一次修改并保留云端内容" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard this device's change and keep the cloud content"
           }
         }
       }
@@ -21268,6 +22312,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Data restore"
+          }
+        }
+      }
+    },
+    "数据摘要" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Data digest"
           }
         }
       }
@@ -21483,11 +22537,22 @@
       }
     },
     "文件恢复只会建立新的仅本机牧场，不会覆盖当前 eSheep 云牧场。恢复完成并核对后，可再从云存储页面显式迁移。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Restoring this file creates a new on-device-only farm and does not overwrite the current eSheep Cloud farm. After restoration and review, you can explicitly migrate it from Cloud Storage."
+          }
+        }
+      }
+    },
+    "文件恢复只会建立新的仅本机牧场，不会覆盖当前 eSheep+ 云牧场。恢复完成并核对后，可再从云端页面显式迁移。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restoring a file creates a new local-only farm and does not overwrite the current eSheep+ Cloud farm. After restoring and checking it, you can explicitly migrate it from the cloud page."
           }
         }
       }
@@ -22118,6 +23183,16 @@
         }
       }
     },
+    "新用途" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New purpose"
+          }
+        }
+      }
+    },
     "新耳号与牧场内其他羊只重复。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -22354,6 +23429,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Could not establish an encrypted invitation channel."
+          }
+        }
+      }
+    },
+    "无法录入父本" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cannot record sire"
+          }
+        }
+      }
+    },
+    "无法批量录入" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cannot record batch"
           }
         }
       }
@@ -22753,7 +23848,18 @@
         }
       }
     },
+    "旧档种公羊线索 · 不能录入" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Legacy breeding ram reference · Entry unavailable"
+          }
+        }
+      }
+    },
     "旧档种公羊线索 · 本批同时确认资格" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -23176,6 +24282,7 @@
       }
     },
     "普通公羊" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -23539,6 +24646,16 @@
         }
       }
     },
+    "更改羊只用途" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change sheep purpose"
+          }
+        }
+      }
+    },
     "更新 / 生效" : {
       "localizations" : {
         "en" : {
@@ -23681,6 +24798,7 @@
       }
     },
     "有 %lld 条同步冲突等待安全处理" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -23690,7 +24808,28 @@
         }
       }
     },
+    "有 %lld 条数据异常等待处理" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld data anomalies need attention"
+          }
+        }
+      }
+    },
+    "有 %lld 条本地记录等待保存" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld local records are waiting to save"
+          }
+        }
+      }
+    },
     "有 %lld 条本地记录等待同步" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -23716,6 +24855,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld lambings are missing parity, stillbirth, or per-lamb details and are excluded from the relevant metrics."
+          }
+        }
+      }
+    },
+    "有 %lld 项内容等待保存" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld items are waiting to save"
+          }
+        }
+      }
+    },
+    "有 %lld 项内容需要你确认" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld items need your confirmation"
           }
         }
       }
@@ -24542,6 +25701,16 @@
         }
       }
     },
+    "未能完成处理" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Processing could not be completed"
+          }
+        }
+      }
+    },
     "未获得可用的 Apple 账户凭据。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -24853,6 +26022,26 @@
         }
       }
     },
+    "本地版本" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local revision"
+          }
+        }
+      }
+    },
+    "本地版本哈希" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local revision hash"
+          }
+        }
+      }
+    },
     "本地牧场与未同步记录仍然保留。" : {
       "localizations" : {
         "en" : {
@@ -25131,6 +26320,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "This machine data can be used offline; cloud synchronised depends on Supabese and web services. Synchronization failure will not be described as a success in saving, and applications will retain their status."
+          }
+        }
+      }
+    },
+    "本机照片空间" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local photo storage"
           }
         }
       }
@@ -25537,11 +26736,28 @@
       }
     },
     "来源：eSheep 云 · 业务记录 %lld · 照片 %lld" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Source: eSheep Cloud · Records %lld · Photos %lld"
+          }
+        }
+      }
+    },
+    "来源：eSheep+ 云 · 业务记录 %lld · 照片 %lld" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "new",
+            "value": "来源：eSheep+ 云 · 业务记录 %1$lld · 照片 %2$lld"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source: eSheep+ Cloud · Business records %lld · Photos %lld"
           }
         }
       }
@@ -25738,6 +26954,16 @@
         }
       }
     },
+    "查看成员与共享设置" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View members and sharing settings"
+          }
+        }
+      }
+    },
     "查看或更换头像" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -25926,6 +27152,16 @@
         }
       }
     },
+    "校验和写入需要保持 eSheep+ 在前台；离开后会安全暂停，返回时继续。资料完整之前不会打开半成品牧场。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep eSheep+ in the foreground during verification and writing. Leaving safely pauses the process; returning resumes it. An incomplete farm will not open."
+          }
+        }
+      }
+    },
     "校验完成，正在准备显示牧场" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -25954,6 +27190,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Verify full summary"
+          }
+        }
+      }
+    },
+    "校验进度，已处理 %lld / %lld 个事件" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "new",
+            "value": "校验进度，已处理 %1$lld / %2$lld 个事件"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verification progress, %lld / %lld events processed"
           }
         }
       }
@@ -26091,6 +27343,26 @@
         }
       }
     },
+    "档案中的“用途”是当前投影；这里保存每次明确变更的历史事实。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Purpose in the sheep record is the current projection. This timeline preserves the historical facts of each explicit change."
+          }
+        }
+      }
+    },
+    "档案已变化" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The record has changed"
+          }
+        }
+      }
+    },
     "档案确认当前胎次" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -26152,6 +27424,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Check for old copies and clean up"
+          }
+        }
+      }
+    },
+    "检查本机资料" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check local data"
           }
         }
       }
@@ -26389,6 +27671,26 @@
         }
       }
     },
+    "正在准备事件校验" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing event verification"
+          }
+        }
+      }
+    },
+    "正在准备保存" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing to save"
+          }
+        }
+      }
+    },
     "正在准备分析" : {
       "localizations" : {
         "en" : {
@@ -26426,6 +27728,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Preparing poster"
+          }
+        }
+      }
+    },
+    "正在准备牧场资料" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing farm data"
           }
         }
       }
@@ -26679,6 +27991,16 @@
         }
       }
     },
+    "正在备份并检查" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Backing up and checking"
+          }
+        }
+      }
+    },
     "正在安全切换到共享牧场资料" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -26775,6 +28097,7 @@
       }
     },
     "正在恢复云端牧场" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -26827,6 +28150,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ripping cloud records"
+          }
+        }
+      }
+    },
+    "正在按你的选择处理" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Applying your choice"
+          }
+        }
+      }
+    },
+    "正在按你的选择处理。收到 eSheep+ 云确认后才会完成。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Applying your choice. Completion requires confirmation from eSheep+ Cloud."
           }
         }
       }
@@ -27013,7 +28356,6 @@
       }
     },
     "正在检查" : {
-      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -27050,6 +28392,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Checking local data"
+          }
+        }
+      }
+    },
+    "正在检查牧场资料是否完整" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking farm data completeness"
           }
         }
       }
@@ -27145,6 +28497,26 @@
         }
       }
     },
+    "正在等待保存" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting to save"
+          }
+        }
+      }
+    },
+    "正在等待保存的内容" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Content waiting to save"
+          }
+        }
+      }
+    },
     "正在等待牧场主。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -27152,6 +28524,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Waiting for the rancher."
+          }
+        }
+      }
+    },
+    "正在继续接收" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resuming download"
           }
         }
       }
@@ -27320,6 +28702,16 @@
         }
       }
     },
+    "正在读取用途时间线" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading purpose timeline"
+          }
+        }
+      }
+    },
     "正在读取系谱" : {
       "localizations" : {
         "en" : {
@@ -27473,6 +28865,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Normal"
+          }
+        }
+      }
+    },
+    "正常保存时无需停留在这里；离开此页面后仍会继续。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Normal saving does not require you to stay here; it continues after leaving this page."
           }
         }
       }
@@ -28332,6 +29734,16 @@
         }
       }
     },
+    "没有可用圈舍羊只" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No eligible sheep in available pens"
+          }
+        }
+      }
+    },
     "没有已清圈的归档圈舍" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -28463,6 +29875,16 @@
         }
       }
     },
+    "没有等待保存的内容" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing waiting to save"
+          }
+        }
+      }
+    },
     "没有逾期日程" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -28470,6 +29892,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "No overdue schedule"
+          }
+        }
+      }
+    },
+    "没有需要你决定的内容" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No decisions needed"
           }
         }
       }
@@ -28976,11 +30408,22 @@
       }
     },
     "清理只会移除可重新生成的临时文件，不会删除牧场记录、照片、备份或未同步操作。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Cleanup removes only temporary files that can be regenerated. It does not delete farm records, photos, backups, or unsynced operations."
+          }
+        }
+      }
+    },
+    "清理只会移除可重新生成的临时文件，不会删除牧场记录、照片、备份或等待保存的内容。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cleanup only removes temporary files that can be regenerated. Farm records, photos, backups, and pending changes will not be deleted."
           }
         }
       }
@@ -29160,6 +30603,22 @@
         }
       }
     },
+    "激活进度，已处理 %lld / %lld 个事件" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "new",
+            "value": "激活进度，已处理 %1$lld / %2$lld 个事件"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activation progress, %lld / %lld events processed"
+          }
+        }
+      }
+    },
     "灰分" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -29242,6 +30701,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "The validation values after the photo download are inconsistent."
+          }
+        }
+      }
+    },
+    "照片与本机离线空间" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photos and local offline storage"
           }
         }
       }
@@ -29449,6 +30918,26 @@
         }
       }
     },
+    "照片资料" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photo information"
+          }
+        }
+      }
+    },
+    "照片预览" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photo preview"
+          }
+        }
+      }
+    },
     "父本" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -29513,6 +31002,16 @@
         }
       }
     },
+    "父本录入不会再自动修改种公羊资格。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recording a sire no longer changes breeding ram eligibility automatically."
+          }
+        }
+      }
+    },
     "父本必须是公羊。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -29562,6 +31061,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sire source"
+          }
+        }
+      }
+    },
+    "父本资格" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sire eligibility"
           }
         }
       }
@@ -29634,6 +31143,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Version"
+          }
+        }
+      }
+    },
+    "版本：本地 %lld / 云端 %lld" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "new",
+            "value": "版本：本地 %1$lld / 云端 %2$lld"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revisions: local %lld / cloud %lld"
           }
         }
       }
@@ -29862,6 +31387,16 @@
         }
       }
     },
+    "牧场成员与共享" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Farm members and sharing"
+          }
+        }
+      }
+    },
     "牧场数据" : {
       "localizations" : {
         "en" : {
@@ -29911,6 +31446,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Farm information"
+          }
+        }
+      }
+    },
+    "牧场资料接收失败" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Farm data could not be received"
           }
         }
       }
@@ -29979,6 +31524,16 @@
         }
       }
     },
+    "现在检查保存状态" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check save status now"
+          }
+        }
+      }
+    },
     "现在重新批量" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -29986,6 +31541,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Revolume now."
+          }
+        }
+      }
+    },
+    "现有用途来自历史档案；此前没有可追溯的用途变更记录。今后每次修改都会保留时间、前后用途和原因。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The existing purpose comes from historical records; no earlier purpose-change history is available. Future changes will retain the time, previous and new purposes, and reason."
           }
         }
       }
@@ -30068,6 +31633,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Production status"
+          }
+        }
+      }
+    },
+    "生产用途" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Production purpose"
           }
         }
       }
@@ -30391,12 +31966,31 @@
       }
     },
     "用途" : {
-      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Use"
+          }
+        }
+      }
+    },
+    "用途时间线" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Purpose timeline"
+          }
+        }
+      }
+    },
+    "用途未变，自动跳过" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Purpose unchanged; automatically skipped"
           }
         }
       }
@@ -30640,6 +32234,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Login and security"
+          }
+        }
+      }
+    },
+    "登录已成功。牧场资料正在从 eSheep+ 云端接收，完成完整性检查后才会打开牧场。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You are signed in. Farm data is being received from eSheep+ Cloud. The farm will open only after integrity verification."
           }
         }
       }
@@ -31080,6 +32684,26 @@
         }
       }
     },
+    "目标用途" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Target purpose"
+          }
+        }
+      }
+    },
+    "目标用途：%@。所有变更会在一个本地事务中提交；任一羊只校验失败，整批回滚。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Target purpose: %@. All changes are committed in one local transaction. If any sheep fails validation, the entire batch is rolled back."
+          }
+        }
+      }
+    },
     "目标记录" : {
       "localizations" : {
         "en" : {
@@ -31307,6 +32931,16 @@
         }
       }
     },
+    "确认修改 %lld 只" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm changes to %lld sheep"
+          }
+        }
+      }
+    },
     "确认偏差" : {
       "localizations" : {
         "en" : {
@@ -31447,6 +33081,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Identification of high-risk ranger operations"
+          }
+        }
+      }
+    },
+    "确认批量修改用途？" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm batch purpose change?"
           }
         }
       }
@@ -32157,6 +33801,16 @@
         }
       }
     },
+    "种公羊只允许公羊；后备母羊和繁殖母羊只允许母羊。批次中只要有一只不合法，整批都不会写入。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only males can be breeding rams; only females can be replacement or breeding ewes. If any sheep in the batch is invalid, no changes will be written."
+          }
+        }
+      }
+    },
     "种公羊来源必须且只能填写种公羊耳号。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -32180,6 +33834,7 @@
       }
     },
     "种公羊管理" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -32206,6 +33861,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Breeding-ram eligibility"
+          }
+        }
+      }
+    },
+    "种公羊资格统一由羊只用途管理；系谱页面不再直接修改用途。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Breeding ram eligibility is managed through Sheep Purpose. The pedigree page no longer changes purpose directly."
           }
         }
       }
@@ -32327,6 +33992,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Quote re-recording the non-existent sheep."
+          }
+        }
+      }
+    },
+    "移出于 %@ · %@" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "new",
+            "value": "移出于 %1$@ · %2$@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removed on %@ · %@"
           }
         }
       }
@@ -32477,6 +34158,22 @@
         }
       }
     },
+    "第 %lld 步，%@%@" : {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "new",
+            "value": "第 %1$lld 步，%2$@%3$@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Step %lld, %@%@"
+          }
+        }
+      }
+    },
     "第 %lld 胎" : {
       "localizations" : {
         "en" : {
@@ -32611,6 +34308,7 @@
       }
     },
     "筛选与排序" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -32906,6 +34604,7 @@
       }
     },
     "系统会在下次前台恢复时继续，不会把当前半成品设为云端权威。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -33273,6 +34972,7 @@
       }
     },
     "纳入种公羊父本候选" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -33496,6 +35196,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Continue scanning"
+          }
+        }
+      }
+    },
+    "继续接收资料" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue receiving data"
           }
         }
       }
@@ -34080,6 +35790,16 @@
         }
       }
     },
+    "网络中断不会丢失本机记录，联网后会自动继续保存。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A network interruption will not lose local records. Saving resumes automatically when connected."
+          }
+        }
+      }
+    },
     "羊" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -34218,6 +35938,16 @@
         }
       }
     },
+    "羊只明细" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sheep details"
+          }
+        }
+      }
+    },
     "羊只档案" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -34225,6 +35955,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sheep files."
+          }
+        }
+      }
+    },
+    "羊只档案 · %lld" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sheep records · %lld"
           }
         }
       }
@@ -34289,6 +36029,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sheep photo"
+          }
+        }
+      }
+    },
+    "羊只用途" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sheep purpose"
+          }
+        }
+      }
+    },
+    "羊只用途管理" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sheep purpose management"
           }
         }
       }
@@ -34646,6 +36406,26 @@
         }
       }
     },
+    "耳号或用途" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ear tag or purpose"
+          }
+        }
+      }
+    },
+    "联网后会从已经检查完成的位置继续；现有牧场资料不会被半成品替换。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When connected, receiving resumes from the last verified checkpoint. Existing farm data will not be replaced with incomplete data."
+          }
+        }
+      }
+    },
     "聚焦每胎结构、断奶质量和缺失数据" : {
       "localizations" : {
         "en" : {
@@ -34929,6 +36709,7 @@
       }
     },
     "脱离于 %@ · %@" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -36111,6 +37892,16 @@
         }
       }
     },
+    "设备" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device"
+          }
+        }
+      }
+    },
     "设备存储" : {
       "localizations" : {
         "en" : {
@@ -36202,6 +37993,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Access cancelled"
+          }
+        }
+      }
+    },
+    "诊断信息默认只包含业务状态和脱敏编号，不包含照片内容。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostics include only business status and redacted identifiers by default, not photo content."
           }
         }
       }
@@ -36646,6 +38447,7 @@
       }
     },
     "该记录目前不是已确认种公羊。保存时会先将这一个体明确标记为种公羊，再写入父本关系；不会批量修改其他旧档公羊。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -37825,6 +39627,7 @@
       }
     },
     "账号注册、密码登录和 Apple 登录需要配置 Supabase。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -38089,6 +39892,16 @@
         }
       }
     },
+    "资料检查完整前不会进入牧场。锁屏、关闭 App 或断网后，重新打开会自动继续。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The farm will not open until data verification is complete. After locking, closing the app, or losing connectivity, reopen the app to resume automatically."
+          }
+        }
+      }
+    },
     "资格依据" : {
       "localizations" : {
         "en" : {
@@ -38100,6 +39913,7 @@
       }
     },
     "资格确认" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -38179,6 +39993,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "System Default"
+          }
+        }
+      }
+    },
+    "跳过" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skip"
           }
         }
       }
@@ -39210,6 +41034,16 @@
         }
       }
     },
+    "这些内容已安全保留，需要选择后才能继续保存；牧场其他内容不会受影响。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This content is safely retained. Choose a version to continue saving; other farm data is unaffected."
+          }
+        }
+      }
+    },
     "这些羊只不会参与断奶日龄判断，也不会被误报为异常。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -39217,6 +41051,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "These sheep will not participate in the weaning-day judgement, nor will they be misreported as abnormal."
+          }
+        }
+      }
+    },
+    "这台设备" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This device"
           }
         }
       }
@@ -39239,6 +41083,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "This old weaning draft lacks target circles. Please delete it and re-create it with AI."
+          }
+        }
+      }
+    },
+    "这张照片" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This photo"
           }
         }
       }
@@ -39327,6 +41181,16 @@
         }
       }
     },
+    "这次接收没有完成，原有牧场资料没有受到影响。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Receiving did not finish. Existing farm data is unaffected."
+          }
+        }
+      }
+    },
     "这次请求需要的步骤过多，已安全停止继续调用。没有任何操作被自动执行，请缩小范围后重试。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -39370,12 +41234,32 @@
         }
       }
     },
+    "这里只暂停相关字段及依赖操作，牧场的其他内容会继续保存。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only the related fields and dependent operations are paused. Other farm data continues to save."
+          }
+        }
+      }
+    },
     "这里按唯一候选父本分组。进入一个父本后可全选或取消部分后代，只填写一次核实原因。" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Groups are organized by unique sire candidate. Open a sire to select all or deselect individual offspring, then enter one verification reason."
+          }
+        }
+      }
+    },
+    "这里是羊只用途的唯一人工修改入口。可以逐只修改、列表多选，或按舍整批修改；现有用途只有确认保存后才会改变。" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This is the only place to manually change sheep purpose. Edit individual sheep, select multiple sheep, or change a whole pen. Existing purposes change only after you confirm and save."
           }
         }
       }
@@ -39387,6 +41271,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "This is used to view or remove shared members, not to send invitations."
+          }
+        }
+      }
+    },
+    "这项内容已经处理完成" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This item has been processed"
           }
         }
       }
@@ -39472,6 +41366,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Remote Delete"
+          }
+        }
+      }
+    },
+    "远端设备" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remote device"
           }
         }
       }
@@ -39796,6 +41700,16 @@
         }
       }
     },
+    "选择来源" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose source"
+          }
+        }
+      }
+    },
     "选择海报模板" : {
       "localizations" : {
         "en" : {
@@ -40115,6 +42029,16 @@
         }
       }
     },
+    "部分内容尚未保存，请稍后再试" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some content has not been saved. Try again later."
+          }
+        }
+      }
+    },
     "部分圈舍在投喂发生日期没有羊只，请重新选择。" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -40133,6 +42057,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Partially unclosed"
+          }
+        }
+      }
+    },
+    "部分牧场资料没有接收完整" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some farm data was not fully received"
           }
         }
       }
@@ -40447,6 +42381,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Use all suggestions (%lld only)"
+          }
+        }
+      }
+    },
+    "采用这台设备的内容" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use this device's content"
           }
         }
       }
@@ -40979,6 +42923,16 @@
         }
       }
     },
+    "阶段日增重" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interval daily gain"
+          }
+        }
+      }
+    },
     "阻断" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -41313,6 +43267,16 @@
         }
       }
     },
+    "需要先处理无法解释的旧操作" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unexplained legacy operations must be resolved first"
+          }
+        }
+      }
+    },
     "需要先确认母本，才能按母本历史圈舍推算父本。" : {
       "localizations" : {
         "en" : {
@@ -41372,6 +43336,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Need confirmation"
+          }
+        }
+      }
+    },
+    "需要确认的内容" : {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Content requiring confirmation"
           }
         }
       }

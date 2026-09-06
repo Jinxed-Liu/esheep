@@ -111,6 +111,7 @@ final class ESheepCloudViewState {
         case safelySaved
         case saving(Int)
         case offline(Int)
+        case failed(ESheepCloudSyncFailure.Kind)
         case needsConfirmation(Int)
         case reauthenticationRequired
         case partiallyUnsaved
@@ -123,12 +124,15 @@ final class ESheepCloudViewState {
     private(set) var pendingCount = 0
     private(set) var attentionCount = 0
     private(set) var lastErrorMessage: String?
+    private(set) var failure: ESheepCloudSyncFailure?
 
     var statusTitle: String {
         switch presentation {
         case .safelySaved: "已安全保存"
         case .saving(let count): "正在保存 \(count) 项"
         case .offline: "离线，联网后自动保存"
+        case .failed(.serviceUnavailable): "云端保存服务暂不可用"
+        case .failed: "部分内容尚未保存，请查看原因"
         case .needsConfirmation(let count): "\(count) 项需要你确认"
         case .reauthenticationRequired: "需要重新登录"
         case .partiallyUnsaved: "部分内容尚未保存，请稍后再试"
@@ -140,13 +144,19 @@ final class ESheepCloudViewState {
     func update(
         from snapshot: ESheepCloudLocalCycleSnapshot,
         transportError: Error? = nil,
-        authenticationRequired: Bool = false
+        authenticationRequired: Bool = false,
+        cycleCompleted: Bool = false
     ) {
         pendingCount = snapshot.pendingCount
         attentionCount = snapshot.attentionCount
         lastSafeSaveAt = snapshot.lastSafeSaveAt
-        lastErrorMessage = transportError?.localizedDescription
-        if authenticationRequired {
+        if let transportError {
+            failure = ESheepCloudSyncFailure.classify(transportError)
+        } else if cycleCompleted {
+            failure = nil
+        }
+        lastErrorMessage = failure?.localizedDescription
+        if authenticationRequired || failure?.kind == .authentication {
             presentation = .reauthenticationRequired
         } else if snapshot.attentionCount > 0 {
             presentation = .needsConfirmation(snapshot.attentionCount)
@@ -159,8 +169,9 @@ final class ESheepCloudViewState {
             presentation = .partiallyUnsaved
         } else if snapshot.activityState == .preparing {
             presentation = .preparing
-        } else if transportError != nil, snapshot.pendingCount > 0 {
-            presentation = .offline(snapshot.pendingCount)
+        } else if let failure {
+            presentation = failure.kind == .network
+                ? .offline(snapshot.pendingCount) : .failed(failure.kind)
         } else if snapshot.pendingAssetCount > 0 {
             presentation = .saving(snapshot.pendingAssetCount)
         } else if snapshot.pendingCount > 0 {
@@ -176,10 +187,9 @@ final class ESheepCloudViewState {
     }
 }
 
-/// Main-actor boundary for SwiftData. The network actor exchanges immutable,
-/// Sendable envelopes only; no managed model crosses an actor boundary.
-@MainActor
-final class ESheepCloudLocalStore {
+/// Serial background boundary for SwiftData. Contexts and managed models never
+/// leave this actor; the UI receives immutable cycle summaries only.
+actor ESheepCloudLocalStore {
     private let container: ModelContainer
     private let historyRebuilder = FarmHistoryRebuilder()
 
@@ -200,8 +210,11 @@ final class ESheepCloudLocalStore {
         guard let state = try activeFarmState(farmID: farmID, context: context) else {
             throw ESheepCloudCoreError.farmStateMissing
         }
-        guard let item = try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>())
-            .first(where: { $0.id == attentionID && $0.farmID == farmID }) else {
+        var attentionQuery = FetchDescriptor<ESheepCloudAttentionItem>(predicate: #Predicate {
+            $0.id == attentionID && $0.farmID == farmID
+        })
+        attentionQuery.fetchLimit = 1
+        guard let item = try context.fetch(attentionQuery).first else {
             throw ESheepCloudCoreError.attentionMissing
         }
         if item.state == .resolving {
@@ -265,6 +278,7 @@ final class ESheepCloudLocalStore {
     func markAttentionResolutionTransportUncertain(
         commandID: UUID,
         message: String,
+        failure: ESheepCloudSyncFailure? = nil,
         now: Date = .now
     ) throws {
         let context = ModelContext(container)
@@ -276,7 +290,7 @@ final class ESheepCloudLocalStore {
         item.resolutionLastErrorMessage = message
         item.resolutionNextRetryAt = retryDate(
             attemptCount: max(1, item.resolutionAttemptCount),
-            now: now
+            now: now, failure: failure
         )
         try context.save()
     }
@@ -284,17 +298,20 @@ final class ESheepCloudLocalStore {
     func markAttentionResolutionStatusQueryFailed(
         commandIDs: [UUID],
         message: String,
+        failure: ESheepCloudSyncFailure? = nil,
         now: Date = .now
     ) throws {
         let context = ModelContext(container)
         let idSet = Set(commandIDs)
-        for item in try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>())
+        for item in try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>(predicate: #Predicate {
+            $0.stateRawValue == "resolving"
+        }))
             where item.state == .resolving &&
                 item.resolutionCommandID.map(idSet.contains) == true {
             item.resolutionLastErrorMessage = message
             item.resolutionNextRetryAt = retryDate(
                 attemptCount: max(1, item.resolutionAttemptCount),
-                now: now
+                now: now, failure: failure
             )
         }
         try context.save()
@@ -305,7 +322,9 @@ final class ESheepCloudLocalStore {
     ) throws {
         let context = ModelContext(container)
         let idSet = Set(commandIDs)
-        for item in try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>())
+        for item in try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>(predicate: #Predicate {
+            $0.stateRawValue == "resolving"
+        }))
             where item.state == .resolving &&
                 item.resolutionCommandID.map(idSet.contains) == true {
             item.resolutionAwaitingStatus = false
@@ -319,7 +338,8 @@ final class ESheepCloudLocalStore {
         farmID: UUID,
         accountID: UUID,
         now: Date = .now,
-        commandLimit: Int = 25
+        commandLimit: Int = 25,
+        forceRetry: Bool = false
     ) throws -> ESheepCloudLocalCycleSnapshot {
         let context = ModelContext(container)
         context.autosaveEnabled = false
@@ -327,6 +347,16 @@ final class ESheepCloudLocalStore {
             throw ESheepCloudCoreError.farmStateMissing
         }
         do {
+            if forceRetry {
+                for intent in try intents(farmID: farmID, context: context)
+                    where intent.accountID == accountID && !intent.lifecycle.isTerminal && intent.nextRetryAt != nil {
+                    intent.nextRetryAt = nil
+                }
+                let resolving = try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>(predicate: #Predicate {
+                    $0.farmID == farmID && $0.resolverAccountID == accountID && $0.stateRawValue == "resolving"
+                }))
+                for item in resolving where item.resolutionNextRetryAt != nil { item.resolutionNextRetryAt = nil }
+            }
             for intent in try intents(farmID: farmID, context: context)
                 where intent.lifecycle == .sending {
                 // A process can die after bytes left the phone. Never generate a
@@ -372,7 +402,7 @@ final class ESheepCloudLocalStore {
         guard status.v2Ready else {
             throw ESheepCloudCoreError.applicationUpdateRequired
         }
-        state.cloudEventHead = max(state.cloudEventHead, status.cloudHead)
+        if status.cloudHead > state.cloudEventHead { state.cloudEventHead = status.cloudHead }
         if status.writeFrozen {
             state.activityState = .integrityHold
             state.integrityFailureTraceID = status.writeFreezeTraceID
@@ -385,8 +415,10 @@ final class ESheepCloudLocalStore {
             accountID: accountID,
             context: context
         )
-        state.updatedAt = contextDate
-        try context.save()
+        if context.hasChanges {
+            state.updatedAt = contextDate
+            try context.save()
+        }
         if status.writeFrozen {
             throw ESheepCloudCoreError.cloudWriteFrozen(
                 traceID: status.writeFreezeTraceID
@@ -400,19 +432,37 @@ final class ESheepCloudLocalStore {
         farmID: UUID,
         farmGeneration: Int
     ) throws -> Int {
+        let phase = ESheepCloudDiagnostics.Phase(page.events.isEmpty ? "empty-page" : "incremental-page")
+        defer { phase.end(items: page.events.count, fullTableReads: page.events.isEmpty ? 0 : -1) }
         let context = ModelContext(container)
         context.autosaveEnabled = false
         guard let state = try activeFarmState(farmID: farmID, context: context),
               state.farmGeneration == farmGeneration else {
             throw ESheepCloudCoreError.farmGenerationChanged
         }
+        // An empty response is the normal steady-state case. Do not construct
+        // replay indexes or materialize any business/receipt table here.
+        if page.events.isEmpty {
+            guard !page.hasMore, page.cloudHead >= state.lastAppliedEventSequence else {
+                throw ESheepCloudProjectionError.streamDigestMismatch
+            }
+            if page.cloudHead > state.cloudEventHead {
+                state.cloudEventHead = page.cloudHead
+                try context.save()
+            }
+            return 0
+        }
         var earliestHistoryChange: Date?
+        let replayContext = ESheepCloudProjectionReplayContext(bulkReplay: false)
+        let domainApplyService = RemoteDomainApplyService()
         do {
             for event in page.events {
                 let outcome = try ESheepCloudEventReducer.apply(
                     event,
                     context: context,
-                    savesChanges: false
+                    savesChanges: false,
+                    replayContext: replayContext,
+                    domainApplyService: domainApplyService
                 )
                 if let changedAt = outcome.historyChangedAt {
                     earliestHistoryChange = min(
@@ -421,6 +471,8 @@ final class ESheepCloudLocalStore {
                     )
                 }
             }
+            replayContext.registerInsertedModels(in: context)
+            domainApplyService.rebuildPendingReplayIndex(in: context)
             state.cloudEventHead = max(state.cloudEventHead, page.cloudHead)
             try finalizeAcceptedIntents(farmID: farmID, context: context)
             if let earliestHistoryChange {
@@ -451,8 +503,9 @@ final class ESheepCloudLocalStore {
         let context = ModelContext(container)
         context.autosaveEnabled = false
         let idSet = Set(commandIDs)
-        let selected = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
-            .filter { idSet.contains($0.id) }
+        let selected = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+            commandIDs.contains($0.id)
+        }))
         guard selected.count == idSet.count,
               selected.allSatisfy({ $0.lifecycle == .ready }) else {
             throw ESheepCloudContractError.malformedPayload
@@ -471,15 +524,19 @@ final class ESheepCloudLocalStore {
     func markTransportUncertain(
         commandIDs: [UUID],
         message: String,
+        failure: ESheepCloudSyncFailure? = nil,
         now: Date = .now
     ) throws {
         let context = ModelContext(container)
         let idSet = Set(commandIDs)
-        for intent in try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
-            where idSet.contains(intent.id) && !intent.lifecycle.isTerminal {
+        for intent in try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+            commandIDs.contains($0.id)
+        }))
+            where idSet.contains(intent.id) && (intent.lifecycle == .sending ||
+                (intent.lifecycle == .awaitingResult && intent.acceptedEventSequence == nil)) {
             intent.lifecycle = .awaitingResult
             intent.lastTransportMessage = message
-            intent.nextRetryAt = retryDate(attemptCount: intent.attemptCount, now: now)
+            intent.nextRetryAt = retryDate(attemptCount: intent.attemptCount, now: now, failure: failure)
         }
         try context.save()
     }
@@ -487,16 +544,19 @@ final class ESheepCloudLocalStore {
     func markStatusQueryFailed(
         commandIDs: [UUID],
         message: String,
+        failure: ESheepCloudSyncFailure? = nil,
         now: Date = .now
     ) throws {
         let context = ModelContext(container)
         let idSet = Set(commandIDs)
-        for intent in try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
+        for intent in try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+            commandIDs.contains($0.id)
+        }))
             where idSet.contains(intent.id) && intent.lifecycle == .awaitingResult {
             intent.lastTransportMessage = message
             intent.nextRetryAt = retryDate(
                 attemptCount: max(1, intent.attemptCount),
-                now: now
+                now: now, failure: failure
             )
         }
         try context.save()
@@ -507,7 +567,9 @@ final class ESheepCloudLocalStore {
     func markUnknownCommandsReadyToRetry(_ commandIDs: [UUID]) throws {
         let context = ModelContext(container)
         let idSet = Set(commandIDs)
-        for intent in try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
+        for intent in try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+            commandIDs.contains($0.id)
+        }))
             where idSet.contains(intent.id) && intent.lifecycle == .awaitingResult {
             intent.lifecycle = .ready
             intent.nextRetryAt = nil
@@ -528,12 +590,31 @@ final class ESheepCloudLocalStore {
             throw ESheepCloudCoreError.farmGenerationChanged
         }
         for (commandID, result) in results {
-            guard let intent = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
-                .first(where: { $0.id == commandID && $0.farmID == farmID }) else {
+            guard let intent = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+                $0.id == commandID && $0.farmID == farmID
+            })).first else {
                 // Results for commands authored elsewhere are delivered via
                 // events; they are not local pending intents.
                 continue
             }
+            let acknowledgedEvents: [ESheepCloudEventEnvelopeV2]
+            let acknowledgedHead: Int64
+            switch result {
+            case .accepted(let events, let head):
+                acknowledgedEvents = events; acknowledgedHead = head
+            case .duplicate(let original):
+                guard original.commandID == commandID else { throw ESheepCloudContractError.malformedPayload }
+                acknowledgedEvents = original.events; acknowledgedHead = original.cloudHead
+            case .needsConfirmation(_, let events, let head):
+                acknowledgedEvents = events; acknowledgedHead = head
+            case .rejected:
+                acknowledgedEvents = []; acknowledgedHead = 0
+            }
+            let originalCommandDigest = intent.commandDigest.lowercased()
+            guard acknowledgedEvents.allSatisfy({
+                $0.commandID == commandID && $0.farmID == farmID && $0.farmGeneration == farmGeneration &&
+                $0.eventSequence <= acknowledgedHead && $0.sourceCommandDigest.lowercased() == originalCommandDigest
+            }) else { throw ESheepCloudContractError.malformedPayload }
             intent.serverResultData = try ESheepCloudCanonicalCodec.encode(result)
             switch result {
             case .accepted(let events, let cloudHead):
@@ -587,6 +668,9 @@ final class ESheepCloudLocalStore {
                     intent.lifecycle = .rejected
                 }
             }
+            // Commit each acknowledged command independently. A later malformed
+            // item or interrupted batch cannot erase already persisted results.
+            try context.save()
         }
         try finalizeAcceptedIntents(farmID: farmID, context: context)
         try context.save()
@@ -693,9 +777,14 @@ final class ESheepCloudLocalStore {
                noImmediateWork,
                value.rejectedCount == 0,
                value.integrityState == .passed {
-                state.lastSafeSaveAt = now
-                state.lastVerifiedEventSequence = state.lastAppliedEventSequence
-                try context.save()
+                if state.lastSafeSaveAt == nil ||
+                    state.lastVerifiedEventSequence != state.lastAppliedEventSequence {
+                    state.lastSafeSaveAt = now
+                }
+                if state.lastVerifiedEventSequence != state.lastAppliedEventSequence {
+                    state.lastVerifiedEventSequence = state.lastAppliedEventSequence
+                }
+                if context.hasChanges { try context.save() }
                 value = try snapshot(
                     farmID: farmID,
                     accountID: accountID,
@@ -703,7 +792,7 @@ final class ESheepCloudLocalStore {
                     commandLimit: 25,
                     context: context
                 )
-            } else {
+            } else if state.lastSafeSaveAt != nil {
                 state.lastSafeSaveAt = nil
                 try context.save()
             }
@@ -782,8 +871,11 @@ final class ESheepCloudLocalStore {
             .sorted { $0.deviceSequence < $1.deviceSequence }
             .prefix(25)
             .map(\.id)
-        let farmAttention = try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>())
-            .filter { $0.farmID == farmID && $0.farmGeneration == state.farmGeneration }
+        let generation = state.farmGeneration
+        let farmAttention = try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.farmGeneration == generation &&
+                ($0.stateRawValue == "open" || $0.stateRawValue == "resolving")
+        }))
         let openAttention = farmAttention.filter { $0.state == .open }
         let resolvingAttention = farmAttention.filter {
             $0.state == .resolving && $0.resolverAccountID == accountID
@@ -806,10 +898,9 @@ final class ESheepCloudLocalStore {
             }
             .compactMap(\.resolutionCommandID)
         let accountIntents = farmIntents.filter { $0.accountID == accountID }
-        let assetStates = try context.fetch(FetchDescriptor<ESheepCloudAssetState>())
-            .filter {
-                $0.farmID == farmID && $0.farmGeneration == state.farmGeneration
-            }
+        let assetStates = try context.fetch(FetchDescriptor<ESheepCloudAssetState>(predicate: #Predicate {
+            $0.farmID == farmID && $0.farmGeneration == generation
+        }))
         let pendingAssetCount = assetStates.count { asset in
             [asset.thumbnailStateRawValue, asset.avatarStateRawValue, asset.originalStateRawValue]
                 .contains { rawValue in
@@ -859,14 +950,24 @@ final class ESheepCloudLocalStore {
         guard let state = try activeFarmState(farmID: farmID, context: context) else {
             return
         }
-        let receipts = try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>())
-            .filter { $0.farmID == farmID }
-        let receivedCommandIDs = Set(receipts.map(\.commandID))
         for intent in try intents(farmID: farmID, context: context) {
             guard intent.lifecycle == .awaitingResult,
                   let accepted = intent.acceptedEventSequence,
-                  accepted <= state.lastAppliedEventSequence,
-                  receivedCommandIDs.contains(intent.id) else { continue }
+                  accepted <= state.lastAppliedEventSequence else { continue }
+            let commandID = intent.id
+            var descriptor = FetchDescriptor<ESheepCloudEventReceipt>(predicate: #Predicate {
+                $0.farmID == farmID && $0.commandID == commandID
+            })
+            descriptor.fetchLimit = 1
+            if try context.fetch(descriptor).isEmpty {
+                let generation = state.farmGeneration
+                let anchors = try context.fetch(FetchDescriptor<ESheepCloudCheckpointState>(predicate: #Predicate {
+                    $0.farmID == farmID && $0.farmGeneration == generation
+                }))
+                guard intent.serverResultData != nil,
+                      anchors.contains(where: { $0.stateRawValue == "active" &&
+                          $0.accountID == intent.accountID && $0.boundaryEventSequence >= accepted }) else { continue }
+            }
             intent.lifecycle = .accepted
         }
     }
@@ -896,18 +997,23 @@ final class ESheepCloudLocalStore {
         }
         let remoteIDs = Set(values.map(\.id))
         let remoteCommandIDs = Set(values.map(\.commandID))
-        for item in try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>())
-            where item.farmID == farmID &&
-                item.farmGeneration == generation &&
-                (item.state == .open || item.state == .resolving) &&
-                !remoteIDs.contains(item.id) {
+        let attentionQuery = FetchDescriptor<ESheepCloudAttentionItem>(predicate: #Predicate {
+            $0.farmID == farmID && $0.farmGeneration == generation &&
+                ($0.stateRawValue == "open" || $0.stateRawValue == "resolving")
+        })
+        for item in try context.fetch(attentionQuery) where !remoteIDs.contains(item.id) {
             item.state = .obsolete
             item.resolutionAwaitingStatus = false
             item.resolutionNextRetryAt = nil
-            if !remoteCommandIDs.contains(item.commandID),
-               let source = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
-                .first(where: { $0.id == item.commandID && $0.lifecycle == .needsConfirmation }) {
-                source.lifecycle = .supersededLocally
+            if !remoteCommandIDs.contains(item.commandID) {
+                let commandID = item.commandID
+                var intentQuery = FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+                    $0.id == commandID && $0.lifecycleRawValue == "needsConfirmation"
+                })
+                intentQuery.fetchLimit = 1
+                if let source = try context.fetch(intentQuery).first {
+                    source.lifecycle = .supersededLocally
+                }
             }
         }
     }
@@ -916,18 +1022,20 @@ final class ESheepCloudLocalStore {
         farmID: UUID,
         context: ModelContext
     ) throws -> ESheepCloudFarmState? {
-        let matches = try context.fetch(FetchDescriptor<ESheepCloudFarmState>())
-            .filter { $0.farmID == farmID && $0.activityState != .accessRevoked }
-            .sorted { $0.farmGeneration > $1.farmGeneration }
-        return matches.first
+        var query = FetchDescriptor<ESheepCloudFarmState>(
+            predicate: #Predicate { $0.farmID == farmID && $0.activityStateRawValue != "accessRevoked" },
+            sortBy: [SortDescriptor(\.farmGeneration, order: .reverse)])
+        query.fetchLimit = 1
+        return try context.fetch(query).first
     }
 
     private func intents(
         farmID: UUID,
         context: ModelContext
     ) throws -> [ESheepCloudPendingIntent] {
-        try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
-            .filter { $0.farmID == farmID }
+        try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+            $0.farmID == farmID && $0.lifecycleRawValue != "accepted" && $0.lifecycleRawValue != "supersededLocally"
+        }))
     }
 
     private func pendingResolution(
@@ -962,8 +1070,9 @@ final class ESheepCloudLocalStore {
         resolutionCommandID: UUID,
         context: ModelContext
     ) throws -> ESheepCloudAttentionItem? {
-        try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>())
-            .first(where: { $0.resolutionCommandID == resolutionCommandID })
+        try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>(predicate: #Predicate {
+            $0.resolutionCommandID == resolutionCommandID
+        })).first
     }
 
     private func resetPendingResolution(
@@ -984,11 +1093,12 @@ final class ESheepCloudLocalStore {
         item.resolutionLastErrorMessage = message
     }
 
-    private func retryDate(attemptCount: Int, now: Date) -> Date {
+    private func retryDate(attemptCount: Int, now: Date, failure: ESheepCloudSyncFailure? = nil) -> Date {
+        if let failure { return now.addingTimeInterval(failure.retryDelay(attempt: attemptCount)) }
         let exponent = min(9, max(0, attemptCount - 1))
-        let base = min(900.0, pow(2.0, Double(exponent)) * 2.0)
+        let base = pow(2.0, Double(exponent)) * 2.0
         let jitter = Double.random(in: 0.8...1.2)
-        return now.addingTimeInterval(base * jitter)
+        return now.addingTimeInterval(min(300, base * jitter))
     }
 }
 
@@ -999,10 +1109,21 @@ actor ESheepCloudCore {
     private let accountID: UUID
     private let gateway: any ESheepCloudGateway
     private let localStore: ESheepCloudLocalStore
+    private let checkpointMaintenance: ESheepCloudCheckpointMaintenance
+    private var maintainedCompletedReceive = false
+    private let checkpointBusinessHistory: ESheepCloudCheckpointBusinessHistory
+    private var restoredBusinessHistory = false
+    private var businessHistoryRetryAfter: Date?
     private let assetCoordinator: ESheepCloudAssetCoordinator?
     private let deviceIdentity: DeviceIdentityActor
     private let viewState: ESheepCloudViewState
-    private var cycleInProgress = false
+    private var activeCycle: Task<ESheepCloudSyncCycleReport, Error>?
+    private var wakePending = false
+    private var wakeForceRetry = false
+    private var lastReport: ESheepCloudSyncCycleReport?
+    private var lastFailure: ESheepCloudSyncFailure?
+    private var nextCycleAt: Date?
+    private var consecutiveFailures = 0
 
     @MainActor
     init(
@@ -1018,6 +1139,9 @@ actor ESheepCloudCore {
         self.accountID = accountID
         self.gateway = gateway
         self.localStore = ESheepCloudLocalStore(container: container)
+        self.checkpointBusinessHistory = ESheepCloudCheckpointBusinessHistory(container: container)
+        self.checkpointMaintenance = ESheepCloudCheckpointMaintenance(container: container,
+            support: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0])
         self.assetCoordinator = assetTransport.map {
             ESheepCloudAssetCoordinator(
                 container: container,
@@ -1045,22 +1169,60 @@ actor ESheepCloudCore {
         return try await synchronize()
     }
 
-    func synchronize(maxCommands: Int = 25) async throws -> ESheepCloudSyncCycleReport {
-        guard !cycleInProgress else {
-            let value = try await localStore.prepareCycle(
-                farmID: farmID,
-                accountID: accountID,
-                commandLimit: maxCommands
-            )
-            return report(from: value, pulled: 0, submitted: 0, queried: 0)
+    func synchronize(maxCommands: Int = 25, force: Bool = false) async throws -> ESheepCloudSyncCycleReport {
+        // Reentrant callers join one task; they must never "prepare" another
+        // cycle and change sending intents while the first request is in flight.
+        if let activeCycle {
+            wakePending = true
+            wakeForceRetry = wakeForceRetry || force
+            return try await activeCycle.value
         }
-        cycleInProgress = true
-        defer { cycleInProgress = false }
+        if !force, let nextCycleAt, nextCycleAt > .now, let lastFailure {
+            throw lastFailure
+        }
+        let task = Task {
+            var result = try await self.runCycle(maxCommands: maxCommands, forceRetry: force)
+            // All notifications arriving during a request collapse into one
+            // follow-up cycle, so a just-entered command is not missed.
+            if self.wakePending {
+                let retry = self.wakeForceRetry
+                self.wakePending = false
+                self.wakeForceRetry = false
+                let next = try await self.runCycle(maxCommands: maxCommands, forceRetry: retry)
+                result = ESheepCloudSyncCycleReport(pulledEventCount: result.pulledEventCount + next.pulledEventCount,
+                    submittedCommandCount: result.submittedCommandCount + next.submittedCommandCount,
+                    queriedCommandCount: result.queriedCommandCount + next.queriedCommandCount,
+                    pendingCount: next.pendingCount, attentionCount: next.attentionCount, safelySavedAt: next.safelySavedAt)
+            }
+            return result
+        }
+        activeCycle = task
+        defer { activeCycle = nil }
+        do {
+            let value = try await task.value
+            lastReport = value
+            lastFailure = nil
+            nextCycleAt = nil
+            consecutiveFailures = 0
+            return value
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let failure = ESheepCloudSyncFailure.classify(error)
+            consecutiveFailures += 1
+            nextCycleAt = Date.now.addingTimeInterval(failure.retryDelay(attempt: consecutiveFailures))
+            lastFailure = failure
+            throw failure
+        }
+    }
 
+    private func runCycle(maxCommands: Int, forceRetry: Bool) async throws -> ESheepCloudSyncCycleReport {
+        let phase = ESheepCloudDiagnostics.Phase("sync-cycle")
+        defer { phase.end() }
         var snapshot = try await localStore.prepareCycle(
             farmID: farmID,
             accountID: accountID,
-            commandLimit: maxCommands
+            commandLimit: maxCommands, forceRetry: forceRetry
         )
         await viewState.update(from: snapshot)
         do {
@@ -1106,11 +1268,13 @@ actor ESheepCloudCore {
                 } catch {
                     try await localStore.markStatusQueryFailed(
                         commandIDs: intentStatusIDs,
-                        message: error.localizedDescription
+                        message: ESheepCloudSyncFailure.classify(error).localizedDescription,
+                        failure: ESheepCloudSyncFailure.classify(error)
                     )
                     try await localStore.markAttentionResolutionStatusQueryFailed(
                         commandIDs: resolutionStatusIDs,
-                        message: error.localizedDescription
+                        message: ESheepCloudSyncFailure.classify(error).localizedDescription,
+                        failure: ESheepCloudSyncFailure.classify(error)
                     )
                     throw error
                 }
@@ -1176,7 +1340,8 @@ actor ESheepCloudCore {
                 } catch {
                     try await localStore.markAttentionResolutionTransportUncertain(
                         commandID: resolution.resolutionCommandID,
-                        message: error.localizedDescription
+                        message: ESheepCloudSyncFailure.classify(error).localizedDescription,
+                        failure: ESheepCloudSyncFailure.classify(error)
                     )
                     throw error
                 }
@@ -1214,7 +1379,8 @@ actor ESheepCloudCore {
                 } catch {
                     try await localStore.markTransportUncertain(
                         commandIDs: ids,
-                        message: error.localizedDescription
+                        message: ESheepCloudSyncFailure.classify(error).localizedDescription,
+                        failure: ESheepCloudSyncFailure.classify(error)
                     )
                     throw error
                 }
@@ -1244,9 +1410,26 @@ actor ESheepCloudCore {
                 farmID: farmID,
                 accountID: accountID
             )
+            if !restoredBusinessHistory, finished.pendingCount == 0, finished.attentionCount == 0,
+               finished.integrityState == .passed,
+               forceRetry || (businessHistoryRetryAfter.map({ $0 <= .now }) ?? true),
+               let transport = gateway as? any ESheepCloudCheckpointGateway {
+                let history = try await checkpointBusinessHistory.restore(farmID: farmID,
+                    accountID: accountID, generation: snapshot.farmGeneration,
+                    gateway: gateway, transport: transport)
+                restoredBusinessHistory = history.verified
+                businessHistoryRetryAfter = history.verified ? nil : Date.now.addingTimeInterval(900)
+            }
+            if !maintainedCompletedReceive, finished.pendingCount == 0,
+               finished.attentionCount == 0, finished.integrityState == .passed,
+               !UserDefaults.standard.bool(forKey: "ESheepCloudDisableCheckpointCleanup") {
+                _ = try? await checkpointMaintenance.removeCompletedReceiveFiles(farmID: farmID, accountID: accountID)
+                maintainedCompletedReceive = true
+            }
             await viewState.update(
                 from: finished,
-                transportError: assetTransferError
+                transportError: assetTransferError,
+                cycleCompleted: true
             )
             return report(
                 from: finished,

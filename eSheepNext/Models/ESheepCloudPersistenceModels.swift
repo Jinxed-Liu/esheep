@@ -63,6 +63,7 @@ enum ESheepCloudInitialSyncState: String, Codable, Sendable, CaseIterable {
     case applyingRecentChanges
     case buildingIndexes
     case readyToActivate
+    case activating
     case active
     case paused
     case failed
@@ -126,12 +127,18 @@ final class ESheepCloudFarmState {
 
     var activityState: ESheepCloudFarmActivityState {
         get { ESheepCloudFarmActivityState(rawValue: activityStateRawValue) ?? .integrityHold }
-        set { activityStateRawValue = newValue.rawValue; updatedAt = .now }
+        set {
+            guard activityStateRawValue != newValue.rawValue else { return }
+            activityStateRawValue = newValue.rawValue; updatedAt = .now
+        }
     }
 
     var integrityState: ESheepCloudIntegrityState {
         get { ESheepCloudIntegrityState(rawValue: integrityStateRawValue) ?? .failed }
-        set { integrityStateRawValue = newValue.rawValue; updatedAt = .now }
+        set {
+            guard integrityStateRawValue != newValue.rawValue else { return }
+            integrityStateRawValue = newValue.rawValue; updatedAt = .now
+        }
     }
 }
 
@@ -257,7 +264,10 @@ final class ESheepCloudPendingIntent {
 
     var lifecycle: ESheepCloudIntentLifecycle {
         get { ESheepCloudIntentLifecycle(rawValue: lifecycleRawValue) ?? .rejected }
-        set { lifecycleRawValue = newValue.rawValue; updatedAt = .now }
+        set {
+            guard lifecycleRawValue != newValue.rawValue else { return }
+            lifecycleRawValue = newValue.rawValue; updatedAt = .now
+        }
     }
 }
 
@@ -496,6 +506,9 @@ final class ESheepCloudInitialSyncSession {
     var id: UUID
     var farmID: UUID
     var farmGeneration: Int
+    /// Account scope is optional only while a V12 session is being claimed by
+    /// the authenticated V2 membership discovery after the V13 migration.
+    var accountID: UUID?
     var stagingGeneration: Int
     var snapshotID: UUID?
     var boundaryEventSequence: Int64
@@ -512,17 +525,24 @@ final class ESheepCloudInitialSyncSession {
     var startedAt: Date
     var updatedAt: Date
     var activatedAt: Date?
+    /// Durable progress is separate from bytes: a complete download may still
+    /// be replaying a large immutable event snapshot.
+    var verifiedProjectionEventSequence: Int64 = 0
+    var activationProjectionEventSequence: Int64 = 0
+    var lastProgressAt: Date?
 
     init(
         id: UUID = UUID(),
         farmID: UUID,
         farmGeneration: Int,
         stagingGeneration: Int,
-        stagingStoreRelativePath: String
+        stagingStoreRelativePath: String,
+        accountID: UUID? = nil
     ) {
         self.id = id
         self.farmID = farmID
         self.farmGeneration = max(0, farmGeneration)
+        self.accountID = accountID
         self.stagingGeneration = max(1, stagingGeneration)
         self.boundaryEventSequence = 0
         self.targetEventHead = 0
@@ -535,6 +555,13 @@ final class ESheepCloudInitialSyncSession {
         self.retryCount = 0
         self.startedAt = .now
         self.updatedAt = .now
+        self.verifiedProjectionEventSequence = 0
+        self.activationProjectionEventSequence = 0
+        self.lastProgressAt = nil
+    }
+
+    var usesBusinessCheckpoint: Bool {
+        stagingStoreRelativePath.hasPrefix("ESheepCloud/Checkpoints/")
     }
 
     var state: ESheepCloudInitialSyncState {

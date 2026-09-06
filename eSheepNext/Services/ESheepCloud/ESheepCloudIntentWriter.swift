@@ -144,25 +144,31 @@ enum ESheepCloudIntentWriter {
         now: Date = .now,
         context: ModelContext
     ) throws {
-        let allFarmIntents = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
-            .filter { $0.farmID == farmID }
-        let intents = allFarmIntents.filter { !$0.lifecycle.isTerminal }
-        // Dependency decisions must include terminal rows. Treating a missing
-        // rejected prerequisite as if it were accepted lets a dependent
-        // pedigree/state-machine command jump the DAG after a failure.
-        var byID = [UUID: ESheepCloudPendingIntent]()
-        for intent in allFarmIntents {
-            guard byID.updateValue(intent, forKey: intent.id) == nil else {
-                throw ESheepCloudContractError.malformedPayload
-            }
+        let terminal = [ESheepCloudIntentLifecycle.accepted.rawValue,
+                        ESheepCloudIntentLifecycle.rejected.rawValue, ESheepCloudIntentLifecycle.supersededLocally.rawValue]
+        let intents = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+            $0.farmID == farmID && !terminal.contains($0.lifecycleRawValue)
+        }))
+        guard !intents.isEmpty else { return }
+        var dependencyIDs = Set<UUID>(), assetIDs = Set<UUID>()
+        for intent in intents {
+            dependencyIDs.formUnion(try ESheepCloudCanonicalCodec.decode([UUID].self, from: intent.prerequisiteCommandIDsData))
+            assetIDs.formUnion(try ESheepCloudCanonicalCodec.decode([UUID].self, from: intent.requiredAssetIDsData))
         }
-        let assets = try context.fetch(FetchDescriptor<ESheepCloudAssetState>())
-            .filter { $0.farmID == farmID }
+        let dependencies = Array(dependencyIDs), requiredAssets = Array(assetIDs)
+        let dependencyRows = dependencies.isEmpty ? [] : try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+            $0.farmID == farmID && dependencies.contains($0.id)
+        }))
+        var byID = [UUID: ESheepCloudPendingIntent]()
+        for intent in dependencyRows {
+            guard byID.updateValue(intent, forKey: intent.id) == nil else { throw ESheepCloudContractError.malformedPayload }
+        }
+        let assets = requiredAssets.isEmpty ? [] : try context.fetch(FetchDescriptor<ESheepCloudAssetState>(predicate: #Predicate {
+            $0.farmID == farmID && requiredAssets.contains($0.id)
+        }))
         var assetByID = [UUID: ESheepCloudAssetState]()
         for asset in assets {
-            guard assetByID.updateValue(asset, forKey: asset.id) == nil else {
-                throw ESheepCloudContractError.malformedPayload
-            }
+            guard assetByID.updateValue(asset, forKey: asset.id) == nil else { throw ESheepCloudContractError.malformedPayload }
         }
 
         for intent in intents where
@@ -232,10 +238,11 @@ enum ESheepCloudIntentWriter {
               Set(fieldKeys).count == fieldKeys.count else {
             throw ESheepCloudContractError.malformedPayload
         }
-        let states = try context.fetch(FetchDescriptor<ESheepCloudStreamState>())
-            .filter {
-                $0.farmID == farmID && $0.farmGeneration == farmGeneration
-            }
+        let streamType = streams[0].type, streamID = streams[0].id
+        let states = try context.fetch(FetchDescriptor<ESheepCloudStreamState>(predicate: #Predicate {
+            $0.farmID == farmID && $0.farmGeneration == farmGeneration &&
+                $0.streamType == streamType && $0.streamID == streamID
+        }))
         var stateByStream = [StreamKey: ESheepCloudStreamState]()
         for state in states {
             let key = StreamKey(type: state.streamType, id: state.streamID)
