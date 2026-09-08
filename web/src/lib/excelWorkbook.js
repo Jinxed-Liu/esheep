@@ -63,6 +63,7 @@ export async function inspectExcelWorkbook(file, contractURL) {
   const sheets = workbookSheets(files).map((sheet) => ({ ...sheet, rows: files[sheet.path] ? readRows(files[sheet.path], shared) : [] }));
   const issues = [];
   const summaries = [];
+  const records = [];
   const importKeys = new Set();
   for (const schema of contract.schemas) {
     const sheet = sheets.find((item) => item.name === schema.name);
@@ -79,11 +80,12 @@ export async function inspectExcelWorkbook(file, contractURL) {
       const importKey = values[headerIndex.get("导入键")]?.toLowerCase();
       if (importKey && importKeys.has(importKey)) issues.push(`${schema.name} 第 ${offset + 2} 行：导入键“${importKey}”与文件内其他行重复`);
       if (importKey) importKeys.add(importKey);
+      records.push({sheet:schema.name,rowNumber:offset+2,importKey,values:Object.fromEntries(schema.columns.map(column=>[column,values[headerIndex.get(column)]??""]))});
     }
     if (rowCount) summaries.push({ name: schema.name, rowCount });
   }
   const supportedNames = new Set(["填写说明", ...contract.schemas.map((schema) => schema.name)]);
   const ignoredSheets = sheets.map((sheet) => sheet.name).filter((name) => !supportedNames.has(name));
   if (!summaries.length && !issues.length) issues.push("没有找到可导入的数据行；请删除或覆盖模板中的示例行。");
-  return { version: contract.version, fileName: file.name, summaries, issues, ignoredSheets };
+  return { version: contract.version, fileName: file.name, summaries, issues, ignoredSheets, records };
 }

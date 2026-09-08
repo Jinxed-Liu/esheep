@@ -252,47 +252,66 @@ export default function FarmAssistant({ workspace, onBack }) {
     const controller = new AbortController();
     abortRef.current = controller;
     const responseItemIDs = new Map();
+    let requestSessionID = sessionID;
+    let recoveredExpiredSession = false;
     try {
       const [accessToken, snapshot] = await Promise.all([
         getAssistantAccessToken(),
         Promise.resolve().then(() => buildAssistantSnapshot(workspace)),
       ]);
-      await streamAssistantTurn({
-        accessToken,
-        mimoAPIKey,
-        farmID: workspace.farm.id,
-        prompt,
-        sessionID,
-        snapshot,
-        attachments: sentAttachments,
-        signal: controller.signal,
-        onEvent(event) {
-          if (event.type === "session") {
-            setSessionID(event.sessionID);
-            storeSession(sessionStorageKey, event.sessionID);
-            setActivity(event.multimodal ? `${event.model} 正在进行图片理解` : `${event.model} 正在回答`);
-          } else if (event.type === "status") {
-            setActivity(event.message);
-          } else if (event.type === "assistant") {
-            const existingID = responseItemIDs.get(event.itemID);
-            if (!responseItemIDs.size) {
-              responseItemIDs.set(event.itemID, event.itemID);
-              setMessages((current) => current.map((message) => message.id === pendingID
-                ? { id: event.itemID, role: "assistant", text: event.text }
-                : message));
-            } else if (existingID) {
-              setMessages((current) => current.map((message) => message.id === existingID
-                ? { ...message, text: event.text, pending: false }
-                : message));
-            } else {
-              responseItemIDs.set(event.itemID, event.itemID);
-              setMessages((current) => [...current, { id: event.itemID, role: "assistant", text: event.text }]);
-            }
-          } else if (event.type === "done") {
-            setActivity(`${event.model} · 回答完成`);
+      const handleEvent = (event) => {
+        if (event.type === "session") {
+          setSessionID(event.sessionID);
+          storeSession(sessionStorageKey, event.sessionID);
+          setActivity(event.multimodal ? `${event.model} 正在进行图片理解` : `${event.model} 正在回答`);
+        } else if (event.type === "status") {
+          setActivity(event.message);
+        } else if (event.type === "assistant") {
+          const existingID = responseItemIDs.get(event.itemID);
+          if (!responseItemIDs.size) {
+            responseItemIDs.set(event.itemID, event.itemID);
+            setMessages((current) => current.map((message) => message.id === pendingID
+              ? { id: event.itemID, role: "assistant", text: event.text }
+              : message));
+          } else if (existingID) {
+            setMessages((current) => current.map((message) => message.id === existingID
+              ? { ...message, text: event.text, pending: false }
+              : message));
+          } else {
+            responseItemIDs.set(event.itemID, event.itemID);
+            setMessages((current) => [...current, { id: event.itemID, role: "assistant", text: event.text }]);
           }
-        },
-      });
+        } else if (event.type === "done") {
+          setActivity(`${event.model} · 回答完成`);
+        }
+      };
+      while (true) {
+        try {
+          await streamAssistantTurn({
+            accessToken,
+            mimoAPIKey,
+            farmID: workspace.farm.id,
+            prompt,
+            sessionID: requestSessionID,
+            snapshot,
+            attachments: sentAttachments,
+            signal: controller.signal,
+            onEvent: handleEvent,
+          });
+          break;
+        } catch (requestError) {
+          if (requestError.code !== "SESSION_EXPIRED" || !requestSessionID || recoveredExpiredSession || controller.signal.aborted) {
+            throw requestError;
+          }
+          recoveredExpiredSession = true;
+          requestSessionID = null;
+          responseItemIDs.clear();
+          setSessionID(null);
+          storeSession(sessionStorageKey, null);
+          setError("");
+          setActivity("旧会话已过期，正在新建会话并重试");
+        }
+      }
       setMessages((current) => current.map((message) => message.id === pendingID
         ? { ...message, pending: false, text: message.text || "模型没有返回可显示的回答。" }
         : message));

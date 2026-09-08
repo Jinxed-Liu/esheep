@@ -988,7 +988,7 @@ struct RemoteDomainApplyService {
                 litterSize: payload.integers["litterSize"],
                 note: payload.strings["note"] ?? ""
             ), context: context)
-            return .applied(rebuildHistoryFrom: nil)
+            return .applied(rebuildHistoryFrom: try date("occurredAt", payload))
         case .createBreedingProgram:
             if try exists(BreedingProgramRecord.self, id: envelope.entityID, context: context) { return .duplicate }
             guard !payload.breedingProgramSteps.isEmpty else { throw RemoteDomainApplyError.invalidPayload("breedingProgramSteps") }

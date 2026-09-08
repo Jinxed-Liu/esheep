@@ -7,6 +7,17 @@ struct ESheepCloudCenterSummary: Sendable, Equatable {
         let commandKind: String
         let occurredAt: Date
     }
+    struct RejectedItem: Identifiable, Sendable, Equatable {
+        let id: UUID
+        let commandKind: String
+        let occurredAt: Date
+        let explanation: String
+        let deviceID: UUID
+        let deviceSequence: Int64
+        let recordDisplayName: String
+        let fieldEvidence: String
+    }
+    var rejectedItems: [RejectedItem] = []
     var waitingCount = 0
     var rejectedCount = 0
     var waitingItems: [WaitingItem] = []
@@ -35,6 +46,48 @@ actor ESheepCloudCenterSummaryReader {
         result.rejectedCount = try context.fetchCount(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
             $0.farmID == farmID && $0.accountID == accountID && $0.farmGeneration == generation && $0.lifecycleRawValue == "rejected"
         }))
+        let rejected = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+            $0.farmID == farmID && $0.accountID == accountID && $0.farmGeneration == generation && $0.lifecycleRawValue == "rejected"
+        }, sortBy: [SortDescriptor(\.occurredAt, order: .reverse)]))
+        let sheep = rejected.isEmpty ? [] : try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate { $0.farmID == farmID }))
+        let photos = rejected.isEmpty ? [] : try context.fetch(FetchDescriptor<PhotoAssetRecord>(predicate: #Predicate { $0.farmID == farmID }))
+        let earTags = Dictionary(sheep.map { ($0.id, $0.earTag) }, uniquingKeysWith: { first, _ in first })
+        let photoOwners = Dictionary(photos.map { ($0.id, $0.sheepID) }, uniquingKeysWith: { first, _ in first })
+        result.rejectedItems = rejected.map { intent in
+            let envelope = try? ESheepCloudCanonicalCodec.decode(ESheepCloudCommandEnvelopeV2.self, from: intent.commandEnvelopeData)
+            let sheepID: UUID?
+            switch envelope?.payload {
+            case .fact(.recordWeaning(let id, _, _, _, _, _, _, _, _)), .fact(.transferSheep(let id, _, _, _)):
+                sheepID = id
+            case .care(.setSheepPurpose(let id, _, _, _)): sheepID = id
+            case .deletion(.tombstone(.photoAsset, let id, _)): sheepID = photoOwners[id] ?? nil
+            default: sheepID = envelope?.affectedStreams.first(where: { ["sheep", "sheepProfile", "sheepLocation"].contains($0.type) })?.id
+            }
+            let displayName = sheepID.flatMap { earTags[$0] } ?? "记录详情见核对信息"
+            let fieldEvidence = (envelope?.affectedFields ?? []).map {
+                "\($0.stream.type)/\($0.stream.id) \($0.field)：本机依据版本 \($0.observedVersion)，值摘要 \($0.baseValueDigest)"
+            }.joined(separator: "\n")
+            let response = intent.serverResultData.flatMap {
+                try? ESheepCloudCanonicalCodec.decode(ESheepCloudCommandResultV2.self, from: $0)
+            }
+            let reason: ESheepCloudRejectionReasonV2?
+            switch response {
+            case .rejected(let value): reason = value
+            case .duplicate(let original): reason = original.rejection
+            default: reason = nil
+            }
+            let explanation: String
+            switch reason {
+            case .businessRule(let code, let message, _): explanation = "\(message)（\(code)）"
+            case .malformedCommand(let message): explanation = intent.lastTransportMessage ?? message
+            case .permissionDenied: explanation = "当前账号没有保存这项内容的权限。"
+            case .applicationUpdateRequired: explanation = "需要更新 App 后处理这项内容。"
+            default: explanation = intent.lastTransportMessage ?? "云端未接受这项内容，本机记录已保留。"
+            }
+            return .init(id: intent.id, commandKind: intent.commandKind, occurredAt: intent.occurredAt,
+                         explanation: explanation, deviceID: intent.deviceID, deviceSequence: intent.deviceSequence,
+                         recordDisplayName: displayName, fieldEvidence: fieldEvidence)
+        }
         result.assetCount = try context.fetchCount(FetchDescriptor<ESheepCloudAssetState>(predicate: #Predicate {
             $0.farmID == farmID && $0.farmGeneration == generation
         }))

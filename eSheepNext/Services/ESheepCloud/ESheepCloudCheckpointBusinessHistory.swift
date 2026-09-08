@@ -37,7 +37,8 @@ actor ESheepCloudCheckpointBusinessHistory {
             name: "purpose-history-backfill:\(accountID.uuidString.lowercased())")
         let digest = ESheepCloudCheckpointArchive.digest(try ESheepCloudCanonicalCodec.encode(manifest))
         let initial = ModelContext(container)
-        guard try hasQuiescentBoundary(manifest, context: initial) else { return Result(verified: false, inserted: 0) }
+        guard try hasQuiescentBoundary(manifest, accountID: accountID, manifestDigest: digest,
+                                      context: initial) else { return Result(verified: false, inserted: 0) }
         if try initial.fetch(FetchDescriptor<ESheepCloudCheckpointState>(predicate: #Predicate {
             $0.id == proofID && $0.accountID == accountID && $0.stateRawValue == "historyBackfilled"
         })).contains(where: { $0.manifestDigest == digest }) { return Result(verified: true, inserted: 0) }
@@ -72,7 +73,8 @@ actor ESheepCloudCheckpointBusinessHistory {
               admission.expiresAt > .now else { throw ESheepCloudInitialSyncError.accountMismatch }
         try Task.checkCancellation()
         let context = ModelContext(container); context.autosaveEnabled = false
-        guard try hasQuiescentBoundary(manifest, context: context) else { return Result(verified: false, inserted: 0) }
+        guard try hasQuiescentBoundary(manifest, accountID: accountID, manifestDigest: digest,
+                                      context: context) else { return Result(verified: false, inserted: 0) }
         let adapter = ESheepCloudCheckpointRegistry.adapters.first { $0.name == "DomainOperation" }!
         var seen = Set<UUID>()
         do {
@@ -83,7 +85,11 @@ actor ESheepCloudCheckpointBusinessHistory {
                 var query = FetchDescriptor<DomainOperation>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })
                 query.fetchLimit = 1
                 if let existing = try context.fetch(query).first {
-                    guard try adapter.exportRecord(existing) == row else { throw ESheepCloudCheckpointError.digestMismatch }
+                    // Date fields export as Double; integral JSON timestamps
+                    // decode as Int64. Compare canonical wire content rather
+                    // than the enum case chosen by the numeric decoder.
+                    guard try ESheepCloudCanonicalCodec.encode(adapter.exportRecord(existing)) ==
+                        ESheepCloudCanonicalCodec.encode(row) else { throw ESheepCloudCheckpointError.digestMismatch }
                 } else {
                     guard case .string(let sheepIdentifier) = row.values["entityID"],
                           let sheepID = UUID(uuidString: sheepIdentifier),
@@ -102,7 +108,8 @@ actor ESheepCloudCheckpointBusinessHistory {
         return Result(verified: true, inserted: inserted)
     }
 
-    private func hasQuiescentBoundary(_ manifest: ESheepCloudCheckpointManifest, context: ModelContext) throws -> Bool {
+    private func hasQuiescentBoundary(_ manifest: ESheepCloudCheckpointManifest, accountID: UUID,
+                                     manifestDigest: String, context: ModelContext) throws -> Bool {
         let farmID = manifest.farmID, generation = manifest.farmGeneration, head = manifest.boundaryEventSequence
         let terminal = ["accepted", "rejected", "supersededLocally"]
         guard try context.fetchCount(FetchDescriptor<FarmRecord>(predicate: #Predicate { $0.id == farmID })) == 1,
@@ -124,13 +131,32 @@ actor ESheepCloudCheckpointBusinessHistory {
         if receipts.contains(where: { $0.eventDigest == manifest.boundaryEventDigest &&
             $0.appliedProjectionDigest == manifest.receiptChainDigest }) { return true }
         let anchors = try context.fetch(FetchDescriptor<ESheepCloudCheckpointState>(predicate: #Predicate {
-            $0.farmID == farmID && $0.farmGeneration == generation && $0.stateRawValue == "active"
+            $0.farmID == farmID && $0.farmGeneration == generation &&
+                $0.accountID == accountID && $0.stateRawValue == "active"
         }))
-        guard anchors.contains(where: { $0.boundaryEventSequence == head &&
-            $0.boundaryEventDigest == manifest.boundaryEventDigest && $0.receiptChainDigest == manifest.receiptChainDigest }) else {
-            throw ESheepCloudCheckpointError.digestMismatch
+        if anchors.contains(where: { $0.boundaryEventSequence == head &&
+            $0.boundaryEventDigest == manifest.boundaryEventDigest && $0.receiptChainDigest == manifest.receiptChainDigest }) {
+            return true
         }
-        return true
+        // Activation verifies the checkpoint and its subsequent events before
+        // copying the farm. Its anchor advances to that final event head, so
+        // the original checkpoint boundary need not have a local receipt.
+        // Recognize only this exact manifest and its durable completed session.
+        let sessions = try context.fetch(FetchDescriptor<ESheepCloudInitialSyncSession>(predicate: #Predicate {
+            $0.farmID == farmID && $0.farmGeneration == generation && $0.accountID == accountID
+        }))
+        if anchors.contains(where: { anchor in
+            anchor.id == manifest.checkpointID && anchor.manifestDigest == manifestDigest &&
+                anchor.importedChunkCount == manifest.chunks.count && anchor.boundaryEventSequence >= head &&
+                state.lastVerifiedEventSequence >= anchor.boundaryEventSequence &&
+                state.lastAppliedEventSequence >= state.lastVerifiedEventSequence &&
+                sessions.contains(where: {
+                    $0.state == .active && $0.snapshotID == anchor.id && $0.activatedAt != nil &&
+                        $0.manifestDigest == manifestDigest && $0.boundaryEventSequence == head &&
+                        $0.activationProjectionEventSequence == anchor.boundaryEventSequence
+                })
+        }) { return true }
+        throw ESheepCloudCheckpointError.digestMismatch
     }
 }
 

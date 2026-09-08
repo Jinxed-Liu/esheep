@@ -99,7 +99,9 @@ export function createAssistantAPI({
           snapshot: body.snapshot,
           attachments,
           mimoAPIKey,
-          signal: request.signal,
+          signal: AbortSignal.any([request.signal, AbortSignal.timeout(10 * 60_000)]),
+          requireExistingSession: environment.CODEX_HARNESS_REQUIRE_SESSION_RESUME === "true" &&
+            request.headers.get("x-esheep-session-create") !== "1",
         })[Symbol.asyncIterator]();
         const first = await iterator.next();
         const encoder = new TextEncoder();

@@ -1245,6 +1245,7 @@ struct ESheepCloudAssetTransferTicketV2: Codable, Sendable {
 }
 
 struct ESheepCloudStatusV2: Codable, Sendable, Equatable {
+    var deviceSequenceFloor: Int64? = nil
     let farmID: UUID
     let farmGeneration: Int
     let cloudHead: Int64

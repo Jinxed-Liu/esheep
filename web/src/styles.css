@@ -4976,3 +4976,15 @@ p {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* Durable record workflows retain the existing workspace layout. */
+.draft-row { padding: 18px 0; border-bottom: 1px solid #e7ebf0; display: grid; gap: 8px; }
+.draft-row>div { display:flex;gap:12px;flex-wrap:wrap; }
+.receipt-json { white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;font-size:12px; }
+.form-error { color:#a43330;white-space:pre-wrap; }
+.workspace-toolbar { flex-wrap:wrap; }
+.workspace-toolbar label { display:flex;gap:8px;align-items:center; }
+.workspace-toolbar select,.workspace-toolbar input[type=date] { border:1px solid #dce3eb;border-radius:6px;padding:7px;background:white; }
+.sheep-event-history {max-height:500px;overflow:auto;margin:14px 0;}
+.sheep-event-history details {padding:10px 0;border-bottom:1px solid #e7ebf0;}
+.record-dialog {max-height:90vh;overflow:auto;}

@@ -1,0 +1,167 @@
+{
+  "source": "FarmEventCSVExport.swift / FarmEventHistoryView.swift",
+  "format": "csv",
+  "encoding": "UTF-8-BOM",
+  "fixedColumns": [
+    "发生时间",
+    "录入时间",
+    "类别",
+    "记录类型",
+    "主对象",
+    "摘要"
+  ],
+  "trailingColumns": [
+    "备注",
+    "记录ID"
+  ],
+  "scopes": [
+    {
+      "id": "all",
+      "name": "全部记录"
+    },
+    {
+      "id": "birth",
+      "name": "出生记录"
+    },
+    {
+      "id": "sheep",
+      "name": "羊只建档"
+    },
+    {
+      "id": "purpose",
+      "name": "用途变更"
+    },
+    {
+      "id": "weight",
+      "name": "称重记录"
+    },
+    {
+      "id": "weaning",
+      "name": "断奶羔羊"
+    },
+    {
+      "id": "transfer",
+      "name": "转群记录"
+    },
+    {
+      "id": "removal",
+      "name": "离群记录"
+    },
+    {
+      "id": "feed",
+      "name": "投喂记录"
+    },
+    {
+      "id": "health",
+      "name": "健康记录"
+    },
+    {
+      "id": "reproduction",
+      "name": "繁殖记录"
+    },
+    {
+      "id": "inventory",
+      "name": "库存记录"
+    },
+    {
+      "id": "note",
+      "name": "备注记录"
+    }
+  ],
+  "categories": [
+    {
+      "id": "herd",
+      "name": "羊群"
+    },
+    {
+      "id": "feeding",
+      "name": "投喂"
+    },
+    {
+      "id": "health",
+      "name": "健康"
+    },
+    {
+      "id": "reproduction",
+      "name": "繁殖"
+    },
+    {
+      "id": "inventory",
+      "name": "库存"
+    },
+    {
+      "id": "note",
+      "name": "备注"
+    }
+  ],
+  "fieldLabels": [
+    "耳号",
+    "性别",
+    "品种",
+    "入场圈舍",
+    "原用途",
+    "新用途",
+    "变更原因",
+    "羊只修订",
+    "操作账号ID",
+    "出生日期",
+    "初始圈舍",
+    "母本",
+    "父本来源",
+    "羊只档案ID",
+    "体重",
+    "状态",
+    "当前圈舍",
+    "断奶重kg",
+    "出生重kg",
+    "日增重起算体重kg",
+    "日增重起算日期",
+    "日增重计算天数",
+    "日增重kg/天",
+    "胎只数",
+    "原圈舍",
+    "目标圈舍",
+    "类型",
+    "原因",
+    "同批离场数量",
+    "同批总售卖金额",
+    "售卖金额",
+    "生产批次",
+    "生产目的",
+    "加入时间",
+    "移出时间",
+    "移出原因",
+    "圈舍",
+    "来源",
+    "方式",
+    "顿次",
+    "原料明细",
+    "剩料kg",
+    "废弃kg",
+    "TMR批次",
+    "TMR配方",
+    "实际TMR kg",
+    "目标TMR kg",
+    "旧位置备注",
+    "项目",
+    "对象",
+    "剂量",
+    "途径",
+    "母羊",
+    "公羊",
+    "冻精",
+    "冻精供体",
+    "胎次",
+    "产羔数",
+    "死胎数",
+    "结果",
+    "内容",
+    "数量变化"
+  ],
+  "dateTimeFormat": "yyyy-MM-dd HH:mm:ss",
+  "sort": [
+    "occurredAt:desc",
+    "recordedAt:desc",
+    "id:desc"
+  ]
+}

@@ -29,7 +29,7 @@ function FeedTable({ workspace }) {
 function IngredientTable({ workspace }) {
   return (
     <div className="table-scroll"><table className="data-table"><thead><tr><th>原料</th><th>类别</th><th>单位</th><th>干物质</th><th>可用库存</th><th>库存状态</th></tr></thead><tbody>
-      {workspace.ingredients.length ? workspace.ingredients.map((item) => <tr key={item.id}><td><strong>{item.name}</strong></td><td>{item.category}</td><td>{item.unit}</td><td>{item.dryMatter == null ? "—" : `${item.dryMatter}%`}</td><td>{item.stock == null ? "—" : `${item.stock.toLocaleString("zh-CN")} kg`}</td><td><span className={`state-label ${item.stock == null ? "neutral" : item.stock < 800 ? "warning" : "success"}`}>{item.stock == null ? "未接入" : item.stock < 800 ? "需关注" : "充足"}</span></td></tr>) : <tr><td colSpan="6"><div className="empty-state">暂无云端原料目录。</div></td></tr>}
+      {workspace.ingredients.length ? workspace.ingredients.map((item) => <tr key={item.id}><td><strong>{item.name}</strong></td><td>{item.category}</td><td>{item.unit}</td><td>{item.dryMatter == null ? "—" : `${item.dryMatter}%`}</td><td>{item.stock == null ? "—" : `${item.stock.toLocaleString("zh-CN")} kg`}</td><td><span className={`state-label ${item.stock == null ? "neutral" : item.stock <= 0 ? "warning" : "success"}`}>{item.stock == null ? "未确认重量" : item.stock <= 0 ? "需关注" : "充足"}</span></td></tr>) : <tr><td colSpan="6"><div className="empty-state">暂无云端原料目录。</div></td></tr>}
     </tbody></table></div>
   );
 }
@@ -41,11 +41,11 @@ export default function FeedingPage({ workspace, mode = "feeding", onCreateRecor
   if (isHistory || isIngredients) {
     return (
       <main className="page feature-page">
-        <PageTop title={isHistory ? "投喂历史" : "原料与库存"} description={isHistory ? "按发生时间查看投喂事实与营养快照，不覆盖历史。" : "维护原料目录、营养值和可用库存。"} actionLabel={isHistory ? "记录投喂" : undefined} onAction={() => onCreateRecord("feed")} icon={BowlFood} />
-        {workspace.mode === "cloud" ? <ProjectionNotice>{isHistory ? "读取真实 feed 投影；网页新增仍只生成浏览器草稿。" : "原料目录读取真实云端投影；库存数量尚未接入时显示“—”。"}</ProjectionNotice> : null}
+        <PageTop title={isHistory ? "投喂历史" : "原料与库存"} description={isHistory ? "按发生时间查看投喂事实与营养快照，不覆盖历史。" : "维护原料目录、营养值和可用库存。"} actionLabel={isHistory ? "记录投喂" : "原料批次入库"} onAction={() => onCreateRecord(isHistory ? "feed" : "原料批次入库")} icon={BowlFood} />
+        {workspace.mode === "cloud" ? <ProjectionNotice>{isHistory ? "记录可保存草稿或正式提交，成功结果可在录入页核对。" : "库存为已确认期初量加出入库流水；未确认重量的批次显示“—”。"}</ProjectionNotice> : null}
         <section className="workspace-panel flat-panel">
           <div className="workspace-toolbar"><button className="text-button back-link" type="button" onClick={() => onNavigate("feeding")}>返回投喂工作台</button><span className="toolbar-note">{isHistory ? `${workspace.feedRecords.length} 条记录` : `${workspace.ingredients.length} 种原料`}</span></div>
-          {isHistory ? <FeedTable workspace={workspace} /> : <IngredientTable workspace={workspace} />}
+          {isHistory ? <FeedTable workspace={workspace} /> : <><IngredientTable workspace={workspace} /><h3>原料库存批次</h3><div className="table-scroll"><table className="data-table"><thead><tr><th>原料 / 批次</th><th>存放位置</th><th>供应商</th><th>单价 元/kg</th><th>结余 kg</th><th>状态</th></tr></thead><tbody>{workspace.ingredientBatches?.map(b=><tr key={b.id}><td>{workspace.ingredients.find(i=>i.id===b.ingredientID)?.name} / {b.batchName}</td><td>{b.storageLocation||"—"}</td><td>{b.supplier||"—"}</td><td>{b.pricePerKilogramText}</td><td>{b.balance??"—"}</td><td>{b.isActive?"启用":"停用"}</td></tr>)}</tbody></table></div></>}
         </section>
       </main>
     );
@@ -58,7 +58,7 @@ export default function FeedingPage({ workspace, mode = "feeding", onCreateRecor
   return (
     <main className="page feature-page feeding-hub-page">
       <PageTop title="投喂" description="与 App 一致：TMR、直接投喂、营养分析、历史、原料与库存都从这里进入。" actionLabel="记录直接投喂" onAction={() => onCreateRecord("feed")} icon={BowlFood} />
-      {workspace.mode === "cloud" ? <ProjectionNotice>投喂、原料、配方和计划读取真实云端投影；TMR 批次与偏差监控尚未接入，相关页面会明确显示空状态。</ProjectionNotice> : null}
+      {workspace.mode === "cloud" ? <ProjectionNotice>投喂、原料、库存、配方、计划与 TMR 批次已接入云端资料。</ProjectionNotice> : null}
       <section className="feeding-summary-row">
         <article><BowlFood size={25} /><span><small>今日记录</small><strong>{workspace.metrics.feedsToday}<em>次</em></strong></span></article>
         <article><Scales size={25} /><span><small>今日投喂量</small><strong>{todayKg.toLocaleString("zh-CN", { maximumFractionDigits: 1 })}<em>kg</em></strong></span></article>

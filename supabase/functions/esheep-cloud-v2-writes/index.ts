@@ -1,3 +1,4 @@
+import { withCheckpointCors } from "../esheep-cloud-checkpoints/cors.mjs";
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 
 type SignedCommand = {
@@ -334,7 +335,7 @@ const confirmAsset = async (
   return data;
 };
 
-Deno.serve(async (request) => {
+Deno.serve(withCheckpointCors(async (request) => {
   if (request.method !== "POST") return response(405, { error: "method_not_allowed" });
   try {
     const url = requiredEnvironment("SUPABASE_URL");
@@ -369,4 +370,4 @@ Deno.serve(async (request) => {
     console.error(JSON.stringify({ trace_id, category, code }));
     return response(status, { error: code, category, trace_id });
   }
-});
+}));

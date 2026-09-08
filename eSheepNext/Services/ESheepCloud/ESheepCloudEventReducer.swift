@@ -535,7 +535,7 @@ enum ESheepCloudEventReducer {
             }
         }
 
-        let historyChangedAt: Date?
+        var historyChangedAt: Date?
         switch event.payload {
         case .fieldsPatched(let stream, let changes):
             guard stream == event.stream else {
@@ -611,6 +611,7 @@ enum ESheepCloudEventReducer {
                         accountID: event.actorAccountID, deviceID: event.sourceDeviceID,
                         occurredAt: event.occurredAt, recordedAt: event.receivedAt,
                         previousPurpose: purposeHistory.previousPurpose, context: context)
+                    historyChangedAt = event.occurredAt
                 }
             }
             try advanceNonFieldStream(

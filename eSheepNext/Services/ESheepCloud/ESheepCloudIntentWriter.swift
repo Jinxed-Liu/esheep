@@ -56,6 +56,12 @@ enum ESheepCloudIntentWriter {
             throw ESheepCloudIntentWriterError.integrityHold
         }
 
+        // Reserve before signing. Keychain shares the device identity lifetime;
+        // a transaction rollback may leave a gap, but can never reuse a number.
+        let deviceSequence = try ESheepCloudSequenceWatermark.reserve(
+            farmID: farmID, deviceID: deviceID, operationID: commandID,
+            proposed: deviceSequence, context: context)
+
         let dependencies = Array(Set(prerequisiteCommandIDs))
             .sorted { $0.uuidString < $1.uuidString }
         try validateDependencies(
@@ -137,6 +143,44 @@ enum ESheepCloudIntentWriter {
         farmState.updatedAt = .now
         farmState.lastSafeSaveAt = nil
         return intent
+    }
+
+    /// Called inside the original local transaction, before any envelope can
+    /// be signed or sent. Never rewrites a previously attempted command.
+    static func bindWeaningBundles(commandIDs: [UUID], context: ModelContext) throws {
+        guard commandIDs.count > 1 else { return }
+        let rows = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+            commandIDs.contains($0.id)
+        }))
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        for index in 0..<(commandIDs.count - 1) {
+            guard let first = byID[commandIDs[index]], let second = byID[commandIDs[index + 1]],
+                  first.commandKind == "weaning.record", second.commandKind == "transfer.record" else { continue }
+            let a = try ESheepCloudCanonicalCodec.decode(ESheepCloudCommandEnvelopeV2.self, from: first.commandEnvelopeData)
+            let b = try ESheepCloudCanonicalCodec.decode(ESheepCloudCommandEnvelopeV2.self, from: second.commandEnvelopeData)
+            guard case .fact(.recordWeaning(let sheepID, _, let date, _, _, _, _, _, _)) = a.payload,
+                  case .fact(.transferSheep(let transferredID, _, let transferredAt, let note)) = b.payload,
+                  sheepID == transferredID, date == transferredAt, note == "随断奶事件调舍" else { continue }
+            guard first.attemptCount == 0, second.attemptCount == 0,
+                  first.bundleID == nil, second.bundleID == nil,
+                  a.farmID == b.farmID, a.farmGeneration == b.farmGeneration,
+                  a.accountID == b.accountID, a.deviceID == b.deviceID else {
+                throw ESheepCloudContractError.malformedPayload
+            }
+            let bundleID = UUID()
+            for (row, old) in [(first, a), (second, b)] {
+                let envelope = try ESheepCloudCommandEnvelopeV2(
+                    commandID: old.commandID, sourceRequestID: old.sourceRequestID, bundleID: bundleID,
+                    farmID: old.farmID, farmGeneration: old.farmGeneration, accountID: old.accountID,
+                    deviceID: old.deviceID, deviceSequence: old.deviceSequence, createdAt: old.createdAt,
+                    occurredAt: old.occurredAt, payload: old.payload, affectedStreams: old.affectedStreams,
+                    affectedFields: old.affectedFields, fieldChanges: old.fieldChanges,
+                    prerequisiteCommandIDs: old.prerequisiteCommandIDs, requiredAssetIDs: old.requiredAssetIDs)
+                row.bundleID = bundleID
+                row.commandEnvelopeData = try ESheepCloudCanonicalCodec.encode(envelope)
+                row.commandDigest = envelope.contentDigest
+            }
+        }
     }
 
     static func refreshReadiness(
@@ -425,5 +469,46 @@ enum ESheepCloudIntentWriterError: LocalizedError, Equatable {
         case .dependencyCycle: "这组操作的先后关系无效，无法安全保存。"
         case .invalidDependency: "这组操作引用了不属于当前账号或牧场版本的前置内容。"
         }
+    }
+}
+
+/// Stored beside device identity, so reinstalling a database cannot reset the
+/// sequence of an existing device. Only a validated status initializes it.
+enum ESheepCloudSequenceWatermark {
+    private static let lock = NSLock()
+    private static func key(farmID: UUID, deviceID: UUID) -> String {
+        "esheep-v2-sequence-\(farmID.uuidString.lowercased())-\(deviceID.uuidString.lowercased())"
+    }
+    static func reconcile(farmID: UUID, deviceID: UUID, floor: Int64) throws {
+        try lock.withLock {
+            let account = key(farmID: farmID, deviceID: deviceID)
+            let current = try SecureAccountStore.data(account: account)
+                .flatMap { String(data: $0, encoding: .utf8) }.flatMap(Int64.init) ?? 0
+            try SecureAccountStore.save(Data(String(max(current, floor)).utf8), account: account)
+        }
+    }
+    static func reserve(farmID: UUID, deviceID: UUID, operationID: UUID, proposed: Int64, context: ModelContext) throws -> Int64 {
+        let reserved = try lock.withLock {
+            let account = key(farmID: farmID, deviceID: deviceID)
+            guard let data = try SecureAccountStore.data(account: account),
+                  let text = String(data: data, encoding: .utf8), let current = Int64(text),
+                  current >= 0, current < Int64.max - 1, proposed > 0, proposed < Int64.max - 1 else {
+                throw SequenceError.requiresCloudStatus
+            }
+            let next = max(proposed, current + 1)
+            try SecureAccountStore.save(Data(String(next).utf8), account: account)
+            return next
+        }
+        if let record = try context.fetch(FetchDescriptor<FarmOperationSequenceRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.operationID == operationID
+        })).first { record.clientSequence = reserved }
+        if let counter = try context.fetch(FetchDescriptor<FarmOperationSequenceCounter>(predicate: #Predicate {
+            $0.farmID == farmID
+        })).first { counter.nextSequence = max(counter.nextSequence, reserved + 1) }
+        return reserved
+    }
+    enum SequenceError: LocalizedError {
+        case requiresCloudStatus
+        var errorDescription: String? { "请先连接 eSheep+ 云完成这台设备的保存准备，再录入内容。" }
     }
 }

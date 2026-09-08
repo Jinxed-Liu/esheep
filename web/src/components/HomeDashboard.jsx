@@ -175,14 +175,14 @@ export function HomeDashboard({ workspace, onNavigate, onCreateRecord }) {
                   <button type="button" key={meal.id} onClick={() => onNavigate("tmr-monitor")}>
                     <span className="meal-period-badge">{meal.period}</span>
                     <time>{meal.time}</time>
-                    <span className="meal-stat"><small>计划</small><strong>{meal.planKg.toLocaleString("zh-CN")}<em> kg</em></strong></span>
+                    <span className="meal-stat"><small>计划</small><strong>{meal.planKg?.toLocaleString("zh-CN")??"未关联"}<em> kg</em></strong></span>
                     <span className={`meal-stat actual ${meal.status}`}><small>实际投喂</small><strong>{meal.actualKg.toLocaleString("zh-CN")}<em> kg</em></strong></span>
                     <CheckCircle size={18} weight="fill" className={`meal-check ${meal.status}`} />
                   </button>
                 ))}
               </div>
             ) : (
-              <div className="side-empty-state">云端 TMR 顿次监控尚未接入。</div>
+              <div className="side-empty-state">今日暂无 TMR 投喂记录。</div>
             )}
           </section>
         </aside>

@@ -235,11 +235,14 @@ actor ESheepCloudLocalStore {
             from: item.cloudValueData
         )
         let resolutionCommandID = UUID()
-        let deviceSequence = try FarmStorageRouter.takeNextOperationSequence(
+        let proposedSequence = try FarmStorageRouter.takeNextOperationSequence(
             farmID: farmID,
             operationID: resolutionCommandID,
             context: context
         )
+        let deviceSequence = try ESheepCloudSequenceWatermark.reserve(
+            farmID: farmID, deviceID: deviceID, operationID: resolutionCommandID,
+            proposed: proposedSequence, context: context)
         item.state = .resolving
         item.resolutionRawValue = choice.rawValue
         item.resolutionCommandID = resolutionCommandID
@@ -402,6 +405,15 @@ actor ESheepCloudLocalStore {
         guard status.v2Ready else {
             throw ESheepCloudCoreError.applicationUpdateRequired
         }
+        if let floor = status.deviceSequenceFloor {
+            guard floor >= 0, floor < Int64.max else { throw ESheepCloudContractError.malformedPayload }
+            let farmID = status.farmID
+            let deviceID = try ESheepCloudDeviceIdentityStore.deviceID(accountID: accountID)
+            let localFloor = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+                $0.farmID == farmID && $0.deviceID == deviceID
+            })).map(\.deviceSequence).max() ?? 0
+            try ESheepCloudSequenceWatermark.reconcile(farmID: farmID, deviceID: deviceID, floor: max(floor, localFloor))
+        }
         if status.cloudHead > state.cloudEventHead { state.cloudEventHead = status.cloudHead }
         if status.writeFrozen {
             state.activityState = .integrityHold
@@ -521,6 +533,24 @@ actor ESheepCloudLocalStore {
         try context.save()
     }
 
+    /// Repair derived classifications only after the authoritative purpose
+    /// history has been restored. Imported adult purposes remain untouched.
+    func reconcileLifecyclePurposes(farmID: UUID) throws {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let timelines = try SheepLifecyclePurpose.timelines(farmID: farmID, sheep: sheep, context: context)
+        let now = Date.now
+        let changed = sheep.filter { item in
+            timelines[item.id].map { $0.value(at: now) != item.purpose } ?? false
+        }
+        guard let firstDate = changed.map({ $0.enteredAt }).min() else { return }
+        try historyRebuilder.rebuild(farmID: farmID, context: context, from: firstDate, through: now)
+        try context.save()
+    }
+
     func markTransportUncertain(
         commandIDs: [UUID],
         message: String,
@@ -575,6 +605,82 @@ actor ESheepCloudLocalStore {
             intent.nextRetryAt = nil
             intent.lastTransportMessage = nil
         }
+        try context.save()
+    }
+
+    /// Only the Build 21 rejection family is eligible. The network caller must
+    /// first prove each original ID is absent; durable receipts always win.
+    func repairableRejectedCommandIDs(farmID: UUID, accountID: UUID) throws -> [UUID] {
+        let context = ModelContext(container)
+        return try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+            $0.farmID == farmID && $0.accountID == accountID && $0.lifecycleRawValue == "rejected"
+        })).filter { intent in
+            guard ESheepCloudBuild21Recovery.originalDigests.contains(intent.commandDigest), let bytes = intent.serverResultData,
+                  let result = try? ESheepCloudCanonicalCodec.decode(ESheepCloudCommandResultV2.self, from: bytes),
+                  case .rejected(let reason) = result else { return false }
+            switch reason {
+            case .malformedCommand: return intent.attemptCount > 0
+            case .businessRule(let code, _, _): return code == "device_sequence_reused"
+            default: return false
+            }
+        }.sorted { $0.deviceSequence < $1.deviceSequence }.map(\.id)
+    }
+
+    func recoverAbsentRejectedCommands(_ ids: [UUID], farmID: UUID, accountID: UUID, generation: Int) throws {
+        guard !ids.isEmpty else { return }
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let eligible = Set(try repairableRejectedCommandIDs(farmID: farmID, accountID: accountID))
+        let deviceID = try ESheepCloudDeviceIdentityStore.deviceID(accountID: accountID)
+        var replacementIDs: [UUID] = []
+        for id in ids where eligible.contains(id) {
+            guard let old = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+                $0.id == id && $0.farmID == farmID && $0.farmGeneration == generation
+            })).first, old.deviceID == deviceID else { continue }
+            let envelope = try ESheepCloudCanonicalCodec.decode(ESheepCloudCommandEnvelopeV2.self, from: old.commandEnvelopeData)
+            try envelope.validateDigest()
+            guard envelope.commandID == id, envelope.contentDigest == old.commandDigest,
+                  envelope.farmID == farmID, envelope.accountID == accountID,
+                  envelope.farmGeneration == generation, envelope.deviceID == deviceID,
+                  envelope.bundleID == nil, envelope.prerequisiteCommandIDs.isEmpty else {
+                throw ESheepCloudContractError.invalidCommandDigest
+            }
+            // Never rebase a user's field edit or change an immutable fact.
+            // Preserve concrete record IDs so a replay cannot create duplicates.
+            let replacementID = StableCloudUUID.derived(namespace: id, name: "build21-authorized-recovery-v1")
+            let recoveryBundleID: UUID?
+            switch try ESheepCloudBuild21Recovery.preparePhoto(envelope, context: context) {
+            case .ready(let bundleID): recoveryBundleID = bundleID
+            case .deferred(let explanation):
+                old.lastTransportMessage = explanation
+                continue
+            }
+            let proposed = try FarmStorageRouter.takeNextOperationSequence(
+                farmID: farmID, operationID: replacementID, context: context)
+            let sequence = try ESheepCloudSequenceWatermark.reserve(farmID: farmID, deviceID: deviceID,
+                operationID: replacementID, proposed: proposed, context: context)
+            // Retain the photo revocation's original lifecycle observation;
+            // its avatar clear uses a separate, explicit versioned field edit.
+            let updated = try ESheepCloudCommandEnvelopeV2(commandID: replacementID,
+                sourceRequestID: envelope.sourceRequestID, bundleID: recoveryBundleID, farmID: farmID, farmGeneration: generation,
+                accountID: accountID, deviceID: deviceID, deviceSequence: sequence, createdAt: .now,
+                occurredAt: envelope.occurredAt, payload: envelope.payload,
+                affectedStreams: envelope.affectedStreams, affectedFields: envelope.affectedFields,
+                fieldChanges: envelope.fieldChanges, requiredAssetIDs: envelope.requiredAssetIDs)
+            let replacement = ESheepCloudPendingIntent(commandID: replacementID, farmID: farmID,
+                farmGeneration: generation, accountID: accountID, deviceID: deviceID, deviceSequence: sequence,
+                sourceRequestID: envelope.sourceRequestID, bundleID: recoveryBundleID, commandKind: updated.commandKind,
+                commandEnvelopeData: try ESheepCloudCanonicalCodec.encode(updated), commandDigest: updated.contentDigest,
+                affectedStreamsData: old.affectedStreamsData, affectedFieldsData: old.affectedFieldsData,
+                prerequisiteCommandIDsData: old.prerequisiteCommandIDsData, requiredAssetIDsData: old.requiredAssetIDsData,
+                lifecycle: .ready, createdAt: updated.createdAt, occurredAt: old.occurredAt)
+            context.insert(replacement)
+            replacementIDs.append(replacementID)
+            old.lifecycle = .supersededLocally
+            old.lastTransportMessage = "云端核对原请求不存在，恢复请求：\(replacement.id.uuidString.lowercased())"
+            replacement.lastTransportMessage = "恢复原请求：\(old.id.uuidString.lowercased())；原始内容与失败回执已保留。"
+        }
+        try ESheepCloudIntentWriter.bindWeaningBundles(commandIDs: replacementIDs, context: context)
         try context.save()
     }
 
@@ -834,7 +940,7 @@ actor ESheepCloudLocalStore {
             throw ESheepCloudCoreError.farmStateMissing
         }
         let farmIntents = try intents(farmID: farmID, context: context)
-        let readyModels = farmIntents
+        let readyCandidates = farmIntents
             .filter {
                 $0.accountID == accountID &&
                 $0.farmGeneration == state.farmGeneration &&
@@ -846,7 +952,24 @@ actor ESheepCloudLocalStore {
                 }
                 return $0.id.uuidString < $1.id.uuidString
             }
-            .prefix(max(1, min(25, commandLimit)))
+        var readyModels: [ESheepCloudPendingIntent] = []
+        let limit = max(1, min(25, commandLimit))
+        for candidate in readyCandidates {
+            if let bundleID = candidate.bundleID {
+                if !readyModels.isEmpty { break }
+                let members = farmIntents.filter { $0.bundleID == bundleID }
+                // A weaning workflow is exactly two commands. Never split it at
+                // the upload limit or send it alongside an unrelated command.
+                guard members.count == 2, members.allSatisfy({
+                    $0.accountID == accountID && $0.farmGeneration == state.farmGeneration &&
+                        $0.deviceID == candidate.deviceID && $0.lifecycle == .ready
+                }) else { continue }
+                readyModels = members.sorted { $0.deviceSequence < $1.deviceSequence }
+                break
+            }
+            readyModels.append(candidate)
+            if readyModels.count >= limit { break }
+        }
         let ready = try readyModels.map {
             let envelope = try ESheepCloudCanonicalCodec.decode(
                 ESheepCloudCommandEnvelopeV2.self,
@@ -855,6 +978,7 @@ actor ESheepCloudLocalStore {
             try envelope.validateDigest()
             guard envelope.commandID == $0.id,
                   envelope.contentDigest == $0.commandDigest,
+                  envelope.bundleID == $0.bundleID,
                   envelope.accountID == accountID,
                   envelope.farmGeneration == state.farmGeneration else {
                 throw ESheepCloudContractError.invalidCommandDigest
@@ -1237,6 +1361,17 @@ actor ESheepCloudCore {
                 generation: snapshot.farmGeneration,
                 after: snapshot.lastAppliedEventSequence
             )
+            // The new status field is also the server-fix capability gate.
+            // Read back old IDs before creating replacement signed envelopes.
+            if status.deviceSequenceFloor != nil {
+                let repairIDs = try await localStore.repairableRejectedCommandIDs(farmID: farmID, accountID: accountID)
+                if !repairIDs.isEmpty {
+                    let receipts = try await gateway.queryCommandStatus(farmID: farmID, commandIDs: repairIDs)
+                    try await localStore.recordCommandResults(receipts, farmID: farmID, farmGeneration: snapshot.farmGeneration)
+                    try await localStore.recoverAbsentRejectedCommands(repairIDs.filter { receipts[$0] == nil },
+                        farmID: farmID, accountID: accountID, generation: snapshot.farmGeneration)
+                }
+            }
             // Resource verification precedes command readiness. Thumbnail and
             // avatar bytes are prioritized, while an independent failure here
             // cannot block receiving unrelated farm events or business
@@ -1358,7 +1493,10 @@ actor ESheepCloudCore {
                 accountID: accountID,
                 commandLimit: maxCommands
             )
-            if !snapshot.readyCommands.isEmpty {
+            let businessBudget = max(2, min(25, maxCommands))
+            var submittedBusiness = 0
+            while !snapshot.readyCommands.isEmpty, submittedBusiness < businessBudget {
+                guard snapshot.readyCommands.count <= businessBudget - submittedBusiness else { break }
                 guard snapshot.readyCommands.allSatisfy({ $0.deviceID == identity.deviceID }) else {
                     throw ESheepCloudCoreError.deviceIdentityChanged
                 }
@@ -1395,6 +1533,11 @@ actor ESheepCloudCore {
                     )
                 }
                 submitted += ids.count
+                submittedBusiness += ids.count
+                if submittedBusiness < businessBudget {
+                    snapshot = try await localStore.prepareCycle(farmID: farmID, accountID: accountID,
+                        commandLimit: businessBudget - submittedBusiness)
+                }
             }
 
             snapshot = try await localStore.prepareCycle(
@@ -1417,6 +1560,7 @@ actor ESheepCloudCore {
                 let history = try await checkpointBusinessHistory.restore(farmID: farmID,
                     accountID: accountID, generation: snapshot.farmGeneration,
                     gateway: gateway, transport: transport)
+                if history.verified { try await localStore.reconcileLifecyclePurposes(farmID: farmID) }
                 restoredBusinessHistory = history.verified
                 businessHistoryRetryAfter = history.verified ? nil : Date.now.addingTimeInterval(900)
             }

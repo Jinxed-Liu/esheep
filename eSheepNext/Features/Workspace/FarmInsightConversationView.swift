@@ -1280,6 +1280,10 @@ private struct InsightActionDraftCard: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+            if draft.status == .executed,
+               draft.toolName != "draft_reminder", draft.toolName != "draft_calendar_event" {
+                InsightDraftCloudSaveStatus(draft: draft)
+            }
             if draft.status == .proposed {
                 HStack {
                     Button(LocalizedStringKey(primaryActionTitle), action: onReview)
@@ -1313,10 +1317,60 @@ private struct InsightActionDraftCard: View {
         switch draft.status {
         case .proposed: "待确认"
         case .approved: "已批准"
-        case .executed: "已执行"
+        case .executed: "本机已执行"
         case .rejected: "已拒绝"
         case .stale: "已过期"
         case .failed: "执行失败"
+        }
+    }
+}
+
+/// Observe only this card's requests, including the linked weaning transfer.
+/// Superseded originals retain evidence but do not count twice after recovery.
+private struct InsightDraftCloudSaveStatus: View {
+    @Query private var intents: [ESheepCloudPendingIntent]
+    private let isWeaning: Bool
+
+    init(draft: InsightActionDraftRecord) {
+        let sourceID = draft.id
+        let transferID = WeaningWorkflow.transferSourceRequestID(for: sourceID)
+        let farmID = draft.farmID
+        let accountID = draft.accountID
+        isWeaning = draft.toolName == "draft_record_weaning"
+        _intents = Query(filter: #Predicate<ESheepCloudPendingIntent> {
+            $0.farmID == farmID && $0.accountID == accountID &&
+                ($0.sourceRequestID == sourceID || $0.sourceRequestID == transferID) &&
+                $0.lifecycleRawValue != "supersededLocally"
+        })
+    }
+
+    var body: some View {
+        if !intents.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(intents) { intent in
+                    let name = intent.commandKind == "weaning.record" ? "断奶" :
+                        (intent.commandKind == "transfer.record" ? "调舍" : "记录")
+                    Text("\(name)：\(status(intent))")
+                        .foregroundStyle(intent.lifecycle == .rejected ? Color.red : Color.secondary)
+                }
+                if isWeaning && !intents.contains(where: { $0.commandKind == "transfer.record" }) {
+                    Text("调舍：尚未找到云端确认记录").foregroundStyle(.orange)
+                }
+                if intents.contains(where: { $0.lifecycle == .rejected || $0.lifecycle == .needsConfirmation }) {
+                    Text("请到 eSheep+ 云查看具体失败原因和核对信息。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
+        }
+    }
+
+    private func status(_ intent: ESheepCloudPendingIntent) -> String {
+        switch intent.lifecycle {
+        case .accepted: "云端已确认"
+        case .rejected: "云端未保存，本机内容已保留"
+        case .needsConfirmation: "存在冲突，需要确认"
+        default: "本机已保存，等待云端确认"
         }
     }
 }

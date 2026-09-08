@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "sync:excel-template": "node scripts/sync-app-excel-template.mjs",
+    "sync:excel-template": "node scripts/sync-app-excel-template.mjs && node scripts/sync-app-event-contract.mjs",
     "dev": "npm run sync:excel-template && node server/dev.mjs",
     "dev:frontend": "npm run sync:excel-template && vite",
     "build": "npm run sync:excel-template && vite build && node scripts/prepare-sites-build.mjs",
@@ -28,6 +28,7 @@
     "vite": "6.4.3"
   },
   "devDependencies": {
+    "@cloudflare/containers": "0.3.7",
     "wrangler": "^4.127.1"
   }
 }

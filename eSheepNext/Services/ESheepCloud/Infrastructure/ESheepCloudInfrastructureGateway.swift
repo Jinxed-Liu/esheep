@@ -461,6 +461,7 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
     func fetchCloudStatus(farmID: UUID) async throws -> ESheepCloudStatusV2 {
         let wire = try await fetchStatusWire(farmID: farmID)
         return ESheepCloudStatusV2(
+            deviceSequenceFloor: wire.deviceSequenceFloor,
             farmID: wire.farmID,
             farmGeneration: wire.farmGeneration,
             cloudHead: wire.cloudHead,
@@ -1062,6 +1063,7 @@ private struct AppliedFieldChangeWire: Decodable, Sendable {
 }
 
 private struct StatusWire: Decodable, Sendable {
+    let deviceSequenceFloor: Int64?
     let farmID: UUID
     let farmGeneration: Int
     let cloudHead: Int64
@@ -1073,6 +1075,7 @@ private struct StatusWire: Decodable, Sendable {
     let serverTime: String
 
     enum CodingKeys: String, CodingKey {
+        case deviceSequenceFloor = "device_sequence_floor"
         case farmID = "farm_id"
         case farmGeneration = "farm_generation"
         case cloudHead = "cloud_head"

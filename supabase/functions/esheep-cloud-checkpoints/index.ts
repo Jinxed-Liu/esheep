@@ -1,11 +1,12 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
+import { withCheckpointCors } from "./cors.mjs";
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), {
   status, headers: { "content-type": "application/json", "cache-control": "no-store", "x-esheep-service-version": "checkpoint-v1-integrated-v1" },
 });
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-Deno.serve(async (request) => {
+Deno.serve(withCheckpointCors(async (request: Request) => {
   if (request.method !== "POST") return json(405, { error: "method_not_allowed" });
   try {
     const authorization = request.headers.get("authorization");
@@ -59,4 +60,4 @@ Deno.serve(async (request) => {
   } catch {
     return json(400, { error: "invalid_checkpoint_request" });
   }
-});
+}));

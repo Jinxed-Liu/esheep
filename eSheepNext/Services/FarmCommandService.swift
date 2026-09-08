@@ -1221,6 +1221,7 @@ final class FarmCommandService {
         var pendingHistory: [HistoryImpact] = []
         var receiptBySourceRequestID: [UUID: FarmCommandExecutionReceipt] = [:]
         var stagedBySourceRequestID: [UUID: StagedCommandResult] = [:]
+        var stagedCloudCommandIDs: [UUID] = []
         let requestedSourceIDs = Set(requests.map(\.sourceRequestID))
         let farmID = farm.farmID
         let accountID = farm.accountID
@@ -1289,12 +1290,16 @@ final class FarmCommandService {
                 batchState: batchState
             )
             stagedBySourceRequestID[request.sourceRequestID] = staged
+            stagedCloudCommandIDs.append(staged.commandID)
             if let impact = staged.historyImpact {
                 pendingHistory.append(impact)
             }
         }
         try flushHistory()
 
+        if route.mode == .eSheepCloud {
+            try ESheepCloudIntentWriter.bindWeaningBundles(commandIDs: stagedCloudCommandIDs, context: context)
+        }
         for request in requests where receiptBySourceRequestID[request.sourceRequestID] == nil {
             guard let staged = stagedBySourceRequestID[request.sourceRequestID] else {
                 throw FarmCommandError.sourceRecordNotFound
@@ -1348,6 +1353,7 @@ final class FarmCommandService {
         }
         try validateStorageRoute(in: farm, context: context)
         var pendingHistory: [HistoryImpact] = []
+        var stagedCommandIDs: [UUID] = []
 
         func flushHistory() throws {
             guard !pendingHistory.isEmpty else { return }
@@ -1361,16 +1367,21 @@ final class FarmCommandService {
             if !affectsHistoryProjection(command) {
                 try flushHistory()
             }
-            if let impact = try executeWithoutSaving(
+            let staged = try stageCommandWithoutSaving(
                 command,
                 in: farm,
                 context: context,
                 pedigreeSheepByID: pedigreeSheepByID
-            ) {
+            )
+            stagedCommandIDs.append(staged.commandID)
+            if let impact = staged.historyImpact {
                 pendingHistory.append(impact)
             }
         }
         try flushHistory()
+        if try FarmStorageRouter.route(farmID: farm.farmID, context: context).mode == .eSheepCloud {
+            try ESheepCloudIntentWriter.bindWeaningBundles(commandIDs: stagedCommandIDs, context: context)
+        }
         try context.save()
         committed = true
         FarmOperationalAlertRuntimeNotification.post(farmID: farm.farmID)
@@ -2727,10 +2738,12 @@ final class FarmCommandService {
 
     private func affectsHistoryProjection(_ command: FarmCommand) -> Bool {
         switch command {
-        case .addSheep, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep:
+        case .addSheep, .recordWeaning, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep:
+            true
+        case .care(.setSheepPurpose):
             true
         case .tombstoneEntity(let entityType, _, _):
-            entityType == .sheep || entityType == .transfer || entityType == .removal
+            entityType == .sheep || entityType == .transfer || entityType == .removal || entityType == .weaning
         case .restoreTombstonedEntity:
             true
         default:
@@ -2748,6 +2761,10 @@ final class FarmCommandService {
         switch command {
         case .addSheep(_, _, _, _, let occurredAt, _, _, _):
             impact = HistoryImpact(sheepID: result.entityID, changedAt: occurredAt)
+        case .care(.setSheepPurpose(let sheepID, _, _, _)):
+            impact = HistoryImpact(sheepID: sheepID, changedAt: .now)
+        case .recordWeaning(let sheepID, _, let occurredAt, _, _, _, _, _, _):
+            impact = HistoryImpact(sheepID: sheepID, changedAt: occurredAt)
         case .transferSheep(let sheepID, _, let occurredAt, _):
             impact = HistoryImpact(sheepID: sheepID, changedAt: occurredAt)
         case .correctTransfer(let originalID, _, let occurredAt, _, _):
@@ -2814,6 +2831,10 @@ final class FarmCommandService {
                 $0.id == entityID && $0.farmID == farmID
             }))
             return records.first.map { ($0.id, $0.enteredAt) }
+        case .weaning:
+            return try context.fetch(FetchDescriptor<WeaningRecord>(predicate: #Predicate {
+                $0.id == entityID && $0.farmID == farmID
+            })).first.map { ($0.sheepID, $0.occurredAt) }
         case .transfer:
             return try transferRecord(id: entityID, farmID: farmID, context: context)
                 .map { ($0.sheepID, $0.occurredAt) }

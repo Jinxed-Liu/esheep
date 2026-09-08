@@ -271,7 +271,8 @@ struct ESheepCloudCenterView: View {
                 if !summaryLoaded {
                     Text("正在读取本机保存状态")
                 } else if waitingIntents.isEmpty {
-                    Label("没有等待保存的内容", systemImage: "checkmark")
+                    Label(rejectedIntentCount > 0 ? "没有正在重试的内容；下方仍有保存失败的记录" : "没有等待保存的内容",
+                          systemImage: rejectedIntentCount > 0 ? "exclamationmark.circle" : "checkmark")
                         .foregroundStyle(.secondary)
                 } else {
                     LabeledContent("合计", value: "\(summary.waitingCount) 项")
@@ -289,6 +290,27 @@ struct ESheepCloudCenterView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                }
+            }
+
+            if !summary.rejectedItems.isEmpty {
+                Section("尚未保存到云端（\(summary.rejectedCount) 项）") {
+                    ForEach(summary.rejectedItems) { item in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(ESheepCloudCommandPresentation.title(for: item.commandKind))
+                            Text(item.recordDisplayName).font(.subheadline.weight(.semibold))
+                            Text(item.occurredAt, format: .dateTime.year().month().day().hour().minute())
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(item.explanation).font(.footnote)
+                            Text("记录编号：\(item.id.uuidString.lowercased())")
+                                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            ShareLink(item: "\(ESheepCloudCommandPresentation.title(for: item.commandKind))：\(item.recordDisplayName)\n\(item.explanation)\n发生时间：\(item.occurredAt.ISO8601Format())\n记录：\(item.id)\n设备：\(item.deviceID)\n操作编号：\(item.deviceSequence)\n\(item.fieldEvidence)") {
+                                Label("分享核对信息", systemImage: "square.and.arrow.up")
+                            }.font(.footnote)
+                        }
+                    }
+                    Text("这些内容已保留在本机，但尚未得到云端保存确认。")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
             }
 

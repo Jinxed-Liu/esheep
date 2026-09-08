@@ -1,0 +1,8 @@
+**
+!package.json
+!package-lock.json
+!server/
+!server/**
+!src/
+!src/lib/
+!src/lib/**

@@ -3,6 +3,24 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/p
 import path from "node:path";
 import { Codex } from "@openai/codex-sdk";
 import { buildCodexOptions, buildThreadOptions, buildTurnConfig } from "./config.mjs";
+import { startProviderStream } from "./provider-stream.mjs";
+
+function eventQueue() {
+  const queued = [];
+  let wake = null;
+  return {
+    push(value) { if (wake) { const resolve = wake; wake = null; resolve(value); } else queued.push(value); },
+    next() { return queued.length ? Promise.resolve(queued.shift()) : new Promise(resolve => { wake = resolve; }); },
+  };
+}
+
+function queryProgress(command = "") {
+  const kind = /query-farm\.mjs["']?\s+(\w+)/.exec(command)?.[1];
+  return ({ available_data: "正在检查可用的牧场资料", farm_overview: "正在查询牧场存栏与结构",
+    sheep_search: "正在查询羊只档案", pen_summary: "正在查询圈舍与羊只分布", event_search: "正在查询业务事件",
+    weight_summary: "正在核对体重记录与有效样本", lamb_summary: "正在核对羔羊与断奶记录",
+    reproduction_summary: "正在核对繁殖与产羔记录", feed_intake_summary: "正在核对投喂记录与采食口径" })[kind] || "正在按 App 口径核对牧场数据";
+}
 
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_IMAGES = 4;
@@ -149,8 +167,11 @@ export class FarmAssistantHarness {
     }));
   }
 
-  async prepareSession({ sessionID, userID, farmID, snapshot }) {
+  async prepareSession({ sessionID, userID, farmID, snapshot, requireExistingSession = false }) {
     const directory = this.sessionDirectory(sessionID);
+    if (requireExistingSession && !(await readJSON(path.join(directory, "session.json")))) {
+      throw new HarnessExecutionError("助手会话已休眠或过期，请新建会话后继续。", 409, "SESSION_EXPIRED");
+    }
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await mkdir(path.join(directory, "codex-home"), { recursive: true, mode: 0o700 });
     await mkdir(path.join(directory, "attachments"), { recursive: true, mode: 0o700 });
@@ -203,16 +224,19 @@ export class FarmAssistantHarness {
     }));
   }
 
-  async *runTurn({ sessionID: requestedSessionID, userID, farmID, prompt, snapshot, attachments = [], mimoAPIKey, signal }) {
+  async *runTurn({ sessionID: requestedSessionID, userID, farmID, prompt, snapshot, attachments = [], mimoAPIKey, signal, requireExistingSession = false }) {
     const turnConfig = buildTurnConfig(this.config, mimoAPIKey);
     const sessionID = requestedSessionID ? safeSessionID(requestedSessionID) : randomUUID();
     if (this.locks.has(sessionID)) {
       throw new HarnessExecutionError("这条助手会话正在回答上一条问题。", 409, "SESSION_BUSY");
     }
     this.locks.add(sessionID);
+    let providerStream = null;
+    const lifetime = new AbortController();
+    const turnSignal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
     try {
       await this.cleanupExpiredSessions();
-      const { directory, metadata, metadataPath } = await this.prepareSession({ sessionID, userID, farmID, snapshot });
+      const { directory, metadata, metadataPath } = await this.prepareSession({ sessionID, userID, farmID, snapshot, requireExistingSession });
       const imagePaths = await this.materializeImages(directory, attachments);
       const multimodal = imagePaths.length > 0;
       const selectedModel = multimodal ? turnConfig.multimodalModel : turnConfig.model;
@@ -221,7 +245,15 @@ export class FarmAssistantHarness {
       await atomicJSON(metadataPath, metadata);
 
       const codexHome = path.join(directory, "codex-home");
-      const codex = this.codexFactory(buildCodexOptions(turnConfig, codexHome, this.environment));
+      const queue = eventQueue();
+      const publicMessages = new Map();
+      providerStream = await startProviderStream({ baseURL: turnConfig.mimoBaseURL, apiKey: turnConfig.mimoAPIKey, signal: turnSignal,
+        onText({ itemID, text }) {
+          publicMessages.set(itemID, text);
+          queue.push({ type: "assistant", itemID: `mimo:${itemID}`, text, partial: true });
+        },
+      });
+      const codex = this.codexFactory(buildCodexOptions({ ...turnConfig, mimoBaseURL: providerStream.baseURL }, codexHome, this.environment));
       const threadOptions = buildThreadOptions(turnConfig, directory, { multimodal });
       const thread = metadata.threadID
         ? codex.resumeThread(metadata.threadID, threadOptions)
@@ -232,25 +264,42 @@ export class FarmAssistantHarness {
         : userPrompt;
 
       yield { type: "session", sessionID, model: selectedModel, multimodal };
-      yield { type: "status", message: multimodal ? "MiMo 多模态模型正在读取图片" : "Codex harness 正在理解问题" };
-      const streamed = await thread.runStreamed(input, { signal });
+      yield { type: "status", message: multimodal ? "模型正在理解图片与问题" : "模型正在理解问题" };
       let answered = false;
-      for await (const event of streamed.events) {
+      const producer = (async () => {
+        try {
+          const streamed = await thread.runStreamed(input, { signal: turnSignal });
+          for await (const event of streamed.events) {
         if (event.type === "thread.started") {
           metadata.threadID = event.thread_id;
           metadata.updatedAt = new Date().toISOString();
           await atomicJSON(metadataPath, metadata);
         } else if (["item.started", "item.updated"].includes(event.type) && event.item?.type === "command_execution") {
-          yield { type: "status", message: "正在按 App 口径核对牧场事实" };
+          queue.push({ type: "status", message: queryProgress(event.item.command) });
+        } else if (event.type === "item.completed" && event.item?.type === "command_execution") {
+          queue.push({ type: "status", message: event.item.exit_code === 0 ? "数据查询已完成，正在整理回答" : "正在检查查询结果并调整查询" });
+        } else if (event.type === "item.started" && event.item?.type === "reasoning") {
+          queue.push({ type: "status", message: "模型正在分析问题与已获取的资料" });
         } else if (event.type === "item.completed" && event.item?.type === "agent_message") {
           answered = true;
-          yield { type: "assistant", itemID: event.item.id, text: event.item.text };
+          const providerID = [...publicMessages].find(([, text]) => text.trim() === event.item.text.trim())?.[0];
+          queue.push({ type: "assistant", itemID: providerID ? `mimo:${providerID}` : event.item.id, text: event.item.text });
         } else if (event.type === "turn.completed") {
-          yield { type: "usage", usage: event.usage };
+          queue.push({ type: "usage", usage: event.usage });
         } else if (event.type === "turn.failed" || event.type === "error") {
           throw new HarnessExecutionError("MiMo/Codex harness 暂时无法完成本次回答。", 502, "MODEL_TURN_FAILED");
         }
+          }
+        } catch (error) { queue.push({ failure: error }); }
+        finally { queue.push({ finished: true }); }
+      })();
+      while (true) {
+        const event = await queue.next();
+        if (event.failure) throw event.failure;
+        if (event.finished) break;
+        yield event;
       }
+      await producer;
       metadata.updatedAt = new Date().toISOString();
       await atomicJSON(metadataPath, metadata);
       if (!answered) throw new HarnessExecutionError("模型没有返回可显示的回答。", 502, "EMPTY_MODEL_RESPONSE");
@@ -261,6 +310,8 @@ export class FarmAssistantHarness {
       }
       throw error;
     } finally {
+      lifetime.abort();
+      await providerStream?.close();
       this.locks.delete(sessionID);
     }
   }

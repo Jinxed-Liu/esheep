@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { listAccessibleFarms } from "../src/lib/farmAccess.js";
 
 export class AssistantAuthorizationError extends Error {
   constructor(message, status = 401, code = "UNAUTHORIZED") {
@@ -24,16 +25,22 @@ export async function verifyFarmAccess({ request, farmID, config }) {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
     global: { headers: { Authorization: `Bearer ${accessToken}` } },
   });
-  const { data: userData, error: userError } = await client.auth.getUser(accessToken);
-  if (userError || !userData.user) {
+  // All three requests use the same bearer token and are independent. Do not
+  // serialize the membership lookup behind the user lookup across regions.
+  const [userResult, accessResult] = await Promise.allSettled([
+    client.auth.getUser(accessToken), listAccessibleFarms(client),
+  ]);
+  const { data: userData, error: userError } = userResult.status === "fulfilled"
+    ? userResult.value : { data: null, error: userResult.reason };
+  if (userError || !userData?.user) {
     throw new AssistantAuthorizationError("登录状态已失效，请重新登录。", 401, "INVALID_SESSION");
   }
 
-  const { data: accessRows, error: accessError } = await client.rpc("list_my_active_farm_access");
-  if (accessError) {
+  if (accessResult.status !== "fulfilled") {
     throw new AssistantAuthorizationError("暂时无法核对牧场权限。", 502, "FARM_ACCESS_LOOKUP_FAILED");
   }
-  const membership = (accessRows ?? []).find((row) => String(row.farm_id) === String(farmID));
+  const accessRows = accessResult.value;
+  const membership = accessRows.find((row) => String(row.farm_id).toLowerCase() === String(farmID).toLowerCase());
   if (!membership) {
     throw new AssistantAuthorizationError("当前账号无权访问这个牧场。", 403, "FARM_ACCESS_DENIED");
   }

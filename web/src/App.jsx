@@ -6,7 +6,11 @@ import { X } from "@phosphor-icons/react/X";
 import { AppHeader } from "./components/AppHeader.jsx";
 import { HomeDashboard } from "./components/HomeDashboard.jsx";
 import { InviteOnlyAccessScreen } from "./components/InviteOnlyAccessScreen.jsx";
+import { CloudAccessErrorScreen } from "./components/CloudAccessErrorScreen.jsx";
 import { LoginScreen } from "./components/LoginScreen.jsx";
+import { listDrafts, saveDraft, discardDraft } from "./lib/draftStore.js";
+import { submitDraft } from "./lib/cloudV2Writes.js";
+import { buildBusinessCommands } from "./lib/businessCommands.js";
 import { isSupabaseConfigured } from "./lib/supabaseConfig.js";
 import {
   WorkspaceDataSource,
@@ -79,7 +83,17 @@ export function App() {
   const [workspace, setWorkspace] = useState(null);
   const [recordDialog, setRecordDialog] = useState({ open: false, type: "new" });
   const [authState, setAuthState] = useState({ loading: true, error: "", access: "checking", user: null });
+  const [drafts, setDrafts] = useState([]);
+  const [writeBusy,setWriteBusy] = useState(false);
+  const [writeProgress,setWriteProgress]=useState("");
   const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    let active=true;
+    if(workspace?.profile?.accountID) listDrafts(workspace.profile.accountID,workspace.farm.id).then(rows=>{if(active)setDrafts(rows);}).catch(e=>setToast({message:e.message,tone:"danger"}));
+    else setDrafts([]);
+    return()=>{active=false;};
+  },[workspace?.profile?.accountID,workspace?.farm.id]);
 
   const closeRecordDialog = useCallback(() => {
     setRecordDialog((current) => ({ ...current, open: false }));
@@ -130,7 +144,8 @@ export function App() {
           if (isNoFarmAccessError(error)) {
             setAuthState({ loading: false, error: "", access: "invite-only", user: verifiedUser });
           } else {
-            setAuthState({ loading: false, error: explainSessionRestoreError(error), access: "signed-out", user: null });
+            setAuthState({ loading: false, error: verifiedUser ? error.message || "牧场资料读取失败，请重试。" : explainSessionRestoreError(error),
+              access: verifiedUser ? "unavailable" : "signed-out", user: verifiedUser });
           }
         }
       }
@@ -277,9 +292,10 @@ export function App() {
         setAuthState({ loading: false, error: "", access: "member", user });
         showToast(`已连接 ${cloudWorkspace.farm.name}`);
       } catch (error) {
-        if (!isNoFarmAccessError(error)) throw error;
+        if (error?.name === "AbortError") throw error;
         setWorkspace(null);
-        setAuthState({ loading: false, error: "", access: "invite-only", user });
+        setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : error.message,
+          access: isNoFarmAccessError(error) ? "invite-only" : "unavailable", user });
       }
     } catch (error) {
       if (error?.name === "AbortError") return;
@@ -304,9 +320,10 @@ export function App() {
         setWorkspace(cloudWorkspace);
         setAuthState({ loading: false, error: "", access: "member", user: result.user });
       } catch (error) {
-        if (!isNoFarmAccessError(error)) throw error;
+        if (error?.name === "AbortError") throw error;
         setWorkspace(null);
-        setAuthState({ loading: false, error: "", access: "invite-only", user: result.user });
+        setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : error.message,
+          access: isNoFarmAccessError(error) ? "invite-only" : "unavailable", user: result.user });
       }
       return result;
     } catch (error) {
@@ -319,16 +336,40 @@ export function App() {
   async function handleRedeemInvite(code) {
     workspaceDataSource.invalidate();
     setAuthState((current) => ({ ...current, loading: true, error: "" }));
+    let redeemed = false;
     try {
       const cloud = await loadSupabaseModule();
       const redemption = await cloud.redeemFarmInvite(code);
+      redeemed = true;
       const cloudWorkspace = await workspaceDataSource.loadOverview(redemption.farm_id, { bypassCache: true });
       setWorkspace(cloudWorkspace);
       setAuthState((current) => ({ ...current, loading: false, error: "", access: "member" }));
       showToast(`已加入 ${cloudWorkspace.farm.name}`);
     } catch (error) {
-      setAuthState((current) => ({ ...current, loading: false, error: error.message || "加入牧场失败。" }));
+      setAuthState((current) => ({ ...current, loading: false, access: redeemed ? "unavailable" : current.access,
+        error: error.message || "加入牧场失败。" }));
       throw error;
+    }
+  }
+
+  async function handleRetryCloudAccess() {
+    workspaceDataSource.invalidate();
+    setAuthState((current) => ({ ...current, loading: true, error: "" }));
+    let user = null;
+    try {
+      const cloud = await loadSupabaseModule();
+      user = await cloud.getVerifiedUser();
+      if (!user) {
+        setAuthState({ loading: false, error: "登录已过期，请重新登录。", access: "signed-out", user: null });
+        return;
+      }
+      const cloudWorkspace = await workspaceDataSource.loadOverview(undefined, { bypassCache: true });
+      setWorkspace(cloudWorkspace);
+      setAuthState({ loading: false, error: "", access: "member", user });
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : error.message,
+        access: isNoFarmAccessError(error) ? "invite-only" : user ? "unavailable" : "signed-out", user });
     }
   }
 
@@ -385,96 +426,61 @@ export function App() {
     }
   }
 
-  async function openRecord(type) {
-    if (workspace.mode === "cloud" && ["feed", "new"].includes(type) &&
-        !workspaceHasSections(workspace, ["tmr"])) {
-      setAuthState({ loading: true, error: "" });
-      try {
-        const cloudWorkspace = await workspaceDataSource.loadTMR(
-          workspace.farm.id,
-          { currentWorkspace: workspace },
-        );
-        setWorkspace(cloudWorkspace);
-      } catch (error) {
-        if (error?.name === "AbortError") return;
-        const message = error.message || "配方数据装载失败。";
-        setAuthState({ loading: false, error: message });
-        showToast(message, "danger");
-        return;
+  async function openRecord(type, options={}) {
+    setRecordDialog({open:true,type,...options});
+  }
+  async function refreshDrafts() { setDrafts(await listDrafts(workspace.profile.accountID,workspace.farm.id)); }
+  async function persistRecord(record,draftID,submit=false) {
+    const draft=await saveDraft(workspace.profile.accountID,workspace.farm,record,draftID);
+    await refreshDrafts();
+    if(submit) {
+      try {await sendSavedDraft(draft);} catch(error) {showToast(error.message,"danger");}
+      navigate("entry");
+    } else showToast("草稿已保存在此浏览器，重新打开仍可继续。");
+    return draft;
+  }
+  async function sendSavedDraft(draft) { return sendDraftGroup([draft]); }
+  async function sendDraftGroup(group) {
+    setWriteBusy(true);let accepted=0;
+    try {
+      const cloud=await loadSupabaseModule();
+      const ordered=[...group].sort((a,b)=>a.createdAt-b.createdAt||(a.record.rowNumber??0)-(b.record.rowNumber??0));
+      for(const draft of ordered) {
+        setWriteProgress(`正在提交 ${accepted+1} / ${ordered.length} 条`);
+        const fresh=await cloud.loadCloudWorkspace(workspace.farm.id);
+        const result=await submitDraft(cloud.supabase,workspace.profile.accountID,fresh.farm,draft,()=>buildBusinessCommands({...draft.record,id:draft.id},fresh));
+        if(result.status!=="accepted")throw new Error(`${draft.record.sheet}：${result.status==="conflict"?"云端发现冲突":"云端拒绝保存"}，请打开原始回执核对。`);
+        accepted++;await refreshDrafts();
       }
-      setAuthState({ loading: false, error: "" });
+      workspaceDataSource.invalidate({farmID:workspace.farm.id});
+      try {const fresh=await cloud.loadCloudWorkspace(workspace.farm.id);setWorkspace(fresh);showToast(`云端已接受 ${accepted} 条记录，资料与原始回执已更新。`);}
+      catch(e){showToast(`云端已接受 ${accepted} 条记录；读取刷新未完成：${e.message}`,"warning");}
+    } catch(e) {throw new Error(`${accepted?`已接受 ${accepted} 条，其余停止提交。`:""}${e.message}`);}
+    finally {await refreshDrafts();setWriteBusy(false);setWriteProgress("");}
+  }
+  async function importRecords(records) {
+    const existing=await listDrafts(workspace.profile.accountID,workspace.farm.id);
+    const freshRecords=[];
+    for(const record of records){const previous=existing.find(d=>d.record.importKey===record.importKey&&d.record.sheet===record.sheet&&d.status!=="discarded");if(previous&&JSON.stringify(previous.record.values)!==JSON.stringify(record.values))throw new Error(`导入键 ${record.importKey} 已有不同内容，请核对原草稿，不能覆盖。`);if(!previous)freshRecords.push(record);}
+    if(freshRecords.length){const {preflightImport}=await import("./lib/importPreflight.js");await preflightImport(freshRecords,workspace);}
+    let added=0;
+    for(const record of records) {
+      const previous=existing.find(d=>d.record.importKey===record.importKey&&d.record.sheet===record.sheet&&d.status!=="discarded");
+      if(previous) {
+        if(JSON.stringify(previous.record.values)!==JSON.stringify(record.values)) throw new Error(`导入键 ${record.importKey} 已有不同内容，请核对原草稿，不能覆盖。`);
+        continue;
+      }
+      const saved=await saveDraft(workspace.profile.accountID,workspace.farm,record);existing.push(saved);added++;
     }
-    setRecordDialog({ open: true, type });
+    await refreshDrafts();showToast(`已保存 ${added} 行导入草稿，请按顺序核对并提交。`);
   }
-
-  function submitRecord(record) {
-    const draft = workspace.mode === "cloud";
-    const event = {
-      id: createID(),
-      at: record.occurredAt,
-      type: record.eventType,
-      label: record.label,
-      object: record.object,
-      actor: workspace.profile?.displayName ?? "当前用户",
-      status: draft ? "draft" : "synced",
-    };
-
-    setWorkspace((current) => {
-      const next = {
-        ...current,
-        events: [event, ...current.events],
-        lastSyncedAt: draft ? current.lastSyncedAt : new Date().toISOString(),
-      };
-      if (!draft && record.type === "addSheep") {
-        const newSheep = {
-          id: createID(),
-          earTag: record.values.earTag,
-          breed: record.values.breed,
-          sex: record.values.sex,
-          stage: "新建档案",
-          pen: record.values.pen || "未分圈",
-          weight: null,
-          updatedAt: record.occurredAt,
-        };
-        next.sheep = [newSheep, ...current.sheep];
-        next.metrics = { ...current.metrics, activeSheep: current.metrics.activeSheep + 1 };
-      }
-      if (!draft && record.type === "weight") {
-        next.sheep = current.sheep.map((sheep) => sheep.earTag === record.values.sheep
-          ? { ...sheep, weight: Number(record.values.kilograms), updatedAt: record.occurredAt }
-          : sheep);
-      }
-      if (!draft && record.type === "transfer") {
-        next.sheep = current.sheep.map((sheep) => sheep.earTag === record.values.sheep
-          ? { ...sheep, pen: record.values.pen, updatedAt: record.occurredAt }
-          : sheep);
-      }
-      if (!draft && record.type === "removal") {
-        next.sheep = current.sheep.filter((sheep) => sheep.earTag !== record.values.sheep);
-        next.metrics = { ...current.metrics, activeSheep: Math.max(0, current.metrics.activeSheep - 1) };
-      }
-      if (!draft && record.type === "feed") {
-        next.feedRecords = [{
-          id: createID(),
-          at: record.occurredAt,
-          pen: record.values.pen,
-          meal: record.values.meal,
-          recipe: record.values.recipe,
-          mode: "限量投喂",
-          kilograms: Number(record.values.kilograms),
-          dryMatter: null,
-        }, ...current.feedRecords];
-        next.metrics = { ...current.metrics, feedsToday: current.metrics.feedsToday + 1 };
-      }
-      return next;
-    });
-
-    closeRecordDialog();
-    showToast("已生成浏览器草稿；尚未提交云端。", "warning");
-  }
+  async function deleteDraft(draft) { await discardDraft(workspace.profile.accountID,draft.id);await refreshDrafts(); }
 
   if (!workspace) {
     if (!authState.loading) {
+      if (authState.access === "unavailable") {
+        return <CloudAccessErrorScreen authState={authState} onRetry={handleRetryCloudAccess} onSignOut={handleSignOut} />;
+      }
       if (authState.access === "invite-only") {
         return (
           <InviteOnlyAccessScreen
@@ -512,9 +518,9 @@ export function App() {
     case "flock":
     case "pens": content = <FlockPage workspace={workspace} initialView={activePage === "pens" ? "pens" : "sheep"} selectedID={routeContext.selectedID} onCreateRecord={openRecord} />; break;
     case "alerts": content = <AlertsPage workspace={workspace} selectedID={routeContext.selectedID} onNavigate={navigate} onCreateRecord={openRecord} />; break;
-    case "entry": content = <EntryPage workspace={workspace} onCreateRecord={openRecord} onNavigate={navigate} />; break;
+    case "entry": content = <EntryPage drafts={drafts} busy={writeBusy} progress={writeProgress} onSubmitGroup={sendDraftGroup} onResume={draft=>openRecord(draft.record.sheet,{draft})} onSubmitDraft={sendSavedDraft} onDiscardDraft={deleteDraft} onImport={importRecords} workspace={workspace} onCreateRecord={openRecord} onNavigate={navigate} />; break;
     case "care": content = <CarePage workspace={workspace} onCreateRecord={openRecord} />; break;
-    case "batches": content = <ProductionBatchesPage workspace={workspace} />; break;
+    case "batches": content = <ProductionBatchesPage workspace={workspace} onCreateRecord={openRecord} />; break;
     case "feeding":
     case "feed-history":
     case "ingredients": content = <FeedingPage workspace={workspace} mode={activePage} onCreateRecord={openRecord} onNavigate={navigate} />; break;
@@ -544,10 +550,10 @@ export function App() {
       />
       <Suspense fallback={<div className="route-loading"><SpinnerGap size={26} className="spin" />正在打开工作区…</div>}>
         {content}
-        {recordDialog.open ? <RecordDialog open requestedType={recordDialog.type} workspace={workspace} onClose={closeRecordDialog} onSubmit={submitRecord} /> : null}
+        {recordDialog.open ? <RecordDialog open requestedType={recordDialog.type} initialDraft={recordDialog.draft} initialValues={recordDialog.values} workspace={workspace} onClose={closeRecordDialog} onSave={persistRecord} /> : null}
       </Suspense>
       {routeLoading || routeTransitionPending ? <div className="route-progress" role="status" aria-label="正在载入页面数据" /> : null}
-      {authState.loading ? <div className="loading-scrim" aria-live="polite"><SpinnerGap size={28} className="spin" />正在连接云端…</div> : null}
+      {authState.loading || writeBusy ? <div className="loading-scrim" aria-live="polite"><SpinnerGap size={28} className="spin" />{writeProgress||"正在连接云端…"}</div> : null}
       {toast ? (
         <div className={`toast ${toast.tone}`} role="status">
           {toast.tone === "danger" ? <WarningCircle size={22} weight="fill" /> : <CheckCircle size={22} weight="fill" />}

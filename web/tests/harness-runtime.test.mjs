@@ -37,6 +37,18 @@ const snapshot = {
   analyticsSource: { sheep: [], pens: [], weights: [], weanings: [], reproduction: [], removals: [], transfers: [], batches: [], batchMemberships: [], feeds: [], troughObservations: [], dailyPenCounts: [] },
 };
 
+test("a resumed session missing after container sleep fails before creating a new thread", async (context) => {
+  const stateRoot = await mkdtemp(path.join(os.tmpdir(), "esheepnext-harness-expiry-"));
+  context.after(() => rm(stateRoot, { recursive: true, force: true }));
+  const calls = [];
+  const config = loadHarnessConfig({ SUPABASE_URL: "https://project.supabase.co", SUPABASE_PUBLISHABLE_KEY: "test", CODEX_HARNESS_STATE_DIR: stateRoot });
+  const harness = new FarmAssistantHarness({ config, codexFactory: fakeCodexFactory(calls) });
+  await assert.rejects(async () => {
+    for await (const event of harness.runTurn({ sessionID: "22222222-2222-4222-8222-222222222222", userID: "user-1", farmID: "farm-1", prompt: "继续", snapshot, mimoAPIKey: "sk-test-never-real", requireExistingSession: true })) void event;
+  }, { code: "SESSION_EXPIRED" });
+  assert.equal(calls.length, 0);
+});
+
 test("resumes one Codex thread while switching image turns to mimo-v2.5", async (context) => {
   const stateRoot = await mkdtemp(path.join(os.tmpdir(), "esheepnext-harness-test-"));
   context.after(() => rm(stateRoot, { recursive: true, force: true }));

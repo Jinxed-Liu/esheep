@@ -331,10 +331,11 @@ enum ESheepCloudCommandFactoryV2 {
             return draft(
                 .care(value),
                 occurredAt: careOccurredAt(value) ?? .now,
-                streams: streams(
-                    primary: primaryStream,
-                    semantic: careStream(value, fallback: primaryStream)
-                ),
+                // Field observations belong to the concrete projection. Semantic
+                // aliases must not make a scalar edit into a multi-stream patch.
+                streams: careAffectedFields(value).isEmpty
+                    ? streams(primary: primaryStream, semantic: careStream(value, fallback: primaryStream))
+                    : [primaryStream],
                 fields: careAffectedFields(value)
             )
         case .tmr(let value):

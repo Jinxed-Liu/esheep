@@ -1,3 +1,5 @@
+import { nativeEventSnapshots } from "./nativeEventSnapshots.js";
+import { managementProjection } from "./managementProjection.js";
 import { createClient } from "@supabase/supabase-js";
 import { decodeCompactCheckpoint } from "./lzfse";
 import { isSupabaseConfigured, supabaseBrowserConfiguration } from "./supabaseConfig.js";
@@ -20,6 +22,8 @@ import {
   projectionToWeightRecord,
 } from "./farmReadModels.js";
 import { decodeFeedNutrients, farmDayKey } from "./appAnalytics.js";
+import { listAccessibleFarms, redeemAccessibleFarmInvite } from "./farmAccess.js";
+import { loadCloudV2Projection, clearCloudV2Cache } from "./cloudV2Checkpoint.js";
 
 const { url, publishableKey } = supabaseBrowserConfiguration;
 
@@ -354,7 +358,7 @@ function entityToSheep(row, penNameByID, latestWeightBySheep, latestTransferBySh
   // snapshot is authoritative. Only sheep whose pen authority was released
   // are reconstructed from the transfer timeline.
   const penSnapshotIsAuthoritative = hasAuthoritativeLegacyFlag(payload, "legacyPenSnapshotIsAuthoritative") && !transfer?.hasPostBaselineOperation;
-  const penID = penSnapshotIsAuthoritative
+  const penID = row.v2State ? row.v2State.penID : penSnapshotIsAuthoritative
     ? snapshotPenID
     : transfer?.penID ?? snapshotPenID;
   const statusRaw = String(firstPayloadValue(payload, "strings", "legacyStatusRawValue") ?? "").toLowerCase();
@@ -364,12 +368,12 @@ function entityToSheep(row, penNameByID, latestWeightBySheep, latestTransferBySh
   const sexRaw = firstPayloadValue(payload, "strings", "sex");
   const weight = latestWeightBySheep.get(sheepKey);
   const keepsLegacyStatus = hasAuthoritativeLegacyFlag(payload, "legacyStatusSnapshotIsAuthoritative") && !removal?.hasPostBaselineOperation;
-  const status = keepsLegacyStatus
+  const status = row.v2State ? row.v2State.status : keepsLegacyStatus
     ? (statusRaw || "active")
     : removal
       ? (removal.kind === "deceased" ? "deceased" : "removed")
       : "active";
-  const removedAt = keepsLegacyStatus
+  const removedAt = row.v2State ? row.v2State.removedAt : keepsLegacyStatus
     ? dateValue(payload, "legacyRemovedAt")?.toISOString() ?? null
     : removal?.at?.toISOString() ?? null;
   return {
@@ -748,11 +752,11 @@ export async function getVerifiedUser() {
 
 export async function getAssistantAccessToken() {
   if (!supabase) throw new Error("Supabase 尚未配置。");
-  const user = await getVerifiedUser();
-  if (!user) throw new Error("请先登录 Supabase 账号。");
+  // The assistant gateway and container verify this token server-side. A third
+  // getUser round trip in the browser adds latency without authorizing anything.
   const { data, error } = await supabase.auth.getSession();
   if (error) throw error;
-  if (!data.session?.access_token || data.session.user?.id !== user.id) {
+  if (!data.session?.access_token || !data.session.user?.id) {
     throw new Error("登录状态已失效，请重新登录。");
   }
   return data.session.access_token;
@@ -802,17 +806,7 @@ export async function signUpWithPassword({ displayName, email, password }) {
 
 export async function redeemFarmInvite(code) {
   if (!supabase) throw new Error("Supabase 尚未配置。");
-  const normalizedCode = code.trim();
-  if (!normalizedCode) throw new Error("请输入牧场邀请码。");
-  const { data, error } = await supabase.rpc("redeem_farm_invite", { p_code: normalizedCode });
-  if (error) {
-    if (/farm_invite_invalid_or_expired/i.test(error.message || "")) throw new Error("邀请码无效、已使用或已过期，请联系场主重新生成。");
-    if (/farm_authority_not_available/i.test(error.message || "")) throw new Error("该牧场的云端服务当前不可用，请联系场主。");
-    throw error;
-  }
-  const redemption = data?.[0];
-  if (!redemption?.farm_id) throw new Error("邀请码已处理，但没有返回可访问的牧场。");
-  return redemption;
+  return redeemAccessibleFarmInvite(supabase, code);
 }
 
 export async function signInWithApple() {
@@ -829,6 +823,7 @@ export async function signInWithApple() {
 
 export async function signOut() {
   if (!supabase) return;
+  clearCloudV2Cache();
   const { error } = await supabase.auth.signOut({ scope: "local" });
   if (error) throw error;
 }
@@ -845,21 +840,19 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
   const user = await getVerifiedUser();
   if (!user) throw new Error("请先登录 Supabase 账号。");
 
-  let accessQuery = supabase.rpc("list_my_active_farm_access");
+  const accessQuery = listAccessibleFarms(supabase, { signal });
   let profileQuery = supabase
     .from("profiles")
     .select("app_account_id,display_name")
     .eq("user_id", user.id)
     .single();
   if (signal) {
-    accessQuery = accessQuery.abortSignal(signal);
     profileQuery = profileQuery.abortSignal(signal);
   }
-  const [{ data: accessRows, error: accessError }, { data: profile, error: profileError }] = await Promise.all([
+  const [accessRows, { data: profile, error: profileError }] = await Promise.all([
     accessQuery,
     profileQuery,
   ]);
-  if (accessError) throw accessError;
   if (profileError) throw profileError;
   if (!accessRows?.length) {
     const error = new Error("当前账号尚未加入任何云端牧场。");
@@ -868,14 +861,18 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
   }
 
   const farms = accessRows.map(toFarm);
-  const farm = farms.find((item) => item.id === preferredFarmID) ?? farms[0];
+  const farm = farms.find((item) => normalizedIdentifier(item.id) === normalizedIdentifier(preferredFarmID)) ?? farms[0];
+  const v2 = farm.provider === "esheep_cloud"
+    ? await loadCloudV2Projection(supabase, farm, { accountID: user.id, storageOrigin: new URL(url).origin, signal })
+    : null;
+  if (v2) farm.revision = v2.revision;
 
-  const checkpointPromise = fetchLatestCompactCheckpoint(farm.id, farm.generation, signal)
+  const checkpointPromise = v2 ? Promise.resolve({ result: null, error: null }) : fetchLatestCompactCheckpoint(farm.id, farm.generation, signal)
     .then((result) => ({ result, error: null }))
     .catch((error) => ({ result: null, error }));
 
-  const fetchRequestedEntity = (entityType) => requestedEntityTypes.has(entityType)
-    ? fetchEntityRows(farm.id, entityType, signal)
+  const fetchRequestedEntity = (entityType) => (v2 || requestedEntityTypes.has(entityType))
+    ? v2 ? Promise.resolve(v2.rowsByType.get(entityType) ?? []) : fetchEntityRows(farm.id, entityType, signal)
     : Promise.resolve([]);
 
   const [
@@ -911,7 +908,7 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
     fetchRequestedEntity("productionBatch"),
     fetchRequestedEntity("batchMembership"),
     fetchRequestedEntity("feedTroughObservation"),
-    fetchOperationRows(farm.id, farm.generation, signal),
+    v2 ? Promise.resolve(v2.operationRows) : fetchOperationRows(farm.id, farm.generation, signal),
   ]);
   signal?.throwIfAborted();
 
@@ -921,7 +918,7 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
   const expandRows = (rows) => expandRowsFromBaseline(rows, baselinePayloads);
   const expandedFarmRows = expandRows(farmRows);
   const expandedPenRows = expandRows(penRows);
-  const expandedSheepRows = expandSheepRowsFromHistory(sheepRows, baselinePayloads, operationRows);
+  const expandedSheepRows = v2 ? sheepRows : expandSheepRowsFromHistory(sheepRows, baselinePayloads, operationRows);
   const expandedFeedRows = expandRows(feedRows);
   const expandedWeightRows = expandRows(weightRows);
   const expandedTransferRows = expandRows(transferRows);
@@ -947,6 +944,7 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
   const latestTransferBySheep = latestTransfers(expandedTransferRows);
   const latestRemovalBySheep = latestRemovals(expandedRemovalRows);
   const activeSheepRows = expandedSheepRows.filter((row) => {
+    if (row.v2State) return row.v2State.status === "active" && !row.v2State.isHistoricalArchive;
     const key = normalizedIdentifier(row.entity_id);
     const payload = payloadForRow(row);
     const removal = latestRemovalBySheep.get(key);
@@ -1039,7 +1037,7 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
   signal?.throwIfAborted();
   const decodedOperationRows = operationRows.map((row) => ({ ...row, payload_json: payloadForRow(row) }));
   const sheepIDByEntityID = buildEventSheepIndex(decodedOperationRows);
-  const events = decodedOperationRows
+  const operationEvents = decodedOperationRows
     .map((row) => projectFarmOperationEvent({
       row,
       payload: row.payload_json,
@@ -1051,6 +1049,9 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
       membershipByID,
     }))
     .sort((left, right) => new Date(right.at).getTime() - new Date(left.at).getTime() || right.revision - left.revision);
+  const events = v2 ? await nativeEventSnapshots(v2.models,{timeZone:farmTimeZone,purposeEvents:operationEvents.filter(e=>e.type==="purpose")}) : operationEvents;
+  if(v2){const byID=new Map(operationEvents.map(e=>[e.id,e]));for(const event of events){const source=byID.get(event.id);if(source?.actor)event.actor=source.actor;}}
+  const management = v2 ? await managementProjection(v2.models,{...farm,timeZoneIdentifier:farmTimeZone}) : {};
   const analyticsSource = {
     sheep: allSheep.map((item) => ({
       id: item.id,
@@ -1084,9 +1085,12 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
     mode: "cloud",
     loadedSections,
     projectionCoverage: {
-      real: [...requestedEntityTypes, "farm_operations"],
-      preview: ["alerts", "tmrMeals", "tmrMonitoring"],
-      baseline: baselinePackage
+      real: [...requestedEntityTypes, v2 ? "esheep_cloud_events_v2" : "farm_operations"],
+      preview: v2 ? [] : ["alerts", "tmrMeals", "tmrMonitoring"],
+      baseline: v2 ? {
+        status: "loaded", throughRevision: v2.manifest.boundaryEventSequence,
+        projectionCount: [...v2.rowsByType.values()].reduce((total, rows) => total + rows.length, 0),
+      } : baselinePackage
         ? {
             status: "loaded",
             throughRevision: Number(baselinePackage.manifest?.frozenOperationSequence ?? 0),
@@ -1118,12 +1122,15 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
     sheep,
     pens: pensWithCounts,
     feedRecords,
-    ingredients,
+    ingredients: ingredients.map(i=>{const batches=management.ingredientBatches?.filter(b=>b.ingredientID===i.id&&b.isActive)??[];return {...i,stock:batches.length&&batches.every(b=>b.balance!=null)?batches.reduce((sum,b)=>sum+Number(b.balance),0):null};}),
     recipes,
     tmrMeals,
     tmrPlan,
     batches,
     careItems: [],
+    allSheep,
+    models:v2?.models,
+    ...management,
     analyticsSource,
     insightData,
     lastSyncedAt: new Date().toISOString(),

@@ -20,6 +20,7 @@ export async function handleNodeRequest(request, response, fetchHandler) {
   if (!webResponse) return false;
   response.statusCode = webResponse.status;
   for (const [name, value] of webResponse.headers) response.setHeader(name, value);
+  response.flushHeaders();
   if (!webResponse.body || request.method === "HEAD") {
     response.end();
     return true;

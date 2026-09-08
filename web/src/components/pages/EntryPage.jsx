@@ -55,7 +55,11 @@ const managementItems = [
   { id: "events", label: "事件历史与导出", detail: "审计、筛选和导出业务事件", icon: Notebook },
 ];
 
-export default function EntryPage({ workspace, onCreateRecord, onNavigate }) {
+export default function EntryPage({ workspace, onCreateRecord, onNavigate, drafts=[], busy, onResume, onSubmitGroup,progress, onSubmitDraft, onDiscardDraft, onImport }) {
+  const [selectedDrafts,setSelectedDrafts]=useState([]);
+  const eligibleDrafts=drafts.filter(d=>["draft","unknown","pending"].includes(d.status));
+  const [draftError,setDraftError]=useState("");
+  async function action(fn){setDraftError("");try{await fn();}catch(e){setDraftError(e.message);}}
   const timeZone = workspace.farm?.timeZoneIdentifier || "Asia/Shanghai";
   const workbookInput = useRef(null);
   const [workbookState, setWorkbookState] = useState({ status: "idle", result: null, error: "" });
@@ -114,7 +118,7 @@ export default function EntryPage({ workspace, onCreateRecord, onNavigate }) {
               <button className="primary-button" type="button" onClick={() => workbookInput.current?.click()} disabled={workbookState.status === "reading"}><UploadSimple size={19} />{workbookState.status === "reading" ? "正在检查…" : "选择工作簿"}</button>
               <input ref={workbookInput} className="visually-hidden" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={inspectWorkbook} />
             </div>
-            <p className="excel-import-boundary">网页会先在本机检查模板版本、字段、必填项和重复导入键，不会把工作簿上传到第三方。生产云端提交仍必须经过与 App 等价的权限、业务校验、审计和 Outbox 管道。</p>
+            <p className="excel-import-boundary">网页会先在本机检查模板版本、字段、必填项和重复导入键，不会把工作簿上传到第三方。检查通过后保存为逐行草稿；正式提交时执行权限与业务校验，并保留每行云端回执。</p>
             {workbookState.error ? <div className="excel-preflight-result invalid"><WarningCircle size={21} weight="fill" /><span><strong>无法读取工作簿</strong><small>{workbookState.error}</small></span></div> : null}
             {workbookState.result ? (
               <div className={`excel-preflight-result ${workbookState.status}`}>
@@ -128,7 +132,13 @@ export default function EntryPage({ workspace, onCreateRecord, onNavigate }) {
                 </span>
               </div>
             ) : null}
+            {workbookState.status==="ready"?<button className="primary-button" disabled={busy} onClick={()=>action(()=>onImport(workbookState.result.records))}>保存 {workbookState.result.records.length} 行导入草稿</button>:null}
           </section>
+          <section className="record-hub-group"><div className="group-heading"><span><h2>草稿与提交回执</h2><p>草稿保存在当前浏览器；不确定结果可用原始请求重新核对。</p></span><button className="secondary-button" onClick={()=>onCreateRecord("new")}>全部录入类型</button></div>
+          <div className="workspace-toolbar"><label><input type="checkbox" checked={eligibleDrafts.length>0&&eligibleDrafts.every(d=>selectedDrafts.includes(d.id))} onChange={e=>setSelectedDrafts(e.target.checked?eligibleDrafts.map(d=>d.id):[])}/>选择全部未完成草稿</label><button className="primary-button" disabled={busy||!selectedDrafts.length} onClick={()=>action(()=>onSubmitGroup(eligibleDrafts.filter(d=>selectedDrafts.includes(d.id))))}>按顺序提交所选草稿</button><span>{progress}</span></div>
+          {draftError?<p role="alert" className="form-error">{draftError}</p>:null}
+          {drafts.filter(d=>d.status!=="discarded").map(d=><article key={d.id} className="draft-row">{eligibleDrafts.some(item=>item.id===d.id)?<label><input type="checkbox" checked={selectedDrafts.includes(d.id)} onChange={e=>setSelectedDrafts(ids=>e.target.checked?[...ids,d.id]:ids.filter(id=>id!==d.id))}/>选择此条草稿</label>:null}<strong>{d.record.sheet} · {d.record.importKey||d.record.values["耳号"]||d.record.values["母羊耳号"]||"手工录入"}</strong><span>{({draft:"未提交草稿",pending:"正在提交",unknown:"结果待核对",accepted:"云端已接受",rejected:"云端已拒绝",conflict:"需要确认冲突"})[d.status]}</span><small>{formatDateTime(d.updatedAt,timeZone)}</small><div>{!d.signed?<><button className="text-button" disabled={busy} onClick={()=>onResume(d)}>继续编辑</button><button className="text-button" disabled={busy} onClick={()=>action(()=>onDiscardDraft(d))}>放弃草稿</button></>:null}{!["accepted","rejected","conflict"].includes(d.status)?<button className="secondary-button" disabled={busy} onClick={()=>action(()=>onSubmitDraft(d))}>{d.signed?"核对原始请求":"提交这条记录"}</button>:null}</div>{d.error?<p role="alert">{d.error}</p>:null}<details><summary>查看字段与回执</summary><pre className="receipt-json">{JSON.stringify({record:d.record,receipts:d.receipts,commands:d.commands},null,2)}</pre></details></article>)}
+          {!drafts.length?<p>暂无保存在此浏览器的草稿。</p>:null}</section>
         </div>
 
         <aside className="recent-records-panel">

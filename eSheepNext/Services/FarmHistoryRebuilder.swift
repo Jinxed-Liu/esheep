@@ -92,8 +92,10 @@ final class FarmHistoryRebuilder {
         let transfersBySheepID = Dictionary(grouping: transfers, by: \.sheepID)
         let removalsBySheepID = Dictionary(grouping: removals, by: \.sheepID)
         let membershipsByBatchID = Dictionary(grouping: memberships, by: \.batchID)
+        let purposes = try SheepLifecyclePurpose.timelines(farmID: farmID, sheep: sheep, context: context)
 
         for item in sheep {
+            SheepLifecyclePurpose.project(item, timeline: purposes[item.id], at: endDate)
             rebuildProjection(
                 for: item,
                 at: endDate,
@@ -126,6 +128,7 @@ final class FarmHistoryRebuilder {
             sheep: sheep,
             transfers: transfers,
             removals: removals,
+            purposes: purposes,
             from: firstRelevantDate,
             through: endDate,
             clearsUnprovableEarlierHistory: changedAt == nil || effectiveChangedAt == nil,
@@ -160,7 +163,9 @@ final class FarmHistoryRebuilder {
         let changedDay = calendar.startOfDay(for: changedAt)
         let endDay = calendar.startOfDay(for: endDate)
         if changedDay < endDay {
-            guard let deletion,
+            let hasPurposeHistory = try !context.fetch(FetchDescriptor<WeaningRecord>(predicate: #Predicate { $0.farmID == farmID })).isEmpty
+                || !context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate { $0.farmID == farmID && $0.kindRawValue == "care" })).isEmpty
+            guard !hasPurposeHistory, let deletion,
                   try rebuildHistoricalDeletion(
                     farmID: farmID,
                     sheepIDs: sheepIDs,
@@ -188,7 +193,9 @@ final class FarmHistoryRebuilder {
         let transfersBySheepID = Dictionary(grouping: transfers, by: \.sheepID)
         let removalsBySheepID = Dictionary(grouping: removals, by: \.sheepID)
 
+        let purposes = try SheepLifecyclePurpose.timelines(farmID: farmID, sheep: affectedSheep, context: context)
         for item in affectedSheep {
+            SheepLifecyclePurpose.project(item, timeline: purposes[item.id], at: endDate)
             rebuildProjection(
                 for: item,
                 at: endDate,
@@ -498,6 +505,7 @@ final class FarmHistoryRebuilder {
         sheep: [SheepRecord],
         transfers: [TransferRecord],
         removals: [RemovalRecord],
+        purposes: [UUID: SheepLifecyclePurpose.Timeline],
         from start: Date,
         through end: Date,
         clearsUnprovableEarlierHistory: Bool,
@@ -543,6 +551,14 @@ final class FarmHistoryRebuilder {
                 return lhs.createdAt < rhs.createdAt
             }
         }
+        let purposeChanges = purposes.values.flatMap(\.changes).sorted {
+            if $0.occurredAt != $1.occurredAt { return $0.occurredAt < $1.occurredAt }
+            if $0.explicit != $1.explicit { return !$0.explicit }
+            if $0.recordedAt != $1.recordedAt { return $0.recordedAt < $1.recordedAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        var activePurposes = purposes.mapValues(\.initial)
+        var purposeIndex = 0
         var latestTransfer: [UUID: TransferRecord] = [:]
         var activePens: [UUID: UUID] = [:]
         var activeCounts: [DailyPenCountKey: Int] = [:]
@@ -563,13 +579,13 @@ final class FarmHistoryRebuilder {
             guard oldPenID != newPenID else { return }
 
             if let oldPenID {
-                let oldKey = DailyPenCountKey(penID: oldPenID, purpose: sheep.purpose)
+                let oldKey = DailyPenCountKey(penID: oldPenID, purpose: activePurposes[sheepID] ?? sheep.purpose)
                 activeCounts[oldKey, default: 0] -= 1
                 knownKeys.insert(oldKey)
                 changedKeys.insert(oldKey)
             }
             if let newPenID {
-                let newKey = DailyPenCountKey(penID: newPenID, purpose: sheep.purpose)
+                let newKey = DailyPenCountKey(penID: newPenID, purpose: activePurposes[sheepID] ?? sheep.purpose)
                 activeCounts[newKey, default: 0] += 1
                 knownKeys.insert(newKey)
                 changedKeys.insert(newKey)
@@ -584,6 +600,7 @@ final class FarmHistoryRebuilder {
                 sheepIndex < orderedSheep.count ? orderedSheep[sheepIndex].enteredAt : nil,
                 transferIndex < orderedTransfers.count ? orderedTransfers[transferIndex].occurredAt : nil,
                 removalIndex < orderedRemovals.count ? orderedRemovals[removalIndex].occurredAt : nil,
+                purposeIndex < purposeChanges.count ? purposeChanges[purposeIndex].occurredAt : nil,
             ]
             .compactMap { $0 }
             .min()
@@ -595,6 +612,14 @@ final class FarmHistoryRebuilder {
             let snapshotInstant = nextDay.addingTimeInterval(-0.001)
             var changedKeys = Set<DailyPenCountKey>()
 
+            while purposeIndex < purposeChanges.count, purposeChanges[purposeIndex].occurredAt <= snapshotInstant {
+                let change = purposeChanges[purposeIndex]
+                let pen = activePens[change.sheepID]
+                replaceActivePen(for: change.sheepID, with: nil, changedKeys: &changedKeys)
+                activePurposes[change.sheepID] = change.purpose
+                replaceActivePen(for: change.sheepID, with: pen, changedKeys: &changedKeys)
+                purposeIndex += 1
+            }
             while transferIndex < orderedTransfers.count, orderedTransfers[transferIndex].occurredAt <= snapshotInstant {
                 let transfer = orderedTransfers[transferIndex]
                 latestTransfer[transfer.sheepID] = transfer
