@@ -21,6 +21,15 @@ SHARED_PROJECTION_OWNERS = {
         "ESheepCloudInitialSyncCoordinator.swift", "ESheepCloudV2DomainAdapter.swift",
     )
 }
+# DomainOperation is intentionally a typed transfer row in the checkpoint
+# registry. Its revision field is metadata for reconstructing the local
+# operation ledger; it is not a V1 transport read or sync decision. Keep this
+# exception scoped to that one adapter instead of weakening the whole V2 tree.
+CHECKPOINT_TRANSFER_METADATA_ALLOWLIST = {
+    V2_ROOT / "ESheepCloudCheckpointRegistry.swift": {
+        "DomainOperation": {"baseRevision"},
+    },
+}
 UI_FILES = (
     ROOT / "eSheepNext" / "Features" / "Account" / "ESheepCloudCenterView.swift",
     ROOT / "eSheepNext" / "Features" / "Collaboration" / "SupabaseFarmSharingView.swift",
@@ -75,6 +84,7 @@ def check_v1_runtime_boundary() -> int:
         if path == MIGRATION_READER:
             continue
         local_metadata_model = None
+        checkpoint_transfer_model = None
         for line_number, line in enumerate(path.read_text().splitlines(), 1):
             # Checkpoint coverage explicitly classifies every old model as
             # local-only. Permit only these declarative key-path lines; no
@@ -91,8 +101,18 @@ def check_v1_runtime_boundary() -> int:
                                          re.fullmatch(rf'\s*\], farmID: (nil|\\{model}\.farmID), recordID: \\{model}\.id\),', line))
                     if not metadata_only or line.strip().startswith("],"):
                         local_metadata_model = None
+                transfer_opening = re.fullmatch(
+                    r"\s*ESheepCloudCheckpointModelAdapter\(DomainOperation\.self, disposition: \.transfer, fields: \[",
+                    line,
+                )
+                if transfer_opening:
+                    checkpoint_transfer_model = "DomainOperation"
+                elif checkpoint_transfer_model and line.strip().startswith("],"):
+                    checkpoint_transfer_model = None
             for symbol in FORBIDDEN_V1_RUNTIME_SYMBOLS:
                 if metadata_only:
+                    continue
+                if symbol in CHECKPOINT_TRANSFER_METADATA_ALLOWLIST.get(path, {}).get(checkpoint_transfer_model, set()):
                     continue
                 if symbol == "RemoteDomainApplyService" and path in SHARED_PROJECTION_OWNERS:
                     continue

@@ -637,7 +637,7 @@ select throws_ok(
     '[]'::jsonb
   )$$,
   '22023',
-  'esheep_cloud_stream_kind_invalid',
+  'esheep_cloud_primary_stream_invalid',
   'care commands must bind their primary stream to the result entity type'
 );
 
@@ -1624,7 +1624,7 @@ select set_config(
 
 select is(
   current_setting('esheep.test.sequence_reuse_result')::jsonb #>> '{results,0,reason,code}',
-  'malformed_command',
+  'device_sequence_reused',
   'a reused device sequence is rejected instead of being processed twice'
 );
 

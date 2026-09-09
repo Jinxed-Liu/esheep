@@ -160,6 +160,34 @@ final class DomainOperation {
         self.capabilityCertificate = ""
         self.sourceRequestID = sourceRequestID
     }
+
+    /// Creates the local operation row used to retain the purpose-history fact
+    /// after a V2 event is applied. The legacy revision storage remains inside
+    /// this model boundary; V2 projection code only supplies a source revision.
+    static func makePurposeHistoryOperation(
+        id: UUID,
+        farmID: UUID,
+        accountID: UUID,
+        occurredAt: Date,
+        summary: String,
+        sheepID: UUID,
+        sourceRevision: Int,
+        payload: Data
+    ) -> DomainOperation {
+        DomainOperation(
+            id: id,
+            farmID: farmID,
+            accountID: accountID,
+            kind: .care,
+            occurredAt: occurredAt,
+            summary: summary,
+            entityType: CloudEntityType.sheep.rawValue,
+            entityID: sheepID,
+            baseRevision: sourceRevision,
+            resultingRevision: sourceRevision + 1,
+            payload: payload
+        )
+    }
 }
 
 @Model

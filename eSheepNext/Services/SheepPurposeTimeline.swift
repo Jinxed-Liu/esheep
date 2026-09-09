@@ -30,6 +30,11 @@ enum SheepPurposeTimeline {
     static let previousPurposeField = "previousSheepPurpose"
     static let changedAtField = "sheepPurposeChangedAt"
 
+    static func previousPurpose(from payload: Data) throws -> String? {
+        let decoded = try cloudDecoder.decode(FarmCommandCloudPayload.self, from: payload)
+        return decoded.optionalStrings[previousPurposeField] ?? nil
+    }
+
     static func facts(from operations: [DomainOperation]) -> [SheepPurposeTimelineFact] {
         let decoded = operations.compactMap(decode)
             .sorted {

@@ -40,9 +40,7 @@ enum ESheepCloudPurposeHistory {
     }
 
     static func previousPurpose(from payload: Data) throws -> String? {
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        let decoded = try decoder.decode(FarmCommandCloudPayload.self, from: payload)
-        return decoded.optionalStrings[SheepPurposeTimeline.previousPurposeField] ?? nil
+        try SheepPurposeTimeline.previousPurpose(from: payload)
     }
 
     static func record(
@@ -51,16 +49,10 @@ enum ESheepCloudPurposeHistory {
         context: ModelContext
     ) throws {
         guard case .care(.setSheepPurpose(let sheepID, _, _, let expectedRevision)) = command else { return }
-        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-        var payload = try decoder.decode(FarmCommandCloudPayload.self,
-            from: FarmCommandCloudPayloadEncoder.encode(command))
-        if let previousPurpose { payload.optionalStrings[SheepPurposeTimeline.previousPurposeField] = previousPurpose }
-        // occurredAt is stored exactly on the operation. Avoid a duplicate ISO
-        // date field that would discard its millisecond precision.
-        payload.dates.removeValue(forKey: SheepPurposeTimeline.changedAtField)
-        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        let bytes = try encoder.encode(payload)
+        let bytes = try FarmCommandCloudPayloadEncoder.encode(
+            command,
+            previousSheepPurpose: previousPurpose
+        )
         var query = FetchDescriptor<DomainOperation>(predicate: #Predicate {
             $0.id == commandID && $0.farmID == farmID
         })
@@ -71,10 +63,16 @@ enum ESheepCloudPurposeHistory {
                   existing.entityID == sheepID, existing.accountID == accountID else { throw ESheepCloudCheckpointError.malformedRecord }
             operation = existing
         } else {
-            operation = DomainOperation(id: commandID, farmID: farmID, accountID: accountID,
-                kind: .care, occurredAt: occurredAt, summary: command.summary,
-                entityType: CloudEntityType.sheep.rawValue, entityID: sheepID,
-                baseRevision: expectedRevision, resultingRevision: expectedRevision + 1, payload: bytes)
+            operation = DomainOperation.makePurposeHistoryOperation(
+                id: commandID,
+                farmID: farmID,
+                accountID: accountID,
+                occurredAt: occurredAt,
+                summary: command.summary,
+                sheepID: sheepID,
+                sourceRevision: expectedRevision,
+                payload: bytes
+            )
             context.insert(operation)
         }
         if operation.payload != bytes { operation.payload = bytes }
