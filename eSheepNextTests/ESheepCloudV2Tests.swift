@@ -215,6 +215,53 @@ final class ESheepCloudV2Tests: XCTestCase {
         }
     }
 
+    func testV2RemovalReplayReleasesRestoredLegacySnapshotButBaselinePreservesIt() throws {
+        for isBaseline in [true, false] {
+            let fixture = try makeFixture()
+            let entry = Date(timeIntervalSince1970: 1_700_000_000)
+            let removalDate = entry.addingTimeInterval(86_400)
+            let pen = PenRecord(farmID: fixture.farmID, name: "恢复圈舍")
+            let sheep = SheepRecord(farmID: fixture.farmID, earTag: "RESTORED-LAMB",
+                breed: "湖羊", sex: .ewe, penID: pen.id, enteredAt: entry)
+            sheep.legacyStatusSnapshotIsAuthoritative = true
+            sheep.legacyPenSnapshotIsAuthoritative = true
+            fixture.context.insert(pen)
+            fixture.context.insert(sheep)
+            try fixture.context.save()
+            let removalID = UUID()
+            let payload = try FarmCommandCloudPayloadEncoder.encode(.removeSheep(
+                sheepID: sheep.id, kind: .sold, reason: "已出售", amountText: nil,
+                occurredAt: removalDate, note: "", recordID: removalID
+            ))
+            let envelope = CloudOperationEnvelope(
+                farmID: fixture.farmID, entityID: removalID,
+                entityType: CloudEntityType.removal.rawValue, schemaVersion: 2,
+                revision: 1, baseRevision: 0, operationID: UUID(),
+                modifiedAt: removalDate, modifiedByAccountID: fixture.accountID,
+                modifiedByDeviceID: fixture.deviceID, payload: payload,
+                payloadDigest: CloudPayloadDigest.hex(for: payload),
+                capabilityCertificate: "esheep-cloud-v2-event",
+                operationSignature: Data(), deletedAt: nil
+            )
+            let writer = RemoteDomainApplyService()
+            if isBaseline {
+                _ = try writer.applyBaselineProjection(envelope, context: fixture.context)
+            } else {
+                _ = try writer.applyV2(envelope, context: fixture.context)
+            }
+            try FarmHistoryRebuilder().rebuild(farmID: fixture.farmID,
+                context: fixture.context, from: entry, through: removalDate)
+            try fixture.context.save()
+            XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<RemovalRecord>()).count, 1)
+            XCTAssertEqual(sheep.legacyStatusSnapshotIsAuthoritative, isBaseline)
+            XCTAssertEqual(sheep.legacyPenSnapshotIsAuthoritative, isBaseline)
+            XCTAssertEqual(sheep.status, isBaseline ? .active : .removed)
+            XCTAssertEqual(sheep.isCurrentlyPresent, isBaseline)
+            XCTAssertEqual(sheep.currentPenID, isBaseline ? pen.id : nil)
+            XCTAssertEqual(sheep.removedAt, isBaseline ? nil : removalDate)
+        }
+    }
+
     func testAuthoritativeCareReplayUsesEventOrderButKeepsBusinessValidation() throws {
         let fixture = try makeFixture()
         let sheep = SheepRecord(

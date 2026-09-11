@@ -1,0 +1,215 @@
+{
+  "color-space-for-untagged-svg-colors" : "display-p3",
+  "fill" : {
+    "linear-gradient" : [
+      "srgb:0.85519,0.95534,0.99454,1.00000",
+      "srgb:0.55900,0.80682,1.00000,1.00000"
+    ],
+    "orientation" : {
+      "start" : {
+        "x" : 0.5,
+        "y" : 1
+      },
+      "stop" : {
+        "x" : 0.5,
+        "y" : 0
+      }
+    }
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : false,
+          "hidden" : false,
+        "image-name" : "黄色-图片 3 2.png",
+          "name" : "图片 3 2",
+          "position" : {
+            "scale" : 0.5,
+            "translation-in-points" : [
+              62.6875,
+              -83
+            ]
+          }
+        },
+        {
+          "glass" : false,
+        "image-name" : "黄色-图片 3.png",
+          "name" : "图片 3",
+          "position" : {
+            "scale" : 0.5,
+            "translation-in-points" : [
+              34.77187499999991,
+              -36.93593750000002
+            ]
+          }
+        },
+        {
+          "glass" : false,
+        "image-name" : "黄色-图片2.png",
+          "name" : "图片2",
+          "position" : {
+            "scale" : 0.5,
+            "translation-in-points" : [
+              -36.9921875,
+              -14.734375
+            ]
+          }
+        },
+        {
+          "blend-mode-specializations" : [
+            {
+              "value" : "normal"
+            },
+            {
+              "appearance" : "tinted",
+              "value" : "plus-lighter"
+            }
+          ],
+          "fill-specializations" : [
+            {
+              "value" : {
+                "linear-gradient" : [
+                  "srgb:0.00485,0.36494,0.03252,1.00000",
+                  "extended-srgb:0.20392,0.78039,0.34902,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.5,
+                    "y" : 1
+                  },
+                  "stop" : {
+                    "x" : 0.5,
+                    "y" : 0
+                  }
+                }
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "linear-gradient" : [
+                  "srgb:0.00485,0.36494,0.03252,0.57443",
+                  "extended-srgb:0.20392,0.78039,0.34902,0.84558"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.5,
+                    "y" : 1
+                  },
+                  "stop" : {
+                    "x" : 0.5,
+                    "y" : 0
+                  }
+                }
+              }
+            }
+          ],
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "图片 1.png",
+          "name" : "图片 1",
+          "position" : {
+            "scale" : 0.6,
+            "translation-in-points" : [
+              15.376562499999977,
+              -49.18593750000002
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    },
+    {
+      "layers" : [
+        {
+          "hidden" : true,
+          "image-name" : "图片 5.png",
+          "name" : "图片 5",
+          "position" : {
+            "scale" : 0.5,
+            "translation-in-points" : [
+              -5.3125,
+              35.6875
+            ]
+          }
+        },
+        {
+          "hidden" : true,
+          "image-name" : "图片 5.png",
+          "name" : "图片 5",
+          "position" : {
+            "scale" : 0.5,
+            "translation-in-points" : [
+              35.77187499999991,
+              6.064062499999977
+            ]
+          }
+        },
+        {
+          "hidden" : true,
+          "image-name" : "图片 6.png",
+          "name" : "图片 6",
+          "position" : {
+            "scale" : 0.5,
+            "translation-in-points" : [
+              -76.0625,
+              26.390625
+            ]
+          }
+        },
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "linear-gradient" : [
+                  "extended-srgb:0.20392,0.78039,0.34902,1.00000",
+                  "srgb:0.00485,0.36494,0.03252,1.00000"
+                ]
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : "system-dark"
+            }
+          ],
+          "glass" : true,
+          "hidden" : true,
+          "image-name" : "图片 4 3.png",
+          "name" : "图片 4 3",
+          "position" : {
+            "scale" : 0.6,
+            "translation-in-points" : [
+              -68.47812500000009,
+              47.264062499999966
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : [
+      "iOS",
+      "macOS"
+    ]
+  }
+}

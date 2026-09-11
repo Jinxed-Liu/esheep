@@ -24,6 +24,8 @@ private enum WelcomeAuthError: LocalizedError {
 }
 
 struct WelcomeView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @Environment(\.modelContext) private var modelContext
     @Environment(AppSession.self) private var session
     @Query private var accounts: [AccountProfile]
@@ -31,6 +33,7 @@ struct WelcomeView: View {
 
     let reauthenticationRequired: Bool
 
+    @State private var connectionCheck = LoginConnectionCheck()
     @State private var credentialMode: WelcomeCredentialMode = .signIn
     @State private var username = ""
     @State private var email = ""
@@ -64,12 +67,12 @@ struct WelcomeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 24) {
+            VStack(spacing: 16) {
                 GlassEffectContainer(spacing: 18) {
                     Image("AppLogo")
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 92, height: 92)
+                        .frame(width: 72, height: 72)
                         .clipShape(.rect(cornerRadius: 21, style: .continuous))
                         .shadow(color: AppTheme.brand.opacity(0.22), radius: 12, y: 6)
 
@@ -81,6 +84,20 @@ struct WelcomeView: View {
                     }
                 }
 
+                if let message = connectionCheck.message {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(message).font(.footnote).foregroundStyle(.secondary)
+                        HStack {
+                            Button("重试连接") { Task { await connectionCheck.check() } }
+                            Button("系统设置") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                            }
+                        }
+                        .font(.footnote)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 if let notice = session.authenticationNotice {
                     Label(LocalizedStringKey(notice), systemImage: "person.crop.circle.badge.checkmark")
                         .font(.footnote)
@@ -90,7 +107,7 @@ struct WelcomeView: View {
                     .glassEffect(.regular, in: .rect(cornerRadius: 16))
                 }
 
-                VStack(spacing: 16) {
+                VStack(spacing: 12) {
                     Picker("登录方式", selection: $credentialMode) {
                         ForEach(WelcomeCredentialMode.allCases) { mode in
                             Text(LocalizedStringKey(mode.title)).tag(mode)
@@ -194,8 +211,6 @@ struct WelcomeView: View {
                 .padding(18)
                 .glassEffect(.regular, in: .rect(cornerRadius: 22))
 
-                legalConsentCard
-
                 HStack(spacing: 12) {
                     Rectangle().fill(.separator).frame(height: 1)
                     Text("或").font(.footnote).foregroundStyle(.secondary)
@@ -216,7 +231,7 @@ struct WelcomeView: View {
                 .clipShape(.rect(cornerRadius: 14))
                 .disabled(isBindingAccount || !identityIsConfigured || !hasRequiredLegalConsent)
 
-                Text("Apple 登录使用系统当前提供的 Apple 账户。两台设备登录同一 Apple 账户时会映射到同一 eSheepNext 账号；跨账号共享仍应使用不同的 Apple 或邮箱账号。")
+                Text("使用同一 Apple 账户，可在不同设备登录同一牧场账号。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)
@@ -226,13 +241,21 @@ struct WelcomeView: View {
                         .font(.footnote)
                 }
 
+                legalConsentCard
+
             }
             .frame(maxWidth: 520)
             .padding(.horizontal, 24)
-            .padding(.vertical, 32)
+            .padding(.vertical, 24)
             .frame(maxWidth: .infinity)
         }
         .background(AppTheme.pageBackground.ignoresSafeArea())
+        .task { await connectionCheck.check() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, connectionCheck.message != nil {
+                Task { await connectionCheck.check() }
+            }
+        }
         .sheet(item: $selectedLegalDocument) { document in
             NavigationStack {
                 LegalDocumentView(document: document)
@@ -275,46 +298,31 @@ struct WelcomeView: View {
     }
 
     private var legalConsentCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("请先阅读并主动选择")
-                .font(.headline)
-
-            Toggle(isOn: $hasAcceptedTermsAndPrivacy) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("我已阅读并同意服务条款和隐私政策")
-                        .font(.subheadline.weight(.semibold))
-                    HStack(spacing: 12) {
-                        Button("《服务条款》") { selectedLegalDocument = .terms }
-                        Button("《隐私政策》") { selectedLegalDocument = .privacy }
-                    }
-                    .font(.footnote)
-                }
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("我已阅读并同意服务条款和隐私政策", isOn: $hasAcceptedTermsAndPrivacy)
+                .toggleStyle(ConsentCheckboxStyle())
+            HStack(spacing: 12) {
+                Button("《服务条款》") { selectedLegalDocument = .terms }
+                Button("《隐私政策》") { selectedLegalDocument = .privacy }
             }
-            .accessibilityHint("默认关闭；打开后表示同意当前版本的服务条款和隐私政策")
+            .foregroundStyle(AppTheme.brand)
+            .padding(.leading, 32)
 
-            Divider()
-
-            Toggle(isOn: $hasAcceptedCrossBorder) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("我单独同意必要的境外云处理")
-                        .font(.subheadline.weight(.semibold))
-                    Text("账号、云同步和协作使用境外 Supabase 基础设施；不同意时不能使用这些云功能。可选 AI 仍会另行征求同意。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Button("查看接收方、数据种类、风险和撤回方式") {
-                        selectedLegalDocument = .crossBorder
-                    }
-                    .font(.footnote)
-                }
+            Toggle("我单独同意必要的境外云处理", isOn: $hasAcceptedCrossBorder)
+                .toggleStyle(ConsentCheckboxStyle())
+            Button("《境外云处理告知》 · 接收方、用途与撤回方式") {
+                selectedLegalDocument = .crossBorder
             }
-            .accessibilityHint("默认关闭；这是与条款和隐私政策分开的单独同意")
-
-            Text("条款、隐私和境外告知版本：\(LegalPolicyVersions.terms)。同意时间、App 版本和语言会被记录用于证明你的选择。")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            .foregroundStyle(AppTheme.brand)
+            .padding(.leading, 32)
+            Text("用于账号与云同步；可选 AI 会另行征求同意。")
+                .foregroundStyle(.secondary)
+                .padding(.leading, 32)
         }
-        .padding(18)
-        .glassEffect(.regular, in: .rect(cornerRadius: 22))
+        .font(.caption)
+        .buttonStyle(.plain)
+        .tint(AppTheme.brand)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var identityIsConfigured: Bool {

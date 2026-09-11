@@ -1,0 +1,187 @@
+{
+  "name": "eSheep+ 七色耳标素材",
+  "version": "2026-09-11-v2",
+  "colorOrder": [
+    "yellow",
+    "green",
+    "red",
+    "white",
+    "orange",
+    "light-blue",
+    "pink"
+  ],
+  "semantics": {
+    "yellow": "公羊",
+    "green": "母羊"
+  },
+  "files": [
+    {
+      "color": "yellow",
+      "file": "png/ear-tag-yellow.png",
+      "width": 704,
+      "height": 512,
+      "sha256": "f8416e5a9cfb0b5cdf9bb3c39dc6d6be55046ef2607222ec7490c6b941e567b7",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-20260908/edge-fix-20260910/yellow-glass-27-smooth.png"
+    },
+    {
+      "color": "yellow",
+      "file": "png/ear-tag-yellow@2x.png",
+      "width": 1408,
+      "height": 1024,
+      "sha256": "6012b1fc83d58e489dfce24f0d11646da675edf916ff096f2fa3df4f0ba21e14",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-20260908/edge-fix-20260910/yellow-glass-27-smooth@2x.png"
+    },
+    {
+      "color": "yellow",
+      "file": "png/ear-tag-yellow@4x.png",
+      "width": 2816,
+      "height": 2048,
+      "sha256": "820aafc386187abba59c432f20e2da85c03eb6d2fb3c5e33929f5a496f54592e",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-20260908/edge-fix-20260910/yellow-glass-27-smooth@4x.png"
+    },
+    {
+      "color": "green",
+      "file": "png/ear-tag-green.png",
+      "width": 704,
+      "height": 512,
+      "sha256": "2693a4fc61b0150b4ea06336dc66894225be252d3c3394845055f16b3e62fe69",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-20260908/edge-fix-20260910/green-glass-27-smooth.png"
+    },
+    {
+      "color": "green",
+      "file": "png/ear-tag-green@2x.png",
+      "width": 1408,
+      "height": 1024,
+      "sha256": "c30282e8d28b5977279a690396470ad85cc6143a020a582cf4e3706beaf0d127",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-20260908/edge-fix-20260910/green-glass-27-smooth@2x.png"
+    },
+    {
+      "color": "green",
+      "file": "png/ear-tag-green@4x.png",
+      "width": 2816,
+      "height": 2048,
+      "sha256": "cb3479237cb131a4e8bc58954ec6c54ddd55a427104b83835b3b65b1be117ac4",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-20260908/edge-fix-20260910/green-glass-27-smooth@4x.png"
+    },
+    {
+      "color": "red",
+      "file": "png/ear-tag-red.png",
+      "width": 704,
+      "height": 512,
+      "sha256": "23821c0d4bb024dbc9ce434fda7c0223d3aeed654e81b81fbfdba0a98c80be7d",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/red-glass-27-smooth.png"
+    },
+    {
+      "color": "red",
+      "file": "png/ear-tag-red@2x.png",
+      "width": 1408,
+      "height": 1024,
+      "sha256": "748ae71eeac6c325820c90fcd44bec31a1520d4810fb44c7866498d8dfeb260a",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/red-glass-27-smooth@2x.png"
+    },
+    {
+      "color": "red",
+      "file": "png/ear-tag-red@4x.png",
+      "width": 2816,
+      "height": 2048,
+      "sha256": "6528739322d067178fbd8ec7d9f00b2529aab1821d1b559daa1837f8485f6db9",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/red-glass-27-smooth@4x.png"
+    },
+    {
+      "color": "white",
+      "file": "png/ear-tag-white.png",
+      "width": 704,
+      "height": 512,
+      "sha256": "2a23af9fc96640c6f32d9d060000b93181a022f9a38cab7b9e264633d6d9917e",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/white-glass-27-smooth.png"
+    },
+    {
+      "color": "white",
+      "file": "png/ear-tag-white@2x.png",
+      "width": 1408,
+      "height": 1024,
+      "sha256": "35d060e03f3298957029d7861eb7b33c8c05341a980a4cc3ffe2964f677ad7b5",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/white-glass-27-smooth@2x.png"
+    },
+    {
+      "color": "white",
+      "file": "png/ear-tag-white@4x.png",
+      "width": 2816,
+      "height": 2048,
+      "sha256": "05895d0641ac9cab2d408f8e962b728d2a41605bc39e1c32ddcc273e6416f065",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/white-glass-27-smooth@4x.png"
+    },
+    {
+      "color": "orange",
+      "file": "png/ear-tag-orange.png",
+      "width": 704,
+      "height": 512,
+      "sha256": "216f752267458cb3c07b737cb55143ef6ab6d625090ef90f26289388bc4694fe",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/orange-glass-27-smooth.png"
+    },
+    {
+      "color": "orange",
+      "file": "png/ear-tag-orange@2x.png",
+      "width": 1408,
+      "height": 1024,
+      "sha256": "1535adad6a232567d69f7868b6683af1b7190e4d55b2cd9cc836ab89b56b265b",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/orange-glass-27-smooth@2x.png"
+    },
+    {
+      "color": "orange",
+      "file": "png/ear-tag-orange@4x.png",
+      "width": 2816,
+      "height": 2048,
+      "sha256": "a7b85dc7c0b69595123a80ed9f66b77a8510fe6593c2a1167d1c837085488e76",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/orange-glass-27-smooth@4x.png"
+    },
+    {
+      "color": "light-blue",
+      "file": "png/ear-tag-light-blue.png",
+      "width": 704,
+      "height": 512,
+      "sha256": "8fc8a8f0019e4d72ef0269731e14515064195b23d5572d699736917e679c641f",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/light-blue-glass-27-smooth.png"
+    },
+    {
+      "color": "light-blue",
+      "file": "png/ear-tag-light-blue@2x.png",
+      "width": 1408,
+      "height": 1024,
+      "sha256": "c2341fd3ba6aab08f44cd628ea564c51be0e07b8099e273213ed01c9c792c3c5",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/light-blue-glass-27-smooth@2x.png"
+    },
+    {
+      "color": "light-blue",
+      "file": "png/ear-tag-light-blue@4x.png",
+      "width": 2816,
+      "height": 2048,
+      "sha256": "5f6c5a7233c04ba6f7708dd9346d58ca859712044c123a6d7162e6b8cde7bc17",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/light-blue-glass-27-smooth@4x.png"
+    },
+    {
+      "color": "pink",
+      "file": "png/ear-tag-pink.png",
+      "width": 704,
+      "height": 512,
+      "sha256": "16d84319d6f13d96e7068e964e7b360bc09b1ea11d23175e2560d90840138ae6",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/pink-glass-27-smooth.png"
+    },
+    {
+      "color": "pink",
+      "file": "png/ear-tag-pink@2x.png",
+      "width": 1408,
+      "height": 1024,
+      "sha256": "24c1234270b9b0a746355f631f1eb573fd8b2de660a506e92dfbe17907da342f",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/pink-glass-27-smooth@2x.png"
+    },
+    {
+      "color": "pink",
+      "file": "png/ear-tag-pink@4x.png",
+      "width": 2816,
+      "height": 2048,
+      "sha256": "274a393efca14ec12c212f13c2684e71b49a444add84912f88387a6011124da7",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/pink-glass-27-smooth@4x.png"
+    }
+  ]
+}

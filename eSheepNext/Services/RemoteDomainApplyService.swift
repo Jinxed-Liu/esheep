@@ -487,7 +487,9 @@ struct RemoteDomainApplyService {
         try applyDecoded(
             envelope,
             context: context,
-            preservesLegacySnapshotAuthority: true,
+            // Accepted V2 lifecycle facts supersede a restored legacy snapshot.
+            // Only baseline/bootstrap imports retain that snapshot authority.
+            preservesLegacySnapshotAuthority: false,
             allowsBaselineProjection: false,
             v2Authority: true
         )

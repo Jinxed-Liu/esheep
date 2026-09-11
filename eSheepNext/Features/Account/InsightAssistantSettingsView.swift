@@ -64,6 +64,7 @@ struct InsightAssistantSettingsView: View {
                     .disabled(isUpdatingAIConsent)
                 } else {
                     Toggle("我已阅读并同意 AI 数据处理说明", isOn: $hasReadAIPrivacy)
+                        .toggleStyle(ConsentCheckboxStyle())
                         .accessibilityHint("默认关闭；同意只适用于可选 AI，不影响其他牧场功能")
                     Button("同意并启用 AI") {
                         acceptAIPrivacy()

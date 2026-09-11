@@ -1,0 +1,17 @@
+{
+  "version": "3.1.1",
+  "build": 24,
+  "branch": "main",
+  "head": "7332b0648ed47916d8a8a02b5d2b8857b3308a18",
+  "toolchain": "Xcode 27.0 (27A266a)",
+  "sourceHashes": {
+    "eSheepNext/Features/Account/WelcomeView.swift": "c645067249a93af7c4af1e16891a065d6c048466f7f7b8b86da4dba4424db101",
+    "eSheepNext/Features/Account/InsightAssistantSettingsView.swift": "dfe94854d1c808171e4b91be3c1890339c45a67b6f889a3e92c47e9e4d9ea112",
+    "eSheepNext/Features/Account/ConsentCheckboxStyle.swift": "137a1225241d683130279a808df301a29f28d8385e6f11296e195b5a09892ebb",
+    "eSheepNext/Services/LoginConnectionCheck.swift": "1428cf5cbcfb5a580ff21173073a34b421b6edc0a399a5d1e994e810c819723e",
+    "eSheepNext/Services/RemoteDomainApplyService.swift": "c8e75143d8cde05d571dcb3003d4a0772cf2deef91f31735b7187d03fbfea718",
+    "eSheepNextTests/ESheepCloudV2Tests.swift": "d988282b6e0e719ad4229d57f12df57079cc6dd01566f588d49bfe9c9c89ed9a",
+    "eSheepNext.xcodeproj/project.pbxproj": "ecf8146a67ad54416a0b048a787a25e25d08f6ccf455338f68185192a0fe6ed6",
+    "tools/verify_testflight_internal.sh": "6da27eccc9d5d8a843b41d3c34fa460f7ae252d57faf2bb9d6003a4737d9ecd3"
+  }
+}

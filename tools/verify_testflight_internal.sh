@@ -2,12 +2,12 @@
 set -euo pipefail
 
 repo_root="${0:A:h:h}"
-developer_dir="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
-expected_xcode_build="${EXPECTED_XCODE_BUILD:-27A5252f}"
-expected_app_build="${EXPECTED_APP_BUILD:-23}"
+developer_dir="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+expected_xcode_build="${EXPECTED_XCODE_BUILD:-27A266a}"
+expected_app_build="${EXPECTED_APP_BUILD:-24}"
 expected_app_version="${EXPECTED_APP_VERSION:-3.1.1}"
 release_config="$repo_root/Config/ReleaseEnvironment.local.xcconfig"
-test_destination="${TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 17 Pro}"
+test_destination="${TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 18 Pro}"
 derived_data="${TESTFLIGHT_DERIVED_DATA:-$(mktemp -d -t esheep-testflight.XXXXXX)}"
 
 fail() {
@@ -68,6 +68,7 @@ DEVELOPER_DIR="$developer_dir" xcodebuild test \
   -only-testing:eSheepNextTests/FarmRemoteRestoreAndStorageTests \
   -only-testing:eSheepNextTests/FarmRemoteSyncCoordinatorTests \
   -only-testing:eSheepNextTests/FarmSessionTests \
+  -only-testing:eSheepNextTests/ESheepCloudV2Tests/testV2RemovalReplayReleasesRestoredLegacySnapshotButBaselinePreservesIt \
   CODE_SIGN_STYLE=Automatic
 
 print -r -- "Internal TestFlight hard gate passed with Xcode $xcode_build."
