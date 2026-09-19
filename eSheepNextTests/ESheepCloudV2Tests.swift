@@ -923,7 +923,7 @@ final class ESheepCloudV2Tests: XCTestCase {
     /// payload and a deterministic replay route.
     func testV2CommandRegistryIsExhaustiveAndEveryKindHasTypedRoute() {
         let kinds = ESheepCloudCommandRegistryV2.allKinds
-        XCTAssertEqual(kinds.count, 83)
+        XCTAssertEqual(kinds.count, 86)
         XCTAssertEqual(Set(kinds).count, kinds.count)
         XCTAssertEqual(ESheepCloudCommandRegistryV2.kindSet, Set(kinds))
         for kind in kinds {

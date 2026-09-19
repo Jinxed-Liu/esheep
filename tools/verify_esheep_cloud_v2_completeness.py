@@ -18,15 +18,23 @@ import sys
 from pathlib import Path
 
 
-CATALOG_START = "insert into esheep_cloud.command_catalog (command_kind, merge_mode"
-CATALOG_END = "on conflict (command_kind) do update"
-
-
 def extract_catalog(sql: str) -> list[str]:
-    start = sql.index(CATALOG_START)
-    end = sql.index(CATALOG_END, start)
-    block = sql[start:end]
-    kinds = re.findall(r"\(\s*'([^']+)'\s*,\s*'[^']+'\s*,", block)
+    """Collect command kinds from every applied catalogue insertion.
+
+    Cloud V2 is extended by forward-only migrations.  Reading only the
+    foundation migration makes the checker compare the current Swift registry
+    with a stale 83-command catalogue after a later migration adds commands.
+    Restrict extraction to ``command_catalog`` INSERT statements so unrelated
+    SQL tuples cannot be mistaken for protocol commands.
+    """
+    blocks = re.findall(
+        r"insert\s+into\s+esheep_cloud\.command_catalog\b.*?;",
+        sql,
+        re.IGNORECASE | re.DOTALL,
+    )
+    kinds: list[str] = []
+    for block in blocks:
+        kinds.extend(re.findall(r"\(\s*'([^']+)'\s*,\s*'[^']+'\s*,", block))
 
     # attention.resolve is inserted by a separate statement because it is a
     # control-plane command rather than a farm-domain command.
@@ -64,16 +72,42 @@ def extract_server_dispatch_kinds(sql: str) -> set[str]:
         sql,
         re.IGNORECASE | re.DOTALL,
     )
-    if not match:
-        return set()
-    body = match.group(1)
+    body = match.group(1) if match else ""
     kinds = set(re.findall(r"when\s+'([^']+)'\s+then", body, re.IGNORECASE))
+
+    # Later migrations extend the installed dispatcher through a checked
+    # ``pg_get_functiondef``/``replace`` block.  Count only blocks that name
+    # the dispatcher and perform the exact replacement; a string in a fixture
+    # or an unverified catalogue update must not make a route ready.
+    for extension in re.findall(
+        r"do\s+\$migration\$(.*?)\$migration\$;",
+        sql,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        if (
+            "esheep_cloud.dispatch_command_v2(text,jsonb,text,jsonb)" not in extension
+            or "execute replace(d,before_text,after_text)" not in extension
+        ):
+            continue
+        kinds.update(
+            left
+            for left, right in re.findall(
+                r"when\s+''([^']+)''\s+then\s+''([^']+)''",
+                extension,
+                re.IGNORECASE,
+            )
+            if left == right
+        )
     if re.search(r"p_kind\s*=\s*'attention\.resolve'.*?return\s+'attention\.resolve'", body, re.IGNORECASE | re.DOTALL):
         kinds.add("attention.resolve")
     return kinds
 
 
-def extract_payload_kinds(contracts: str, catalog: set[str]) -> set[str]:
+def extract_payload_kinds(
+    contracts: str,
+    catalog: set[str],
+    additional_models: str = "",
+) -> set[str]:
     """Return kinds with an exhaustive typed decoder/discriminator.
 
     The discriminator has two deliberately dynamic families.  Care commands
@@ -102,6 +136,17 @@ def extract_payload_kinds(contracts: str, catalog: set[str]) -> set[str]:
             )
         )
         literals.update(f"care.{suffix}" for suffix in care_suffixes)
+
+        # SheepLabelCommand is a separately declared model whose three stable
+        # wire suffixes are exposed through ``c.kind`` rather than literal
+        # cases in this contracts file.  Read those explicit model cases while
+        # keeping the care-family decoder requirement above.
+        if "case .sheepLabels(let c): c.kind" in contracts:
+            label_suffixes = re.findall(
+                r"case\s+\.(?:saveLabel|editLabels|patchProfile)\s*:\s*\"([^\"]+)\"",
+                additional_models,
+            )
+            literals.update(f"care.{suffix}" for suffix in label_suffixes)
 
     # TMRCommand.operationKind is a DomainOperationKind enum.  The command
     # catalogue names the same cases with the stable ``tmr.`` prefix.
@@ -176,6 +221,10 @@ def make_report(root: Path) -> dict[str, object]:
     test_path = root / "eSheepNextTests/ESheepCloudV2Tests.swift"
 
     sql = migration_path.read_text(encoding="utf-8")
+    migration_sql = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((root / "supabase/migrations").glob("*.sql"))
+    )
     repair_sql = (root / "supabase/migrations/20260905043413_esheep_cloud_owner_history_repair.sql").read_text(encoding="utf-8")
     contracts = contracts_path.read_text(encoding="utf-8")
     factory = factory_path.read_text(encoding="utf-8")
@@ -184,13 +233,14 @@ def make_report(root: Path) -> dict[str, object]:
     core = core_path.read_text(encoding="utf-8")
     registry = registry_path.read_text(encoding="utf-8")
     tests = test_path.read_text(encoding="utf-8")
+    sheep_label_models = (root / "eSheepNext/Models/SheepLabelModels.swift").read_text(encoding="utf-8")
 
-    catalog = extract_catalog(sql)
+    catalog = extract_catalog(migration_sql)
     repair_kinds = set(re.findall(r"\('([^']+)'\s*,\s*'append_fact'\s*,\s*array\['owner'\]", repair_sql))
     catalog = sorted(set(catalog) | repair_kinds)
     registry_kinds = extract_registry_kinds(registry)
     registry_native_routes = extract_registry_native_routes(registry)
-    server_dispatch_kinds = extract_server_dispatch_kinds(sql)
+    server_dispatch_kinds = extract_server_dispatch_kinds(migration_sql)
     # The additive migration extends installed functions by checked, exact
     # replacement. Require explicit dispatcher arms AND approval enforcement;
     # catalogue insertion alone must not mark an extension implemented.
@@ -207,8 +257,8 @@ def make_report(root: Path) -> dict[str, object]:
     # taken from the product-target native projection registry below.
     server_ready = server_dispatch_kinds
     client_ready = registry_native_routes
-    manual_readiness_update = contains_manual_readiness_update(sql)
-    payload_kinds = extract_payload_kinds(contracts, set(catalog))
+    manual_readiness_update = contains_manual_readiness_update(migration_sql)
+    payload_kinds = extract_payload_kinds(contracts, set(catalog), sheep_label_models)
     factory_text = factory
     reducer_text = reducer
     migration_text = migration_coordinator

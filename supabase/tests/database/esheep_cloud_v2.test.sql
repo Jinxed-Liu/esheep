@@ -463,19 +463,19 @@ select has_column(
 
 select is(
   (esheep_cloud.protocol_readiness_report_v2() ->> 'implemented_command_count')::integer,
-  83,
-  'the readiness report accounts for all 83 declared commands'
+  86,
+  'the readiness report accounts for all 86 declared commands'
 );
 
 select is(
   (esheep_cloud.protocol_readiness_report_v2() ->> 'server_implemented_command_count')::integer,
-  83,
+  86,
   'server readiness is computed from the executable dispatcher, not a catalogue flag'
 );
 
 select is(
   (esheep_cloud.protocol_readiness_report_v2() ->> 'client_projected_command_count')::integer,
-  83,
+  86,
   'client readiness is computed from the explicit projection route inventory'
 );
 
@@ -498,7 +498,7 @@ select is(
 
 select lives_ok(
   $$select esheep_cloud.assert_protocol_ready_v2()$$,
-  'the protocol completeness assertion passes at the 83/83 gate'
+  'the protocol completeness assertion passes at the 86/86 gate'
 );
 
 select is(
