@@ -5,6 +5,7 @@ struct FeedingOverviewSnapshot: Sendable, Hashable {
     let todayFeedCount: Int
     let todayKilograms: Double
     let pendingTroughCount: Int
+    var pendingTroughRows: [PendingTroughSnapshot] = []
 
     static let empty = FeedingOverviewSnapshot(
         todayFeedCount: 0,
@@ -68,11 +69,11 @@ actor FeedingOverviewSnapshotActor {
             .filter { todayFeedIDs.contains($0.feedRecordID) }
             .reduce(0) { $0 + NSDecimalNumber(decimal: $1.kilograms).doubleValue }
 
-        var latestFreeChoiceFeedByLocation: [FeedLocationSnapshotKey: Date] = [:]
+        var latestFreeChoiceFeedByLocation: [FeedLocationSnapshotKey: FeedRecord] = [:]
         for feed in feeds where feed.mode == .freeChoice {
             let key = FeedLocationSnapshotKey(penID: feed.penID, feederName: feed.feederName)
             if latestFreeChoiceFeedByLocation[key] == nil {
-                latestFreeChoiceFeedByLocation[key] = feed.occurredAt
+                latestFreeChoiceFeedByLocation[key] = feed
             }
         }
         var latestObservationByLocation: [FeedLocationSnapshotKey: Date] = [:]
@@ -85,15 +86,18 @@ actor FeedingOverviewSnapshotActor {
                 latestObservationByLocation[key] = observation.observedAt
             }
         }
-        let pendingTroughCount = latestFreeChoiceFeedByLocation.count { key, feedDate in
-            latestObservationByLocation[key].map { $0 < feedDate } ?? true
-        }
+        let penNames = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate { $0.farmID == farmID })).map { ($0.id, $0.name) })
+        let pendingRows = latestFreeChoiceFeedByLocation.compactMap { key, feed -> PendingTroughSnapshot? in
+            guard latestObservationByLocation[key].map({ $0 < feed.occurredAt }) ?? true else { return nil }
+            return PendingTroughSnapshot(penID: key.penID, penName: penNames[key.penID] ?? "历史圈舍", feederName: key.feederName, lastFedAt: feed.occurredAt, relatedFeedID: feed.id)
+        }.sorted { $0.lastFedAt < $1.lastFedAt }
 
         try Task.checkCancellation()
         return FeedingOverviewSnapshot(
             todayFeedCount: todayFeeds.count,
             todayKilograms: todayKilograms,
-            pendingTroughCount: pendingTroughCount
+            pendingTroughCount: pendingRows.count,
+            pendingTroughRows: pendingRows
         )
     }
 }
@@ -197,4 +201,13 @@ actor FeedHistorySnapshotActor {
         try Task.checkCancellation()
         return FeedHistoryScreenSnapshot(feeds: feedRows, troughs: troughRows)
     }
+}
+
+struct PendingTroughSnapshot: Identifiable, Sendable, Hashable {
+    let penID: UUID
+    let penName: String
+    let feederName: String
+    let lastFedAt: Date
+    let relatedFeedID: UUID
+    var id: String { penID.uuidString + ":" + feederName }
 }

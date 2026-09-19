@@ -1,38 +1,32 @@
-# eSheep+ Web — App-aligned Field Briefing
+# eSheep+ Web — 晴空玻璃
 
-Source visual truth: `design-qa-assets/home-redesign-option-1.png`.
+Approved target: `design-qa-assets/skyglass-approved.png`, 1586 × 992. User approval on 2026-09-17 applies to the last revision with 新建记录 inside 今日操作.
 
-## Layout
+## Layout and visual decisions
 
-- Desktop reference viewport: 1487 × 1058.
-- 142 px fixed left rail and a 95 px quiet top bar. The rail owns only the five App destinations; the top bar owns farm switching and the account/avatar menu.
-- Open true-white / very pale cool-blue canvas. The main column owns the date/weather briefing, sync truth, three metrics, operational alerts, and production-status links.
-- A narrow contextual right column owns one primary `新建记录` action, six lightweight quick-operation rows, and today’s feeding/TMR context.
-- Use open bands and row separators first. Borders are subtle and purposeful; nested cards, bento grids, oversized rounded wrappers, and decorative filler are prohibited.
-- Below 1120 px the contextual column moves beneath the briefing. Below 760 px the left rail becomes a five-item bottom navigation, the top bar stays visible, metrics wrap, and wide data tables scroll inside their own containers.
+- Horizontal product header: original ear-tag icon and blue eSheep+ wordmark; five-item frosted capsule; farm switcher and account menu. No desktop sidebar.
+- Primary navigation stays 首页 / 洞察 / 录入 / 投喂 / 搜索. Existing business destinations and route callbacks remain intact. Codex assistant is accessible from the account menu and Insights.
+- Main canvas: 3.5% side margins, pale sky/mint/gold atmospheric raster background, maximum 1760px width. Green/ink 今日牧场 title and current farm-local date.
+- Three open metrics: sheep, occupied pens, today's feeding. Read existing projections without new statistical definitions.
+- 2.08:1 content columns: sheep/pen production entries on left, daily operations on right. 新建记录 sits beside 今日操作, above weight/transfer/feed actions.
+- Full-width recent-activity feed opens existing event details. Keep readable object, business label, details and occurrence date; historical events show their date, not just a misleading clock time.
+- Existing non-empty operational alerts and TMR summaries remain available below the main feed. Footer links retain access when there are no results.
+- <=1150px: navigation wraps into a second header row. <=800px: production and actions stack. <=600px: five destinations become a floating bottom bar; page padding reserves space. Small-screen popovers are pinned below the top header.
 
-## Tokens
+## Tokens and assets
 
-- Brand: `#0b5fe9`; strong brand: `#0454dd`; active tint: `#edf4ff`.
-- Canvas: `#f8fbff`; surface: `#ffffff`; subtle surface: `#f5f8fc`.
-- Text: `#101b33`; secondary text: `#667187`; borders: `#dfe6ef`.
-- Danger: `#e92846`; warning: `#f58b00`; success: `#20a946`.
-- Typography: PingFang SC / SF Pro / Inter-compatible system stack. Date 50–56/1.08 on desktop, page headings 30–36, section titles 18–20, UI chrome and body 14–16.
-- UI icons: direct Phosphor outline imports, regular/medium weight, optically aligned at 18–28 px. Do not ship handcrafted SVG substitutes.
+- Text `#0c1835`; secondary `#647394`; brand blue `#0b5fe9`; title green `#189952`; CTA green `#20a85b`; separators `#e0e9f4`.
+- Typography uses existing SF Pro / PingFang SC system stack. Desktop title up to 68px, metrics up to 52px, production titles 23px, supporting text 14–16px. Mobile title 44px.
+- Glass surfaces use restrained borders, translucent fills, inset highlights and shadows; retain the approved color and softness. The user explicitly rejected a flattened, muted reinterpretation.
+- `public/assets/esheepplus-icon.png`: native Icon Composer export, iOS Default, design generation 27, 256 points at 2x. Source remains untouched at `/Users/jinxliu/Desktop/eSheep+.icon`.
+- `public/assets/skyglass-background.jpg`: ImageGen background based on approved mock, optimized to ~101KB. Master retained in design evidence.
+- `public/assets/skyglass-sheep.png`: generated matching sheep-head tile, transparent PNG resized to 256px (~69KB).
+- Other UI glyphs use the existing Phosphor library; no new icon dependency or generated full-page raster UI.
+- Real CSS/React layout lives in `src/skyglass.css`, `AppHeader.jsx`, and `HomeDashboard.jsx`. Existing feature components retain their behavior.
 
-## Component families
+## Data and acceptance boundaries
 
-- App rail with selected blue tint and a compact mobile bottom-nav variant.
-- Quiet top bar with farm switcher and account menu.
-- Field-briefing header with date, weather/location context, sync truth, and three inline metrics.
-- Operational rows, status rows, quick-operation rows, and TMR meal rows with lightweight separators and visible hover/focus states.
-- App-aligned hub groups for Records, Feeding/TMR, Insights, Search, and avatar-owned Settings.
-- Modal record sheet, entity detail pane, filter/search controls, export actions, cloud projection notices, and explicit draft states.
-
-## Core workflow
-
-1. Read today’s status on Home and open sheep, pens, alerts, or a quick operation without crossing into a different top-level module.
-2. Use Records for daily entries, sheep movement, reproduction, production batches, care management, and event history.
-3. Use Feeding for direct feed, trough observations, TMR production/planning/monitoring, nutrition analysis, history, ingredients, and inventory.
-4. Use Insights for App-matched analysis destinations and the assistant entry; use Search as its own top-level destination.
-5. Confirm browser interactions locally; cloud-mode mutations remain explicitly drafted until the Web implements the App’s command validation, device identity, authority generation, entity revision, audit, Outbox, and replay guarantees.
+- No mock numbers, invented trends, fake weather, or fake sync results in the authenticated app.
+- Home renders newest three events from the existing workspace; record dialogs use the existing canonical schema and save callbacks.
+- Local review harness `design-qa-assets/skyglass-review.html` mounts the real components with clearly identified fixture data and a no-op save. It imports no cloud client and is not a production build input.
+- Validation covers local UI, routing, responsive layouts and existing unit tests. It does not constitute live farm submission, production deployment, or physical-device acceptance.

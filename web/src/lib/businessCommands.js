@@ -1,3 +1,4 @@
+import { labelSpec } from "./sheepLabels.js";
 import { additionalRecordSchemas } from './additionalRecordSchemas.js';
 import { additionalBusinessCommands } from './additionalBusinessCommands.js';
 import templateContract from "../../public/downloads/eSheepPlus_全功能录入模板_v7.json" with {type:"json"};
@@ -45,6 +46,7 @@ export function parseBusinessDate(value, timeZone = "Asia/Shanghai", optional = 
 }
 
 export async function buildBusinessCommands(record, workspace, { identity = record.importKey ?? record.id ?? crypto.randomUUID() } = {}) {
+  if(record.labelAction)return [await labelSpec(record.labelAction,record.labelDraft,workspace)];
   const { sheet } = record;
   const v=Object.fromEntries(Object.entries(record.values??{}).map(([key,value])=>[key,String(value??"").trim()]));
   for(const key of [...templateContract.schemas,...additionalRecordSchemas].find(s=>s.name===sheet)?.required??[])if(key!=="导入键")requireValue(v[key],`${key}不能为空。`);

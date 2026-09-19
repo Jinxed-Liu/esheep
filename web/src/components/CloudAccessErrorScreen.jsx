@@ -6,7 +6,7 @@ export function CloudAccessErrorScreen({ authState, onRetry, onSignOut }) {
     <main className="login-screen">
       <section className="login-card invite-only-card" aria-labelledby="cloud-access-error-title">
         <div className="login-brand">
-          <img src="/assets/esheepnext-mark.png" alt="" />
+          <img src="/assets/esheepplus-icon.png" alt="" />
           <span><strong id="cloud-access-error-title">暂时无法打开牧场</strong><small>eSheep+ 云端牧场</small></span>
         </div>
         <div className="login-intro"><p>你已登录。牧场资料未能完成读取，请重试。</p></div>

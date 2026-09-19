@@ -33,14 +33,15 @@ struct FarmCareBackupPayload: Codable, Sendable, Equatable {
     let reminders: [Reminder]
     let alertDeferrals: [Deferral]?
     let pedigreeAudits: [PedigreeAudit]?
+    var sheepLabels: [ESheepCloudCheckpointRecord]? = nil
 
     var entityCount: Int {
-        catalogs.count + inventoryLots.count + inventoryTransactions.count + health.count + healthSubjects.count + (donors?.count ?? 0) + semen.count + semenTransactions.count + reproduction.count + offspring.count + batches.count + rules.count + reminders.count + (alertDeferrals?.count ?? 0) + (pedigreeAudits?.count ?? 0)
+        catalogs.count + inventoryLots.count + inventoryTransactions.count + health.count + healthSubjects.count + (donors?.count ?? 0) + semen.count + semenTransactions.count + reproduction.count + offspring.count + batches.count + rules.count + reminders.count + (alertDeferrals?.count ?? 0) + (pedigreeAudits?.count ?? 0) + (sheepLabels?.count ?? 0)
     }
 
     @MainActor
     static func capture(farmID: UUID, context: ModelContext) throws -> Self {
-        .init(
+        var result = Self(
             catalogs: try context.fetch(FetchDescriptor<HealthCatalogItemRecord>()).filter { $0.farmID == farmID }.map { .init(id: $0.id, legacySourceKey: $0.legacySourceKey, legacyCatalogID: $0.legacyCatalogID, kindRawValue: $0.kindRawValue, name: $0.name, category: $0.category, unit: $0.unit, defaultDoseText: $0.defaultDoseText, defaultRoute: $0.defaultRoute, reminderIntervalDays: $0.reminderIntervalDays, note: $0.note, isActive: $0.isActive, createdAt: $0.createdAt) },
             inventoryLots: try context.fetch(FetchDescriptor<InventoryLotRecord>()).filter { $0.farmID == farmID }.map { .init(id: $0.id, catalogName: $0.catalogName, catalogItemID: $0.catalogItemID, legacySourceKey: $0.legacySourceKey, batchNumber: $0.batchNumber, supplier: $0.supplier, receivedAt: $0.receivedAt, unit: $0.unit, kindRawValue: $0.kindRawValue, expiresAt: $0.expiresAt, startingQuantityText: $0.startingQuantityText, createdAt: $0.createdAt, isActive: $0.isActive, deletedAt: $0.deletedAt) },
             inventoryTransactions: try context.fetch(FetchDescriptor<InventoryTransactionRecord>()).filter { $0.farmID == farmID }.map { .init(id: $0.id, inventoryLotID: $0.inventoryLotID, kindRawValue: $0.kindRawValue, quantityText: $0.quantityText, occurredAt: $0.occurredAt, sourceRecordID: $0.sourceRecordID, note: $0.note, createdAt: $0.createdAt, deletedAt: $0.deletedAt) },
@@ -57,9 +58,12 @@ struct FarmCareBackupPayload: Codable, Sendable, Equatable {
             alertDeferrals: try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).filter { $0.farmID == farmID }.map { .init(id: $0.id, alertID: $0.alertID, alertKindRawValue: $0.alertKindRawValue, subjectID: $0.subjectID, sourceEntityID: $0.sourceEntityID, conditionFingerprint: $0.conditionFingerprint, deferredUntil: $0.deferredUntil, deferredByAccountID: $0.deferredByAccountID, createdAt: $0.createdAt, updatedAt: $0.updatedAt, revision: $0.revision) },
             pedigreeAudits: try context.fetch(FetchDescriptor<PedigreeChangeRecord>()).filter { $0.farmID == farmID }.map { .init(id: $0.id, sheepID: $0.sheepID, beforeDamID: $0.beforeDamID, afterDamID: $0.afterDamID, beforeSireID: $0.beforeSireID, afterSireID: $0.afterSireID, beforeSemenDonorID: $0.beforeSemenDonorID, afterSemenDonorID: $0.afterSemenDonorID, beforeDamSourceRawValue: $0.beforeDamSourceRawValue, afterDamSourceRawValue: $0.afterDamSourceRawValue, beforeSireSourceRawValue: $0.beforeSireSourceRawValue, afterSireSourceRawValue: $0.afterSireSourceRawValue, reason: $0.reason, changedByAccountID: $0.changedByAccountID, sheepRevision: $0.sheepRevision, occurredAt: $0.occurredAt) }
         )
+        result.sheepLabels = try SheepLabelBackup.capture(farmID: farmID, context: context)
+        return result
     }
 
     func validate(penIDs: Set<UUID>, sheepIDs: Set<UUID>) throws {
+        try SheepLabelBackup.validate(sheepLabels ?? [], sheepIDs: sheepIDs)
         try requireUnique(catalogs.map(\.id), "健康目录")
         try requireUnique(inventoryLots.map(\.id), "库存批次")
         try requireUnique(inventoryTransactions.map(\.id), "库存流水")
@@ -109,8 +113,9 @@ struct FarmCareBackupPayload: Codable, Sendable, Equatable {
     }
 
     @MainActor
-    func insert(farmID: UUID, context: ModelContext, includeDonors: Bool = true) {
+    func insert(farmID: UUID, context: ModelContext, includeDonors: Bool = true) throws {
         if includeDonors { insertDonors(farmID: farmID, context: context) }
+        try SheepLabelBackup.restore(sheepLabels ?? [], farmID: farmID, context: context)
         for value in catalogs { let record = HealthCatalogItemRecord(id: value.id, farmID: farmID, legacySourceKey: value.legacySourceKey, legacyCatalogID: value.legacyCatalogID, kindRawValue: value.kindRawValue, name: value.name, category: value.category, unit: value.unit, defaultDoseText: value.defaultDoseText, defaultRoute: value.defaultRoute, reminderIntervalDays: value.reminderIntervalDays, note: value.note, isActive: value.isActive); record.createdAt = value.createdAt; context.insert(record) }
         for value in inventoryLots { let record = InventoryLotRecord(id: value.id, farmID: farmID, catalogName: value.catalogName, catalogItemID: value.catalogItemID, kind: HealthRecordKind(rawValue: value.kindRawValue) ?? .treatment, expiresAt: value.expiresAt, startingQuantityText: value.startingQuantityText, legacySourceKey: value.legacySourceKey, batchNumber: value.batchNumber, supplier: value.supplier, receivedAt: value.receivedAt, unit: value.unit); record.createdAt = value.createdAt; record.isActive = value.isActive; record.deletedAt = value.deletedAt; context.insert(record) }
         for value in inventoryTransactions { let record = InventoryTransactionRecord(id: value.id, farmID: farmID, inventoryLotID: value.inventoryLotID, kind: InventoryTransactionKind(rawValue: value.kindRawValue) ?? .adjustment, quantityText: value.quantityText, occurredAt: value.occurredAt, sourceRecordID: value.sourceRecordID, note: value.note); record.createdAt = value.createdAt; record.deletedAt = value.deletedAt; context.insert(record) }

@@ -58,7 +58,7 @@ export function LoginScreen({ authState, isConfigured, onSignIn, onSignUp, onApp
     <main className="login-screen">
       <section className="login-card" aria-labelledby="login-title">
         <div className="login-brand">
-          <img src="/assets/esheepnext-mark.png" alt="" />
+          <img src="/assets/esheepplus-icon.png" alt="" />
           <span><strong id="login-title">eSheep+</strong><small>牧场管理工作台</small></span>
         </div>
         <div className="login-intro">

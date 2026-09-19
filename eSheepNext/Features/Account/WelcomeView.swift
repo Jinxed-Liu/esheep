@@ -167,7 +167,7 @@ struct WelcomeView: View {
                     }
 
                     credentialFieldLabel("密码")
-                    SecureField("至少 10 位，必须包含文字和数字", text: $password)
+                    SecureField(credentialMode == .signIn ? "请输入密码" : "至少 10 位，必须包含文字和数字", text: $password)
                         .textContentType(credentialMode == .register ? .newPassword : .password)
                         .focused($focusedField, equals: .password)
                         .textFieldStyle(.roundedBorder)
@@ -186,14 +186,11 @@ struct WelcomeView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
-                    Button(
-                        credentialMode == .signIn
-                            ? "登录"
-                            : (AccountIdentityClients.activeProvider == .supabase ? "注册并发送验证邮件" : "注册并登录"),
-                        action: submitPasswordAuthentication
-                    )
-                        .buttonStyle(.glassProminent)
-                        .frame(maxWidth: .infinity)
+                    Button(action: submitPasswordAuthentication) {
+                        Text(credentialMode == .signIn ? "登录" : (AccountIdentityClients.activeProvider == .supabase ? "注册并发送验证邮件" : "注册并登录"))
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                        .buttonStyle(.borderedProminent)
                         .disabled(
                             isBindingAccount ||
                                 !passwordFormIsReady ||
@@ -201,6 +198,9 @@ struct WelcomeView: View {
                                 !hasRequiredLegalConsent
                         )
 
+                    if !hasRequiredLegalConsent {
+                        Text("请先在下方分别勾选必需的同意项。").font(.caption).foregroundStyle(.secondary)
+                    }
                     if !identityIsConfigured {
                         Text("eSheep+ 云账号服务尚未配置，暂时无法注册或登录。")
                             .font(.footnote)
@@ -209,7 +209,7 @@ struct WelcomeView: View {
                     }
                 }
                 .padding(18)
-                .glassEffect(.regular, in: .rect(cornerRadius: 22))
+                .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 22))
 
                 HStack(spacing: 12) {
                     Rectangle().fill(.separator).frame(height: 1)

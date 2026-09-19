@@ -2894,6 +2894,8 @@ final class InsightToolRegistry {
             add(draft.penID)
         }
         switch command {
+        case .sheepLabels(let command):
+            result.insert(command.primaryID)
         case .upsertHealthCatalog, .updateRules, .updateOperationalAlertRules:
             break
         case .recordHealth(let draft):

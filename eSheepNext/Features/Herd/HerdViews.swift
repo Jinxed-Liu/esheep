@@ -10,6 +10,12 @@ struct HerdManagementView: View {
     let account: AccountProfile
     let farm: FarmRecord
 
+    @Query private var labelCatalog: [SheepLabelRecord]
+    @Query private var labelAssignments: [SheepLabelAssignmentRecord]
+    @State private var selectedLabelIDs = Set<UUID>()
+    @State private var matchAllLabels = false
+    @State private var unlabelledOnly = false
+    @State private var isEditingLabels = false
     @State private var isAddingSheep = false
     @State private var isExportingSheep = false
     @State private var exportDocument: InHerdSheepExportDocument?
@@ -30,6 +36,7 @@ struct HerdManagementView: View {
     @State private var penOptions: [HerdPenOption] = []
     @State private var presentSheepCount = 0
     @State private var removedSheepCount = 0
+    @State private var sheepLoadError: String?
     @State private var hasBuiltSheepSnapshot = false
     @State private var sheepSourceLoadRevision = 0
     @State private var sheepSourceRevision = 0
@@ -39,16 +46,31 @@ struct HerdManagementView: View {
     }
 
     var body: some View {
-        let displayedSheep = filteredSheep
+        let assignments = Dictionary(uniqueKeysWithValues: labelAssignments.filter { $0.farmID == farm.id }.map { ($0.sheepID, $0) })
+        let labels = labelCatalog.filter { $0.farmID == farm.id }.map(\.value)
+        let displayedSheep = filteredSheep.filter { SheepLabelRules.matches(ids: assignments[$0.id]?.labelIDs ?? [], selected: selectedLabelIDs, all: matchAllLabels, unlabelled: unlabelledOnly) }
         let visibleSheep = displayedSheep.prefix(visibleLimit)
         List(selection: $selection) {
+            if let sheepLoadError {
+                Text(sheepLoadError).foregroundStyle(.orange)
+                Button("重新读取") { sheepSourceLoadRevision &+= 1 }
+            }
             if !hasBuiltSheepSnapshot {
                 ProgressView("正在整理羊只")
                     .frame(maxWidth: .infinity, minHeight: 320)
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
             } else if displayedSheep.isEmpty {
-                ContentUnavailableView.search(text: query)
+                ContentUnavailableView {
+                    Label(sheepLoadError != nil ? "羊只档案暂不可用" : sourceSheep.isEmpty ? "尚无羊只档案" : query.isEmpty ? "没有符合条件的羊只" : "未找到匹配结果", systemImage: "magnifyingglass")
+                } actions: {
+                    if sourceSheep.isEmpty && sheepLoadError == nil {
+                        Button("新建羊只") { isAddingSheep = true }.disabled(!CapabilitySet(role: farm.role).allows(.recordProduction))
+                    } else {
+                        if !query.isEmpty { Button("清空搜索") { query = "" } }
+                        Button("清除筛选") { sexFilter = nil; statusFilter = nil; penFilter = nil; selectedLabelIDs.removeAll(); unlabelledOnly = false }
+                    }
+                }
             } else {
                 ForEach(visibleSheep, id: \.id) { sheep in
                     NavigationLink {
@@ -59,9 +81,10 @@ struct HerdManagementView: View {
                         )
                     } label: {
                         HStack(spacing: 12) {
-                            SheepAvatarView(photo: sheep.avatarPhoto, size: 48)
+                            SheepAvatarView(photo: sheep.avatarPhoto, size: 48, sex: sheep.sex)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(sheep.earTag).font(.headline)
+                                SheepLabelChips(labels: labels.filter { assignments[sheep.id]?.labelIDs.contains($0.id) == true }, primaryID: assignments[sheep.id]?.primaryLabelID)
                                 HStack(spacing: 4) {
                                     if !sheep.breed.isEmpty {
                                         Text(verbatim: sheep.breed)
@@ -85,7 +108,11 @@ struct HerdManagementView: View {
             }
         }
         .navigationTitle("羊只")
-        .searchable(text: $query, prompt: "耳号或品种")
+        .sheet(isPresented: $isEditingLabels) { NavigationStack { SheepLabelsEditor(account: account, farm: farm, sheepIDs: selection) } }
+        .onChange(of: selectedLabelIDs) { selection.removeAll(); visibleLimit = 100 }
+        .onChange(of: matchAllLabels) { selection.removeAll(); visibleLimit = 100 }
+        .onChange(of: unlabelledOnly) { selection.removeAll(); visibleLimit = 100 }
+        .searchable(text: $query, prompt: "搜索羊只耳号或品种")
         .task(id: HerdSourceLoadRequest(farmID: farm.id, revision: sheepSourceLoadRevision)) {
             await reloadSheepSource()
         }
@@ -99,7 +126,7 @@ struct HerdManagementView: View {
         )) {
             await rebuildSheepSnapshot()
         }
-        .onChange(of: query) { _, _ in visibleLimit = 100 }
+        .onChange(of: query) { _, _ in visibleLimit = 100; selection.removeAll() }
         .onChange(of: sexFilter) { _, _ in visibleLimit = 100; selection.removeAll() }
         .onChange(of: statusFilter) { _, _ in visibleLimit = 100; selection.removeAll() }
         .onChange(of: penFilter) { _, _ in visibleLimit = 100; selection.removeAll() }
@@ -108,6 +135,17 @@ struct HerdManagementView: View {
             ToolbarItem(placement: .topBarLeading) { EditButton() }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Menu("标签") {
+                        Toggle("无自定义标签", isOn: $unlabelledOnly)
+                        Toggle("同时包含全部", isOn: $matchAllLabels)
+                        ForEach(labels) { label in
+                            Toggle(label.name, isOn: Binding(get: { selectedLabelIDs.contains(label.id) }, set: { on in
+                                unlabelledOnly = false
+                                if on { selectedLabelIDs.insert(label.id) } else { selectedLabelIDs.remove(label.id) }
+                            }))
+                        }
+                        Button("清除标签筛选") { selectedLabelIDs.removeAll(); unlabelledOnly = false }
+                    }
                     Picker("性别", selection: $sexFilter) {
                         Text("全部性别").tag(SheepSex?.none)
                         ForEach(SheepSex.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag(SheepSex?.some($0)) }
@@ -120,12 +158,17 @@ struct HerdManagementView: View {
                         Text("全部圈舍").tag(UUID?.none)
                         ForEach(penOptions) { Text($0.name).tag(UUID?.some($0.id)) }
                     }
+                } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
+                .accessibilityLabel("筛选羊只")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
                     Divider()
                     Picker("排序", selection: $sortOrder) {
                         ForEach(HerdSortOrder.allCases) { Text($0.title).tag($0) }
                     }
-                    if sexFilter != nil || statusFilter != nil || penFilter != nil {
-                        Button("清除筛选") { sexFilter = nil; statusFilter = nil; penFilter = nil }
+                    if sexFilter != nil || statusFilter != nil || penFilter != nil || !selectedLabelIDs.isEmpty || unlabelledOnly {
+                        Button("清除筛选") { sexFilter = nil; statusFilter = nil; penFilter = nil; selectedLabelIDs.removeAll(); unlabelledOnly = false }
                     }
                     Divider()
                     NavigationLink {
@@ -133,6 +176,7 @@ struct HerdManagementView: View {
                     } label: {
                         Label("羊只用途管理", systemImage: "tag")
                     }
+                    NavigationLink { SheepLabelManagementView(account: account, farm: farm) } label: { Label("标签管理", systemImage: "tag.fill") }
                     Menu("导出羊只", systemImage: "square.and.arrow.up") {
                         Button("导出在群羊只 CSV", systemImage: "checkmark.circle") { exportSheep(.present) }
                             .disabled(presentSheepCount == 0)
@@ -147,6 +191,7 @@ struct HerdManagementView: View {
             if !selection.isEmpty {
                 ToolbarItem(placement: .bottomBar) {
                     Menu {
+                        Button("批量标签", systemImage: "tag") { isEditingLabels = true }
                         Button("批量转群", systemImage: "arrow.left.arrow.right") {
                             isBatchTransferring = true
                         }
@@ -249,6 +294,7 @@ struct HerdManagementView: View {
             let snapshot = try await HerdSnapshotActor(container: modelContext.container)
                 .load(farmID: farm.id)
             try Task.checkCancellation()
+            sheepLoadError = nil
             sourceSheep = snapshot.sheep
             penOptions = snapshot.penOptions
             presentSheepCount = snapshot.presentSheepCount
@@ -258,11 +304,7 @@ struct HerdManagementView: View {
             }
             sheepSourceRevision &+= 1
         } catch {
-            sourceSheep = []
-            filteredSheep = []
-            penOptions = []
-            presentSheepCount = 0
-            removedSheepCount = 0
+            sheepLoadError = "读取羊只档案失败：\(error.localizedDescription)"
             hasBuiltSheepSnapshot = true
             exportMessage = "读取羊只档案失败：\(error.localizedDescription)"
         }
@@ -465,7 +507,9 @@ private struct BatchTransferSheepView: View {
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
     let account: AccountProfile
     let farm: FarmRecord
-    let sheepIDs: Set<UUID>
+    @State private var selectedIDs: Set<UUID>
+    @State private var candidates: [SheepEarTagSearchCandidate] = []
+    @State private var entrySession = ProductionEntrySession()
     let completion: (Int) -> Void
     private let commandService = FarmCommandService()
     @State private var targetPenID: UUID?
@@ -475,22 +519,40 @@ private struct BatchTransferSheepView: View {
 
     private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
 
+    init(account: AccountProfile, farm: FarmRecord, sheepIDs: Set<UUID>, completion: @escaping (Int) -> Void) {
+        self.account = account; self.farm = farm; self.completion = completion
+        _selectedIDs = State(initialValue: sheepIDs)
+    }
+
+    private var productionFields: [ProductionDraftField] {
+        [ProductionDraftField("selectedIDs", $selectedIDs, reset: { [] }),
+         ProductionDraftField("targetPenID", $targetPenID, reset: { nil }),
+         ProductionDraftField("occurredAt", $occurredAt, carry: true),
+         ProductionDraftField("note", $note, reset: { "" })]
+    }
+
     var body: some View {
         Form {
-            Section("影响摘要") { Text("将为 \(sheepIDs.count) 只羊分别创建可同步、可追溯的转群记录。") }
+            ProductionEntryFeedback(session: entrySession)
+            Section("转群对象") {
+                SheepEarTagMultiSearchField(candidates: candidates, selection: $selectedIDs)
+                Text("本次 \(selectedIDs.count) 只羊将整批保存；任一条失败时不保存本批。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             Section("目标") {
                 Picker("目标圈舍", selection: $targetPenID) {
                     Text("未分圈").tag(UUID?.none)
                     ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
                 }
-                DatePicker("发生时间", selection: $occurredAt)
+                DatePicker("发生时间", selection: $occurredAt); ProductionTimeModeControl(session: entrySession)
                 TextField("备注", text: $note)
             }
         }
         .navigationTitle("批量转群")
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) { Button("确认保存", action: save).disabled(sheepIDs.isEmpty) }
+        .productionEntry(entrySession, form: "BatchTransferSheepView", account: account, farm: farm, fields: productionFields, save: save)
+        .task(id: farm.id) {
+            do { candidates = try await SheepEarTagCandidateSnapshotActor(container: modelContext.container).load(farmID: farm.id, scope: .active) }
+            catch { errorMessage = error.localizedDescription }
         }
         .recordErrorAlert($errorMessage)
     }
@@ -498,11 +560,14 @@ private struct BatchTransferSheepView: View {
     private func save() {
         do {
             let farmContext = FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role)
-            for sheepID in sheepIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
-                try commandService.execute(.transferSheep(sheepID: sheepID, toPenID: targetPenID, occurredAt: occurredAt, note: note), in: farmContext, context: modelContext)
+            guard !selectedIDs.isEmpty else { errorMessage = "请先选择转群羊只。"; return }
+            let count = selectedIDs.count
+            let commands = selectedIDs.sorted { $0.uuidString < $1.uuidString }.map {
+                FarmCommand.transferSheep(sheepID: $0, toPenID: targetPenID, occurredAt: occurredAt, note: note)
             }
-            completion(sheepIDs.count)
-            dismiss()
+            try entrySession.executeBatch(commands, in: farmContext, context: modelContext)
+            entrySession.complete()
+            if !entrySession.continuesAfterSave { completion(count) }
         } catch { errorMessage = error.localizedDescription }
     }
 }
@@ -574,6 +639,7 @@ struct SheepDetailView: View {
     @State private var exportDocument: FarmInterchangeDocument?
     @State private var isExporting = false
     @State private var isPreparingExport = false
+    @State private var quickEntry: PendingRecordEntry?
     @State private var presentedShareDestination: SheepDetailShareDestination?
     @State private var detailSnapshot: SheepDetailSnapshot?
     @State private var isLoadingDetail = true
@@ -594,6 +660,18 @@ struct SheepDetailView: View {
         _detailSnapshot = State(initialValue: screen.detail)
         _isLoadingDetail = State(initialValue: false)
         _detailLoadError = State(initialValue: screen.detailLoadErrorDescription)
+    }
+
+    @ViewBuilder
+    private var quickEntryButtons: some View {
+        Button("称重", systemImage: "scalemass") { quickEntry = .weight }
+        Button("健康记录", systemImage: "cross.case") { quickEntry = .health }
+        Menu("更多", systemImage: "ellipsis.circle") {
+            Button("转群") { quickEntry = .transfer }
+            Button("断奶") { quickEntry = .weaning }
+            Button("离场") { quickEntry = .removal }
+            Button("备注") { quickEntry = .note }
+        }
     }
 
     private var sheepPhotos: [SheepDetailPhotoSnapshot] { detailSnapshot?.photos ?? [] }
@@ -620,6 +698,26 @@ struct SheepDetailView: View {
                 )
                 .listRowInsets(.init())
                 .listRowBackground(Color.clear)
+            }
+            SheepLabelDetailSection(account: account, farm: farm, sheepID: subject.id)
+            if subject.isCurrentlyPresent && CapabilitySet(role: farm.role).allows(.recordProduction) {
+                Section {
+                    ViewThatFits(in: .horizontal) {
+                        HStack { quickEntryButtons }
+                        VStack(alignment: .leading) { quickEntryButtons }
+                    }
+                }
+            }
+            if let entries = detailSnapshot?.timeline, !entries.isEmpty {
+                Section("最近事件") {
+                    ForEach(Array(entries.sorted { $0.date > $1.date }.prefix(3)), id: \.id) { entry in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(LocalizedStringKey(entry.title)).font(.subheadline.weight(.medium))
+                            Text(entry.detail).font(.footnote).foregroundStyle(.secondary)
+                            Text(entry.date, format: .dateTime.year().month().day().hour().minute()).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
             if let detailLoadError {
                 Section {
@@ -756,6 +854,12 @@ struct SheepDetailView: View {
                 }
                 .accessibilityLabel("分享或导出羊只档案")
                 .disabled(isPreparingExport || !CapabilitySet(role: farm.role).allows(.exportFarm))
+            }
+        }
+        .sheet(item: $quickEntry, onDismiss: { Task { await reloadDetailSnapshot() } }) { entry in
+            NavigationStack {
+                ProductionEntryDestination(entry: entry, account: account, farm: farm)
+                    .environment(\.productionEntryPrefill, ProductionEntryPrefill(sheepID: subject.id))
             }
         }
         .sheet(item: $presentedShareDestination) { destination in
@@ -1257,10 +1361,10 @@ private struct SheepProfileBanner: View {
         ZStack(alignment: .bottomLeading) {
             Group {
                 if photos.isEmpty {
-                    SheepBannerPhotoView(photos: photos)
+                    SheepBannerPhotoView(photos: photos, sex: sheep.sex)
                 } else {
                     Button(action: onPreview) {
-                        SheepBannerPhotoView(photos: photos)
+                        SheepBannerPhotoView(photos: photos, sex: sheep.sex)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("查看羊只照片大图")
@@ -1908,6 +2012,7 @@ private struct PenDetailView: View {
 }
 
 struct AddSheepView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
@@ -1928,8 +2033,22 @@ struct AddSheepView: View {
 
     private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
 
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("earTag", $earTag),
+            ProductionDraftField("breed", $breed, carry: true),
+            ProductionDraftField("sex", $sex, carry: true),
+            ProductionDraftField("penID", $penID, reset: { nil }),
+            ProductionDraftField("occurredAt", $occurredAt, carry: true),
+            ProductionDraftField("birthAt", $birthAt, reset: { nil }),
+            ProductionDraftField("currentParityText", $currentParityText),
+            ProductionDraftField("note", $note)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Section("基础信息") {
                 TextField("耳号", text: $earTag)
                 TextField("品种", text: $breed)
@@ -1937,8 +2056,7 @@ struct AddSheepView: View {
             }
             if sex == .ewe {
                 Section {
-                    TextField("当前胎次", text: $currentParityText)
-                        .keyboardType(.numberPad)
+                    ProductionValueField(title: "当前胎次", text: $currentParityText, unit: "胎", keyboard: .numberPad)
                 } header: {
                     Text("繁殖信息")
                 } footer: {
@@ -1946,7 +2064,7 @@ struct AddSheepView: View {
                 }
             }
             Section("发生时间") {
-                DatePicker("入场时间", selection: $occurredAt)
+                DatePicker("入场时间", selection: $occurredAt); ProductionTimeModeControl(session: entrySession)
                 Toggle("记录出生日期", isOn: Binding(get: { birthAt != nil }, set: { birthAt = $0 ? occurredAt : nil }))
                 if let birthAt { DatePicker("出生日期", selection: Binding(get: { birthAt }, set: { self.birthAt = $0 }), displayedComponents: .date) }
             }
@@ -1959,10 +2077,7 @@ struct AddSheepView: View {
             Section("备注") { TextField("可选", text: $note, axis: .vertical).lineLimit(2...4) }
         }
         .navigationTitle("新建羊只")
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
-        }
+        .productionEntry(entrySession, form: "AddSheepView", account: account, farm: farm, fields: productionFields, save: save)
         .alert("无法保存", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(LocalizedStringKey(errorMessage ?? "")) }
         .farmExcelImport(account: account, farm: farm, sheets: ["新建羊只"])
     }
@@ -1974,8 +2089,8 @@ struct AddSheepView: View {
                 errorMessage = "当前胎次必须是大于或等于 0 的整数。"
                 return
             }
-            try commandService.execute(.addSheep(earTag: earTag, breed: breed, sex: sex, penID: penID, occurredAt: occurredAt, birthAt: birthAt, currentParity: sex == .ewe ? (Int(parityText) ?? 0) : nil, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
-            dismiss()
+            try entrySession.execute(.addSheep(earTag: earTag, breed: breed, sex: sex, penID: penID, occurredAt: occurredAt, birthAt: birthAt, currentParity: sex == .ewe ? (Int(parityText) ?? 0) : nil, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            entrySession.complete()
         } catch { errorMessage = error.localizedDescription }
     }
 }

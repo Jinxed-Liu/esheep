@@ -327,6 +327,19 @@ enum ESheepCloudCommandFactoryV2 {
                 occurredAt: occurredAt,
                 stream: primaryStream
             )
+        case .care(.sheepLabels(.patchProfile(let d))):
+            let patches: [ESheepCloudFieldPatchV2] = [
+                .init(field: "earTag", mutation: .set(.string(d.earTag))),
+                .init(field: "breed", mutation: .set(.string(d.breed))),
+                .init(field: "sex", mutation: .set(.string(d.sex.rawValue))),
+                .init(field: "birthAt", mutation: d.birthAt.map { .set(.date($0)) } ?? .clear),
+                .init(field: "currentParity", mutation: d.currentParity.map { .set(.integer($0)) } ?? .clear),
+                .init(field: "parityRecordedAt", mutation: d.parityRecordedAt.map { .set(.date($0)) } ?? .clear),
+                .init(field: "note", mutation: .set(.string(d.note))),
+            ]
+            return draft(.care(.sheepLabels(.patchProfile(d))), stream: .init(type: "sheepProfile", id: d.sheepID), fields: patches.map(\.field), changes: patches)
+        case .care(.sheepLabels(let value)):
+            return draft(.care(.sheepLabels(value)), stream: .init(type: value.streamType, id: value.primaryID))
         case .care(let value):
             return draft(
                 .care(value),
@@ -498,6 +511,7 @@ enum ESheepCloudCommandFactoryV2 {
 
     private static func careAffectedFields(_ command: CareCommand) -> [String] {
         switch command {
+        case .sheepLabels: []
         case .upsertHealthCatalog: ["name", "category", "unit", "defaults", "note", "isActive"]
         case .setInventoryLotActive: ["isActive"]
         case .upsertSemenDonor: ["registration", "profile"]

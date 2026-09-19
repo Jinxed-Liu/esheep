@@ -1,3 +1,4 @@
+import { labelKinds, applyLabelAction } from "./sheepLabels.js";
 import { replayTMR,tmrReplayKinds } from './tmrBusinessReplay.js';
 import { presentAtTime,penAtTime } from './businessValidation.js';
 import { applyV2Event } from "./cloudV2Projection.js";
@@ -12,6 +13,16 @@ const supported = new Set(["sheep.add", "productionBatch.create", "batchMembersh
   "care.careRules.update", "care.operationalAlertRules.update", "care.operationalAlert.defer", "care.careReminder.setStatus", "care.inventoryLot.setActive"]);
 
 export async function applyExtendedV2Event(projection, event, body) {
+  const kind = body.command_kind;
+  if(kind==="care.sheepLabels.patchProfile" && event.event_kind==="fields_patched") {
+    if(body.changes.some(c=>c.field==="sex")) {
+      const d=body.command_payload.body.sheepLabels._0.patchProfile._0;
+      const normalize=values=>values.map(id=>id.toLowerCase());
+      const models=Object.fromEntries([...projection.models].map(([name,rows])=>[name,[...rows.values()]]));
+      applyLabelAction("editLabels",{id:d.id.toLowerCase(),sheepID:d.sheepID.toLowerCase(),addIDs:[],removeIDs:normalize(d.removeLabelIDs),setsPrimary:false},models,{farmID:projection.farmID,accountID:event.actor_account_id,at:event.occurred_at_millis});
+      for(const name of ["SheepLabelRecord","SheepLabelAssignmentRecord","SheepLabelChangeRecord"])projection.models.set(name,new Map((models[name]??[]).map(r=>[r.id,r])));
+    }
+  }
   if(event.event_kind==='fields_patched'&&event.stream_type==='sheepProfile'&&body.changes?.some(c=>['currentParity','parityRecordedAt'].includes(c.field))) {
     const normal=body.changes.filter(c=>!['currentParity','parityRecordedAt'].includes(c.field));
     if(normal.length)applyV2Event(projection,event,{...body,changes:normal});
@@ -24,7 +35,23 @@ export async function applyExtendedV2Event(projection, event, body) {
     }
     return true;
   }
-  const kind = body.command_kind;
+  if(kind==="care.sheepLabels.patchProfile" && event.event_kind==="fields_patched") { applyV2Event(projection,event,body); return true; }
+  if (labelKinds.has(kind)) {
+    const prior=projection.seenCommands.get(event.command_id);
+    if(prior){if(prior!==event.source_command_digest)throw new Error("标签命令摘要不一致。");return true;}
+    if(kind!==body.command_payload?.kind)throw new Error("标签命令类型不一致。");
+    const normalize=value=>Array.isArray(value)?value.map(normalize):value&&typeof value==="object"?Object.fromEntries(Object.entries(value).map(([k,v])=>[k,normalize(v)])):typeof value==="string"&&/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value)?value.toLowerCase():value;
+    const nested=body.command_payload.body?.sheepLabels?._0;
+    const [action,encoded]=Object.entries(nested??{})[0]??[];
+    const expected={"care.sheepLabel.save":"saveLabel","care.sheepLabels.edit":"editLabels","care.sheepLabels.patchProfile":"patchProfile"}[kind];
+    if(action!==expected||Object.keys(nested??{}).length!==1)throw new Error("标签命令内容不匹配。");
+    const models=Object.fromEntries([...projection.models].map(([name,rows])=>[name,[...rows.values()]]));
+    applyLabelAction(action,normalize(encoded?._0),models,{farmID:projection.farmID,accountID:event.actor_account_id,at:event.occurred_at_millis});
+    for(const name of ["SheepLabelRecord","SheepLabelAssignmentRecord","SheepLabelChangeRecord","SheepRecord"])projection.models.set(name,new Map((models[name]??[]).map(r=>[r.id,r])));
+    projection.seenCommands.set(event.command_id,event.source_command_digest);
+    return true;
+  }
+
   if (!supported.has(kind)&&!tmrReplayKinds.has(kind)) return false;
   if (kind !== body.command_payload?.kind) throw new Error("业务事件种类不一致。");
   const prior = projection.seenCommands.get(event.command_id);

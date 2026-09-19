@@ -15,6 +15,7 @@ struct FarmInsightConversationView: View {
 
     let account: AccountProfile
     let farm: FarmRecord
+    let initialPrompt: String?
 
     @State private var controller: InsightConversationController
     @State private var audioRecorder = InsightAudioRecorder()
@@ -39,9 +40,11 @@ struct FarmInsightConversationView: View {
     @FocusState private var isComposerFocused: Bool
     private let conversationBottomID = "insight-conversation-bottom"
 
-    init(account: AccountProfile, farm: FarmRecord) {
+    init(account: AccountProfile, farm: FarmRecord, initialPrompt: String? = nil) {
         self.account = account
         self.farm = farm
+        self.initialPrompt = initialPrompt
+        _input = State(initialValue: initialPrompt ?? "")
         _controller = State(initialValue: InsightConversationController(account: account, farm: farm))
     }
 
@@ -105,6 +108,7 @@ struct FarmInsightConversationView: View {
                     return
                 }
                 await controller.connect(to: modelContext)
+                if initialPrompt != nil { isComposerFocused = true }
 #if DEBUG
                 if case .ready = controller.availability,
                    let prompt = InsightAcceptanceLaunchRequest.takePrompt() {

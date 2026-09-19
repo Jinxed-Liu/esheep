@@ -15,9 +15,16 @@ struct FarmAnalyticsSnapshot: Sendable {
         let birthAt: Date?
         let enteredAt: Date
         let removedAt: Date?
+        var isHistoricalArchive: Bool = false
+
+        var isCurrentlyPresent: Bool { status == .active && !isHistoricalArchive }
     }
 
-    struct Pen: Sendable, Hashable { let id: UUID; let name: String }
+    struct Pen: Sendable, Hashable {
+        let id: UUID
+        let name: String
+        var isActive: Bool = true
+    }
     struct Weight: Sendable, Hashable { let id: UUID; let sheepID: UUID; let kilograms: Double; let occurredAt: Date }
     struct Weaning: Sendable, Hashable { let id: UUID; let sheepID: UUID; let occurredAt: Date; let weanWeight: Double; let birthAt: Date?; let birthWeight: Double?; let damID: UUID?; let litterSize: Int? }
     struct Lambing: Sendable, Hashable {
@@ -33,9 +40,20 @@ struct FarmAnalyticsSnapshot: Sendable {
             parity != nil && birthDeadCount != nil && offspring.count == total
         }
     }
+    struct ParityEvidence: Sendable, Hashable {
+        let id: UUID
+        let eweID: UUID
+        let occurredAt: Date
+        let parity: Int
+        let updatedAt: Date
+        let createdAt: Date
+    }
     struct Offspring: Sendable, Hashable { let id: UUID; let sheepID: UUID?; let earTag: String; let sex: LambSex?; let birthWeight: Double? }
     struct Removal: Sendable, Hashable { let sheepID: UUID; let kind: RemovalKind; let occurredAt: Date }
-    struct Transfer: Sendable, Hashable { let id: UUID; let sheepID: UUID; let toPenID: UUID?; let occurredAt: Date; let recordedAt: Date }
+    struct Transfer: Sendable, Hashable {
+        let id: UUID; let sheepID: UUID; let toPenID: UUID?; let occurredAt: Date; let recordedAt: Date
+        var note: String = ""
+    }
     struct BatchMembership: Sendable, Hashable {
         let batchID: UUID
         let sheepID: UUID
@@ -60,6 +78,8 @@ struct FarmAnalyticsSnapshot: Sendable {
     let transfers: [Transfer]
     let batchMemberships: [BatchMembership]
     let feeds: [Feed]
+    var parityEvidence: [ParityEvidence] = []
+    var purposeFacts: [SheepPurposeTimelineFact] = []
 
     static func make(
         farmID: UUID,
@@ -76,7 +96,7 @@ struct FarmAnalyticsSnapshot: Sendable {
         feedLines: [FeedRecordLine]
     ) -> Self {
         let farmSheep = sheep.filter { $0.farmID == farmID && $0.deletedAt == nil }.map {
-            Sheep(id: $0.id, earTag: $0.earTag, breed: $0.breed, purpose: $0.purpose, sex: $0.sex, status: $0.status, initialPenID: $0.initialPenID, currentPenID: $0.currentPenID, birthAt: $0.birthAt, enteredAt: $0.enteredAt, removedAt: $0.removedAt)
+            Sheep(id: $0.id, earTag: $0.earTag, breed: $0.breed, purpose: $0.purpose, sex: $0.sex, status: $0.status, initialPenID: $0.initialPenID, currentPenID: $0.currentPenID, birthAt: $0.birthAt, enteredAt: $0.enteredAt, removedAt: $0.removedAt, isHistoricalArchive: $0.isHistoricalArchive)
         }
         let offspringByLambing = Dictionary(grouping: offspring.filter {
             $0.farmID == farmID && $0.deletedAt == nil && !$0.deletedByLambingRevocation
@@ -98,16 +118,23 @@ struct FarmAnalyticsSnapshot: Sendable {
         return Self(
             farmID: farmID,
             sheep: farmSheep,
-            pens: pens.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Pen(id: $0.id, name: $0.name) },
+            pens: pens.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Pen(id: $0.id, name: $0.name, isActive: $0.isActive) },
             weights: weights.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Weight(id: $0.id, sheepID: $0.sheepID, kilograms: NSDecimalNumber(decimal: $0.kilograms).doubleValue, occurredAt: $0.occurredAt) },
             weanings: weanings.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Weaning(id: $0.id, sheepID: $0.sheepID, occurredAt: $0.occurredAt, weanWeight: NSDecimalNumber(decimal: $0.weanWeight).doubleValue, birthAt: $0.birthAt, birthWeight: $0.birthWeightText.flatMap(Decimal.stable).map { NSDecimalNumber(decimal: $0).doubleValue }, damID: $0.damID, litterSize: $0.litterSize) },
             lambings: lambings,
             removals: removals.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Removal(sheepID: $0.sheepID, kind: $0.kind, occurredAt: $0.occurredAt) },
-            transfers: transfers.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Transfer(id: $0.id, sheepID: $0.sheepID, toPenID: $0.toPenID, occurredAt: $0.occurredAt, recordedAt: $0.recordedAt) },
+            transfers: transfers.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Transfer(id: $0.id, sheepID: $0.sheepID, toPenID: $0.toPenID, occurredAt: $0.occurredAt, recordedAt: $0.recordedAt, note: $0.note) },
             batchMemberships: memberships.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { BatchMembership(batchID: $0.batchID, sheepID: $0.sheepID, joinedAt: $0.joinedAt, leftAt: $0.leftAt) },
             feeds: feedLines.filter { $0.farmID == farmID }.compactMap { line in
                 guard let feed = feedByID[line.feedRecordID] else { return nil }
                 return Feed(penID: feed.penID, ingredientName: line.ingredientNameSnapshot, kilograms: NSDecimalNumber(decimal: line.kilograms).doubleValue, mode: feed.mode, occurredAt: feed.occurredAt)
+            },
+            parityEvidence: reproduction.filter {
+                $0.farmID == farmID && $0.deletedAt == nil &&
+                ($0.kind == .parityBaseline || $0.kind == .lambing) && ($0.parity ?? -1) >= 0
+            }.map {
+                ParityEvidence(id: $0.id, eweID: $0.eweID, occurredAt: $0.occurredAt,
+                               parity: $0.parity!, updatedAt: $0.updatedAt, createdAt: $0.createdAt)
             }
         )
     }
@@ -186,7 +213,7 @@ actor FarmDeepAnalyticsSnapshotActor {
         }))
         try Task.checkCancellation()
 
-        let snapshot = FarmAnalyticsSnapshot.make(
+        var snapshot = FarmAnalyticsSnapshot.make(
             farmID: farmID,
             sheep: sheep,
             pens: pens,
@@ -200,6 +227,11 @@ actor FarmDeepAnalyticsSnapshotActor {
             feeds: feeds,
             feedLines: feedLines
         )
+        snapshot.purposeFacts = SheepPurposeTimeline.facts(from: try context.fetch(
+            FetchDescriptor<DomainOperation>(predicate: #Predicate {
+                $0.farmID == farmID && $0.kindRawValue == "care"
+            })
+        ))
         let weightCutoff = weights.map(\.occurredAt).max() ?? now
         let occupancy = FarmPenOccupancyIndex.make(
             farmID: farmID,

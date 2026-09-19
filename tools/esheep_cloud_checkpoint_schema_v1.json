@@ -1802,5 +1802,44 @@
       "stateRawValue": "String",
       "createdAt": "Date"
     }
+  },
+  "SheepLabelRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "name": "String",
+      "colorRawValue": "String",
+      "note": "String",
+      "sortOrder": "Int",
+      "isActive": "Bool",
+      "revision": "Int",
+      "updatedAt": "Date"
+    }
+  },
+  "SheepLabelAssignmentRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "sheepID": "UUID",
+      "labelIDsJSON": "String",
+      "primaryLabelID": "UUID?",
+      "revision": "Int",
+      "updatedAt": "Date"
+    }
+  },
+  "SheepLabelChangeRecord": {
+    "disposition": "transfer",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "sheepID": "UUID?",
+      "accountID": "UUID",
+      "title": "String",
+      "detail": "String",
+      "snapshotsJSON": "String",
+      "occurredAt": "Date"
+    }
   }
 }

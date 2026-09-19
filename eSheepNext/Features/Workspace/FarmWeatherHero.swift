@@ -3,6 +3,8 @@ import OSLog
 import SwiftUI
 
 struct FarmWeatherHero: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let farm: FarmRecord
     let syncSymbol: String
     let syncAccessibilityLabel: LocalizedStringKey
@@ -57,7 +59,7 @@ struct FarmWeatherHero: View {
                     cloudCover: weather?.visualCloudCover ?? 0,
                     wind: weather?.visualWind ?? 0,
                     isDaylight: weather?.isDaylight ?? true,
-                    isPaused: isDetailPresented,
+                    isPaused: isDetailPresented || reduceMotion,
                     renderScale: 0.75
                 )
             } else {
@@ -71,9 +73,9 @@ struct FarmWeatherHero: View {
                 Spacer(minLength: 4)
                 primaryWeather
             }
-            .padding(20)
+            .padding(14)
         }
-        .frame(maxWidth: .infinity, minHeight: 210, maxHeight: 210, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: dynamicTypeSize.isAccessibilitySize ? 260 : 154, alignment: .leading)
         .clipShape(.rect(cornerRadius: 28))
         .overlay {
             RoundedRectangle(cornerRadius: 28)
@@ -153,43 +155,20 @@ struct FarmWeatherHero: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 5) {
-                farmNameView
-                    .font(.title3.weight(.semibold))
-                    .lineLimit(1)
-                HStack(spacing: 5) {
-                    Image(systemName: "location.fill")
-                        .font(.caption2)
-                    locationNameView
-                }
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.78))
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: "location.fill").font(.caption)
+            locationNameView
+                .font(.subheadline.weight(.medium))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if farm.locationSnapshot != nil {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .accessibilityHidden(true)
             }
-
-            Spacer(minLength: 8)
-
-            HStack(spacing: 7) {
-                Label(LocalizedStringKey(farm.role.displayName), systemImage: "person.crop.circle.fill")
-
-                Image(systemName: syncSymbol)
-                    .font(.caption2.weight(.semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.white.opacity(0.82))
-                    .accessibilityLabel(Text(syncAccessibilityLabel))
-            }
-            .accessibilityElement(children: .combine)
-            .font(.caption.weight(.medium))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .glassEffect(.regular, in: .capsule)
         }
         .foregroundStyle(.white)
         .shadow(color: .black.opacity(0.30), radius: 3, y: 1)
-    }
-
-    private var farmNameView: Text {
-        Text(verbatim: farm.name)
     }
 
     private var locationNameView: Text {

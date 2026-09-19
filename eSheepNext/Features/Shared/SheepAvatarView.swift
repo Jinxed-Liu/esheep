@@ -11,6 +11,7 @@ private enum SheepPhotoRenderingMode: String, Sendable, Hashable {
 struct SheepAvatarView: View {
     let photo: SheepPhotoReference?
     var size: CGFloat = 48
+    var sex: SheepSex = .unknown
 
     var body: some View {
         ZStack {
@@ -22,6 +23,8 @@ struct SheepAvatarView: View {
                     maximumPixelSize: Int(size * 3),
                     renderingMode: .headFocused
                 )
+            } else if sex != .unknown {
+                SheepLabelIcon(color: sex == .ram ? .yellow : .green, width: size * 0.95)
             } else {
                 Image(systemName: "sheep")
                     .font(.system(size: size * 0.42, weight: .semibold))
@@ -40,6 +43,7 @@ struct SheepAvatarView: View {
 
 struct SheepBannerPhotoView: View {
     let photos: [SheepPhotoReference]
+    var sex: SheepSex = .unknown
 
     var body: some View {
         ZStack {
@@ -57,6 +61,8 @@ struct SheepBannerPhotoView: View {
                     maximumPixelSize: 1_200,
                     renderingMode: .fullFrame
                 )
+            } else if sex != .unknown {
+                SheepLabelIcon(color: sex == .ram ? .yellow : .green, width: 130)
             } else {
                 Image(systemName: "sheep")
                     .font(.system(size: 74, weight: .semibold))

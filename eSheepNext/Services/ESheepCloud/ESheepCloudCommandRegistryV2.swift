@@ -9,6 +9,10 @@ import Foundation
 /// editing a CI fixture while its runtime route is still missing.
 enum ESheepCloudCommandRegistryV2 {
     static let allKinds: [String] = [
+        "care.sheepLabel.save",
+        "care.sheepLabels.edit",
+        "care.sheepLabels.patchProfile",
+
         "migration.restoreRemoval",
         "migration.restoreBusinessBaseline",
         "migration.restoreSheepBaseline",
@@ -104,6 +108,10 @@ enum ESheepCloudCommandRegistryV2 {
     /// discriminator table, so a schema addition must update both sides.
     static func expectedPayloadCase(for kind: String) -> String? {
         switch kind {
+        case "care.sheepLabel.save": "sheepLabels"
+        case "care.sheepLabels.edit": "sheepLabels"
+        case "care.sheepLabels.patchProfile": "sheepLabels"
+
         case "migration.restoreSheepBaseline": "restoreSheepBaseline"
         case "migration.restoreRemoval": "restoreRemoval"
         case "migration.restoreBusinessBaseline": "restoreBusinessBaseline"
@@ -191,6 +199,10 @@ enum ESheepCloudCommandRegistryV2 {
 
     static func mergeMode(for kind: String) -> String? {
         switch kind {
+        case "care.sheepLabel.save": "state_machine"
+        case "care.sheepLabels.edit": "state_machine"
+        case "care.sheepLabels.patchProfile": "field_patch"
+
         case "migration.restoreSheepBaseline", "migration.restoreRemoval", "migration.restoreBusinessBaseline": "append_fact"
         case "farm.updateLocation", "pen.update", "pen.setActive",
              "sheep.patchProfile", "sheepAvatar.set", "sheepAvatar.clear":
@@ -244,6 +256,10 @@ enum ESheepCloudCommandRegistryV2 {
     /// compilation/tests until its domain route is named here.
     static func nativeProjectionRoute(for kind: String) -> String? {
         switch kind {
+        case "care.sheepLabel.save": "care.sheepLabel.save"
+        case "care.sheepLabels.edit": "care.sheepLabels.edit"
+        case "care.sheepLabels.patchProfile": "care.sheepLabels.patchProfile"
+
         case "migration.restoreSheepBaseline": "migration.restoreSheepBaseline"
         case "migration.restoreRemoval": "migration.restoreRemoval"
         case "migration.restoreBusinessBaseline": "migration.restoreBusinessBaseline"

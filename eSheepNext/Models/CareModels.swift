@@ -251,6 +251,7 @@ struct FarmAlertDeferralDraft: Codable, Sendable, Equatable {
 }
 
 enum CareCommand: Codable, Sendable, Equatable {
+    case sheepLabels(SheepLabelCommand)
     case upsertHealthCatalog(id: UUID, kindRawValue: String, name: String, category: String, unit: String, defaultDoseText: String?, defaultRoute: String, reminderIntervalDays: Int?, note: String, isActive: Bool)
     case recordHealth(CareHealthDraft)
     case correctHealth(originalID: UUID, replacement: CareHealthDraft, reason: String)
@@ -277,6 +278,7 @@ enum CareCommand: Codable, Sendable, Equatable {
 
     var primaryID: UUID {
         switch self {
+        case .sheepLabels(let c): c.primaryID
         case .upsertHealthCatalog(let id, _, _, _, _, _, _, _, _, _): id
         case .recordHealth(let draft): draft.id
         case .correctHealth(_, let replacement, _): replacement.id
@@ -304,6 +306,7 @@ enum CareCommand: Codable, Sendable, Equatable {
 
     var requiredCapability: FarmCapability {
         switch self {
+        case .sheepLabels(let c): c.capability
         case .upsertHealthCatalog, .receiveInventory, .adjustInventory, .setInventoryLotActive, .adjustSemen, .upsertSemenDonor, .setSemenDonor, .updateRules, .updateOperationalAlertRules:
             .manageCatalogs
         case .correctHealth, .correctReproduction, .updateSheepPedigree, .setBreedingRam, .setSheepPurpose, .restorePedigreeAudit, .correctLambing, .revokeLambing, .restoreLambing:
@@ -315,6 +318,7 @@ enum CareCommand: Codable, Sendable, Equatable {
 
     var summary: String {
         switch self {
+        case .sheepLabels(let c): c.summary
         case .upsertHealthCatalog: "维护健康目录"
         case .recordHealth: "记录批量健康事项"
         case .correctHealth: "修正健康记录"

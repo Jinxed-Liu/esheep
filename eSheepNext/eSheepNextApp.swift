@@ -14,6 +14,31 @@ struct eSheepNextApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--design-acceptance") {
+                    DevelopmentDesignAcceptanceView()
+                } else {
+                    applicationContent
+                }
+                #else
+                applicationContent
+                #endif
+            }
+            .environment(\.locale, preferences.language.locale)
+            .task {
+                #if DEBUG
+                guard !ProcessInfo.processInfo.arguments.contains("--design-acceptance") else { return }
+                #endif
+                ImageThumbnailMemoryPressureMonitor.start()
+                let interval = PerformanceTrace.begin(.appLaunch)
+                bootstrap.start()
+                PerformanceTrace.end(interval)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var applicationContent: some View {
                 if let modelContainer = bootstrap.modelContainer,
                    let collaboration = bootstrap.collaboration {
                     MotionHost(engine: motionEngine) {
@@ -55,14 +80,5 @@ struct eSheepNextApp: App {
                 } else {
                     ProgressView("正在检查本地数据")
                 }
-            }
-            .environment(\.locale, preferences.language.locale)
-            .task {
-                ImageThumbnailMemoryPressureMonitor.start()
-                let interval = PerformanceTrace.begin(.appLaunch)
-                bootstrap.start()
-                PerformanceTrace.end(interval)
-            }
-        }
     }
 }

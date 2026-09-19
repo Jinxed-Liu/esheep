@@ -1,192 +1,133 @@
+import { useMemo } from "react";
 import { ArrowsLeftRight } from "@phosphor-icons/react/ArrowsLeftRight";
 import { Barn } from "@phosphor-icons/react/Barn";
 import { BowlFood } from "@phosphor-icons/react/BowlFood";
 import { CaretRight } from "@phosphor-icons/react/CaretRight";
-import { CheckCircle } from "@phosphor-icons/react/CheckCircle";
 import { CloudCheck } from "@phosphor-icons/react/CloudCheck";
-import { DownloadSimple } from "@phosphor-icons/react/DownloadSimple";
 import { Plus } from "@phosphor-icons/react/Plus";
 import { Scales } from "@phosphor-icons/react/Scales";
-import { SignOut } from "@phosphor-icons/react/SignOut";
 import { Sun } from "@phosphor-icons/react/Sun";
 import { Tag } from "@phosphor-icons/react/Tag";
 import { WarningCircle } from "@phosphor-icons/react/WarningCircle";
 
-const quickActions = [
-  { id: "addSheep", label: "新建羊只", icon: Tag },
-  { id: "weight", label: "称重", icon: Scales },
-  { id: "transfer", label: "转群", icon: ArrowsLeftRight },
-  { id: "removal", label: "离场", icon: SignOut },
-  { id: "feed", label: "投喂", icon: BowlFood },
-  { id: "export", label: "记录导出", icon: DownloadSimple },
-];
-
 const metrics = [
-  { key: "activeSheep", label: "在场羊只", unit: "只", icon: Tag },
-  { key: "activePens", label: "有羊圈舍", unit: "个", icon: Barn },
-  { key: "feedsToday", label: "今日投喂", unit: "次", icon: BowlFood },
+  { key: "activeSheep", label: "在场羊只", unit: "只", icon: Tag, tone: "green", page: "flock" },
+  { key: "activePens", label: "有羊圈舍", unit: "个", icon: Barn, tone: "gold", page: "pens" },
+  { key: "feedsToday", label: "今日投喂", unit: "次", icon: BowlFood, tone: "blue", page: "feeding" },
 ];
+const actions = [
+  { id: "weight", label: "称重", detail: "记录体重，关注生长", icon: Scales, tone: "green" },
+  { id: "transfer", label: "转群", detail: "调整圈舍，优化管理", icon: ArrowsLeftRight, tone: "gold" },
+  { id: "feed", label: "投喂", detail: "记录投喂，掌握饲喂情况", icon: BowlFood, tone: "blue" },
+];
+const count = (value) => Number.isFinite(value) ? value.toLocaleString("zh-CN") : "—";
 
-function dateParts(date = new Date(), timeZone = "Asia/Shanghai") {
-  const parts = new Intl.DateTimeFormat("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-    weekday: "long",
-    timeZone,
-  }).formatToParts(date);
-  const read = (type) => parts.find((part) => part.type === type)?.value ?? "";
-  return {
-    dateText: `${read("month")}月${read("day")}日，${read("weekday")}`,
-    yearText: new Intl.DateTimeFormat("zh-CN", { year: "numeric", timeZone }).format(date),
-  };
+function GlassIcon({ icon: Icon, tone, sheep = false }) {
+  return sheep
+    ? <img className="sky-sheep-icon" src="/assets/skyglass-sheep.png" alt="" />
+    : <span className={`sky-icon ${tone}`} aria-hidden="true"><Icon size={36} weight="bold" /></span>;
 }
 
-function syncTime(value, timeZone) {
-  if (!value) return "尚未同步";
+function eventTone(event) {
+  if (event.type === "weight" || event.scope === "weight") return "green";
+  if (/feed|tmr/i.test(event.type ?? event.scope ?? "")) return "blue";
+  if (event.type === "transfer" || event.scope === "transfer") return "gold";
+  return "neutral";
+}
+
+function displayTime(value, timeZone, now) {
+  const date = new Date(value);
+  if (!value || !Number.isFinite(date.getTime())) return "时间未记录";
+  const day = new Intl.DateTimeFormat("en-CA", { timeZone });
+  const sameDay = day.format(date) === day.format(now);
   return new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone,
-  }).format(new Date(value));
-}
-
-function ProductionRow({ icon: Icon, title, detail, value, unit, onClick }) {
-  return (
-    <button className="production-row" type="button" onClick={onClick}>
-      <span className="row-icon"><Icon size={23} /></span>
-      <span className="row-copy"><strong>{title}</strong><small>{detail}</small></span>
-      <span className="row-value">{value.toLocaleString("zh-CN")}<small>{unit}</small></span>
-      <CaretRight size={19} weight="bold" />
-    </button>
-  );
+    ...(sameDay ? {} : { year: "numeric", month: "2-digit", day: "2-digit" }),
+    hour: "2-digit", minute: "2-digit", hour12: false, timeZone,
+  }).format(date);
 }
 
 export function HomeDashboard({ workspace, onNavigate, onCreateRecord }) {
   const timeZone = workspace.farm?.timeZoneIdentifier || "Asia/Shanghai";
-  const { dateText, yearText } = dateParts(new Date(), timeZone);
-  const weather = workspace.weather;
+  const now = new Date();
+  const dateText = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", timeZone }).format(now)
+    + " " + new Intl.DateTimeFormat("zh-CN", { weekday: "long", timeZone }).format(now);
+  const recentEvents = useMemo(() => [...(workspace.events ?? [])]
+    .sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0)).slice(0, 3), [workspace.events]);
   const alerts = workspace.alerts ?? [];
-  const tmrMeals = workspace.tmrMeals ?? [];
-
-  function runQuickAction(id) {
-    if (id === "export") {
-      onNavigate("events", { exportHint: true });
-      return;
-    }
-    onCreateRecord(id);
-  }
+  const meals = workspace.tmrMeals ?? [];
+  const weather = workspace.weather;
 
   return (
-    <main className="page home-page">
-      <div className="home-layout">
-        <section className="home-briefing">
-          <header className="briefing-hero">
-            <div className="briefing-title">
-              <p className="eyebrow">{yearText} · {workspace.farm.name}</p>
-              <h1>{dateText}</h1>
-              <div className="weather-line">
-                <Sun size={22} weight="duotone" />
-                {weather ? (
-                  <span><strong>{weather.temperature}°</strong> {weather.condition}{weather.wind ? ` · ${weather.wind}` : ""}{weather.humidity == null ? "" : ` · 湿度 ${weather.humidity}%`}{weather.location ? ` · ${weather.location}` : ""}</span>
-                ) : (
-                  <span>天气详情仅在 App 授权后显示，网页端不猜测当前位置。</span>
-                )}
-              </div>
-            </div>
-            <div className="sync-truth cloud">
-              <CloudCheck size={20} weight="fill" />
-              <span><strong>云端读取已连接</strong><small>{`最后读取 ${syncTime(workspace.lastSyncedAt, timeZone)}`}</small></span>
-            </div>
-          </header>
+    <main className="page sky-home">
+      <section className="sky-overview" aria-label="牧场概览">
+        <div className="sky-intro">
+          <h1><span>今日</span>牧场</h1>
+          <p className="sky-date">{dateText}</p>
+          <p className="sky-greeting">好好照顾每一只羊，让牧场更美好。</p>
+          {weather ? <p className="sky-weather"><Sun size={18} />{weather.temperature}° {weather.condition}{weather.location ? ` · ${weather.location}` : ""}</p> : null}
+        </div>
+        <div className="sky-metrics">
+          {metrics.map(({ key, label, unit, icon, tone, page }) => (
+            <button key={key} className="sky-metric" type="button" onClick={() => onNavigate(page)}>
+              <GlassIcon icon={icon} tone={tone} />
+              <span className="sky-metric-copy"><span>{label}</span><strong>{count(workspace.metrics[key])}<small>{unit}</small></strong></span>
+            </button>
+          ))}
+        </div>
+        <p className="sky-motto">与羊相伴，<br /><span>让每一天都有收获。</span></p>
+      </section>
 
-          <section className="briefing-metrics" aria-label="牧场概览">
-            {metrics.map(({ key, label, unit, icon: Icon }) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => onNavigate(key === "activePens" ? "pens" : key === "feedsToday" ? "feeding" : "flock")}
-              >
-                <Icon size={27} weight="duotone" />
-                <span><small>{label}</small><strong>{workspace.metrics[key].toLocaleString("zh-CN")}<em>{unit}</em></strong></span>
-                <CaretRight size={17} weight="bold" />
-              </button>
-            ))}
-          </section>
-
-          <section className="briefing-section alert-section">
-            <div className="section-heading">
-              <span><p className="eyebrow">TODAY</p><h2>待办与异常</h2></span>
-            </div>
-            <div className="operational-list">
-              {alerts.length ? alerts.map((alert) => (
-                <button className="operational-row" type="button" key={alert.id} onClick={() => onNavigate("alerts", { selectedID: alert.id })}>
-                  <WarningCircle className={`tone-${alert.tone}`} size={26} weight="fill" />
-                  <span className="row-copy"><strong>{alert.title}</strong><small>{alert.description}</small></span>
-                  <span className="row-value">{alert.count}<small>{alert.unit}</small></span>
-                  <CaretRight size={19} weight="bold" />
-                </button>
-              )) : (
-                <div className="open-empty-state">
-                  <strong>没有可展示的网页规则结果</strong>
-                  <span>App 的规则计算尚未接入 Web，因此这里保持为空。</span>
-                </div>
-              )}
-            </div>
-            <button className="briefing-section-footer" type="button" onClick={() => onNavigate("alerts")}>查看全部 <CaretRight size={16} /></button>
-          </section>
-
-          <section className="briefing-section production-section">
-            <div className="section-heading">
-              <span><p className="eyebrow">FARM</p><h2>生产状态</h2></span>
-            </div>
-            <ProductionRow icon={Tag} title="羊只档案" detail="查看在场羊只、当前圈舍、体重与生产阶段" value={workspace.metrics.activeSheep} unit="只" onClick={() => onNavigate("flock")} />
-            <ProductionRow icon={Barn} title="圈舍状态" detail="查看有羊圈舍、用途与实时存栏投影" value={workspace.metrics.activePens} unit="个" onClick={() => onNavigate("pens")} />
-          </section>
+      <div className="sky-workspace-grid">
+        <section className="sky-panel sky-production" aria-label="生产状态">
+          <button className="sky-production-row" type="button" onClick={() => onNavigate("flock")}>
+            <GlassIcon sheep />
+            <span className="sky-row-copy"><strong>羊只档案</strong><small>查看在场羊只、当前圈舍、体重与生产阶段</small></span>
+            <span className="sky-row-number">{count(workspace.metrics.activeSheep)}<small>只</small></span><CaretRight size={23} />
+          </button>
+          <button className="sky-production-row" type="button" onClick={() => onNavigate("pens")}>
+            <GlassIcon icon={Barn} tone="gold" />
+            <span className="sky-row-copy"><strong>圈舍状态</strong><small>查看圈舍用途与当前存栏</small></span>
+            <span className="sky-row-number">{count(workspace.metrics.activePens)}<small>个</small></span><CaretRight size={23} />
+          </button>
         </section>
 
-        <aside className="home-actions">
-          <button className="new-record-button" type="button" onClick={() => onCreateRecord("new")}>
-            <Plus size={21} weight="bold" />
-            新建记录
-          </button>
-
-          <section className="action-section">
-            <div className="side-section-title"><p className="eyebrow">QUICK ACTIONS</p><h2>快捷操作</h2></div>
-            <div className="quick-operation-list">
-              {quickActions.map(({ id, label, icon: Icon }) => (
-                <button type="button" key={id} onClick={() => runQuickAction(id)}>
-                  <Icon size={21} />
-                  <span>{label}</span>
-                  <CaretRight size={17} weight="bold" />
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section className="action-section tmr-summary">
-            <div className="side-section-title split-title">
-              <span><p className="eyebrow">FEEDING</p><h2>今日投喂与 TMR</h2></span>
-              <button type="button" onClick={() => onNavigate("tmr")}>工作台</button>
-            </div>
-            {tmrMeals.length ? (
-              <div className="meal-summary-list">
-                {tmrMeals.map((meal) => (
-                  <button type="button" key={meal.id} onClick={() => onNavigate("tmr-monitor")}>
-                    <span className="meal-period-badge">{meal.period}</span>
-                    <time>{meal.time}</time>
-                    <span className="meal-stat"><small>计划</small><strong>{meal.planKg?.toLocaleString("zh-CN")??"未关联"}<em> kg</em></strong></span>
-                    <span className={`meal-stat actual ${meal.status}`}><small>实际投喂</small><strong>{meal.actualKg.toLocaleString("zh-CN")}<em> kg</em></strong></span>
-                    <CheckCircle size={18} weight="fill" className={`meal-check ${meal.status}`} />
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="side-empty-state">今日暂无 TMR 投喂记录。</div>
-            )}
-          </section>
-        </aside>
+        <section className="sky-panel sky-actions" aria-labelledby="today-actions-title">
+          <div className="sky-panel-heading">
+            <h2 id="today-actions-title">今日操作</h2>
+            <button className="sky-new-record" type="button" onClick={() => onCreateRecord("new")}><Plus size={21} weight="bold" />新建记录</button>
+          </div>
+          <div className="sky-action-list">
+            {actions.map(({ id, label, detail, icon, tone }) => (
+              <button key={id} type="button" onClick={() => onCreateRecord(id)}>
+                <GlassIcon icon={icon} tone={tone} />
+                <span className="sky-row-copy"><strong>{label}</strong><small>{detail}</small></span><CaretRight size={20} />
+              </button>
+            ))}
+          </div>
+        </section>
       </div>
+
+      <section className="sky-panel sky-activity" aria-labelledby="recent-activity-title">
+        <div className="sky-panel-heading"><h2 id="recent-activity-title">最近动态</h2><button className="sky-text-link" type="button" onClick={() => onNavigate("events")}>查看全部<CaretRight size={16} /></button></div>
+        {recentEvents.length ? <div className="sky-activity-list">{recentEvents.map(event => (
+          <button className={`sky-activity-row ${eventTone(event)}`} key={event.id} type="button" onClick={() => onNavigate("events", { selectedID: event.id })}>
+            <span className="sky-event-dot" aria-hidden="true" />
+            <time dateTime={event.at || undefined}>{displayTime(event.at, timeZone, now)}</time>
+            <strong>{event.object ? `${event.object} · ` : ""}{event.label}</strong>
+            <span className="sky-event-detail">{event.detail || event.note || "查看记录详情"}</span>
+            <span className="sky-event-kind">{event.status === "synced" ? event.label : "浏览器草稿"}</span>
+          </button>
+        ))}</div> : <div className="sky-empty"><strong>还没有生产记录</strong><p>从「新建记录」开始，牧场的每一次变化都会留在这里。</p></div>}
+      </section>
+
+      {alerts.length || meals.length ? <div className="sky-operational-context">
+        {alerts.length ? <section className="sky-panel"><div className="sky-panel-heading"><h2>待办与异常</h2><button className="sky-text-link" type="button" onClick={() => onNavigate("alerts")}>查看全部<CaretRight size={16} /></button></div>{alerts.map(alert => <button key={alert.id} className="operational-row" type="button" onClick={() => onNavigate("alerts", { selectedID: alert.id })}><WarningCircle className={`tone-${alert.tone}`} size={25} /><span className="row-copy"><strong>{alert.title}</strong><small>{alert.description}</small></span><span className="row-value">{alert.count}<small>{alert.unit}</small></span><CaretRight size={18} /></button>)}</section> : null}
+        {meals.length ? <section className="sky-panel"><div className="sky-panel-heading"><h2>今日投喂与 TMR</h2><button className="sky-text-link" type="button" onClick={() => onNavigate("tmr")}>工作台<CaretRight size={16} /></button></div>{meals.map(meal => <button key={meal.id} className="sky-meal-row" type="button" onClick={() => onNavigate("tmr-monitor")}><strong>{meal.period}</strong><time>{meal.time}</time><span>计划 {meal.planKg == null ? "未关联" : `${count(meal.planKg)} kg`}</span><span>实际 {count(meal.actualKg)} kg</span><CaretRight size={18} /></button>)}</section> : null}
+      </div> : null}
+      <footer className="sky-home-footer">
+        <span>{workspace.mode === "cloud" && workspace.lastSyncedAt ? <><CloudCheck size={16} />云端读取 · {displayTime(workspace.lastSyncedAt, timeZone, now)}</> : workspace.mode === "cloud" ? "等待云端读取" : "视觉预览 · 示例数据"}</span>
+        <div><button type="button" onClick={() => onNavigate("alerts")}>待办与异常</button><button type="button" onClick={() => onNavigate("tmr")}>投喂与 TMR</button><button type="button" onClick={() => onNavigate("events", { exportHint: true })}>记录导出</button></div>
+      </footer>
     </main>
   );
 }

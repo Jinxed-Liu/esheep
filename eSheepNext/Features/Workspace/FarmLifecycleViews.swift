@@ -3,6 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct RemovalEntryView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
@@ -25,8 +26,20 @@ struct RemovalEntryView: View {
         self.farm = farm
     }
 
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("sheepID", $sheepID, reset: { nil }),
+            ProductionDraftField("kind", $kind, carry: true),
+            ProductionDraftField("reason", $reason),
+            ProductionDraftField("amount", $amount),
+            ProductionDraftField("occurredAt", $occurredAt, carry: true),
+            ProductionDraftField("note", $note)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Section("离场羊只") {
                 SheepEarTagSingleSearchField(
                     candidates: sheepCandidates,
@@ -39,13 +52,13 @@ struct RemovalEntryView: View {
             }
             TextField("原因", text: $reason)
             if kind == .sold || kind == .culled {
-                TextField("金额（可选）", text: $amount).keyboardType(.decimalPad)
+                ProductionValueField(title: "金额（可选）", text: $amount, unit: "元")
             }
-            DatePicker("发生时间", selection: $occurredAt)
+            DatePicker("发生时间", selection: $occurredAt); ProductionTimeModeControl(session: entrySession)
             TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
         }
         .navigationTitle("离场记录")
-        .toolbar { EntrySaveToolbar(action: save, isSaving: isSaving) }
+        .productionEntry(entrySession, form: "RemovalEntryView", account: account, farm: farm, fields: productionFields, save: save)
         .disabled(isSaving)
         .overlay { if isSaving { ProgressView("正在保存离场记录") } }
         .recordErrorAlert($errorMessage)
@@ -58,12 +71,15 @@ struct RemovalEntryView: View {
         guard !isSaving else { return }
         guard let sheepID else { errorMessage = "请先搜索并确认离场羊只。"; return }
         isSaving = true
+        entrySession.holdSubmission()
         Task { @MainActor in
             await Task.yield()
             do {
-                try commandService.execute(.removeSheep(sheepID: sheepID, kind: kind, reason: reason, amountText: amount, occurredAt: occurredAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
-                dismiss()
+                try entrySession.execute(.removeSheep(sheepID: sheepID, kind: kind, reason: reason, amountText: amount, occurredAt: occurredAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+                isSaving = false
+                entrySession.complete()
             } catch {
+                entrySession.cancelDeferredSubmission()
                 isSaving = false
                 errorMessage = error.localizedDescription
             }

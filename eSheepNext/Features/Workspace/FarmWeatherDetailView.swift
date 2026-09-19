@@ -3,6 +3,7 @@ import ESMotion
 import SwiftUI
 
 struct FarmWeatherDetailView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let farm: FarmRecord
     let initialWeather: FarmWeatherSnapshot?
 
@@ -39,7 +40,7 @@ struct FarmWeatherDetailView: View {
                 cloudCover: currentWeather?.visualCloudCover ?? 0,
                 wind: currentWeather?.visualWind ?? 0,
                 isDaylight: currentWeather?.isDaylight ?? true,
-                isPaused: !activation.playsContinuousMotion,
+                isPaused: reduceMotion || !activation.playsContinuousMotion,
                 renderScale: 0.50
             )
             .ignoresSafeArea()
@@ -94,13 +95,10 @@ struct FarmWeatherDetailView: View {
 
     private var topBar: some View {
         VStack(spacing: 2) {
-            Text(farm.name)
-                .font(.headline)
-                .lineLimit(1)
+            Text(farm.name).font(.headline)
             Text(farm.locationSnapshot?.displayName ?? "牧场天气")
                 .font(.caption)
-                .foregroundStyle(.white.opacity(0.68))
-                .lineLimit(1)
+                .foregroundStyle(.white.opacity(0.8))
         }
         .multilineTextAlignment(.center)
         .frame(maxWidth: .infinity, alignment: .center)

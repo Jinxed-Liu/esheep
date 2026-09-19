@@ -74,6 +74,8 @@ struct EditSheepProfileView: View {
     @State private var originalCurrentParity: Int?
     @State private var note: String
     @State private var errorMessage: String?
+    @State private var confirmedLabelRemoval = false
+    @State private var conflictingLabels: [SheepLabelValue] = []
 
     init(account: AccountProfile, farm: FarmRecord, sheep: SheepRecord) {
         self.account = account
@@ -94,6 +96,12 @@ struct EditSheepProfileView: View {
                 TextField("品种", text: $breed)
                 Picker("性别", selection: $sex) {
                     ForEach(SheepSex.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
+                }
+            }
+            if !conflictingLabels.isEmpty {
+                Section("标签与新性别冲突") {
+                    ForEach(conflictingLabels) { label in SheepLabelChips(labels: [label]) }
+                    Toggle("确认移除上述标签并保存性别修改", isOn: $confirmedLabelRemoval)
                 }
             }
             Section("出生信息") {
@@ -119,6 +127,11 @@ struct EditSheepProfileView: View {
         }
         .recordErrorAlert($errorMessage)
         .onAppear(perform: loadCurrentParity)
+        .onChange(of: sex) {
+            confirmedLabelRemoval = false
+            do { conflictingLabels = try SheepLabelService.conflicts(sheepID: sheep.id, sex: sex, farmID: farm.id, context: modelContext) }
+            catch { errorMessage = error.localizedDescription }
+        }
     }
 
     private func loadCurrentParity() {
@@ -136,6 +149,13 @@ struct EditSheepProfileView: View {
             }
             let enteredParity = sex == .ewe ? (Int(parityText) ?? 0) : nil
             let changedParity = enteredParity != originalCurrentParity ? enteredParity : nil
+            if !conflictingLabels.isEmpty {
+                guard confirmedLabelRemoval else { throw SheepLabelError.invalid("请先确认移除冲突标签。") }
+                let draft = SheepLabelProfileDraft(sheepID: sheep.id, earTag: earTag, breed: breed, sex: sex, birthAt: hasBirthDate ? birthAt : nil, note: note, currentParity: changedParity, parityRecordedAt: changedParity == nil ? nil : .now, removeLabelIDs: conflictingLabels.map(\.id), expectedRevision: sheep.revision)
+                try commandService.execute(.care(.sheepLabels(.patchProfile(draft))), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+                dismiss()
+                return
+            }
             try commandService.execute(
                 .updateSheepProfile(sheepID: sheep.id, earTag: earTag, breed: breed, sex: sex, birthAt: hasBirthDate ? birthAt : nil, currentParity: changedParity, parityRecordedAt: changedParity == nil ? nil : .now, note: note),
                 in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),

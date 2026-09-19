@@ -3,11 +3,15 @@ import Observation
 import SwiftData
 
 enum AppTab: Hashable {
-    case home
-    case assistant
-    case records
-    case feeding
-    case search
+    case home, workbench, analysis, search
+    static var records: Self { .workbench }
+    static var feeding: Self { .workbench }
+    static var assistant: Self { .analysis }
+}
+
+enum WorkbenchSection: String, CaseIterable, Identifiable {
+    case management = "管理", records = "生产记录", feeding = "投喂"
+    var id: Self { self }
 }
 
 enum AppNavigationRequest: Codable, Sendable, Equatable {
@@ -55,6 +59,7 @@ final class AppSession {
     var activeAccountProfileID: UUID?
     var selectedFarmID: UUID?
     var selectedTab: AppTab = .home
+    var workbenchSection: WorkbenchSection = .management
     var isCreateFarmPresented = false
     var isJoinFarmPresented = false
     var isReauthenticationPresented = false
@@ -113,7 +118,8 @@ final class AppSession {
         case .removeSheep:
             requestRecordEntry(.removal)
         case .recordFeed:
-            selectedTab = .feeding
+            workbenchSection = .feeding
+            selectedTab = .workbench
             pendingRecordEntry = .feed
         case .openSheep(let sheepID):
             pendingSheepID = sheepID
@@ -135,14 +141,17 @@ final class AppSession {
             pendingSearchQuery = target.query
             selectedTab = .search
         case .recordWeight:
-            selectedTab = .records
+            workbenchSection = .records
+            selectedTab = .workbench
             pendingRecordEntry = .weight
         case .recordFeed:
-            selectedTab = .feeding
+            workbenchSection = .feeding
+            selectedTab = .workbench
             pendingRecordEntry = .feed
         case .openCareReminder:
             pendingCareReminderID = target.entityID
-            selectedTab = .records
+            workbenchSection = .records
+            selectedTab = .workbench
         case .openOperationalAlerts:
             pendingOperationalAlertsRequestID = UUID()
             selectedTab = .home
@@ -150,7 +159,8 @@ final class AppSession {
     }
 
     func requestRecordEntry(_ entry: PendingRecordEntry) {
-        selectedTab = entry == .feed ? .feeding : .records
+        workbenchSection = [.feed, .trough, .tmrProduction, .tmrFeeding].contains(entry) ? .feeding : .records
+        selectedTab = .workbench
         pendingRecordEntry = entry
     }
 
@@ -160,7 +170,17 @@ final class AppSession {
         }
 
         selectedFarmID = farmID
+        resetWorkspaceNavigation()
+    }
+
+    func resetWorkspaceNavigation() {
         selectedTab = .home
+        workbenchSection = .management
+        pendingRecordEntry = nil
+        pendingSearchQuery = nil
+        pendingSheepID = nil
+        pendingCareReminderID = nil
+        pendingOperationalAlertsRequestID = nil
     }
 
     func context(for account: AccountProfile, activeFarm: FarmRecord) -> FarmContext {
@@ -248,6 +268,7 @@ enum PendingRecordEntry: String, Sendable, Equatable, Identifiable {
     case transfer
     case removal
     case feed
+    case health, weaning, reproduction, lambing, note, trough, tmrProduction, tmrFeeding
 
     var id: String { rawValue }
 }

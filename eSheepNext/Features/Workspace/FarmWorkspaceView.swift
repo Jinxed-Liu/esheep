@@ -52,64 +52,23 @@ struct FarmWorkspaceView: View {
                         for: .tabBar
                     )
                 }
-                Tab("洞察", systemImage: "sparkles", value: .assistant) {
-                    NavigationStack {
-                        FarmInsightsView(
-                            account: account,
-                            farm: activeFarm,
-                            assistantFarmID: $assistantFarmID
-                        )
-                            .navigationBarTitleDisplayMode(.inline)
-                            .toolbar {
-                                FarmNavigationToolbar(
-                                    account: account,
-                                    farms: farms,
-                                    activeFarm: activeFarm,
-                                    sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
-                                )
-                            }
-                    }
-                    .toolbarVisibility(
-                        assistantFarmID == activeFarm.id ? .hidden : .visible,
-                        for: .tabBar
-                    )
+                Tab("工作台", systemImage: "square.grid.2x2", value: .workbench) {
+                    FarmWorkbenchView(account: account, farm: activeFarm, farms: farms, sharedFarmAdmissionStatus: sharedFarmAdmissionStatus)
                 }
-                Tab("录入", systemImage: "square.and.pencil", value: .records) {
+                Tab("分析", systemImage: "sparkles", value: .analysis) {
                     NavigationStack {
-                        FarmRecordsView(account: account, farm: activeFarm)
+                        FarmInsightsView(account: account, farm: activeFarm, assistantFarmID: $assistantFarmID)
                             .navigationBarTitleDisplayMode(.inline)
-                            .toolbar {
-                                FarmNavigationToolbar(
-                                    account: account,
-                                    farms: farms,
-                                    activeFarm: activeFarm,
-                                    sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
-                                )
-                            }
+                            .toolbar { FarmNavigationToolbar(account: account, farms: farms, activeFarm: activeFarm, sharedFarmAdmissionStatus: sharedFarmAdmissionStatus) }
                     }
-                }
-                Tab("投喂", systemImage: "leaf", value: .feeding) {
-                    NavigationStack {
-                        FeedingStartView(account: account, farm: activeFarm)
-                            .navigationBarTitleDisplayMode(.inline)
-                            .toolbar {
-                                FarmNavigationToolbar(
-                                    account: account,
-                                    farms: farms,
-                                    activeFarm: activeFarm,
-                                    sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
-                                )
-                            }
-                    }
+                    .toolbarVisibility(assistantFarmID == activeFarm.id ? .hidden : .visible, for: .tabBar)
                 }
                 Tab(value: .search, role: .search) {
                     searchNavigationStack(for: activeFarm, query: $searchQuery)
                 }
             }
             .tabViewSearchActivation(.searchTabSelection)
-            .tabBarMinimizeBehavior(.onScrollDown)
-            .scrollEdgeEffectHidden(assistantFarmID != activeFarm.id, for: .top)
-            .scrollEdgeEffectHidden(true, for: .bottom)
+            .id(activeFarm.id)
             .safeAreaInset(edge: .top, spacing: 0) {
                 AccountAccessWorkspaceBanner(
                     authenticationMethod: account.authenticationMethod
@@ -125,6 +84,10 @@ struct FarmWorkspaceView: View {
             .onChange(of: activeFarm.id) { previousFarmID, currentFarmID in
                 guard previousFarmID != currentFarmID else { return }
                 assistantFarmID = nil
+                searchQuery = ""
+                isWeatherDetailPresented = false
+                isMetricDetailPresented = false
+                session.resetWorkspaceNavigation()
             }
             .onChange(of: session.pendingSearchQuery, initial: true) { _, pendingQuery in
                 guard let pendingQuery else { return }
@@ -141,7 +104,7 @@ struct FarmWorkspaceView: View {
     }
 }
 
-private struct FarmNavigationToolbar: ToolbarContent {
+struct FarmNavigationToolbar: ToolbarContent {
     let account: AccountProfile
     let farms: [FarmRecord]
     let activeFarm: FarmRecord

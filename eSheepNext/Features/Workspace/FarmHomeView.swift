@@ -16,6 +16,11 @@ struct FarmHomeView: View {
     @Binding var isWeatherDetailPresented: Bool
     @Binding var isMetricDetailPresented: Bool
     let sharedFarmAdmissionStatus: SharedFarmAdmissionStatus?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var homeLoadFailure: String?
+    @State private var homeLoadedAt: Date?
+    @State private var quickActions = HomeQuickAction.defaults
+    @State private var isEditingQuickActions = false
     @State private var selectedMetric: HomeMetricDestination?
     @State private var isEventExportPresented = false
     @State private var operationalAlertState: FarmOperationalAlertLoadState = .loading
@@ -52,7 +57,7 @@ struct FarmHomeView: View {
         self.sharedFarmAdmissionStatus = sharedFarmAdmissionStatus
     }
 
-    private var canExport: Bool { CapabilitySet(role: farm.role).allows(.exportFarm) }
+    private var canExport: Bool { CapabilitySet(role: farm.role).allows(.exportEvents) }
     private var canManageAlertRules: Bool { CapabilitySet(role: farm.role).allows(.manageCatalogs) }
     private var usesESheepCloudV2: Bool {
         storageProfiles.first(where: { $0.farmID == farm.id })?.mode == .eSheepCloud
@@ -108,13 +113,19 @@ struct FarmHomeView: View {
             VStack(alignment: .leading, spacing: 18) {
                 hero
                 metrics
+                if let homeLoadFailure {
+                    Text(homeLoadFailure).font(.footnote).foregroundStyle(.orange)
+                    if let homeLoadedAt { Text("上次读取：\(homeLoadedAt.formatted())").font(.caption) }
+                    Button("重新读取") { homeSnapshotRefreshRevision &+= 1 }
+                }
+                FarmEventEntryLink(account: account, farm: farm)
                 operationalAlertCard
                 shortcuts
-                productionStatus
+                syncStatus
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .safeAreaPadding(.bottom, 96)
+            .safeAreaPadding(.bottom, 24)
         }
         .scrollIndicators(.hidden)
         .background(AppTheme.pageBackground)
@@ -129,7 +140,6 @@ struct FarmHomeView: View {
         }
         .navigationDestination(isPresented: $isOperationalAlertCenterPresented) {
             FarmOperationalAlertCenterView(account: account, farm: farm)
-                .toolbarVisibility(.hidden, for: .tabBar)
         }
         .onChange(of: selectedMetric) { _, destination in
             isMetricDetailPresented = destination != nil
@@ -140,7 +150,7 @@ struct FarmHomeView: View {
             }
         }
         .sheet(isPresented: $isEventExportPresented) {
-            FarmEventExportLauncher(farmID: farm.id, farmName: farm.name)
+            FarmEventExportLauncher(accountProfileID: account.id, farmID: farm.id, farmName: farm.name)
                 .presentationDetents([.large])
         }
         .task(id: homeSnapshotTaskID) {
@@ -164,6 +174,18 @@ struct FarmHomeView: View {
             session.pendingOperationalAlertsRequestID = nil
             isOperationalAlertCenterPresented = true
         }
+    }
+
+    private var syncStatus: some View {
+        NavigationLink {
+            if usesESheepCloudV2 { ESheepCloudCenterView(account: account, farm: farm) }
+            else { FarmConflictCenterView(account: account, farm: farm) }
+        } label: {
+            Label(homeSyncAccessibilityLabel, systemImage: homeSyncSymbol)
+                .font(.caption).foregroundStyle(cloudNeedsAttentionFromService || cloudAttentionCount > 0 ? .orange : .secondary)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
+        }
+        .buttonStyle(MotionSurfaceButtonStyle())
     }
 
     private var hero: some View {
@@ -190,6 +212,7 @@ struct FarmHomeView: View {
                 ? "checkmark.circle.fill"
                 : "arrow.triangle.2.circlepath"
         }
+        if homeLoadedAt == nil { return homeLoadFailure == nil ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle" }
         if homeSnapshot.conflictOutboxCount > 0 {
             return "exclamationmark.triangle.fill"
         }
@@ -202,6 +225,9 @@ struct FarmHomeView: View {
         if let sharedFarmAdmissionStatus {
             return "正在加入共享牧场 · \(sharedFarmAdmissionStatus.detailText)"
         }
+        if storageProfiles.first(where: { $0.farmID == farm.id })?.mode == .localOnly {
+            return "已保存到本机"
+        }
         if usesESheepCloudV2 {
             if cloudAttentionCount > 0 {
                 return "有 \(cloudAttentionCount) 项内容需要你确认"
@@ -210,22 +236,26 @@ struct FarmHomeView: View {
                 return "部分内容尚未保存，请稍后再试"
             }
             if cloudIsSafelySaved {
-                return "业务数据已安全保存"
+                return "云端已确认"
             }
             return cloudWaitingCount > 0
-                ? "有 \(cloudWaitingCount) 项内容等待保存"
+                ? "本机已接收 · \(cloudWaitingCount) 项等待云端确认"
                 : "正在检查牧场资料是否完整"
+        }
+        if homeLoadedAt == nil {
+            return homeLoadFailure == nil ? "正在读取保存状态" : "保存状态暂不可用"
         }
         if homeSnapshot.conflictOutboxCount > 0 {
             return "有 \(homeSnapshot.conflictOutboxCount) 条数据异常等待处理"
         }
         return homeSnapshot.pendingOutboxCount == 0
             ? "业务数据已保存"
-            : "有 \(homeSnapshot.pendingOutboxCount) 条本地记录等待保存"
+            : "本机已接收 · \(homeSnapshot.pendingOutboxCount) 条等待云端确认"
     }
 
     private var metrics: some View {
-        HStack(spacing: 12) {
+        let layout = dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 12))
+        return layout {
             metricButton(.sheep, value: homeSnapshot.activeSheepCount)
             metricButton(.pens, value: homeSnapshot.occupiedPenCount)
             metricButton(.feeding, value: homeSnapshot.todayFeedCount)
@@ -236,7 +266,7 @@ struct FarmHomeView: View {
         Button {
             selectedMetric = destination
         } label: {
-            HomeMetric(title: destination.title, value: "\(value)", symbol: destination.symbol)
+            HomeMetric(title: destination.title, value: homeLoadedAt == nil ? "—" : "\(value)", symbol: destination.symbol)
                 .contentShape(.rect(cornerRadius: 20))
                 .motionTransitionSource(
                     id: MotionTransitionID(destination.id),
@@ -247,7 +277,7 @@ struct FarmHomeView: View {
         }
         .buttonStyle(MotionSurfaceButtonStyle())
         .frame(maxWidth: .infinity)
-        .accessibilityLabel("\(destination.title)，\(value)")
+        .accessibilityLabel(homeLoadedAt == nil ? "\(destination.title)，尚未读取" : "\(destination.title)，\(value)")
         .accessibilityHint("打开完整页面")
     }
 
@@ -272,23 +302,33 @@ struct FarmHomeView: View {
         }
     }
 
+    private var quickActionKey: String { "home-quick-actions.\(account.effectiveAccountID).\(farm.id)" }
+
     private var shortcuts: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("快捷操作").font(.headline)
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                HomeShortcut(title: "新建羊只", symbol: "plus.circle") { session.requestRecordEntry(.addSheep) }
-                HomeShortcut(title: "称重", symbol: "scalemass") { session.requestRecordEntry(.weight) }
-                HomeShortcut(title: "转群", symbol: "arrow.left.arrow.right") { session.requestRecordEntry(.transfer) }
-                HomeShortcut(title: "离场", symbol: "person.crop.circle.badge.minus") { session.requestRecordEntry(.removal) }
-                HomeShortcut(title: "投喂", symbol: "leaf") { session.selectedTab = .feeding }
-                HomeShortcut(title: "记录导出", symbol: "square.and.arrow.up") {
-                    isEventExportPresented = true
+            HStack {
+                Text("常用操作").font(.headline)
+                Spacer()
+                Button("自定义", systemImage: "slider.horizontal.3") { isEditingQuickActions = true }.font(.footnote)
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 260 : 150))], spacing: 12) {
+                ForEach(quickActions) { action in
+                    HomeShortcut(title: action.title, symbol: action.symbol) {
+                        if action == .exportEvents { isEventExportPresented = true }
+                        else if let entry = action.entry { session.requestRecordEntry(entry) }
+                    }
+                    .disabled(action == .exportEvents ? !canExport : !CapabilitySet(role: farm.role).allows(.recordProduction))
                 }
-                .disabled(!canExport)
-                .opacity(canExport ? 1 : 0.5)
-                .accessibilityHint(canExport ? "选择记录类型和发生时间范围" : "当前牧场角色没有导出权限")
             }
         }
+        .task(id: quickActionKey) {
+            if let data = UserDefaults.standard.data(forKey: quickActionKey), let saved = try? JSONDecoder().decode([HomeQuickAction].self, from: data) {
+                var seen = Set<HomeQuickAction>()
+                quickActions = saved.filter { seen.insert($0).inserted }
+            } else { quickActions = HomeQuickAction.defaults }
+        }
+        .onChange(of: quickActions) { _, value in if let data = try? JSONEncoder().encode(value) { UserDefaults.standard.set(data, forKey: quickActionKey) } }
+        .sheet(isPresented: $isEditingQuickActions) { HomeQuickActionEditor(actions: $quickActions) }
     }
 
     private var operationalAlertCard: some View {
@@ -300,25 +340,6 @@ struct FarmHomeView: View {
         )
     }
 
-    private var productionStatus: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("生产状态").font(.headline)
-            NavigationLink { HerdManagementView(account: account, farm: farm) } label: {
-                StatusRow(title: "羊只档案", detail: "查看羊只档案、体重与时间线", symbol: "list.bullet")
-            }
-            NavigationLink { PenManagementView(account: account, farm: farm) } label: {
-                StatusRow(
-                    title: "圈舍管理",
-                    detail: "当前 \(homeSnapshot.occupiedPenCount) 个圈舍有在场羊",
-                    symbol: "building.2"
-                )
-            }
-            if homeSnapshot.activeHealthRecordCount > 0 {
-                StatusRow(title: "健康记录", detail: "已有 \(homeSnapshot.activeHealthRecordCount) 条记录", symbol: "cross.case")
-            }
-        }
-    }
-
     @MainActor
     private func loadHomeSnapshot() async {
         do {
@@ -326,11 +347,12 @@ struct FarmHomeView: View {
                 .load(farmID: farm.id)
             try Task.checkCancellation()
             homeSnapshot = snapshot
+            homeLoadedAt = .now
+            homeLoadFailure = nil
         } catch is CancellationError {
             return
         } catch {
-            // Keep the last valid counters visible. A retry is triggered by
-            // the next local command or cloud-sync notification.
+            homeLoadFailure = "读取首页失败：\(error.localizedDescription)"
         }
     }
 
@@ -398,8 +420,8 @@ private struct HomeMetric: View {
             Text(value).font(.title3.bold())
             Text(LocalizedStringKey(title)).font(.caption).foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64, alignment: .leading)
-        .padding(20)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+        .padding(14)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 24))
         .frame(maxWidth: .infinity)
     }
@@ -499,7 +521,7 @@ private struct HomeShortcut: View {
             .padding(14)
             .background(.background, in: .rect(cornerRadius: 16))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionSurfaceButtonStyle())
         .accessibilityLabel(title)
     }
 }

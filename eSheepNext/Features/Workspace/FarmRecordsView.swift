@@ -3,6 +3,7 @@ import SwiftUI
 
 struct FarmRecordsView: View {
     @Environment(AppSession.self) private var session
+    var showsManagement = false
     let account: AccountProfile
     let farm: FarmRecord
     @State private var presentedEntry: PendingRecordEntry?
@@ -11,6 +12,7 @@ struct FarmRecordsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 20) {
+                if !showsManagement {
                 SettingsCard(title: "日常记录") {
                     SettingsNavigationRow(
                         title: "称重",
@@ -80,6 +82,8 @@ struct FarmRecordsView: View {
                     ) { CareLambingEntryView(account: account, farm: farm) }
                 }
 
+                }
+                if showsManagement {
                 SettingsCard(title: "管理与查阅") {
                     SettingsNavigationRow(
                         title: "生产批次",
@@ -94,31 +98,20 @@ struct FarmRecordsView: View {
                         systemImage: "heart.text.square",
                         iconColor: .pink
                     ) { CareManagementView(account: account, farm: farm) }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "事件记录与导出",
-                        subtitle: "查看、筛选和导出牧场历史",
-                        systemImage: "clock.arrow.circlepath",
-                        iconColor: .blue
-                    ) { FarmEventHistoryView(account: account, farm: farm) }
+
+                }
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .safeAreaPadding(.bottom, 96)
+            .safeAreaPadding(.bottom, 24)
         }
         .scrollIndicators(.hidden)
         .background(AppTheme.pageBackground)
-        .navigationTitle("录入")
+        .navigationTitle("工作台")
         .sheet(item: $presentedEntry) { entry in
             NavigationStack {
-                switch entry {
-                case .addSheep: AddSheepView(account: account, farm: farm)
-                case .weight: WeightEntryView(account: account, farm: farm)
-                case .transfer: TransferEntryView(account: account, farm: farm)
-                case .removal: RemovalEntryView(account: account, farm: farm)
-                case .feed: EmptyView()
-                }
+                ProductionEntryDestination(entry: entry, account: account, farm: farm)
             }
         }
         .onAppear {
@@ -137,13 +130,13 @@ struct FarmRecordsView: View {
     }
 
     private func presentIntentEntryIfNeeded() {
-        guard let entry = session.pendingRecordEntry, entry != .feed else { return }
+        guard !showsManagement, let entry = session.pendingRecordEntry, ![.feed, .trough, .tmrProduction, .tmrFeeding].contains(entry) else { return }
         session.pendingRecordEntry = nil
         presentedEntry = entry
     }
 
     private func presentCareReminderIfNeeded() {
-        guard let reminderID = session.pendingCareReminderID else { return }
+        guard !showsManagement, let reminderID = session.pendingCareReminderID else { return }
         session.pendingCareReminderID = nil
         careReminderDestination = PendingCareReminderDestination(id: reminderID)
     }
@@ -154,6 +147,7 @@ private struct PendingCareReminderDestination: Identifiable, Hashable {
 }
 
 struct WeightEntryView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     let account: AccountProfile
@@ -166,8 +160,18 @@ struct WeightEntryView: View {
     @State private var note = ""
     @State private var errorMessage: String?
 
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("sheepID", $sheepID, reset: { nil }),
+            ProductionDraftField("kilograms", $kilograms),
+            ProductionDraftField("occurredAt", $occurredAt, carry: true),
+            ProductionDraftField("note", $note)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Section("称重羊只") {
                 SheepEarTagSingleSearchField(
                     candidates: sheepCandidates,
@@ -175,12 +179,12 @@ struct WeightEntryView: View {
                     emptySelectionText: "尚未确认称重羊只"
                 )
             }
-            TextField("体重（千克）", text: $kilograms).keyboardType(.decimalPad)
-            DatePicker("称重时间", selection: $occurredAt)
+            ProductionValueField(title: "体重", text: $kilograms, unit: "千克")
+            DatePicker("称重时间", selection: $occurredAt); ProductionTimeModeControl(session: entrySession)
             TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
         }
         .navigationTitle("称重")
-        .toolbar { EntrySaveToolbar(action: save) }
+        .productionEntry(entrySession, form: "WeightEntryView", account: account, farm: farm, fields: productionFields, save: save)
         .task(id: farm.id) { await loadSheepCandidates() }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["称重"])
@@ -189,8 +193,8 @@ struct WeightEntryView: View {
     private func save() {
         guard let sheepID else { errorMessage = "请先搜索并确认称重羊只。"; return }
         do {
-            try commandService.execute(.recordWeight(sheepID: sheepID, kilogramsText: kilograms, occurredAt: occurredAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
-            dismiss()
+            try entrySession.execute(.recordWeight(sheepID: sheepID, kilogramsText: kilograms, occurredAt: occurredAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            entrySession.complete()
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -208,6 +212,7 @@ struct WeightEntryView: View {
 }
 
 struct WeaningEntryView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     let account: AccountProfile
@@ -262,8 +267,21 @@ struct WeaningEntryView: View {
         return lower...upper
     }
 
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("sheepID", $sheepID, reset: { nil }),
+            ProductionDraftField("targetPenID", $targetPenID, reset: { nil }),
+            ProductionDraftField("weanWeight", $weanWeight),
+            ProductionDraftField("occurredAt", $occurredAt, carry: true),
+            ProductionDraftField("birthAt", $birthAt),
+            ProductionDraftField("includesBirthDate", $includesBirthDate),
+            ProductionDraftField("note", $note)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Section("断奶羊只") {
                 SheepEarTagSingleSearchField(
                     candidates: sheepCandidates,
@@ -272,7 +290,7 @@ struct WeaningEntryView: View {
                 )
             }
             Section("断奶信息") {
-                TextField("断奶重（千克）", text: $weanWeight).keyboardType(.decimalPad)
+                ProductionValueField(title: "断奶重", text: $weanWeight, unit: "千克")
             }
             Section("断奶后调舍") {
                 Picker("转入圈舍", selection: $targetPenID) {
@@ -283,7 +301,7 @@ struct WeaningEntryView: View {
                 }
             }
             Section("时间") {
-                DatePicker("断奶时间", selection: $occurredAt, in: weaningDateRange)
+                DatePicker("断奶时间", selection: $occurredAt, in: weaningDateRange); ProductionTimeModeControl(session: entrySession)
                 if let profileBirthAt = selectedSheep?.birthAt {
                     LabeledContent("出生日期", value: profileBirthAt.formatted(date: .abbreviated, time: .omitted))
                 } else {
@@ -318,7 +336,7 @@ struct WeaningEntryView: View {
             TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
         }
         .navigationTitle("断奶记录")
-        .toolbar { EntrySaveToolbar(action: save) }
+        .productionEntry(entrySession, form: "WeaningEntryView", account: account, farm: farm, fields: productionFields, save: save)
         .task(id: farm.id) { await loadReferenceData() }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["断奶"])
@@ -339,7 +357,7 @@ struct WeaningEntryView: View {
         guard let sheepID else { errorMessage = "请先搜索并确认断奶羊只。"; return }
         guard let targetPenID else { errorMessage = "请选择断奶后调入的圈舍。"; return }
         do {
-            try commandService.executeBatch(
+            try entrySession.executeBatch(
                 WeaningWorkflow.commands(
                     sheepID: sheepID,
                     weanWeightText: weanWeight,
@@ -351,7 +369,7 @@ struct WeaningEntryView: View {
                 in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
                 context: modelContext
             )
-            dismiss()
+            entrySession.complete()
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -500,6 +518,7 @@ struct BreedingProgramEntryView: View {
 }
 
 struct TransferEntryView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
@@ -520,8 +539,18 @@ struct TransferEntryView: View {
     }
 
     private var farmPens: [PenRecord] { pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive } }
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("sheepID", $sheepID, reset: { nil }),
+            ProductionDraftField("penID", $penID, reset: { nil }),
+            ProductionDraftField("occurredAt", $occurredAt, carry: true),
+            ProductionDraftField("note", $note)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Section("转群羊只") {
                 SheepEarTagSingleSearchField(
                     candidates: sheepCandidates,
@@ -535,11 +564,11 @@ struct TransferEntryView: View {
                     ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
                 }
             }
-            DatePicker("转群时间", selection: $occurredAt)
+            DatePicker("转群时间", selection: $occurredAt); ProductionTimeModeControl(session: entrySession)
             TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
         }
         .navigationTitle("转群")
-        .toolbar { EntrySaveToolbar(action: save) }
+        .productionEntry(entrySession, form: "TransferEntryView", account: account, farm: farm, fields: productionFields, save: save)
         .task(id: farm.id) { await loadSheepCandidates() }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["转群"])
@@ -548,8 +577,8 @@ struct TransferEntryView: View {
     private func save() {
         guard let sheepID else { errorMessage = "请先搜索并确认转群羊只。"; return }
         do {
-            try commandService.execute(.transferSheep(sheepID: sheepID, toPenID: penID, occurredAt: occurredAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
-            dismiss()
+            try entrySession.execute(.transferSheep(sheepID: sheepID, toPenID: penID, occurredAt: occurredAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            entrySession.complete()
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -567,6 +596,7 @@ struct TransferEntryView: View {
 }
 
 struct NoteEntryView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
@@ -596,8 +626,18 @@ struct NoteEntryView: View {
         pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && eligiblePenIDs.contains($0.id) }
     }
 
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("sheepID", $sheepID, reset: { nil }),
+            ProductionDraftField("penID", $penID, reset: { nil }),
+            ProductionDraftField("text", $text),
+            ProductionDraftField("occurredAt", $occurredAt, carry: true)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Section("羊只（可选）") {
                 SheepEarTagSingleSearchField(
                     candidates: sheepCandidates,
@@ -612,11 +652,11 @@ struct NoteEntryView: View {
                         .tag(UUID?.some(pen.id))
                 }
             }
-            DatePicker("发生时间", selection: $occurredAt)
+            DatePicker("发生时间", selection: $occurredAt); ProductionTimeModeControl(session: entrySession)
             TextField("备注内容", text: $text, axis: .vertical).lineLimit(4...8)
         }
         .navigationTitle("备注")
-        .toolbar { EntrySaveToolbar(action: save) }
+        .productionEntry(entrySession, form: "NoteEntryView", account: account, farm: farm, fields: productionFields, save: save)
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["备注"])
         .task(id: farm.id) { await loadSheepCandidates() }
@@ -643,8 +683,8 @@ struct NoteEntryView: View {
 
     private func save() {
         do {
-            try commandService.execute(.addNote(sheepID: sheepID, penID: penID, text: text, occurredAt: occurredAt), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
-            dismiss()
+            try entrySession.execute(.addNote(sheepID: sheepID, penID: penID, text: text, occurredAt: occurredAt), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            entrySession.complete()
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -713,8 +753,8 @@ struct DismissButton: View {
 }
 
 extension View {
-    func recordErrorAlert(_ errorMessage: Binding<String?>) -> some View {
-        alert("无法保存", isPresented: Binding(get: { errorMessage.wrappedValue != nil }, set: { if !$0 { errorMessage.wrappedValue = nil } })) {
+    func recordErrorAlert(_ errorMessage: Binding<String?>, title: LocalizedStringKey = "无法保存") -> some View {
+        alert(title, isPresented: Binding(get: { errorMessage.wrappedValue != nil }, set: { if !$0 { errorMessage.wrappedValue = nil } })) {
             Button("知道了", role: .cancel) {}
         } message: { Text(LocalizedStringKey(errorMessage.wrappedValue ?? "")) }
     }

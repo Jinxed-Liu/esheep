@@ -90,7 +90,15 @@ actor ESheepCloudCheckpointImporter {
             counts[adapter.name] = rows.count
         }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        guard counts == manifest.modelCounts, digest == manifest.businessDigest else {
+        // Published v1 checkpoints predate sheep labels. Only these additive
+        // models may be absent, and their imported tables must still be empty.
+        // Keep every advertised count and the original business digest intact.
+        var expectedCounts = manifest.modelCounts
+        for model in ["SheepLabelRecord", "SheepLabelAssignmentRecord", "SheepLabelChangeRecord"]
+            where expectedCounts[model] == nil {
+            expectedCounts[model] = 0
+        }
+        guard counts == expectedCounts, digest == manifest.businessDigest else {
             throw ESheepCloudCheckpointError.digestMismatch
         }
         // Stream state belongs to exactly the advertised authority generation.

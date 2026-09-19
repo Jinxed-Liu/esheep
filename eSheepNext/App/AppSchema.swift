@@ -536,6 +536,11 @@ enum AppSchemaV13: VersionedSchema {
 
 enum AppSchemaV14: VersionedSchema {
     static let versionIdentifier = Schema.Version(14, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.v14ModelTypes }
+}
+
+enum AppSchemaV15: VersionedSchema {
+    static let versionIdentifier = Schema.Version(15, 0, 0)
     static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
 }
 
@@ -557,6 +562,7 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             AppSchemaV12.self,
             AppSchemaV13.self,
             AppSchemaV14.self,
+            AppSchemaV15.self,
         ]
     }
 
@@ -696,6 +702,7 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             // upgraded without replaying business data.
             .lightweight(fromVersion: AppSchemaV12.self, toVersion: AppSchemaV13.self),
             .lightweight(fromVersion: AppSchemaV13.self, toVersion: AppSchemaV14.self),
+            .lightweight(fromVersion: AppSchemaV14.self, toVersion: AppSchemaV15.self),
         ]
     }
 }
@@ -1025,8 +1032,10 @@ enum AppSchema {
         businessModelTypes + insightModelTypes
     }
 
+    fileprivate static var v14ModelTypes: [any PersistentModel.Type] { v13ModelTypes + [ESheepCloudCheckpointState.self] }
+
     static var modelTypes: [any PersistentModel.Type] {
-        v13ModelTypes + [ESheepCloudCheckpointState.self]
+        v14ModelTypes + [SheepLabelRecord.self, SheepLabelAssignmentRecord.self, SheepLabelChangeRecord.self]
     }
 
     fileprivate static var preV4ModelTypes: [any PersistentModel.Type] {
@@ -1070,7 +1079,7 @@ enum AppSchema {
     }
 
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV14.self)
+        Schema(versionedSchema: AppSchemaV15.self)
     }
 
     static func makeConfiguration(

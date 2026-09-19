@@ -545,6 +545,7 @@ enum ESheepCloudCommandPayloadV2: Codable, Sendable, Equatable {
 private extension CareCommand {
     var cloudKindV2: String {
         switch self {
+        case .sheepLabels(let c): c.kind
         case .upsertHealthCatalog: "healthCatalog.upsert"
         case .recordHealth: "health.recordBatch"
         case .correctHealth: "health.correct"

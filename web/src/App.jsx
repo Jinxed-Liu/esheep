@@ -439,6 +439,26 @@ export function App() {
     } else showToast("草稿已保存在此浏览器，重新打开仍可继续。");
     return draft;
   }
+  async function sendLabelActions(actions) {
+    const results=[];
+    const cloud=await loadSupabaseModule();
+    for(const action of actions) {
+      try {
+        const fresh=await cloud.loadCloudWorkspace(workspace.farm.id);
+        const record={sheet:"羊只标签",values:{},labelAction:action.action,labelDraft:action.draft};
+        const id=action.draft.changeID??action.draft.id;
+        const existing=(await listDrafts(workspace.profile.accountID,workspace.farm.id)).find(d=>d.id===id);
+        const draft=existing??await saveDraft(workspace.profile.accountID,workspace.farm,record,id);
+        const result=await submitDraft(cloud.supabase,workspace.profile.accountID,fresh.farm,draft,()=>buildBusinessCommands(record,fresh));
+        const accepted=result.status==="accepted";
+        results.push({action,accepted,error:accepted?null:JSON.stringify(result.receipts??result.error??"云端拒绝，请核对回执")});
+      } catch(e) { results.push({action,accepted:false,error:e.message}); }
+    }
+    workspaceDataSource.invalidate({farmID:workspace.farm.id});
+    try{setWorkspace(await cloud.loadCloudWorkspace(workspace.farm.id));}catch(e){showToast(`标签提交已处理，读取刷新失败：${e.message}`,"warning");}
+    await refreshDrafts();
+    return results;
+  }
   async function sendSavedDraft(draft) { return sendDraftGroup([draft]); }
   async function sendDraftGroup(group) {
     setWriteBusy(true);let accepted=0;
@@ -516,7 +536,7 @@ export function App() {
   let content;
   switch (activePage) {
     case "flock":
-    case "pens": content = <FlockPage workspace={workspace} initialView={activePage === "pens" ? "pens" : "sheep"} selectedID={routeContext.selectedID} onCreateRecord={openRecord} />; break;
+    case "pens": content = <FlockPage workspace={workspace} initialView={activePage === "pens" ? "pens" : "sheep"} selectedID={routeContext.selectedID} onCreateRecord={openRecord} onLabelSubmit={sendLabelActions} />; break;
     case "alerts": content = <AlertsPage workspace={workspace} selectedID={routeContext.selectedID} onNavigate={navigate} onCreateRecord={openRecord} />; break;
     case "entry": content = <EntryPage drafts={drafts} busy={writeBusy} progress={writeProgress} onSubmitGroup={sendDraftGroup} onResume={draft=>openRecord(draft.record.sheet,{draft})} onSubmitDraft={sendSavedDraft} onDiscardDraft={deleteDraft} onImport={importRecords} workspace={workspace} onCreateRecord={openRecord} onNavigate={navigate} />; break;
     case "care": content = <CarePage workspace={workspace} onCreateRecord={openRecord} />; break;

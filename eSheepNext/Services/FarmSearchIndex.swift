@@ -21,6 +21,7 @@ struct FarmSearchSheepEntry: Identifiable, Equatable, Sendable {
     let statusName: String
     let penName: String?
     let avatarPhoto: SheepPhotoReference?
+    let sex: SheepSex
     let normalizedEarTag: String
     let normalizedBreed: String
 
@@ -30,7 +31,8 @@ struct FarmSearchSheepEntry: Identifiable, Equatable, Sendable {
         breed: String,
         statusName: String,
         penName: String?,
-        avatarPhoto: SheepPhotoReference? = nil
+        avatarPhoto: SheepPhotoReference? = nil,
+        sex: SheepSex = .unknown
     ) {
         self.id = id
         self.earTag = earTag
@@ -38,6 +40,7 @@ struct FarmSearchSheepEntry: Identifiable, Equatable, Sendable {
         self.statusName = statusName
         self.penName = penName
         self.avatarPhoto = avatarPhoto
+        self.sex = sex
         normalizedEarTag = SearchText.normalized(earTag)
         normalizedBreed = SearchText.normalized(breed)
     }
@@ -206,7 +209,8 @@ actor FarmSearchIndexActor {
                     breed: $0.breed,
                     statusName: $0.status.displayName,
                     penName: $0.currentPenID.flatMap { penNames[$0] },
-                    avatarPhoto: avatarPhotos[$0.id]
+                    avatarPhoto: avatarPhotos[$0.id],
+                    sex: $0.sex
                 )
             },
             pens: pens.map { FarmSearchPenEntry(id: $0.id, name: $0.name) }

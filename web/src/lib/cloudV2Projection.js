@@ -7,6 +7,7 @@ import checkpointSchema from "../../../tools/esheep_cloud_checkpoint_schema_v1.j
 const appleEpochMilliseconds = 978307200000;
 const normalizeID = (id) => id == null ? null : String(id).toLowerCase();
 const entityModels = {
+  sheepLabel: "SheepLabelRecord", sheepLabels: "SheepLabelAssignmentRecord",
   farm: "FarmRecord", pen: "PenRecord", sheep: "SheepRecord", weight: "WeightRecord",
   weaning: "WeaningRecord", transfer: "TransferRecord", removal: "RemovalRecord",
   reproduction: "ReproductionRecord", feed: "FeedRecord", feedIngredient: "FeedIngredientRecord",
@@ -22,7 +23,7 @@ const modelEntities = Object.fromEntries(Object.entries(entityModels).map(([enti
 export const webCheckpointModels = new Set([
   ...Object.values(entityModels), "FeedRecordLine", "FeedRecipeRecord", "FeedRecipeComponentRecord",
   "TMRFormulaProfileRecord", "TMRFeedingPlanRecord", "TMRFeedingPlanPenRecord", "LambingOffspringRecord",
-  "DomainOperation", "TombstoneRecord",
+  "DomainOperation", "TombstoneRecord", "SheepLabelChangeRecord",
   "HealthSubjectLink", "CareBatchRecord", "CareReminderRecord", "FarmCareRuleRecord", "FarmAlertDeferralRecord",
   "BreedingProgramRecord", "BreedingProgramStepRecord", "PedigreeChangeRecord", "SheepAvatarRecord",
   "FeedStockCountRecord", "TMRBatchIngredientRecord", "TMRBatchLoadLineRecord", "TMRBatchMovementRecord",
@@ -157,6 +158,13 @@ function applyFieldPatch(projection, event, changes) {
   const model = { farm: "FarmRecord", pen: "PenRecord", sheepProfile: "SheepRecord" }[event.stream_type];
   if (!model) throw unsupported(event.stream_type);
   const row = get(projection, model, event.stream_id);
+  const stateTable=projection.models.get("ESheepCloudStreamState");
+  let state=[...stateTable.values()].find(s=>s.streamType===event.stream_type&&s.streamID===event.stream_id.toLowerCase());
+  if(!state){state={id:event.event_id,farmID:projection.farmID,streamType:event.stream_type,streamID:event.stream_id.toLowerCase(),fieldVersionsData:btoa("[]")};stateTable.set(state.id,state);}
+  const versions=JSON.parse(atob(state.fieldVersionsData??btoa("[]")));
+  for(const change of changes){const entry={field:change.field,version:change.field_version,valueDigest:change.value_digest,value:change.value};const i=versions.findIndex(v=>v.field===change.field);if(i<0)versions.push(entry);else versions[i]=entry;}
+  state.fieldVersionsData=btoa(unescape(encodeURIComponent(JSON.stringify(versions))));
+
   for (const change of changes) {
     const field = patchFields[event.stream_type][change.field];
     if (!field) throw unsupported(`${event.stream_type}.${change.field}`);

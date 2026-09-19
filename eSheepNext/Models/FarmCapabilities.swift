@@ -25,6 +25,7 @@ enum FarmCapability: String, CaseIterable, Codable, Hashable, Sendable {
     case manageFarm
     case editFarmLocation
     case exportFarm
+    case exportEvents
     case resolveConflicts
     case recoverFarm
 }
@@ -44,7 +45,7 @@ struct CapabilitySet: Sendable, Equatable {
             true
         case .administrator:
             switch capability {
-            case .readFarm, .recordProduction, .editHistoricalFacts, .manageCatalogs, .viewAnalytics, .editFarmLocation:
+            case .readFarm, .recordProduction, .editHistoricalFacts, .manageCatalogs, .viewAnalytics, .editFarmLocation, .exportEvents:
                 true
             case .deleteProtectedFacts, .manageMembers, .manageFarm, .exportFarm, .resolveConflicts, .recoverFarm:
                 false
@@ -54,7 +55,7 @@ struct CapabilitySet: Sendable, Equatable {
             case .readFarm, .recordProduction:
                 true
             default:
-                grantedWorkerCapabilities.contains(capability)
+                grantedWorkerCapabilities.contains(capability) || (capability == .exportEvents && grantedWorkerCapabilities.contains(.exportFarm))
             }
         }
     }

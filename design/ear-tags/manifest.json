@@ -1,6 +1,6 @@
 {
-  "name": "eSheep+ 七色耳标素材",
-  "version": "2026-09-11-v2",
+  "name": "eSheep+ 十色耳标素材",
+  "version": "2026-09-15-v3",
   "colorOrder": [
     "yellow",
     "green",
@@ -8,7 +8,10 @@
     "white",
     "orange",
     "light-blue",
-    "pink"
+    "pink",
+    "black",
+    "purple",
+    "dark-blue"
   ],
   "semantics": {
     "yellow": "公羊",
@@ -182,6 +185,78 @@
       "height": 2048,
       "sha256": "274a393efca14ec12c212f13c2684e71b49a444add84912f88387a6011124da7",
       "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-five-colors-20260911/vivid-v2/pink-glass-27-smooth@4x.png"
+    },
+    {
+      "color": "black",
+      "file": "png/ear-tag-black.png",
+      "width": 704,
+      "height": 512,
+      "sha256": "a1d9913ab342fa8f1a961e34382af17ff9a876e4ac43936ce1f5305f4c36f83e",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-dark-colors-20260915/black-glass-27-smooth.png"
+    },
+    {
+      "color": "black",
+      "file": "png/ear-tag-black@2x.png",
+      "width": 1408,
+      "height": 1024,
+      "sha256": "44a94c769fc8e7390adc8680de7feae0dbd78585adfa86c6d1f7c3fe98820e95",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-dark-colors-20260915/black-glass-27-smooth@2x.png"
+    },
+    {
+      "color": "black",
+      "file": "png/ear-tag-black@4x.png",
+      "width": 2816,
+      "height": 2048,
+      "sha256": "cb6ef5210b49a7ef3a719b0adcaf70dab568446c37ea042dff2ddb140f32c68d",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-dark-colors-20260915/black-glass-27-smooth@4x.png"
+    },
+    {
+      "color": "purple",
+      "file": "png/ear-tag-purple.png",
+      "width": 704,
+      "height": 512,
+      "sha256": "e639d3d76137469449d0a059b200b646b94060b1726386d3d4247712db5339fc",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-dark-colors-20260915/purple-glass-27-smooth.png"
+    },
+    {
+      "color": "purple",
+      "file": "png/ear-tag-purple@2x.png",
+      "width": 1408,
+      "height": 1024,
+      "sha256": "b2a0c7f922d6094773cc04492ab879fa0f9e76e4be4ffae2f9635ab176fa0158",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-dark-colors-20260915/purple-glass-27-smooth@2x.png"
+    },
+    {
+      "color": "purple",
+      "file": "png/ear-tag-purple@4x.png",
+      "width": 2816,
+      "height": 2048,
+      "sha256": "1939634a9311a56b03d036a4121c01b3e96bdc3f54e9188a7225d72b1cf58cc7",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-dark-colors-20260915/purple-glass-27-smooth@4x.png"
+    },
+    {
+      "color": "dark-blue",
+      "file": "png/ear-tag-dark-blue.png",
+      "width": 704,
+      "height": 512,
+      "sha256": "49f046ae7ba8f2beb9ddbef547c657d0c3c8ade3c2277ceb04503c00efc30249",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-dark-colors-20260915/dark-blue-glass-27-smooth.png"
+    },
+    {
+      "color": "dark-blue",
+      "file": "png/ear-tag-dark-blue@2x.png",
+      "width": 1408,
+      "height": 1024,
+      "sha256": "5afdf0a06b57842653ded49c5972ed741924845ee51aadbf2cfb59e839f9a613",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-dark-colors-20260915/dark-blue-glass-27-smooth@2x.png"
+    },
+    {
+      "color": "dark-blue",
+      "file": "png/ear-tag-dark-blue@4x.png",
+      "width": 2816,
+      "height": 2048,
+      "sha256": "36f575fa8e5ded41a926bf8d95b581fe99d784b2bb87794819a86de94fcd0a2b",
+      "source": "/Volumes/移动硬盘/eSheepNext-Dev/Design/ear-tags-dark-colors-20260915/dark-blue-glass-27-smooth@4x.png"
     }
   ]
 }

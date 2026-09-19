@@ -52,7 +52,7 @@ struct FarmOperationalAlertHomeCard: View {
                 VStack(alignment: .leading, spacing: 10) {
                     StatusRow(
                         title: "暂时无法计算",
-                        detail: "未用 0 项掩盖错误，请重试。",
+                        detail: "暂时无法读取待办，请重新计算。",
                         symbol: "exclamationmark.arrow.triangle.2.circlepath"
                     )
                     Button("重新计算", systemImage: "arrow.clockwise", action: onRetry)
@@ -82,7 +82,7 @@ struct FarmOperationalAlertHomeCard: View {
         } else {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(snapshot.totalPendingCount == 0 ? LocalizedStringKey("全部正常") : LocalizedStringKey("\(snapshot.totalPendingCount) 项待处理"))
+                    Text(snapshot.totalPendingCount == 0 ? LocalizedStringKey("暂无待处理事项") : LocalizedStringKey("\(snapshot.totalPendingCount) 项待处理"))
                         .font(.title3.bold())
                         .foregroundStyle(.primary)
                     categorySummary(snapshot)

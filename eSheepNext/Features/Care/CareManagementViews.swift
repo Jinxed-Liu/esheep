@@ -159,7 +159,7 @@ struct CareReminderCenterView: View {
     }
 }
 
-private enum HealthSubjectMode: String, CaseIterable, Identifiable {
+private enum HealthSubjectMode: String, CaseIterable, Identifiable, Codable {
     case single = "单羊"
     case multiple = "多选"
     case pen = "按圈舍"
@@ -167,6 +167,7 @@ private enum HealthSubjectMode: String, CaseIterable, Identifiable {
 }
 
 struct HealthBatchEntryView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(FarmNotificationService.self) private var notifications
@@ -217,8 +218,28 @@ struct HealthBatchEntryView: View {
     }
     private var matchingCatalogs: [HealthCatalogItemRecord] { catalogs.filter { $0.farmID == farm.id && $0.isActive && catalogMatches($0, kind: kind) } }
     private var matchingLots: [InventoryLotRecord] { lots.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive && $0.kindRawValue == kind.rawValue } }
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("mode", $mode, carry: true),
+            ProductionDraftField("selectedIDs", $selectedIDs, reset: { [] }),
+            ProductionDraftField("penID", $penID, reset: { nil }),
+            ProductionDraftField("kind", $kind, carry: true),
+            ProductionDraftField("catalogID", $catalogID, carry: true),
+            ProductionDraftField("itemName", $itemName, carry: true),
+            ProductionDraftField("inventoryLotID", $inventoryLotID, reset: { nil }),
+            ProductionDraftField("dose", $dose),
+            ProductionDraftField("unit", $unit, carry: true),
+            ProductionDraftField("route", $route, carry: true),
+            ProductionDraftField("occurredAt", $occurredAt, carry: true),
+            ProductionDraftField("hasReminder", $hasReminder),
+            ProductionDraftField("reminderAt", $reminderAt, reset: { .now }),
+            ProductionDraftField("note", $note)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Picker("类型", selection: $kind) { ForEach(HealthRecordKind.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) } }
             Picker("对象", selection: $mode) { ForEach(HealthSubjectMode.allCases) { Text(LocalizedStringKey($0.rawValue)).tag($0) } }.pickerStyle(.segmented)
             Section("实际对象") {
@@ -250,27 +271,27 @@ struct HealthBatchEntryView: View {
                 Picker("目录", selection: $catalogID) { Text("手工填写").tag(UUID?.none); ForEach(matchingCatalogs, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }
                 TextField("名称", text: $itemName)
                 Picker("库存批次", selection: $inventoryLotID) { Text("不扣库存").tag(UUID?.none); ForEach(matchingLots, id: \.id) { Text($0.catalogName).tag(UUID?.some($0.id)) } }
-                TextField("每只剂量", text: $dose).keyboardType(.decimalPad)
+                ProductionValueField(title: "每只剂量", text: $dose)
                 TextField("单位", text: $unit)
                 TextField("给药途径", text: $route)
             }
             Section("时间与提醒") {
-                DatePicker("发生时间", selection: $occurredAt)
+                DatePicker("发生时间", selection: $occurredAt); ProductionTimeModeControl(session: entrySession)
                 Toggle("创建复免提醒", isOn: $hasReminder)
                 if hasReminder { DatePicker("提醒时间", selection: $reminderAt) }
             }
             TextField("备注", text: $note, axis: .vertical).lineLimit(2...5)
         }
         .navigationTitle("治疗或疫苗")
-        .toolbar { EntrySaveToolbar(action: save) }
+        .productionEntry(entrySession, form: "HealthBatchEntryView", account: account, farm: farm, fields: productionFields, save: save)
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["健康记录"])
         .task(id: farm.id) { await loadSheepCandidates() }
-        .onChange(of: mode) { _, _ in selectedIDs.removeAll(); penID = nil }
-        .onChange(of: kind) { _, _ in catalogID = nil; inventoryLotID = nil }
-        .onChange(of: catalogID) { _, id in applyCatalog(id) }
+        .onChange(of: mode) { _, _ in guard !entrySession.isApplyingFields else { return }; selectedIDs.removeAll(); penID = nil }
+        .onChange(of: kind) { _, _ in guard !entrySession.isApplyingFields else { return }; catalogID = nil; inventoryLotID = nil }
+        .onChange(of: catalogID) { _, id in guard !entrySession.isApplyingFields else { return }; applyCatalog(id) }
         .task(id: occurredAt) { await refreshPenOccupancy() }
-        .onChange(of: eligiblePenIDs) { _, validIDs in
+        .onChange(of: eligiblePenIDs) { _, validIDs in guard !entrySession.isApplyingFields else { return };
             if let penID, !validIDs.contains(penID) { self.penID = nil }
         }
     }
@@ -311,10 +332,10 @@ struct HealthBatchEntryView: View {
     private func save() {
         let draft = CareHealthDraft(id: UUID(), batchID: UUID(), subjectIDs: Array(selectedIDs), penID: mode == .pen ? penID : nil, catalogItemID: catalogID, kind: kind, itemName: itemName, occurredAt: occurredAt, note: note, inventoryLotID: inventoryLotID, dosePerSubjectText: dose.isEmpty ? nil : dose, unit: unit, route: route, reminderAt: hasReminder ? reminderAt : nil)
         do {
-            try commandService.execute(.care(.recordHealth(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            try entrySession.execute(.care(.recordHealth(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
             let refreshed = (try? modelContext.fetch(FetchDescriptor<CareReminderRecord>())) ?? reminders
             Task { await notifications.rescheduleCareReminders(refreshed, farmID: farm.id) }
-            dismiss()
+            entrySession.complete()
         } catch { errorMessage = error.localizedDescription }
     }
 }
@@ -449,6 +470,7 @@ private struct CareInventoryLotDetailView: View {
 }
 
 struct ReproductionBatchEntryView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(FarmNotificationService.self) private var notifications
@@ -499,8 +521,24 @@ struct ReproductionBatchEntryView: View {
     private var ramCandidates: [SheepEarTagSearchCandidate] { breedingRams.map { .init(sheep: $0) } }
     private var selectedEwes: [SheepRecord] { ewes.filter { selected.contains($0.id) } }
     private var rule: FarmCareRuleRecord? { rules.first { $0.farmID == farm.id } }
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("kind", $kind, carry: true),
+            ProductionDraftField("selected", $selected, reset: { [] }),
+            ProductionDraftField("results", $results, reset: { [:] }),
+            ProductionDraftField("relatedBreedings", $relatedBreedings, reset: { [:] }),
+            ProductionDraftField("sireID", $sireID, reset: { nil }),
+            ProductionDraftField("semenID", $semenID, reset: { nil }),
+            ProductionDraftField("semenUnits", $semenUnits, reset: { "" }),
+            ProductionDraftField("occurredAt", $occurredAt, carry: true),
+            ProductionDraftField("reminderAt", $reminderAt, reset: { .now }),
+            ProductionDraftField("note", $note)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Picker("类型", selection: $kind) { Text("配种").tag(ReproductionRecordKind.breeding); Text("孕检").tag(ReproductionRecordKind.pregnancyCheck); Text("流产").tag(ReproductionRecordKind.abortion) }
             Section("母羊（可多选）") {
                 SheepEarTagMultiSearchField(
@@ -557,20 +595,20 @@ struct ReproductionBatchEntryView: View {
                         accessibilityName: "种公羊耳号"
                     )
                     Picker("冻精", selection: $semenID) { Text("不使用冻精").tag(UUID?.none); ForEach(farmSemen, id: \.id) { Text($0.code).tag(UUID?.some($0.id)) } }
-                    if semenID != nil { TextField("每只用量", text: $semenUnits).keyboardType(.decimalPad) }
+                    if semenID != nil { ProductionValueField(title: "每只用量", text: $semenUnits) }
                     Text("本场种公羊与冻精必须二选一；普通公羊不会出现在此处。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            DatePicker("发生时间", selection: $occurredAt); if kind != .abortion { DatePicker(kind == .breeding ? "孕检提醒" : "预产提醒", selection: $reminderAt) }; TextField("备注", text: $note, axis: .vertical)
+            DatePicker("发生时间", selection: $occurredAt); ProductionTimeModeControl(session: entrySession); if kind != .abortion { DatePicker(kind == .breeding ? "孕检提醒" : "预产提醒", selection: $reminderAt) }; TextField("备注", text: $note, axis: .vertical)
         }
-        .navigationTitle("批量配种或孕检").toolbar { EntrySaveToolbar(action: save) }.recordErrorAlert($errorMessage)
+        .navigationTitle("批量配种或孕检").productionEntry(entrySession, form: "ReproductionBatchEntryView", account: account, farm: farm, fields: productionFields, save: save).recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["繁殖记录"])
         .onAppear { updateReminder() }
-        .onChange(of: kind) { _, _ in sireID = nil; semenID = nil; relatedBreedings.removeAll(); updateReminder() }
-        .onChange(of: occurredAt) { _, _ in updateReminder() }
-        .onChange(of: sireID) { _, value in if value != nil { semenID = nil } }
-        .onChange(of: semenID) { _, value in if value != nil { sireID = nil } }
+        .onChange(of: kind) { _, _ in guard !entrySession.isApplyingFields else { return }; sireID = nil; semenID = nil; relatedBreedings.removeAll(); updateReminder() }
+        .onChange(of: occurredAt) { _, _ in guard !entrySession.isApplyingFields else { return }; updateReminder() }
+        .onChange(of: sireID) { _, value in guard !entrySession.isApplyingFields else { return }; if value != nil { semenID = nil } }
+        .onChange(of: semenID) { _, value in guard !entrySession.isApplyingFields else { return }; if value != nil { sireID = nil } }
     }
     private func remove(_ id: UUID) {
         selected.remove(id)
@@ -582,10 +620,10 @@ struct ReproductionBatchEntryView: View {
     private func breedingLabel(_ record: ReproductionRecord) -> String { "\(record.occurredAt.formatted(date: .abbreviated, time: .omitted)) · \(record.paternalSource.displayName)" }
     private func expectedLambingDate(for record: ReproductionRecord) -> Date { Calendar.current.date(byAdding: .day, value: rule?.gestationDays ?? 150, to: record.occurredAt) ?? record.occurredAt }
     private func updateReminder() { let days = kind == .breeding ? (rule?.pregnancyCheckDays ?? 45) : (rule?.gestationDays ?? 150); reminderAt = Calendar.current.date(byAdding: .day, value: days, to: occurredAt) ?? occurredAt }
-    private func save() { let subjects = selected.map { CareReproductionSubjectDraft(eweID: $0, result: results[$0] ?? "", relatedBreedingRecordID: kind == .breeding ? nil : relatedBreedings[$0]) }; let draft = CareReproductionBatchDraft(id: UUID(), kind: kind, subjects: subjects, occurredAt: occurredAt, sireID: kind == .breeding ? sireID : nil, semenID: kind == .breeding ? semenID : nil, semenUnitsPerEweText: kind == .breeding && semenID != nil ? semenUnits : nil, note: note, reminderAt: kind == .abortion ? nil : reminderAt); do { try service.execute(.care(.recordReproductionBatch(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); let refreshed = (try? modelContext.fetch(FetchDescriptor<CareReminderRecord>())) ?? reminders; Task { await notifications.rescheduleCareReminders(refreshed, farmID: farm.id) }; dismiss() } catch { errorMessage = error.localizedDescription } }
+    private func save() { let subjects = selected.map { CareReproductionSubjectDraft(eweID: $0, result: results[$0] ?? "", relatedBreedingRecordID: kind == .breeding ? nil : relatedBreedings[$0]) }; let draft = CareReproductionBatchDraft(id: UUID(), kind: kind, subjects: subjects, occurredAt: occurredAt, sireID: kind == .breeding ? sireID : nil, semenID: kind == .breeding ? semenID : nil, semenUnitsPerEweText: kind == .breeding && semenID != nil ? semenUnits : nil, note: note, reminderAt: kind == .abortion ? nil : reminderAt); do { try entrySession.execute(.care(.recordReproductionBatch(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); let refreshed = (try? modelContext.fetch(FetchDescriptor<CareReminderRecord>())) ?? reminders; Task { await notifications.rescheduleCareReminders(refreshed, farmID: farm.id) }; entrySession.complete() } catch { errorMessage = error.localizedDescription } }
 }
 
-private struct LambFormRow: Identifiable {
+private struct LambFormRow: Identifiable, Codable {
     let id: UUID
     let sheepID: UUID
     var earTag: String
@@ -746,8 +784,7 @@ private struct LambFormSection: View {
                 .disabled(row.isStillborn)
             Toggle("记录体重", isOn: recordsWeight)
             if row.weightOccurredAt != nil {
-                TextField("体重（kg）", text: $row.weight)
-                    .keyboardType(.decimalPad)
+                ProductionValueField(title: "体重", text: $row.weight, unit: "千克")
                 DatePicker("称重日期与时间", selection: weightDate, in: lambingAt...Date.now)
                 if let weightKind {
                     LabeledContent("记录类型", value: weightKind.displayName)
@@ -768,6 +805,7 @@ private struct LambFormSection: View {
 }
 
 struct CareLambingEntryView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
@@ -856,8 +894,23 @@ struct CareLambingEntryView: View {
     }
     private var nextParity: Int { recordedCurrentParity + 1 }
 
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("eweID", $eweID, reset: { nil }),
+            ProductionDraftField("sireID", $sireID, reset: { nil }),
+            ProductionDraftField("semenID", $semenID, reset: { nil }),
+            ProductionDraftField("relatedBreedingID", $relatedBreedingID, reset: { nil }),
+            ProductionDraftField("penID", $penID, reset: { nil }),
+            ProductionDraftField("occurredAt", $occurredAt, carry: true),
+            ProductionDraftField("rows", $rows, reset: { [LambFormRow()] }),
+            ProductionDraftField("lambCountText", $lambCountText),
+            ProductionDraftField("note", $note)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Section("产羔母羊") {
                 SheepEarTagSingleSearchField(
                     candidates: eweCandidates,
@@ -868,7 +921,7 @@ struct CareLambingEntryView: View {
                 )
             }
             Section("产羔事实") {
-                DatePicker("产羔时间", selection: $occurredAt, in: ...Date.now)
+                DatePicker("产羔时间", selection: $occurredAt, in: ...Date.now); ProductionTimeModeControl(session: entrySession)
                 Picker("羔羊圈舍", selection: $penID) {
                     Text("未分圈").tag(UUID?.none)
                     ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
@@ -934,15 +987,15 @@ struct CareLambingEntryView: View {
             }
             Section("备注") { TextField("备注", text: $note, axis: .vertical) }
         }
-            .navigationTitle("产羔记录").toolbar { EntrySaveToolbar(action: save) }.recordErrorAlert($errorMessage)
+            .navigationTitle("产羔记录").productionEntry(entrySession, form: "CareLambingEntryView", account: account, farm: farm, fields: productionFields, save: save).recordErrorAlert($errorMessage)
             .farmExcelImport(account: account, farm: farm, sheets: ["产羔"])
             .onAppear(perform: refreshCandidates)
-            .onChange(of: eweID) { _, _ in
+            .onChange(of: eweID) { _, _ in guard !entrySession.isApplyingFields else { return };
                 relatedBreedingID = nil
                 resetAndRefreshCandidates()
                 applyBreedSuggestion()
             }
-            .onChange(of: occurredAt) { oldValue, newValue in
+            .onChange(of: occurredAt) { oldValue, newValue in guard !entrySession.isApplyingFields else { return };
                 for index in rows.indices {
                     guard let weighedAt = rows[index].weightOccurredAt else { continue }
                     if weighedAt == oldValue || weighedAt < newValue {
@@ -953,16 +1006,16 @@ struct CareLambingEntryView: View {
                 resetAndRefreshCandidates()
                 applyBreedSuggestion()
             }
-            .onChange(of: lambCountText) { _, value in resizeRows(to: value) }
-            .onChange(of: relatedBreedingID) { _, value in
+            .onChange(of: lambCountText) { _, value in guard !entrySession.isApplyingFields else { return }; resizeRows(to: value) }
+            .onChange(of: relatedBreedingID) { _, value in guard !entrySession.isApplyingFields else { return };
                 if value != nil { sireID = nil; semenID = nil }
                 applyBreedSuggestion()
             }
-            .onChange(of: sireID) { _, value in
+            .onChange(of: sireID) { _, value in guard !entrySession.isApplyingFields else { return };
                 if value != nil { semenID = nil }
                 applyBreedSuggestion()
             }
-            .onChange(of: semenID) { _, value in
+            .onChange(of: semenID) { _, value in guard !entrySession.isApplyingFields else { return };
                 if value != nil { sireID = nil }
                 applyBreedSuggestion()
             }
@@ -1041,8 +1094,8 @@ struct CareLambingEntryView: View {
         }
         let draft = CareLambingDraft(id: UUID(), eweID: eweID, occurredAt: occurredAt, sireID: relatedBreedingID == nil ? sireID : nil, semenID: relatedBreedingID == nil ? semenID : nil, relatedBreedingRecordID: relatedBreedingID, parity: nextParity, birthDeadCount: offspring.count(where: \.isStillborn), offspring: offspring, penID: penID, note: note)
         do {
-            try service.execute(.care(.recordLambing(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
-            dismiss()
+            try entrySession.execute(.care(.recordLambing(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            entrySession.complete()
         } catch { errorMessage = error.localizedDescription }
     }
 }

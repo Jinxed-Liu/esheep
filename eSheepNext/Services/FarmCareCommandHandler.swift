@@ -120,6 +120,7 @@ enum FarmCareCommandHandler {
         pedigreeAuditRecords: [PedigreeChangeRecord]? = nil
     ) throws -> Bool {
         switch command {
+        case .sheepLabels(let c): return try SheepLabelService.alreadyApplied(c, farmID: farmID, context: context)
         case .upsertHealthCatalog(let id, let kind, let name, let category, let unit, let dose, let route, let interval, let note, let active):
             return try context.fetch(FetchDescriptor<HealthCatalogItemRecord>()).contains { $0.id == id && $0.farmID == farmID && $0.kindRawValue == kind && $0.name == name.trimmed && $0.category == category.trimmed && $0.unit == unit.trimmed && $0.defaultDoseText == dose?.trimmed.nilIfEmpty && $0.defaultRoute == route.trimmed && $0.reminderIntervalDays == interval && $0.note == note.trimmed && $0.isActive == active }
         case .recordHealth(let draft), .correctHealth(_, let draft, _):
@@ -235,6 +236,7 @@ enum FarmCareCommandHandler {
         enforcesExpectedRevision: Bool = true
     ) throws {
         switch command {
+        case .sheepLabels(let c): try SheepLabelService.validate(c, farmID: farmID, context: context, enforceRevision: enforcesExpectedRevision)
         case .upsertHealthCatalog(_, let kindRawValue, let name, _, let unit, let dose, _, let interval, _, _):
             guard HealthRecordKind(rawValue: kindRawValue) != nil else { throw FarmCommandError.missingRequiredValue("健康目录类型") }
             try require(name, "目录名称")
@@ -453,6 +455,7 @@ enum FarmCareCommandHandler {
         onPedigreeAuditInserted: ((PedigreeChangeRecord) -> Void)? = nil
     ) throws -> CareApplyResult {
         switch command {
+        case .sheepLabels(let c): return try SheepLabelService.apply(c, farmID: farmID, accountID: accountID, at: modifiedAt, context: context)
         case .upsertHealthCatalog(let id, let kindRawValue, let name, let category, let unit, let dose, let route, let interval, let note, let isActive):
             let records = try context.fetch(FetchDescriptor<HealthCatalogItemRecord>())
             if let record = records.first(where: { $0.id == id && $0.farmID == farmID }) {

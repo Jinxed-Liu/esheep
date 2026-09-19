@@ -10,7 +10,7 @@ struct FarmAnalysisCenterView: View {
     let assistantTransition: Namespace.ID
     let assistantTransitionID: MotionTransitionID
     let assistantTransitionSpec: MotionTransitionSpec
-    let onAskAssistant: () -> Void
+    let onAskAssistant: (String?) -> Void
     @State private var deepAnalytics = FarmDeepAnalyticsStore()
 
     init(
@@ -18,7 +18,7 @@ struct FarmAnalysisCenterView: View {
         assistantTransition: Namespace.ID,
         assistantTransitionID: MotionTransitionID,
         assistantTransitionSpec: MotionTransitionSpec,
-        onAskAssistant: @escaping () -> Void
+        onAskAssistant: @escaping (String?) -> Void
     ) {
         self.farm = farm
         self.assistantTransition = assistantTransition
@@ -29,44 +29,10 @@ struct FarmAnalysisCenterView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                analysisHero
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("牧场快照")
-                        .font(.headline)
-                    HStack(spacing: 0) {
-                        DashboardMetric(title: "在场羊只", value: metricText(\.activeSheepCount), unit: "只")
-                        Divider().frame(height: 46)
-                        DashboardMetric(title: "有羊圈舍", value: metricText(\.activePenCount), unit: "个")
-                        Divider().frame(height: 46)
-                        DashboardMetric(title: "本月投喂", value: metricText(\.currentMonthFeedCount), unit: "次")
-                    }
-                    .padding(.vertical, 12)
-                    .background(.background, in: .rect(cornerRadius: 18))
-                    .overlay { RoundedRectangle(cornerRadius: 18).stroke(.separator.opacity(0.38), lineWidth: 0.5) }
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("深度分析")
-                        .font(.headline)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 154), spacing: 12)], spacing: 12) {
-                        AnalysisDestination(title: "增重", detail: "体重与 ADG 趋势", symbol: "chart.line.uptrend.xyaxis", tint: .blue) {
-                            WeightGainAnalysisView(farm: farm, dataStore: deepAnalytics)
-                        }
-                        AnalysisDestination(title: "羔羊", detail: "产羔与断奶质量", symbol: "figure.and.child.holdinghands", tint: .orange) {
-                            LambAnalysisView(farm: farm, dataStore: deepAnalytics)
-                        }
-                        AnalysisDestination(title: "繁殖", detail: "胎均与繁殖节律", symbol: "heart.text.square", tint: .pink) {
-                            ReproductionAnalysisView(farm: farm, dataStore: deepAnalytics)
-                        }
-                        AnalysisDestination(title: "采食", detail: "羊天与采食区间", symbol: "chart.bar.xaxis", tint: .green) {
-                            FarmAnalyticsView(farm: farm)
-                        }
-                    }
-                }
-
+            VStack(alignment: .leading, spacing: 24) {
                 assistantPrompt
+                analysisDestinations
+                analysisErrorStatus
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
@@ -82,99 +48,204 @@ struct FarmAnalysisCenterView: View {
         }
     }
 
-    private var analysisHero: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "waveform.path.ecg")
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(AppTheme.brand)
-                .frame(width: 38, height: 38)
-                .background(AppTheme.brand.opacity(0.10), in: .rect(cornerRadius: 12))
-            VStack(alignment: .leading, spacing: 3) {
-                Text("今天的牧场")
-                    .font(.title3.bold())
-                latestActivityView
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+    private var analysisDestinations: some View {
+        SettingsCard(title: "生产分析") {
+            SettingsNavigationRow(
+                title: "增重分析", subtitle: "体重变化、日增重与生长趋势",
+                systemImage: "chart.line.uptrend.xyaxis", iconColor: .blue
+            ) {
+                WeightGainAnalysisView(farm: farm, dataStore: deepAnalytics)
             }
-            Spacer(minLength: 8)
+            .accessibilityIdentifier("analysis-weight-entry")
+            SettingsCardDivider()
+            SettingsNavigationRow(
+                title: "羔羊分析", subtitle: "产羔数量、初生重与断奶表现",
+                systemImage: "figure.and.child.holdinghands", iconColor: .orange
+            ) {
+                LambAnalysisView(farm: farm, dataStore: deepAnalytics)
+            }
+            .accessibilityIdentifier("analysis-lamb-entry")
+            SettingsCardDivider()
+            SettingsNavigationRow(
+                title: "繁殖分析", subtitle: "胎均产羔、胎间距与母羊表现",
+                systemImage: "heart.text.square", iconColor: .pink
+            ) {
+                ReproductionAnalysisView(farm: farm, dataStore: deepAnalytics)
+            }
+            .accessibilityIdentifier("analysis-reproduction-entry")
+            SettingsCardDivider()
+            SettingsNavigationRow(
+                title: "采食分析", subtitle: "圈舍采食量与营养摄入",
+                systemImage: "chart.bar.xaxis", iconColor: .green
+            ) {
+                FarmAnalyticsView(farm: farm)
+            }
+            .accessibilityIdentifier("analysis-intake-entry")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
-    private var latestActivityView: some View {
-        if deepAnalytics.isLoading, deepAnalytics.payload == nil {
-            Text("正在后台准备分析数据…")
-        } else if let errorMessage = deepAnalytics.errorMessage {
-            Text("分析数据暂时无法读取：\(errorMessage)")
-        } else if let latestActivityDate = deepAnalytics.payload?.latestActivityDate {
-            Text("最近记录于 \(latestActivityDate.formatted(.relative(presentation: .named)))")
-        } else {
-            Text("还没有可用于分析的生产记录")
+    private var analysisErrorStatus: some View {
+        if let errorMessage = deepAnalytics.errorMessage {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("分析数据暂时无法读取：\(errorMessage)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button("重新加载") {
+                    Task {
+                        await deepAnalytics.load(container: modelContext.container, farmID: farm.id, force: true)
+                    }
+                }
+                .disabled(deepAnalytics.isLoading)
+            }
+            .padding(.horizontal, 12)
         }
-    }
-
-    private func metricText(_ keyPath: KeyPath<FarmDeepAnalyticsPayload, Int>) -> String {
-        deepAnalytics.payload.map { String($0[keyPath: keyPath]) } ?? "—"
     }
 
     private var assistantPrompt: some View {
-        Button(action: onAskAssistant) {
-            HStack(spacing: 14) {
-                Image(systemName: "sparkles")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(AppTheme.brand)
-                    .frame(width: 44, height: 44)
-                    .background(AppTheme.brand.opacity(0.10), in: .rect(cornerRadius: 14))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("与 AI 助手聊天")
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                    Text("让 AI 助手结合当前牧场记录分析、回答或生成操作草案")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: "arrow.right")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.brand)
-            }
-            .padding(16)
-            .background(.background, in: .rect(cornerRadius: 22))
-            .overlay { RoundedRectangle(cornerRadius: 22).stroke(AppTheme.brand.opacity(0.16), lineWidth: 1) }
-            .contentShape(.rect(cornerRadius: 22))
-            .motionTransitionSource(
-                id: assistantTransitionID,
-                in: assistantTransition,
-                spec: assistantTransitionSpec,
-                background: AppTheme.pageBackground
-            )
+        Button { onAskAssistant(nil) } label: {
+            FarmAssistantBanner(cornerRadius: assistantTransitionSpec.cornerRadius)
+                .contentShape(.rect(cornerRadius: assistantTransitionSpec.cornerRadius))
+                .motionTransitionSource(
+                    id: assistantTransitionID,
+                    in: assistantTransition,
+                    spec: assistantTransitionSpec,
+                    background: AppTheme.pageBackground
+                )
         }
         .buttonStyle(MotionSurfaceButtonStyle())
-        .accessibilityHint("打开全屏 AI 助手")
+        .frame(maxWidth: .infinity)
+        .accessibilityIdentifier("analysis-assistant-entry")
+        .accessibilityLabel("询问 AI 助手")
+        .accessibilityHint("打开 AI 助手对话")
     }
 }
 
-private struct DashboardMetric: View {
-    let title: String
-    let value: String
-    let unit: String
+private struct FarmAssistantBanner: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    let cornerRadius: CGFloat
 
     var body: some View {
-        VStack(spacing: 4) {
-            HStack(alignment: .lastTextBaseline, spacing: 2) {
-                Text(value)
-                    .font(.title2.bold())
-                Text(unit)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Text(LocalizedStringKey(title))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+        ZStack(alignment: .bottomTrailing) {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.08, green: 0.24, blue: 0.48),
+                    Color(red: 0.14, green: 0.40, blue: 0.70),
+                    Color(red: 0.24, green: 0.60, blue: 0.84),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            assistantVisual
+                .offset(x: -4, y: 0)
+
+            assistantCopy
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(16)
         }
-        .frame(maxWidth: .infinity)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: dynamicTypeSize.isAccessibilitySize ? 180 : 126,
+            alignment: .leading
+        )
+        .clipShape(.rect(cornerRadius: cornerRadius))
+        .overlay {
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .stroke(
+                    LinearGradient(
+                        colors: [.white.opacity(0.42), .white.opacity(0.08)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.8
+                )
+        }
+        .shadow(color: .black.opacity(0.18), radius: 24, y: 12)
+    }
+
+    private var assistantCopy: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 5) {
+                Image(systemName: "sparkles")
+                    .font(.caption.weight(.semibold))
+                Text("AI 辅助分析")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.72))
+
+            HStack(spacing: 7) {
+                Text("牧场洞察")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                Image(systemName: "arrow.up.right")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.78))
+            }
+
+            HStack(spacing: 7) {
+                Text("记录")
+                Circle()
+                    .fill(.white.opacity(0.42))
+                    .frame(width: 3, height: 3)
+                Text("趋势")
+                Circle()
+                    .fill(.white.opacity(0.42))
+                    .frame(width: 3, height: 3)
+                Text("分析")
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.white.opacity(0.78))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(.white.opacity(0.11), in: .capsule)
+            .overlay {
+                Capsule()
+                    .stroke(.white.opacity(0.15), lineWidth: 0.6)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.trailing, 92)
+    }
+
+    private var assistantVisual: some View {
+        ZStack {
+            Circle()
+                .fill(.white.opacity(0.08))
+                .frame(width: 98, height: 98)
+
+            Circle()
+                .stroke(.white.opacity(0.2), lineWidth: 1)
+                .frame(width: 82, height: 82)
+
+            Circle()
+                .fill(.white.opacity(0.16))
+                .frame(width: 58, height: 58)
+                .overlay {
+                    Circle()
+                        .stroke(.white.opacity(0.34), lineWidth: 1)
+                }
+                .overlay {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 23, weight: .medium))
+                        .foregroundStyle(.white)
+                }
+
+            Image(systemName: "chart.line.uptrend.xyaxis")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.78))
+                .offset(x: 36, y: 8)
+
+            Image(systemName: "bubble.left.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.64))
+                .offset(x: -35, y: -21)
+        }
+        .frame(width: 102, height: 102)
+        .accessibilityHidden(true)
     }
 }
 
@@ -934,6 +1005,17 @@ private struct ReproductionAnalysisView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                #if DEBUG
+                NavigationLink {
+                    PenReproductionAnalysisView(farm: farm, dataStore: dataStore)
+                } label: {
+                    Label("羊舍母羊分析 · 四项名单与总体评价", systemImage: "house.and.flag")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                        .background(AppTheme.brand.opacity(0.08), in: .rect(cornerRadius: 16))
+                }
+                #endif
                 Text("从胎均、繁殖间隔到品种维度查看繁殖效率")
                     .analysisPageSubtitle()
                 AnalysisFilterBar {
@@ -1311,41 +1393,6 @@ private struct ReproductionFilterSheet: View {
         refreshOptions()
         onApply(draft)
         dismiss()
-    }
-}
-
-private struct AnalysisDestination<Destination: View>: View {
-    let title: String
-    let detail: String
-    let symbol: String
-    let tint: Color
-    @ViewBuilder let destination: () -> Destination
-
-    var body: some View {
-        NavigationLink(destination: destination) {
-            HStack(spacing: 10) {
-                Image(systemName: symbol)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 34, height: 34)
-                    .background(tint.opacity(0.10), in: .rect(cornerRadius: 11))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(LocalizedStringKey(title))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text(LocalizedStringKey(detail))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
-            .background(.background, in: .rect(cornerRadius: 16))
-            .overlay { RoundedRectangle(cornerRadius: 16).stroke(.separator.opacity(0.38), lineWidth: 0.5) }
-        }
-        .buttonStyle(.plain)
     }
 }
 

@@ -16,6 +16,8 @@ enum CloudEntityType: String, CaseIterable, Codable, Sendable {
     case farm
     case pen
     case sheep
+    case sheepLabel
+    case sheepLabels
     case weight
     case weaning
     case breedingProgram

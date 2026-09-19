@@ -163,6 +163,8 @@ enum SheepEarTagSearchMatcher {
 }
 
 struct SheepEarTagSingleSearchField: View {
+    @Environment(\.productionEntryFocusRevision) private var entryFocusRevision
+    @FocusState private var entryFocused: Bool
     let candidates: [SheepEarTagSearchCandidate]
     @Binding var selection: UUID?
     var prompt = "输入耳号搜索"
@@ -214,6 +216,8 @@ struct SheepEarTagSingleSearchField: View {
             )
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
+                .focused($entryFocused)
+                .onChange(of: entryFocusRevision) { _, _ in query = ""; entryFocused = true }
                 .submitLabel(.search)
                 .accessibilityLabel(accessibilityName)
             if !query.isEmpty {
@@ -280,6 +284,8 @@ struct SheepEarTagSingleSearchField: View {
 }
 
 struct SheepEarTagMultiSearchField: View {
+    @Environment(\.productionEntryFocusRevision) private var entryFocusRevision
+    @FocusState private var entryFocused: Bool
     let candidates: [SheepEarTagSearchCandidate]
     @Binding var selection: Set<UUID>
     var maximumSelectionCount: Int? = nil
@@ -312,6 +318,13 @@ struct SheepEarTagMultiSearchField: View {
             : SheepEarTagSearchResultSet(matches: [], totalCount: 0)
 
         Group {
+            let unavailable = selection.subtracting(Set(candidates.map(\.id)))
+            if !unavailable.isEmpty {
+                HStack {
+                    Text("\(unavailable.count) 只已选羊只不再符合当前条件").font(.footnote).foregroundStyle(.orange)
+                    Button("清除失效选择") { selection.subtract(unavailable) }.buttonStyle(.borderless)
+                }
+            }
             if showsSelectedCandidates {
                 if selectedCandidates.isEmpty, !hasQuery {
                     Text(LocalizedStringKey(emptySelectionText))
@@ -339,6 +352,8 @@ struct SheepEarTagMultiSearchField: View {
             TextField(LocalizedStringKey(prompt), text: $query)
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
+                .focused($entryFocused)
+                .onChange(of: entryFocusRevision) { _, _ in query = ""; entryFocused = true }
                 .submitLabel(.search)
                 .accessibilityLabel(accessibilityName)
             if !query.isEmpty {

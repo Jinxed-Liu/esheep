@@ -49,6 +49,9 @@ struct RootView: View {
     @Query private var storageProfiles: [FarmStorageProfile]
     @Query private var initialSyncSessions: [ESheepCloudInitialSyncSession]
     @State private var lifecycleCoordinator = AppLifecycleCoordinator()
+    #if DEBUG
+    @State private var didRunParityAudit = false
+    #endif
 
     var body: some View {
         @Bindable var session = session
@@ -98,6 +101,15 @@ struct RootView: View {
             session.consumePendingNavigationRequest()
             session.consumeSystemNavigationTarget()
         }
+        #if DEBUG
+        .task(id: session.accountAccessStatus.allowsCloudOperations) {
+            guard session.accountAccessStatus.allowsCloudOperations,
+                  !didRunParityAudit, let account = activeAccount else { return }
+            didRunParityAudit = true
+            await DevelopmentParityRepair.runIfRequested(account: account,
+                container: modelContext.container, collaboration: collaboration)
+        }
+        #endif
         .onChange(of: session.selectedFarmID) { _, _ in
             PerformanceTrace.event(.farmSwitch, count: visibleFarms.count)
         }

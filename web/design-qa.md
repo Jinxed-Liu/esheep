@@ -1,52 +1,59 @@
-# eSheep+ Web redesign QA
+# eSheep+ Web — 晴空玻璃实现验收
 
-- Selected reference: `design-qa-assets/home-redesign-option-1.png` (1487 × 1058)
-- Browser implementation: `design-qa-assets/home-redesign-implementation.png` (1487 × 1058)
-- Combined comparison input: `design-qa-assets/home-redesign-comparison.png`
-- Mobile evidence: `design-qa-assets/home-redesign-mobile.png` (390 × 844)
-- Browser state: authenticated cloud workspace; unauthenticated users are held at the eSheep+ login screen and no demo route is available.
+Date: 2026-09-17. Scope: approved visual design implemented in the existing React application; local component and interaction acceptance. This report supersedes the old rail-based home visual report. Its original text and previous analytics evidence remain in the backup below and existing design assets.
 
-## Visual fidelity
+## Evidence
 
-- P0: none. The App shell, navigation, home information hierarchy, primary action, alert/status groups, and TMR context all render and remain usable.
-- P1: none. The implementation matches the selected 142 px rail, 95 px top bar, 1487 × 1058 desktop canvas, main/right-column split, content edges, vertical rhythm, blue/white palette, thin separators, and compact row anatomy.
-- P2: none requiring correction. Intentional product-truth differences are the direct Phosphor `Tag` glyph in place of the generated sheep glyph and an explicit `云端读取已连接` state; unauthenticated visitors never enter a farm workspace.
-- Copy check: primary navigation, quick actions, alert labels/counts, production status, and TMR plan/actual labels match the selected direction. Dynamic farm/account/cloud values remain data-driven.
-- Responsive check: 390 × 844 has no page-level horizontal overflow; the rail becomes a five-item bottom navigation and tables keep their own horizontal scroll.
+- Approved target: `design-qa-assets/skyglass-approved.png` (1586 × 992).
+- Browser implementation: `design-qa-assets/skyglass-desktop.png` (1586 × 992).
+- Side-by-side source + implementation: `design-qa-assets/skyglass-comparison.png`.
+- Focused comparisons: `skyglass-actions-comparison.png`, `skyglass-header-comparison.png` in the same directory.
+- Mobile: `skyglass-mobile.png`, `skyglass-mobile-activity.png` (390 × 844).
+- Empty data: `skyglass-empty.png` (390 × 844); counts render as zero and recent activity shows the empty-state message.
+- Local URL: http://127.0.0.1:5178/design-qa-assets/skyglass-review.html
+- Fixture harness mounts actual application components. It imports no cloud client and uses a no-op save; the visible footer identifies example data. Actual authenticated application entry remains `/`.
 
-## Interaction acceptance
+## Source comparison and corrections
 
-- All five App destinations open: 首页、洞察、录入、投喂、搜索.
-- Browser-only draft weighing flow submits and appears in recent events without claiming a cloud write.
-- Unified search opens the selected sheep detail.
-- Feeding opens TMR completion/deviation monitoring with three meal rows.
-- A fresh browser tab completed the primary-route sweep with no console errors or warnings.
+The source and browser capture were reviewed together at the same canvas size, followed by focused header/actions crops.
+
+| Area | Result |
+| --- | --- |
+| Composition | Horizontal capsule navigation, open overview, 2.08:1 production/actions split and full-width activity match the approved hierarchy. No desktop sidebar. |
+| Main action | 新建记录 sits inside 今日操作 beside its title. It opens the existing canonical record selector. |
+| Typography | Green/ink hero title, large numerals, medium production titles and quiet descriptions retain the source hierarchy. System Chinese font rendering differs slightly from the generated source. |
+| Spacing | Main panels begin at y=390 and recent activity at y=732 on the 1586 × 992 canvas. Activity was compacted after comparison. |
+| Color and material | Pale sky/mint/gold background, translucent white panels, color-coded icons, glossy green CTA and highlighted green title retained. Final pass strengthened icon gradients and button highlights. |
+| Brand and icons | Brand comes from the exact user-supplied Icon Composer document. Sheep tile is generated in the selected style. Standard feature glyphs use existing Phosphor icons; their silhouettes are intentionally not pixel-identical to generated artwork. |
+| Content | Real app reads existing metrics/events; no invented day-over-day comparisons. Current farm-local date replaces the mock date. Historical records show dates as well as time. Alerts and TMR sections appear when real data exists. |
+| Responsive | Tested widths 320, 390, 768, 1024, 1280, 1586; no page-level horizontal overflow. Mobile uses stacked content and a five-destination bottom bar with reserved page space. |
+
+Fixed during review: initially undersized sheep tile; excessive activity height; mobile bottom-navigation shrink; mobile farm/account popovers positioned below the viewport by legacy CSS. Rechecked farm switching after the menu fix.
+
+P0: none. P1: none. P2: none outstanding in the tested scope. P3: standard glyph silhouettes and exact light/shadow rendering differ from the generated mock; they preserve meaning and layout and are not pixel-perfect reproductions.
+
+## Functional acceptance
+
+- All five primary destinations render: 首页、洞察、录入、投喂、搜索.
+- New-record selector exposes 28 canonical choices; weight/transfer/feed quick actions open corresponding existing forms. Mobile selector opens correctly. No business form was submitted.
+- Sheep archive opens the actual Flock page; searching D034 returns the expected fixture. Recent D021 entry opens actual event detail. Unified search D021 returns the matching sheep.
+- Farm picker switches to the second fixture farm and back; account menu opens settings/assistant entries; Escape dismisses menus.
+- Empty metrics preserve zero; the activity empty-state copy is visible.
+- A development-only harness HMR duplicate-root warning was addressed with root disposal. Final fresh browser load plus new-record open/close had zero console errors/warnings.
+
+## Automated verification
+
+- `npm run build`: passed; production client and server artifacts generated.
+- `npm test`: 95/95 passed.
+- `npm run test:sites`: 6/6 passed (subset also present in the full suite).
+- `git diff --check`: passed.
+- Production artifact check: `dist/client/index.html`, `dist/server/index.js`, `dist/.openai/hosting.json` exist.
+- Production JS/HTML scan found no `review-weight`, `skyglass-review`, or second fixture-farm string; review entry is not a build input.
+
+## Boundaries and recovery
+
+This validates local layout and component behavior. It does not claim live cloud write acceptance, signed-in farm end-to-end regression, deployment, or physical-device acceptance. Existing cloud/projection code and other pre-existing working-tree changes were preserved.
+
+Before-edit backup: `backups/web-skyglass-20260917-000344/`, including touched-file originals, manifest, and the pre-existing web diff. User icon source was not modified.
 
 final result: passed
-
-## App analytics parity QA
-
-- Desktop evidence: `design-qa-assets/insights-app-parity-desktop.png` (1440 × 1000 viewport)
-- Mobile evidence: `design-qa-assets/insights-app-parity-mobile.png` (390 × 844 viewport)
-- Live workspace: the signed-in Supabase farm at the default local URL; no demo values were used for the analytics acceptance.
-
-### Reference mismatch ledger
-
-1. Rail and top bar: matches the selected reference's fixed blue brand rail, white account bar, selected-route treatment, and left content origin.
-2. Main canvas: matches the reference's blue-white surface, thin separators, square-soft cards, and wide desktop rhythm; the analytics page intentionally uses the full content width instead of the home-only action sidebar.
-3. KPI anatomy: the four analytics totals use the same icon/label/value/unit hierarchy as the home livestock, pen, and feeding totals, with App-specific sample units retained.
-4. Destination cards: the two-column desktop grid keeps the reference's row geometry and chevrons; descriptions are denser because each destination must expose its statistical boundary before opening.
-5. Right-side operations column: intentionally absent on the analytics route because new-record actions and today's TMR are home context, not analytics context; adding them here would change the selected App information architecture.
-6. Typography and color: title weight, muted supporting copy, App blue accent, status green, and border contrast remain within the selected system; analysis-specific warnings use the same restrained notice treatment.
-7. Mobile collapse: the rail becomes the five-item bottom navigation, KPI rows become one column, and the 390 px viewport reports `scrollWidth === innerWidth`; no page-level horizontal overflow was found.
-8. Data-state difference: the live farm currently has no qualifying recent feed/trough intervals, so the App-correct result is `0` with an explicit boundary explanation rather than the reference mockup's illustrative TMR values.
-
-### Analytics interaction acceptance
-
-- All four destinations load from live cloud projections: 增重、羔羊（产羔/断奶）、繁殖（胎间距/产后天数/品种）、采食营养.
-- Historical lamb offspring stored with `sexRawValue` render as concrete 公/母 values.
-- The 7-day and 30-day feeding presets switch without the former per-pen full sheep-day recomputation stall.
-- The live event table contains 637 rendered rows; the placeholder scan found no blank object/value cells, `对象某某`, `未知对象`, `资料未展开`, or `[object Object]` values.
-- Browser console acceptance: no errors or warnings.
-
-analytics result: passed

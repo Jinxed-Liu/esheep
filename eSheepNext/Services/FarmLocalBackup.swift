@@ -198,7 +198,7 @@ enum FarmLocalBackupService {
             || context.fetch(FetchDescriptor<SheepAvatarRecord>()).contains { $0.farmID == farm.id }
         guard !hasData else { throw FarmLocalBackupError.targetNotEmpty }
         try validateIdentifierCollisions(preview.envelope.payload, targetFarmID: farm.id, context: context)
-        insert(preview.envelope.payload, farmID: farm.id, accountID: account.effectiveAccountID, context: context)
+        try insert(preview.envelope.payload, farmID: farm.id, accountID: account.effectiveAccountID, context: context)
         try additionalRestore?(farm.id, account.effectiveAccountID, context)
         farm.name = preview.envelope.payload.farm.name
         farm.updatedAt = .now
@@ -234,13 +234,13 @@ enum FarmLocalBackupService {
         let context = ModelContext(container)
         let accountID = UUID()
         context.insert(FarmRecord(id: envelope.payload.farm.id, ownerAccountID: accountID, name: envelope.payload.farm.name))
-        insert(envelope.payload, farmID: envelope.payload.farm.id, accountID: accountID, context: context, includeAudits: false)
+        try insert(envelope.payload, farmID: envelope.payload.farm.id, accountID: accountID, context: context, includeAudits: false)
         try context.save()
         try FarmHistoryRebuilder().rebuild(farmID: envelope.payload.farm.id, context: context, from: .distantPast)
         try context.save()
     }
 
-    private static func insert(_ payload: FarmBackupPayloadV1, farmID: UUID, accountID: UUID, context: ModelContext, includeAudits: Bool = true) {
+    private static func insert(_ payload: FarmBackupPayloadV1, farmID: UUID, accountID: UUID, context: ModelContext, includeAudits: Bool = true) throws {
         payload.care?.insertDonors(farmID: farmID, context: context)
         for value in payload.pens { let record = PenRecord(id: value.id, farmID: farmID, name: value.name, note: value.note, createdAt: value.createdAt); record.isActive = value.isActive; record.revision = value.revision; record.updatedAt = value.updatedAt; record.deletedAt = value.deletedAt; context.insert(record) }
         for value in payload.sheep { let record = SheepRecord(id: value.id, farmID: farmID, earTag: value.earTag, isHistoricalArchive: value.isHistoricalArchive, breed: value.breed, purpose: value.purpose, isBreedingRam: value.isBreedingRam, sex: value.sex, penID: value.initialPenID, enteredAt: value.enteredAt, birthAt: value.birthAt, damID: value.damID, sireID: value.sireID, damProvenance: value.damProvenanceRawValue.flatMap(PedigreeRelationSource.init(rawValue:)), sireProvenance: value.sireProvenanceRawValue.flatMap(PedigreeRelationSource.init(rawValue:)), semenDonorID: value.semenDonorID, semenDonorNameSnapshot: value.semenDonorNameSnapshot, semenDonorRegistrationNumberSnapshot: value.semenDonorRegistrationNumberSnapshot, semenDonorBreedSnapshot: value.semenDonorBreedSnapshot, note: value.note); record.statusRawValue = value.status.rawValue; record.currentPenID = value.currentPenID; record.removedAt = value.removedAt; record.revision = value.revision; record.createdAt = value.createdAt; record.updatedAt = value.updatedAt; record.deletedAt = value.deletedAt; context.insert(record) }
@@ -248,7 +248,7 @@ enum FarmLocalBackupService {
         for value in payload.transfers { let record = TransferRecord(id: value.id, farmID: farmID, sheepID: value.sheepID, fromPenID: value.fromPenID, toPenID: value.toPenID, occurredAt: value.occurredAt, note: value.note); record.recordedAt = value.recordedAt; record.revision = value.revision; record.deletedAt = value.deletedAt; context.insert(record) }
         for value in payload.removals { let record = RemovalRecord(id: value.id, farmID: farmID, sheepID: value.sheepID, kind: value.kind, reason: value.reason, amountText: value.amountText, removalBatchID: value.removalBatchID, batchTotalAmountText: value.batchTotalAmountText, occurredAt: value.occurredAt, note: value.note); record.recordedAt = value.recordedAt; record.revision = value.revision; record.deletedAt = value.deletedAt; context.insert(record) }
         for value in payload.tombstones { let record = TombstoneRecord(id: value.id, farmID: farmID, entityType: value.entityType, entityID: value.entityID, deletedByAccountID: accountID, reason: value.reason, revision: value.revision); record.deletedAt = value.deletedAt; record.restoredAt = value.restoredAt; context.insert(record) }
-        payload.care?.insert(farmID: farmID, context: context, includeDonors: false)
+        try payload.care?.insert(farmID: farmID, context: context, includeDonors: false)
         payload.feeding?.insert(farmID: farmID, context: context)
         if includeAudits { for value in payload.audits { context.insert(DomainOperation(id: value.id, farmID: farmID, accountID: accountID, kind: value.kind, occurredAt: value.occurredAt, summary: value.summary, entityType: value.entityType, entityID: value.entityID, baseRevision: value.baseRevision, resultingRevision: value.resultingRevision, payload: value.payload)) } }
     }

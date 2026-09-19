@@ -867,13 +867,13 @@ struct TMRFeedingPlanEditorView: View {
     }
 }
 
-private struct TMRLoadInput: Identifiable, Hashable {
+private struct TMRLoadInput: Identifiable, Hashable, Codable {
     var id = UUID()
     var stockBatchID: UUID?
     var actualKilogramsText: String = ""
 }
 
-private struct TMRProductionIngredientInput: Identifiable, Hashable {
+private struct TMRProductionIngredientInput: Identifiable, Hashable, Codable {
     let id: UUID
     let ingredientID: UUID
     let ingredientName: String
@@ -881,7 +881,7 @@ private struct TMRProductionIngredientInput: Identifiable, Hashable {
     var loads: [TMRLoadInput]
 }
 
-private enum TMRProductionQuantitySource: String, CaseIterable, Identifiable {
+private enum TMRProductionQuantitySource: String, CaseIterable, Identifiable, Codable {
     case customMultiplier
     case feedingPlan
 
@@ -894,7 +894,7 @@ private enum TMRProductionQuantitySource: String, CaseIterable, Identifiable {
     }
 }
 
-private enum TMRCustomProductionInput: String, CaseIterable, Identifiable {
+private enum TMRCustomProductionInput: String, CaseIterable, Identifiable, Codable {
     case totalKilograms
     case multiplier
 
@@ -908,6 +908,7 @@ private enum TMRCustomProductionInput: String, CaseIterable, Identifiable {
 }
 
 struct TMRBatchProductionView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \FeedRecipeRecord.name) private var recipes: [FeedRecipeRecord]
@@ -990,8 +991,27 @@ struct TMRBatchProductionView: View {
         rows.flatMap(\.loads).reduce(0) { $0 + (tmrDecimal($1.actualKilogramsText) ?? 0) }
     }
 
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("formulaID", $formulaID, carry: true),
+            ProductionDraftField("quantitySource", $quantitySource, carry: true),
+            ProductionDraftField("customInput", $customInput, carry: true),
+            ProductionDraftField("customTotalText", $customTotalText),
+            ProductionDraftField("multiplierText", $multiplierText, reset: { "" }),
+            ProductionDraftField("planID", $planID, carry: true),
+            ProductionDraftField("planDate", $planDate, carry: true),
+            ProductionDraftField("selectedMeals", $selectedMeals, carry: true),
+            ProductionDraftField("producedAt", $producedAt, carry: true),
+            ProductionDraftField("rows", $rows, reset: { rows.map { row in
+                TMRProductionIngredientInput(id: row.id, ingredientID: row.ingredientID, ingredientName: row.ingredientName, plannedKilogramsText: "", loads: [TMRLoadInput()])
+            } }),
+            ProductionDraftField("note", $note)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Section("本锅来源") {
                 Picker("计算方式", selection: $quantitySource) {
                     ForEach(TMRProductionQuantitySource.allCases) { source in
@@ -999,7 +1019,7 @@ struct TMRBatchProductionView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: quantitySource) { _, source in
+                .onChange(of: quantitySource) { _, source in guard !entrySession.isApplyingFields else { return };
                     if source == .feedingPlan {
                         configureSelectedPlan(preferCurrent: true)
                     } else {
@@ -1019,7 +1039,7 @@ struct TMRBatchProductionView: View {
                             Text(recipeName(profile.recipeID)).tag(UUID?.some(profile.recipeID))
                         }
                     }
-                    .onChange(of: formulaID) { _, _ in
+                    .onChange(of: formulaID) { _, _ in guard !entrySession.isApplyingFields else { return };
                         rebuildRows()
                         if customInput == .totalKilograms, tmrDecimal(customTotalText) != nil {
                             applyCustomTotal()
@@ -1033,7 +1053,7 @@ struct TMRBatchProductionView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .onChange(of: customInput) { _, input in
+                    .onChange(of: customInput) { _, input in guard !entrySession.isApplyingFields else { return };
                         if input == .totalKilograms {
                             customTotalText = plannedTotal.stableText
                         }
@@ -1047,7 +1067,7 @@ struct TMRBatchProductionView: View {
                                 .multilineTextAlignment(.trailing)
                             Text("kg")
                         }
-                        .onChange(of: customTotalText) { _, _ in applyCustomTotal() }
+                        .onChange(of: customTotalText) { _, _ in guard !entrySession.isApplyingFields else { return }; applyCustomTotal() }
                     } else {
                         HStack {
                             Text("配方倍率")
@@ -1056,14 +1076,14 @@ struct TMRBatchProductionView: View {
                                 .keyboardType(.decimalPad)
                                 .multilineTextAlignment(.trailing)
                         }
-                        .onChange(of: multiplierText) { _, _ in
+                        .onChange(of: multiplierText) { _, _ in guard !entrySession.isApplyingFields else { return };
                             updatePlannedAmounts()
                             customTotalText = plannedTotal.stableText
                         }
                     }
                 } else {
                     DatePicker("计划日期", selection: $planDate, displayedComponents: .date)
-                        .onChange(of: planDate) { _, _ in configureSelectedPlan(preferCurrent: true) }
+                        .onChange(of: planDate) { _, _ in guard !entrySession.isApplyingFields else { return }; configureSelectedPlan(preferCurrent: true) }
                     Picker("投喂计划", selection: $planID) {
                         Text("请选择").tag(UUID?.none)
                         ForEach(plansForSelectedDate, id: \.id) { plan in
@@ -1075,7 +1095,7 @@ struct TMRBatchProductionView: View {
                             .tag(UUID?.some(plan.id))
                         }
                     }
-                    .onChange(of: planID) { _, _ in configureSelectedPlan(preferCurrent: false) }
+                    .onChange(of: planID) { _, _ in guard !entrySession.isApplyingFields else { return }; configureSelectedPlan(preferCurrent: false) }
                     if let selectedPlan {
                         LabeledContent("计划快照") {
                             Text("\(selectedPlan.formulaNameSnapshot) v\(selectedPlan.formulaRevision)")
@@ -1116,7 +1136,7 @@ struct TMRBatchProductionView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                DatePicker("制作时间", selection: $producedAt)
+                DatePicker("制作时间", selection: $producedAt); ProductionTimeModeControl(session: entrySession)
                 Text("按计划选择多顿只是本锅产量计算快捷方式，不会生成“全天汇总”投喂记录；实际投喂仍逐顿、逐舍录入。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -1187,12 +1207,7 @@ struct TMRBatchProductionView: View {
         }
         .navigationTitle("制作 TMR")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) {
-                Button("保存成锅", action: produce).disabled(producedBatchID != nil)
-            }
-        }
+        .productionEntry(entrySession, form: "TMRBatchProductionView", account: account, farm: farm, fields: productionFields, save: produce)
         .onAppear(perform: loadIfNeeded)
         .recordErrorAlert($errorMessage)
     }
@@ -1200,9 +1215,9 @@ struct TMRBatchProductionView: View {
     private func loadIfNeeded() {
         guard !didLoad else { return }
         didLoad = true
-        if formulaID == nil { formulaID = farmProfiles.first?.recipeID }
         rebuildRows()
-        customTotalText = plannedTotal.stableText
+        customTotalText = formulaID == nil ? "" : plannedTotal.stableText
+        entrySession.acceptInitialValues(fields: productionFields)
     }
 
     private func configureSelectedPlan(preferCurrent: Bool) {
@@ -1464,7 +1479,7 @@ struct TMRBatchProductionView: View {
         }
         let batchID = UUID()
         do {
-            try commandService.produceTMRBatch(
+            try entrySession.produceTMRBatch(
                 TMRBatchProductionDraft(
                     id: batchID,
                     formulaID: formulaID,
@@ -1480,7 +1495,7 @@ struct TMRBatchProductionView: View {
                 in: tmrFarmContext(account: account, farm: farm),
                 context: modelContext
             )
-            producedBatchID = batchID
+            entrySession.complete()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1804,7 +1819,7 @@ private struct TMRBatchAdjustmentView: View {
     }
 }
 
-private struct TMRFeedPenInput: Identifiable, Hashable {
+private struct TMRFeedPenInput: Identifiable, Hashable, Codable {
     let id: UUID
     let penID: UUID
     let penName: String
@@ -1814,6 +1829,7 @@ private struct TMRFeedPenInput: Identifiable, Hashable {
 }
 
 struct TMRFeedingEntryView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \TMRBatchRecord.producedAt, order: .reverse) private var batches: [TMRBatchRecord]
@@ -1865,8 +1881,22 @@ struct TMRFeedingEntryView: View {
         "\(batchID?.uuidString ?? "none"):\(occurredAt.timeIntervalSince1970):\(meal.rawValue)"
     }
 
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("batchID", $batchID, reset: { nil }),
+            ProductionDraftField("occurredAt", $occurredAt, carry: true),
+            ProductionDraftField("meal", $meal, carry: true),
+            ProductionDraftField("totalKilogramsText", $totalKilogramsText),
+            ProductionDraftField("penRows", $penRows, reset: { penRows.map { row in
+                TMRFeedPenInput(id: UUID(), penID: row.penID, penName: row.penName, isSelected: false, headCountText: "", actualKilogramsText: "")
+            } }),
+            ProductionDraftField("note", $note)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Section("出锅投喂") {
                 Picker("TMR 批次", selection: $batchID) {
                     Text("请选择").tag(UUID?.none)
@@ -1875,7 +1905,7 @@ struct TMRFeedingEntryView: View {
                             .tag(UUID?.some(batch.id))
                     }
                 }
-                DatePicker("投喂时间", selection: $occurredAt)
+                DatePicker("投喂时间", selection: $occurredAt); ProductionTimeModeControl(session: entrySession)
                 Picker("顿次", selection: $meal) {
                     ForEach(TMRMealPeriod.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) }
                 }
@@ -1973,12 +2003,7 @@ struct TMRFeedingEntryView: View {
         }
         .navigationTitle("记录 TMR 投喂")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) {
-                Button("保存", action: save).disabled(isSaving)
-            }
-        }
+        .productionEntry(entrySession, form: "TMRFeedingEntryView", account: account, farm: farm, fields: productionFields, save: save)
         .onAppear(perform: loadIfNeeded)
         .task(id: monitorTaskID) { await loadTargetsAndHeadCounts() }
         .confirmationDialog(
@@ -1991,7 +2016,7 @@ struct TMRFeedingEntryView: View {
                 pendingReopenDraft = nil
                 performSave(draft)
             }
-            Button("取消", role: .cancel) { pendingReopenDraft = nil }
+            Button("取消", role: .cancel) { pendingReopenDraft = nil; entrySession.cancelDeferredSubmission() }
         } message: {
             Text("本次追加涉及已手工完成的圈舍顿次。确认后，重新打开与追加投料会作为同一个原子操作保存。")
         }
@@ -2001,10 +2026,10 @@ struct TMRFeedingEntryView: View {
     private func loadIfNeeded() {
         guard !didLoad else { return }
         didLoad = true
-        if batchID == nil { batchID = farmBatches.first?.id }
         penRows = pens.filter { $0.farmID == farm.id && $0.deletedAt == nil && $0.isActive }.map {
             TMRFeedPenInput(id: UUID(), penID: $0.id, penName: $0.name, isSelected: false, headCountText: "", actualKilogramsText: "")
         }
+        entrySession.acceptInitialValues(fields: productionFields)
     }
 
     @MainActor
@@ -2089,6 +2114,7 @@ struct TMRFeedingEntryView: View {
             note: note
         )
         if !reopenCompletions.isEmpty {
+            entrySession.holdSubmission()
             pendingReopenDraft = draft
             showingReopenConfirmation = true
             return
@@ -2100,13 +2126,13 @@ struct TMRFeedingEntryView: View {
         isSaving = true
         defer { isSaving = false }
         do {
-            try commandService.recordTMRFeeding(
+            try entrySession.recordTMRFeeding(
                 draft,
                 in: tmrFarmContext(account: account, farm: farm),
                 context: modelContext
             )
-            dismiss()
-        } catch { errorMessage = error.localizedDescription }
+            entrySession.complete()
+        } catch { entrySession.cancelDeferredSubmission(); errorMessage = error.localizedDescription }
     }
 }
 

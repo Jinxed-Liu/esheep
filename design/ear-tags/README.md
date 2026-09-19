@@ -1,8 +1,10 @@
-# eSheep+ 七色耳标素材
+# eSheep+ 十色耳标素材
 
 统一素材库，用于 eSheep+ iOS、网页和宣传设计。此目录归档素材，不会自动改变现有页面或 App 图标。
 
 ## 已选版本
+
+- 黑色配银白线、紫色配淡金线、深蓝色配冰白线：2026-09-15 新增，沿用统一轮廓和透明导出。
 
 - 黄色、绿色：保留原先 27 版原生玻璃质感导出。
 - 白色：保留用户满意的版本，文件内容未变。
@@ -11,8 +13,8 @@
 
 ## 目录
 
-- `png/`：7 色 × 3 个尺寸，共 21 张透明 PNG；项目使用时以这里的文件为准。
-- `sources/`：七个 Icon Composer `.icon` 原始工程，供后续编辑；正式 PNG 为已校验交付文件。
+- `png/`：10 色 × 3 个尺寸，共 30 张透明 PNG；项目使用时以这里的文件为准。
+- `sources/`：十个 Icon Composer `.icon` 原始工程，供后续编辑；正式 PNG 为已校验交付文件。
 - `preview/`：浅色和深色背景对照图，仅作展示，有背景，不作为透明素材引用。
 - `manifest.json`：版本、来源路径、尺寸和 SHA-256 校验值。
 - `verification.txt`：透明轮廓、圆孔和边缘校验结果。
@@ -23,7 +25,7 @@
 | `@2x.png` | 1408 × 1024 |
 | `@4x.png` | 2816 × 2048 |
 
-色名为 `yellow`、`green`、`red`、`white`、`orange`、`light-blue`、`pink`，例如 `png/ear-tag-orange@4x.png`。
+色名为 `yellow`、`green`、`red`、`white`、`orange`、`light-blue`、`pink`、`black`、`purple`、`dark-blue`，例如 `png/ear-tag-orange@4x.png`。
 
 所有正式 PNG 均有真实透明通道，圆孔内部透明，保留抗锯齿边缘。三个尺寸的同尺寸轮廓一致。请保持 11:8 比例并等比缩放。
 

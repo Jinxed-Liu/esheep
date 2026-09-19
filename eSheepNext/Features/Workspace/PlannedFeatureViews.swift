@@ -9,8 +9,10 @@ struct FeedingStartView: View {
     let account: AccountProfile
     let farm: FarmRecord
     @State private var isFeedEntryPresented = false
+    @State private var feedEntry: PendingRecordEntry = .feed
     @State private var overview = FeedingOverviewSnapshot.empty
     @State private var isLoadingOverview = true
+    @State private var overviewLoadedAt: Date?
     @State private var overviewError: String?
     @State private var overviewRevision = 0
 
@@ -22,58 +24,59 @@ struct FeedingStartView: View {
         List {
             Section("今日概览") {
                 LabeledContent("投喂次数") {
-                    if isLoadingOverview { Text("—") }
+                    if overviewLoadedAt == nil { Text("—") }
                     else { Text("\(overview.todayFeedCount)次") }
                 }
                 LabeledContent("投料量") {
-                    if isLoadingOverview { Text("—") }
+                    if overviewLoadedAt == nil { Text("—") }
                     else { Text("\(FeedAnalysisNumberFormatter.total(overview.todayKilograms)) kg") }
                 }
-                LabeledContent("待盘槽") {
-                    if isLoadingOverview { Text("—") }
-                    else { Text("\(overview.pendingTroughCount)项") }
+                NavigationLink { PendingTroughListView(account: account, farm: farm) } label: {
+                    LabeledContent("待盘槽", value: overviewLoadedAt == nil ? "—" : "\(overview.pendingTroughCount) 项")
                 }
                 if isLoadingOverview {
                     ProgressView("正在汇总投喂记录")
                         .font(.footnote)
                 } else if let overviewError {
-                    Text("汇总失败：\(overviewError)")
+                    Text(overviewError)
                         .font(.footnote)
                         .foregroundStyle(.orange)
                 }
+                if let overviewLoadedAt, overviewError != nil { Text("上次读取：\(overviewLoadedAt.formatted())").font(.footnote) }
+                if overviewError != nil { Button("重新读取", action: refreshOverview) }
                 Text("投喂、配方和库存都以全舍公斤数保存；每只羊的数据只在营养和采食分析中展示。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section("TMR") {
-                NavigationLink { TMRFeedingEntryView(account: account, farm: farm) } label: { Label("记录 TMR 投喂", systemImage: "arrow.right.circle") }
-                NavigationLink { TMRBatchProductionView(account: account, farm: farm) } label: { Label("制作 TMR", systemImage: "takeoutbag.and.cup.and.straw") }
-                NavigationLink { TMRBatchLibraryView(account: account, farm: farm) } label: { Label("TMR 批次", systemImage: "list.bullet.rectangle") }
+            Section("开始作业") {
+                ForEach([HomeQuickAction.tmrFeeding, .feed, .trough, .tmrProduction]) { action in
+                    Button(action.title, systemImage: action.symbol) {
+                        if let entry = action.entry { feedEntry = entry; isFeedEntryPresented = true }
+                    }
+                }
+            }
+            Section("执行情况") {
+                NavigationLink { PendingTroughListView(account: account, farm: farm) } label: { Label("待盘槽", systemImage: "checklist") }
                 NavigationLink { TMRMonitoringView(account: account, farm: farm) } label: { Label("TMR 监控", systemImage: "chart.bar.doc.horizontal") }
+                NavigationLink { FeedHistoryView(account: account, farm: farm) } label: { Label("投喂与盘槽历史", systemImage: "clock.arrow.circlepath") }
+                NavigationLink { FarmAnalyticsView(farm: farm) } label: { Label("采食营养分析", systemImage: "chart.bar.xaxis") }
+            }
+            Section("准备资料") {
+                NavigationLink { TMRBatchLibraryView(account: account, farm: farm) } label: { Label("TMR 批次", systemImage: "list.bullet.rectangle") }
                 NavigationLink { TMRFeedingPlanLibraryView(account: account, farm: farm) } label: { Label("TMR 投喂计划", systemImage: "calendar") }
                 NavigationLink { TMRFormulaLibraryView(account: account, farm: farm) } label: { Label("TMR 配方", systemImage: "list.bullet.clipboard") }
-            }
-            Section("直接投喂与盘槽") {
-                NavigationLink { FeedEntryView(account: account, farm: farm) } label: { Label("直接投喂", systemImage: "plus.circle") }
-                NavigationLink { FeedTroughObservationEntryView(account: account, farm: farm) } label: { Label("记录盘槽", systemImage: "scalemass") }
-            }
-            Section("分析与历史") {
-                NavigationLink { FarmAnalyticsView(farm: farm) } label: { Label("采食营养分析", systemImage: "chart.bar.xaxis") }
-                NavigationLink { FeedHistoryView(account: account, farm: farm) } label: { Label("投喂与盘槽历史", systemImage: "clock.arrow.circlepath") }
-            }
-            Section("基础资料") {
                 NavigationLink { IngredientLibraryView(account: account, farm: farm) } label: { Label("原料库与库存", systemImage: "shippingbox") }
             }
         }
         .navigationTitle("投喂")
         .sheet(isPresented: $isFeedEntryPresented, onDismiss: refreshOverview) {
-            NavigationStack { FeedEntryView(account: account, farm: farm) }
+            NavigationStack { ProductionEntryDestination(entry: feedEntry, account: account, farm: farm) }
         }
         .task(id: overviewTaskID) { await loadOverview() }
         .onReceive(NotificationCenter.default.publisher(for: CloudRuntimeNotification.syncWake)) { notification in
             guard CloudRuntimeNotification.farmID(from: notification) == farm.id else { return }
             refreshOverview()
         }
-        .onAppear(perform: presentIntentEntryIfNeeded)
+        .onAppear { refreshOverview(); presentIntentEntryIfNeeded() }
         .onChange(of: session.pendingRecordEntry) { _, _ in presentIntentEntryIfNeeded() }
     }
 
@@ -85,6 +88,7 @@ struct FeedingStartView: View {
             overview = try await FeedingOverviewSnapshotActor(container: modelContext.container)
                 .load(farmID: farm.id)
             try Task.checkCancellation()
+            overviewLoadedAt = .now
             isLoadingOverview = false
         } catch is CancellationError {
             return
@@ -100,7 +104,8 @@ struct FeedingStartView: View {
     }
 
     private func presentIntentEntryIfNeeded() {
-        guard session.pendingRecordEntry == .feed else { return }
+        guard let entry = session.pendingRecordEntry, [.feed, .trough, .tmrProduction, .tmrFeeding].contains(entry) else { return }
+        feedEntry = entry
         session.pendingRecordEntry = nil
         isFeedEntryPresented = true
     }
@@ -125,7 +130,14 @@ struct IngredientLibraryView: View {
     var body: some View {
         List {
             if visibleIngredients.isEmpty {
-                ContentUnavailableView("还没有匹配原料", systemImage: "shippingbox", description: Text("可从 eSheepPlus 系统库加入，也可以创建自定义原料。"))
+                ContentUnavailableView {
+                    Label(searchText.isEmpty ? "尚无原料" : "未找到匹配原料", systemImage: "shippingbox")
+                } description: {
+                    Text(searchText.isEmpty ? "从系统原料库加入，或创建自定义原料。" : "请修改关键词或清空搜索后再试。")
+                } actions: {
+                    if searchText.isEmpty { Button("系统原料库") { isOpeningSystemLibrary = true } }
+                    else { Button("清空搜索") { searchText = "" } }
+                }
             } else {
                 ForEach(visibleIngredients, id: \.id) { ingredient in
                     NavigationLink { IngredientDetailView(account: account, farm: farm, ingredient: ingredient) } label: {
@@ -157,9 +169,11 @@ struct IngredientLibraryView: View {
         .navigationTitle("原料库")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button { isOpeningSystemLibrary = true } label: { Image(systemName: "books.vertical") }
-                Button { isAddingMixture = true } label: { Image(systemName: "circle.grid.2x2") }
-                Button { isAdding = true } label: { Image(systemName: "plus") }
+                Button("系统原料库", systemImage: "books.vertical") { isOpeningSystemLibrary = true }
+                Menu("添加", systemImage: "plus") {
+                    Button("新建自定义原料") { isAdding = true }
+                    Button("新建混合原料") { isAddingMixture = true }
+                }
             }
         }
         .sheet(isPresented: $isAdding) { NavigationStack { AddIngredientView(account: account, farm: farm) } }
@@ -915,7 +929,7 @@ private struct FeedRecipeEditorView: View {
     }
 }
 
-private struct FeedingLineInput: Identifiable, Hashable {
+private struct FeedingLineInput: Identifiable, Hashable, Codable {
     let id: UUID
     var ingredientID: UUID?
     var batchID: UUID?
@@ -929,7 +943,7 @@ private struct FeedingLineInput: Identifiable, Hashable {
     }
 }
 
-private struct FeedingPenInput: Identifiable, Hashable {
+private struct FeedingPenInput: Identifiable, Hashable, Codable {
     let penID: UUID
     var mixtureKilogramsText = ""
     var remainingKilogramsText = ""
@@ -991,14 +1005,14 @@ private struct FeedPenSelectionView: View {
     }
 }
 
-private enum FeedPenAllocationMethod: String, CaseIterable, Identifiable {
+private enum FeedPenAllocationMethod: String, CaseIterable, Identifiable, Codable {
     case perPen = "逐舍填写"
     case averageByHeadCount = "按羊数均分"
 
     var id: Self { self }
 }
 
-private enum FeedMealPeriod: String, CaseIterable, Identifiable {
+private enum FeedMealPeriod: String, CaseIterable, Identifiable, Codable {
     case morning = "早"
     case noon = "中"
     case evening = "晚"
@@ -1129,6 +1143,7 @@ private struct FeedCountExclusionView: View {
 }
 
 struct FeedEntryView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \PenRecord.name) private var pens: [PenRecord]
@@ -1210,8 +1225,26 @@ struct FeedEntryView: View {
         )
     }
 
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("penEntries", $penEntries, reset: { [] }),
+            ProductionDraftField("allocationMethod", $allocationMethod, carry: true),
+            ProductionDraftField("averageLines", $averageLines, reset: { averageLines.map { FeedingLineInput(ingredientID: $0.ingredientID) } }),
+            ProductionDraftField("excludedSheepIDs", $excludedSheepIDs, reset: { [] }),
+            ProductionDraftField("recipeID", $recipeID, carry: true),
+            ProductionDraftField("mode", $mode, carry: true),
+            ProductionDraftField("occurredAt", $occurredAt, carry: true),
+            ProductionDraftField("mealPeriod", $mealPeriod, carry: true),
+            ProductionDraftField("note", $note),
+            ProductionDraftField("newIngredientID", $newIngredientID, reset: { nil }),
+            ProductionDraftField("newBatchID", $newBatchID, reset: { nil }),
+            ProductionDraftField("newKilograms", $newKilograms)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Section("投喂对象") {
                 if isResolvingPenEligibility {
                     ProgressView("正在确认投喂日期的圈舍存栏")
@@ -1230,7 +1263,7 @@ struct FeedEntryView: View {
                 .pickerStyle(.segmented)
                 Picker("配方", selection: $recipeID) { Text("不关联配方").tag(UUID?.none); ForEach(farmRecipes, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) } }
                 Picker("方式", selection: $mode) { ForEach(FeedMode.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag($0) } }
-                DatePicker("发生时间", selection: $occurredAt, in: ...Date.now)
+                DatePicker("发生时间", selection: $occurredAt, in: ...Date.now); ProductionTimeModeControl(session: entrySession)
                 Picker("顿次", selection: $mealPeriod) {
                     ForEach(FeedMealPeriod.allCases) { period in
                         Text(LocalizedStringKey(period.rawValue)).tag(FeedMealPeriod?.some(period))
@@ -1257,7 +1290,7 @@ struct FeedEntryView: View {
                                 Text(batchPickerText(batch)).tag(UUID?.some(batch.id))
                             }
                         }
-                        TextField("本批投入重量 kg", text: $line.kilogramsText).keyboardType(.decimalPad)
+                        ProductionValueField(title: "本批投入", text: $line.kilogramsText, unit: "千克")
                     }
                     .swipeActions { Button(role: .destructive) { averageLines.removeAll { $0.id == line.id } } label: { Label("删除", systemImage: "trash") } }
                 }
@@ -1323,19 +1356,16 @@ struct FeedEntryView: View {
             }
         }
         .navigationTitle("记录投喂")
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) }
-        }
+        .productionEntry(entrySession, form: "FeedEntryView", account: account, farm: farm, fields: productionFields, save: save)
         .recordErrorAlert($errorMessage)
         .task(id: occurredAt) { await refreshFeedPenEligibility() }
-        .onChange(of: recipeID) { _, _ in loadRecipe() }
-        .onChange(of: occurredAt) { _, _ in
+        .onChange(of: recipeID) { _, _ in guard !entrySession.isApplyingFields else { return }; loadRecipe() }
+        .onChange(of: occurredAt) { _, _ in guard !entrySession.isApplyingFields else { return };
             let eligible = Set(feedPens.map(\.id))
             penEntries.removeAll { !eligible.contains($0.penID) }
             excludedSheepIDs.formIntersection(Set(selectedDaySheep.map(\.id)))
         }
-        .onChange(of: newIngredientID) { _, _ in
+        .onChange(of: newIngredientID) { _, _ in guard !entrySession.isApplyingFields else { return };
             newBatchID = newIngredientBatches.count == 1 ? newIngredientBatches[0].id : nil
         }
     }
@@ -1499,13 +1529,13 @@ struct FeedEntryView: View {
             ))
         }
         do {
-            try commandService.executeBatch(commands, in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
-            dismiss()
+            try entrySession.executeBatch(commands, in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            entrySession.complete()
         } catch { errorMessage = error.localizedDescription }
     }
 }
 
-private struct FeedTroughCompositionInput: Identifiable, Hashable {
+private struct FeedTroughCompositionInput: Identifiable, Hashable, Codable {
     let id: UUID
     var ingredientID: UUID?
     var ingredientBatchID: UUID?
@@ -1525,6 +1555,7 @@ private struct FeedTroughCompositionInput: Identifiable, Hashable {
 }
 
 struct FeedTroughObservationEntryView: View {
+    @State private var entrySession = ProductionEntrySession()
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query private var pens: [PenRecord]
@@ -1593,8 +1624,22 @@ struct FeedTroughObservationEntryView: View {
 
     private var recentFeedIDs: Set<UUID> { Set(recentFeeds.map(\.id)) }
 
+    private var productionFields: [ProductionDraftField] {
+        [
+            ProductionDraftField("penID", $penID, reset: { nil }),
+            ProductionDraftField("relatedFeedID", $relatedFeedID, reset: { nil }),
+            ProductionDraftField("observedAt", $observedAt, carry: true),
+            ProductionDraftField("actualRemaining", $actualRemaining),
+            ProductionDraftField("discarded", $discarded),
+            ProductionDraftField("method", $method, carry: true),
+            ProductionDraftField("compositionRows", $compositionRows, reset: { [] }),
+            ProductionDraftField("note", $note)
+        ]
+    }
+
     var body: some View {
         Form {
+            ProductionEntryFeedback(session: entrySession)
             Section("盘槽位置") {
                 Picker("圈舍", selection: $penID) {
                     Text("请选择").tag(UUID?.none)
@@ -1610,7 +1655,7 @@ struct FeedTroughObservationEntryView: View {
                     Text("该盘槽时间没有可选的有羊圈舍。")
                         .font(.footnote).foregroundStyle(.orange)
                 }
-                DatePicker("盘槽时间", selection: $observedAt, in: ...Date.now)
+                DatePicker("盘槽时间", selection: $observedAt, in: ...Date.now); ProductionTimeModeControl(session: entrySession)
                 Picker("关联投喂（可选）", selection: $relatedFeedID) {
                     Text("不指定").tag(UUID?.none)
                     ForEach(recentFeeds, id: \.id) { feed in
@@ -1620,10 +1665,8 @@ struct FeedTroughObservationEntryView: View {
             }
 
             Section("实际盘槽") {
-                TextField("盘槽时实际剩余 kg", text: $actualRemaining)
-                    .keyboardType(.decimalPad)
-                TextField("其中清出量 kg（可选）", text: $discarded)
-                    .keyboardType(.decimalPad)
+                ProductionValueField(title: "实际剩余", text: $actualRemaining, unit: "千克")
+                ProductionValueField(title: "其中清出量（可选）", text: $discarded, unit: "千克")
                 Picker("测量方式", selection: $method) {
                     ForEach(FeedTroughMeasurementMethod.allCases, id: \.self) {
                         Text(LocalizedStringKey($0.displayName)).tag($0)
@@ -1677,23 +1720,20 @@ struct FeedTroughObservationEntryView: View {
             }
         }
         .navigationTitle("记录盘槽")
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) }
-        }
+        .productionEntry(entrySession, form: "FeedTroughObservationEntryView", account: account, farm: farm, fields: productionFields, save: save)
         .recordErrorAlert($errorMessage)
         .task(id: observedAt) { await refreshTroughPenEligibility() }
-        .onChange(of: relatedFeedID) { _, newValue in
+        .onChange(of: relatedFeedID) { _, newValue in guard !entrySession.isApplyingFields else { return };
             guard let feed = newValue.flatMap({ id in recentFeeds.first { $0.id == id } }) else {
                 if newValue != nil { relatedFeedID = nil }
                 return
             }
             penID = feed.penID
         }
-        .onChange(of: eligiblePenIDs) { _, validIDs in
+        .onChange(of: eligiblePenIDs) { _, validIDs in guard !entrySession.isApplyingFields else { return };
             if let penID, !validIDs.contains(penID) { self.penID = nil }
         }
-        .onChange(of: recentFeedIDs) { _, validIDs in
+        .onChange(of: recentFeedIDs) { _, validIDs in guard !entrySession.isApplyingFields else { return };
             if let relatedFeedID, !validIDs.contains(relatedFeedID) { self.relatedFeedID = nil }
         }
     }
@@ -1790,7 +1830,7 @@ struct FeedTroughObservationEntryView: View {
         }
         let compositionJSON = components.isEmpty ? nil : FeedTroughCompositionCodec.encode(components)
         do {
-            try commandService.execute(
+            try entrySession.execute(
                 .recordFeedTroughObservation(FeedTroughObservationDraft(
                     penID: penID,
                     relatedFeedRecordID: relatedFeedID,
@@ -1805,7 +1845,7 @@ struct FeedTroughObservationEntryView: View {
                 in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
                 context: modelContext
             )
-            dismiss()
+            entrySession.complete()
         } catch {
             errorMessage = error.localizedDescription
         }

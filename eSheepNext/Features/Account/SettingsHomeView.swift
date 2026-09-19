@@ -90,8 +90,6 @@ struct SettingsHomeView: View {
                 )
 
                 SettingsCard(title: "账户") {
-                    avatarRow
-                    SettingsCardDivider()
                     SettingsNavigationRow(
                         title: "名称",
                         subtitle: account.displayName,
@@ -326,24 +324,16 @@ struct SettingsHomeView: View {
             NavigationLink {
                 AccountAvatarSettingsView(account: account)
             } label: {
-                ZStack(alignment: .bottomTrailing) {
-                    AccountAvatarView(account: account, size: 104)
-                        .overlay {
-                            Circle()
-                                .stroke(.white.opacity(0.85), lineWidth: 3)
-                        }
-                        .shadow(color: .black.opacity(0.14), radius: 14, y: 6)
-
-                    Image(systemName: "camera.fill")
-                        .font(.caption.bold())
-                        .foregroundStyle(.white)
-                        .frame(width: 30, height: 30)
-                        .background(AppTheme.brand, in: .circle)
-                        .overlay { Circle().stroke(.background, lineWidth: 3) }
+                VStack(spacing: 14) {
+                    AccountAvatarView(account: account, size: 96)
+                        .padding(6)
+                        .background(.background, in: .circle)
+                        .overlay { Circle().strokeBorder(.primary.opacity(0.05), lineWidth: 1) }
                 }
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("编辑头像")
+            .accessibilityLabel("更换账号头像")
+            .accessibilityIdentifier("account-avatar-entry")
 
             VStack(spacing: 4) {
                 Text(account.displayName)
@@ -365,20 +355,6 @@ struct SettingsHomeView: View {
         .opacity(1 - avatarMotionProgress * 0.28)
         .padding(.top, 14)
         .padding(.bottom, 2)
-    }
-
-    private var avatarRow: some View {
-        NavigationLink {
-            AccountAvatarSettingsView(account: account)
-        } label: {
-            SettingsRowContent(
-                title: "头像",
-                subtitle: account.avatarImageData == nil ? "选择一个头像" : "查看或更换头像",
-                systemImage: "person.crop.circle.fill",
-                iconColor: .teal
-            )
-        }
-        .buttonStyle(.plain)
     }
 
     private var notificationStatusText: String {

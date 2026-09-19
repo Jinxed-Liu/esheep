@@ -133,10 +133,11 @@ enum FarmEventSearch {
         _ events: [FarmEventSnapshot],
         query: String,
         category: FarmEventCategory?,
-        scope: FarmEventExportScope
+        scope: FarmEventExportScope,
+        range: FarmEventExportRange = .all
     ) -> [FarmEventSnapshot] {
         let normalizedQuery = normalized(query)
-        return events.filter { event in
+        return FarmEventCSVExport.matchingEvents(events, scope: scope, range: range).filter { event in
             (category == nil || event.category == category) &&
                 scope.includes(event) &&
                 (normalizedQuery.isEmpty || event.searchableText.contains(normalizedQuery))
@@ -621,12 +622,18 @@ struct FarmEventHistoryView: View {
     @State private var visibleEvents = [FarmEventSnapshot]()
     @State private var listSnapshotRevision = 0
     @State private var eventSourceRevision = 0
+    @State private var usesDateRange = false
+    @State private var startDate = Calendar.current.startOfDay(for: Date.now)
+    @State private var endDate = Date.now
+    @State private var lastLoadedAt: Date?
+    @State private var loadFailure: String?
     @State private var category: FarmEventCategory?
     @State private var recordScope = FarmEventExportScope.all
     @State private var query = ""
     @State private var pendingEditor: FarmEventEditDestination?
     @State private var pendingDeletion: FarmEventSnapshot?
     @State private var isPresentingExport = false
+    @State private var isPresentingFilters = false
     @State private var isLoading = true
     @State private var isFiltering = false
     @State private var errorMessage: String?
@@ -636,7 +643,7 @@ struct FarmEventHistoryView: View {
     }
 
     private var canExport: Bool {
-        CapabilitySet(role: farm.role).allows(.exportFarm)
+        CapabilitySet(role: farm.role).allows(.exportEvents)
     }
 
     private func canEdit(_ event: FarmEventSnapshot) -> Bool {
@@ -661,13 +668,41 @@ struct FarmEventHistoryView: View {
         event.entityType == .reproduction && event.title == ReproductionRecordKind.parityBaseline.displayName
     }
 
+    private var selectedRange: FarmEventExportRange { usesDateRange ? .days(from: startDate, through: endDate) : .all }
+
     private var hasActiveSearchOrFilter: Bool {
-        !FarmEventSearch.normalized(query).isEmpty || category != nil || recordScope != .all
+        !FarmEventSearch.normalized(query).isEmpty || category != nil || recordScope != .all || usesDateRange
     }
 
     var body: some View {
         List {
-            if (isLoading || isFiltering) && visibleEvents.isEmpty {
+            if hasActiveSearchOrFilter {
+                Section {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 8) {
+                            if let category { filterChip(category.displayName) { self.category = nil } }
+                            if recordScope != .all { filterChip(recordScope.displayName) { recordScope = .all } }
+                            if usesDateRange {
+                                filterChip("\(startDate.formatted(date: .numeric, time: .omitted)) – \(endDate.formatted(date: .numeric, time: .omitted))") { usesDateRange = false }
+                            }
+                            if !FarmEventSearch.normalized(query).isEmpty { filterChip("搜索：\(query)") { query = "" } }
+                        }
+                    }
+                    .scrollIndicators(.hidden)
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+            if let loadFailure {
+                Section {
+                    Text(loadFailure).foregroundStyle(.orange)
+                    if let lastLoadedAt { Text("上次读取：\(lastLoadedAt.formatted())").font(.footnote) }
+                    Button("重新读取") { Task { await reload() } }
+                }
+            }
+            if loadFailure != nil && lastLoadedAt == nil {
+                ContentUnavailableView("事件暂不可用", systemImage: "exclamationmark.triangle")
+            } else if (isLoading || isFiltering) && visibleEvents.isEmpty {
                 ProgressView("正在整理事件记录")
                     .frame(maxWidth: .infinity, minHeight: 360)
                     .listRowSeparator(.hidden)
@@ -676,7 +711,7 @@ struct FarmEventHistoryView: View {
                 ContentUnavailableView(
                     hasActiveSearchOrFilter ? "没有匹配的事件" : "暂无事件记录",
                     systemImage: "clock.arrow.circlepath",
-                    description: Text("生产录入完成后会按发生时间倒序显示在这里。")
+                    description: Text(hasActiveSearchOrFilter ? "请更换关键词或移除筛选条件。" : "生产录入完成后会按发生时间倒序显示在这里。")
                 )
                 .frame(maxWidth: .infinity, minHeight: 360)
                 .listRowSeparator(.hidden)
@@ -685,6 +720,7 @@ struct FarmEventHistoryView: View {
                 ForEach(visibleEvents, id: \.rowIdentity) { event in
                     FarmEventHistoryRowLink(
                         event: event,
+                        identity: EventExportIdentity(accountProfileID: account.id, farmID: farm.id),
                         farmName: farm.name,
                         canExport: canExport,
                         canEdit: canEdit(event),
@@ -711,37 +747,18 @@ struct FarmEventHistoryView: View {
                 }
             }
         }
-        .id(listSnapshotRevision)
+
         .navigationTitle("事件记录")
         .searchable(
             text: $query,
-            prompt: "搜索耳号、圈舍、项目或备注"
+            prompt: "搜索事件中的耳号、项目或备注"
         )
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Section("业务分类") {
-                        Button("全部分类", systemImage: category == nil ? "checkmark" : "clock") {
-                            category = nil
-                            recordScope = .all
-                        }
-                        ForEach(FarmEventCategory.allCases) { item in
-                            Button(LocalizedStringKey(item.displayName), systemImage: category == item ? "checkmark" : item.symbol) {
-                                category = item
-                                recordScope = .all
-                            }
-                        }
-                    }
-                    Section("记录类型") {
-                        ForEach(FarmEventExportScope.allCases.dropFirst()) { item in
-                            Button(LocalizedStringKey(item.displayName), systemImage: recordScope == item ? "checkmark" : item.symbol) {
-                                recordScope = item
-                                category = nil
-                            }
-                        }
-                    }
+                Button {
+                    isPresentingFilters = true
                 } label: {
-                    Image(systemName: category == nil && recordScope == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                    Image(systemName: category == nil && recordScope == .all && !usesDateRange ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
                 }
                 .accessibilityLabel("筛选事件")
             }
@@ -752,12 +769,13 @@ struct FarmEventHistoryView: View {
                     Image(systemName: "square.and.arrow.up")
                 }
                 .disabled(events.isEmpty || !canExport)
+                .accessibilityHint(canExport ? "选择范围并导出 CSV" : "当前角色没有事件导出权限")
                 .accessibilityLabel("导出事件记录")
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if !canDelete {
-                Text("当前角色可查看事件，但没有删除权威事实的权限。")
+            if !canExport {
+                Text("你可以查阅事件，当前账号尚未获得事件导出权限。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
@@ -771,7 +789,8 @@ struct FarmEventHistoryView: View {
             query: FarmEventSearch.normalized(query),
             category: category,
             scope: recordScope,
-            sourceRevision: eventSourceRevision
+            sourceRevision: eventSourceRevision,
+            range: selectedRange
         )) {
             await updateVisibleEvents()
         }
@@ -787,10 +806,22 @@ struct FarmEventHistoryView: View {
             FarmEventDeletionSheet(account: account, farm: farm, event: event)
                 .presentationDetents([.medium])
         }
-        .sheet(isPresented: $isPresentingExport) {
-            FarmEventExportSheet(farmName: farm.name, events: events, initialScope: recordScope)
+        .sheet(isPresented: $isPresentingFilters) {
+            FarmEventFilterSheet(category: $category, scope: $recordScope, usesDateRange: $usesDateRange, startDate: $startDate, endDate: $endDate)
         }
-        .recordErrorAlert($errorMessage)
+        .sheet(isPresented: $isPresentingExport) {
+            FarmEventExportSheet(farmName: farm.name, events: events, initialFilter: FarmEventExportSelection(category: category, scope: recordScope, query: query, range: selectedRange))
+        }
+        .recordErrorAlert($errorMessage, title: "事件操作未完成")
+        .environment(\.eventExportIdentity, EventExportIdentity(accountProfileID: account.id, farmID: farm.id))
+    }
+
+    private func filterChip(_ title: String, clear: @escaping () -> Void) -> some View {
+        Button(action: clear) { Label(title, systemImage: "xmark.circle.fill") }
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .controlSize(.small)
+            .accessibilityLabel("移除\(title)")
     }
 
     @MainActor
@@ -808,6 +839,9 @@ struct FarmEventHistoryView: View {
         defer { isLoading = false }
         do {
             let updatedEvents = try await FarmEventHistoryActor(container: modelContext.container).load(farmID: farm.id)
+            try Task.checkCancellation()
+            lastLoadedAt = .now
+            loadFailure = nil
             if replacesListSnapshot {
                 var transaction = Transaction(animation: nil)
                 transaction.disablesAnimations = true
@@ -824,7 +858,7 @@ struct FarmEventHistoryView: View {
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = "读取事件记录失败：\(error.localizedDescription)"
+            loadFailure = "读取事件记录失败：\(error.localizedDescription)"
         }
     }
 
@@ -834,7 +868,8 @@ struct FarmEventHistoryView: View {
             query: FarmEventSearch.normalized(query),
             category: category,
             scope: recordScope,
-            sourceRevision: eventSourceRevision
+            sourceRevision: eventSourceRevision,
+            range: selectedRange
         )
         isFiltering = true
         do {
@@ -847,7 +882,8 @@ struct FarmEventHistoryView: View {
                     eventSnapshot,
                     query: request.query,
                     category: request.category,
-                    scope: request.scope
+                    scope: request.scope,
+                    range: request.range
                 )
             }.value
             try Task.checkCancellation()
@@ -943,10 +979,12 @@ private struct FarmEventFilterRequest: Equatable, Sendable {
     let category: FarmEventCategory?
     let scope: FarmEventExportScope
     let sourceRevision: Int
+    let range: FarmEventExportRange
 }
 
 private struct FarmEventHistoryRowLink: View {
     let event: FarmEventSnapshot
+    let identity: EventExportIdentity
     let farmName: String
     let canExport: Bool
     let canEdit: Bool
@@ -960,6 +998,7 @@ private struct FarmEventHistoryRowLink: View {
         NavigationLink {
             FarmEventDetailView(
                 event: event,
+                identity: identity,
                 farmName: farmName,
                 canExport: canExport,
                 canEdit: canEdit,
@@ -1011,9 +1050,12 @@ private struct FarmEventRow: View {
 }
 
 private struct FarmEventDetailView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(AppSession.self) private var session
     @Environment(\.dismiss) private var dismiss
 
     let event: FarmEventSnapshot
+    let identity: EventExportIdentity
     let farmName: String
     let canExport: Bool
     let canEdit: Bool
@@ -1072,7 +1114,7 @@ private struct FarmEventDetailView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("导出", systemImage: "square.and.arrow.up", action: prepareExport)
-                    .disabled(!canExport)
+                    .disabled((try? EventExportAuthorization.require(identity, session: session, context: modelContext)) == nil)
             }
         }
         .fileExporter(
@@ -1104,10 +1146,19 @@ private struct FarmEventDetailView: View {
         } message: {
             Text("将恢复这只羊在原生产批次中的成员关系和原加入时间。")
         }
-        .recordErrorAlert($errorMessage)
+        .recordErrorAlert($errorMessage, title: "事件操作未完成")
+        .onChange(of: session.selectedFarmID) { _, _ in isExporting = false; document = nil }
+        .onChange(of: session.activeAccountProfileID) { _, _ in isExporting = false; document = nil }
+        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)) { _ in
+            if (try? EventExportAuthorization.require(identity, session: session, context: modelContext)) == nil {
+                isExporting = false; document = nil
+            }
+        }
     }
 
     private func prepareExport() {
+        do { try EventExportAuthorization.require(identity, session: session, context: modelContext) }
+        catch { errorMessage = error.localizedDescription; return }
         document = FarmEventCSVExportDocument(
             data: FarmEventCSVExport.csvData(events: [event], scope: .all, range: .all)
         )
@@ -1343,5 +1394,43 @@ enum FarmEventDeletionCommandResolver {
         }
 
         return .care(.revokeLambing(recordID: event.id, reason: normalizedReason))
+    }
+}
+
+private struct FarmEventFilterSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var category: FarmEventCategory?
+    @Binding var scope: FarmEventExportScope
+    @Binding var usesDateRange: Bool
+    @Binding var startDate: Date
+    @Binding var endDate: Date
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("事件范围") {
+                    Picker("业务分类", selection: Binding(get: { category }, set: { category = $0; scope = .all })) {
+                        Text("全部分类").tag(FarmEventCategory?.none)
+                        ForEach(FarmEventCategory.allCases) { value in Text(value.displayName).tag(FarmEventCategory?.some(value)) }
+                    }
+                    Picker("记录类型", selection: Binding(get: { scope }, set: { scope = $0; if $0 != .all { category = nil } })) {
+                        ForEach(FarmEventExportScope.allCases) { value in Text(value.displayName).tag(value) }
+                    }
+                }
+                Section {
+                    Toggle("限定发生时间", isOn: $usesDateRange)
+                    if usesDateRange {
+                        DatePicker("开始日期", selection: $startDate, in: ...endDate, displayedComponents: .date)
+                        DatePicker("结束日期", selection: $endDate, in: startDate..., displayedComponents: .date)
+                    }
+                } header: { Text("发生时间") } footer: { Text("按事件实际发生日期筛选，包含开始日和结束日。") }
+                Section {
+                    Button("清除筛选") { category = nil; scope = .all; usesDateRange = false }
+                } footer: { Text("搜索关键词会保留，可在列表单独清空。") }
+            }
+            .navigationTitle("筛选事件")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+        }
     }
 }

@@ -6,6 +6,7 @@ struct FarmInsightsView: View {
     let account: AccountProfile
     let farm: FarmRecord
     @Binding var assistantFarmID: UUID?
+    @State private var suggestedQuestion: String?
     @Namespace private var assistantTransition
 
     var body: some View {
@@ -16,8 +17,8 @@ struct FarmInsightsView: View {
                     assistantTransition: assistantTransition,
                     assistantTransitionID: assistantTransitionID,
                     assistantTransitionSpec: assistantTransitionSpec
-                ) {
-                    presentAssistant()
+                ) { question in
+                    presentAssistant(question: question)
                 }
             } else {
                 ContentUnavailableView {
@@ -25,7 +26,7 @@ struct FarmInsightsView: View {
                 } description: {
                     Text("当前牧场角色没有分析权限，但仍可使用 AI 助手查询获准读取的数据。")
                 } actions: {
-                    Button("与 AI 助手聊天", action: presentAssistant)
+                    Button("与 AI 助手聊天") { presentAssistant() }
                         .buttonStyle(.borderedProminent)
                         .motionTransitionSource(
                             id: assistantTransitionID,
@@ -36,9 +37,9 @@ struct FarmInsightsView: View {
                 }
             }
         }
-        .navigationTitle("洞察")
+        .navigationTitle("分析")
         .navigationDestination(isPresented: assistantPresentation) {
-            FarmInsightConversationView(account: account, farm: farm)
+            FarmInsightConversationView(account: account, farm: farm, initialPrompt: suggestedQuestion)
                 .id(farm.id)
                 .motionTransitionDestination(
                     id: assistantTransitionID,
@@ -55,12 +56,13 @@ struct FarmInsightsView: View {
     private var assistantTransitionSpec: MotionTransitionSpec {
         MotionTransitionSpec(
             preset: .card,
-            cornerRadius: 22
+            cornerRadius: 28
         )
     }
 
-    private func presentAssistant() {
+    private func presentAssistant(question: String? = nil) {
         guard assistantFarmID != farm.id else { return }
+        suggestedQuestion = question
         assistantFarmID = farm.id
     }
 
@@ -74,6 +76,7 @@ struct FarmInsightsView: View {
                     assistantFarmID = farm.id
                 } else if assistantFarmID == farm.id {
                     assistantFarmID = nil
+                    suggestedQuestion = nil
                 }
             }
         )
@@ -102,9 +105,19 @@ struct FarmSearchView: View {
     @State private var isLoadingSource = false
     @State private var isSearching = false
     @State private var errorMessage: String?
+    @State private var sourceFailure: String?
+    @State private var lastLoadedAt: Date?
 
     var body: some View {
         List {
+            if let sourceFailure {
+                Section {
+                    Label(lastLoadedAt == nil ? "搜索暂不可用" : "搜索数据更新失败", systemImage: "exclamationmark.triangle")
+                    Text(sourceFailure).font(.footnote).foregroundStyle(.secondary)
+                    if let lastLoadedAt { Text("当前数据读取于 \(lastLoadedAt.formatted())").font(.caption) }
+                    Button("重试") { Task { await reloadSource() } }
+                }
+            }
             if SearchText.normalized(query).isEmpty {
                 ContentUnavailableView {
                     Label("搜索牧场", systemImage: "magnifyingglass")
@@ -114,12 +127,12 @@ struct FarmSearchView: View {
                 .frame(maxWidth: .infinity, minHeight: 360)
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
-            } else if isSearching && results.isEmpty {
+            } else if (isSearching || isLoadingSource) && results.isEmpty {
                 ProgressView("正在搜索")
                     .frame(maxWidth: .infinity, minHeight: 360)
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
-            } else if results.isEmpty {
+            } else if results.isEmpty && sourceFailure == nil {
                 ContentUnavailableView.search(text: query)
                     .frame(maxWidth: .infinity, minHeight: 360)
                     .listRowSeparator(.hidden)
@@ -137,7 +150,7 @@ struct FarmSearchView: View {
                             )
                         } label: {
                             HStack(spacing: 12) {
-                                SheepAvatarView(photo: item.avatarPhoto, size: 48)
+                                SheepAvatarView(photo: item.avatarPhoto, size: 48, sex: item.sex)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(item.earTag).font(.headline)
                                     HStack(spacing: 0) {
@@ -181,7 +194,7 @@ struct FarmSearchView: View {
         .searchable(
             text: $query,
             placement: .navigationBarDrawer(displayMode: .always),
-            prompt: "耳号、品种或圈舍"
+            prompt: "搜索当前牧场的羊只、圈舍"
         )
         .task(id: farm.id) {
             await reloadSource()
@@ -206,7 +219,7 @@ struct FarmSearchView: View {
                 ContentUnavailableView("羊只不存在", systemImage: "questionmark.folder", description: Text("该羊只可能已删除或不属于当前牧场。"))
             }
         }
-        .recordErrorAlert($errorMessage)
+        .recordErrorAlert($errorMessage, title: "暂时无法搜索")
     }
 
     @MainActor
@@ -217,6 +230,8 @@ struct FarmSearchView: View {
                 container: modelContext.container
             ).load(farmID: farm.id)
             try Task.checkCancellation()
+            sourceFailure = nil
+            lastLoadedAt = .now
             source = updatedSource
             sourceRevision &+= 1
             isLoadingSource = false
@@ -224,7 +239,7 @@ struct FarmSearchView: View {
             return
         } catch {
             isLoadingSource = false
-            errorMessage = "准备搜索数据失败：\(error.localizedDescription)"
+            sourceFailure = error.localizedDescription
         }
     }
 

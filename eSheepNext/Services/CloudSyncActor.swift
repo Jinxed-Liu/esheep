@@ -161,12 +161,13 @@ final class CloudCollaborationStore {
 
     init(
         container: ModelContainer,
-        startupPreparation: CloudCollaborationStartupPreparation? = nil
+        startupPreparation: CloudCollaborationStartupPreparation? = nil,
+        allowsRemoteConnections: Bool = true
     ) {
         modelContainer = container
         photoTransfers = PhotoTransferActor(modelContainer: container)
         conflicts = ConflictResolutionActor(container: container)
-        if let client = AccountIdentityClients.supabaseClient {
+        if allowsRemoteConnections, let client = AccountIdentityClients.supabaseClient {
             let gateway = ESheepCloudInfrastructureGateway(client: client)
             eSheepCloudGateway = gateway
             eSheepCloudAssetTransport = gateway
@@ -205,6 +206,7 @@ final class CloudCollaborationStore {
         if !preparation.errorMessages.isEmpty {
             lastErrorMessage = preparation.errorMessages.joined(separator: "\n")
         }
+        guard allowsRemoteConnections else { return }
         installRuntimeObservers()
         startSupabaseCursorPollingIfNeeded()
         if AccountIdentityClients.supabaseClient != nil {
@@ -318,6 +320,15 @@ final class CloudCollaborationStore {
         lastSuccessfulSyncAt = report.safelySavedAt ?? .now
         return report
     }
+
+    #if DEBUG
+    func developmentParityCommandStatus(farmID: UUID, commandIDs: [UUID]) async throws -> [UUID: ESheepCloudCommandResultV2] {
+        guard AppEnvironment.current == .development, let gateway = eSheepCloudGateway else {
+            throw ESheepCloudRuntimeError.unavailable
+        }
+        return try await gateway.queryCommandStatus(farmID: farmID, commandIDs: commandIDs)
+    }
+    #endif
 
     /// Runs the read-only half of the V1 -> V2 migration.  This deliberately
     /// never calls a cloud write RPC: it creates a verified local backup and a

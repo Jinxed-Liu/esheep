@@ -14,6 +14,7 @@ enum DomainEntityDeletionService {
         context: ModelContext
     ) throws {
         switch type {
+        case .sheepLabel, .sheepLabels: throw SheepLabelError.invalid("标签请使用停用或移除关联操作。")
         case .farm: throw FarmPermissionError.denied(.manageFarm)
         case .pen: try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.deletedAt = date
         case .sheep: try setSheepDeletedAt(date, id: id, farmID: farmID, context: context)
@@ -151,6 +152,7 @@ enum DomainEntityDeletionService {
         context: ModelContext
     ) throws {
         switch type {
+        case .sheepLabel, .sheepLabels: throw SheepLabelError.invalid("标签请使用停用或移除关联操作。")
         case .pen:
             try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate { $0.id == id && $0.farmID == farmID })).first?.revision = revision
         case .sheep:

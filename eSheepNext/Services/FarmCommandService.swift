@@ -2998,9 +2998,14 @@ final class FarmCommandService {
             }
             if let penID { try assertPen(penID, farmID: farmID, context: context) }
         case .updateSheepProfile(let sheepID, let earTag, let breed, let sex, _, let currentParity, let parityRecordedAt, _):
+            try SheepLabelService.assertSex(sheepID: sheepID, sex: sex, farmID: farmID, context: context)
             let current = try sheepRecord(sheepID, farmID: farmID, context: context)
             let normalizedTag = try required(earTag, label: "耳号")
-            _ = try required(breed, label: "品种")
+            // Preserve imported missing breed when confirming parity alone.
+            // A user changing the breed must still provide a nonempty value.
+            if breed != current.breed || currentParity == nil {
+                _ = try required(breed, label: "品种")
+            }
             if let currentParity {
                 guard currentParity >= 0, sex == .ewe else { throw FarmCommandError.invalidNumber("当前胎次") }
                 guard parityRecordedAt != nil else { throw FarmCommandError.missingRequiredValue("胎次确认时间") }
@@ -4269,6 +4274,14 @@ final class FarmCommandService {
         context: ModelContext
     ) throws -> Int? {
         return switch entityType {
+        case .sheepLabel:
+            try context.fetch(FetchDescriptor<SheepLabelRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
+        case .sheepLabels:
+            try context.fetch(FetchDescriptor<SheepLabelAssignmentRecord>()).first {
+                $0.id == entityID && $0.farmID == farmID
+            }?.revision
         case .pen:
             try context.fetch(FetchDescriptor<PenRecord>()).first {
                 $0.id == entityID && $0.farmID == farmID
@@ -4386,6 +4399,8 @@ final class FarmCommandService {
 
     private func entityExists(type: CloudEntityType, id: UUID, farmID: UUID, context: ModelContext) throws -> Bool {
         switch type {
+        case .sheepLabel: return try context.fetch(FetchDescriptor<SheepLabelRecord>()).contains { $0.id == id && $0.farmID == farmID }
+        case .sheepLabels: return try context.fetch(FetchDescriptor<SheepLabelAssignmentRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .farm: return try context.fetch(FetchDescriptor<FarmRecord>()).contains { $0.id == id }
         case .pen: return try context.fetch(FetchDescriptor<PenRecord>()).contains { $0.id == id && $0.farmID == farmID }
         case .sheep: return try context.fetch(FetchDescriptor<SheepRecord>()).contains { $0.id == id && $0.farmID == farmID }

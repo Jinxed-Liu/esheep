@@ -25,7 +25,7 @@ export function InviteOnlyAccessScreen({ accountEmail, authState, isConfigured, 
     <main className="login-screen">
       <section className="login-card invite-only-card" aria-labelledby="invite-only-title">
         <div className="login-brand">
-          <img src="/assets/esheepnext-mark.png" alt="" />
+          <img src="/assets/esheepplus-icon.png" alt="" />
           <span><strong id="invite-only-title">等待牧场邀请</strong><small>eSheep+ 免费账号</small></span>
         </div>
         <div className="login-intro invite-only-intro">

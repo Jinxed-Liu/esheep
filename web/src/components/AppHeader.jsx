@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { BowlFood } from "@phosphor-icons/react/BowlFood";
 import { CaretDown } from "@phosphor-icons/react/CaretDown";
 import { Check } from "@phosphor-icons/react/Check";
-import { CloudCheck } from "@phosphor-icons/react/CloudCheck";
 import { House } from "@phosphor-icons/react/House";
 import { MagnifyingGlass } from "@phosphor-icons/react/MagnifyingGlass";
 import { PencilSimpleLine } from "@phosphor-icons/react/PencilSimpleLine";
@@ -52,8 +51,13 @@ function useOutsideDismiss(ref, dismiss) {
     function handlePointerDown(event) {
       if (ref.current && !ref.current.contains(event.target)) dismiss();
     }
+    const handleKeyDown = (event) => { if (event.key === "Escape") dismiss(); };
     document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
   }, [dismiss, ref]);
 }
 
@@ -75,14 +79,13 @@ export function AppHeader({
   useOutsideDismiss(accountMenuRef, () => setAccountMenuOpen(false));
 
   return (
-    <>
-      <aside className="app-sidebar" aria-label="eSheep+ 主要导航">
-        <button className="sidebar-brand" type="button" onClick={() => onNavigate("home")} aria-label="返回首页">
-          <img src="/assets/esheepnext-mark.png" alt="" />
+    <header className="sky-header">
+        <button className="sky-brand" type="button" onClick={() => onNavigate("home")} aria-label="返回首页">
+          <img src="/assets/esheepplus-icon.png" alt="" />
           <span>eSheep+</span>
         </button>
 
-        <nav className="sidebar-nav">
+        <nav className="sky-navigation" aria-label="主要导航">
           {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -97,13 +100,7 @@ export function AppHeader({
           ))}
         </nav>
 
-        <div className="sidebar-sync cloud">
-          <CloudCheck size={18} weight="fill" />
-          <span>云端读取已连接</span>
-        </div>
-      </aside>
-
-      <header className="app-topbar">
+      <div className="sky-header-tools">
         <div className="farm-switcher" ref={farmMenuRef}>
           <button
             className="farm-switcher-button"
@@ -143,16 +140,6 @@ export function AppHeader({
         </div>
 
         <div className="topbar-actions">
-          <button
-            className={`topbar-assistant-button${activePage === "assistant" ? " active" : ""}`}
-            type="button"
-            onClick={() => onNavigate("assistant")}
-            aria-current={activePage === "assistant" ? "page" : undefined}
-            aria-label="Codex 助手"
-          >
-            <Robot size={20} weight={activePage === "assistant" ? "fill" : "duotone"} />
-            <span>Codex 助手</span>
-          </button>
           <div className="account-menu-wrap" ref={accountMenuRef}>
             <button
               className="account-button"
@@ -174,6 +161,9 @@ export function AppHeader({
                     <small>{workspace.profile?.email ?? "当前云端账户"}</small>
                   </span>
                 </div>
+                <button type="button" onClick={() => { onNavigate("assistant"); setAccountMenuOpen(false); }}>
+                  <Robot size={19} />Codex 助手
+                </button>
                 <button type="button" onClick={() => { onNavigate("settings"); setAccountMenuOpen(false); }}>
                   <UserCircle size={19} />
                   账户与牧场设置
@@ -188,7 +178,7 @@ export function AppHeader({
             ) : null}
           </div>
         </div>
-      </header>
-    </>
+      </div>
+    </header>
   );
 }

@@ -538,6 +538,16 @@ enum ESheepCloudEventReducer {
         var historyChangedAt: Date?
         switch event.payload {
         case .fieldsPatched(let stream, let changes):
+            if changes.contains(where: { $0.field == "sex" }), let canonical = event.eventBodyCanonical,
+               let body = try JSONSerialization.jsonObject(with: Data(canonical.utf8)) as? [String: Any],
+               body["command_kind"] as? String == "care.sheepLabels.patchProfile",
+               let payload = body["command_payload"] {
+                let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
+                let command = try decoder.decode(ESheepCloudCommandPayloadV2.self, from: JSONSerialization.data(withJSONObject: payload))
+                if case .care(.sheepLabels(.patchProfile(let d))) = command {
+                    try SheepLabelService.apply(.editLabels(.init(id: d.id, sheepID: d.sheepID, removeIDs: d.removeLabelIDs)), farmID: event.farmID, accountID: event.actorAccountID, at: event.occurredAt, context: context)
+                }
+            }
             guard stream == event.stream else {
                 throw ESheepCloudProjectionError.farmIdentityMismatch
             }

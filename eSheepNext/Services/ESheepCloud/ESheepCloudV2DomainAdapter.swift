@@ -26,6 +26,9 @@ enum ESheepCloudV2DomainAdapter {
         }
 
         switch payload {
+        case .care(.sheepLabels(let command)):
+            try SheepLabelService.apply(command, farmID: event.farmID, accountID: event.actorAccountID, at: event.occurredAt, context: context)
+            return .applied(rebuildHistoryFrom: nil)
         case .historyRepair(let repair):
             return try ESheepCloudHistoryRepairProjection.apply(
                 repair, event: event, context: context, replayContext: replayContext

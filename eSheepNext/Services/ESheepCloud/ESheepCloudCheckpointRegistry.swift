@@ -5,6 +5,36 @@ import SwiftData
 enum ESheepCloudCheckpointRegistry {
     static var adapters: [ESheepCloudCheckpointModelAdapter] {
         [
+            ESheepCloudCheckpointModelAdapter(SheepLabelRecord.self, disposition: .transfer, fields: [
+                .init("id", \SheepLabelRecord.id),
+                .init("farmID", \SheepLabelRecord.farmID),
+                .init("name", \SheepLabelRecord.name),
+                .init("colorRawValue", \SheepLabelRecord.colorRawValue),
+                .init("note", \SheepLabelRecord.note),
+                .init("sortOrder", \SheepLabelRecord.sortOrder),
+                .init("isActive", \SheepLabelRecord.isActive),
+                .init("revision", \SheepLabelRecord.revision),
+                .init("updatedAt", \SheepLabelRecord.updatedAt),
+            ], farmID: \SheepLabelRecord.farmID, recordID: \SheepLabelRecord.id),
+            ESheepCloudCheckpointModelAdapter(SheepLabelAssignmentRecord.self, disposition: .transfer, fields: [
+                .init("id", \SheepLabelAssignmentRecord.id),
+                .init("farmID", \SheepLabelAssignmentRecord.farmID),
+                .init("sheepID", \SheepLabelAssignmentRecord.sheepID),
+                .init("labelIDsJSON", \SheepLabelAssignmentRecord.labelIDsJSON),
+                .init("primaryLabelID", \SheepLabelAssignmentRecord.primaryLabelID),
+                .init("revision", \SheepLabelAssignmentRecord.revision),
+                .init("updatedAt", \SheepLabelAssignmentRecord.updatedAt),
+            ], farmID: \SheepLabelAssignmentRecord.farmID, recordID: \SheepLabelAssignmentRecord.id),
+            ESheepCloudCheckpointModelAdapter(SheepLabelChangeRecord.self, disposition: .transfer, fields: [
+                .init("id", \SheepLabelChangeRecord.id),
+                .init("farmID", \SheepLabelChangeRecord.farmID),
+                .init("sheepID", \SheepLabelChangeRecord.sheepID),
+                .init("accountID", \SheepLabelChangeRecord.accountID),
+                .init("title", \SheepLabelChangeRecord.title),
+                .init("detail", \SheepLabelChangeRecord.detail),
+                .init("snapshotsJSON", \SheepLabelChangeRecord.snapshotsJSON),
+                .init("occurredAt", \SheepLabelChangeRecord.occurredAt),
+            ], farmID: \SheepLabelChangeRecord.farmID, recordID: \SheepLabelChangeRecord.id),
             ESheepCloudCheckpointModelAdapter(ESheepCloudCheckpointState.self, disposition: .localOnly, fields: [
                 .init("id", \ESheepCloudCheckpointState.id),
                 .init("farmID", \ESheepCloudCheckpointState.farmID),

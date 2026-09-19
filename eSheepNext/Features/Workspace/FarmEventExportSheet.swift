@@ -6,6 +6,8 @@ struct FarmEventExportLauncher: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
+    @Environment(AppSession.self) private var session
+    let accountProfileID: UUID
     let farmID: UUID
     let farmName: String
 
@@ -46,6 +48,7 @@ struct FarmEventExportLauncher: View {
                 }
             }
         }
+        .environment(\.eventExportIdentity, EventExportIdentity(accountProfileID: accountProfileID, farmID: farmID))
         .task(id: reloadGeneration) { await load() }
     }
 
@@ -60,6 +63,7 @@ struct FarmEventExportLauncher: View {
     private func load() async {
         state = .loading
         do {
+            try EventExportAuthorization.require(EventExportIdentity(accountProfileID: accountProfileID, farmID: farmID), session: session, context: modelContext)
             let events = try await FarmEventHistoryActor(container: modelContext.container).load(farmID: farmID)
             guard !Task.isCancelled else { return }
             state = .loaded(events)
@@ -77,12 +81,26 @@ private enum FarmEventExportLoadState {
     case failed(String)
 }
 
+struct FarmEventExportSelection {
+    var category: FarmEventCategory?
+    var scope: FarmEventExportScope = .all
+    var query = ""
+    var range: FarmEventExportRange = .all
+}
+
 struct FarmEventExportSheet: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(AppSession.self) private var session
+    @Environment(\.eventExportIdentity) private var identity
     @Environment(\.dismiss) private var dismiss
 
     let farmName: String
     let events: [FarmEventSnapshot]
 
+    let initialFilter: FarmEventExportSelection?
+    @State private var category: FarmEventCategory?
+    @State private var query: String
+    @State private var usesCurrentFilter: Bool
     @State private var scope: FarmEventExportScope
     @State private var usesDateRange = false
     @State private var startDate: Date
@@ -97,14 +115,29 @@ struct FarmEventExportSheet: View {
         farmName: String,
         events: [FarmEventSnapshot],
         initialScope: FarmEventExportScope = .all,
+        initialFilter: FarmEventExportSelection? = nil,
         now: Date = .now,
         calendar: Calendar = .current
     ) {
         self.farmName = farmName
         self.events = events
-        _scope = State(initialValue: initialScope)
-        _endDate = State(initialValue: now)
-        _startDate = State(initialValue: calendar.date(byAdding: .month, value: -1, to: now) ?? now)
+        self.initialFilter = initialFilter
+        _category = State(initialValue: initialFilter?.category)
+        _query = State(initialValue: initialFilter?.query ?? "")
+        _usesCurrentFilter = State(initialValue: initialFilter != nil)
+        _scope = State(initialValue: initialFilter?.scope ?? initialScope)
+        if case let .days(from, through) = initialFilter?.range {
+            _usesDateRange = State(initialValue: true)
+            _startDate = State(initialValue: from)
+            _endDate = State(initialValue: through)
+        } else {
+            _endDate = State(initialValue: now)
+            _startDate = State(initialValue: calendar.date(byAdding: .month, value: -1, to: now) ?? now)
+        }
+    }
+
+    private var sourceEvents: [FarmEventSnapshot] {
+        events.filter { (category == nil || $0.category == category) && (FarmEventSearch.normalized(query).isEmpty || $0.searchableText.contains(FarmEventSearch.normalized(query))) }
     }
 
     private var selectedRange: FarmEventExportRange {
@@ -112,13 +145,35 @@ struct FarmEventExportSheet: View {
     }
 
     private var matchingCount: Int {
-        FarmEventCSVExport.matchingEventCount(events, scope: scope, range: selectedRange)
+        FarmEventCSVExport.matchingEventCount(sourceEvents, scope: scope, range: selectedRange)
     }
 
     var body: some View {
         let previewCount = matchingCount
         NavigationStack {
             Form {
+                if initialFilter != nil {
+                    Section("导出范围") {
+                        Picker("范围", selection: $usesCurrentFilter) {
+                            Text("当前筛选结果").tag(true)
+                            Text("全部事件").tag(false)
+                        }
+                        .onChange(of: usesCurrentFilter) { _, useFilter in
+                            let selection = useFilter ? (initialFilter ?? .init()) : .init()
+                            scope = selection.scope; category = selection.category; query = selection.query
+                            if case let .days(from, through) = selection.range {
+                                usesDateRange = true; startDate = from; endDate = through
+                            } else { usesDateRange = false }
+                        }
+                    }
+                }
+                Section("筛选条件") {
+                    Picker("业务分类", selection: $category) {
+                        Text("全部类别").tag(FarmEventCategory?.none)
+                        ForEach(FarmEventCategory.allCases) { Text($0.displayName).tag(Optional($0)) }
+                    }
+                    TextField("关键词", text: $query)
+                }
                 Section("记录类型") {
                     Picker("导出内容", selection: $scope) {
                         ForEach(FarmEventExportScope.allCases) { item in
@@ -147,7 +202,9 @@ struct FarmEventExportSheet: View {
                     Button("导出 \(previewCount) 条 CSV", systemImage: "square.and.arrow.up") {
                         prepareExport()
                     }
-                    .disabled(previewCount == 0)
+                    .disabled(previewCount == 0 || !isAuthorized)
+                    if !isAuthorized { Text("当前账号没有事件导出权限，或牧场已切换。").foregroundStyle(.secondary) }
+                    if previewCount == 0 { Text("当前范围没有可导出的事件。").foregroundStyle(.secondary) }
                 }
 
                 Section {
@@ -185,11 +242,20 @@ struct FarmEventExportSheet: View {
                 Text(LocalizedStringKey(message ?? ""))
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)) { _ in
+            if !isAuthorized { isExporting = false; document = nil }
+        }
+        .onChange(of: session.selectedFarmID) { _, _ in isExporting = false; document = nil; dismiss() }
+        .onChange(of: session.activeAccountProfileID) { _, _ in isExporting = false; document = nil; dismiss() }
     }
 
+    private var isAuthorized: Bool { (try? EventExportAuthorization.require(identity, session: session, context: modelContext)) != nil }
+
     private func prepareExport() {
+        do { try EventExportAuthorization.require(identity, session: session, context: modelContext) }
+        catch { message = error.localizedDescription; return }
         let range = selectedRange
-        let matchingEvents = FarmEventCSVExport.matchingEvents(events, scope: scope, range: range)
+        let matchingEvents = FarmEventCSVExport.matchingEvents(sourceEvents, scope: scope, range: range)
         guard !matchingEvents.isEmpty else {
             message = "当前类型和时间范围内没有可导出的记录。"
             return
