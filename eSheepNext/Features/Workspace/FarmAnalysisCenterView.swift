@@ -6,6 +6,7 @@ import SwiftUI
 struct FarmAnalysisCenterView: View {
     @Environment(\.modelContext) private var modelContext
 
+    let account: AccountProfile
     let farm: FarmRecord
     let assistantTransition: Namespace.ID
     let assistantTransitionID: MotionTransitionID
@@ -14,12 +15,14 @@ struct FarmAnalysisCenterView: View {
     @State private var deepAnalytics = FarmDeepAnalyticsStore()
 
     init(
+        account: AccountProfile,
         farm: FarmRecord,
         assistantTransition: Namespace.ID,
         assistantTransitionID: MotionTransitionID,
         assistantTransitionSpec: MotionTransitionSpec,
         onAskAssistant: @escaping (String?) -> Void
     ) {
+        self.account = account
         self.farm = farm
         self.assistantTransition = assistantTransition
         self.assistantTransitionID = assistantTransitionID
@@ -54,7 +57,7 @@ struct FarmAnalysisCenterView: View {
                 title: "增重分析", subtitle: "体重变化、日增重与生长趋势",
                 systemImage: "chart.line.uptrend.xyaxis", iconColor: .blue
             ) {
-                WeightGainAnalysisView(farm: farm, dataStore: deepAnalytics)
+                WeightGainAnalysisView(account: account, farm: farm, dataStore: deepAnalytics)
             }
             .accessibilityIdentifier("analysis-weight-entry")
             SettingsCardDivider()
@@ -249,113 +252,141 @@ private struct FarmAssistantBanner: View {
     }
 }
 
+private enum WeightGainAnalysisTab: String, CaseIterable, Identifiable {
+    case overview = "全场概览"
+    case batch = "批次分析"
+    case pen = "圈舍分析"
+
+    var id: Self { self }
+}
+
+private enum WeightGainSelectionSheet: String, Identifiable {
+    case batch
+    case pens
+
+    var id: String { rawValue }
+}
+
 private struct WeightGainAnalysisView: View {
     @Environment(\.modelContext) private var modelContext
 
+    let account: AccountProfile
     let farm: FarmRecord
     let dataStore: FarmDeepAnalyticsStore
-    @State private var scope = WeightSampleScope.all
-    @State private var selectedPenID: UUID?
+    @State private var tab = WeightGainAnalysisTab.overview
+    @State private var mode = WeightGainAnalysisMode.period
+    @State private var selectedPenIDs: Set<UUID> = []
     @State private var selectedBatchID: UUID?
-    @State private var regressionKind = WeightRegressionKind.linear
-    @State private var analytics = FarmAnalyticsViewModel()
+    @State private var population = WeightGainAnalysisPopulation.wholeObject
+    @State private var cohortAnchor = WeightGainCohortAnchor.analysisEnd
+    @State private var cohortDate = Calendar.current.startOfDay(for: .now)
+    @State private var startDate = Calendar.current.date(byAdding: .day, value: -30, to: Calendar.current.startOfDay(for: .now)) ?? .now
+    @State private var endDate = Calendar.current.startOfDay(for: .now)
+    @State private var selectionSheet: WeightGainSelectionSheet?
+    @State private var analytics = WeightGainAnalysisViewModel()
 
-    private var cutoff: Date {
-        dataStore.payload?.weightCutoff ?? .now
-    }
-    private var cohort: WeightCohort { analytics.weightCohort ?? WeightCohort(sheepIDs: [], latestAverageWeight: nil, latestAverageADG: nil, weightTrend: [], adgTrend: [], scatter: []) }
-    private var eligiblePenIDs: Set<UUID> {
-        dataStore.payload?.eligibleWeightPenIDs ?? []
-    }
     private var farmPens: [FarmAnalyticsSnapshot.Pen] {
-        guard let snapshot = dataStore.payload?.snapshot else { return [] }
-        return snapshot.pens.filter { eligiblePenIDs.contains($0.id) }
+        (dataStore.payload?.snapshot.pens ?? []).sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
     }
-    private var farmBatches: [FarmAnalyticsBatchSnapshot] { dataStore.payload?.batches ?? [] }
-    private var visibleBatchIDs: [UUID] { farmBatches.map(\.id).sorted { $0.uuidString < $1.uuidString } }
-    private var regression: [WeightRegressionPoint] { WeightGainAnalyticsEngine.trendline(for: cohort.scatter, kind: regressionKind) }
+
+    private var farmBatches: [FarmAnalyticsBatchSnapshot] {
+        dataStore.payload?.batches ?? []
+    }
+
+    /// 批次筛选只展示曾与该批次成员发生过真实关联的圈舍。
+    /// 关联来源包括成员当前/初始圈舍和已记录调群事件的原舍、目标舍；
+    /// 不用全场圈舍列表制造与当前批次无关的选择项。
+    private var selectablePens: [FarmAnalyticsSnapshot.Pen] {
+        guard tab == .batch, let batchID = selectedBatchID,
+              let snapshot = dataStore.payload?.snapshot else {
+            return farmPens
+        }
+        let sheepIDs = Set(snapshot.batchMemberships.filter { $0.batchID == batchID }.map(\.sheepID))
+        guard !sheepIDs.isEmpty else { return [] }
+        var relatedPenIDs = Set(snapshot.sheep.filter { sheepIDs.contains($0.id) }.compactMap(\.initialPenID))
+        relatedPenIDs.formUnion(snapshot.sheep.filter { sheepIDs.contains($0.id) }.compactMap(\.currentPenID))
+        for transfer in snapshot.transfers where sheepIDs.contains(transfer.sheepID) {
+            if let fromPenID = transfer.fromPenID { relatedPenIDs.insert(fromPenID) }
+            if let toPenID = transfer.toPenID { relatedPenIDs.insert(toPenID) }
+        }
+        return farmPens.filter { relatedPenIDs.contains($0.id) }
+    }
+
+    private var conditionText: String {
+        let object: String
+        switch tab {
+        case .overview:
+            object = "全场"
+        case .batch:
+            let batchName = farmBatches.first(where: { $0.id == selectedBatchID })?.name ?? "请选择批次"
+            if !selectedPenIDs.isEmpty {
+                if population == .trackedCohort {
+                    let anchorTitle = cohortAnchor == .analysisEnd ? "期末" : cohortAnchor == .analysisStart ? "期初" : "历史时点"
+                    let count = analytics.result.map { "的 \($0.cohortMembers.count) 只羊" } ?? "名单"
+                    object = "\(batchName) · \(anchorTitle)在 \(penNames(selectedPenIDs)) \(count)"
+                } else {
+                    object = "\(batchName) · \(penNames(selectedPenIDs))"
+                }
+            } else {
+                object = "\(batchName) · 全部圈舍"
+            }
+        case .pen:
+            let penName = selectedPenIDs.isEmpty ? "请选择圈舍" : penNames(selectedPenIDs)
+            if let selectedBatchID,
+               let batchName = farmBatches.first(where: { $0.id == selectedBatchID })?.name {
+                if population == .trackedCohort {
+                    let anchorTitle = cohortAnchor == .analysisEnd ? "期末" : cohortAnchor == .analysisStart ? "期初" : "历史时点"
+                    let count = analytics.result.map { "的 \($0.cohortMembers.count) 只羊" } ?? "名单"
+                    object = "\(batchName) · \(anchorTitle)在 \(penName) \(count)"
+                } else {
+                    object = "\(batchName) · \(penName)"
+                }
+            } else {
+                if population == .trackedCohort {
+                    let anchorTitle = cohortAnchor == .analysisEnd ? "期末" : cohortAnchor == .analysisStart ? "期初" : "历史时点"
+                    let count = analytics.result.map { "的 \($0.cohortMembers.count) 只羊" } ?? "名单"
+                    object = "\(anchorTitle)在 \(penName) \(count) · 全部批次"
+                } else {
+                    object = "\(penName) · 全部批次"
+                }
+            }
+        }
+        let populationTitle = population.rawValue
+        return "\(object) · \(populationTitle) · \(weightDate(startDate))–\(weightDate(endDate))"
+    }
+
+    private func penNames(_ ids: Set<UUID>) -> String {
+        let names = farmPens.filter { ids.contains($0.id) }.map(\.name)
+        return names.isEmpty ? "请选择圈舍" : names.joined(separator: "、")
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("按样本范围、圈舍或生产批次查看增重表现")
+                Text("按批次、圈舍和日期查看增重表现")
                     .analysisPageSubtitle()
-                AnalysisFilterBar {
-                    Picker("样本范围", selection: $scope) {
-                        ForEach(WeightSampleScope.allCases, id: \.self) { Text(scopeName($0)).tag($0) }
+
+                Picker("分析范围", selection: $tab) {
+                    ForEach(WeightGainAnalysisTab.allCases) { item in
+                        Text(item.rawValue).tag(item)
                     }
-                    .pickerStyle(.menu)
-                    .analysisFilterChip()
-                    Picker("圈舍", selection: $selectedPenID) {
-                        Text("全场").tag(UUID?.none)
-                        ForEach(farmPens, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
-                    }
-                    .pickerStyle(.menu)
-                    .analysisFilterChip()
-                    Picker("批次", selection: $selectedBatchID) {
-                        Text("不按批次").tag(UUID?.none)
-                        ForEach(farmBatches, id: \.id) { Text($0.name).tag(UUID?.some($0.id)) }
-                    }
-                    .pickerStyle(.menu)
-                    .analysisFilterChip()
                 }
-                if dataStore.errorMessage != nil, analytics.snapshot == nil {
-                    AnalysisNotice(content: Text("分析数据读取失败：\(dataStore.errorMessage ?? "未知错误")"))
-                } else if analytics.isCalculating && analytics.weightCohort == nil || dataStore.isLoading && analytics.snapshot == nil {
+                .pickerStyle(.segmented)
+
+                filterCard
+
+                if let error = dataStore.errorMessage, analytics.snapshot != nil {
+                    AnalysisNotice(content: Text("刷新未完成，当前显示上次读取的数据：\(error)"))
+                }
+
+                if let errorMessage = dataStore.errorMessage, analytics.snapshot == nil {
+                    AnalysisNotice(content: Text("分析数据读取失败：\(errorMessage)"))
+                } else if (dataStore.isLoading && analytics.snapshot == nil) || (analytics.isCalculating && analytics.result == nil) {
                     AnalysisLoading(title: "正在计算增重数据")
                 } else {
-                    MetricGrid {
-                        AnalysisMetric(title: "有效羊只", value: "\(cohort.sheepIDs.count)", unit: "只", tint: .blue)
-                        AnalysisMetric(title: "最新均重", value: cohort.latestAverageWeight.map(number) ?? "—", unit: "千克", tint: .teal)
-                        AnalysisMetric(title: "首末 ADG", value: cohort.latestAverageADG.map(number) ?? "—", unit: "千克/天", tint: .orange)
-                    }
-                    if analytics.isCalculating { ProgressView("正在更新分析").font(.footnote) }
-                    if !cohort.weightTrend.isEmpty {
-                        AnalysisCard(title: "平均体重趋势", caption: "每个记录日期的样本平均体重") {
-                            Chart(cohort.weightTrend) { point in
-                                AreaMark(x: .value("日期", point.date), y: .value("体重", point.value))
-                                    .foregroundStyle(AppTheme.brand.opacity(0.16))
-                                LineMark(x: .value("日期", point.date), y: .value("体重", point.value))
-                                    .foregroundStyle(AppTheme.brand)
-                                    .lineStyle(StrokeStyle(lineWidth: 2.5))
-                                PointMark(x: .value("日期", point.date), y: .value("体重", point.value))
-                                    .foregroundStyle(AppTheme.brand)
-                            }
-                            .frame(height: 164)
-                        }
-                    }
-                    if !cohort.adgTrend.isEmpty {
-                        AnalysisCard(title: "区间 ADG 趋势", caption: "相邻两次有效体重的平均日增重") {
-                            Chart(cohort.adgTrend) { point in
-                                LineMark(x: .value("日期", point.date), y: .value("ADG", point.value))
-                                    .foregroundStyle(.orange)
-                                    .lineStyle(StrokeStyle(lineWidth: 2.5))
-                                PointMark(x: .value("日期", point.date), y: .value("ADG", point.value))
-                                    .foregroundStyle(.orange)
-                            }
-                            .frame(height: 164)
-                        }
-                    }
-                    if !cohort.scatter.isEmpty {
-                        AnalysisCard(title: "体重与 ADG", caption: "前次体重与区间日增重的关系") {
-                            Picker("趋势线", selection: $regressionKind) {
-                                ForEach(WeightRegressionKind.allCases) { Text($0.title).tag($0) }
-                            }
-                            .pickerStyle(.segmented)
-                            Chart {
-                                ForEach(cohort.scatter) { point in
-                                    PointMark(x: .value("前次体重", point.baselineWeight), y: .value("ADG", point.adg))
-                                        .foregroundStyle(AppTheme.brand.opacity(0.65))
-                                }
-                                ForEach(regression) { point in
-                                    LineMark(x: .value("前次体重", point.x), y: .value("ADG", point.y))
-                                        .foregroundStyle(.orange)
-                                        .lineStyle(StrokeStyle(lineWidth: 2, dash: regressionKind == .linear ? [8, 5] : []))
-                                }
-                            }
-                            .frame(height: 164)
-                        }
-                    }
+                    analysisContent
                 }
             }
             .padding(.horizontal, 16)
@@ -369,18 +400,525 @@ private struct WeightGainAnalysisView: View {
         .refreshable {
             await dataStore.load(container: modelContext.container, farmID: farm.id, force: true)
         }
-        .onChange(of: scope) { _, _ in calculateWeight() }
-        .onChange(of: selectedPenID) { _, _ in calculateWeight() }
-        .onChange(of: selectedBatchID) { _, _ in calculateWeight() }
-        .onChange(of: visibleBatchIDs) { _, validIDs in
-            if let selectedBatchID, !validIDs.contains(selectedBatchID) {
-                self.selectedBatchID = nil
+        .sheet(item: $selectionSheet) { sheet in
+            switch sheet {
+            case .batch:
+                WeightGainBatchSelectionSheet(
+                    batches: farmBatches,
+                    selection: $selectedBatchID
+                )
+            case .pens:
+                WeightGainPenSelectionSheet(
+                    pens: selectablePens,
+                    selection: $selectedPenIDs,
+                    allowsEmpty: tab == .batch
+                )
             }
         }
-        .onChange(of: eligiblePenIDs) { _, validIDs in
-            if let selectedPenID, !validIDs.contains(selectedPenID) {
-                self.selectedPenID = nil
+        .onChange(of: tab) { _, _ in
+            selectedPenIDs = selectedPenIDs.intersection(Set(selectablePens.map(\.id)))
+            calculate()
+        }
+        .onChange(of: mode) { _, _ in calculate() }
+        .onChange(of: startDate) { _, _ in calculate() }
+        .onChange(of: endDate) { _, _ in calculate() }
+        .onChange(of: selectedPenIDs) { _, _ in
+            if selectedPenIDs.isEmpty { population = .wholeObject }
+            else if population == .wholeObject { population = .trackedCohort }
+            calculate()
+        }
+        .onChange(of: selectedBatchID) { _, _ in
+            selectedPenIDs = selectedPenIDs.intersection(Set(selectablePens.map(\.id)))
+            calculate()
+        }
+        .onChange(of: population) { _, _ in calculate() }
+        .onChange(of: cohortAnchor) { _, _ in calculate() }
+        .onChange(of: cohortDate) { _, _ in calculate() }
+    }
+
+    private var filterCard: some View {
+        AnalysisCard(title: "分析条件", caption: conditionText) {
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(spacing: 12) {
+                    DatePicker(
+                        mode == .paired ? "分析起点" : "开始日期",
+                        selection: $startDate,
+                        in: ...endDate,
+                        displayedComponents: .date
+                    )
+                    DatePicker(
+                        mode == .paired ? "分析终点" : "结束日期",
+                        selection: $endDate,
+                        in: startDate...FarmAnalyticsDate.day(.now),
+                        displayedComponents: .date
+                    )
+                }
+
+                Picker("计算方式", selection: $mode) {
+                    ForEach(WeightGainAnalysisMode.allCases, id: \.self) { item in
+                        Text(item.title).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if mode == .paired {
+                    Text("范围内自动取每只羊最早、最晚的有效称重。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let latest = dataStore.payload?.weightCutoff {
+                    Text("最近称重：\(weightDate(latest))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                if tab == .batch {
+                    filterSelectionRow(
+                        title: "生产批次",
+                        subtitle: selectedBatchName == nil ? "请选择" : "当前批次",
+                        value: selectedBatchName ?? "未选择",
+                        systemImage: "square.stack.3d.up",
+                        tint: .blue
+                    ) {
+                        selectionSheet = .batch
+                    }
+                    filterSelectionRow(
+                        title: "关联圈舍",
+                        subtitle: selectedBatchID == nil ? "先选批次" : "可多选 · 历史关联圈舍",
+                        value: selectedPenSummary(allowsEmpty: true),
+                        systemImage: "rectangle.3.group",
+                        tint: .teal,
+                        isDisabled: selectedBatchID == nil
+                    ) {
+                        selectionSheet = .pens
+                    }
+                    if !selectedPenIDs.isEmpty {
+                        populationPicker
+                        if population == .trackedCohort { cohortAnchorPicker }
+                    }
+                    Text(selectedPenIDs.isEmpty ? "整批表现" : population == .trackedCohort ? "固定名单跟踪 · 调群连续保留" : "真实在舍区间")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if tab == .pen {
+                    filterSelectionRow(
+                        title: "圈舍",
+                        subtitle: "可多选",
+                        value: selectedPenSummary(allowsEmpty: false),
+                        systemImage: "rectangle.3.group",
+                        tint: .teal
+                    ) {
+                        selectionSheet = .pens
+                    }
+                    filterSelectionRow(
+                        title: "生产批次",
+                        subtitle: selectedBatchName == nil ? "可选" : "当前批次",
+                        value: selectedBatchName ?? "全部批次",
+                        systemImage: "square.stack.3d.up",
+                        tint: .blue
+                    ) {
+                        selectionSheet = .batch
+                    }
+                    populationPicker
+                    if population == .trackedCohort { cohortAnchorPicker }
+                    Text(selectedBatchID == nil ? "按真实在舍阶段计算 · 跨舍区间单列" : "批次与圈舍取真实交集")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
+        }
+    }
+
+    private var selectedBatchName: String? {
+        guard let selectedBatchID else { return nil }
+        return farmBatches.first(where: { $0.id == selectedBatchID }).map {
+            $0.name.isEmpty ? "未命名生产批次" : $0.name
+        }
+    }
+
+    private func selectedPenSummary(allowsEmpty: Bool) -> String {
+        if selectedPenIDs.isEmpty {
+            return allowsEmpty ? "全部关联圈舍" : "请选择圈舍"
+        }
+        if selectedPenIDs.count == 1 { return penNames(selectedPenIDs) }
+        return "已选 \(selectedPenIDs.count) 个圈舍"
+    }
+
+    private func filterSelectionRow(
+        title: String,
+        subtitle: String,
+        value: String,
+        systemImage: String,
+        tint: Color,
+        isDisabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 34, height: 34)
+                    .background(tint.opacity(0.12), in: .rect(cornerRadius: 10))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(value)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(isDisabled ? Color.secondary.opacity(0.55) : tint)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+    }
+
+    private var populationPicker: some View {
+        Picker("分析方式", selection: $population) {
+            Text(WeightGainAnalysisPopulation.trackedCohort.rawValue).tag(WeightGainAnalysisPopulation.trackedCohort)
+            Text(WeightGainAnalysisPopulation.inPen.rawValue).tag(WeightGainAnalysisPopulation.inPen)
+        }
+        .pickerStyle(.segmented)
+    }
+
+    @ViewBuilder
+    private var cohortAnchorPicker: some View {
+        Picker("名单基准", selection: $cohortAnchor) {
+            ForEach(WeightGainCohortAnchor.allCases, id: \.self) { anchor in
+                Text(anchor.rawValue).tag(anchor)
+            }
+        }
+        .pickerStyle(.menu)
+        if cohortAnchor == .custom {
+            DatePicker("固定名单时点", selection: $cohortDate, in: startDate...endDate, displayedComponents: .date)
+        }
+        Text("基准时点确定名单，调群不改变名单。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var analysisContent: some View {
+        if tab == .overview {
+            overviewContent
+        } else if let result = analytics.result {
+            detailContent(result)
+        } else {
+            AnalysisNotice(content: Text(tab == .batch ? "请选择生产批次" : "请选择圈舍"))
+        }
+    }
+
+    @ViewBuilder
+    private var overviewContent: some View {
+        if let overview = analytics.overview {
+            let all = overview.all
+            MetricGrid {
+                AnalysisMetric(title: "期间对象", value: "\(all.objectCount)", unit: "只", tint: .blue)
+                AnalysisMetric(title: "期间称重", value: "\(all.weighedCount)", unit: "只", tint: .teal)
+                AnalysisMetric(title: "可计算增重", value: "\(all.calculableCount)", unit: "只", tint: .orange)
+            }
+
+            AnalysisCard(title: "群体表现", caption: "逐羊计算 · 等权汇总") {
+                if overview.groups.isEmpty {
+                    AnalysisEmpty(text: "当前日期范围内还没有可识别的生产群体")
+                } else {
+                    ForEach(overview.groups) { group in
+                        if case .batch(let batchID) = group.scope {
+                            Button {
+                                selectedBatchID = batchID
+                                selectedPenIDs.removeAll()
+                                population = .wholeObject
+                                tab = .batch
+                            } label: {
+                                groupRow(group)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Button {
+                                tab = .pen
+                            } label: {
+                                AnalysisRow(title: Text(group.title),
+                                    detail: Text("期间涉及 \(group.result.objectCount)只 · 按圈舍继续查看"),
+                                    trailing: Text("选择圈舍"))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if group.id != overview.groups.last?.id {
+                            Divider()
+                        }
+                    }
+                }
+            }
+
+            AnalysisCard(title: "需要关注", caption: "下降和缺口") {
+                if all.downwardCount == 0 && all.missingPairCount == 0 {
+                    AnalysisEmpty(text: "当前范围内没有体重下降或配对缺口")
+                } else {
+                    if all.downwardCount > 0 {
+                        AnalysisRow(
+                            title: Text("本期净下降"),
+                            detail: Text("期间日增重 < 0"),
+                            trailing: Text("\(all.downwardCount)只")
+                        )
+                    }
+                    if all.missingPairCount > 0 {
+                        AnalysisRow(
+                            title: Text("缺少有效区间"),
+                            detail: Text("对象数 − 可计算数"),
+                            trailing: Text("\(all.missingPairCount)只")
+                        )
+                    }
+                    NavigationLink {
+                        WeightGainEvidenceList(account: account, farm: farm, result: all, onlyCurrentDeclines: true)
+                    } label: {
+                        AnalysisActionButton(
+                            title: "当前在场下降 \(all.currentDownwardCount)只",
+                            systemImage: "list.bullet",
+                            tint: .red
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    NavigationLink {
+                        WeightGainEvidenceList(account: account, farm: farm, result: all, showExclusions: true)
+                    } label: {
+                        AnalysisActionButton(
+                            title: "未纳入原因 \(all.exclusions.count)只",
+                            systemImage: "list.bullet.clipboard",
+                            tint: .orange
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        } else {
+            AnalysisLoading(title: "正在整理群体表现")
+        }
+    }
+
+    private func groupRow(_ group: WeightGainOverviewGroup) -> some View {
+        let result = group.result
+        return AnalysisRow(
+            title: Text(group.title),
+            detail: Text("\(group.subtitle) · 可计算 \(result.calculableCount)/\(result.objectCount)只 · 下降 \(result.downwardCount)只"),
+            trailing: Text(result.averageDailyGainGrams.map(weightRate) ?? "—")
+        )
+    }
+
+    @ViewBuilder
+    private func detailContent(_ result: WeightGainAnalysisResult) -> some View {
+        MetricGrid {
+            AnalysisMetric(title: "平均日增重", value: result.averageDailyGainGrams.map(weightRateValue) ?? "—", unit: "克/天", tint: .orange)
+            AnalysisMetric(title: mode == .paired ? "有效配对" : "可计算增重", value: "\(result.calculableCount)", unit: "只", tint: .blue)
+            AnalysisMetric(title: "体重下降", value: "\(result.downwardCount)", unit: "只", tint: .red)
+        }
+
+        if result.population == .trackedCohort {
+            AnalysisCard(
+                title: "固定名单与调群",
+                caption: "\(result.cohortMembers.count)只名单 · \(result.transferSheepCount)只调群"
+            ) {
+                if result.cohortMembers.isEmpty {
+                    Text("该时点没有符合条件的羊只")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 0) {
+                    AnalysisMetric(title: "固定名单", value: "\(result.cohortMembers.count)", unit: "只", tint: .blue)
+                    AnalysisMetric(title: "跨舍区间", value: "\(result.crossPenIntervalCount)", unit: "段", tint: .teal)
+                    AnalysisMetric(title: "调群羊只", value: "\(result.transferSheepCount)", unit: "只", tint: .orange)
+                }
+                .padding(.vertical, 8)
+                .background(.fill.quaternary, in: .rect(cornerRadius: 14))
+
+                if let anchorDate = result.cohortAnchorDate {
+                    Label(
+                        "基准 \(anchorDate.formatted(date: .abbreviated, time: .shortened)) · \(result.analysisTimeZoneIdentifier)",
+                        systemImage: "calendar"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    NavigationLink {
+                        WeightGainCohortEvidenceList(result: result)
+                    } label: {
+                        AnalysisActionButton(title: "名单证据 \(result.cohortMembers.count)", systemImage: "person.3", tint: .blue)
+                    }
+                    .buttonStyle(.plain)
+                    if !result.transferEvents.isEmpty {
+                        NavigationLink {
+                            WeightGainTransferEvidenceList(result: result)
+                        } label: {
+                            AnalysisActionButton(title: "调群事件 \(result.transferEvents.count)", systemImage: "arrow.left.arrow.right", tint: .orange)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        } else if result.crossPenIntervalCount > 0 {
+            AnalysisCard(title: "跨舍未归属区间", caption: "不估算分摊") {
+                AnalysisRow(
+                    title: Text("保留在羊只历史"),
+                    detail: Text("保留整体证据 · 不计单舍"),
+                    trailing: Text("\(result.unassignedIntervals.count)段")
+                )
+                if !result.unassignedIntervals.isEmpty {
+                    NavigationLink {
+                        WeightGainUnassignedIntervalList(result: result)
+                    } label: {
+                        AnalysisActionButton(
+                            title: "未归属区间证据 \(result.unassignedIntervals.count)",
+                            systemImage: "rectangle.and.text.magnifyingglass",
+                            tint: .teal
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+                NavigationLink {
+                    WeightGainTransferEvidenceList(result: result)
+                } label: {
+                    AnalysisActionButton(
+                        title: "相关调群事件 \(result.transferEvents.count)",
+                        systemImage: "arrow.left.arrow.right",
+                        tint: .orange
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+
+        if mode == .paired {
+            AnalysisCard(title: "同羊两次称重", caption: "\(result.calculableCount)只有效配对") {
+                HStack(spacing: 0) {
+                    AnalysisMetric(
+                        title: "起点均重",
+                        value: result.averageStartWeight.map(weightKilograms) ?? "—",
+                        unit: nil,
+                        tint: .blue
+                    )
+                    AnalysisMetric(
+                        title: "终点均重",
+                        value: result.averageEndWeight.map(weightKilograms) ?? "—",
+                        unit: nil,
+                        tint: .teal
+                    )
+                    AnalysisMetric(
+                        title: "平均增重",
+                        value: result.averageGainKilograms.map(weightKilogramsSigned) ?? "—",
+                        unit: nil,
+                        tint: .orange
+                    )
+                }
+                .padding(.vertical, 8)
+                .background(.fill.quaternary, in: .rect(cornerRadius: 14))
+                if let actualStartDate = result.actualStartDate, let actualEndDate = result.actualEndDate {
+                    Text("\(weightDate(actualStartDate)) 至 \(weightDate(actualEndDate))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            AnalysisCard(title: "期间表现", caption: "\(result.intervalCount)个有效区间") {
+                HStack(spacing: 0) {
+                    AnalysisMetric(
+                        title: "观察区间",
+                        value: "\(result.intervalCount)",
+                        unit: "段",
+                        tint: .blue
+                    )
+                    AnalysisMetric(
+                        title: "在场下降",
+                        value: "\(result.currentDownwardCount)",
+                        unit: "只",
+                        tint: .red
+                    )
+                }
+                .padding(.vertical, 8)
+                .background(.fill.quaternary, in: .rect(cornerRadius: 14))
+                Text("\(weightDate(startDate)) 至 \(weightDate(endDate))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+
+        if !result.rows.isEmpty {
+            AnalysisCard(title: "日增重分布", caption: "\(result.rows.count)只 · g/天") {
+                WeightGainDistributionView(rows: result.rows)
+            }
+        }
+
+        AnalysisCard(title: "个体明细", caption: "对象 \(result.objectCount) · 称重 \(result.weighedCount) · 可计算 \(result.calculableCount)") {
+            if result.rows.isEmpty {
+                AnalysisEmpty(text: "当前条件下没有形成有效增重区间")
+            } else {
+                NavigationLink {
+                    WeightGainEvidenceList(account: account, farm: farm, result: result)
+                } label: {
+                    AnalysisActionButton(
+                        title: "个体计算依据 \(result.rows.count)只",
+                        systemImage: "list.bullet",
+                        tint: .blue
+                    )
+                }
+                .buttonStyle(.plain)
+                NavigationLink {
+                    WeightGainEvidenceList(account: account, farm: farm, result: result, onlyCurrentDeclines: true)
+                } label: {
+                    AnalysisActionButton(
+                        title: "当前在场下降 \(result.currentDownwardCount)只",
+                        systemImage: "arrow.down.right",
+                        tint: .red
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+
+        AnalysisCard(title: "未纳入原因", caption: "缺口单列") {
+            if result.exclusions.isEmpty {
+                AnalysisEmpty(text: "没有被排除的对象")
+            } else {
+                NavigationLink {
+                    WeightGainEvidenceList(account: account, farm: farm, result: result, showExclusions: true)
+                } label: {
+                    AnalysisActionButton(
+                        title: "未纳入原因 \(result.exclusions.count)只",
+                        systemImage: "list.bullet.clipboard",
+                        tint: .orange
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+
+        if let snapshot = analytics.snapshot, result.filter.scope != .farm {
+            AnalysisCard(title: "固定样本体重趋势", caption: "全程同羊") {
+                WeightGainFixedTrendView(snapshot: snapshot, filter: result.filter)
+                    .id("\(conditionText)-\(dataStore.revision)")
+            }
+        }
+
+        ShareLink(item: result.csvReport(scopeName: conditionText)) {
+            Label("分享本次结果与全部区间（CSV 文本）", systemImage: "square.and.arrow.up")
         }
     }
 
@@ -388,20 +926,263 @@ private struct WeightGainAnalysisView: View {
         await dataStore.load(container: modelContext.container, farmID: farm.id)
         guard !Task.isCancelled, let payload = dataStore.payload else { return }
         analytics.replaceSnapshot(payload.snapshot)
-        if let selectedPenID, !payload.eligibleWeightPenIDs.contains(selectedPenID) {
-            self.selectedPenID = nil
-        }
-        if let selectedBatchID, !payload.batches.contains(where: { $0.id == selectedBatchID }) {
+        selectedPenIDs = selectedPenIDs.intersection(Set(farmPens.map(\.id)))
+        if let selectedBatchID, !farmBatches.contains(where: { $0.id == selectedBatchID }) {
             self.selectedBatchID = nil
         }
-        calculateWeight()
+        selectedPenIDs = selectedPenIDs.intersection(Set(selectablePens.map(\.id)))
+        calculate()
     }
 
-    private func calculateWeight() {
-        let batchID = selectedBatchID.flatMap { selected in
-            farmBatches.contains(where: { $0.id == selected }) ? selected : nil
+    private func calculate() {
+        guard analytics.snapshot != nil else { return }
+        let normalizedStart = FarmAnalyticsDate.day(min(startDate, endDate))
+        let normalizedEnd = min(FarmAnalyticsDate.day(max(startDate, endDate)), FarmAnalyticsDate.day(.now))
+        if startDate != normalizedStart { startDate = normalizedStart }
+        if endDate != normalizedEnd { endDate = normalizedEnd }
+
+        let scope: WeightGainAnalysisScope?
+        switch tab {
+        case .overview:
+            scope = .farm
+        case .batch:
+            if let selectedBatchID {
+                if selectedPenIDs.count > 1 {
+                    scope = .batchAndPens(batchID: selectedBatchID, penIDs: selectedPenIDs)
+                } else if let penID = selectedPenIDs.first {
+                    scope = .batchAndPen(batchID: selectedBatchID, penID: penID)
+                } else {
+                    scope = .batch(selectedBatchID)
+                }
+            } else {
+                scope = nil
+            }
+        case .pen:
+            if !selectedPenIDs.isEmpty {
+                if selectedPenIDs.count > 1 {
+                    scope = selectedBatchID.map { .batchAndPens(batchID: $0, penIDs: selectedPenIDs) } ?? .pens(selectedPenIDs)
+                } else if let penID = selectedPenIDs.first {
+                    scope = selectedBatchID.map { .batchAndPen(batchID: $0, penID: penID) } ?? .pen(penID)
+                } else {
+                    scope = nil
+                }
+            } else {
+                scope = nil
+            }
         }
-        analytics.calculateWeight(penID: selectedPenID, batchID: batchID, snapshotDate: cutoff, scope: scope)
+        guard let scope else {
+            analytics.clearCalculation()
+            return
+        }
+        analytics.calculate(
+            filter: WeightGainAnalysisFilter(
+                scope: scope,
+                mode: mode,
+                startDate: normalizedStart,
+                endDate: normalizedEnd,
+                population: tab == .overview ? .wholeObject : population,
+                cohortAnchor: cohortAnchor,
+                cohortDate: cohortDate
+            ),
+            batches: farmBatches
+        )
+    }
+}
+
+private struct WeightGainBatchSelectionSheet: View {
+    let batches: [FarmAnalyticsBatchSnapshot]
+    @Binding var selection: UUID?
+    @Environment(\.dismiss) private var dismiss
+    @State private var draftSelection: UUID?
+    @State private var search = ""
+
+    init(batches: [FarmAnalyticsBatchSnapshot], selection: Binding<UUID?>) {
+        self.batches = batches
+        self._selection = selection
+        self._draftSelection = State(initialValue: selection.wrappedValue)
+    }
+
+    private var filteredBatches: [FarmAnalyticsBatchSnapshot] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return batches }
+        return batches.filter { $0.name.localizedStandardContains(query) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        draftSelection = nil
+                    } label: {
+                        selectionRow(
+                            title: "全部批次",
+                            subtitle: "不限制批次",
+                            isSelected: draftSelection == nil,
+                            tint: .blue
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Section("选择一个生产批次") {
+                    if filteredBatches.isEmpty {
+                        ContentUnavailableView("没有匹配的批次", systemImage: "square.stack.3d.up.slash")
+                    } else {
+                        ForEach(filteredBatches, id: \.id) { batch in
+                            Button {
+                                draftSelection = batch.id
+                            } label: {
+                                selectionRow(
+                                    title: batch.name.isEmpty ? "未命名生产批次" : batch.name,
+                                    subtitle: "单选",
+                                    isSelected: draftSelection == batch.id,
+                                    tint: .blue
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .searchable(text: $search, prompt: "搜索批次名称")
+            .navigationTitle("选择生产批次")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") {
+                        selection = draftSelection
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func selectionRow(title: String, subtitle: String, isSelected: Bool, tint: Color) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.title3)
+                .foregroundStyle(isSelected ? tint : Color.secondary.opacity(0.55))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+        }
+        .contentShape(.rect)
+    }
+}
+
+private struct WeightGainPenSelectionSheet: View {
+    let pens: [FarmAnalyticsSnapshot.Pen]
+    @Binding var selection: Set<UUID>
+    let allowsEmpty: Bool
+    @Environment(\.dismiss) private var dismiss
+    @State private var draftSelection: Set<UUID>
+    @State private var search = ""
+
+    init(pens: [FarmAnalyticsSnapshot.Pen], selection: Binding<Set<UUID>>, allowsEmpty: Bool) {
+        self.pens = pens
+        self._selection = selection
+        self.allowsEmpty = allowsEmpty
+        self._draftSelection = State(initialValue: selection.wrappedValue)
+    }
+
+    private var filteredPens: [FarmAnalyticsSnapshot.Pen] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return pens }
+        return pens.filter { $0.name.localizedStandardContains(query) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if allowsEmpty {
+                    Section {
+                        Button {
+                            draftSelection.removeAll()
+                        } label: {
+                            penRow(
+                                title: "全部关联圈舍",
+                                subtitle: "整批表现",
+                                isSelected: draftSelection.isEmpty
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Section(allowsEmpty ? "关联圈舍" : "选择圈舍") {
+                    if filteredPens.isEmpty {
+                        ContentUnavailableView(
+                            allowsEmpty ? "该批次没有可识别的关联圈舍" : "没有匹配的圈舍",
+                            systemImage: "rectangle.3.group.slash"
+                        )
+                    } else {
+                        ForEach(filteredPens, id: \.id) { pen in
+                            Button {
+                                if draftSelection.contains(pen.id) {
+                                    draftSelection.remove(pen.id)
+                                } else {
+                                    draftSelection.insert(pen.id)
+                                }
+                            } label: {
+                                penRow(
+                                    title: pen.name,
+                                    subtitle: allowsEmpty ? "历史关联" : "在舍阶段",
+                                    isSelected: draftSelection.contains(pen.id)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .searchable(text: $search, prompt: "搜索圈舍名称")
+            .navigationTitle(allowsEmpty ? "选择关联圈舍" : "选择圈舍")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") {
+                        selection = draftSelection
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func penRow(title: String, subtitle: String, isSelected: Bool) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.title3)
+                .foregroundStyle(isSelected ? Color.teal : Color.secondary.opacity(0.55))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+        }
+        .contentShape(.rect)
     }
 }
 
@@ -1409,6 +2190,7 @@ private struct AnalysisCard<Content: View>: View {
             }
             content()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .background(.background, in: .rect(cornerRadius: 18))
         .overlay { RoundedRectangle(cornerRadius: 18).stroke(.separator.opacity(0.38), lineWidth: 0.5) }
@@ -1419,6 +2201,7 @@ private struct MetricGrid<Content: View>: View {
     @ViewBuilder let content: () -> Content
     var body: some View {
         HStack(alignment: .top, spacing: 0) { content() }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 12)
             .background(.background, in: .rect(cornerRadius: 18))
             .overlay { RoundedRectangle(cornerRadius: 18).stroke(.separator.opacity(0.38), lineWidth: 0.5) }
@@ -1446,6 +2229,31 @@ private struct AnalysisMetric: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
+    }
+}
+
+private struct AnalysisActionButton: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.subheadline.weight(.semibold))
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 4)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.bold))
+        }
+        .foregroundStyle(tint)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.horizontal, 12)
+        .background(tint.opacity(0.10), in: .rect(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(tint.opacity(0.22), lineWidth: 0.8) }
     }
 }
 
@@ -1535,3 +2343,14 @@ private func dayNumber(_ value: Double) -> String { value.formatted(.number.prec
 private func sampleNumber(_ value: Double, count: Int) -> String { count > 0 ? "\(number(value))（\(count)）" : "—" }
 private func sampleValue(_ value: Double, count: Int, unit: String) -> String { count > 0 ? "\(number(value))\(unit)" : "—" }
 private func percent(_ value: Double) -> String { "\(number(value * 100))%" }
+private func weightDate(_ date: Date) -> String { date.formatted(date: .numeric, time: .omitted) }
+private func weightRateValue(_ value: Double) -> String {
+    let sign = value > 0 ? "+" : value < 0 ? "−" : ""
+    return "\(sign)\(abs(value).formatted(.number.precision(.fractionLength(0...1))))"
+}
+private func weightRate(_ value: Double) -> String { "\(weightRateValue(value)) g/天" }
+private func weightKilograms(_ value: Double) -> String { "\(value.formatted(.number.precision(.fractionLength(1...2))))kg" }
+private func weightKilogramsSigned(_ value: Double) -> String {
+    let sign = value > 0 ? "+" : value < 0 ? "−" : ""
+    return "\(sign)\(abs(value).formatted(.number.precision(.fractionLength(1...2))))kg"
+}

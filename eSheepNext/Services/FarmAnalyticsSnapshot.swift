@@ -25,7 +25,21 @@ struct FarmAnalyticsSnapshot: Sendable {
         let name: String
         var isActive: Bool = true
     }
-    struct Weight: Sendable, Hashable { let id: UUID; let sheepID: UUID; let kilograms: Double; let occurredAt: Date }
+    struct Weight: Sendable, Hashable {
+        let id: UUID
+        let sheepID: UUID
+        let kilograms: Double
+        let occurredAt: Date
+        let recordedAt: Date
+
+        init(id: UUID, sheepID: UUID, kilograms: Double, occurredAt: Date, recordedAt: Date = .distantPast) {
+            self.id = id
+            self.sheepID = sheepID
+            self.kilograms = kilograms
+            self.occurredAt = occurredAt
+            self.recordedAt = recordedAt
+        }
+    }
     struct Weaning: Sendable, Hashable { let id: UUID; let sheepID: UUID; let occurredAt: Date; let weanWeight: Double; let birthAt: Date?; let birthWeight: Double?; let damID: UUID?; let litterSize: Int? }
     struct Lambing: Sendable, Hashable {
         let id: UUID
@@ -51,14 +65,58 @@ struct FarmAnalyticsSnapshot: Sendable {
     struct Offspring: Sendable, Hashable { let id: UUID; let sheepID: UUID?; let earTag: String; let sex: LambSex?; let birthWeight: Double? }
     struct Removal: Sendable, Hashable { let sheepID: UUID; let kind: RemovalKind; let occurredAt: Date }
     struct Transfer: Sendable, Hashable {
-        let id: UUID; let sheepID: UUID; let toPenID: UUID?; let occurredAt: Date; let recordedAt: Date
+        let id: UUID
+        let sheepID: UUID
+        let fromPenID: UUID?
+        let toPenID: UUID?
+        let occurredAt: Date
+        let recordedAt: Date
         var note: String = ""
+
+        init(
+            id: UUID,
+            sheepID: UUID,
+            toPenID: UUID?,
+            occurredAt: Date,
+            recordedAt: Date,
+            note: String = "",
+            fromPenID: UUID? = nil
+        ) {
+            self.id = id
+            self.sheepID = sheepID
+            self.fromPenID = fromPenID
+            self.toPenID = toPenID
+            self.occurredAt = occurredAt
+            self.recordedAt = recordedAt
+            self.note = note
+        }
+
+        init(
+            id: UUID,
+            sheepID: UUID,
+            fromPenID: UUID?,
+            toPenID: UUID?,
+            occurredAt: Date,
+            recordedAt: Date,
+            note: String = ""
+        ) {
+            self.init(id: id, sheepID: sheepID, toPenID: toPenID, occurredAt: occurredAt, recordedAt: recordedAt, note: note, fromPenID: fromPenID)
+        }
     }
     struct BatchMembership: Sendable, Hashable {
+        let id: UUID
         let batchID: UUID
         let sheepID: UUID
         let joinedAt: Date
         let leftAt: Date?
+
+        init(id: UUID = UUID(), batchID: UUID, sheepID: UUID, joinedAt: Date, leftAt: Date?) {
+            self.id = id
+            self.batchID = batchID
+            self.sheepID = sheepID
+            self.joinedAt = joinedAt
+            self.leftAt = leftAt
+        }
 
         /// 批次归属按事实发生时间判断。脱离批次只影响其后的事实，
         /// 不会从批次分析中抹掉加入后、脱离前已经发生的数据。
@@ -78,6 +136,8 @@ struct FarmAnalyticsSnapshot: Sendable {
     let transfers: [Transfer]
     let batchMemberships: [BatchMembership]
     let feeds: [Feed]
+    var timeZoneIdentifier: String = "Asia/Shanghai"
+    var factsReadAt: Date = .now
     var parityEvidence: [ParityEvidence] = []
     var purposeFacts: [SheepPurposeTimelineFact] = []
 
@@ -93,7 +153,9 @@ struct FarmAnalyticsSnapshot: Sendable {
         transfers: [TransferRecord],
         memberships: [BatchMembershipRecord],
         feeds: [FeedRecord],
-        feedLines: [FeedRecordLine]
+        feedLines: [FeedRecordLine],
+        timeZoneIdentifier: String = "Asia/Shanghai",
+        factsReadAt: Date = .now
     ) -> Self {
         let farmSheep = sheep.filter { $0.farmID == farmID && $0.deletedAt == nil }.map {
             Sheep(id: $0.id, earTag: $0.earTag, breed: $0.breed, purpose: $0.purpose, sex: $0.sex, status: $0.status, initialPenID: $0.initialPenID, currentPenID: $0.currentPenID, birthAt: $0.birthAt, enteredAt: $0.enteredAt, removedAt: $0.removedAt, isHistoricalArchive: $0.isHistoricalArchive)
@@ -119,16 +181,18 @@ struct FarmAnalyticsSnapshot: Sendable {
             farmID: farmID,
             sheep: farmSheep,
             pens: pens.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Pen(id: $0.id, name: $0.name, isActive: $0.isActive) },
-            weights: weights.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Weight(id: $0.id, sheepID: $0.sheepID, kilograms: NSDecimalNumber(decimal: $0.kilograms).doubleValue, occurredAt: $0.occurredAt) },
+            weights: weights.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Weight(id: $0.id, sheepID: $0.sheepID, kilograms: NSDecimalNumber(decimal: $0.kilograms).doubleValue, occurredAt: $0.occurredAt, recordedAt: $0.recordedAt) },
             weanings: weanings.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Weaning(id: $0.id, sheepID: $0.sheepID, occurredAt: $0.occurredAt, weanWeight: NSDecimalNumber(decimal: $0.weanWeight).doubleValue, birthAt: $0.birthAt, birthWeight: $0.birthWeightText.flatMap(Decimal.stable).map { NSDecimalNumber(decimal: $0).doubleValue }, damID: $0.damID, litterSize: $0.litterSize) },
             lambings: lambings,
             removals: removals.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Removal(sheepID: $0.sheepID, kind: $0.kind, occurredAt: $0.occurredAt) },
-            transfers: transfers.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Transfer(id: $0.id, sheepID: $0.sheepID, toPenID: $0.toPenID, occurredAt: $0.occurredAt, recordedAt: $0.recordedAt, note: $0.note) },
-            batchMemberships: memberships.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { BatchMembership(batchID: $0.batchID, sheepID: $0.sheepID, joinedAt: $0.joinedAt, leftAt: $0.leftAt) },
+            transfers: transfers.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { Transfer(id: $0.id, sheepID: $0.sheepID, toPenID: $0.toPenID, occurredAt: $0.occurredAt, recordedAt: $0.recordedAt, note: $0.note, fromPenID: $0.fromPenID) },
+            batchMemberships: memberships.filter { $0.farmID == farmID && $0.deletedAt == nil }.map { BatchMembership(id: $0.id, batchID: $0.batchID, sheepID: $0.sheepID, joinedAt: $0.joinedAt, leftAt: $0.leftAt) },
             feeds: feedLines.filter { $0.farmID == farmID }.compactMap { line in
                 guard let feed = feedByID[line.feedRecordID] else { return nil }
                 return Feed(penID: feed.penID, ingredientName: line.ingredientNameSnapshot, kilograms: NSDecimalNumber(decimal: line.kilograms).doubleValue, mode: feed.mode, occurredAt: feed.occurredAt)
             },
+            timeZoneIdentifier: timeZoneIdentifier,
+            factsReadAt: factsReadAt,
             parityEvidence: reproduction.filter {
                 $0.farmID == farmID && $0.deletedAt == nil &&
                 ($0.kind == .parityBaseline || $0.kind == .lambing) && ($0.parity ?? -1) >= 0
@@ -170,6 +234,9 @@ actor FarmDeepAnalyticsSnapshotActor {
         try Task.checkCancellation()
         let context = ModelContext(container)
         context.autosaveEnabled = false
+        let farmTimeZoneIdentifier = (try context.fetch(FetchDescriptor<FarmRecord>())
+            .first(where: { $0.id == farmID && $0.deletedAt == nil })?.timeZoneIdentifier)
+            ?? "Asia/Shanghai"
 
         let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
@@ -225,14 +292,18 @@ actor FarmDeepAnalyticsSnapshotActor {
             transfers: transfers,
             memberships: memberships,
             feeds: feeds,
-            feedLines: feedLines
+            feedLines: feedLines,
+            timeZoneIdentifier: farmTimeZoneIdentifier,
+            factsReadAt: now
         )
         snapshot.purposeFacts = SheepPurposeTimeline.facts(from: try context.fetch(
             FetchDescriptor<DomainOperation>(predicate: #Predicate {
                 $0.farmID == farmID && $0.kindRawValue == "care"
             })
         ))
-        let weightCutoff = weights.map(\.occurredAt).max() ?? now
+        // 增重分析使用统一体重事实：断奶重和有日期的初生重也属于可追溯称重点。
+        // 只看 WeightRecord 会让页面截止日期早于实际可用的分析数据。
+        let weightCutoff = snapshot.weightSamples.map(\.occurredAt).max() ?? now
         let occupancy = FarmPenOccupancyIndex.make(
             farmID: farmID,
             sheep: sheep,
@@ -336,6 +407,7 @@ struct SheepWeightSample: Identifiable, Sendable, Hashable {
     let kilogramsText: String
     let kilograms: Double
     let occurredAt: Date
+    let recordedAt: Date
     let source: SheepWeightSource
 
     init(
@@ -344,24 +416,27 @@ struct SheepWeightSample: Identifiable, Sendable, Hashable {
         kilogramsText: String,
         kilograms: Double,
         occurredAt: Date,
-        source: SheepWeightSource
+        source: SheepWeightSource,
+        recordedAt: Date = .distantPast
     ) {
         self.id = id
         self.sheepID = sheepID
         self.kilogramsText = kilogramsText
         self.kilograms = kilograms
         self.occurredAt = occurredAt
+        self.recordedAt = recordedAt
         self.source = source
     }
 
-    init(id: UUID, sheepID: UUID, kilograms: Double, occurredAt: Date, source: SheepWeightSource) {
+    init(id: UUID, sheepID: UUID, kilograms: Double, occurredAt: Date, source: SheepWeightSource, recordedAt: Date = .distantPast) {
         self.init(
             id: id,
             sheepID: sheepID,
             kilogramsText: Decimal(kilograms).stableText,
             kilograms: kilograms,
             occurredAt: occurredAt,
-            source: source
+            source: source,
+            recordedAt: recordedAt
         )
     }
 }
@@ -418,6 +493,7 @@ enum SheepWeightSampleBuilder {
     private static func isPreferred(_ lhs: SheepWeightSample, _ rhs: SheepWeightSample) -> Bool {
         if lhs.source.rawValue != rhs.source.rawValue { return lhs.source.rawValue < rhs.source.rawValue }
         if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt > rhs.occurredAt }
+        if lhs.recordedAt != rhs.recordedAt { return lhs.recordedAt > rhs.recordedAt }
         return lhs.id.uuidString < rhs.id.uuidString
     }
 }
@@ -431,7 +507,8 @@ extension FarmAnalyticsSnapshot {
                 sheepID: $0.sheepID,
                 kilograms: $0.kilograms,
                 occurredAt: $0.occurredAt,
-                source: .weighing
+                source: .weighing,
+                recordedAt: $0.recordedAt
             )
         }
         for weaning in weanings {
@@ -918,7 +995,7 @@ enum ReproductionAnalyticsEngine {
     }
 }
 
-enum WeightSampleScope: String, CaseIterable, Sendable { case all; case inHerdOnly; case removedOnly }
+enum WeightSampleScope: String, CaseIterable, Sendable, Hashable { case all; case inHerdOnly; case removedOnly }
 struct WeightTrendPoint: Identifiable, Sendable { let date: Date; let value: Double; var id: Date { date } }
 struct WeightScatterPoint: Identifiable, Sendable { let sheepID: UUID; let date: Date; let baselineWeight: Double; let adg: Double; var id: String { "\(sheepID.uuidString)-\(date.timeIntervalSince1970)" } }
 enum WeightRegressionKind: String, CaseIterable, Identifiable, Sendable {
@@ -963,7 +1040,1509 @@ enum WeightRegressionKind: String, CaseIterable, Identifiable, Sendable {
 struct WeightRegressionPoint: Identifiable, Sendable { let x: Double; let y: Double; var id: String { "\(x)-\(y)" } }
 struct WeightCohort: Sendable { let sheepIDs: [UUID]; let latestAverageWeight: Double?; let latestAverageADG: Double?; let weightTrend: [WeightTrendPoint]; let adgTrend: [WeightTrendPoint]; let scatter: [WeightScatterPoint] }
 
+/// 增重分析只允许在明确的对象范围内计算。批次和圈舍可以组合成显式的
+/// 动态交集；不选择圈舍时，批次分析覆盖该批次当前分布的所有圈舍。
+enum WeightGainAnalysisScope: Hashable, Sendable {
+    case farm
+    case batch(UUID)
+    case batchAndPen(batchID: UUID, penID: UUID)
+    case batchAndPens(batchID: UUID, penIDs: Set<UUID>)
+    case pen(UUID)
+    case pens(Set<UUID>)
+    case unassigned
+}
+
+enum WeightGainAnalysisPopulation: String, CaseIterable, Sendable, Hashable {
+    case wholeObject = "整批期间表现"
+    case trackedCohort = "跟踪这群羊"
+    case inPen = "在舍期间表现"
+}
+
+enum WeightGainCohortAnchor: String, CaseIterable, Sendable, Hashable {
+    case analysisEnd = "分析结束时"
+    case analysisStart = "分析开始时"
+    case custom = "自定义历史时点"
+}
+
+enum WeightGainAnalysisMode: String, CaseIterable, Sendable, Hashable {
+    case period
+    case paired
+
+    var title: String {
+        switch self {
+        case .period: "期间表现"
+        case .paired: "两次称重对比"
+        }
+    }
+}
+
+struct WeightGainAnalysisFilter: Sendable, Hashable {
+    var scope: WeightGainAnalysisScope
+    var mode: WeightGainAnalysisMode
+    var startDate: Date
+    var endDate: Date
+    var sampleScope: WeightSampleScope
+    var population: WeightGainAnalysisPopulation
+    var cohortAnchor: WeightGainCohortAnchor
+    var cohortDate: Date?
+
+    init(
+        scope: WeightGainAnalysisScope = .farm,
+        mode: WeightGainAnalysisMode = .period,
+        startDate: Date,
+        endDate: Date,
+        sampleScope: WeightSampleScope = .all,
+        population: WeightGainAnalysisPopulation = .wholeObject,
+        cohortAnchor: WeightGainCohortAnchor = .analysisEnd,
+        cohortDate: Date? = nil
+    ) {
+        self.scope = scope
+        self.mode = mode
+        self.startDate = startDate
+        self.endDate = endDate
+        self.sampleScope = sampleScope
+        self.population = population
+        self.cohortAnchor = cohortAnchor
+        self.cohortDate = cohortDate
+    }
+
+    var normalized: Self {
+        let start = FarmAnalyticsDate.day(min(startDate, endDate))
+        let end = FarmAnalyticsDate.day(max(startDate, endDate))
+        let boundedCustomDate = cohortDate.map { min(max($0, start), end) }
+        return Self(
+            scope: scope,
+            mode: mode,
+            startDate: start,
+            endDate: end,
+            sampleScope: sampleScope,
+            population: population,
+            cohortAnchor: cohortAnchor,
+            cohortDate: boundedCustomDate
+        )
+    }
+}
+
+enum WeightGainExclusionReason: String, Sendable, Hashable {
+    case noSample = "期间没有有效称重点"
+    case missingPair = "缺少第二次称重"
+    case missingStart = "缺少起始称重"
+    case missingEnd = "缺少结束称重"
+    case outOfScope = "称重区间不连续属于所选对象"
+    case conflictingEventTime = "称重时刻与调群事件冲突，无法确定圈舍归属"
+
+    var title: String { rawValue }
+}
+
+struct WeightGainExclusion: Identifiable, Sendable, Hashable {
+    let sheepID: UUID
+    let earTag: String
+    let reason: WeightGainExclusionReason
+
+    var id: String { "\(sheepID.uuidString)-\(reason.rawValue)" }
+}
+
+struct WeightGainAnalysisRow: Identifiable, Sendable, Hashable {
+    let sheepID: UUID
+    let earTag: String
+    let sex: SheepSex
+    let purpose: String
+    let status: SheepStatus
+    let currentPenID: UUID?
+    let startDate: Date
+    let endDate: Date
+    let startWeight: Double
+    let endWeight: Double
+    let intervalDays: Int
+    let intervalCount: Int
+    let gramsPerDay: Double
+    let totalGainKilograms: Double
+
+    var id: UUID { sheepID }
+    var isDown: Bool { gramsPerDay < 0 }
+    var isCurrentlyPresent: Bool { status == .active }
+}
+
+struct WeightGainCohortMember: Identifiable, Sendable, Hashable {
+    let sheepID: UUID
+    let earTag: String
+    let anchorDate: Date
+    let anchorPenID: UUID?
+    let anchorPenName: String?
+    let batchID: UUID?
+    let batchMembershipID: UUID?
+    let anchorTransferID: UUID?
+
+    var id: UUID { sheepID }
+}
+
+struct WeightGainTransferEvidence: Identifiable, Sendable, Hashable {
+    let id: UUID
+    let sheepID: UUID
+    let earTag: String
+    let occurredAt: Date
+    let recordedAt: Date
+    let fromPenID: UUID?
+    let toPenID: UUID?
+    let fromPenName: String?
+    let toPenName: String?
+    let note: String
+}
+
+struct WeightGainAnalysisInterval: Identifiable, Sendable, Hashable {
+    let sheepID: UUID
+    let startSample: SheepWeightSample
+    let endSample: SheepWeightSample
+    let startDate: Date
+    let endDate: Date
+    let startWeight: Double
+    let endWeight: Double
+    let intervalDays: Int
+    let gramsPerDay: Double
+    let crossedTransfers: [WeightGainTransferEvidence]
+    let startPenID: UUID?
+    let endPenID: UUID?
+    let isCalculable: Bool
+    let canBeAttributedToSinglePen: Bool
+    let exclusionReason: WeightGainExclusionReason?
+
+    init(
+        sheepID: UUID,
+        startSample: SheepWeightSample,
+        endSample: SheepWeightSample,
+        startDate: Date,
+        endDate: Date,
+        startWeight: Double,
+        endWeight: Double,
+        intervalDays: Int,
+        gramsPerDay: Double,
+        crossedTransfers: [WeightGainTransferEvidence] = [],
+        startPenID: UUID? = nil,
+        endPenID: UUID? = nil,
+        isCalculable: Bool = true,
+        canBeAttributedToSinglePen: Bool = true,
+        exclusionReason: WeightGainExclusionReason? = nil
+    ) {
+        self.sheepID = sheepID
+        self.startSample = startSample
+        self.endSample = endSample
+        self.startDate = startDate
+        self.endDate = endDate
+        self.startWeight = startWeight
+        self.endWeight = endWeight
+        self.intervalDays = intervalDays
+        self.gramsPerDay = gramsPerDay
+        self.crossedTransfers = crossedTransfers
+        self.startPenID = startPenID
+        self.endPenID = endPenID
+        self.isCalculable = isCalculable
+        self.canBeAttributedToSinglePen = canBeAttributedToSinglePen
+        self.exclusionReason = exclusionReason
+    }
+
+    var id: String { "\(sheepID.uuidString)-\(startDate.timeIntervalSince1970)-\(endDate.timeIntervalSince1970)" }
+    var totalGainKilograms: Double { endWeight - startWeight }
+}
+
+struct WeightGainOverviewGroup: Identifiable, Sendable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let scope: WeightGainAnalysisScope
+    let result: WeightGainAnalysisResult
+}
+
+struct WeightGainAnalysisResult: Sendable {
+    let filter: WeightGainAnalysisFilter
+    let objectCount: Int
+    let weighedCount: Int
+    let calculableCount: Int
+    let pairedCount: Int
+    let downwardCount: Int
+    let currentDownwardCount: Int
+    let intervalCount: Int
+    let averageDailyGainGrams: Double?
+    let averageStartWeight: Double?
+    let averageEndWeight: Double?
+    let averageGainKilograms: Double?
+    /// The actual observation bounds used by the result. These can differ from
+    /// the user-selected filter dates because a date range is a boundary, not
+    /// a requirement that a weighing happened at midnight on that date.
+    let actualStartDate: Date?
+    let actualEndDate: Date?
+    let latestSampleDate: Date?
+    let population: WeightGainAnalysisPopulation
+    let cohortAnchorDate: Date?
+    let cohortMembers: [WeightGainCohortMember]
+    let transferEvents: [WeightGainTransferEvidence]
+    let transferSheepCount: Int
+    let crossPenIntervalCount: Int
+    let crossPenSheepCount: Int
+    let analysisTimeZoneIdentifier: String
+    let factsReadAt: Date
+    let unassignedIntervals: [WeightGainAnalysisInterval]
+    let rows: [WeightGainAnalysisRow]
+    let intervals: [WeightGainAnalysisInterval]
+    let exclusions: [WeightGainExclusion]
+
+    var missingPairCount: Int { max(objectCount - calculableCount, 0) }
+}
+
+struct WeightGainOverviewResult: Sendable {
+    let all: WeightGainAnalysisResult
+    let groups: [WeightGainOverviewGroup]
+}
+
+struct WeightGainFixedTrend: Sendable {
+    struct Point: Identifiable, Sendable {
+        let date: Date
+        let kilograms: Double
+        var id: Date { date }
+    }
+    let points: [Point]
+    let sheepIDs: Set<UUID>
+    let candidateCount: Int
+    var excludedCount: Int { candidateCount - sheepIDs.count }
+}
+
+@MainActor
+@Observable
+final class WeightGainAnalysisViewModel {
+    private(set) var snapshot: FarmAnalyticsSnapshot?
+    private(set) var result: WeightGainAnalysisResult?
+    private(set) var overview: WeightGainOverviewResult?
+    private(set) var isCalculating = false
+
+    private struct BatchCacheKey: Hashable {
+        let id: UUID
+        let name: String
+    }
+
+    private struct CacheKey: Hashable {
+        let factsReadAt: Date
+        let filter: WeightGainAnalysisFilter
+        let batches: [BatchCacheKey]
+    }
+
+    private struct CachedCalculation {
+        let result: WeightGainAnalysisResult
+        let overview: WeightGainOverviewResult?
+    }
+
+    /// 分析页会在导航返回、切换子页或 SwiftUI 重建 destination 时重新创建
+    /// ViewModel。结果以事实快照时间和完整筛选条件做键缓存，避免同一份事实
+    /// 反复扫描；事实刷新后 factsReadAt 变化，旧结果自然不会混入新结果。
+    private static var cache: [CacheKey: CachedCalculation] = [:]
+    private static var cacheOrder: [CacheKey] = []
+    private static let cacheLimit = 12
+    private var calculationRevision = UUID()
+    private var calculatingKey: CacheKey?
+
+    func replaceSnapshot(_ snapshot: FarmAnalyticsSnapshot) {
+        calculationRevision = UUID()
+        calculatingKey = nil
+        self.snapshot = snapshot
+        result = nil
+        overview = nil
+    }
+
+    func clearCalculation() {
+        calculationRevision = UUID()
+        calculatingKey = nil
+        result = nil
+        overview = nil
+        isCalculating = false
+    }
+
+    func calculate(filter: WeightGainAnalysisFilter, batches: [FarmAnalyticsBatchSnapshot]) {
+        guard let snapshot else { return }
+        let cacheKey = CacheKey(
+            factsReadAt: snapshot.factsReadAt,
+            filter: filter,
+            batches: batches
+                .map { BatchCacheKey(id: $0.id, name: $0.name) }
+                .sorted { $0.id.uuidString < $1.id.uuidString }
+        )
+        if isCalculating, calculatingKey == cacheKey { return }
+        if let cached = Self.cache[cacheKey] {
+            // A different calculation may still be finishing in the detached
+            // task. Invalidate it before applying the cached result so a quick
+            // tab/filter switch cannot let the older result overwrite this one.
+            calculationRevision = UUID()
+            calculatingKey = nil
+            result = cached.result
+            overview = cached.overview
+            isCalculating = false
+            Self.touchCacheKey(cacheKey)
+            return
+        }
+        let revision = UUID()
+        calculationRevision = revision
+        calculatingKey = cacheKey
+        isCalculating = true
+        if result?.filter != filter {
+            result = nil
+            overview = nil
+        }
+        Task { [weak self] in
+            let computed = await Task.detached(priority: .userInitiated) {
+                let all = WeightGainAnalyticsEngine.calculate(snapshot: snapshot, filter: filter)
+                let overview: WeightGainOverviewResult?
+                if filter.scope == .farm {
+                    overview = WeightGainAnalyticsEngine.overview(snapshot: snapshot, batches: batches, filter: filter)
+                } else {
+                    overview = nil
+                }
+                return (all, overview)
+            }.value
+            guard let self, self.calculationRevision == revision else { return }
+            self.result = computed.0
+            self.overview = computed.1
+            Self.cache[cacheKey] = CachedCalculation(result: computed.0, overview: computed.1)
+            Self.touchCacheKey(cacheKey)
+            while Self.cacheOrder.count > Self.cacheLimit {
+                let expired = Self.cacheOrder.removeFirst()
+                Self.cache.removeValue(forKey: expired)
+            }
+            self.calculatingKey = nil
+            self.isCalculating = false
+        }
+    }
+
+    private static func touchCacheKey(_ key: CacheKey) {
+        cacheOrder.removeAll { $0 == key }
+        cacheOrder.append(key)
+    }
+}
+
 enum WeightGainAnalyticsEngine {
+    /// 一次分析只建立一份历史索引。旧实现会在每个称重区间反复扫描全部
+    /// 羊只、批次成员和调群事件，数据量大时页面会明显等待。
+    private struct PreparedIndex {
+        let calendar: Calendar
+        let sheepByID: [UUID: FarmAnalyticsSnapshot.Sheep]
+        let transfersBySheep: [UUID: [FarmAnalyticsSnapshot.Transfer]]
+        let membershipsBySheep: [UUID: [FarmAnalyticsSnapshot.BatchMembership]]
+        let removalsBySheep: [UUID: [FarmAnalyticsSnapshot.Removal]]
+        let canonicalSamples: [SheepWeightSample]
+        let samplesBySheep: [UUID: [SheepWeightSample]]
+        let penNames: [UUID: String]
+
+        init(snapshot: FarmAnalyticsSnapshot) {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: snapshot.timeZoneIdentifier) ?? .current
+            self.calendar = calendar
+            sheepByID = Dictionary(uniqueKeysWithValues: snapshot.sheep.map { ($0.id, $0) })
+            transfersBySheep = Dictionary(grouping: snapshot.transfers, by: \.sheepID).mapValues {
+                $0.sorted(by: WeightGainAnalyticsEngine.transferSort)
+            }
+            membershipsBySheep = Dictionary(grouping: snapshot.batchMemberships, by: \.sheepID).mapValues {
+                $0.sorted { lhs, rhs in
+                    if lhs.joinedAt != rhs.joinedAt { return lhs.joinedAt < rhs.joinedAt }
+                    return lhs.id.uuidString < rhs.id.uuidString
+                }
+            }
+            removalsBySheep = Dictionary(grouping: snapshot.removals, by: \.sheepID).mapValues {
+                $0.sorted { lhs, rhs in
+                    if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt < rhs.occurredAt }
+                    return lhs.kind.rawValue < rhs.kind.rawValue
+                }
+            }
+            canonicalSamples = SheepWeightSampleBuilder.dailyCanonical(snapshot.weightSamples, calendar: calendar)
+            samplesBySheep = Dictionary(grouping: canonicalSamples, by: \.sheepID)
+            penNames = Dictionary(uniqueKeysWithValues: snapshot.pens.map { ($0.id, $0.name) })
+        }
+
+        func day(_ date: Date) -> Date { calendar.startOfDay(for: date) }
+
+        func penID(for sheep: FarmAnalyticsSnapshot.Sheep, at date: Date) -> UUID? {
+            guard let transfers = transfersBySheep[sheep.id], !transfers.isEmpty else {
+                return sheep.initialPenID
+            }
+            var lower = 0
+            var upper = transfers.count
+            while lower < upper {
+                let middle = lower + (upper - lower) / 2
+                if transfers[middle].occurredAt <= date {
+                    lower = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            return lower > 0 ? transfers[lower - 1].toPenID : sheep.initialPenID
+        }
+
+        func removalDate(for sheep: FarmAnalyticsSnapshot.Sheep) -> Date? {
+            [sheep.removedAt, removalsBySheep[sheep.id]?.map(\.occurredAt).min()]
+                .compactMap { $0 }
+                .min()
+        }
+    }
+
+    static func observationDays(snapshot: FarmAnalyticsSnapshot, filter: WeightGainAnalysisFilter) -> [Date] {
+        let filter = normalized(filter: filter, snapshot: snapshot)
+        let index = PreparedIndex(snapshot: snapshot)
+        let ids = Set(candidateSheep(snapshot: snapshot, filter: filter, index: index).map(\.id))
+        return Set(index.canonicalSamples.compactMap { sample -> Date? in
+            let day = index.day(sample.occurredAt)
+            guard ids.contains(sample.sheepID), day >= filter.startDate, day <= filter.endDate,
+                  sampleIsInScope(sheepID: sample.sheepID, occurredAt: sample.occurredAt,
+                                  scope: filter.scope, snapshot: snapshot,
+                                  population: filter.population,
+                                  cohortIDs: ids,
+                                  index: index) else { return nil }
+            return day
+        }).sorted()
+    }
+
+    /// Calendar days are explicit observation rounds, not inferred weighing tasks.
+    /// Every point uses the intersection of sheep present in all selected rounds.
+    static func fixedTrend(
+        snapshot: FarmAnalyticsSnapshot,
+        filter: WeightGainAnalysisFilter,
+        dates: Set<Date>
+    ) -> WeightGainFixedTrend {
+        let filter = normalized(filter: filter, snapshot: snapshot)
+        let index = PreparedIndex(snapshot: snapshot)
+        let days = Set(dates.map { index.day($0) }).filter {
+            $0 >= filter.startDate && $0 <= filter.endDate
+        }.sorted()
+        let candidates = candidateSheep(snapshot: snapshot, filter: filter, index: index)
+        guard filter.scope != .farm, days.count >= 2 else {
+            return .init(points: [], sheepIDs: [], candidateCount: candidates.count)
+        }
+        let timelines = index.samplesBySheep
+        let cohortIDs = Set(candidates.map(\.id))
+        var matched: [[SheepWeightSample]] = []
+        var ids: Set<UUID> = []
+        for sheep in candidates {
+            let byDay = Dictionary(uniqueKeysWithValues: (timelines[sheep.id] ?? []).map {
+                (index.day($0.occurredAt), $0)
+            })
+            let samples = days.compactMap { byDay[$0] }
+            guard samples.count == days.count,
+                  let first = samples.first, let last = samples.last,
+                  intervalIsInScope(sheepID: sheep.id, startDate: first.occurredAt,
+                                    endDate: last.occurredAt, scope: filter.scope, snapshot: snapshot,
+                                    population: filter.population,
+                                    cohortIDs: cohortIDs,
+                                    index: index) else { continue }
+            matched.append(samples)
+            ids.insert(sheep.id)
+        }
+        let points: [WeightGainFixedTrend.Point] = matched.isEmpty ? [] : days.enumerated().map { index, day in
+            .init(date: day, kilograms: matched.reduce(0) { $0 + $1[index].kilograms } / Double(matched.count))
+        }
+        return .init(points: points, sheepIDs: ids, candidateCount: candidates.count)
+    }
+
+    static func calculate(
+        snapshot: FarmAnalyticsSnapshot,
+        filter: WeightGainAnalysisFilter
+    ) -> WeightGainAnalysisResult {
+        return calculate(snapshot: snapshot, filter: filter, index: PreparedIndex(snapshot: snapshot))
+    }
+
+    private static func calculate(
+        snapshot: FarmAnalyticsSnapshot,
+        filter: WeightGainAnalysisFilter,
+        index: PreparedIndex
+    ) -> WeightGainAnalysisResult {
+        let filter = normalized(filter: filter, snapshot: snapshot)
+        let candidates = candidateSheep(snapshot: snapshot, filter: filter, index: index)
+        let cohortIDs = Set(candidates.map(\.id))
+        let samplesBySheep = index.samplesBySheep
+        var intervalsBySheep: [UUID: [WeightGainAnalysisInterval]] = [:]
+        var exclusions: [WeightGainExclusion] = []
+
+        for sheep in candidates {
+            let timeline = (samplesBySheep[sheep.id] ?? []).sorted { $0.occurredAt < $1.occurredAt }
+            let rangeSamples = timeline.filter {
+                let day = index.day($0.occurredAt)
+                return day >= filter.startDate && day <= filter.endDate
+            }
+            let relevantSamples = timeline.filter {
+                let day = index.day($0.occurredAt)
+                return day >= filter.startDate && day <= filter.endDate && sampleIsInScope(
+                    sheepID: sheep.id,
+                    occurredAt: $0.occurredAt,
+                    scope: filter.scope,
+                    snapshot: snapshot,
+                    population: filter.population,
+                    cohortIDs: cohortIDs,
+                    index: index
+                )
+            }
+            let intervals: [WeightGainAnalysisInterval]
+            switch filter.mode {
+            case .period:
+                intervals = periodIntervals(
+                    timeline: timeline,
+                    sheepID: sheep.id,
+                    filter: filter,
+                    snapshot: snapshot,
+                    cohortIDs: cohortIDs,
+                    index: index
+                )
+            case .paired:
+                intervals = pairedIntervals(
+                    timeline: timeline,
+                    sheepID: sheep.id,
+                    filter: filter,
+                    snapshot: snapshot,
+                    cohortIDs: cohortIDs,
+                    index: index
+                )
+            }
+            if intervals.isEmpty {
+                exclusions.append(.init(
+                    sheepID: sheep.id,
+                    earTag: sheep.earTag,
+                    reason: exclusionReason(
+                        mode: filter.mode,
+                        timeline: timeline,
+                        rangeSamples: rangeSamples,
+                        relevantSamples: relevantSamples,
+                        filter: filter,
+                        snapshot: snapshot,
+                        sheepID: sheep.id,
+                        index: index
+                    )
+                ))
+            } else {
+                intervalsBySheep[sheep.id] = intervals
+            }
+        }
+
+        let unassignedIntervals = filter.population == .inPen && isPenScoped(filter.scope)
+            ? candidates.flatMap { sheep in
+                unassignedPenIntervals(
+                    timeline: samplesBySheep[sheep.id] ?? [],
+                    sheepID: sheep.id,
+                    filter: filter,
+                    snapshot: snapshot,
+                    cohortIDs: cohortIDs,
+                    index: index
+                )
+            }
+            : []
+
+        let rows = candidates.compactMap { sheep -> WeightGainAnalysisRow? in
+            guard let intervals = intervalsBySheep[sheep.id], !intervals.isEmpty else { return nil }
+            return aggregateRow(sheep: sheep, intervals: intervals)
+        }
+        let allScopedSamples = candidates.flatMap { sheep in
+            (samplesBySheep[sheep.id] ?? []).filter {
+                    let day = index.day($0.occurredAt)
+                return day >= filter.startDate && day <= filter.endDate && sampleIsInScope(
+                    sheepID: sheep.id,
+                    occurredAt: $0.occurredAt,
+                    scope: filter.scope,
+                    snapshot: snapshot,
+                    population: filter.population,
+                    cohortIDs: cohortIDs,
+                    index: index
+                )
+            }
+        }
+        let weightedRates = rows.map(\.gramsPerDay)
+        let actualStartDate = intervalsBySheep.values.flatMap { $0 }.map(\.startDate).min()
+        let actualEndDate = intervalsBySheep.values.flatMap { $0 }.map(\.endDate).max()
+        let latestSampleDate = allScopedSamples.map(\.occurredAt).max().map { index.day($0) }
+        let cohortMembers = filter.population == .trackedCohort ? cohortMembers(snapshot: snapshot, filter: filter, index: index) : []
+        let transferEvents = transferEvents(
+            snapshot: snapshot,
+            sheepIDs: cohortIDs,
+            startDate: filter.startDate,
+            endDate: rangeEndExclusive(filter: filter, snapshot: snapshot),
+            index: index
+        )
+        let intervals = intervalsBySheep.values.flatMap { $0 }
+        let crossPenIntervals = intervals.filter { !$0.crossedTransfers.isEmpty } + unassignedIntervals
+        return WeightGainAnalysisResult(
+            filter: filter,
+            objectCount: candidates.count,
+            weighedCount: Set(allScopedSamples.map(\.sheepID)).count,
+            calculableCount: rows.count,
+            pairedCount: filter.mode == .paired ? rows.count : 0,
+            downwardCount: rows.count { $0.isDown },
+            currentDownwardCount: rows.count { $0.isCurrentlyPresent && $0.isDown },
+            intervalCount: intervalsBySheep.values.reduce(0) { $0 + $1.count },
+            averageDailyGainGrams: weightedRates.isEmpty ? nil : weightedRates.reduce(0, +) / Double(weightedRates.count),
+            averageStartWeight: rows.isEmpty ? nil : rows.reduce(0) { $0 + $1.startWeight } / Double(rows.count),
+            averageEndWeight: rows.isEmpty ? nil : rows.reduce(0) { $0 + $1.endWeight } / Double(rows.count),
+            averageGainKilograms: rows.isEmpty ? nil : rows.reduce(0) { $0 + $1.totalGainKilograms } / Double(rows.count),
+            actualStartDate: actualStartDate,
+            actualEndDate: actualEndDate,
+            latestSampleDate: latestSampleDate,
+            population: filter.population,
+            cohortAnchorDate: filter.population == .trackedCohort ? cohortAnchorInstant(filter: filter, snapshot: snapshot) : nil,
+            cohortMembers: cohortMembers,
+            transferEvents: transferEvents,
+            transferSheepCount: Set(transferEvents.map(\.sheepID)).count,
+            crossPenIntervalCount: crossPenIntervals.count,
+            crossPenSheepCount: Set(crossPenIntervals.map(\.sheepID)).count,
+            analysisTimeZoneIdentifier: snapshot.timeZoneIdentifier,
+            factsReadAt: snapshot.factsReadAt,
+            unassignedIntervals: unassignedIntervals.sorted { $0.endDate < $1.endDate },
+            rows: rows.sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending },
+            intervals: intervals.sorted { $0.endDate < $1.endDate },
+            exclusions: exclusions.sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }
+        )
+    }
+
+    static func overview(
+        snapshot: FarmAnalyticsSnapshot,
+        batches: [FarmAnalyticsBatchSnapshot],
+        filter: WeightGainAnalysisFilter
+    ) -> WeightGainOverviewResult {
+        let normalized = normalized(filter: filter, snapshot: snapshot)
+        let index = PreparedIndex(snapshot: snapshot)
+        let all = calculate(snapshot: snapshot, filter: normalized, index: index)
+        var groups: [WeightGainOverviewGroup] = []
+        for batch in batches {
+            let batchFilter = WeightGainAnalysisFilter(
+                scope: .batch(batch.id),
+                mode: normalized.mode,
+                startDate: normalized.startDate,
+                endDate: normalized.endDate,
+                sampleScope: normalized.sampleScope
+            )
+            let result = calculate(snapshot: snapshot, filter: batchFilter, index: index)
+            guard result.objectCount > 0 else { continue }
+            groups.append(.init(
+                id: batch.id.uuidString,
+                title: batch.name.isEmpty ? "未命名生产批次" : batch.name,
+                subtitle: "生产批次",
+                scope: .batch(batch.id),
+                result: result
+            ))
+        }
+        let unassignedFilter = WeightGainAnalysisFilter(
+            scope: .unassigned,
+            mode: normalized.mode,
+            startDate: normalized.startDate,
+            endDate: normalized.endDate,
+            sampleScope: normalized.sampleScope
+        )
+        let unassigned = calculate(snapshot: snapshot, filter: unassignedFilter, index: index)
+        if unassigned.objectCount > 0 {
+            groups.append(.init(
+                id: "unassigned",
+                title: "未分生产批次",
+                subtitle: "可继续按圈舍查看",
+                scope: .unassigned,
+                result: unassigned
+            ))
+        }
+        return WeightGainOverviewResult(all: all, groups: groups)
+    }
+
+    private static func candidateSheep(
+        snapshot: FarmAnalyticsSnapshot,
+        filter: WeightGainAnalysisFilter,
+        index: PreparedIndex? = nil
+    ) -> [FarmAnalyticsSnapshot.Sheep] {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        let removedIDs = Set(index.removalsBySheep.compactMap { sheepID, removals in
+            removals.contains { $0.occurredAt <= rangeEndExclusive(filter: filter, snapshot: snapshot) } ? sheepID : nil
+        })
+        let trackedIDs = filter.population == .trackedCohort ? cohortMembers(snapshot: snapshot, filter: filter, index: index).map(\.sheepID) : nil
+        return snapshot.sheep
+            .filter { sheep in
+                guard !sheep.isHistoricalArchive,
+                      index.day(sheep.enteredAt) <= filter.endDate,
+                      sheep.removedAt.map({ $0 >= filter.startDate }) ?? true else { return false }
+                if let trackedIDs, !trackedIDs.contains(sheep.id) { return false }
+                let inScope: Bool
+                switch filter.scope {
+                case .farm:
+                    inScope = true
+                case .batch(let batchID):
+                    inScope = (index.membershipsBySheep[sheep.id] ?? []).contains {
+                        $0.batchID == batchID && $0.sheepID == sheep.id &&
+                            index.day($0.joinedAt) <= filter.endDate && ($0.leftAt.map { $0 >= filter.startDate } ?? true)
+                    }
+                case .batchAndPen(let batchID, let penID):
+                    let batchRelevant = (index.membershipsBySheep[sheep.id] ?? []).contains {
+                        $0.batchID == batchID && $0.sheepID == sheep.id &&
+                            index.day($0.joinedAt) <= filter.endDate && ($0.leftAt.map { $0 >= filter.startDate } ?? true)
+                    }
+                    inScope = batchRelevant && penWasRelevant(
+                        sheep: sheep,
+                        penID: penID,
+                        startDate: filter.startDate,
+                        endDate: rangeEndExclusive(filter: filter, snapshot: snapshot),
+                        transfers: snapshot.transfers,
+                        index: index
+                    )
+                case .batchAndPens(let batchID, let penIDs):
+                    let batchRelevant = (index.membershipsBySheep[sheep.id] ?? []).contains {
+                        $0.batchID == batchID && $0.sheepID == sheep.id &&
+                            index.day($0.joinedAt) <= filter.endDate && ($0.leftAt.map { $0 >= filter.startDate } ?? true)
+                    }
+                    inScope = batchRelevant && penWasRelevant(
+                        sheep: sheep,
+                        penIDs: penIDs,
+                        startDate: filter.startDate,
+                        endDate: rangeEndExclusive(filter: filter, snapshot: snapshot),
+                        transfers: snapshot.transfers,
+                        index: index
+                    )
+                case .unassigned:
+                    let memberships = index.membershipsBySheep[sheep.id] ?? []
+                    let end = rangeEndExclusive(filter: filter, snapshot: snapshot)
+                    let boundaries = [max(filter.startDate, sheep.enteredAt), min(end, sheep.removedAt ?? end)] + memberships.compactMap {
+                        $0.leftAt?.addingTimeInterval(0.001)
+                    }
+                    inScope = boundaries.contains { date in
+                        date >= max(filter.startDate, sheep.enteredAt) && date <= min(end, sheep.removedAt ?? end) &&
+                            !memberships.contains { $0.contains(eventAt: date) }
+                    }
+                case .pen(let penID):
+                    inScope = penWasRelevant(
+                        sheep: sheep,
+                        penID: penID,
+                        startDate: filter.startDate,
+                        endDate: rangeEndExclusive(filter: filter, snapshot: snapshot),
+                        transfers: snapshot.transfers,
+                        index: index
+                    )
+                case .pens(let penIDs):
+                    inScope = penWasRelevant(
+                        sheep: sheep,
+                        penIDs: penIDs,
+                        startDate: filter.startDate,
+                        endDate: rangeEndExclusive(filter: filter, snapshot: snapshot),
+                        transfers: snapshot.transfers,
+                        index: index
+                    )
+                }
+                guard inScope else { return false }
+                switch filter.sampleScope {
+                case .all:
+                    return true
+                case .inHerdOnly:
+                    return sheep.status == .active && !removedIDs.contains(sheep.id)
+                case .removedOnly:
+                    return sheep.status != .active || removedIDs.contains(sheep.id)
+                }
+            }
+            .sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }
+    }
+
+    private static func analysisCalendar(snapshot: FarmAnalyticsSnapshot) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: snapshot.timeZoneIdentifier) ?? .current
+        return calendar
+    }
+
+    private static func normalized(filter: WeightGainAnalysisFilter, snapshot: FarmAnalyticsSnapshot) -> WeightGainAnalysisFilter {
+        let calendar = analysisCalendar(snapshot: snapshot)
+        let first = calendar.startOfDay(for: min(filter.startDate, filter.endDate))
+        let last = calendar.startOfDay(for: max(filter.startDate, filter.endDate))
+        let customDate = filter.cohortDate.map { calendar.startOfDay(for: min(max($0, first), last)) }
+        return WeightGainAnalysisFilter(
+            scope: filter.scope,
+            mode: filter.mode,
+            startDate: first,
+            endDate: last,
+            sampleScope: filter.sampleScope,
+            population: filter.population,
+            cohortAnchor: filter.cohortAnchor,
+            cohortDate: customDate
+        )
+    }
+
+    private static func day(_ date: Date, snapshot: FarmAnalyticsSnapshot) -> Date {
+        analysisCalendar(snapshot: snapshot).startOfDay(for: date)
+    }
+
+    private static func rangeEndExclusive(filter: WeightGainAnalysisFilter, snapshot: FarmAnalyticsSnapshot) -> Date {
+        let calendar = analysisCalendar(snapshot: snapshot)
+        let start = calendar.startOfDay(for: filter.endDate)
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-0.001) ?? filter.endDate
+        return calendar.isDate(start, inSameDayAs: snapshot.factsReadAt) ? min(snapshot.factsReadAt, endOfDay) : endOfDay
+    }
+
+    private static func cohortAnchorInstant(filter: WeightGainAnalysisFilter, snapshot: FarmAnalyticsSnapshot) -> Date {
+        let calendar = analysisCalendar(snapshot: snapshot)
+        switch filter.cohortAnchor {
+        case .analysisStart:
+            return calendar.startOfDay(for: filter.startDate)
+        case .custom:
+            return filter.cohortDate.map(calendar.startOfDay) ?? rangeEndExclusive(filter: filter, snapshot: snapshot)
+        case .analysisEnd:
+            return rangeEndExclusive(filter: filter, snapshot: snapshot)
+        }
+    }
+
+    private static func isPresentAt(_ sheep: FarmAnalyticsSnapshot.Sheep, date: Date, snapshot: FarmAnalyticsSnapshot) -> Bool {
+        guard sheep.enteredAt <= date else { return false }
+        let removalAt = [sheep.removedAt, snapshot.removals.filter { $0.sheepID == sheep.id }.map(\.occurredAt).min()].compactMap { $0 }.min()
+        return removalAt.map { date <= $0 } ?? true
+    }
+
+    private static func cohortMembers(
+        snapshot: FarmAnalyticsSnapshot,
+        filter: WeightGainAnalysisFilter,
+        index: PreparedIndex? = nil
+    ) -> [WeightGainCohortMember] {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        let anchor = cohortAnchorInstant(filter: filter, snapshot: snapshot)
+        let transfersBySheep = index.transfersBySheep
+        return snapshot.sheep.compactMap { sheep in
+            guard !sheep.isHistoricalArchive,
+                  sheep.enteredAt <= anchor,
+                  index.removalDate(for: sheep).map({ anchor <= $0 }) ?? true else { return nil }
+            let penID = index.penID(for: sheep, at: anchor)
+            let selectedBatch: FarmAnalyticsSnapshot.BatchMembership?
+            switch filter.scope {
+            case .batch(let batchID), .batchAndPen(let batchID, _), .batchAndPens(let batchID, _):
+                selectedBatch = (index.membershipsBySheep[sheep.id] ?? [])
+                    .filter { $0.batchID == batchID && $0.contains(eventAt: anchor) }
+                    .sorted { $0.joinedAt > $1.joinedAt }
+                    .first
+            default:
+                selectedBatch = nil
+            }
+            let anchorBatch = (index.membershipsBySheep[sheep.id] ?? [])
+                .filter { $0.contains(eventAt: anchor) }
+                .sorted { $0.joinedAt > $1.joinedAt }
+                .first
+            let isInScope: Bool
+            switch filter.scope {
+            case .farm:
+                isInScope = true
+            case .batch, .batchAndPen, .batchAndPens:
+                isInScope = selectedBatch != nil && penMatchesScope(penID: penID, scope: filter.scope)
+            case .pen(let selectedPenID):
+                isInScope = penID == selectedPenID
+            case .pens(let selectedPenIDs):
+                isInScope = penID.map(selectedPenIDs.contains) ?? false
+            case .unassigned:
+                isInScope = anchorBatch == nil
+            }
+            guard isInScope else { return nil }
+            let anchorTransfer = transfersBySheep[sheep.id]?
+                .filter { $0.occurredAt <= anchor && $0.toPenID == penID }
+                .sorted { transferSort($0, $1) }
+                .last
+            return WeightGainCohortMember(
+                sheepID: sheep.id,
+                earTag: sheep.earTag,
+                anchorDate: anchor,
+                anchorPenID: penID,
+                anchorPenName: penID.flatMap { index.penNames[$0] },
+                batchID: selectedBatch?.batchID ?? anchorBatch?.batchID,
+                batchMembershipID: selectedBatch?.id ?? anchorBatch?.id,
+                anchorTransferID: anchorTransfer?.id
+            )
+        }
+        .sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }
+    }
+
+    private static func penMatchesScope(penID: UUID?, scope: WeightGainAnalysisScope) -> Bool {
+        switch scope {
+        case .batchAndPen(_, let selectedPenID): return penID == selectedPenID
+        case .batchAndPens(_, let selectedPenIDs): return penID.map(selectedPenIDs.contains) ?? false
+        default: return true
+        }
+    }
+
+    private static func periodIntervals(
+        timeline: [SheepWeightSample],
+        sheepID: UUID,
+        filter: WeightGainAnalysisFilter,
+        snapshot: FarmAnalyticsSnapshot,
+        cohortIDs: Set<UUID>,
+        index: PreparedIndex? = nil
+    ) -> [WeightGainAnalysisInterval] {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        return zip(timeline, timeline.dropFirst()).compactMap { (pair: (SheepWeightSample, SheepWeightSample)) -> WeightGainAnalysisInterval? in
+            let start = pair.0
+            let end = pair.1
+            let startDate = index.day(start.occurredAt)
+            let endDate = index.day(end.occurredAt)
+            guard startDate >= filter.startDate, endDate <= filter.endDate else { return nil }
+            guard !(filter.population == .inPen && hasTransferConflict(sheepID: sheepID, at: start.occurredAt, or: end.occurredAt, snapshot: snapshot, index: index)) else { return nil }
+            guard let days = positiveDays(from: startDate, to: endDate, snapshot: snapshot, index: index),
+                  intervalIsInScope(
+                      sheepID: sheepID,
+                      startDate: start.occurredAt,
+                      endDate: end.occurredAt,
+                      scope: filter.scope,
+                      snapshot: snapshot,
+                      population: filter.population,
+                      cohortIDs: cohortIDs,
+                      index: index
+                  ) else { return nil }
+            let crossedTransfers = transferEvidence(
+                sheepID: sheepID,
+                from: start.occurredAt,
+                to: end.occurredAt,
+                snapshot: snapshot,
+                index: index
+            )
+            return WeightGainAnalysisInterval(
+                sheepID: sheepID,
+                startSample: start,
+                endSample: end,
+                startDate: start.occurredAt,
+                endDate: end.occurredAt,
+                startWeight: start.kilograms,
+                endWeight: end.kilograms,
+                intervalDays: days,
+                gramsPerDay: (end.kilograms - start.kilograms) * 1_000 / Double(days),
+                crossedTransfers: crossedTransfers,
+                startPenID: index.sheepByID[sheepID].flatMap { index.penID(for: $0, at: start.occurredAt) },
+                endPenID: index.sheepByID[sheepID].flatMap { index.penID(for: $0, at: end.occurredAt) }
+            )
+        }
+    }
+
+    private static func pairedIntervals(
+        timeline: [SheepWeightSample],
+        sheepID: UUID,
+        filter: WeightGainAnalysisFilter,
+        snapshot: FarmAnalyticsSnapshot,
+        cohortIDs: Set<UUID>,
+        index: PreparedIndex? = nil
+    ) -> [WeightGainAnalysisInterval] {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        let candidates = timeline.filter {
+            let day = index.day($0.occurredAt)
+            return day >= filter.startDate && day <= filter.endDate &&
+                sampleIsInScope(
+                    sheepID: sheepID,
+                    occurredAt: $0.occurredAt,
+                    scope: filter.scope,
+                    snapshot: snapshot,
+                    population: filter.population,
+                    cohortIDs: cohortIDs,
+                    index: index
+                )
+        }
+        guard candidates.count >= 2 else { return [] }
+        var segments: [[SheepWeightSample]] = []
+        if filter.population == .trackedCohort {
+            var current: [SheepWeightSample] = []
+            for sample in candidates {
+                guard let previous = current.last else {
+                    current = [sample]
+                    continue
+                }
+                let continuous = intervalIsInScope(
+                    sheepID: sheepID,
+                    startDate: previous.occurredAt,
+                    endDate: sample.occurredAt,
+                    scope: filter.scope,
+                    snapshot: snapshot,
+                    population: filter.population,
+                    cohortIDs: cohortIDs
+                )
+                if continuous {
+                    current.append(sample)
+                } else {
+                    if current.count >= 2 { segments.append(current) }
+                    current = [sample]
+                }
+            }
+            if current.count >= 2 { segments.append(current) }
+        } else {
+            segments = [candidates]
+        }
+        return segments.compactMap { segment in
+            guard let start = segment.first, let end = segment.last, start.id != end.id,
+                  let days = positiveDays(from: start.occurredAt, to: end.occurredAt, snapshot: snapshot, index: index),
+                  intervalIsInScope(
+                      sheepID: sheepID,
+                      startDate: start.occurredAt,
+                      endDate: end.occurredAt,
+                    scope: filter.scope,
+                    snapshot: snapshot,
+                    population: filter.population,
+                    cohortIDs: cohortIDs,
+                    index: index
+                  ),
+                  !(filter.population == .inPen && hasTransferConflict(sheepID: sheepID, at: start.occurredAt, or: end.occurredAt, snapshot: snapshot, index: index)),
+                  let sheep = index.sheepByID[sheepID] else { return nil }
+            return WeightGainAnalysisInterval(
+                sheepID: sheepID,
+                startSample: start,
+                endSample: end,
+                startDate: start.occurredAt,
+                endDate: end.occurredAt,
+                startWeight: start.kilograms,
+                endWeight: end.kilograms,
+                intervalDays: days,
+                gramsPerDay: (end.kilograms - start.kilograms) * 1_000 / Double(days),
+                crossedTransfers: transferEvidence(sheepID: sheepID, from: start.occurredAt, to: end.occurredAt, snapshot: snapshot, index: index),
+                startPenID: index.penID(for: sheep, at: start.occurredAt),
+                endPenID: index.penID(for: sheep, at: end.occurredAt)
+            )
+        }
+    }
+
+    private static func isPenScoped(_ scope: WeightGainAnalysisScope) -> Bool {
+        switch scope {
+        case .pen, .pens, .batchAndPen, .batchAndPens:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func unassignedPenIntervals(
+        timeline: [SheepWeightSample],
+        sheepID: UUID,
+        filter: WeightGainAnalysisFilter,
+        snapshot: FarmAnalyticsSnapshot,
+        cohortIDs: Set<UUID>,
+        index: PreparedIndex? = nil
+    ) -> [WeightGainAnalysisInterval] {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        let ordered = timeline.sorted { $0.occurredAt < $1.occurredAt }
+        return zip(ordered, ordered.dropFirst()).compactMap { (pair: (SheepWeightSample, SheepWeightSample)) -> WeightGainAnalysisInterval? in
+            let start = pair.0
+            let end = pair.1
+            let startDay = index.day(start.occurredAt)
+            let endDay = index.day(end.occurredAt)
+            guard startDay >= filter.startDate, endDay <= filter.endDate,
+                  let days = positiveDays(from: start.occurredAt, to: end.occurredAt, snapshot: snapshot, index: index),
+                  intervalTouchesPenScope(sheepID: sheepID, start: start.occurredAt, end: end.occurredAt, scope: filter.scope, snapshot: snapshot, index: index),
+                  (hasTransferConflict(sheepID: sheepID, at: start.occurredAt, or: end.occurredAt, snapshot: snapshot, index: index) ||
+                   !intervalIsInScope(sheepID: sheepID, startDate: start.occurredAt, endDate: end.occurredAt, scope: filter.scope, snapshot: snapshot, population: .inPen, cohortIDs: cohortIDs, index: index)),
+                  let sheep = index.sheepByID[sheepID] else { return nil }
+            let conflict = hasTransferConflict(sheepID: sheepID, at: start.occurredAt, or: end.occurredAt, snapshot: snapshot, index: index)
+            return WeightGainAnalysisInterval(
+                sheepID: sheepID,
+                startSample: start,
+                endSample: end,
+                startDate: start.occurredAt,
+                endDate: end.occurredAt,
+                startWeight: start.kilograms,
+                endWeight: end.kilograms,
+                intervalDays: days,
+                gramsPerDay: (end.kilograms - start.kilograms) * 1_000 / Double(days),
+                crossedTransfers: transferEvidence(sheepID: sheepID, from: start.occurredAt, to: end.occurredAt, snapshot: snapshot, index: index),
+                startPenID: index.penID(for: sheep, at: start.occurredAt),
+                endPenID: index.penID(for: sheep, at: end.occurredAt),
+                isCalculable: false,
+                canBeAttributedToSinglePen: false,
+                exclusionReason: conflict ? .conflictingEventTime : .outOfScope
+            )
+        }
+    }
+
+    private static func intervalTouchesPenScope(
+        sheepID: UUID,
+        start: Date,
+        end: Date,
+        scope: WeightGainAnalysisScope,
+        snapshot: FarmAnalyticsSnapshot,
+        index: PreparedIndex? = nil
+    ) -> Bool {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        guard let sheep = index.sheepByID[sheepID] else { return false }
+        let selectedPenIDs: Set<UUID>
+        switch scope {
+        case .pen(let penID), .batchAndPen(_, let penID):
+            selectedPenIDs = [penID]
+        case .pens(let penIDs), .batchAndPens(_, let penIDs):
+            selectedPenIDs = penIDs
+        default:
+            return false
+        }
+        guard !selectedPenIDs.isEmpty else { return false }
+        if index.penID(for: sheep, at: start).map(selectedPenIDs.contains) == true ||
+            index.penID(for: sheep, at: end).map(selectedPenIDs.contains) == true {
+            return true
+        }
+        return (index.transfersBySheep[sheepID] ?? []).contains {
+            $0.sheepID == sheepID && $0.occurredAt >= start && $0.occurredAt <= end &&
+                ($0.fromPenID.map(selectedPenIDs.contains) == true || $0.toPenID.map(selectedPenIDs.contains) == true)
+        }
+    }
+
+    private static func hasTransferConflict(
+        sheepID: UUID,
+        at first: Date,
+        or second: Date,
+        snapshot: FarmAnalyticsSnapshot,
+        index: PreparedIndex? = nil
+    ) -> Bool {
+        let transfers = index?.transfersBySheep[sheepID] ?? snapshot.transfers.filter { $0.sheepID == sheepID }
+        return transfers.contains {
+            $0.sheepID == sheepID && ($0.occurredAt == first || $0.occurredAt == second)
+        }
+    }
+
+    private static func transferEvidence(
+        sheepID: UUID,
+        from start: Date,
+        to end: Date,
+        snapshot: FarmAnalyticsSnapshot,
+        index: PreparedIndex? = nil
+    ) -> [WeightGainTransferEvidence] {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        guard let sheep = index.sheepByID[sheepID] else { return [] }
+        return (index.transfersBySheep[sheepID] ?? [])
+            .filter { $0.occurredAt > start && $0.occurredAt <= end }
+            .sorted(by: transferSort)
+            .map {
+                WeightGainTransferEvidence(
+                    id: $0.id,
+                    sheepID: sheepID,
+                    earTag: sheep.earTag,
+                    occurredAt: $0.occurredAt,
+                    recordedAt: $0.recordedAt,
+                    fromPenID: $0.fromPenID,
+                    toPenID: $0.toPenID,
+                    fromPenName: $0.fromPenID.flatMap { index.penNames[$0] },
+                    toPenName: $0.toPenID.flatMap { index.penNames[$0] },
+                    note: $0.note
+                )
+            }
+    }
+
+    private static func transferEvents(
+        snapshot: FarmAnalyticsSnapshot,
+        sheepIDs: Set<UUID>,
+        startDate: Date,
+        endDate: Date,
+        index: PreparedIndex? = nil
+    ) -> [WeightGainTransferEvidence] {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        return sheepIDs.flatMap { index.transfersBySheep[$0] ?? [] }
+            .filter { $0.occurredAt >= startDate && $0.occurredAt <= endDate }
+            .sorted(by: transferSort)
+            .compactMap { transfer in
+                guard let sheep = index.sheepByID[transfer.sheepID] else { return nil }
+                return WeightGainTransferEvidence(
+                    id: transfer.id,
+                    sheepID: transfer.sheepID,
+                    earTag: sheep.earTag,
+                    occurredAt: transfer.occurredAt,
+                    recordedAt: transfer.recordedAt,
+                    fromPenID: transfer.fromPenID,
+                    toPenID: transfer.toPenID,
+                    fromPenName: transfer.fromPenID.flatMap { index.penNames[$0] },
+                    toPenName: transfer.toPenID.flatMap { index.penNames[$0] },
+                    note: transfer.note
+                )
+            }
+    }
+
+    private static func aggregateRow(
+        sheep: FarmAnalyticsSnapshot.Sheep,
+        intervals: [WeightGainAnalysisInterval]
+    ) -> WeightGainAnalysisRow {
+        let ordered = intervals.sorted { $0.startDate < $1.startDate }
+        let totalDays = ordered.reduce(0) { $0 + $1.intervalDays }
+        let totalGain = ordered.reduce(0.0) { $0 + $1.totalGainKilograms }
+        let gramsPerDay = totalDays > 0 ? totalGain * 1_000 / Double(totalDays) : 0
+        return WeightGainAnalysisRow(
+            sheepID: sheep.id,
+            earTag: sheep.earTag,
+            sex: sheep.sex,
+            purpose: sheep.purpose,
+            status: sheep.status,
+            currentPenID: sheep.currentPenID,
+            startDate: ordered.first?.startDate ?? .distantPast,
+            endDate: ordered.last?.endDate ?? .distantPast,
+            startWeight: ordered.first?.startWeight ?? 0,
+            endWeight: ordered.last?.endWeight ?? 0,
+            intervalDays: totalDays,
+            intervalCount: ordered.count,
+            gramsPerDay: gramsPerDay,
+            totalGainKilograms: totalGain
+        )
+    }
+
+    private static func exclusionReason(
+        mode: WeightGainAnalysisMode,
+        timeline: [SheepWeightSample],
+        rangeSamples: [SheepWeightSample],
+        relevantSamples: [SheepWeightSample],
+        filter: WeightGainAnalysisFilter,
+        snapshot: FarmAnalyticsSnapshot,
+        sheepID: UUID,
+        index: PreparedIndex? = nil
+    ) -> WeightGainExclusionReason {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        guard !relevantSamples.isEmpty else { return .noSample }
+        if filter.population == .inPen,
+           zip(rangeSamples, rangeSamples.dropFirst()).contains(where: { hasTransferConflict(sheepID: sheepID, at: $0.0.occurredAt, or: $0.1.occurredAt, snapshot: snapshot, index: index) }) {
+            return .conflictingEventTime
+        }
+        if mode == .paired {
+            if relevantSamples.count < 2 { return .missingPair }
+        } else if rangeSamples.count < 2 {
+            return .missingPair
+        }
+        return intervalIsInScope(
+            sheepID: sheepID,
+            startDate: rangeSamples.first?.occurredAt ?? filter.startDate,
+            endDate: rangeSamples.last?.occurredAt ?? filter.endDate,
+            scope: filter.scope,
+            snapshot: snapshot,
+            index: index
+        ) ? .missingPair : .outOfScope
+    }
+
+    private static func positiveDays(from start: Date, to end: Date, snapshot: FarmAnalyticsSnapshot, index: PreparedIndex? = nil) -> Int? {
+        let calendar = index?.calendar ?? analysisCalendar(snapshot: snapshot)
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: start), to: calendar.startOfDay(for: end)).day ?? 0
+        return days > 0 ? days : nil
+    }
+
+    private static func sampleIsInScope(
+        sheepID: UUID,
+        occurredAt: Date,
+        scope: WeightGainAnalysisScope,
+        snapshot: FarmAnalyticsSnapshot,
+        population: WeightGainAnalysisPopulation = .wholeObject,
+        cohortIDs: Set<UUID> = [],
+        index: PreparedIndex? = nil
+    ) -> Bool {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        guard let sheep = index.sheepByID[sheepID],
+              sheep.enteredAt <= occurredAt,
+              sheep.removedAt.map({ $0 >= occurredAt }) ?? true else { return false }
+        if population == .trackedCohort && !cohortIDs.contains(sheepID) { return false }
+        if population == .trackedCohort {
+            switch scope {
+            case .batch(let batchID), .batchAndPen(let batchID, _), .batchAndPens(let batchID, _):
+                return (index.membershipsBySheep[sheepID] ?? []).contains { $0.batchID == batchID && $0.contains(eventAt: occurredAt) }
+            case .unassigned:
+                return !(index.membershipsBySheep[sheepID] ?? []).contains { $0.contains(eventAt: occurredAt) }
+            default:
+                return true
+            }
+        }
+        switch scope {
+        case .farm:
+            return true
+        case .batch(let batchID):
+            return (index.membershipsBySheep[sheepID] ?? []).contains {
+                $0.batchID == batchID && $0.sheepID == sheepID && $0.contains(eventAt: occurredAt)
+            }
+        case .batchAndPen(let batchID, let penID):
+            return (index.membershipsBySheep[sheepID] ?? []).contains {
+                $0.batchID == batchID && $0.contains(eventAt: occurredAt)
+            } && index.penID(for: sheep, at: occurredAt) == penID
+        case .batchAndPens(let batchID, let penIDs):
+            return (index.membershipsBySheep[sheepID] ?? []).contains {
+                $0.batchID == batchID && $0.contains(eventAt: occurredAt)
+            } && index.penID(for: sheep, at: occurredAt).map(penIDs.contains) == true
+        case .unassigned:
+            return !(index.membershipsBySheep[sheepID] ?? []).contains { $0.contains(eventAt: occurredAt) }
+        case .pen(let penID):
+            return index.penID(for: sheep, at: occurredAt) == penID
+        case .pens(let penIDs):
+            return index.penID(for: sheep, at: occurredAt).map(penIDs.contains) == true
+        }
+    }
+
+    private static func intervalIsInScope(
+        sheepID: UUID,
+        startDate: Date,
+        endDate: Date,
+        scope: WeightGainAnalysisScope,
+        snapshot: FarmAnalyticsSnapshot,
+        population: WeightGainAnalysisPopulation = .wholeObject,
+        cohortIDs: Set<UUID> = [],
+        index: PreparedIndex? = nil
+    ) -> Bool {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        guard let sheep = index.sheepByID[sheepID],
+              sheep.enteredAt <= startDate,
+              sheep.removedAt.map({ $0 >= endDate }) ?? true else { return false }
+        if population == .trackedCohort && !cohortIDs.contains(sheepID) { return false }
+        if population == .trackedCohort {
+            switch scope {
+            case .batch(let batchID), .batchAndPen(let batchID, _), .batchAndPens(let batchID, _):
+                return batchIntervalIsContinuous(
+                    sheepID: sheepID,
+                    batchID: batchID,
+                    startDate: startDate,
+                    endDate: endDate,
+                    memberships: index.membershipsBySheep[sheepID] ?? []
+                )
+            case .unassigned:
+                return !(index.membershipsBySheep[sheepID] ?? []).contains {
+                    $0.joinedAt <= endDate && ($0.leftAt.map { $0 >= startDate } ?? true)
+                }
+            default:
+                return true
+            }
+        }
+        switch scope {
+        case .farm:
+            return true
+        case .batch(let batchID):
+            return batchIntervalIsContinuous(
+                sheepID: sheepID,
+                batchID: batchID,
+                startDate: startDate,
+                endDate: endDate,
+                memberships: index.membershipsBySheep[sheepID] ?? []
+            )
+        case .batchAndPen(let batchID, let penID):
+            return batchIntervalIsContinuous(
+                sheepID: sheepID,
+                batchID: batchID,
+                startDate: startDate,
+                endDate: endDate,
+                memberships: snapshot.batchMemberships
+            ) && penIntervalIsContinuous(
+                sheepID: sheepID,
+                penID: penID,
+                startDate: startDate,
+                endDate: endDate,
+                snapshot: snapshot,
+                index: index
+            )
+        case .batchAndPens(let batchID, let penIDs):
+            return batchIntervalIsContinuous(
+                sheepID: sheepID,
+                batchID: batchID,
+                startDate: startDate,
+                endDate: endDate,
+                memberships: index.membershipsBySheep[sheepID] ?? []
+            ) && penIntervalIsContinuous(
+                sheepID: sheepID,
+                penIDs: penIDs,
+                startDate: startDate,
+                endDate: endDate,
+                snapshot: snapshot,
+                index: index
+            )
+        case .unassigned:
+            return !(index.membershipsBySheep[sheepID] ?? []).contains {
+                $0.joinedAt <= endDate && ($0.leftAt.map { $0 >= startDate } ?? true)
+            }
+        case .pen(let penID):
+            return penIntervalIsContinuous(
+                sheepID: sheepID,
+                penID: penID,
+                startDate: startDate,
+                endDate: endDate,
+                snapshot: snapshot,
+                index: index
+            )
+        case .pens(let penIDs):
+            return penIntervalIsContinuous(
+                sheepID: sheepID,
+                penIDs: penIDs,
+                startDate: startDate,
+                endDate: endDate,
+                snapshot: snapshot,
+                index: index
+            )
+        }
+    }
+
+    private static func batchIntervalIsContinuous(
+        sheepID: UUID,
+        batchID: UUID,
+        startDate: Date,
+        endDate: Date,
+        memberships: [FarmAnalyticsSnapshot.BatchMembership]
+    ) -> Bool {
+        let overlapping = memberships.filter {
+            $0.sheepID == sheepID && $0.joinedAt <= endDate && ($0.leftAt.map { $0 >= startDate } ?? true)
+        }
+        return overlapping.count == 1 && overlapping.contains {
+            $0.batchID == batchID && $0.joinedAt <= startDate && ($0.leftAt.map { $0 >= endDate } ?? true)
+        }
+    }
+
+    private static func penIntervalIsContinuous(
+        sheepID: UUID,
+        penID: UUID,
+        startDate: Date,
+        endDate: Date,
+        snapshot: FarmAnalyticsSnapshot,
+        index: PreparedIndex? = nil
+    ) -> Bool {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        guard let sheep = index.sheepByID[sheepID],
+              index.penID(for: sheep, at: startDate) == penID,
+              index.penID(for: sheep, at: endDate) == penID else { return false }
+        return !(index.transfersBySheep[sheepID] ?? []).contains {
+            $0.occurredAt > startDate && $0.occurredAt <= endDate && $0.toPenID != penID
+        }
+    }
+
+    private static func penIntervalIsContinuous(
+        sheepID: UUID,
+        penIDs: Set<UUID>,
+        startDate: Date,
+        endDate: Date,
+        snapshot: FarmAnalyticsSnapshot,
+        index: PreparedIndex? = nil
+    ) -> Bool {
+        let index = index ?? PreparedIndex(snapshot: snapshot)
+        guard !penIDs.isEmpty,
+              let sheep = index.sheepByID[sheepID],
+              let startPen = index.penID(for: sheep, at: startDate),
+              let endPen = index.penID(for: sheep, at: endDate),
+              penIDs.contains(startPen), penIDs.contains(endPen) else { return false }
+        return !(index.transfersBySheep[sheepID] ?? []).contains {
+            $0.occurredAt > startDate && $0.occurredAt <= endDate &&
+                ($0.toPenID.map { !penIDs.contains($0) } ?? true)
+        }
+    }
+
+    private static func penWasRelevant(
+        sheep: FarmAnalyticsSnapshot.Sheep,
+        penID: UUID,
+        startDate: Date,
+        endDate: Date,
+        transfers: [FarmAnalyticsSnapshot.Transfer],
+        index: PreparedIndex? = nil
+    ) -> Bool {
+        if let index {
+            if index.penID(for: sheep, at: startDate) == penID ||
+                index.penID(for: sheep, at: endDate) == penID {
+                return true
+            }
+        } else if pen(at: startDate, sheep: sheep, transfers: transfers) == penID ||
+                    pen(at: endDate, sheep: sheep, transfers: transfers) == penID {
+            return true
+        }
+        let relevantTransfers = index?.transfersBySheep[sheep.id] ?? transfers.filter { $0.sheepID == sheep.id }
+        return relevantTransfers.contains {
+            $0.toPenID == penID &&
+                $0.occurredAt >= startDate && $0.occurredAt <= endDate
+        }
+    }
+
+    private static func penWasRelevant(
+        sheep: FarmAnalyticsSnapshot.Sheep,
+        penIDs: Set<UUID>,
+        startDate: Date,
+        endDate: Date,
+        transfers: [FarmAnalyticsSnapshot.Transfer],
+        index: PreparedIndex? = nil
+    ) -> Bool {
+        guard !penIDs.isEmpty else { return false }
+        if let index {
+            if let startPen = index.penID(for: sheep, at: startDate), penIDs.contains(startPen) { return true }
+            if let endPen = index.penID(for: sheep, at: endDate), penIDs.contains(endPen) { return true }
+        } else {
+            if let startPen = pen(at: startDate, sheep: sheep, transfers: transfers), penIDs.contains(startPen) { return true }
+            if let endPen = pen(at: endDate, sheep: sheep, transfers: transfers), penIDs.contains(endPen) { return true }
+        }
+        let relevantTransfers = index?.transfersBySheep[sheep.id] ?? transfers.filter { $0.sheepID == sheep.id }
+        return relevantTransfers.contains {
+            $0.toPenID.map(penIDs.contains) == true &&
+                $0.occurredAt >= startDate && $0.occurredAt <= endDate
+        }
+    }
+
     static func cohort(snapshot: FarmAnalyticsSnapshot, sheepIDs: Set<UUID>? = nil, snapshotDate: Date? = nil, scope: WeightSampleScope = .all) -> WeightCohort {
         let limit = snapshotDate ?? Date.distantFuture
         let removed = Set(snapshot.removals.filter { $0.occurredAt <= limit }.map(\.sheepID))
@@ -1125,9 +2704,16 @@ enum WeightGainAnalyticsEngine {
         }
         return raw.mapValues { $0.sorted { $0.date < $1.date } }
     }
+    private static func transferSort(_ lhs: FarmAnalyticsSnapshot.Transfer, _ rhs: FarmAnalyticsSnapshot.Transfer) -> Bool {
+        if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt < rhs.occurredAt }
+        if lhs.recordedAt != rhs.recordedAt { return lhs.recordedAt < rhs.recordedAt }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
     private static func pen(at date: Date, sheep: FarmAnalyticsSnapshot.Sheep, transfers: [FarmAnalyticsSnapshot.Transfer]) -> UUID? {
-        let last = transfers.filter { $0.sheepID == sheep.id && $0.occurredAt <= date }.sorted { $0.occurredAt == $1.occurredAt ? $0.recordedAt < $1.recordedAt : $0.occurredAt < $1.occurredAt }.last
-        return last?.toPenID ?? sheep.initialPenID
+        let last = transfers.filter { $0.sheepID == sheep.id && $0.occurredAt <= date }.sorted(by: transferSort).last
+        if let last { return last.toPenID }
+        return sheep.initialPenID
     }
 }
 

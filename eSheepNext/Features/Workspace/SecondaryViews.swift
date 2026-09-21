@@ -13,6 +13,7 @@ struct FarmInsightsView: View {
         Group {
             if farmContext.capabilities.allows(.viewAnalytics) {
                 FarmAnalysisCenterView(
+                    account: account,
                     farm: farm,
                     assistantTransition: assistantTransition,
                     assistantTransitionID: assistantTransitionID,
