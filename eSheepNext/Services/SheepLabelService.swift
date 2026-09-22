@@ -27,11 +27,26 @@ enum SheepLabelService {
             guard !d.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, d.name.trimmingCharacters(in: .whitespacesAndNewlines).count <= 40, d.note.count <= 500, d.sortOrder >= 0 else { throw SheepLabelError.invalid("标签名称需为 1–40 字，说明最多 500 字，排序不能为负数。") }
             guard !catalog.contains(where: { $0.id != d.id && $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == d.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }) else { throw SheepLabelError.invalid("当前牧场已有同名标签。") }
             if enforceRevision, (catalog.first { $0.id == d.id }?.revision ?? 0) != d.expectedRevision { throw SheepLabelError.invalid("标签已由其他成员修改，请刷新后重试。") }
-            let assignments = try context.fetch(FetchDescriptor<SheepLabelAssignmentRecord>(predicate: #Predicate { $0.farmID == farmID }))
-            let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate { $0.farmID == farmID }))
-            let ids = Set(assignments.filter { $0.labelIDs.contains(d.id) }.map(\.sheepID))
-            let invalid = sheep.filter { ids.contains($0.id) && !d.color.allows($0.sex) }
-            guard invalid.isEmpty else { throw SheepLabelError.invalid("该颜色与 \(invalid.count) 只羊冲突：\(invalid.prefix(10).map(\.earTag).joined(separator: "、"))。请先移除关联标签。") }
+            // Renaming, reordering, notes, and active-state changes cannot
+            // change sex compatibility. Avoid loading the whole farm for
+            // those common edits; only a recolor needs a conflict scan.
+            let currentColor = catalog.first { $0.id == d.id }?.color
+            if currentColor != d.color {
+                let assignments = try context.fetch(FetchDescriptor<SheepLabelAssignmentRecord>(predicate: #Predicate { $0.farmID == farmID }))
+                let ids = Set(assignments.filter { $0.labelIDs.contains(d.id) }.map(\.sheepID))
+                if !ids.isEmpty {
+                    let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate { $0.farmID == farmID }))
+                    let invalid = sheep.filter { ids.contains($0.id) && !d.color.allows($0.sex) }
+                    guard invalid.isEmpty else { throw SheepLabelError.invalid("该颜色与 \(invalid.count) 只羊冲突：\(invalid.prefix(10).map(\.earTag).joined(separator: "、"))。请先移除关联标签。") }
+                }
+            }
+        case .deleteLabel(let d):
+            guard let current = catalog.first(where: { $0.id == d.id }) else {
+                throw SheepLabelError.invalid("标签不存在，可能已经被其他成员删除。")
+            }
+            guard !enforceRevision || current.revision == d.expectedRevision else {
+                throw SheepLabelError.invalid("标签已由其他成员修改，请刷新后重试。")
+            }
         case .editLabels(let d):
             let sheep = try subject(d.sheepID, farmID: farmID, context: context)
             let a = try assignment(sheepID: d.sheepID, farmID: farmID, context: context)
@@ -68,11 +83,39 @@ enum SheepLabelService {
             record.sortOrder = d.sortOrder; record.isActive = d.isActive; record.revision += 1; record.updatedAt = at
             revision = record.revision
             detail = "\(old.revision == 0 ? "新建" : "更新") \(record.name) · \(d.color.title) · \(d.isActive ? "启用" : "停用")"
-            let updated = try labels(farmID: farmID, context: context)
-            for a in try context.fetch(FetchDescriptor<SheepLabelAssignmentRecord>(predicate: #Predicate { $0.farmID == farmID })) where a.labelIDs.contains(id) {
-                let next = SheepLabelRules.primary(a.primaryLabelID, ids: a.labelIDs, labels: updated)
-                if next != a.primaryLabelID { a.primaryLabelID = next; a.revision += 1; a.updatedAt = at }
+            // Only deactivation can invalidate a primary label. Avoid a
+            // farm-wide assignment scan for ordinary name/color edits.
+            if old.isActive && !d.isActive {
+                let updated = try labels(farmID: farmID, context: context)
+                for a in try context.fetch(FetchDescriptor<SheepLabelAssignmentRecord>(predicate: #Predicate { $0.farmID == farmID })) where a.labelIDs.contains(id) {
+                    let next = SheepLabelRules.primary(a.primaryLabelID, ids: a.labelIDs, labels: updated)
+                    if next != a.primaryLabelID { a.primaryLabelID = next; a.revision += 1; a.updatedAt = at }
+                }
             }
+        case .deleteLabel(let d):
+            guard let record = try context.fetch(FetchDescriptor<SheepLabelRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.id == d.id
+            })).first else {
+                throw SheepLabelError.invalid("标签不存在，可能已经被其他成员删除。")
+            }
+            let labelName = record.name
+            let assignments = try context.fetch(FetchDescriptor<SheepLabelAssignmentRecord>(predicate: #Predicate {
+                $0.farmID == farmID
+            }))
+            let updatedLabels = before.filter { $0.id != d.id }
+            var affectedCount = 0
+            for assignment in assignments where assignment.labelIDs.contains(d.id) {
+                let remaining = assignment.labelIDs.subtracting([d.id])
+                assignment.labelIDsJSON = try encode(remaining.sorted { $0.uuidString < $1.uuidString })
+                assignment.primaryLabelID = SheepLabelRules.primary(assignment.primaryLabelID, ids: remaining, labels: updatedLabels)
+                assignment.revision += 1
+                assignment.updatedAt = at
+                affectedCount += 1
+            }
+            let resultingRevision = record.revision + 1
+            context.delete(record)
+            revision = resultingRevision
+            detail = "彻底删除 \(labelName)；清理 \(affectedCount) 只羊的关联"
         case .editLabels(let d):
             sheepID = d.sheepID
             let sheep = try subject(d.sheepID, farmID: farmID, context: context)

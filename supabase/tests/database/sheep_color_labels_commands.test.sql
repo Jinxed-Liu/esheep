@@ -48,6 +48,6 @@ select is((select cardinality(label_ids) from esheep_cloud.sheep_label_assignmen
 select is(esheep_cloud.sheep_label_subject_sex(pg_temp.uid(10),2,pg_temp.uid(20)),'ewe','authoritative sex updated');
 select is(pg_temp.edit(20,array[31])->>'type','accepted','new sex permits green');
 select throws_like($$select pg_temp.edit(20,array[30])$$,'%不适用%','new sex rejects yellow');
-select ok((select bool_and(esheep_cloud.server_handler_available_v2(command_kind)) from esheep_cloud.command_catalog where command_kind like 'care.sheepLabel%'),'all three new command routes ready');
+select ok((select bool_and(esheep_cloud.server_handler_available_v2(command_kind)) from esheep_cloud.command_catalog where command_kind like 'care.sheepLabel%'),'all label command routes ready');
 select * from finish();
 rollback;

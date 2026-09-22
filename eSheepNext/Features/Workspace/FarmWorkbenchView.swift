@@ -48,7 +48,6 @@ struct FarmWorkbenchView: View {
                     if session.pendingRecordEntry == nil { proxy.scrollTo(section, anchor: .top) }
                 }
             }
-            .navigationTitle("工作台")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { FarmNavigationToolbar(account: account, farms: farms, activeFarm: farm, sharedFarmAdmissionStatus: sharedFarmAdmissionStatus) }
             .sheet(item: $presentedEntry) { entry in
@@ -65,6 +64,11 @@ struct FarmWorkbenchView: View {
 
     private var management: some View {
         SettingsCard(title: "管理") {
+            SettingsNavigationRow(title: "羊只标签", subtitle: "新建标签、设置颜色、查看关联羊只", systemImage: "tag", iconColor: .orange) {
+                SheepLabelManagementView(account: account, farm: farm)
+            }
+            .accessibilityIdentifier("workbench-sheep-labels")
+            SettingsCardDivider()
             SettingsNavigationRow(title: "生产批次", subtitle: "育肥、实验等批次", systemImage: "square.3.layers.3d", iconColor: .purple) {
                 ProductionBatchListView(account: account, farm: farm)
             }

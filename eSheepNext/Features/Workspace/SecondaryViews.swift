@@ -38,7 +38,6 @@ struct FarmInsightsView: View {
                 }
             }
         }
-        .navigationTitle("分析")
         .navigationDestination(isPresented: assistantPresentation) {
             FarmInsightConversationView(account: account, farm: farm, initialPrompt: suggestedQuestion)
                 .id(farm.id)

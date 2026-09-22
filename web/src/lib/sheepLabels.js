@@ -1,6 +1,6 @@
 export const labelColors = ["yellow", "green", "red", "white", "orange", "light-blue", "pink", "black", "purple", "dark-blue"];
 export const labelColorNames = { yellow:"黄色",green:"绿色",red:"红色",white:"白色",orange:"橙色","light-blue":"浅蓝色",pink:"粉色",black:"黑色",purple:"紫色","dark-blue":"深蓝色" };
-export const labelKinds = new Set(["care.sheepLabel.save", "care.sheepLabels.edit", "care.sheepLabels.patchProfile"]);
+export const labelKinds = new Set(["care.sheepLabel.save", "care.sheepLabel.delete", "care.sheepLabels.edit", "care.sheepLabels.patchProfile"]);
 export const labelRestriction = color => color === "yellow" ? "仅公羊" : color === "green" ? "仅母羊" : "所有性别";
 export const labelAllows = (color, sex) => labelColors.includes(color) && (color === "yellow" ? sex === "ram" : color === "green" ? sex === "ewe" : true);
 export const labelIDs = assignment => JSON.parse(assignment?.labelIDsJSON ?? "[]");
@@ -20,6 +20,12 @@ export function labelState(models, farmID) {
 }
 export function validateLabelAction(action, draft, state, enforceRevision=true) {
   const {catalog,assignments,sheep}=state;
+  if(action==="deleteLabel") {
+    const current=catalog.find(l=>l.id===draft.id);
+    requireValue(current,"标签不存在，可能已经被其他成员删除。");
+    if(enforceRevision)requireValue(current.revision===draft.expectedRevision,"标签已由其他成员修改，请刷新后重试。");
+    return;
+  }
   if(action==="saveLabel") {
     requireValue(draft.name?.trim().length>0 && [...draft.name.trim()].length<=40,"标签名称需为 1–40 字。");
     requireValue(labelColors.includes(draft.color),"标签颜色无效。");
@@ -62,9 +68,9 @@ export async function labelSpec(action,draft,workspace) {
   const state=labelState(workspace.models,workspace.farm.id);
   const role=workspace.farm.role ?? workspace.farm.memberRole ?? workspace.profile.role;
   requireValue(["owner","administrator","worker"].includes(role),"当前账号没有牧场记录权限。");
-  if(action==="saveLabel")requireValue(["owner","administrator"].includes(role)||workspace.capabilities?.includes?.("manageCatalogs"),"需要标签目录管理权限。");
+  if(action==="saveLabel"||action==="deleteLabel")requireValue(["owner","administrator"].includes(role)||workspace.capabilities?.includes?.("manageCatalogs"),"需要标签目录管理权限。");
   validateLabelAction(action,draft,state);
-  const kind=action==="saveLabel"?"care.sheepLabel.save":action==="editLabels"?"care.sheepLabels.edit":"care.sheepLabels.patchProfile";
+  const kind=action==="saveLabel"?"care.sheepLabel.save":action==="deleteLabel"?"care.sheepLabel.delete":action==="editLabels"?"care.sheepLabels.edit":"care.sheepLabels.patchProfile";
   if(action==="patchProfile") {
     const stream={type:"sheepProfile",id:draft.sheepID};
     const raw=workspace.models.ESheepCloudStreamState?.find(s=>s.streamType===stream.type&&s.streamID===stream.id)?.fieldVersionsData;
@@ -77,16 +83,30 @@ export async function labelSpec(action,draft,workspace) {
     const changes=Object.entries(values).map(([field,value])=>({field,mutation:value?{action:"set",value}:{action:"clear"}}));
     return {kind,body:{sheepLabels:{_0:{[action]:{_0:draft}}}},streams:[stream],fields,changes,occurredAt:Date.now()};
   }
-  return {kind,body:{sheepLabels:{_0:{[action]:{_0:draft}}}},streams:[{type:action==="saveLabel"?"sheepLabel":"sheepLabels",id:action==="saveLabel"?draft.id:draft.sheepID}],occurredAt:Date.now()};
+  return {kind,body:{sheepLabels:{_0:{[action]:{_0:draft}}}},streams:[{type:action==="saveLabel"||action==="deleteLabel"?"sheepLabel":"sheepLabels",id:action==="saveLabel"||action==="deleteLabel"?draft.id:draft.sheepID}],occurredAt:Date.now()};
 }
 export function applyLabelAction(action,draft,models,{farmID,accountID,at},enforceRevision=false) {
   for(const name of ["SheepLabelRecord","SheepLabelAssignmentRecord","SheepLabelChangeRecord"])models[name]??=[];
-  const state=labelState(models,farmID), changeID=action==="saveLabel"?draft.changeID:draft.id;
+  const state=labelState(models,farmID), changeID=action==="saveLabel"||action==="deleteLabel"?draft.changeID:draft.id;
   if(state.changes.some(c=>c.id===changeID))return;
   validateLabelAction(action,draft,state,enforceRevision);
   const snapshots=state.catalog.map(l=>({id:l.id,name:l.name,color:l.colorRawValue,note:l.note,sortOrder:l.sortOrder,isActive:l.isActive,revision:l.revision}));
   let detail,subjectID=null;
-  if(action==="saveLabel") {
+  if(action==="deleteLabel") {
+    const record=state.catalog.find(l=>l.id===draft.id);
+    requireValue(record,"标签不存在，可能已经被其他成员删除。");
+    const affected=state.assignments.filter(a=>labelIDs(a).includes(draft.id));
+    const remainingCatalog=state.catalog.filter(l=>l.id!==draft.id);
+    for(const a of affected) {
+      const ids=labelIDs(a).filter(id=>id!==draft.id);
+      a.labelIDsJSON=JSON.stringify(ids);
+      a.primaryLabelID=nextPrimary(a.primaryLabelID,ids,remainingCatalog);
+      a.revision=(a.revision??0)+1;a.updatedAt=at;
+    }
+    models.SheepLabelRecord=models.SheepLabelRecord.filter(l=>!(l.farmID===farmID&&l.id===draft.id));
+    state.catalog=remainingCatalog;
+    detail=`彻底删除 ${record.name}；清理 ${affected.length} 只羊的关联`;
+  } else if(action==="saveLabel") {
     let record=state.catalog.find(l=>l.id===draft.id);
     const wasNew=!record;
     if(!record){record={id:draft.id,farmID,revision:0};models.SheepLabelRecord.push(record);state.catalog.push(record);}
@@ -111,5 +131,5 @@ export function applyLabelAction(action,draft,models,{farmID,accountID,at},enfor
       if(draft.sex!=="ram")subject.isBreedingRam=false;
     } else detail=`${subject.earTag} · 添加：${names(draft.addIDs)}；移除：${names(removed)}${draft.setsPrimary?`; 主标签：${state.catalog.find(l=>l.id===a.primaryLabelID)?.name??"无"}`:""}`;
   }
-  models.SheepLabelChangeRecord.push({id:changeID,farmID,sheepID:subjectID,accountID,title:action==="saveLabel"?`维护标签：${draft.name}`:action==="patchProfile"?"修改羊只档案与标签":"修改羊只标签",detail,snapshotsJSON:JSON.stringify({before:snapshots,after:state.catalog.map(l=>({id:l.id,name:l.name,color:l.colorRawValue,note:l.note,sortOrder:l.sortOrder,isActive:l.isActive,revision:l.revision}))}),occurredAt:at});
+  models.SheepLabelChangeRecord.push({id:changeID,farmID,sheepID:subjectID,accountID,title:action==="saveLabel"?`维护标签：${draft.name}`:action==="deleteLabel"?"彻底删除标签":action==="patchProfile"?"修改羊只档案与标签":"修改羊只标签",detail,snapshotsJSON:JSON.stringify({before:snapshots,after:state.catalog.map(l=>({id:l.id,name:l.name,color:l.colorRawValue,note:l.note,sortOrder:l.sortOrder,isActive:l.isActive,revision:l.revision}))}),occurredAt:at});
 }

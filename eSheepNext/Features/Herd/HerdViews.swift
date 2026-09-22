@@ -51,6 +51,13 @@ struct HerdManagementView: View {
         let displayedSheep = filteredSheep.filter { SheepLabelRules.matches(ids: assignments[$0.id]?.labelIDs ?? [], selected: selectedLabelIDs, all: matchAllLabels, unlabelled: unlabelledOnly) }
         let visibleSheep = displayedSheep.prefix(visibleLimit)
         List(selection: $selection) {
+            SheepLabelFilterEntry(
+                labels: labels,
+                selectedIDs: $selectedLabelIDs,
+                matchAll: $matchAllLabels,
+                unlabelledOnly: $unlabelledOnly
+            )
+            .selectionDisabled()
             if let sheepLoadError {
                 Text(sheepLoadError).foregroundStyle(.orange)
                 Button("重新读取") { sheepSourceLoadRevision &+= 1 }
@@ -135,17 +142,6 @@ struct HerdManagementView: View {
             ToolbarItem(placement: .topBarLeading) { EditButton() }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Menu("标签") {
-                        Toggle("无自定义标签", isOn: $unlabelledOnly)
-                        Toggle("同时包含全部", isOn: $matchAllLabels)
-                        ForEach(labels) { label in
-                            Toggle(label.name, isOn: Binding(get: { selectedLabelIDs.contains(label.id) }, set: { on in
-                                unlabelledOnly = false
-                                if on { selectedLabelIDs.insert(label.id) } else { selectedLabelIDs.remove(label.id) }
-                            }))
-                        }
-                        Button("清除标签筛选") { selectedLabelIDs.removeAll(); unlabelledOnly = false }
-                    }
                     Picker("性别", selection: $sexFilter) {
                         Text("全部性别").tag(SheepSex?.none)
                         ForEach(SheepSex.allCases, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag(SheepSex?.some($0)) }
@@ -176,7 +172,6 @@ struct HerdManagementView: View {
                     } label: {
                         Label("羊只用途管理", systemImage: "tag")
                     }
-                    NavigationLink { SheepLabelManagementView(account: account, farm: farm) } label: { Label("标签管理", systemImage: "tag.fill") }
                     Menu("导出羊只", systemImage: "square.and.arrow.up") {
                         Button("导出在群羊只 CSV", systemImage: "checkmark.circle") { exportSheep(.present) }
                             .disabled(presentSheepCount == 0)
@@ -190,8 +185,12 @@ struct HerdManagementView: View {
             }
             if !selection.isEmpty {
                 ToolbarItem(placement: .bottomBar) {
+                    Button("批量标签", systemImage: "tag") { isEditingLabels = true }
+                        .disabled(!CapabilitySet(role: farm.role).allows(.recordProduction))
+                        .accessibilityHint("为选中的 \(selection.count) 只羊添加、移除或设置主标签")
+                }
+                ToolbarItem(placement: .bottomBar) {
                     Menu {
-                        Button("批量标签", systemImage: "tag") { isEditingLabels = true }
                         Button("批量转群", systemImage: "arrow.left.arrow.right") {
                             isBatchTransferring = true
                         }

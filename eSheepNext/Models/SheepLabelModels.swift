@@ -27,7 +27,7 @@ struct SheepLabelValue: Codable, Sendable, Equatable, Identifiable, Hashable {
     var revision: Int
 }
 
-struct SheepLabelDraft: Codable, Sendable, Equatable {
+struct SheepLabelDraft: Codable, Sendable, Equatable, Identifiable {
     var id: UUID = UUID()
     var changeID: UUID = UUID()
     var name: String = ""
@@ -36,6 +36,12 @@ struct SheepLabelDraft: Codable, Sendable, Equatable {
     var sortOrder: Int = 0
     var isActive: Bool = true
     var expectedRevision: Int = 0
+}
+
+struct SheepLabelDeleteDraft: Codable, Sendable, Equatable, Identifiable {
+    var id: UUID
+    var changeID: UUID = UUID()
+    var expectedRevision: Int
 }
 
 struct SheepLabelsEditDraft: Codable, Sendable, Equatable {
@@ -65,22 +71,53 @@ struct SheepLabelProfileDraft: Codable, Sendable, Equatable {
 
 enum SheepLabelCommand: Codable, Sendable, Equatable {
     case saveLabel(SheepLabelDraft)
+    case deleteLabel(SheepLabelDeleteDraft)
     case editLabels(SheepLabelsEditDraft)
     case patchProfile(SheepLabelProfileDraft)
     var primaryID: UUID {
-        switch self { case .saveLabel(let d): d.id; case .editLabels(let d): d.sheepID; case .patchProfile(let d): d.sheepID }
+        switch self {
+        case .saveLabel(let d): d.id
+        case .deleteLabel(let d): d.id
+        case .editLabels(let d): d.sheepID
+        case .patchProfile(let d): d.sheepID
+        }
     }
     var changeID: UUID {
-        switch self { case .saveLabel(let d): d.changeID; case .editLabels(let d): d.id; case .patchProfile(let d): d.id }
+        switch self {
+        case .saveLabel(let d): d.changeID
+        case .deleteLabel(let d): d.changeID
+        case .editLabels(let d): d.id
+        case .patchProfile(let d): d.id
+        }
     }
     var kind: String {
-        switch self { case .saveLabel: "sheepLabel.save"; case .editLabels: "sheepLabels.edit"; case .patchProfile: "sheepLabels.patchProfile" }
+        switch self {
+        case .saveLabel: "sheepLabel.save"
+        case .deleteLabel: "sheepLabel.delete"
+        case .editLabels: "sheepLabels.edit"
+        case .patchProfile: "sheepLabels.patchProfile"
+        }
     }
-    var capability: FarmCapability { if case .saveLabel = self { .manageCatalogs } else { .recordProduction } }
+    var capability: FarmCapability {
+        switch self {
+        case .saveLabel, .deleteLabel: .manageCatalogs
+        case .editLabels, .patchProfile: .recordProduction
+        }
+    }
     var summary: String {
-        switch self { case .saveLabel(let d): "维护标签：\(d.name)"; case .editLabels: "修改羊只标签"; case .patchProfile: "修改羊只档案与标签" }
+        switch self {
+        case .saveLabel(let d): "维护标签：\(d.name)"
+        case .deleteLabel: "彻底删除标签"
+        case .editLabels: "修改羊只标签"
+        case .patchProfile: "修改羊只档案与标签"
+        }
     }
-    var streamType: String { if case .saveLabel = self { "sheepLabel" } else { "sheepLabels" } }
+    var streamType: String {
+        switch self {
+        case .saveLabel, .deleteLabel: "sheepLabel"
+        case .editLabels, .patchProfile: "sheepLabels"
+        }
+    }
 }
 
 @Model final class SheepLabelRecord {

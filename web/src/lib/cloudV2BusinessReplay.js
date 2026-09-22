@@ -43,7 +43,7 @@ export async function applyExtendedV2Event(projection, event, body) {
     const normalize=value=>Array.isArray(value)?value.map(normalize):value&&typeof value==="object"?Object.fromEntries(Object.entries(value).map(([k,v])=>[k,normalize(v)])):typeof value==="string"&&/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value)?value.toLowerCase():value;
     const nested=body.command_payload.body?.sheepLabels?._0;
     const [action,encoded]=Object.entries(nested??{})[0]??[];
-    const expected={"care.sheepLabel.save":"saveLabel","care.sheepLabels.edit":"editLabels","care.sheepLabels.patchProfile":"patchProfile"}[kind];
+    const expected={"care.sheepLabel.save":"saveLabel","care.sheepLabel.delete":"deleteLabel","care.sheepLabels.edit":"editLabels","care.sheepLabels.patchProfile":"patchProfile"}[kind];
     if(action!==expected||Object.keys(nested??{}).length!==1)throw new Error("标签命令内容不匹配。");
     const models=Object.fromEntries([...projection.models].map(([name,rows])=>[name,[...rows.values()]]));
     applyLabelAction(action,normalize(encoded?._0),models,{farmID:projection.farmID,accountID:event.actor_account_id,at:event.occurred_at_millis});

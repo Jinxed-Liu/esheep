@@ -10,6 +10,7 @@ import Foundation
 enum ESheepCloudCommandRegistryV2 {
     static let allKinds: [String] = [
         "care.sheepLabel.save",
+        "care.sheepLabel.delete",
         "care.sheepLabels.edit",
         "care.sheepLabels.patchProfile",
 
@@ -109,6 +110,7 @@ enum ESheepCloudCommandRegistryV2 {
     static func expectedPayloadCase(for kind: String) -> String? {
         switch kind {
         case "care.sheepLabel.save": "sheepLabels"
+        case "care.sheepLabel.delete": "sheepLabels"
         case "care.sheepLabels.edit": "sheepLabels"
         case "care.sheepLabels.patchProfile": "sheepLabels"
 
@@ -200,6 +202,7 @@ enum ESheepCloudCommandRegistryV2 {
     static func mergeMode(for kind: String) -> String? {
         switch kind {
         case "care.sheepLabel.save": "state_machine"
+        case "care.sheepLabel.delete": "lifecycle"
         case "care.sheepLabels.edit": "state_machine"
         case "care.sheepLabels.patchProfile": "field_patch"
 
@@ -257,6 +260,7 @@ enum ESheepCloudCommandRegistryV2 {
     static func nativeProjectionRoute(for kind: String) -> String? {
         switch kind {
         case "care.sheepLabel.save": "care.sheepLabel.save"
+        case "care.sheepLabel.delete": "care.sheepLabel.delete"
         case "care.sheepLabels.edit": "care.sheepLabels.edit"
         case "care.sheepLabels.patchProfile": "care.sheepLabels.patchProfile"
 

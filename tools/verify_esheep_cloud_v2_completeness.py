@@ -143,7 +143,7 @@ def extract_payload_kinds(
         # keeping the care-family decoder requirement above.
         if "case .sheepLabels(let c): c.kind" in contracts:
             label_suffixes = re.findall(
-                r"case\s+\.(?:saveLabel|editLabels|patchProfile)\s*:\s*\"([^\"]+)\"",
+                r"case\s+\.(?:saveLabel|deleteLabel|editLabels|patchProfile)\s*:\s*\"([^\"]+)\"",
                 additional_models,
             )
             literals.update(f"care.{suffix}" for suffix in label_suffixes)
