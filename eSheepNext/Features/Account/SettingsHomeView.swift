@@ -161,6 +161,13 @@ struct SettingsHomeView: View {
 
                 SettingsCard(title: "偏好设置") {
                     SettingsNavigationRow(
+                        title: "小组件", subtitle: "组件库、圈舍与批次、独立配置",
+                        systemImage: "square.grid.2x2.fill", iconColor: .green
+                    ) {
+                        FarmWidgetSettingsView(farm: farm)
+                    }
+                    SettingsCardDivider()
+                    SettingsNavigationRow(
                         title: "通知",
                         subtitle: notificationStatusText,
                         systemImage: "bell.fill",

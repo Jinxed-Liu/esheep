@@ -1,4 +1,5 @@
 import Foundation
+import WidgetKit
 
 struct FarmWidgetSnapshot: Codable, Equatable, Sendable {
     static let currentVersion = 1
@@ -12,8 +13,17 @@ struct FarmWidgetSnapshot: Codable, Equatable, Sendable {
         let pendingOperationCount: Int
         let sheep: [Sheep]
         let pens: [Pen]
+        var cards: [FarmWidgetCard]? = nil
+        var widgetScopes: [ScopeOption]? = nil
+        var timeZoneIdentifier: String? = nil
 
         var id: UUID { farmID }
+    }
+
+    struct ScopeOption: Codable, Equatable, Sendable, Identifiable {
+        let id: UUID
+        let name: String
+        let kind: FarmWidgetScope
     }
 
     struct Sheep: Codable, Equatable, Sendable, Identifiable {
@@ -50,6 +60,7 @@ enum AppGroupConfiguration {
 }
 
 enum FarmWidgetSnapshotStore {
+    static let changeNotification = Notification.Name("FarmWidgetSnapshotDidChange")
     private static let key = "farm-widget-snapshot-v1"
 
     static func load() -> FarmWidgetSnapshot {
@@ -73,6 +84,8 @@ enum FarmWidgetSnapshotStore {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         defaults.set(try encoder.encode(snapshot), forKey: key)
+        WidgetCenter.shared.reloadAllTimelines()
+        NotificationCenter.default.post(name: changeNotification, object: nil)
     }
 
     private static func sharedDefaults() -> UserDefaults? {

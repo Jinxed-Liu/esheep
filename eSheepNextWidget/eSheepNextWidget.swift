@@ -2,150 +2,144 @@ import AppIntents
 import SwiftUI
 import WidgetKit
 
-private struct WidgetSnapshot: Codable {
-    struct Farm: Codable, Identifiable {
-        let farmID: UUID
-        let name: String
-        let activeSheepCount: Int
-        let activePenCount: Int
-        let todayFeedCount: Int
-        let pendingOperationCount: Int
-
-        var id: UUID { farmID }
-    }
-
-    let version: Int
-    let generatedAt: Date
-    let selectedFarmID: UUID?
-    let farms: [Farm]
-}
-
-private enum WidgetSnapshotStore {
-    static func load() -> WidgetSnapshot? {
-        guard let group = Bundle.main.object(forInfoDictionaryKey: "APP_GROUP_IDENTIFIER") as? String,
-              let defaults = UserDefaults(suiteName: group),
-              let data = defaults.data(forKey: "farm-widget-snapshot-v1") else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(WidgetSnapshot.self, from: data)
-    }
-}
-
 struct WidgetFarmEntity: AppEntity {
     static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "牧场")
     static let defaultQuery = WidgetFarmQuery()
-
     let id: UUID
     let name: String
-
     var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(name)") }
 }
-
 struct WidgetFarmQuery: EntityQuery {
     func entities(for identifiers: [UUID]) async throws -> [WidgetFarmEntity] {
-        let identifiers = Set(identifiers)
-        return (WidgetSnapshotStore.load()?.farms ?? []).compactMap {
-            identifiers.contains($0.farmID) ? WidgetFarmEntity(id: $0.farmID, name: $0.name) : nil
-        }
+        try await suggestedEntities().filter { identifiers.contains($0.id) }
     }
-
     func suggestedEntities() async throws -> [WidgetFarmEntity] {
-        (WidgetSnapshotStore.load()?.farms ?? []).map { WidgetFarmEntity(id: $0.farmID, name: $0.name) }
+        FarmWidgetSnapshotStore.load().farms.map { .init(id: $0.farmID, name: $0.name) }
     }
 }
-
+struct WidgetProfileEntity: AppEntity {
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "小组件配置")
+    static let defaultQuery = WidgetProfileQuery()
+    let id: UUID
+    let name: String
+    let detail: String
+    var displayRepresentation: DisplayRepresentation { DisplayRepresentation(title: "\(name)", subtitle: "\(detail)") }
+}
+struct WidgetProfileQuery: EntityQuery {
+    func entities(for identifiers: [UUID]) async throws -> [WidgetProfileEntity] {
+        try await suggestedEntities().filter { identifiers.contains($0.id) }
+    }
+    func suggestedEntities() async throws -> [WidgetProfileEntity] {
+        let farms = FarmWidgetSnapshotStore.load().farms
+        return FarmWidgetProfileStore.load().compactMap { profile in
+            guard let farm = farms.first(where: { $0.farmID == profile.farmID }) else { return nil }
+            return .init(id: profile.id, name: profile.name, detail: "\(farm.name) · \(profile.kind.title)")
+        }
+    }
+}
 struct SelectFarmWidgetIntent: WidgetConfigurationIntent {
-    static let title: LocalizedStringResource = "选择牧场"
-    static let description = IntentDescription("选择要在小组件中显示的牧场。")
-
-    @Parameter(title: "牧场") var farm: WidgetFarmEntity?
+    static let title: LocalizedStringResource = "小组件设置"
+    static let description = IntentDescription("先在 App 的小组件设置中新建配置，再在这里选择。配置独立保存圈舍、批次、周期与配色。")
+    @Parameter(title: "牧场（未选择配置时使用）") var farm: WidgetFarmEntity?
+    @Parameter(title: "使用配置") var profile: WidgetProfileEntity?
 }
 
 private struct FarmWidgetEntry: TimelineEntry {
     let date: Date
-    let farm: WidgetSnapshot.Farm?
+    let farm: FarmWidgetSnapshot.Farm?
+    let generatedAt: Date
+    let card: FarmWidgetCard
     let isStale: Bool
+    var url: URL? {
+        guard let farm else { return nil }
+        let query = card.profileID.map { "?profile=\($0.uuidString)" } ?? ""
+        return URL(string: "esheep://farm/\(farm.farmID.uuidString)/widget/\(card.kind.rawValue)\(query)")
+    }
 }
-
 private struct FarmWidgetProvider: AppIntentTimelineProvider {
-    func placeholder(in context: Context) -> FarmWidgetEntry {
-        FarmWidgetEntry(date: .now, farm: nil, isStale: false)
-    }
-
+    let kind: FarmWidgetKind
+    func placeholder(in context: Context) -> FarmWidgetEntry { preview() }
     func snapshot(for configuration: SelectFarmWidgetIntent, in context: Context) async -> FarmWidgetEntry {
-        entry(for: configuration)
+        context.isPreview ? preview() : entry(for: configuration)
     }
-
     func timeline(for configuration: SelectFarmWidgetIntent, in context: Context) async -> Timeline<FarmWidgetEntry> {
-        Timeline(entries: [entry(for: configuration)], policy: .after(.now.addingTimeInterval(15 * 60)))
+        let first = entry(for: configuration)
+        // Explicit expiry entry prevents an old 'today' result from silently
+        // staying current across midnight when the app has not run.
+        let expires = FarmWidgetSelection.expiry(generatedAt: first.generatedAt,
+                                                 timeZoneIdentifier: first.farm?.timeZoneIdentifier ?? "Asia/Shanghai")
+        var entries = [first]
+        if expires > first.date {
+            entries.append(.init(date: expires, farm: first.farm, generatedAt: first.generatedAt, card: first.card, isStale: true))
+        }
+        return Timeline(entries: entries, policy: .after(.now.addingTimeInterval(15 * 60)))
     }
-
     private func entry(for configuration: SelectFarmWidgetIntent) -> FarmWidgetEntry {
-        guard let snapshot = WidgetSnapshotStore.load() else {
-            return FarmWidgetEntry(date: .now, farm: nil, isStale: true)
+        let snapshot = FarmWidgetSnapshotStore.load()
+        let selected = FarmWidgetSelection.resolve(snapshot: snapshot, profiles: FarmWidgetProfileStore.load(),
+                                                   kind: kind, profileID: configuration.profile?.id, farmID: configuration.farm?.id)
+        let expires = FarmWidgetSelection.expiry(generatedAt: snapshot.generatedAt,
+                                                 timeZoneIdentifier: selected.farm?.timeZoneIdentifier ?? "Asia/Shanghai")
+        return .init(date: .now, farm: selected.farm, generatedAt: snapshot.generatedAt, card: selected.card, isStale: .now >= expires)
+    }
+    private func preview() -> FarmWidgetEntry {
+        var card = FarmWidgetCard(kind: kind, palette: kind.defaultPalette, title: kind.title,
+                                  subtitle: "当前在场", value: "1,286", unit: "只", note: "示例数据")
+        card.rows = [.init(label: "在用圈舍", value: "24 个"), .init(label: "投喂记录", value: "8 条")]
+        switch kind {
+        case .journal: card.subtitle = "今日投喂记录"; card.value = "8"; card.unit = "条"
+        case .breeding: card.subtitle = "未来 7 天预产提醒"; card.value = "6"; card.unit = "条"
+        case .pregnancy, .weaning, .alerts: card.subtitle = "待关注提醒"; card.value = "7"; card.unit = "项"
+        case .feeding: card.title = "03 舍"; card.subtitle = "已有投喂量"; card.value = "2"; card.unit = "/ 3 顿"; card.progress = 2.0 / 3
+        case .coverage: card.title = "03 舍 · 近 7 天"; card.subtitle = "当前名单 · 已称重"; card.value = "86"; card.unit = "/ 100 只"; card.progress = 0.86
+        case .gain: card.title = "秋季育肥批次"; card.subtitle = "期间平均日增重"; card.value = "280"; card.unit = "g/天"
+        case .sync: card.subtitle = "本机待同步指令"; card.value = "2"; card.unit = "项"
+        default: break
         }
-        let requestedID = configuration.farm?.id ?? snapshot.selectedFarmID
-        let farm = snapshot.farms.first(where: { $0.farmID == requestedID }) ?? snapshot.farms.first
-        return FarmWidgetEntry(
-            date: .now,
-            farm: farm,
-            isStale: Date.now.timeIntervalSince(snapshot.generatedAt) > 60 * 60
-        )
+        if kind == .gain || kind == .coverage { card.rows = [.init(label: "可计算 / 期间对象", value: "72 / 100 只"), .init(label: "当前名单已称重", value: "86 / 100 只")] }
+        if kind == .feeding { card.rows = [.init(label: "早 · 实投", value: "120 kg"), .init(label: "中 · 实投", value: "116 kg"), .init(label: "晚 · 目标", value: "120 kg")] }
+        if [.breeding, .pregnancy, .weaning, .alerts].contains(kind) { card.rows = [.init(label: "今日到期", value: "4 项"), .init(label: "已逾期", value: "2 项")] }
+        return .init(date: .now, farm: nil, generatedAt: .now, card: card, isStale: false)
     }
 }
-
 private struct FarmWidgetView: View {
+    @Environment(\.widgetFamily) private var family
     let entry: FarmWidgetEntry
-
     var body: some View {
-        if let farm = entry.farm {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(farm.name).font(.headline).lineLimit(1)
-                    Spacer()
-                    if entry.isStale { Image(systemName: "clock.badge.exclamationmark") }
-                }
-                HStack {
-                    metric("羊只", farm.activeSheepCount)
-                    metric("圈舍", farm.activePenCount)
-                    metric("投喂", farm.todayFeedCount)
-                }
-                if farm.pendingOperationCount > 0 {
-                    Label("\(farm.pendingOperationCount) 项待同步", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .widgetURL(URL(string: "esheep://farm/\(farm.farmID.uuidString.lowercased())/home"))
-        } else {
-            ContentUnavailableView("选择牧场", systemImage: "building.2", description: Text("打开 eSheep+ 后配置小组件。"))
-        }
-    }
-
-    private func metric(_ title: String, _ value: Int) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("\(value)").font(.title3.bold())
-            Text(title).font(.caption).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        FarmWidgetCardView(card: entry.card, farmName: entry.farm?.name ?? "示例牧场", generatedAt: entry.generatedAt,
+                           timeZoneIdentifier: entry.farm?.timeZoneIdentifier ?? "Asia/Shanghai",
+                           medium: family == .systemMedium, stale: entry.isStale)
+            .containerBackground(for: .widget) { FarmWidgetBackground(palette: entry.card.palette) }
+            .widgetURL(entry.url)
     }
 }
-
-struct FarmOverviewWidget: Widget {
-    let kind = "FarmOverviewWidget"
-
+struct FarmConfiguredWidget: Widget {
+    let category: FarmWidgetKind
+    init() { category = .overview }
+    init(category: FarmWidgetKind) { self.category = category }
     var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: kind, intent: SelectFarmWidgetIntent.self, provider: FarmWidgetProvider()) { entry in
+        AppIntentConfiguration(kind: category == .overview ? "FarmOverviewWidget" : "FarmWidget.\(category.rawValue)",
+                               intent: SelectFarmWidgetIntent.self, provider: FarmWidgetProvider(kind: category)) { entry in
             FarmWidgetView(entry: entry)
-                .containerBackground(.background, for: .widget)
         }
-        .configurationDisplayName("牧场概览")
-        .description("查看所选牧场的羊只、圈舍、今日投喂和待同步数量。")
+        .configurationDisplayName(category.title)
+        .description(category.detail)
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
-
 @main
 struct ESheepNextWidgetBundle: WidgetBundle {
-    var body: some Widget { FarmOverviewWidget() }
+    var body: some Widget {
+        FarmConfiguredWidget(category: .overview)
+        FarmConfiguredWidget(category: .journal)
+        FarmConfiguredWidget(category: .duty)
+        FarmConfiguredWidget(category: .breeding)
+        FarmConfiguredWidget(category: .pregnancy)
+        FarmConfiguredWidget(category: .weaning)
+        FarmConfiguredWidget(category: .feeding)
+        FarmConfiguredWidget(category: .coverage)
+        FarmConfiguredWidget(category: .gain)
+        FarmConfiguredWidget(category: .alerts)
+        FarmConfiguredWidget(category: .sync)
+    }
 }

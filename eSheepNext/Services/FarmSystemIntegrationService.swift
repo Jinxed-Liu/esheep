@@ -28,10 +28,12 @@ enum FarmSystemNavigationKind: String, Codable, Sendable {
     case recordWeight
     case recordFeed
     case openCareReminder
+    case openWidget
     case openOperationalAlerts
 }
 
-struct FarmSystemNavigationTarget: Codable, Sendable, Equatable {
+struct FarmSystemNavigationTarget: Codable, Sendable, Equatable, Identifiable {
+    var id: String { "\(farmID):\(kind.rawValue):\(entityID?.uuidString ?? ""):\(query ?? "")" }
     let farmID: UUID
     let kind: FarmSystemNavigationKind
     let entityID: UUID?
@@ -63,15 +65,18 @@ enum FarmSystemIntegrationService {
         pendingOperationCounts: [UUID: Int],
         selectedFarmID: UUID?
     ) -> FarmWidgetSnapshot {
-        let startOfToday = Calendar.current.startOfDay(for: .now)
         let farmSnapshots = farms.filter { $0.deletedAt == nil }.map { farm in
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: farm.timeZoneIdentifier) ?? .gmt
+            let now = Date.now
+            let startOfToday = calendar.startOfDay(for: now)
             let occupiedPens = CurrentFarmOccupancy.occupiedPens(farmID: farm.id, sheep: sheep, pens: pens)
             return FarmWidgetSnapshot.Farm(
                 farmID: farm.id,
                 name: farm.name,
                 activeSheepCount: sheep.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.isCurrentlyPresent },
                 activePenCount: occupiedPens.count,
-                todayFeedCount: feeds.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.occurredAt >= startOfToday },
+                todayFeedCount: feeds.count { $0.farmID == farm.id && $0.deletedAt == nil && $0.occurredAt >= startOfToday && $0.occurredAt <= now },
                 pendingOperationCount: pendingOperationCounts[farm.id, default: 0],
                 sheep: sheep.filter {
                     $0.farmID == farm.id && $0.deletedAt == nil
@@ -265,6 +270,11 @@ enum FarmSystemIntegrationService {
         let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
         let query = queryItems?.first(where: { $0.name == "q" })?.value
         switch components[1] {
+        case "widget":
+            guard components.count == 3, FarmWidgetKind(rawValue: components[2]) != nil else { return nil }
+            let profileText = queryItems?.first(where: { $0.name == "profile" })?.value
+            if let profileText, UUID(uuidString: profileText) == nil { return nil }
+            return .init(farmID: farmID, kind: .openWidget, entityID: profileText.flatMap(UUID.init(uuidString:)), query: components[2])
         case "home":
             return .init(farmID: farmID, kind: .home, entityID: nil, query: nil)
         case "sheep":
@@ -323,7 +333,7 @@ actor FarmSystemSnapshotActor {
     func makeSnapshot(
         farmIDs: [UUID],
         selectedFarmID: UUID?
-    ) throws -> FarmWidgetSnapshot {
+    ) async throws -> FarmWidgetSnapshot {
         let context = ModelContext(container)
         var farmSnapshots: [FarmWidgetSnapshot.Farm] = []
 
@@ -350,12 +360,18 @@ actor FarmSystemSnapshotActor {
             ))
             let pending = OutboxStatus.pending.rawValue
             let retryable = OutboxStatus.retryableFailure.rawValue
-            let pendingOperationCount = try context.fetchCount(FetchDescriptor<OutboxItem>(
+            var pendingOperationCount = try context.fetchCount(FetchDescriptor<OutboxItem>(
                 predicate: #Predicate {
                     $0.farmID == farmID &&
                         ($0.statusRawValue == pending || $0.statusRawValue == retryable)
                 }
             ))
+            if let state = try context.fetch(FetchDescriptor<ESheepCloudFarmState>(predicate: #Predicate { $0.farmID == farmID })).first {
+                let intents = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate { $0.farmID == farmID }))
+                pendingOperationCount = intents.count {
+                    $0.farmGeneration == state.farmGeneration && !$0.lifecycle.isTerminal && $0.lifecycle != .needsConfirmation
+                }
+            }
             let partial = FarmSystemIntegrationService.makeSnapshot(
                 farms: [farm],
                 sheep: sheep,
@@ -364,7 +380,24 @@ actor FarmSystemSnapshotActor {
                 pendingOperationCounts: [farmID: pendingOperationCount],
                 selectedFarmID: selectedFarmID
             )
-            farmSnapshots.append(contentsOf: partial.farms)
+            for base in partial.farms {
+                try Task.checkCancellation()
+                do {
+                    farmSnapshots.append(try await FarmWidgetSnapshotBuilder.enrich(
+                        base, farm: farm, context: context, container: container
+                    ))
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    // Publish an explicit unavailable result rather than retaining
+                    // a previous account/scope's apparently current data.
+                    var unavailable = base
+                    unavailable.cards = FarmWidgetKind.allCases.map {
+                        .waiting(kind: $0, message: "数据暂时无法读取，请打开 App 重试")
+                    }
+                    farmSnapshots.append(unavailable)
+                }
+            }
         }
 
         return FarmWidgetSnapshot(

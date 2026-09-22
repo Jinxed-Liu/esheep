@@ -37,11 +37,16 @@ final class AppSchemaMigrationTests: XCTestCase {
 
     func testVersionedSchemaContainsEveryCurrentModel() {
         let historicalV12 = Schema(versionedSchema: AppSchemaV12.self)
-        let versioned = Schema(versionedSchema: AppSchemaV14.self)
+        let versioned = Schema(versionedSchema: AppSchemaV15.self)
         let current = AppSchema.makeSchema()
 
-        XCTAssertEqual(AppSchema.currentVersion, "14.0.0")
+        XCTAssertEqual(AppSchema.currentVersion, "15.0.0")
         XCTAssertEqual(versioned.entities.map(\.name).sorted(), current.entities.map(\.name).sorted())
+        XCTAssertTrue(
+            Set(versioned.entities.map(\.name)).isSuperset(
+                of: Set(["SheepLabelRecord", "SheepLabelAssignmentRecord", "SheepLabelChangeRecord"])
+            )
+        )
         XCTAssertTrue(
             Set(historicalV12.entities.map(\.name)).isSuperset(
                 of: Set([
@@ -85,9 +90,10 @@ final class AppSchemaMigrationTests: XCTestCase {
                 Schema.Version(12, 0, 0),
                 Schema.Version(13, 0, 0),
                 Schema.Version(14, 0, 0),
+                Schema.Version(15, 0, 0),
             ]
         )
-        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 14)
+        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 15)
     }
 
     func testV13ToV14PreservesOriginalPendingCommandAndIdentity() throws {

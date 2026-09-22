@@ -93,6 +93,16 @@ struct RootView: View {
                 }
             }
         }
+        .sheet(item: $session.pendingWidgetTarget) { target in
+            if let account = activeAccount,
+               let farm = cloudSystemFarms.first(where: { $0.id == target.farmID }) {
+                NavigationStack {
+                    FarmWidgetDestinationView(account: account, farm: farm, target: target)
+                }
+            } else {
+                ContentUnavailableView("牧场不可用", systemImage: "lock", description: Text("请登录并确认当前账号仍可访问此牧场。"))
+            }
+        }
         .sheet(isPresented: $session.isReauthenticationPresented) {
             WelcomeView(reauthenticationRequired: true)
         }
@@ -180,6 +190,9 @@ struct RootView: View {
         }
         .onAppear {
             updateInitialSyncIdleTimer()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: FarmWidgetProfileStore.changeNotification)) { _ in
+            lifecycleCoordinator.requestRefresh(.systemSnapshot)
         }
         .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
             preferences.refreshSystemPowerState()
@@ -788,6 +801,16 @@ struct RootView: View {
               lifecycleCoordinator.isCurrent(lease) else { return }
         let systemFarms = cloudSystemFarms
         let selectedFarmID = cloudSystemSelectedFarmID
+        // Revoke system-surface visibility before a potentially slow/failing read.
+        let previous = FarmWidgetSnapshotStore.load()
+        let allowed = Set(systemFarms.map(\.id))
+        let retained = previous.farms.filter { allowed.contains($0.farmID) }
+        if retained.count != previous.farms.count || (allowed.isEmpty && previous.selectedFarmID != nil) {
+            await FarmSystemIntegrationService.publish(.init(
+                version: FarmWidgetSnapshot.currentVersion, generatedAt: previous.generatedAt,
+                selectedFarmID: selectedFarmID, farms: retained
+            ))
+        }
         let interval = PerformanceTrace.begin(
             .systemSnapshot,
             count: systemFarms.count

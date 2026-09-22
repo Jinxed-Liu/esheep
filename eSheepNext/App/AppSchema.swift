@@ -708,7 +708,7 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
 }
 
 enum AppSchema {
-    static let currentVersion = "14.0.0"
+    static let currentVersion = "15.0.0"
 
     static func defaultStoreURL(name: String = "eSheepNext") -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

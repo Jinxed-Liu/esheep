@@ -72,6 +72,7 @@ final class AppSession {
     var pendingSearchQuery: String?
     var pendingSheepID: UUID?
     var pendingCareReminderID: UUID?
+    var pendingWidgetTarget: FarmSystemNavigationTarget?
     var pendingOperationalAlertsRequestID: UUID?
     var pendingESheepCloudInvitationCode: String?
 
@@ -152,6 +153,15 @@ final class AppSession {
             pendingCareReminderID = target.entityID
             workbenchSection = .records
             selectedTab = .workbench
+        case .openWidget:
+            if target.query == FarmWidgetKind.overview.rawValue || target.query == FarmWidgetKind.duty.rawValue {
+                selectedTab = .home
+            } else if target.query == FarmWidgetKind.journal.rawValue {
+                workbenchSection = .feeding
+                selectedTab = .workbench
+            } else {
+                pendingWidgetTarget = target
+            }
         case .openOperationalAlerts:
             pendingOperationalAlertsRequestID = UUID()
             selectedTab = .home
@@ -174,6 +184,7 @@ final class AppSession {
     }
 
     func resetWorkspaceNavigation() {
+        pendingWidgetTarget = nil
         selectedTab = .home
         workbenchSection = .management
         pendingRecordEntry = nil
