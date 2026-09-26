@@ -440,7 +440,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = "eSheep+";
 				CODE_SIGN_ENTITLEMENTS = eSheepNext/eSheepNext.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -471,7 +471,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.1.1;
+				MARKETING_VERSION = 3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.dev;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -497,13 +497,13 @@
 				CODE_SIGN_ENTITLEMENTS = eSheepNext/eSheepNext.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution: Jianxin Liu (7BBQMZ87SM)";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = eSheepNext/Info.plist;
 				INFOPLIST_KEY_APP_ENVIRONMENT = "$(APP_ENVIRONMENT)";
 				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
-				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+ Dev";
+				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
 				INFOPLIST_KEY_CFBundleURLTypes = "{ CFBundleURLName = \"com.sheepfarm.esheep.deep-link\"; CFBundleURLSchemes = (esheep); }";
 				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
@@ -527,7 +527,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.1.1;
+				MARKETING_VERSION = 3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "eSheep+ 3.1 App Store";
@@ -601,7 +601,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = "eSheep+";
 				CODE_SIGN_ENTITLEMENTS = eSheepNext/eSheepNext.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = eSheepNext/Info.plist;
@@ -631,7 +631,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.1.1;
+				MARKETING_VERSION = 3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -670,7 +670,7 @@
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.dev;
 				CODE_SIGN_ENTITLEMENTS = eSheepNextWidget/eSheepNextWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = eSheepNextWidget/Info.plist;
@@ -683,7 +683,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 3.1.1;
+				MARKETING_VERSION = 3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.dev.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -702,7 +702,7 @@
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.staging;
 				CODE_SIGN_ENTITLEMENTS = eSheepNextWidget/eSheepNextWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = eSheepNextWidget/Info.plist;
@@ -715,7 +715,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 3.1.1;
+				MARKETING_VERSION = 3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.next.staging.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -735,7 +735,7 @@
 				CODE_SIGN_ENTITLEMENTS = eSheepNextWidget/eSheepNextWidget.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution: Jianxin Liu (7BBQMZ87SM)";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 25;
+				CURRENT_PROJECT_VERSION = 26;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = eSheepNextWidget/Info.plist;
@@ -748,7 +748,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 3.1.1;
+				MARKETING_VERSION = 3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "eSheep+ 3.1 Widget App Store";

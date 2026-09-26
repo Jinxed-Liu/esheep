@@ -42,12 +42,8 @@ struct FarmWidgetCardView: View {
                 }
             }
             HStack(spacing: 4) {
-                if stale {
-                    Label("快照已过期", systemImage: "clock.badge.exclamationmark")
-                        .foregroundStyle(usesColorfulInk ? ink : .orange)
-                } else {
-                    Text("快照 \(timeText)")
-                }
+                Text("更新于 \(timeText)")
+                    .accessibilityLabel(stale ? "数据可能已过时，最近更新于 \(timeText)" : "最近更新于 \(timeText)")
                 Spacer(minLength: 0)
                 if !medium { Text(farmName).lineLimit(1) }
             }
