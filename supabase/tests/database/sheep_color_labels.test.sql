@@ -1,7 +1,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set search_path=public,extensions;
-select plan(27);
+select plan(28);
 insert into auth.users(id) values('fc000000-0000-0000-0000-000000000001');
 insert into public.entitlements(owner_user_id,product_id,state,valid_until) values('fc000000-0000-0000-0000-000000000001','com.sheepfarm.ios.pro.monthly','active',now()+interval '30 days');
 insert into public.farm_registry(farm_id,owner_user_id,provider,authority_generation) values('fc000000-0000-0000-0000-000000000002','fc000000-0000-0000-0000-000000000001','esheep_cloud',1);
@@ -49,6 +49,7 @@ select lives_ok($$select pg_temp.edit_labels(3,'{}',array[10])$$,'inactive can b
 select lives_ok($$select pg_temp.delete_label(10,2)$$,'permanent delete removes the catalogue row');
 select ok(not exists(select 1 from esheep_cloud.sheep_label_catalog where label_id='fc000000-0000-0000-0000-000000000010'),'deleted label is absent from catalogue');
 select ok(not exists(select 1 from esheep_cloud.sheep_label_assignments where 'fc000000-0000-0000-0000-000000000010'::uuid=any(label_ids)),'deleted label is absent from assignments');
+select lives_ok($$insert into label_test_events(stream_type,stream_id,event_kind,event_body) values('sheepLabel','fc000000-0000-0000-0000-000000000010','attention_resolved','{}')$$,'non-command events without command_kind bypass the label-delete projector');
 select throws_like($$insert into label_test_events(stream_type,stream_id,event_kind,event_body) values('sheepProfile','fc000000-0000-0000-0000-000000000003','fields_patched','{"command_kind":"sheep.patchProfile","changes":[{"field":"sex","value":{"type":"string","value":"ewe"}}]}')$$,'%冲突%','old profile command cannot bypass sex constraint');
 select ok(not has_table_privilege('authenticated','esheep_cloud.sheep_label_assignments','INSERT') and not has_table_privilege('authenticated','esheep_cloud.sheep_label_catalog','UPDATE'),'clients cannot bypass command channel through tables');
 select * from finish();

@@ -10,13 +10,18 @@ on:
 permissions:
   contents: read
 
+env:
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: main
+
 concurrency:
   group: verify-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   static:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -30,7 +35,7 @@ jobs:
         run: ./tools/verify_local.sh static
 
   web:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -50,7 +55,7 @@ jobs:
         run: ./tools/verify_local.sh web
 
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -70,10 +75,20 @@ jobs:
           npm ci --prefix backend/cloudbase-identity-gateway
           npm ci --prefix backend/identity-worker
       - name: Run backend gate
+        env:
+          # Non-production values mirror the fixtures in vitest.config.ts.
+          APPLE_CLIENT_ID: com.sheepfarm.next.dev
+          APPLE_TEAM_ID: TESTTEAM
+          APPLE_KEY_ID: TESTKEY
+          APPLE_PRIVATE_KEY: test-only
+          SESSION_SIGNING_SECRET: test-session-secret-with-sufficient-entropy
+          CREDENTIAL_ENCRYPTION_KEY: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+          CAPABILITY_SIGNING_PRIVATE_KEY: test-only
+          CAPABILITY_SIGNING_KEY_ID: test-key
         run: ./tools/verify_local.sh backend
 
   database:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:

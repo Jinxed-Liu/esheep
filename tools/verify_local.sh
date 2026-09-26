@@ -306,7 +306,13 @@ verify_db() {
 
   local db_container="supabase_db_${project_id}"
   if ! docker ps --format '{{.Names}}' | rg -qx "$db_container"; then
-    (cd "$repo_root" && supabase start)
+    if [[ "${CI:-false}" == "true" ]]; then
+      # This gate exercises migrations, PostgreSQL tests, lint, and advisors
+      # directly. Do not pull unrelated API/UI containers in disposable CI.
+      (cd "$repo_root" && supabase start --exclude gotrue,realtime,storage-api,imgproxy,kong,mailpit,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor)
+    else
+      (cd "$repo_root" && supabase start)
+    fi
   fi
 
   # 以下命令全部明确绑定 --local；此入口不得添加 link、push 或远端凭据。
