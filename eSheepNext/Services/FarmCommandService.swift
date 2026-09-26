@@ -551,6 +551,9 @@ enum FarmCommand: Sendable {
         switch self {
         case .updateFarmLocation:
             .editFarmLocation
+        case .tombstoneEntity(let entityType, _, _)
+            where entityType == .productionBatch || entityType == .batchMembership:
+            .manageCatalogs
         case .restoreSheep, .tombstoneEntity, .restoreTombstonedEntity:
             .deleteProtectedFacts
         case .correctWeight, .correctTransfer, .correctRemoval:

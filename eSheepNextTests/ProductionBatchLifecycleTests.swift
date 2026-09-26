@@ -297,6 +297,127 @@ final class ProductionBatchLifecycleTests: XCTestCase {
         XCTAssertEqual(batch.endedAt, leftAt)
     }
 
+    func testDeleteBatchRemovesMembershipsPreservesSheepAndAllowsNewBatch() throws {
+        let fixture = try makeFixture()
+        try fixture.service.execute(
+            .createBatch(name: "待删除批次", purpose: "育肥", startedAt: fixture.enteredAt, sheepIDs: [fixture.first.id, fixture.second.id], note: ""),
+            in: fixture.farmContext, context: fixture.context
+        )
+        try fixture.service.execute(
+            .recordWeight(sheepID: fixture.first.id, kilogramsText: "40", occurredAt: fixture.enteredAt, note: "保留"),
+            in: fixture.farmContext, context: fixture.context
+        )
+        let batch = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ProductionBatchRecord>()).first)
+        let members = try fixture.context.fetch(FetchDescriptor<BatchMembershipRecord>())
+        try fixture.service.execute(
+            .leaveBatch(batchID: batch.id, sheepID: fixture.second.id, leftAt: fixture.enteredAt.addingTimeInterval(60), reason: "已移出"),
+            in: fixture.farmContext, context: fixture.context
+        )
+        try fixture.service.deleteProductionBatch(batchID: batch.id, reason: "误建批次", in: fixture.farmContext, context: fixture.context)
+
+        XCTAssertNotNil(batch.deletedAt)
+        XCTAssertTrue(members.allSatisfy { $0.deletedAt != nil })
+        XCTAssertEqual(members.first { $0.sheepID == fixture.second.id }?.leftAt, fixture.enteredAt.addingTimeInterval(60))
+        XCTAssertNil(fixture.first.deletedAt)
+        XCTAssertNil(fixture.second.deletedAt)
+        XCTAssertTrue(fixture.first.isCurrentlyPresent)
+        XCTAssertTrue(try fixture.context.fetch(FetchDescriptor<WeightRecord>()).allSatisfy { $0.deletedAt == nil })
+        XCTAssertNil(ProductionBatchVisibility.validatedSelection(batch.id, farmID: fixture.farm.id, batches: [batch]))
+        let tombstones = try fixture.context.fetch(FetchDescriptor<TombstoneRecord>())
+        XCTAssertEqual(Set(tombstones.map(\.entityID)), Set(members.map(\.id) + [batch.id]))
+        XCTAssertTrue(tombstones.allSatisfy { $0.reason == "误建批次" && $0.operationID != nil })
+        let operations = try fixture.context.fetch(FetchDescriptor<DomainOperation>()).filter { $0.kindRawValue == DomainOperationKind.tombstoneEntity.rawValue }
+        XCTAssertEqual(operations.count, 3)
+        for operation in operations {
+            let payload = try decodePayload(operation.payload)
+            XCTAssertEqual(payload.kind, .tombstoneEntity)
+        }
+        try fixture.service.execute(
+            .createBatch(name: "新批次", purpose: "育肥", startedAt: fixture.enteredAt.addingTimeInterval(120), sheepIDs: [fixture.first.id, fixture.second.id], note: ""),
+            in: fixture.farmContext, context: fixture.context
+        )
+    }
+
+    func testDeleteBatchAllowsAdministratorAndRejectsWorkerAndOtherFarm() throws {
+        let fixture = try makeFixture()
+        try fixture.service.execute(
+            .createBatch(name: "受保护批次", purpose: "育肥", startedAt: fixture.enteredAt, sheepIDs: [fixture.first.id], note: ""),
+            in: fixture.farmContext, context: fixture.context
+        )
+        let batch = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ProductionBatchRecord>()).first)
+        for farmContext in [
+            FarmContext(accountID: fixture.account.id, farmID: fixture.farm.id, role: .worker),
+            FarmContext(accountID: fixture.account.id, farmID: UUID(), role: .owner),
+        ] {
+            XCTAssertThrowsError(try fixture.service.deleteProductionBatch(batchID: batch.id, reason: "无权限", in: farmContext, context: fixture.context))
+        }
+        XCTAssertNil(batch.deletedAt)
+        XCTAssertTrue(try fixture.context.fetch(FetchDescriptor<BatchMembershipRecord>()).allSatisfy { $0.deletedAt == nil })
+        XCTAssertTrue(try fixture.context.fetch(FetchDescriptor<TombstoneRecord>()).isEmpty)
+
+        let administrator = FarmContext(accountID: fixture.account.id, farmID: fixture.farm.id, role: .administrator)
+        try fixture.service.deleteProductionBatch(batchID: batch.id, reason: "管理员删除批次", in: administrator, context: fixture.context)
+        XCTAssertNotNil(batch.deletedAt)
+        XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<TombstoneRecord>()).map(\.entityType).sorted(), [
+            CloudEntityType.batchMembership.rawValue,
+            CloudEntityType.productionBatch.rawValue,
+        ].sorted())
+    }
+
+    func testDeleteBatchStagesCloudV2IntentForEveryDeletedEntity() throws {
+        let fixture = try makeFixture()
+        try fixture.service.execute(
+            .createBatch(name: "云端批次", purpose: "育肥", startedAt: fixture.enteredAt, sheepIDs: [fixture.first.id], note: ""),
+            in: fixture.farmContext, context: fixture.context
+        )
+        let batch = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ProductionBatchRecord>()).first)
+        let member = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<BatchMembershipRecord>()).first)
+        let deviceID = try ESheepCloudDeviceIdentityStore.deviceID(accountID: fixture.account.id)
+        let farmID = fixture.farm.id
+        try ESheepCloudSequenceWatermark.reconcile(farmID: farmID, deviceID: deviceID, floor: 0)
+        addTeardownBlock {
+            try SecureAccountStore.remove(account: "esheep-v2-sequence-\(farmID.uuidString.lowercased())-\(deviceID.uuidString.lowercased())")
+        }
+        fixture.context.insert(FarmStorageProfile(farmID: farmID, mode: .eSheepCloud, authorityGeneration: 1))
+        fixture.context.insert(FarmRemoteBinding(farmID: farmID, ownerAccountID: fixture.account.id, provider: .eSheepCloud, state: .active, authorityGeneration: 1, remoteFarmID: farmID.uuidString.lowercased()))
+        fixture.context.insert(ESheepCloudFarmState(farmID: farmID, farmGeneration: 1, activityState: .active))
+        try fixture.context.save()
+        try fixture.service.deleteProductionBatch(batchID: batch.id, reason: "删除云端批次", in: fixture.farmContext, context: fixture.context)
+        let intents = try fixture.context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
+        XCTAssertEqual(intents.count, 2)
+        XCTAssertTrue(intents.allSatisfy { $0.commandKind == "record.revoke" })
+        XCTAssertEqual(Set(intents.map(\.deviceSequence)).count, 2)
+        let envelopes = try intents.map {
+            try ESheepCloudCanonicalCodec.decode(
+                ESheepCloudCommandEnvelopeV2.self,
+                from: $0.commandEnvelopeData
+            )
+        }
+        var revokedIDs: [String: UUID] = [:]
+        for envelope in envelopes {
+            guard case .deletion(.tombstone(let entityType, let entityID, _)) = envelope.payload else {
+                return XCTFail("批次删除意图必须编码为带实体身份的撤销命令")
+            }
+            revokedIDs[entityType.rawValue] = entityID
+        }
+        XCTAssertEqual(revokedIDs[CloudEntityType.batchMembership.rawValue], member.id)
+        XCTAssertEqual(revokedIDs[CloudEntityType.productionBatch.rawValue], batch.id)
+        XCTAssertNotNil(batch.deletedAt)
+        XCTAssertNotNil(member.deletedAt)
+        XCTAssertNil(fixture.first.deletedAt)
+    }
+
+    func testDeleteCompletedAndEmptyBatches() throws {
+        let fixture = try makeFixture()
+        let batch = ProductionBatchRecord(farmID: fixture.farm.id, name: "空批次", purpose: "育肥", startedAt: fixture.enteredAt)
+        batch.statusRawValue = ProductionBatchStatus.completed.rawValue
+        fixture.context.insert(batch)
+        try fixture.context.save()
+        try fixture.service.deleteProductionBatch(batchID: batch.id, reason: "清理空批次", in: fixture.farmContext, context: fixture.context)
+        XCTAssertNotNil(batch.deletedAt)
+        XCTAssertThrowsError(try fixture.service.deleteProductionBatch(batchID: batch.id, reason: "重复删除", in: fixture.farmContext, context: fixture.context))
+    }
+
     private func makeFixture() throws -> Fixture {
         let container = try AppSchema.makeContainer(name: "batch-lifecycle-\(UUID().uuidString)", isStoredInMemoryOnly: true)
         let context = ModelContext(container)

@@ -745,6 +745,212 @@ final class ESheepCloudV2Tests: XCTestCase {
         )
     }
 
+    func testNewInstallationReplaysDeletedBatchAndMembershipBeforeActivation() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "ESheepCloudDeletedBatchFreshInstall-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let farmID = UUID()
+        let ownerAccountID = UUID()
+        let memberAccountID = UUID()
+        let deviceID = UUID()
+        let generation = 8
+        let profile = ESheepCloudFarmProfileV2(
+            farmID: farmID,
+            ownerAccountID: ownerAccountID,
+            name: "批次删除首次同步测试场",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            locationDisplayName: nil,
+            latitude: nil,
+            longitude: nil,
+            coordinateReferenceSystem: "wgs84",
+            addressSnapshot: nil,
+            timeZoneIdentifier: "Asia/Shanghai",
+            locationSourceRawValue: nil,
+            horizontalAccuracyMeters: nil,
+            locationUpdatedAt: nil
+        )
+        let profileDigest = try ESheepCloudCanonicalCodec.digest(profile)
+        let totalDigest = SHA256.hash(data: Data(profileDigest.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let manifest = ESheepCloudSnapshotManifestV2(
+            snapshotID: UUID(),
+            farmID: farmID,
+            farmGeneration: generation,
+            schemaVersion: ESheepCloudProtocolV2.schemaVersion,
+            boundaryEventSequence: 0,
+            eventHeadAtCreation: 0,
+            recordCounts: [
+                .init(recordType: "streams", count: 0),
+                .init(recordType: "events", count: 0),
+                .init(recordType: "assets", count: 0),
+            ],
+            chunks: [],
+            businessHistoryStartedAt: nil,
+            businessHistoryEndedAt: nil,
+            relationshipDigest: String(repeating: "0", count: 64),
+            fieldVersionDigest: try ESheepCloudCanonicalCodec.digest([[String: Int]]()),
+            farmProfileDigest: profileDigest,
+            assets: [],
+            totalDigest: totalDigest,
+            createdAt: .now
+        )
+
+        let sheepID = UUID()
+        let batchID = UUID()
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        var streamProgress: [ESheepCloudStreamReferenceV2: (count: Int64, digest: String)] = [:]
+        let emptyStreamDigest = try ESheepCloudCanonicalCodec.digest(
+            [String: ESheepCloudValueV2]()
+        )
+        func makeEvent(
+            _ command: FarmCommand,
+            entityType: CloudEntityType,
+            entityID: UUID,
+            sequence: Int64
+        ) throws -> ESheepCloudEventEnvelopeV2 {
+            let draft = try ESheepCloudCommandFactoryV2.make(
+                command: command,
+                farmID: farmID,
+                primaryEntityType: entityType.rawValue,
+                primaryEntityID: entityID
+            )
+            let stream = try XCTUnwrap(draft.affectedStreams.first)
+            let previous = streamProgress[stream]
+            let commandID = UUID()
+            let eventID = UUID()
+            let sourceDigest = try ESheepCloudCanonicalCodec.digest(draft.payload)
+            let eventCount = (previous?.count ?? 0) + 1
+            let beforeDigest = previous?.digest ?? emptyStreamDigest
+            let afterDigest = try ESheepCloudCanonicalCodec.digest(
+                ESheepCloudNonFieldStreamStateV2(
+                    eventCount: eventCount,
+                    lastCommandDigest: sourceDigest,
+                    lastCommandID: commandID.uuidString.lowercased(),
+                    lastCommandKind: draft.kind
+                )
+            )
+            let receivedAt = draft.occurredAt.addingTimeInterval(1)
+            func envelope(digest: String) -> ESheepCloudEventEnvelopeV2 {
+                ESheepCloudEventEnvelopeV2(
+                    protocolVersion: ESheepCloudProtocolV2.protocolVersion,
+                    schemaVersion: ESheepCloudProtocolV2.schemaVersion,
+                    farmID: farmID,
+                    farmGeneration: generation,
+                    eventSequence: sequence,
+                    eventID: eventID,
+                    commandID: commandID,
+                    sourceCommandDigest: sourceDigest,
+                    stream: stream,
+                    payload: .businessCommandApplied(
+                        commandKind: draft.kind,
+                        payload: draft.payload
+                    ),
+                    affectedFields: draft.affectedFieldKeys,
+                    eventBodyDigest: String(repeating: "d", count: 64),
+                    beforeDigest: beforeDigest,
+                    afterDigest: afterDigest,
+                    actorAccountID: memberAccountID,
+                    sourceDeviceID: deviceID,
+                    sourceDeviceSequence: sequence,
+                    occurredAt: draft.occurredAt,
+                    receivedAt: receivedAt,
+                    eventDigest: digest
+                )
+            }
+            let unsigned = envelope(digest: "")
+            let signed = envelope(digest: ESheepCloudEventDigestV2.hex(for: unsigned))
+            streamProgress[stream] = (eventCount, afterDigest)
+            return signed
+        }
+
+        let commands: [(FarmCommand, CloudEntityType, UUID)] = [
+            (.addSheep(
+                earTag: "SYNC-DELETE-1",
+                breed: "湖羊",
+                sex: .ewe,
+                penID: nil,
+                occurredAt: startedAt.addingTimeInterval(-86_400),
+                birthAt: nil,
+                note: "首次安装同步样本"
+            ), .sheep, sheepID),
+            (.createBatch(
+                name: "已删除批次",
+                purpose: "育肥",
+                startedAt: startedAt,
+                sheepIDs: [sheepID],
+                note: "首次安装同步样本"
+            ), .productionBatch, batchID),
+        ]
+        var events: [ESheepCloudEventEnvelopeV2] = []
+        for (offset, value) in commands.enumerated() {
+            events.append(try makeEvent(value.0, entityType: value.1, entityID: value.2, sequence: Int64(offset + 1)))
+        }
+        let membershipID = StableCloudUUID.derived(
+            namespace: batchID,
+            name: "batch-member-\(sheepID.uuidString.lowercased())"
+        )
+        events.append(try makeEvent(
+            .tombstoneEntity(entityType: .batchMembership, entityID: membershipID, reason: "删除批次"),
+            entityType: .batchMembership,
+            entityID: membershipID,
+            sequence: 3
+        ))
+        events.append(try makeEvent(
+            .tombstoneEntity(entityType: .productionBatch, entityID: batchID, reason: "删除批次"),
+            entityType: .productionBatch,
+            entityID: batchID,
+            sequence: 4
+        ))
+
+        let gateway = InitialSyncGatewayStub(
+            ticket: .init(
+                manifest: manifest,
+                farmProfile: profile,
+                memberAccountID: memberAccountID,
+                memberRole: .administrator,
+                membershipStatus: "active",
+                expiresAt: .now.addingTimeInterval(1_800)
+            ),
+            tailEvents: events
+        )
+        let support = FileManager.default.temporaryDirectory
+            .appending(path: "ESheepCloudDeletedBatchFreshInstall-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: support) }
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        let coordinator = ESheepCloudInitialSyncCoordinator(
+            farmID: farmID,
+            container: container,
+            gateway: gateway,
+            applicationSupportURL: support
+        )
+
+        let report = try await coordinator.prepareNewInstallation(
+            expectedFarmGeneration: generation,
+            expectedAccountID: memberAccountID
+        )
+
+        XCTAssertEqual(report.appliedEventHead, 4)
+        let context = ModelContext(container)
+        let farm = try XCTUnwrap(try context.fetch(FetchDescriptor<FarmRecord>()).first { $0.id == farmID })
+        XCTAssertEqual(farm.role, .administrator)
+        let sheep = try XCTUnwrap(try context.fetch(FetchDescriptor<SheepRecord>()).first { $0.id == sheepID })
+        XCTAssertNil(sheep.deletedAt)
+        XCTAssertTrue(sheep.isCurrentlyPresent)
+        let batch = try XCTUnwrap(try context.fetch(FetchDescriptor<ProductionBatchRecord>()).first { $0.id == batchID })
+        let membership = try XCTUnwrap(try context.fetch(FetchDescriptor<BatchMembershipRecord>()).first { $0.id == membershipID })
+        XCTAssertNotNil(batch.deletedAt)
+        XCTAssertNotNil(membership.deletedAt)
+        XCTAssertTrue(ProductionBatchVisibility.userManaged(farmID: farmID, batches: [batch]).isEmpty)
+        let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>()).filter {
+            $0.farmID == farmID && ($0.entityID == batchID || $0.entityID == membershipID)
+        }
+        XCTAssertEqual(Set(tombstones.map(\.entityID)), Set([batchID, membershipID]))
+        XCTAssertEqual(try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>()).filter { $0.farmID == farmID }.count, 4)
+    }
+
     func testInitialSyncMaterializesZeroEventStreamInsteadOfActivatingHalfProjection() async throws {
         let container = try AppSchema.makeContainer(
             name: "ESheepCloudInitialSyncZeroEventStreamTests-\(UUID().uuidString)",
@@ -2264,6 +2470,115 @@ final class ESheepCloudV2Tests: XCTestCase {
         }
         let head = try await importer.currentHead()
         XCTAssertEqual(head, 3)
+    }
+
+    func testDeletedBatchAndMembershipSurviveFreshCheckpointImport() async throws {
+        let fixture = try makeFixture()
+        let farm = FarmRecord(id: fixture.farmID, ownerAccountID: fixture.accountID, name: "删除批次检查点")
+        let sheep = SheepRecord(
+            id: fixture.sharedSheepID,
+            farmID: fixture.farmID,
+            earTag: "CHECKPOINT-DELETE-1",
+            breed: "湖羊",
+            sex: .ewe,
+            penID: nil,
+            enteredAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        fixture.context.insert(farm)
+        fixture.context.insert(sheep)
+        let farmState = try XCTUnwrap(
+            fixture.context.fetch(FetchDescriptor<ESheepCloudFarmState>()).first
+        )
+        farmState.integrityState = .passed
+        farmState.activityState = .active
+        let batchID = UUID()
+        let membershipID = UUID()
+        let deletedAt = Date(timeIntervalSince1970: 1_800_000_100)
+        let batch = ProductionBatchRecord(
+            id: batchID,
+            farmID: fixture.farmID,
+            name: "已删除批次",
+            purpose: "育肥",
+            startedAt: sheep.enteredAt,
+            note: "检查点新安装同步"
+        )
+        let membership = BatchMembershipRecord(
+            id: membershipID,
+            farmID: fixture.farmID,
+            batchID: batch.id,
+            sheepID: sheep.id,
+            joinedAt: sheep.enteredAt
+        )
+        batch.deletedAt = deletedAt
+        membership.deletedAt = deletedAt
+        fixture.context.insert(batch)
+        fixture.context.insert(membership)
+        for (entityType, entityID) in [
+            (CloudEntityType.batchMembership, membership.id),
+            (.productionBatch, batch.id),
+        ] {
+            let tombstone = TombstoneRecord(
+                farmID: fixture.farmID,
+                entityType: entityType.rawValue,
+                entityID: entityID,
+                deletedByAccountID: fixture.accountID,
+                reason: "检查点删除同步"
+            )
+            tombstone.deletedAt = deletedAt
+            fixture.context.insert(tombstone)
+        }
+        try fixture.context.save()
+        XCTAssertNil(sheep.deletedAt)
+
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "DeletedBatchCheckpoint-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archiveDirectory = root.appending(path: "archive", directoryHint: .isDirectory)
+        let manifest = try ESheepCloudCheckpointArchive.export(
+            farmID: fixture.farmID,
+            context: fixture.context,
+            directory: archiveDirectory
+        )
+        let importer = try ESheepCloudCheckpointImporter(
+            manifest: manifest,
+            accountID: fixture.accountID,
+            storeURL: root.appending(path: "fresh-install.store")
+        )
+        for chunk in manifest.chunks {
+            let name = String(format: "%05d.json.gz", chunk.index)
+            try await importer.importChunk(
+                Data(contentsOf: archiveDirectory.appending(path: name)),
+                index: chunk.index
+            )
+        }
+        try await importer.finish()
+
+        for model in ["ProductionBatchRecord", "BatchMembershipRecord", "TombstoneRecord", "SheepRecord"] {
+            let adapter = try XCTUnwrap(
+                ESheepCloudCheckpointRegistry.adapters.first { $0.name == model }
+            )
+            let importedRows = try await importer.records(model: model)
+            XCTAssertEqual(
+                importedRows,
+                try adapter.exportRows(fixture.farmID, fixture.context),
+                "fresh checkpoint import must preserve \(model)"
+            )
+        }
+        let importedBatchRows = try await importer.records(model: "ProductionBatchRecord")
+        let importedMembershipRows = try await importer.records(model: "BatchMembershipRecord")
+        let importedTombstones = try await importer.records(model: "TombstoneRecord")
+        let importedSheepRows = try await importer.records(model: "SheepRecord")
+        let importedBatch = try XCTUnwrap(importedBatchRows.first)
+        let importedMembership = try XCTUnwrap(importedMembershipRows.first)
+        let importedSheep = try XCTUnwrap(importedSheepRows.first)
+        guard case .number? = importedBatch.values["deletedAt"],
+              case .number? = importedMembership.values["deletedAt"],
+              case .null? = importedSheep.values["deletedAt"] else {
+            return XCTFail("checkpoint import must retain both deletion markers and the living sheep")
+        }
+        XCTAssertEqual(importedTombstones.count, 2)
+        let head = try await importer.currentHead()
+        XCTAssertEqual(head, 0)
     }
 
     func testFieldEventIsAppliedExactlyOnceWithVerifiedStreamDigest() throws {

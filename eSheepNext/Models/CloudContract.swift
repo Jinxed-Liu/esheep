@@ -186,7 +186,14 @@ enum CloudContractError: LocalizedError, Equatable {
 
 enum CloudOperationSecurity {
     static func requiredCapability(for entityType: String, deletedAt: Date?) -> FarmCapability {
-        if deletedAt != nil { return .deleteProtectedFacts }
+        if deletedAt != nil {
+            switch CloudEntityType(rawValue: entityType) {
+            case .productionBatch, .batchMembership:
+                return .manageCatalogs
+            default:
+                return .deleteProtectedFacts
+            }
+        }
         switch CloudEntityType(rawValue: entityType) {
         case .feedIngredient, .feedRecipe, .feedRecipeComponent, .feedIngredientBatch, .feedStockTransaction, .feedStockCount, .semen, .breedingProgram, .healthCatalogItem, .careRule:
             return .manageCatalogs
@@ -201,7 +208,15 @@ enum CloudOperationSecurity {
             case .care:
                 return payload.careCommand?.requiredCapability ?? .recordProduction
             case .updateFarmLocation: return .editFarmLocation
-            case .tombstoneEntity, .restoreTombstonedEntity: return .deleteProtectedFacts
+            case .tombstoneEntity:
+                guard payload.strings["entityType"] == envelope.entityType else {
+                    return .deleteProtectedFacts
+                }
+                return requiredCapability(
+                    for: envelope.entityType,
+                    deletedAt: envelope.deletedAt ?? envelope.modifiedAt
+                )
+            case .restoreTombstonedEntity: return .deleteProtectedFacts
             case .correctWeight, .correctTransfer, .correctRemoval: return .editHistoricalFacts
             case .resolveConflict: return .resolveConflicts
             case .recoverEntity: return .recoverFarm

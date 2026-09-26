@@ -105,9 +105,14 @@ struct ProductionBatchListView: View {
     let account: AccountProfile
     let farm: FarmRecord
     @State private var isCreating = false
+    @State private var batchToDelete: ProductionBatchRecord?
 
     private var farmBatches: [ProductionBatchRecord] {
         ProductionBatchVisibility.userManaged(farmID: farm.id, batches: batches)
+    }
+
+    private var canDeleteBatches: Bool {
+        CapabilitySet(role: farm.role).allows(.manageCatalogs)
     }
 
     var body: some View {
@@ -130,6 +135,14 @@ struct ProductionBatchListView: View {
                             .foregroundStyle(.tertiary)
                     }
                 }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        batchToDelete = batch
+                    } label: {
+                        Label("删除批次", systemImage: "trash")
+                    }
+                    .disabled(!canDeleteBatches)
+                }
             }
         }
         .overlay {
@@ -147,6 +160,46 @@ struct ProductionBatchListView: View {
             NavigationStack { CreateProductionBatchView(account: account, farm: farm) }
         }
         .farmExcelImport(account: account, farm: farm, sheets: ["生产批次", "批次脱离"])
+        .modifier(ProductionBatchDeletionModifier(account: account, farm: farm, batch: $batchToDelete))
+    }
+}
+
+private struct ProductionBatchDeletionModifier: ViewModifier {
+    @Environment(\.modelContext) private var modelContext
+    let account: AccountProfile
+    let farm: FarmRecord
+    @Binding var batch: ProductionBatchRecord?
+    var onDeleted: () -> Void = {}
+    @State private var errorMessage: String?
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog("删除生产批次？", isPresented: Binding(
+                get: { batch != nil },
+                set: { if !$0 { batch = nil } }
+            ), titleVisibility: .visible, presenting: batch) { selected in
+                Button("删除批次", role: .destructive) { delete(selected) }
+                Button("取消", role: .cancel) {}
+            } message: { selected in
+                Text("将删除“\(selected.name)”及其成员关联，该批次将不再用于批次分析。羊只及其称重、治疗等生产记录会保留，原成员可加入其他批次。")
+            }
+            .recordErrorAlert($errorMessage)
+    }
+
+    private func delete(_ selected: ProductionBatchRecord) {
+        do {
+            try FarmCommandService().deleteProductionBatch(
+                batchID: selected.id,
+                reason: "用户删除生产批次：\(selected.name)",
+                in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
+                context: modelContext
+            )
+            batch = nil
+            onDeleted()
+        } catch {
+            batch = nil
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -280,6 +333,7 @@ private struct ProductionBatchMembershipAction: Identifiable {
 }
 
 private struct ProductionBatchDetailView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \BatchMembershipRecord.joinedAt, order: .reverse) private var memberships: [BatchMembershipRecord]
     @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
@@ -290,6 +344,7 @@ private struct ProductionBatchDetailView: View {
     private let commandService = FarmCommandService()
     @State private var errorMessage: String?
     @State private var pendingBatchAction: ProductionBatchMembershipAction?
+    @State private var batchToDelete: ProductionBatchRecord?
 
     private var batchMemberships: [BatchMembershipRecord] {
         memberships.filter { $0.farmID == farm.id && $0.batchID == batch.id && $0.deletedAt == nil }
@@ -349,7 +404,21 @@ private struct ProductionBatchDetailView: View {
             Text(action.message)
         }
         .recordErrorAlert($errorMessage)
-        .farmExcelImport(account: account, farm: farm, sheets: ["批次脱离"])
+        .farmExcelImport(
+            account: account,
+            farm: farm,
+            sheets: ["批次脱离"],
+            additionalMenuAction: FarmExcelEntryMenuAction(
+                title: "删除批次",
+                systemImage: "trash",
+                role: .destructive,
+                isEnabled: CapabilitySet(role: farm.role).allows(.manageCatalogs),
+                action: { batchToDelete = batch }
+            )
+        )
+        .modifier(ProductionBatchDeletionModifier(account: account, farm: farm, batch: $batchToDelete) {
+            dismiss()
+        })
     }
 
     private var isPresentingBatchAction: Binding<Bool> {

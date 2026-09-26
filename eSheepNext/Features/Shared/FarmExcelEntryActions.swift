@@ -2,11 +2,20 @@ import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct FarmExcelEntryMenuAction {
+    let title: String
+    let systemImage: String
+    let role: ButtonRole?
+    let isEnabled: Bool
+    let action: () -> Void
+}
+
 struct FarmExcelEntryActions: View {
     @Environment(\.modelContext) private var modelContext
     let account: AccountProfile
     let farm: FarmRecord
     let sheetNames: Set<String>
+    var additionalMenuAction: FarmExcelEntryMenuAction?
 
     @State private var isImporting = false
     @State private var isExporting = false
@@ -18,6 +27,13 @@ struct FarmExcelEntryActions: View {
         Menu {
             Button("下载本页 Excel 模板", systemImage: "arrow.down.doc") { exportTemplate() }
             Button("导入本页 Excel", systemImage: "arrow.up.doc") { isImporting = true }
+            if let additionalMenuAction {
+                Divider()
+                Button(role: additionalMenuAction.role, action: additionalMenuAction.action) {
+                    Label(additionalMenuAction.title, systemImage: additionalMenuAction.systemImage)
+                }
+                .disabled(!additionalMenuAction.isEnabled)
+            }
         } label: {
             Label("Excel", systemImage: "tablecells")
                 .labelStyle(.titleAndIcon)
@@ -179,10 +195,20 @@ private struct FarmExcelPagePreviewView: View {
 }
 
 extension View {
-    func farmExcelImport(account: AccountProfile, farm: FarmRecord, sheets: Set<String>) -> some View {
+    func farmExcelImport(
+        account: AccountProfile,
+        farm: FarmRecord,
+        sheets: Set<String>,
+        additionalMenuAction: FarmExcelEntryMenuAction? = nil
+    ) -> some View {
         toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                FarmExcelEntryActions(account: account, farm: farm, sheetNames: sheets)
+                FarmExcelEntryActions(
+                    account: account,
+                    farm: farm,
+                    sheetNames: sheets,
+                    additionalMenuAction: additionalMenuAction
+                )
             }
         }
     }

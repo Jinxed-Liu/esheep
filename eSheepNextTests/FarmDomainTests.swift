@@ -22,9 +22,82 @@ final class FarmDomainTests: XCTestCase {
     func testCapabilitySetIsFarmRoleScoped() {
         XCTAssertTrue(CapabilitySet(role: .owner).allows(.manageMembers))
         XCTAssertTrue(CapabilitySet(role: .administrator).allows(.recordProduction))
+        XCTAssertTrue(CapabilitySet(role: .administrator).allows(.manageCatalogs))
         XCTAssertFalse(CapabilitySet(role: .administrator).allows(.manageMembers))
+        XCTAssertFalse(CapabilitySet(role: .administrator).allows(.deleteProtectedFacts))
         XCTAssertTrue(CapabilitySet(role: .worker).allows(.recordProduction))
         XCTAssertFalse(CapabilitySet(role: .worker).allows(.manageCatalogs))
+    }
+
+    func testBatchTombstonesUseAdministratorCatalogCapability() throws {
+        let farmID = UUID()
+        let accountID = UUID()
+        let deviceID = UUID()
+        let deletedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let adminClaims = CapabilityCertificateClaims(
+            certificateID: "batch-delete-admin",
+            accountID: accountID,
+            farmID: farmID,
+            deviceID: deviceID,
+            role: .administrator,
+            capabilities: [.manageCatalogs],
+            iat: 1_799_999_000,
+            exp: 1_800_010_000,
+            iss: "esheep-next-identity",
+            aud: "esheep-next-cloud-operation"
+        )
+
+        for entityType in [CloudEntityType.productionBatch, .batchMembership] {
+            let entityID = UUID()
+            let payload = try FarmCommandCloudPayloadEncoder.encode(
+                .tombstoneEntity(entityType: entityType, entityID: entityID, reason: "删除批次")
+            )
+            let envelope = CloudOperationEnvelope(
+                farmID: farmID,
+                entityID: entityID,
+                entityType: entityType.rawValue,
+                schemaVersion: 1,
+                revision: 1,
+                baseRevision: 0,
+                operationID: UUID(),
+                modifiedAt: deletedAt,
+                modifiedByAccountID: accountID,
+                modifiedByDeviceID: deviceID,
+                payload: payload,
+                payloadDigest: CloudPayloadDigest.hex(for: payload),
+                capabilityCertificate: "",
+                operationSignature: Data(),
+                deletedAt: deletedAt
+            )
+
+            XCTAssertEqual(FarmCommand.tombstoneEntity(entityType: entityType, entityID: envelope.entityID, reason: "删除批次").requiredCapability, .manageCatalogs)
+            XCTAssertEqual(CloudOperationSecurity.requiredCapability(for: envelope), .manageCatalogs)
+            XCTAssertNoThrow(try CloudOperationSecurity.validateRequiredCapability(envelope: envelope, claims: adminClaims))
+        }
+
+        let protectedEntityID = UUID()
+        let protectedPayload = try FarmCommandCloudPayloadEncoder.encode(
+            .tombstoneEntity(entityType: .sheep, entityID: protectedEntityID, reason: "删除羊只")
+        )
+        let protectedEnvelope = CloudOperationEnvelope(
+            farmID: farmID,
+            entityID: protectedEntityID,
+            entityType: CloudEntityType.sheep.rawValue,
+            schemaVersion: 1,
+            revision: 1,
+            baseRevision: 0,
+            operationID: UUID(),
+            modifiedAt: deletedAt,
+            modifiedByAccountID: accountID,
+            modifiedByDeviceID: deviceID,
+            payload: protectedPayload,
+            payloadDigest: CloudPayloadDigest.hex(for: protectedPayload),
+            capabilityCertificate: "",
+            operationSignature: Data(),
+            deletedAt: deletedAt
+        )
+        XCTAssertEqual(CloudOperationSecurity.requiredCapability(for: protectedEnvelope), .deleteProtectedFacts)
+        XCTAssertThrowsError(try CloudOperationSecurity.validateRequiredCapability(envelope: protectedEnvelope, claims: adminClaims))
     }
 
     func testSubscriptionNeverBlocksAuthorizedProductionRecording() {

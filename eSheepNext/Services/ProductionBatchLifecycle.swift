@@ -47,3 +47,32 @@ enum ProductionBatchLifecycle {
         reconcile(batch: batch, members: members, changedAt: changedAt)
     }
 }
+
+@MainActor
+extension FarmCommandService {
+    /// Delete the batch and its membership links through the audited command pipeline.
+    /// Sheep and their production facts remain intact; any failure rolls back the local batch.
+    func deleteProductionBatch(
+        batchID: UUID,
+        reason: String,
+        in farm: FarmContext,
+        context: ModelContext
+    ) throws {
+        let farmID = farm.farmID
+        let batches = try context.fetch(FetchDescriptor<ProductionBatchRecord>(predicate: #Predicate {
+            $0.id == batchID && $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        guard let batch = batches.first,
+              batch.sourceRawValue == ProductionBatchSource.manual.rawValue else {
+            throw FarmCommandError.missingRequiredValue("可删除的生产批次")
+        }
+        let members = try context.fetch(FetchDescriptor<BatchMembershipRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.batchID == batchID && $0.deletedAt == nil
+        }))
+        var commands: [FarmCommand] = members.sorted { $0.id.uuidString < $1.id.uuidString }.map {
+            .tombstoneEntity(entityType: .batchMembership, entityID: $0.id, reason: reason)
+        }
+        commands.append(.tombstoneEntity(entityType: .productionBatch, entityID: batchID, reason: reason))
+        try executeBatch(commands, in: farm, context: context)
+    }
+}
