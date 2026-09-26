@@ -307,9 +307,8 @@ verify_db() {
   local db_container="supabase_db_${project_id}"
   if ! docker ps --format '{{.Names}}' | rg -qx "$db_container"; then
     if [[ "${CI:-false}" == "true" ]]; then
-      # This gate exercises migrations, PostgreSQL tests, lint, and advisors
-      # directly. Do not pull unrelated API/UI containers in disposable CI.
-      (cd "$repo_root" && supabase start --exclude gotrue,realtime,storage-api,imgproxy,kong,mailpit,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor)
+      # This gate only needs Postgres; avoid resolving the full local stack.
+      (cd "$repo_root" && supabase db start)
     else
       (cd "$repo_root" && supabase start)
     fi

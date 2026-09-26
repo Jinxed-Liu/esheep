@@ -105,6 +105,7 @@ jobs:
       - name: Run disposable local database gate
         env:
           ALLOW_LOCAL_DB_RESET: '1'
+          SUPABASE_INTERNAL_IMAGE_REGISTRY: ghcr.io
         run: ./tools/verify_local.sh db
 
   # iOS remains a local stable-Xcode release gate until the hosted runner has
