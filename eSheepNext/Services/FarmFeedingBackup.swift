@@ -175,7 +175,6 @@ struct FarmFeedingBackupPayload: Codable, Sendable, Equatable {
             troughObservations.count + (tmr?.entityCount ?? 0)
     }
 
-    @MainActor
     static func capture(farmID: UUID, context: ModelContext) throws -> Self {
         let tmrPayload = try FarmTMRBackupPayload.capture(farmID: farmID, context: context)
         return .init(
@@ -274,7 +273,6 @@ struct FarmFeedingBackupPayload: Codable, Sendable, Equatable {
         try tmr?.validate(recipeIDs: recipeIDs, ingredientIDs: ingredientIDs, ingredientBatchIDs: batchIDs, feedRecordIDs: feedIDs, penIDs: penIDs)
     }
 
-    @MainActor
     func insert(farmID: UUID, context: ModelContext) {
         for value in ingredients {
             let record = FeedIngredientRecord(id: value.id, farmID: farmID, name: value.name, unit: value.unit, dryMatterText: value.dryMatterText, category: value.category, legacySourceKey: value.legacySourceKey, nutrientSnapshotJSON: value.nutrientSnapshotJSON, kind: FeedIngredientKind(rawValue: value.kindRawValue) ?? .legacy, sourceTemplateID: value.sourceTemplateID, sourceTemplateCode: value.sourceTemplateCode, mixtureComponentsJSON: value.mixtureComponentsJSON, note: value.note)

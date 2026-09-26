@@ -230,7 +230,6 @@ struct FarmTMRBackupPayload: Codable, Sendable, Equatable {
 
     var isEmpty: Bool { entityCount == 0 }
 
-    @MainActor
     static func capture(farmID: UUID, context: ModelContext) throws -> Self {
         let profiles = try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>())
             .filter { $0.farmID == farmID && $0.deletedAt == nil }

@@ -186,7 +186,6 @@ enum FarmPortableBackupError: LocalizedError {
     }
 }
 
-@MainActor
 enum FarmPortableBackupService {
     static func export(
         farmID: UUID,

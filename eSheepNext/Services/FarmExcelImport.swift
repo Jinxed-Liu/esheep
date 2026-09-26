@@ -67,7 +67,7 @@ struct FarmExcelPreview: Sendable, Equatable, Identifiable {
     }
 }
 
-private struct FarmExcelSheetSchema {
+private struct FarmExcelSheetSchema: Sendable {
     let name: String
     let capability: FarmCapability
     let columns: [String]
@@ -75,7 +75,6 @@ private struct FarmExcelSheetSchema {
     let example: [String]
 }
 
-@MainActor
 enum FarmExcelImportService {
     static let templateVersion = 7
 
@@ -357,6 +356,7 @@ enum FarmExcelImportService {
         }
     }
 
+    @MainActor
     static func commit(_ preview: FarmExcelPreview, account: AccountProfile, farm: FarmRecord, context: ModelContext, commandService: FarmCommandService = FarmCommandService()) throws -> Int {
         guard preview.canCommit else { throw FarmDataInterchangeError.malformedFile("预检仍有阻断错误。") }
         let order = Dictionary(uniqueKeysWithValues: schemas.enumerated().map { ($0.element.name, $0.offset) })

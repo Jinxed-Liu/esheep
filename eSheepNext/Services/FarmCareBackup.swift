@@ -39,7 +39,6 @@ struct FarmCareBackupPayload: Codable, Sendable, Equatable {
         catalogs.count + inventoryLots.count + inventoryTransactions.count + health.count + healthSubjects.count + (donors?.count ?? 0) + semen.count + semenTransactions.count + reproduction.count + offspring.count + batches.count + rules.count + reminders.count + (alertDeferrals?.count ?? 0) + (pedigreeAudits?.count ?? 0) + (sheepLabels?.count ?? 0)
     }
 
-    @MainActor
     static func capture(farmID: UUID, context: ModelContext) throws -> Self {
         var result = Self(
             catalogs: try context.fetch(FetchDescriptor<HealthCatalogItemRecord>()).filter { $0.farmID == farmID }.map { .init(id: $0.id, legacySourceKey: $0.legacySourceKey, legacyCatalogID: $0.legacyCatalogID, kindRawValue: $0.kindRawValue, name: $0.name, category: $0.category, unit: $0.unit, defaultDoseText: $0.defaultDoseText, defaultRoute: $0.defaultRoute, reminderIntervalDays: $0.reminderIntervalDays, note: $0.note, isActive: $0.isActive, createdAt: $0.createdAt) },
@@ -107,12 +106,10 @@ struct FarmCareBackupPayload: Codable, Sendable, Equatable {
         for value in pedigreeAudits ?? [] { guard sheepIDs.contains(value.sheepID) else { throw FarmLocalBackupError.missingReference("pedigreeAudit.sheepID") }; for id in [value.beforeDamID, value.afterDamID, value.beforeSireID, value.afterSireID].compactMap({ $0 }) where !sheepIDs.contains(id) { throw FarmLocalBackupError.missingReference("pedigreeAudit.parentID") }; for id in [value.beforeSemenDonorID, value.afterSemenDonorID].compactMap({ $0 }) where !donorIDs.contains(id) { throw FarmLocalBackupError.missingReference("pedigreeAudit.donorID") } }
     }
 
-    @MainActor
     func insertDonors(farmID: UUID, context: ModelContext) {
         for value in donors ?? [] { context.insert(SemenDonorRecord(id: value.id, farmID: farmID, name: value.name, registrationNumber: value.registrationNumber, breed: value.breed, linkedRamID: value.linkedRamID, note: value.note, status: SemenDonorStatus(rawValue: value.statusRawValue) ?? .inactive, revision: value.revision, createdAt: value.createdAt, updatedAt: value.updatedAt, deletedAt: value.deletedAt)) }
     }
 
-    @MainActor
     func insert(farmID: UUID, context: ModelContext, includeDonors: Bool = true) throws {
         if includeDonors { insertDonors(farmID: farmID, context: context) }
         try SheepLabelBackup.restore(sheepLabels ?? [], farmID: farmID, context: context)

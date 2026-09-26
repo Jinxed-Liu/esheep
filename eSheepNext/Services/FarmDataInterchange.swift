@@ -342,6 +342,183 @@ enum FarmImportCommitService {
     }
 }
 
+struct FarmDataTaskSnapshot: Sendable, Equatable {
+    let sheepCount: Int
+    let storageMode: FarmStorageMode
+    let authorityGeneration: Int
+    let pendingCloudOperationCount: Int
+    let cloudBackupIsCurrentAndVerified: Bool
+}
+
+/// Keeps data-interchange reads, file decoding, and backup validation away
+/// from SwiftUI's main-actor observation graph.
+actor FarmDataTaskWorker {
+    private let container: ModelContainer
+
+    init(container: ModelContainer) {
+        self.container = container
+    }
+
+    func loadSnapshot(farmID: UUID, accountID: UUID) throws -> FarmDataTaskSnapshot {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+
+        var profileDescriptor = FetchDescriptor<FarmStorageProfile>(predicate: #Predicate {
+            $0.farmID == farmID
+        })
+        profileDescriptor.fetchLimit = 1
+        let profile = try context.fetch(profileDescriptor).first
+        let mode = profile?.mode ?? .localOnly
+
+        let sheepCount = try context.fetchCount(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+
+        let pendingCount: Int
+        let cloudIsCurrentAndVerified: Bool
+        if mode == .eSheepCloud {
+            let states = try context.fetch(FetchDescriptor<ESheepCloudFarmState>(predicate: #Predicate {
+                $0.farmID == farmID
+            }))
+            let activeState = states
+                .filter { $0.activityState != .accessRevoked }
+                .max { $0.farmGeneration < $1.farmGeneration }
+            guard let generation = activeState?.farmGeneration else {
+                pendingCount = 0
+                cloudIsCurrentAndVerified = false
+                return FarmDataTaskSnapshot(
+                    sheepCount: sheepCount,
+                    storageMode: mode,
+                    authorityGeneration: profile?.authorityGeneration ?? 0,
+                    pendingCloudOperationCount: pendingCount,
+                    cloudBackupIsCurrentAndVerified: cloudIsCurrentAndVerified
+                )
+            }
+            let intents = try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+                $0.farmID == farmID && $0.farmGeneration == generation && $0.accountID == accountID
+            }))
+            pendingCount = intents.count { !$0.lifecycle.isTerminal }
+            cloudIsCurrentAndVerified = activeState?.activityState == .active &&
+                activeState?.integrityState == .passed &&
+                activeState?.lastSafeSaveAt != nil &&
+                (activeState?.lastAppliedEventSequence ?? -1) >= (activeState?.cloudEventHead ?? 0) &&
+                pendingCount == 0
+        } else if let provider = mode.deliveryProvider {
+            let items = try context.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate {
+                $0.farmID == farmID
+            }))
+            pendingCount = items.count {
+                $0.deliveryProvider == provider && !$0.status.isTerminalDelivery
+            }
+            cloudIsCurrentAndVerified = false
+        } else {
+            pendingCount = 0
+            cloudIsCurrentAndVerified = false
+        }
+
+        return FarmDataTaskSnapshot(
+            sheepCount: sheepCount,
+            storageMode: mode,
+            authorityGeneration: profile?.authorityGeneration ?? 0,
+            pendingCloudOperationCount: pendingCount,
+            cloudBackupIsCurrentAndVerified: cloudIsCurrentAndVerified
+        )
+    }
+
+    func previewLegacyFile(at url: URL, farmID: UUID) throws -> FarmImportPreview {
+        let data = try SecureImportFileLoader.load(from: url)
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let existingSheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let existingEarTags = Set(existingSheep.map(\.earTag))
+        return try FarmDataInterchange.preview(
+            data: data,
+            fileExtension: url.pathExtension,
+            existingEarTags: existingEarTags
+        )
+    }
+
+    func previewExcelFile(at url: URL, farmID: UUID) throws -> FarmExcelPreview {
+        let data = try SecureImportFileLoader.load(from: url)
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        var farmDescriptor = FetchDescriptor<FarmRecord>(predicate: #Predicate {
+            $0.id == farmID && $0.deletedAt == nil
+        })
+        farmDescriptor.fetchLimit = 1
+        guard let farm = try context.fetch(farmDescriptor).first else {
+            throw FarmDataInterchangeError.malformedFile("当前牧场已不可用，请返回后重试。")
+        }
+        return try FarmExcelImportService.preview(data: data, farm: farm, context: context)
+    }
+
+    func templateData() throws -> Data {
+        try FarmExcelImportService.templateData()
+    }
+
+    func exportWorkbook(farmID: UUID) throws -> (data: Data, sheepCount: Int) {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        return (
+            try FarmDataInterchange.xlsxData(farmID: farmID, sheep: sheep, pens: pens),
+            sheep.count
+        )
+    }
+
+    func exportBackup(
+        farmID: UUID,
+        sourceStorageMode: FarmStorageMode,
+        sourceAuthorityGeneration: Int,
+        sourceWasFullySynchronized: Bool
+    ) throws -> Data {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        return try FarmPortableBackupService.export(
+            farmID: farmID,
+            sourceStorageMode: sourceStorageMode,
+            sourceAuthorityGeneration: sourceAuthorityGeneration,
+            sourceWasFullySynchronized: sourceWasFullySynchronized,
+            context: context
+        )
+    }
+
+    func previewBackupFile(at url: URL) throws -> FarmPortableBackupPreview {
+        let data = try SecureImportFileLoader.load(
+            from: url,
+            maximumBytes: 512 * 1_024 * 1_024
+        )
+        return try FarmPortableBackupService.preview(data: data)
+    }
+
+    func restoreBackup(
+        _ preview: FarmPortableBackupPreview,
+        accountID: UUID
+    ) throws -> FarmPortableBackupRestoreResult {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        var accountDescriptor = FetchDescriptor<AccountProfile>(predicate: #Predicate {
+            $0.id == accountID || $0.serverAccountID == accountID
+        })
+        accountDescriptor.fetchLimit = 1
+        guard let account = try context.fetch(accountDescriptor).first else {
+            throw FarmSessionError.farmNotFound
+        }
+        return try FarmPortableBackupService.restoreAsNewLocalFarm(
+            preview,
+            account: account,
+            context: context
+        )
+    }
+}
+
 struct FarmInterchangeDocument: FileDocument {
     static var readableContentTypes: [UTType] {
         [.officeOpenXMLSpreadsheet, .json, .commaSeparatedText, .eSheepPortableBackup]

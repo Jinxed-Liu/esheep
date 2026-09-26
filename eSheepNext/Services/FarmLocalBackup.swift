@@ -130,7 +130,6 @@ enum FarmLocalBackupError: LocalizedError {
     }
 }
 
-@MainActor
 enum FarmLocalBackupService {
     static func export(farmID: UUID, context: ModelContext, exportedAt: Date = .now) throws -> Data {
         guard let farm = try context.fetch(FetchDescriptor<FarmRecord>()).first(where: { $0.id == farmID && $0.deletedAt == nil }) else { throw FarmLocalBackupError.farmMismatch }
