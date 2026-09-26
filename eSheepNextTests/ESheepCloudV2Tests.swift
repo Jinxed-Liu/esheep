@@ -905,6 +905,38 @@ final class ESheepCloudV2Tests: XCTestCase {
             sequence: 4
         ))
 
+        let checkpointSourceContainer = try AppSchema.makeContainer(
+            name: "ESheepCloudDeletedBatchCheckpointSource-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let checkpointSourceContext = ModelContext(checkpointSourceContainer)
+        checkpointSourceContext.insert(FarmRecord(
+            id: farmID,
+            ownerAccountID: ownerAccountID,
+            name: profile.name
+        ))
+        let checkpointSourceState = ESheepCloudFarmState(
+            farmID: farmID,
+            farmGeneration: generation,
+            activityState: .active
+        )
+        checkpointSourceState.integrityState = .passed
+        checkpointSourceContext.insert(checkpointSourceState)
+        _ = try ESheepCloudEventReducer.apply(events[0], context: checkpointSourceContext)
+        let checkpointArchiveDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "ESheepCloudDeletedBatchCheckpoint-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: checkpointArchiveDirectory) }
+        let checkpointManifest = try ESheepCloudCheckpointArchive.export(
+            farmID: farmID,
+            context: checkpointSourceContext,
+            directory: checkpointArchiveDirectory
+        )
+        XCTAssertEqual(checkpointManifest.boundaryEventSequence, 1)
+        let checkpointChunkDataByIndex = try Dictionary(uniqueKeysWithValues: checkpointManifest.chunks.map { chunk in
+            let name = String(format: "%05d.json.gz", chunk.index)
+            return (chunk.index, try Data(contentsOf: checkpointArchiveDirectory.appending(path: name)))
+        })
+
         let gateway = InitialSyncGatewayStub(
             ticket: .init(
                 manifest: manifest,
@@ -914,7 +946,9 @@ final class ESheepCloudV2Tests: XCTestCase {
                 membershipStatus: "active",
                 expiresAt: .now.addingTimeInterval(1_800)
             ),
-            tailEvents: events
+            tailEvents: Array(events.dropFirst()),
+            checkpointManifest: checkpointManifest,
+            checkpointChunkDataByIndex: checkpointChunkDataByIndex
         )
         let support = FileManager.default.temporaryDirectory
             .appending(path: "ESheepCloudDeletedBatchFreshInstall-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -932,6 +966,7 @@ final class ESheepCloudV2Tests: XCTestCase {
             expectedAccountID: memberAccountID
         )
 
+        XCTAssertEqual(report.snapshotID, checkpointManifest.checkpointID)
         XCTAssertEqual(report.appliedEventHead, 4)
         let context = ModelContext(container)
         let farm = try XCTUnwrap(try context.fetch(FetchDescriptor<FarmRecord>()).first { $0.id == farmID })
@@ -948,7 +983,16 @@ final class ESheepCloudV2Tests: XCTestCase {
             $0.farmID == farmID && ($0.entityID == batchID || $0.entityID == membershipID)
         }
         XCTAssertEqual(Set(tombstones.map(\.entityID)), Set([batchID, membershipID]))
-        XCTAssertEqual(try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>()).filter { $0.farmID == farmID }.count, 4)
+        let farmState = try XCTUnwrap(
+            try context.fetch(FetchDescriptor<ESheepCloudFarmState>()).first { $0.farmID == farmID }
+        )
+        XCTAssertEqual(farmState.lastAppliedEventSequence, 4)
+        XCTAssertEqual(farmState.integrityState, .passed)
+        let checkpointState = try XCTUnwrap(
+            try context.fetch(FetchDescriptor<ESheepCloudCheckpointState>()).first { $0.farmID == farmID }
+        )
+        XCTAssertEqual(checkpointState.stateRawValue, "active")
+        XCTAssertEqual(checkpointState.boundaryEventSequence, 4)
     }
 
     func testInitialSyncMaterializesZeroEventStreamInsteadOfActivatingHalfProjection() async throws {
@@ -3482,13 +3526,15 @@ final class ESheepCloudV2Tests: XCTestCase {
     }
 }
 
-actor InitialSyncGatewayStub: ESheepCloudGateway {
+actor InitialSyncGatewayStub: ESheepCloudGateway, ESheepCloudCheckpointGateway {
     enum StubError: Error { case unexpectedCall }
 
     let ticket: ESheepCloudInitialSyncTicketV2
     let chunkDataByIndex: [Int: Data]
     let cancelChunkIndices: Set<Int>
     let tailEvents: [ESheepCloudEventEnvelopeV2]
+    let checkpointManifest: ESheepCloudCheckpointManifest?
+    let checkpointChunkDataByIndex: [Int: Data]
     private var cancelNextPull = false
     func cancelOnePull() { cancelNextPull = true }
 
@@ -3496,12 +3542,54 @@ actor InitialSyncGatewayStub: ESheepCloudGateway {
         ticket: ESheepCloudInitialSyncTicketV2,
         chunkDataByIndex: [Int: Data] = [:],
         cancelChunkIndices: Set<Int> = [],
-        tailEvents: [ESheepCloudEventEnvelopeV2] = []
+        tailEvents: [ESheepCloudEventEnvelopeV2] = [],
+        checkpointManifest: ESheepCloudCheckpointManifest? = nil,
+        checkpointChunkDataByIndex: [Int: Data] = [:]
     ) {
         self.ticket = ticket
         self.chunkDataByIndex = chunkDataByIndex
         self.cancelChunkIndices = cancelChunkIndices
         self.tailEvents = tailEvents
+        self.checkpointManifest = checkpointManifest
+        self.checkpointChunkDataByIndex = checkpointChunkDataByIndex
+    }
+
+    func openCheckpoint(
+        farmID: UUID,
+        farmGeneration: Int,
+        checkpointID: UUID?
+    ) async throws -> ESheepCloudCheckpointTicket {
+        guard farmID == ticket.manifest.farmID,
+              farmGeneration == ticket.manifest.farmGeneration else {
+            throw StubError.unexpectedCall
+        }
+        guard let checkpointManifest else {
+            return .init(manifest: nil, downloads: [])
+        }
+        guard checkpointManifest.farmID == farmID,
+              checkpointManifest.farmGeneration == farmGeneration,
+              checkpointID == nil || checkpointID == checkpointManifest.checkpointID else {
+            throw StubError.unexpectedCall
+        }
+        let downloads = try checkpointManifest.chunks.map { chunk in
+            guard let url = URL(string: "https://checkpoint.invalid/\(chunk.index)") else {
+                throw StubError.unexpectedCall
+            }
+            return ESheepCloudCheckpointTicket.Download(index: chunk.index, url: url)
+        }
+        return .init(manifest: checkpointManifest, downloads: downloads)
+    }
+
+    func downloadCheckpointChunk(
+        _ download: ESheepCloudCheckpointTicket.Download,
+        descriptor: ESheepCloudCheckpointManifest.Chunk
+    ) async throws -> Data {
+        guard download.index == descriptor.index,
+              checkpointManifest?.chunks.indices.contains(download.index) == true,
+              let data = checkpointChunkDataByIndex[download.index] else {
+            throw StubError.unexpectedCall
+        }
+        return data
     }
 
     func openInitialSync(
