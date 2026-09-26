@@ -1503,26 +1503,38 @@ struct TMRBatchProductionView: View {
 }
 
 struct TMRBatchLibraryView: View {
-    @Query(sort: \TMRBatchRecord.producedAt, order: .reverse) private var batches: [TMRBatchRecord]
+    @Query private var batches: [TMRBatchRecord]
     @Query private var movements: [TMRBatchMovementRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
 
-    private var visibleBatches: [TMRBatchRecord] {
-        batches.filter { $0.farmID == farm.id && $0.deletedAt == nil }
+    init(account: AccountProfile, farm: FarmRecord) {
+        self.account = account
+        self.farm = farm
+        let farmID = farm.id
+        _batches = Query(
+            filter: #Predicate<TMRBatchRecord> { $0.farmID == farmID && $0.deletedAt == nil },
+            sort: \TMRBatchRecord.producedAt,
+            order: .reverse
+        )
+        _movements = Query(
+            filter: #Predicate<TMRBatchMovementRecord> { $0.farmID == farmID && $0.deletedAt == nil }
+        )
     }
 
     var body: some View {
+        let balancesByBatch = Dictionary(grouping: movements, by: \.batchID)
+            .mapValues { TMRCalculator.batchBalance(movements: $0) }
         List {
-            if visibleBatches.isEmpty {
+            if batches.isEmpty {
                 ContentUnavailableView(
                     "还没有 TMR 批次",
                     systemImage: "takeoutbag.and.cup.and.straw",
                     description: Text("制作一锅 TMR 后会在这里形成成品账。")
                 )
             } else {
-                ForEach(visibleBatches, id: \.id) { batch in
+                ForEach(batches, id: \.id) { batch in
                     NavigationLink {
                         TMRBatchDetailView(account: account, farm: farm, batchID: batch.id)
                     } label: {
@@ -1537,7 +1549,7 @@ struct TMRBatchLibraryView: View {
                             Text("\(batch.formulaNameSnapshot) v\(batch.formulaRevision) · 产量 \(batch.producedKilogramsText) kg")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
-                            Text("剩余 \(balance(batch.id).stableText) kg · \(batch.producedAt.formatted(date: .abbreviated, time: .shortened))")
+                            Text("剩余 \(balancesByBatch[batch.id, default: .zero].stableText) kg · \(batch.producedAt.formatted(date: .abbreviated, time: .shortened))")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
@@ -1546,10 +1558,6 @@ struct TMRBatchLibraryView: View {
             }
         }
         .navigationTitle("TMR 批次")
-    }
-
-    private func balance(_ batchID: UUID) -> Decimal {
-        TMRCalculator.batchBalance(movements: movements.filter { $0.batchID == batchID })
     }
 }
 

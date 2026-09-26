@@ -62,6 +62,27 @@ final class SheepEarTagSearchTests: XCTestCase {
         XCTAssertFalse(result.matches.contains { excluded.contains($0.id) })
     }
 
+    func testLateExactMatchesDisplaceEarlierPrefixesAndKeepStableTies() {
+        let candidates = [candidate("XA1", 5), candidate("A10", 4), candidate("A1", 3), candidate("A1", 2)]
+        let result = SheepEarTagSearchMatcher.search(query: "A1", candidates: candidates, limit: 2)
+
+        XCTAssertEqual(result.matches.map(\.id), [candidates[3].id, candidates[2].id])
+        XCTAssertEqual(result.totalCount, 4)
+    }
+
+    func testZeroNegativeAndUnboundedLimitsPreserveExclusionsAndCounts() {
+        let candidates = [candidate("A1", 1), candidate("A2", 2), candidate("B1", 3)]
+        let excluded: Set<UUID> = [candidates[0].id]
+        for limit in [-1, 0] {
+            let result = SheepEarTagSearchMatcher.search(query: "A", candidates: candidates, excluding: excluded, limit: limit)
+            XCTAssertTrue(result.matches.isEmpty)
+            XCTAssertEqual(result.totalCount, 1)
+        }
+        let result = SheepEarTagSearchMatcher.search(query: "A", candidates: candidates, excluding: excluded, limit: Int.max)
+        XCTAssertEqual(result.matches, [candidates[1]])
+        XCTAssertEqual(result.totalCount, 1)
+    }
+
     private func candidate(_ earTag: String, _ suffix: Int) -> SheepEarTagSearchCandidate {
         SheepEarTagSearchCandidate(
             id: UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", suffix))!,

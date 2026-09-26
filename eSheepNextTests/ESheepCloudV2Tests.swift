@@ -1157,6 +1157,20 @@ final class ESheepCloudV2Tests: XCTestCase {
         ))
     }
 
+    func testStagingRequiresVerifiedDeviceSequenceBeforeWriting() throws {
+        let fixture = try makeFixture(reconcilesSequence: false)
+        XCTAssertThrowsError(try stageAvatar(assetID: nil, sequence: 1, fixture: fixture)) { error in
+            XCTAssertTrue(error is ESheepCloudSequenceWatermark.SequenceError)
+        }
+        XCTAssertEqual(try fixture.context.fetchCount(FetchDescriptor<ESheepCloudPendingIntent>()), 0)
+
+        try ESheepCloudSequenceWatermark.reconcile(
+            farmID: fixture.farmID, deviceID: fixture.deviceID, floor: 41
+        )
+        let intent = try stageAvatar(assetID: nil, sequence: 1, fixture: fixture)
+        XCTAssertEqual(intent.deviceSequence, 42)
+    }
+
     func testAvatarSetClearRestoreCollapsesOnlyUnsentIntentForSameSheep() throws {
         let fixture = try makeFixture()
         let firstAsset = UUID()
@@ -2899,13 +2913,21 @@ final class ESheepCloudV2Tests: XCTestCase {
         }
     }
 
-    private func makeFixture() throws -> Fixture {
+    private func makeFixture(reconcilesSequence: Bool = true) throws -> Fixture {
         let container = try AppSchema.makeContainer(
             name: "ESheepCloudV2Tests-\(UUID().uuidString)",
             isStoredInMemoryOnly: true
         )
         let context = ModelContext(container)
         let farmID = UUID()
+        let deviceID = UUID()
+        let sequenceKey = "esheep-v2-sequence-\(farmID.uuidString.lowercased())-\(deviceID.uuidString.lowercased())"
+        addTeardownBlock { try SecureAccountStore.remove(account: sequenceKey) }
+        if reconcilesSequence {
+            // An active test farm represents a validated cloud status. Seed the
+            // same device watermark required by the production writer.
+            try ESheepCloudSequenceWatermark.reconcile(farmID: farmID, deviceID: deviceID, floor: 0)
+        }
         let generation = 2
         let state = ESheepCloudFarmState(
             farmID: farmID,
@@ -2920,7 +2942,7 @@ final class ESheepCloudV2Tests: XCTestCase {
             farmID: farmID,
             generation: generation,
             accountID: UUID(),
-            deviceID: UUID()
+            deviceID: deviceID
         )
     }
 

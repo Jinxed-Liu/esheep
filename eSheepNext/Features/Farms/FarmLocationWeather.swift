@@ -492,68 +492,6 @@ actor FarmWeatherRepository {
     }
 }
 
-struct FarmWeatherPanel: View {
-    let farm: FarmRecord
-    @State private var state: WeatherPanelState = .idle
-
-    private enum WeatherPanelState: Equatable {
-        case idle
-        case loading
-        case loaded(FarmWeatherSnapshot)
-        case unavailable
-    }
-
-    var body: some View {
-        Group {
-            if let location = farm.locationSnapshot {
-                switch state {
-                case .loaded(let weather):
-                    HStack(spacing: 6) {
-                        Image(systemName: weather.symbolName)
-                        Text("天气：\(weather.temperatureText) · 湿度 \(weather.humidityText)")
-                        Spacer(minLength: 0)
-                        Text(location.displayName)
-                            .lineLimit(1)
-                            .foregroundStyle(.secondary)
-                    }
-                    .font(.footnote)
-                case .loading, .idle:
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text("正在读取牧场天气")
-                    }
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                case .unavailable:
-                    Text("天气暂时不可用；不会覆盖已保存的牧场位置。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Text("天气：尚未设置牧场固定位置。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .task(id: farm.locationUpdatedAt) {
-            await loadWeather()
-        }
-    }
-
-    private func loadWeather() async {
-        guard let location = farm.locationSnapshot else {
-            state = .idle
-            return
-        }
-        state = .loading
-        do {
-            state = .loaded(try await FarmWeatherRepository.shared.currentWeather(for: farm.id, location: location))
-        } catch {
-            state = .unavailable
-        }
-    }
-}
-
 struct FarmLocationSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext

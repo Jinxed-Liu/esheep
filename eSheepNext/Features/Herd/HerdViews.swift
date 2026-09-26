@@ -648,6 +648,8 @@ struct SheepDetailView: View {
     @State private var previewingPhoto: SheepPhotoPreviewItem?
     @State private var pendingPhotoDeletion: PhotoDeletionDraft?
     @State private var hasAppeared = false
+    @State private var showsProfileDetails = false
+    @State private var showsPhotoTimeline = false
     private let commandService = FarmCommandService()
 
     init(account: AccountProfile, farm: FarmRecord, screen: SheepDetailScreenSnapshot) {
@@ -698,15 +700,17 @@ struct SheepDetailView: View {
                 .listRowInsets(.init())
                 .listRowBackground(Color.clear)
             }
-            SheepLabelDetailSection(account: account, farm: farm, sheepID: subject.id)
+            latestWeightSummary
             if subject.isCurrentlyPresent && CapabilitySet(role: farm.role).allows(.recordProduction) {
                 Section {
                     ViewThatFits(in: .horizontal) {
                         HStack { quickEntryButtons }
                         VStack(alignment: .leading) { quickEntryButtons }
                     }
+                    .buttonStyle(.borderless)
                 }
             }
+            SheepLabelDetailSection(account: account, farm: farm, sheepID: subject.id)
             if let entries = detailSnapshot?.timeline, !entries.isEmpty {
                 Section("最近事件") {
                     ForEach(Array(entries.sorted { $0.date > $1.date }.prefix(3)), id: \.id) { entry in
@@ -716,6 +720,14 @@ struct SheepDetailView: View {
                             Text(entry.date, format: .dateTime.year().month().day().hour().minute()).font(.caption).foregroundStyle(.secondary)
                         }
                     }
+                    NavigationLink {
+                        List { timelineSection }
+                            .navigationTitle("全部记录")
+                            .navigationBarTitleDisplayMode(.inline)
+                    } label: {
+                        LabeledContent("查看全部记录", value: "\(entries.count) 条")
+                    }
+                    .accessibilityIdentifier("sheep-all-events")
                 }
             }
             if let detailLoadError {
@@ -729,30 +741,35 @@ struct SheepDetailView: View {
                 }
             }
 
-            Section("档案") {
-                LabeledContent("耳号", value: subject.earTag)
-                LabeledContent("品种") { Text(verbatim: subject.breed) }
-                LabeledContent("性别") { Text(LocalizedStringKey(subject.sex.displayName)) }
-                if subject.sex == .ewe {
-                    LabeledContent("当前胎次") { Text(LocalizedStringKey(currentParityDisplayName)) }
-                }
-                LabeledContent("状态") { Text(LocalizedStringKey(subject.status.displayName)) }
-                LabeledContent("用途") { Text(verbatim: subject.purpose) }
-                LabeledContent("当前圈舍") { Text(verbatim: subject.currentPenDisplayName(penName)) }
-                LabeledContent("入场时间") { Text(subject.enteredAt, format: .dateTime.year().month().day()) }
-                NavigationLink {
-                    SheepPurposeEditorEntryView(
-                        account: account,
-                        farm: farm,
-                        sheepID: subject.id
-                    )
+            Section {
+                DisclosureGroup(isExpanded: $showsProfileDetails) {
+                    LabeledContent("耳号", value: subject.earTag)
+                    LabeledContent("品种") { Text(verbatim: subject.breed) }
+                    LabeledContent("性别") { Text(LocalizedStringKey(subject.sex.displayName)) }
+                    if subject.sex == .ewe {
+                        LabeledContent("当前胎次") { Text(LocalizedStringKey(currentParityDisplayName)) }
+                    }
+                    LabeledContent("状态") { Text(LocalizedStringKey(subject.status.displayName)) }
+                    LabeledContent("用途") { Text(verbatim: subject.purpose) }
+                    LabeledContent("当前圈舍") { Text(verbatim: subject.currentPenDisplayName(penName)) }
+                    LabeledContent("入场时间") { Text(subject.enteredAt, format: .dateTime.year().month().day()) }
+                    NavigationLink {
+                        SheepPurposeEditorEntryView(
+                            account: account,
+                            farm: farm,
+                            sheepID: subject.id
+                        )
+                    } label: {
+                        Label("更改羊只用途", systemImage: "tag")
+                    }
+                    .disabled(!CapabilitySet(role: farm.role).allows(.editHistoricalFacts))
+                    if !subject.note.isEmpty {
+                        LabeledContent("备注") { Text(subject.note) }
+                    }
                 } label: {
-                    Label("更改羊只用途", systemImage: "tag")
+                    Label("详细档案", systemImage: "doc.text")
                 }
-                .disabled(!CapabilitySet(role: farm.role).allows(.editHistoricalFacts))
-            }
-            if !subject.note.isEmpty {
-                Section("备注") { Text(subject.note) }
+                .accessibilityIdentifier("sheep-profile-details")
             }
             purposeTimelineSection
             Section("系谱") {
@@ -762,65 +779,68 @@ struct SheepDetailView: View {
                     Label("父母、祖先、同胞与后代", systemImage: "point.3.connected.trianglepath.dotted")
                 }
             }
-            weightChartSection
             analyticsSection
-            Section("照片时间线") {
-                PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                    Label("从照片库添加", systemImage: "photo.badge.plus")
-                }
-                .disabled(isProcessingPhoto || !FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role).capabilities.allows(.recordProduction))
-                if isProcessingPhoto { ProgressView("正在处理照片") }
-                if sheepPhotos.isEmpty {
-                    ContentUnavailableView(
-                        "尚未添加照片",
-                        systemImage: "photo.on.rectangle.angled",
-                        description: Text("添加后会按拍摄时间形成这只羊的影像时间线。")
-                    )
-                } else {
-                    ForEach(sheepPhotos, id: \.id) { photo in
-                        HStack(spacing: 12) {
-                            PhotoTimelineRow(
-                                photo: photo,
-                                canEdit: canEditPhotos,
-                                onPreview: { previewPhoto(photo) },
-                                onEdit: { editPhotoTime(photo) }
-                            )
+            Section {
+                DisclosureGroup(isExpanded: $showsPhotoTimeline) {
+                    PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                        Label("从照片库添加", systemImage: "photo.badge.plus")
+                    }
+                    .disabled(isProcessingPhoto || !FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role).capabilities.allows(.recordProduction))
+                    if isProcessingPhoto { ProgressView("正在处理照片") }
+                    if sheepPhotos.isEmpty {
+                        ContentUnavailableView(
+                            "尚未添加照片",
+                            systemImage: "photo.on.rectangle.angled",
+                            description: Text("添加后会按拍摄时间形成这只羊的影像时间线。")
+                        )
+                    } else {
+                        ForEach(sheepPhotos, id: \.id) { photo in
+                            HStack(spacing: 12) {
+                                PhotoTimelineRow(
+                                    photo: photo,
+                                    canEdit: canEditPhotos,
+                                    onPreview: { previewPhoto(photo) },
+                                    onEdit: { editPhotoTime(photo) }
+                                )
 
-                            Menu {
-                                if avatarPhoto?.id == photo.id {
-                                    Button("取消头像", systemImage: "person.crop.circle.badge.minus") {
-                                        setAvatar(photoAssetID: nil)
+                                Menu {
+                                    if avatarPhoto?.id == photo.id {
+                                        Button("取消头像", systemImage: "person.crop.circle.badge.minus") {
+                                            setAvatar(photoAssetID: nil)
+                                        }
+                                        .disabled(!canEditPhotos)
+                                    } else {
+                                        Button("设为头像", systemImage: "person.crop.circle.badge.checkmark") {
+                                            setAvatar(photoAssetID: photo.id)
+                                        }
+                                        .disabled(!canEditPhotos)
+                                    }
+                                    Button("修改照片时间", systemImage: "calendar.badge.clock") {
+                                        editPhotoTime(photo)
                                     }
                                     .disabled(!canEditPhotos)
-                                } else {
-                                    Button("设为头像", systemImage: "person.crop.circle.badge.checkmark") {
-                                        setAvatar(photoAssetID: photo.id)
+                                    Button("删除照片", systemImage: "trash", role: .destructive) {
+                                        requestPhotoDeletion(photo)
                                     }
-                                    .disabled(!canEditPhotos)
+                                    .disabled(!canDeletePhotos)
+                                } label: {
+                                    Image(systemName: "ellipsis.circle")
                                 }
-                                Button("修改照片时间", systemImage: "calendar.badge.clock") {
-                                    editPhotoTime(photo)
-                                }
-                                .disabled(!canEditPhotos)
-                                Button("删除照片", systemImage: "trash", role: .destructive) {
+                                .accessibilityLabel("照片操作")
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button("删除", systemImage: "trash", role: .destructive) {
                                     requestPhotoDeletion(photo)
                                 }
                                 .disabled(!canDeletePhotos)
-                            } label: {
-                                Image(systemName: "ellipsis.circle")
                             }
-                            .accessibilityLabel("照片操作")
-                        }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button("删除", systemImage: "trash", role: .destructive) {
-                                requestPhotoDeletion(photo)
-                            }
-                            .disabled(!canDeletePhotos)
                         }
                     }
+                } label: {
+                    Label("照片（\(sheepPhotos.count)）", systemImage: "photo.on.rectangle")
                 }
+                .accessibilityIdentifier("sheep-photo-timeline")
             }
-            timelineSection
             Section("记录管理") {
                 NavigationLink {
                     SheepRecordHistoryScreen(account: account, farm: farm, sheepID: subject.id)
@@ -970,6 +990,34 @@ struct SheepDetailView: View {
             return
         }
         isCameraPresented = true
+    }
+
+    @ViewBuilder
+    private var latestWeightSummary: some View {
+        Section {
+            if let latest = detailSnapshot?.weights.first {
+                NavigationLink {
+                    List { weightChartSection }
+                        .navigationTitle("体重与增重")
+                        .navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("最近体重").font(.subheadline).foregroundStyle(.secondary)
+                        Text("\(WeightPrecision.displayText(latest.kilogramsText)) 千克")
+                            .font(.title2.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(.primary)
+                        Text(latest.occurredAt, format: .dateTime.year().month().day().hour().minute())
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .accessibilityIdentifier("sheep-weight-history")
+            } else {
+                LabeledContent("最近体重", value: detailLoadError != nil ? "暂不可用" : isLoadingDetail ? "正在读取" : "未记录")
+            }
+        }
     }
 
     @ViewBuilder
@@ -1347,6 +1395,7 @@ private struct SheepWeightGainRow: View {
 }
 
 private struct SheepProfileBanner: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
     let sheep: SheepDetailSubjectSnapshot
     let penName: String?
     let photos: [SheepPhotoReference]
@@ -1357,75 +1406,69 @@ private struct SheepProfileBanner: View {
     let onCamera: () -> Void
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            Group {
-                if photos.isEmpty {
-                    SheepBannerPhotoView(photos: photos, sex: sheep.sex)
-                } else {
-                    Button(action: onPreview) {
-                        SheepBannerPhotoView(photos: photos, sex: sheep.sex)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("查看羊只照片大图")
+        VStack(alignment: .leading, spacing: 14) {
+            let layout = typeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                : AnyLayout(HStackLayout(alignment: .top, spacing: 14))
+            layout {
+                Button(action: onPreview) {
+                    SheepAvatarView(photo: photos.first, size: 72, sex: sheep.sex)
                 }
-            }
-                .frame(maxWidth: .infinity)
-                .frame(height: 218)
-                .clipped()
+                .buttonStyle(.plain)
+                .disabled(photos.isEmpty)
+                .accessibilityLabel("查看羊只照片，共 \(photoCount) 张")
 
-            LinearGradient(stops: [
-                .init(color: .clear, location: 0.32),
-                .init(color: Color(uiColor: .systemBackground).opacity(0.38), location: 0.56),
-                .init(color: Color(uiColor: .systemBackground).opacity(0.88), location: 0.78),
-                .init(color: Color(uiColor: .systemBackground), location: 1)
-            ], startPoint: .top, endPoint: .bottom)
-            .allowsHitTesting(false)
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(sheep.earTag)
-                        .font(.title.bold())
-                        .lineLimit(1)
-                    Spacer(minLength: 12)
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(verbatim: sheep.earTag)
+                        .font(.title2.bold())
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(LocalizedStringKey(sheep.status.displayName))
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 5)
-                        .background(AppTheme.brand, in: .capsule)
-                }
-                HStack(spacing: 14) {
-                    Label(sheep.breed.isEmpty ? "未填写品种" : sheep.breed, systemImage: "leaf")
-                    Label(LocalizedStringKey(sheep.sex.displayName), systemImage: "sheep")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 3)
+                        .background(AppTheme.brand.opacity(0.12), in: .capsule)
                     Label(sheep.currentPenDisplayName(penName), systemImage: "square.grid.2x2")
-                    Label("\(photoCount)张", systemImage: "photo.stack")
+                        .font(.subheadline)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("\(sheep.breed.isEmpty ? "未填写品种" : sheep.breed) · \(sheep.sex.displayName)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if canEdit || photoCount > 0 {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 16) { photoActions }
+                    VStack(alignment: .leading, spacing: 8) { photoActions }
                 }
                 .font(.subheadline)
-                .lineLimit(1)
             }
-            .foregroundStyle(.primary)
-            .padding(18)
-            .allowsHitTesting(false)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 20))
+        .accessibilityElement(children: .contain)
+    }
 
+    @ViewBuilder
+    private var photoActions: some View {
+        if photoCount > 0 {
+            Button(action: onPreview) { Label("查看照片（\(photoCount)）", systemImage: "photo.stack") }
+                .buttonStyle(.borderless)
+                .frame(minHeight: 44)
+        }
+        if canEdit {
             Button(action: onCamera) {
-                Group {
-                    if isProcessing {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "camera.fill")
-                    }
-                }
-                .frame(width: 42, height: 42)
-                .background(.ultraThinMaterial, in: .circle)
+                if isProcessing { ProgressView("正在处理照片") }
+                else { Label("拍照", systemImage: "camera") }
             }
-            .disabled(!canEdit || isProcessing)
-            .padding(14)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .buttonStyle(.borderless)
+            .frame(minHeight: 44)
+            .disabled(isProcessing)
             .accessibilityLabel("拍摄并设置羊只头像")
         }
-        .frame(height: 218)
-        .clipShape(.rect(cornerRadius: 24))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(sheep.earTag)，\(sheep.breed)，\(sheep.sex.displayName)，\(sheep.status.displayName)，\(sheep.currentPenDisplayName(penName))")
     }
 }
 

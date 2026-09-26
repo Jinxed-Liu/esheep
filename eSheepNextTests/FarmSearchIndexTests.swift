@@ -62,6 +62,42 @@ final class FarmSearchIndexTests: XCTestCase {
         XCTAssertTrue(result.hasMorePens)
     }
 
+    func testSearchFindsLateBestMatchesAndUsesIDsForNaturalOrderTies() {
+        let source = FarmSearchSource(
+            sheep: [
+                sheep("B1", breed: "A01品种", 9),
+                sheep("XA01", breed: "湖羊", 8),
+                sheep("A010", breed: "湖羊", 7),
+                sheep("A01", breed: "湖羊", 4),
+                sheep("A01", breed: "湖羊", 3)
+            ],
+            pens: [pen("XA01", 8), pen("A010", 7), pen("A01", 4), pen("A01", 3)]
+        )
+
+        for values in [source, FarmSearchSource(sheep: Array(source.sheep.reversed()), pens: Array(source.pens.reversed()))] {
+            let result = FarmSearchEngine.search(query: "A01", source: values, limit: 2)
+            XCTAssertEqual(result.sheep.map(\.id), [uuid(3), uuid(4)])
+            XCTAssertEqual(result.pens.map(\.id), [uuid(3), uuid(4)])
+            XCTAssertEqual(result.totalSheepCount, 5)
+            XCTAssertEqual(result.totalPenCount, 4)
+        }
+    }
+
+    func testZeroAndNegativeLimitsStillCountMatches() {
+        let source = FarmSearchSource(
+            sheep: [sheep("A1", breed: "湖羊", 1), sheep("B1", breed: "湖羊", 2)],
+            pens: [pen("A圈舍", 3)]
+        )
+        for limit in [-1, 0] {
+            let result = FarmSearchEngine.search(query: "A", source: source, limit: limit)
+            XCTAssertTrue(result.sheep.isEmpty)
+            XCTAssertTrue(result.pens.isEmpty)
+            XCTAssertEqual(result.totalSheepCount, 1)
+            XCTAssertEqual(result.totalPenCount, 1)
+        }
+        XCTAssertEqual(FarmSearchEngine.search(query: "A", source: source, limit: Int.max).sheep.count, 1)
+    }
+
     @MainActor
     func testIndexLoadsSelectedAvatarAndLeavesUnselectedSheepOnDefault() async throws {
         let container = try AppSchema.makeContainer(

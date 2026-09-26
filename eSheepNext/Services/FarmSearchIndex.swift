@@ -94,63 +94,47 @@ enum FarmSearchEngine {
         let normalizedQuery = SearchText.normalized(query)
         guard !normalizedQuery.isEmpty else { return .empty }
 
-        let sheepMatches = source.sheep.compactMap { entry -> (FarmSearchSheepEntry, Int)? in
-            if entry.normalizedEarTag == normalizedQuery { return (entry, 0) }
-            if entry.normalizedEarTag.hasPrefix(normalizedQuery) { return (entry, 1) }
-            if entry.normalizedEarTag.contains(normalizedQuery) { return (entry, 2) }
-            if entry.normalizedBreed.hasPrefix(normalizedQuery) { return (entry, 3) }
-            if entry.normalizedBreed.contains(normalizedQuery) { return (entry, 4) }
-            return nil
+        var sheepMatches = BoundedSearchMatches<(FarmSearchSheepEntry, Int)>(
+            limit: limit, candidateCount: source.sheep.count
+        )
+        var totalSheepCount = 0
+        for entry in source.sheep {
+            guard let rank = sheepMatchRank(entry, query: normalizedQuery) else { continue }
+            totalSheepCount += 1
+            sheepMatches.insert((entry, rank), by: compareSheepMatches)
         }
-        let penMatches = source.pens.compactMap { entry -> (FarmSearchPenEntry, Int)? in
-            if entry.normalizedName == normalizedQuery { return (entry, 0) }
-            if entry.normalizedName.hasPrefix(normalizedQuery) { return (entry, 1) }
-            if entry.normalizedName.contains(normalizedQuery) { return (entry, 2) }
-            return nil
+        var penMatches = BoundedSearchMatches<(FarmSearchPenEntry, Int)>(
+            limit: limit, candidateCount: source.pens.count
+        )
+        var totalPenCount = 0
+        for entry in source.pens {
+            guard let rank = penMatchRank(entry, query: normalizedQuery) else { continue }
+            totalPenCount += 1
+            penMatches.insert((entry, rank), by: comparePenMatches)
         }
-        let boundedLimit = max(0, limit)
 
         return FarmSearchResultSet(
-            sheep: topSheepMatches(sheepMatches, limit: boundedLimit),
-            pens: topPenMatches(penMatches, limit: boundedLimit),
-            totalSheepCount: sheepMatches.count,
-            totalPenCount: penMatches.count
+            sheep: sheepMatches.values.map(\.0),
+            pens: penMatches.values.map(\.0),
+            totalSheepCount: totalSheepCount,
+            totalPenCount: totalPenCount
         )
     }
 
-    /// Keep only the rows that can be rendered. A full sort of every matching
-    /// sheep was unnecessary once the result limit was capped at 50 and made
-    /// typing in a large farm search O(n log n) on every debounced query.
-    private static func topSheepMatches(
-        _ matches: [(FarmSearchSheepEntry, Int)],
-        limit: Int
-    ) -> [FarmSearchSheepEntry] {
-        guard limit > 0 else { return [] }
-        var top: [(FarmSearchSheepEntry, Int)] = []
-        top.reserveCapacity(min(limit, matches.count))
-        for match in matches {
-            let insertionIndex = top.firstIndex { compareSheepMatches(match, $0) } ?? top.endIndex
-            guard insertionIndex < limit else { continue }
-            top.insert(match, at: insertionIndex)
-            if top.count > limit { top.removeLast() }
-        }
-        return top.map(\.0)
+    private static func sheepMatchRank(_ entry: FarmSearchSheepEntry, query: String) -> Int? {
+        if entry.normalizedEarTag == query { return 0 }
+        if entry.normalizedEarTag.hasPrefix(query) { return 1 }
+        if entry.normalizedEarTag.contains(query) { return 2 }
+        if entry.normalizedBreed.hasPrefix(query) { return 3 }
+        if entry.normalizedBreed.contains(query) { return 4 }
+        return nil
     }
 
-    private static func topPenMatches(
-        _ matches: [(FarmSearchPenEntry, Int)],
-        limit: Int
-    ) -> [FarmSearchPenEntry] {
-        guard limit > 0 else { return [] }
-        var top: [(FarmSearchPenEntry, Int)] = []
-        top.reserveCapacity(min(limit, matches.count))
-        for match in matches {
-            let insertionIndex = top.firstIndex { comparePenMatches(match, $0) } ?? top.endIndex
-            guard insertionIndex < limit else { continue }
-            top.insert(match, at: insertionIndex)
-            if top.count > limit { top.removeLast() }
-        }
-        return top.map(\.0)
+    private static func penMatchRank(_ entry: FarmSearchPenEntry, query: String) -> Int? {
+        if entry.normalizedName == query { return 0 }
+        if entry.normalizedName.hasPrefix(query) { return 1 }
+        if entry.normalizedName.contains(query) { return 2 }
+        return nil
     }
 
     private static func compareSheepMatches(

@@ -1,153 +1,10 @@
 import SwiftData
 import SwiftUI
 
-struct FarmRecordsView: View {
-    @Environment(AppSession.self) private var session
-    var showsManagement = false
-    let account: AccountProfile
-    let farm: FarmRecord
-    @State private var presentedEntry: PendingRecordEntry?
-    @State private var careReminderDestination: PendingCareReminderDestination?
-
-    var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 20) {
-                if !showsManagement {
-                SettingsCard(title: "日常记录") {
-                    SettingsNavigationRow(
-                        title: "称重",
-                        subtitle: "记录羊只体重和发生时间",
-                        systemImage: "scalemass.fill",
-                        iconColor: .blue
-                    ) { WeightEntryView(account: account, farm: farm) }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "治疗或疫苗",
-                        subtitle: "按羊只、多选或圈舍记录健康事件",
-                        systemImage: "cross.case.fill",
-                        iconColor: .red
-                    ) { HealthBatchEntryView(account: account, farm: farm) }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "备注",
-                        subtitle: "补充羊只、圈舍或牧场事件说明",
-                        systemImage: "note.text",
-                        iconColor: .gray
-                    ) { NoteEntryView(account: account, farm: farm) }
-                }
-
-                SettingsCard(title: "羊只流转") {
-                    SettingsNavigationRow(
-                        title: "新建羊只",
-                        subtitle: "建立档案并记录入场信息",
-                        systemImage: "plus",
-                        iconColor: .green
-                    ) { AddSheepView(account: account, farm: farm) }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "转群",
-                        subtitle: "将羊只调入目标圈舍",
-                        systemImage: "arrow.left.arrow.right",
-                        iconColor: .indigo
-                    ) { TransferEntryView(account: account, farm: farm) }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "断奶",
-                        subtitle: "记录断奶重并完成断奶后调舍",
-                        systemImage: "leaf.circle.fill",
-                        iconColor: .mint
-                    ) { WeaningEntryView(account: account, farm: farm) }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "出售、淘汰或死亡",
-                        subtitle: "记录羊只离场及相关金额",
-                        systemImage: "person.crop.circle.badge.minus",
-                        iconColor: .orange
-                    ) { RemovalEntryView(account: account, farm: farm) }
-                }
-
-                SettingsCard(title: "繁殖记录") {
-                    SettingsNavigationRow(
-                        title: "配种或孕检",
-                        subtitle: "记录配种、孕检和繁殖状态",
-                        systemImage: "heart.text.square.fill",
-                        iconColor: .pink
-                    ) { ReproductionBatchEntryView(account: account, farm: farm) }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "产羔",
-                        subtitle: "记录产羔事实并建立羔羊档案",
-                        systemImage: "plus.circle.fill",
-                        iconColor: .purple
-                    ) { CareLambingEntryView(account: account, farm: farm) }
-                }
-
-                }
-                if showsManagement {
-                SettingsCard(title: "管理与查阅") {
-                    SettingsNavigationRow(
-                        title: "生产批次",
-                        subtitle: "管理育肥、实验等生产批次",
-                        systemImage: "square.3.layers.3d",
-                        iconColor: .purple
-                    ) { ProductionBatchListView(account: account, farm: farm) }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "健康与繁殖管理",
-                        subtitle: "维护目录、库存、方案、提醒与历史",
-                        systemImage: "heart.text.square",
-                        iconColor: .pink
-                    ) { CareManagementView(account: account, farm: farm) }
-
-                }
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .safeAreaPadding(.bottom, 24)
-        }
-        .scrollIndicators(.hidden)
-        .background(AppTheme.pageBackground)
-        .navigationTitle("工作台")
-        .sheet(item: $presentedEntry) { entry in
-            NavigationStack {
-                ProductionEntryDestination(entry: entry, account: account, farm: farm)
-            }
-        }
-        .onAppear {
-            presentIntentEntryIfNeeded()
-            presentCareReminderIfNeeded()
-        }
-        .onChange(of: session.pendingRecordEntry) { _, _ in
-            presentIntentEntryIfNeeded()
-        }
-        .navigationDestination(item: $careReminderDestination) { destination in
-            CareReminderCenterView(account: account, farm: farm, focusedReminderID: destination.id)
-        }
-        .onChange(of: session.pendingCareReminderID) { _, _ in
-            presentCareReminderIfNeeded()
-        }
-    }
-
-    private func presentIntentEntryIfNeeded() {
-        guard !showsManagement, let entry = session.pendingRecordEntry, ![.feed, .trough, .tmrProduction, .tmrFeeding].contains(entry) else { return }
-        session.pendingRecordEntry = nil
-        presentedEntry = entry
-    }
-
-    private func presentCareReminderIfNeeded() {
-        guard !showsManagement, let reminderID = session.pendingCareReminderID else { return }
-        session.pendingCareReminderID = nil
-        careReminderDestination = PendingCareReminderDestination(id: reminderID)
-    }
-}
-
-private struct PendingCareReminderDestination: Identifiable, Hashable {
-    let id: UUID
-}
-
 struct WeightEntryView: View {
     @State private var entrySession = ProductionEntrySession()
+    @FocusState private var sheepFocused: Bool
+    @FocusState private var weightFocused: Bool
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     let account: AccountProfile
@@ -159,6 +16,17 @@ struct WeightEntryView: View {
     @State private var occurredAt = Date.now
     @State private var note = ""
     @State private var errorMessage: String?
+    @State private var attemptedSave = false
+    @State private var checkedWeight = false
+
+    private var weightIssue: String? {
+        let text = kilograms.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return "请填写体重。" }
+        guard let value = Decimal.stable(text), value > 0 else {
+            return "请填写大于 0 的体重，单位为千克。"
+        }
+        return nil
+    }
 
     private var productionFields: [ProductionDraftField] {
         [
@@ -176,24 +44,66 @@ struct WeightEntryView: View {
                 SheepEarTagSingleSearchField(
                     candidates: sheepCandidates,
                     selection: $sheepID,
-                    emptySelectionText: "尚未确认称重羊只"
+                    emptySelectionText: "尚未确认称重羊只",
+                    focus: $sheepFocused
                 )
+                if attemptedSave && sheepID == nil {
+                    Label("请搜索并选定一只羊。", systemImage: "exclamationmark.circle")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("weight-sheep-validation")
+                }
             }
-            ProductionValueField(title: "体重", text: $kilograms, unit: "千克")
+            Section {
+                ProductionValueField(title: "体重", text: $kilograms, unit: "千克", focus: $weightFocused)
+                    .accessibilityIdentifier("weight-value-field")
+            } footer: {
+                if (attemptedSave || checkedWeight), let issue = weightIssue {
+                    Label(issue, systemImage: "exclamationmark.circle")
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("weight-value-validation")
+                }
+            }
             DatePicker("称重时间", selection: $occurredAt); ProductionTimeModeControl(session: entrySession)
             TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
         }
         .navigationTitle("称重")
         .productionEntry(entrySession, form: "WeightEntryView", account: account, farm: farm, fields: productionFields, save: save)
         .task(id: farm.id) { await loadSheepCandidates() }
+        .onChange(of: sheepID) { _, selectedID in
+            guard selectedID != nil, !entrySession.isApplyingFields else { return }
+            sheepFocused = false
+            weightFocused = true
+        }
+        .onChange(of: weightFocused) { wasFocused, isFocused in
+            if wasFocused && !isFocused && !kilograms.isEmpty { checkedWeight = true }
+        }
+        .onChange(of: entrySession.focusRevision) { _, _ in
+            attemptedSave = false
+            checkedWeight = false
+            weightFocused = false
+            sheepFocused = true
+        }
         .recordErrorAlert($errorMessage)
         .farmExcelImport(account: account, farm: farm, sheets: ["称重"])
     }
 
     private func save() {
-        guard let sheepID else { errorMessage = "请先搜索并确认称重羊只。"; return }
+        attemptedSave = true
+        guard let sheepID else {
+            weightFocused = false
+            sheepFocused = true
+            return
+        }
+        guard weightIssue == nil else {
+            sheepFocused = false
+            weightFocused = true
+            return
+        }
         do {
             try entrySession.execute(.recordWeight(sheepID: sheepID, kilogramsText: kilograms, occurredAt: occurredAt, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            attemptedSave = false
+            checkedWeight = false
             entrySession.complete()
         } catch { errorMessage = error.localizedDescription }
     }

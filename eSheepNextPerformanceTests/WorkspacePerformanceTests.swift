@@ -7,6 +7,56 @@ import XCTest
 @testable import eSheepNext
 
 final class WorkspacePerformanceTests: XCTestCase {
+    func testBroadFarmSearchOnTenXFixture() {
+        let source = FarmSearchSource(
+            sheep: (0..<20_000).map { index in
+                FarmSearchSheepEntry(
+                    id: UUID(),
+                    earTag: String(format: "SH-%05d", index),
+                    breed: "湖羊",
+                    statusName: "在场",
+                    penName: nil
+                )
+            },
+            pens: (0..<2_000).map { index in
+                FarmSearchPenEntry(id: UUID(), name: String(format: "SH-%05d", index))
+            }
+        )
+        var measured = FarmSearchResultSet.empty
+
+        measure(
+            metrics: [XCTClockMetric(), XCTCPUMetric(), XCTMemoryMetric()],
+            options: measureOptions()
+        ) {
+            measured = FarmSearchEngine.search(query: "SH", source: source)
+        }
+
+        XCTAssertEqual(measured.sheep, Array(source.sheep.prefix(50)))
+        XCTAssertEqual(measured.pens, Array(source.pens.prefix(50)))
+        XCTAssertEqual(measured.totalSheepCount, 20_000)
+        XCTAssertEqual(measured.totalPenCount, 2_000)
+    }
+
+    func testBroadEarTagSearchOnTenXFixture() {
+        let candidates = (0..<20_000).map { index in
+            SheepEarTagSearchCandidate(
+                id: UUID(),
+                earTag: String(format: "SH-%05d", index)
+            )
+        }
+        var measured = SheepEarTagSearchResultSet(matches: [], totalCount: 0)
+
+        measure(
+            metrics: [XCTClockMetric(), XCTCPUMetric(), XCTMemoryMetric()],
+            options: measureOptions()
+        ) {
+            measured = SheepEarTagSearchMatcher.search(query: "SH", candidates: candidates)
+        }
+
+        XCTAssertEqual(measured.matches, Array(candidates.prefix(8)))
+        XCTAssertEqual(measured.totalCount, 20_000)
+    }
+
     func testEarTagSearchOnTenXFixture() {
         let candidates = (0..<20_000).map { index in
             SheepEarTagSearchCandidate(

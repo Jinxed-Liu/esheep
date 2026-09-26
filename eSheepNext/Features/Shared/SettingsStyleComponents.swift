@@ -52,7 +52,7 @@ struct SettingsNavigationRow<Destination: View>: View {
                 iconColor: iconColor
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SettingsRowButtonStyle())
     }
 }
 
@@ -90,7 +90,18 @@ struct SettingsActionRow: View {
                 showsChevron: showsChevron
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SettingsRowButtonStyle())
+    }
+}
+
+/// Dense rows respond immediately without moving adjacent text or separators.
+private struct SettingsRowButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(Color.primary.opacity(configuration.isPressed && isEnabled ? 0.07 : 0))
+            .opacity(isEnabled ? 1 : 0.45)
     }
 }
 

@@ -407,10 +407,12 @@ extension View {
 /// Persistent field names and units remain visible while entering production results.
 struct ProductionValueField: View {
     @Environment(\.dynamicTypeSize) private var typeSize
+    @FocusState private var localFocus: Bool
     let title: String
     @Binding var text: String
     var unit: String = ""
     var keyboard: UIKeyboardType = .decimalPad
+    var focus: FocusState<Bool>.Binding? = nil
 
     var body: some View {
         let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
@@ -419,6 +421,7 @@ struct ProductionValueField: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 TextField("填写", text: $text)
                     .keyboardType(keyboard)
+                    .focused(focus ?? $localFocus)
                     .multilineTextAlignment(.trailing)
                     .accessibilityLabel(title)
                     .accessibilityHint(unit)

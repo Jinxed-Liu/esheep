@@ -1,3 +1,4 @@
+import Combine
 import ESMotion
 import SwiftData
 import SwiftUI
@@ -102,7 +103,7 @@ struct FarmWorkbenchView: View {
     private func actionRows(_ actions: [HomeQuickAction]) -> some View {
         ForEach(actions) { action in
             if let entry = action.entry {
-                SettingsActionRow(title: action.title, systemImage: action.symbol, iconColor: action.workbenchIconColor) {
+                SettingsActionRow(title: action.workbenchActionTitle, systemImage: action.symbol, iconColor: action.workbenchIconColor, showsChevron: false) {
                     presentedEntry = entry
                 }
                 if action != actions.last { SettingsCardDivider() }
@@ -143,6 +144,24 @@ struct FarmWorkbenchView: View {
 }
 
 private extension HomeQuickAction {
+    var workbenchActionTitle: String {
+        switch self {
+        case .weight: "记录体重"
+        case .health: "记录健康事件"
+        case .note: "添加备注"
+        case .transfer: "记录转群"
+        case .weaning: "记录断奶"
+        case .removal: "记录离场"
+        case .reproduction: "记录配种或孕检"
+        case .lambing: "记录产羔"
+        case .feed: "记录直接投喂"
+        case .trough: "记录盘槽"
+        case .tmrProduction: "制作 TMR"
+        case .tmrFeeding: "记录 TMR 投喂"
+        case .addSheep, .exportEvents: title
+        }
+    }
+
     var workbenchIconColor: Color {
         switch self {
         case .addSheep, .feed: .green
@@ -184,6 +203,9 @@ private struct WorkbenchPendingTroughRow: View {
             } catch is CancellationError { }
             catch { failure = true }
         }
-        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)) { _ in revision &+= 1 }
+        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)
+            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)) { _ in
+            revision &+= 1
+        }
     }
 }

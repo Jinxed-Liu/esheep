@@ -114,10 +114,10 @@ enum SheepEarTagSearchMatcher {
             return SheepEarTagSearchResultSet(matches: [], totalCount: 0)
         }
 
-        let boundedLimit = max(0, limit)
         var totalCount = 0
-        var topMatches: [(candidate: SheepEarTagSearchCandidate, rank: Int)] = []
-        topMatches.reserveCapacity(boundedLimit)
+        var topMatches = BoundedSearchMatches<(candidate: SheepEarTagSearchCandidate, rank: Int)>(
+            limit: limit, candidateCount: candidates.count
+        )
 
         for candidate in candidates {
             guard !excludedIDs.contains(candidate.id),
@@ -125,21 +125,11 @@ enum SheepEarTagSearchMatcher {
             else { continue }
             totalCount += 1
 
-            guard boundedLimit > 0 else { continue }
-            let match = (candidate: candidate, rank: rank)
-            let insertionIndex = topMatches.firstIndex { isOrderedBefore(match, $0) } ?? topMatches.endIndex
-            if insertionIndex < boundedLimit {
-                topMatches.insert(match, at: insertionIndex)
-                if topMatches.count > boundedLimit {
-                    topMatches.removeLast()
-                }
-            } else if topMatches.count < boundedLimit {
-                topMatches.append(match)
-            }
+            topMatches.insert((candidate: candidate, rank: rank), by: isOrderedBefore)
         }
 
         return SheepEarTagSearchResultSet(
-            matches: topMatches.map(\.candidate),
+            matches: topMatches.values.map(\.candidate),
             totalCount: totalCount
         )
     }
@@ -170,6 +160,7 @@ struct SheepEarTagSingleSearchField: View {
     var prompt = "输入耳号搜索"
     var emptySelectionText = "尚未选择羊只"
     var accessibilityName = "羊只耳号"
+    var focus: FocusState<Bool>.Binding? = nil
 
     @State private var query = ""
 
@@ -216,8 +207,11 @@ struct SheepEarTagSingleSearchField: View {
             )
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
-                .focused($entryFocused)
-                .onChange(of: entryFocusRevision) { _, _ in query = ""; entryFocused = true }
+                .focused(focus ?? $entryFocused)
+                .onChange(of: entryFocusRevision) { _, _ in
+                    query = ""
+                    (focus ?? $entryFocused).wrappedValue = true
+                }
                 .submitLabel(.search)
                 .accessibilityLabel(accessibilityName)
             if !query.isEmpty {
@@ -246,9 +240,10 @@ struct SheepEarTagSingleSearchField: View {
                     query = ""
                 } label: {
                     SheepEarTagSearchCandidateRow(candidate: candidate, systemImage: "plus.circle")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .contentShape(Rectangle())
                 .accessibilityLabel("选择耳号 \(candidate.earTag)")
             }
             if resultSet.hasMore {
@@ -382,9 +377,10 @@ struct SheepEarTagMultiSearchField: View {
                     query = ""
                 } label: {
                     SheepEarTagSearchCandidateRow(candidate: candidate, systemImage: "plus.circle")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .contentShape(Rectangle())
                 .accessibilityLabel("添加耳号 \(candidate.earTag)")
             }
             if resultSet.hasMore {
