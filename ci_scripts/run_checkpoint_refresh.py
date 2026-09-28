@@ -21,6 +21,6 @@ _, device = sorted(candidates, key=lambda item: (item[0], item[1]['name']), reve
 with tempfile.TemporaryDirectory(prefix='esheep-checkpoint-') as private:
     result = subprocess.run(['python3',str(root/'tools/refresh_esheep_cloud_checkpoints.py'),
         '--project',os.environ['ESHEEP_CHECKPOINT_PROJECT'],'--output',str(Path(private)/'run'),
-        '--execute','--prebuilt-test-plan',str(plans[0]),
+        '--execute','--max-age-hours','1','--prebuilt-test-plan',str(plans[0]),
         '--destination','platform=iOS Simulator,id='+device['udid']],cwd=root)
     raise SystemExit(result.returncode)
