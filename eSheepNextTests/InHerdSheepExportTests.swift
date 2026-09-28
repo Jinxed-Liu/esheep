@@ -47,7 +47,7 @@ final class InHerdSheepExportTests: XCTestCase {
 
     func testFileNameRemovesCharactersNotAcceptedByFilesApp() {
         XCTAssertEqual(
-            InHerdSheepExport.fileName(farmName: "北/场:一", date: Date(timeIntervalSince1970: 1_735_689_600)),
+            InHerdSheepExport.fileName(farmName: "北/场:一", date: Calendar.current.date(from: DateComponents(year: 2025, month: 1, day: 1))!),
             "在群羊只_北-场-一_20250101.csv"
         )
     }
@@ -96,7 +96,7 @@ final class InHerdSheepExportTests: XCTestCase {
 
     func testRemovedFileNameIncludesCSVExtension() {
         XCTAssertEqual(
-            RemovedSheepExport.fileName(farmName: "北/场:一", date: Date(timeIntervalSince1970: 1_735_689_600)),
+            RemovedSheepExport.fileName(farmName: "北/场:一", date: Calendar.current.date(from: DateComponents(year: 2025, month: 1, day: 1))!),
             "离群羊只_北-场-一_20250101.csv"
         )
     }

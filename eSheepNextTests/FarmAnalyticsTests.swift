@@ -848,11 +848,13 @@ final class FarmAnalyticsTests: XCTestCase {
         memberships: [FarmAnalyticsSnapshot.BatchMembership] = [],
         removedAt: Date? = nil, status: SheepStatus = .active
     ) -> FarmAnalyticsSnapshot {
+        // These fixtures use local calendar dates; keep the farm in the same zone.
         FarmAnalyticsSnapshot(farmID: UUID(), sheep: ids.enumerated().map { index, id in
             .init(id: id, earTag: "T-\(index)", breed: "湖羊", purpose: "育肥羊", sex: .ram,
                 status: status, initialPenID: pen, currentPenID: pen, birthAt: nil, enteredAt: start, removedAt: removedAt)
         }, pens: [], weights: weights.map { .init(id: UUID(), sheepID: $0.0, kilograms: $0.1, occurredAt: $0.2) },
-        weanings: [], lambings: [], removals: [], transfers: transfers, batchMemberships: memberships, feeds: [])
+        weanings: [], lambings: [], removals: [], transfers: transfers, batchMemberships: memberships, feeds: [],
+        timeZoneIdentifier: TimeZone.current.identifier)
     }
 
     private func makeDate(year: Int, month: Int, day: Int) -> Date {
