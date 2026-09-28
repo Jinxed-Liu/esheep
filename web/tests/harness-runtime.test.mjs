@@ -49,7 +49,7 @@ test("a resumed session missing after container sleep fails before creating a ne
   assert.equal(calls.length, 0);
 });
 
-test("resumes one Codex thread while switching image turns to mimo-v2.5", async (context) => {
+test("resumes one Codex thread with mimo-v2.6-pro for text and image turns", async (context) => {
   const stateRoot = await mkdtemp(path.join(os.tmpdir(), "esheepnext-harness-test-"));
   context.after(() => rm(stateRoot, { recursive: true, force: true }));
   const secret = "sk-test-never-persist";
@@ -64,7 +64,7 @@ test("resumes one Codex thread while switching image turns to mimo-v2.5", async 
   const textEvents = [];
   for await (const event of harness.runTurn({ userID: "user-1", farmID: "farm-1", prompt: "概览", snapshot, mimoAPIKey: secret })) textEvents.push(event);
   const sessionID = textEvents.find((event) => event.type === "session").sessionID;
-  assert.equal(textEvents.find((event) => event.type === "session").model, "mimo-v2.5-pro");
+  assert.equal(textEvents.find((event) => event.type === "session").model, "mimo-v2.6-pro");
 
   const tinyPNG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64");
   const imageEvents = [];
@@ -77,13 +77,13 @@ test("resumes one Codex thread while switching image turns to mimo-v2.5", async 
     mimoAPIKey: secret,
     attachments: [{ mimeType: "image/png", dataURL: `data:image/png;base64,${tinyPNG}` }],
   })) imageEvents.push(event);
-  assert.equal(imageEvents.find((event) => event.type === "session").model, "mimo-v2.5");
+  assert.equal(imageEvents.find((event) => event.type === "session").model, "mimo-v2.6-pro");
 
   const turnCalls = calls.filter((call) => ["start", "resume"].includes(call.type));
-  assert.equal(turnCalls[0].threadOptions.model, "mimo-v2.5-pro");
+  assert.equal(turnCalls[0].threadOptions.model, "mimo-v2.6-pro");
   assert.match(turnCalls[0].input, /默认先给结果并在 1–3 句内结束/);
   assert.equal(turnCalls[1].type, "resume");
-  assert.equal(turnCalls[1].threadOptions.model, "mimo-v2.5");
+  assert.equal(turnCalls[1].threadOptions.model, "mimo-v2.6-pro");
   assert.equal(turnCalls[1].input.some((item) => item.type === "local_image"), true);
 
   const sessionDirectory = path.join(stateRoot, sessionID);

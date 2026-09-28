@@ -73,14 +73,14 @@ test("proxies assistant requests to a bound Codex harness service", async () => 
           pathname: new URL(proxiedRequest.url).pathname,
           authorization: proxiedRequest.headers.get("authorization"),
         });
-        return Response.json({ configured: true, model: "mimo-v2.5-pro", multimodalModel: "mimo-v2.5" });
+        return Response.json({ configured: true, model: "mimo-v2.6-pro" });
       },
     },
   });
 
   assert.equal(response.status, 200);
   assert.deepEqual(calls, [{ pathname: "/api/assistant/status", authorization: "Bearer test-token" }]);
-  assert.deepEqual(await response.json(), { configured: true, model: "mimo-v2.5-pro", multimodalModel: "mimo-v2.5" });
+  assert.deepEqual(await response.json(), { configured: true, model: "mimo-v2.6-pro" });
 });
 
 test("returns an explicit unavailable response when the harness is not bound", async () => {

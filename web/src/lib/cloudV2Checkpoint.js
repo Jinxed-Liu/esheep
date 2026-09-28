@@ -1,6 +1,7 @@
 import { createV2Projection, applyV2Event, finishV2Projection, webCheckpointModels } from "./cloudV2Projection.js";
 import { applyExtendedV2Event } from "./cloudV2BusinessReplay.js";
 import { concurrentRead } from "./concurrentRead.js";
+import { browserCheckpointChunkCache } from "./checkpointChunkCache.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -124,7 +125,7 @@ async function rpc(client, name, params, signal) {
   return data;
 }
 
-export async function loadCloudV2Projection(client, farm, { accountID, storageOrigin, signal, onProgress = () => {}, fetchImpl = fetch } = {}) {
+export async function loadCloudV2Projection(client, farm, { accountID, storageOrigin, signal, onProgress = () => {}, fetchImpl = fetch, persistentCache = browserCheckpointChunkCache } = {}) {
   onProgress("正在确认牧场最新版本…");
   const status = await rpc(client, "esheep_cloud_fetch_status_v2", { p_farm_id: farm.id }, signal);
   requireValue(status?.farm_generation === farm.generation && sameID(status.farm_id, farm.id), "牧场云同步版本已变化，请刷新重试。");
@@ -143,6 +144,7 @@ export async function loadCloudV2Projection(client, farm, { accountID, storageOr
     ticket.downloads.every((download, index) => download.index === index));
   const cacheKey = `${accountID}:${farm.id.toLowerCase()}:${farm.generation}:${manifest.checkpointID.toLowerCase()}`;
   const manifestFingerprint = await sha256(JSON.stringify(manifest));
+  const persistentScope = `${storageOrigin}:${cacheKey}:${manifestFingerprint}`;
   let cached = checkpointCache.get(cacheKey);
   let projection;
   if (cached) requireValue(cached.fingerprint === manifestFingerprint);
@@ -151,16 +153,30 @@ export async function loadCloudV2Projection(client, farm, { accountID, storageOr
     const descriptors = manifest.chunks.filter(needsChunk);
     // Six bounded slots overlap network waits without the old batch barrier.
     let completed = 0;
-    onProgress(`正在下载牧场资料：0 / ${descriptors.length}`);
+    onProgress(`正在读取牧场资料：0 / ${descriptors.length}`);
     const pages = await concurrentRead(descriptors, async (descriptor, readSignal) => {
+        let bytes = await persistentCache.read(persistentScope, descriptor);
+        if (bytes) {
+          try {
+            const records = (await decodeCheckpointChunk(bytes, descriptor, readSignal))
+              .filter((row) => webCheckpointModels.has(row.model));
+            onProgress(`正在核对本地牧场资料：${++completed} / ${descriptors.length}`);
+            return records;
+          } catch (error) {
+            if (readSignal?.aborted) throw error;
+            // A damaged local copy is replaced by the signed cloud copy below.
+            bytes = null;
+          }
+        }
         const address = new URL(ticket.downloads[descriptor.index].url);
         requireValue(address.protocol === "https:" && address.origin === storageOrigin &&
           decodeURIComponent(address.pathname) === `/storage/v1/object/sign/esheep-cloud-checkpoints/${descriptor.objectKey}`);
         const response = await fetchImpl(address, { signal: readSignal, credentials: "omit", cache: "no-store" });
         if (!response.ok) throw new CloudV2ReadError("牧场资料下载失败，请刷新重试。", "CLOUD_V2_DOWNLOAD_FAILED");
-        const bytes = await readBounded(response.body, descriptor.compressedBytes, readSignal);
+        bytes = await readBounded(response.body, descriptor.compressedBytes, readSignal);
         const records = (await decodeCheckpointChunk(bytes, descriptor, readSignal))
           .filter((row) => webCheckpointModels.has(row.model));
+        await persistentCache.write(persistentScope, descriptor, bytes);
         onProgress(`正在下载并核对牧场资料：${++completed} / ${descriptors.length}`);
         return records;
     }, { signal });
@@ -196,9 +212,11 @@ export async function loadCloudV2Projection(client, farm, { accountID, storageOr
   requireValue(finalStatus.farm_generation === farm.generation && finalStatus.cloud_head >= targetHead && finalStatus.v2_ready === true,
     "牧场云同步版本已变化，请刷新重试。");
   signal?.throwIfAborted();
+  await persistentCache.prune?.(`${storageOrigin}:${accountID}:${farm.id.toLowerCase()}:${farm.generation}:`, persistentScope);
   return { ...finishV2Projection(projection), manifest, revision: targetHead };
 }
 
-export function clearCloudV2Cache() {
+export async function clearCloudV2Cache() {
   checkpointCache.clear();
+  await browserCheckpointChunkCache.clear();
 }

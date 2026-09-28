@@ -823,12 +823,12 @@ export async function signInWithApple() {
 
 export async function signOut() {
   if (!supabase) return;
-  clearCloudV2Cache();
+  await clearCloudV2Cache();
   const { error } = await supabase.auth.signOut({ scope: "local" });
   if (error) throw error;
 }
 
-export async function loadCloudWorkspace(preferredFarmID, { signal, sections } = {}) {
+export async function loadCloudWorkspace(preferredFarmID, { signal, sections, onProgress } = {}) {
   if (!supabase) throw new Error("Supabase 尚未配置。");
   signal?.throwIfAborted();
 
@@ -863,9 +863,13 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
   const farms = accessRows.map(toFarm);
   const farm = farms.find((item) => normalizedIdentifier(item.id) === normalizedIdentifier(preferredFarmID)) ?? farms[0];
   const v2 = farm.provider === "esheep_cloud"
-    ? await loadCloudV2Projection(supabase, farm, { accountID: user.id, storageOrigin: new URL(url).origin, signal })
+    ? await loadCloudV2Projection(supabase, farm, { accountID: user.id, storageOrigin: new URL(url).origin, signal, onProgress })
     : null;
   if (v2) farm.revision = v2.revision;
+  // A verified V2 projection contains every Web model, regardless of which
+  // route requested it. Mark that coverage once so first visits do not replay
+  // the entire checkpoint and event tail for each tab.
+  const availableSections = v2 ? normalizeWorkspaceSections() : loadedSections;
 
   const checkpointPromise = v2 ? Promise.resolve({ result: null, error: null }) : fetchLatestCompactCheckpoint(farm.id, farm.generation, signal)
     .then((result) => ({ result, error: null }))
@@ -1083,9 +1087,10 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
 
   return {
     mode: "cloud",
-    loadedSections,
+    loadedSections: availableSections,
     projectionCoverage: {
-      real: [...requestedEntityTypes, v2 ? "esheep_cloud_events_v2" : "farm_operations"],
+      real: [...(v2 ? workspaceEntityTypesForSections(availableSections) : requestedEntityTypes),
+        v2 ? "esheep_cloud_events_v2" : "farm_operations"],
       preview: v2 ? [] : ["alerts", "tmrMeals", "tmrMonitoring"],
       baseline: v2 ? {
         status: "loaded", throughRevision: v2.manifest.boundaryEventSequence,
@@ -1107,6 +1112,7 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections } =
     farm,
     farms,
     profile: {
+      userID: user.id,
       accountID: profile.app_account_id,
       displayName: profile.display_name || user.email?.split("@")[0] || "牧场成员",
       email: user.email,

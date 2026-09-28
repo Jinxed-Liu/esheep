@@ -1,13 +1,14 @@
 # eSheep+ Harness on Cloudflare Containers
 
-The API runs in a separate, service-binding-only Worker named
-`esheepplus-harness-staging`. The current frontend deployment is not changed until
-the container is verified. MiMo remains the model provider and each user supplies
-their own API key for each turn. No shared model credential is baked into the image.
+The API runs in separate service-binding-only Workers named
+`esheepplus-harness-staging` and `esheepplus-harness`. MiMo remains the model
+provider and each user supplies their own API key for each turn. No shared model
+credential is baked into either image.
 
 ## Deployment contract
 
-- Use `web/wrangler.harness.jsonc`. Workers Paid is required.
+- Use `web/wrangler.harness.jsonc` for staging and
+  `web/wrangler.harness.production.jsonc` for production. Workers Paid is required.
 - Build context is `web/`; the Dockerfile allowlist excludes local environments,
   credentials, farm exports, build output, and developer configuration.
 - Supply `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` as Worker secrets/environment
@@ -19,7 +20,14 @@ their own API key for each turn. No shared model credential is baked into the im
   operator-only runtime-check endpoint requires `HARNESS_DIAGNOSTICS_TOKEN`, uses
   fixed synthetic inputs, and never reads user sessions. Delete that token after
   validation and set `HARNESS_RUNTIME_VERIFIED=true` to enable user turns.
-- Production is a separate rollout and has no binding in this change.
+- Production has its own `esheepplus-harness` Worker and container application.
+
+The production Worker uses `wrangler.harness.production.jsonc` and a pinned
+Cloudflare Registry image. Its 2026-09-29 image layers the current `server/` and
+`src/lib/` source over the existing 2026-09-08 `esheepplus-harness` image, whose
+installed `@openai/codex-sdk` and `@supabase/supabase-js` versions match the
+current pinned direct dependencies. The production image digest is recorded in
+the Wrangler config; update it after building and pushing a new production image.
 
 ## Isolation and resource limits
 

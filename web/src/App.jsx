@@ -12,11 +12,14 @@ import { listDrafts, saveDraft, discardDraft } from "./lib/draftStore.js";
 import { submitDraft } from "./lib/cloudV2Writes.js";
 import { buildBusinessCommands } from "./lib/businessCommands.js";
 import { isSupabaseConfigured } from "./lib/supabaseConfig.js";
+import { cloudAccessErrorMessage, loadWithTransientJWTClockRetry } from "./lib/cloudReadRecovery.js";
 import {
   WorkspaceDataSource,
   workspaceHasSections,
   workspaceSectionsForPage,
 } from "./lib/workspaceDataSource.js";
+
+import { reportCloudReadProgress, subscribeCloudReadProgress } from "./lib/cloudReadProgress.js";
 
 let supabaseModulePromise;
 
@@ -28,7 +31,10 @@ function loadSupabaseModule() {
 const workspaceDataSource = new WorkspaceDataSource({
   loadWorkspace: async (farmID, options) => {
     const cloud = await loadSupabaseModule();
-    return cloud.loadCloudWorkspace(farmID, options);
+    return loadWithTransientJWTClockRetry(
+      () => cloud.loadCloudWorkspace(farmID, { ...options, onProgress: (message) => reportCloudReadProgress(message, options?.signal) }),
+      { signal: options?.signal },
+    );
   },
 });
 
@@ -73,6 +79,8 @@ function isNoFarmAccessError(error) {
 }
 
 export function App() {
+  const [readProgress, setReadProgress] = useState("正在确认登录和牧场权限…");
+  useEffect(() => subscribeCloudReadProgress(setReadProgress), []);
   const [activePage, setActivePage] = useState("home");
   const [routeContext, setRouteContext] = useState({});
   const [routeRequest, setRouteRequest] = useState({ page: "home", context: {} });
@@ -144,7 +152,7 @@ export function App() {
           if (isNoFarmAccessError(error)) {
             setAuthState({ loading: false, error: "", access: "invite-only", user: verifiedUser });
           } else {
-            setAuthState({ loading: false, error: verifiedUser ? error.message || "牧场资料读取失败，请重试。" : explainSessionRestoreError(error),
+            setAuthState({ loading: false, error: verifiedUser ? cloudAccessErrorMessage(error) : explainSessionRestoreError(error),
               access: verifiedUser ? "unavailable" : "signed-out", user: verifiedUser });
           }
         }
@@ -294,7 +302,7 @@ export function App() {
       } catch (error) {
         if (error?.name === "AbortError") throw error;
         setWorkspace(null);
-        setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : error.message,
+        setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : cloudAccessErrorMessage(error),
           access: isNoFarmAccessError(error) ? "invite-only" : "unavailable", user });
       }
     } catch (error) {
@@ -322,7 +330,7 @@ export function App() {
       } catch (error) {
         if (error?.name === "AbortError") throw error;
         setWorkspace(null);
-        setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : error.message,
+        setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : cloudAccessErrorMessage(error),
           access: isNoFarmAccessError(error) ? "invite-only" : "unavailable", user: result.user });
       }
       return result;
@@ -368,7 +376,7 @@ export function App() {
       setAuthState({ loading: false, error: "", access: "member", user });
     } catch (error) {
       if (error?.name === "AbortError") return;
-      setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : error.message,
+      setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : cloudAccessErrorMessage(error),
         access: isNoFarmAccessError(error) ? "invite-only" : user ? "unavailable" : "signed-out", user });
     }
   }
@@ -527,7 +535,7 @@ export function App() {
         <div className="route-loading session-loading" aria-live="polite">
           <SpinnerGap size={28} className="spin" />
           <strong>eSheep+</strong>
-          <span className="visually-hidden">正在准备工作区</span>
+          <span>{readProgress}</span>
         </div>
       </div>
     );
@@ -573,7 +581,7 @@ export function App() {
         {recordDialog.open ? <RecordDialog open requestedType={recordDialog.type} initialDraft={recordDialog.draft} initialValues={recordDialog.values} workspace={workspace} onClose={closeRecordDialog} onSave={persistRecord} /> : null}
       </Suspense>
       {routeLoading || routeTransitionPending ? <div className="route-progress" role="status" aria-label="正在载入页面数据" /> : null}
-      {authState.loading || writeBusy ? <div className="loading-scrim" aria-live="polite"><SpinnerGap size={28} className="spin" />{writeProgress||"正在连接云端…"}</div> : null}
+      {authState.loading || writeBusy ? <div className="loading-scrim" aria-live="polite"><SpinnerGap size={28} className="spin" />{writeProgress || readProgress}</div> : null}
       {toast ? (
         <div className={`toast ${toast.tone}`} role="status">
           {toast.tone === "danger" ? <WarningCircle size={22} weight="fill" /> : <CheckCircle size={22} weight="fill" />}

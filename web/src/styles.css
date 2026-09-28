@@ -292,13 +292,51 @@ p {
 }
 
 .account-button img,
-.account-summary img {
+.account-summary img,
+.account-button .account-avatar-fallback,
+.account-summary .account-avatar-fallback {
   width: 42px;
   height: 42px;
   border-radius: 50%;
   object-fit: cover;
   border: 2px solid var(--brand);
 }
+
+.account-avatar-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--brand);
+  background: var(--surface-subtle);
+  font-weight: 650;
+}
+
+.account-avatar-setting {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.account-avatar-setting > img,
+.account-avatar-setting > .account-avatar-fallback {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--brand);
+}
+
+.account-avatar-setting > span {
+  display: grid;
+  gap: 3px;
+  flex: 1;
+}
+
+.account-avatar-setting small { color: var(--muted); }
+.account-avatar-setting label { cursor: pointer; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 
 .popover {
   position: absolute;
@@ -4488,7 +4526,8 @@ p {
     display: none;
   }
 
-  .account-button img {
+  .account-button img,
+  .account-button .account-avatar-fallback {
     width: 36px;
     height: 36px;
   }

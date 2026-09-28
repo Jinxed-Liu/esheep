@@ -14,6 +14,8 @@ import { ShieldCheck } from "@phosphor-icons/react/ShieldCheck";
 import { UsersThree } from "@phosphor-icons/react/UsersThree";
 import { WarningCircle } from "@phosphor-icons/react/WarningCircle";
 import { PageTop } from "./FeaturePageShared.jsx";
+import { AccountAvatar, accountAvatarChangedEvent } from "../AccountAvatar.jsx";
+import { prepareAccountAvatar, uploadAccountAvatar } from "../../lib/accountAvatar.js";
 
 const capabilityRows = [
   ["读取牧场", "可用", "可用", "可用"],
@@ -31,6 +33,8 @@ export default function SettingsPage({ workspace, authState, isConfigured, onSig
   const [busy, setBusy] = useState(false);
   const [appleBusy, setAppleBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarMessage, setAvatarMessage] = useState("");
   const [showMetricUnits, setShowMetricUnits] = useState(true);
   const [allowAssistantContext, setAllowAssistantContext] = useState(false);
 
@@ -60,6 +64,25 @@ export default function SettingsPage({ workspace, authState, isConfigured, onSig
     }
   }
 
+  async function changeAvatar(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || avatarBusy) return;
+    setAvatarBusy(true);
+    setAvatarMessage("");
+    try {
+      const { supabase } = await import("../../lib/supabase.js");
+      const blob = await prepareAccountAvatar(file);
+      await uploadAccountAvatar(supabase, workspace.profile.userID, blob);
+      window.dispatchEvent(new Event(accountAvatarChangedEvent));
+      setAvatarMessage("头像已同步到云端，App 稍后会自动更新。");
+    } catch (error) {
+      setAvatarMessage(error.message || "头像更新失败，请重试。");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
   return (
     <main className="page feature-page">
       <PageTop title="设置" description="与 App 一致：账号、当前牧场、偏好、AI 与隐私，以及账号操作。" icon={Gear} />
@@ -68,6 +91,15 @@ export default function SettingsPage({ workspace, authState, isConfigured, onSig
           <div className="panel-heading"><h2>Supabase 云端</h2>{workspace.mode === "cloud" ? <CloudCheck size={25} className="success-icon" /> : <CloudSlash size={25} />}</div>
           {workspace.mode === "cloud" ? (
             <div className="signed-in-state">
+              <div className="account-avatar-setting">
+                <AccountAvatar userID={workspace.profile?.userID} name={workspace.profile?.displayName} />
+                <span><strong>账号头像</strong><small>与 App 使用同一份云端头像</small></span>
+                <label className="secondary-button" htmlFor="account-avatar-file">
+                  {avatarBusy ? "正在同步…" : "更换头像"}
+                </label>
+                <input id="account-avatar-file" type="file" accept="image/*" onChange={changeAvatar} disabled={avatarBusy} className="visually-hidden" />
+              </div>
+              {avatarMessage ? <p className="form-message" role="status">{avatarMessage}</p> : null}
               <div className="connection-summary"><CloudCheck size={34} /><span><strong>已连接 {workspace.farm.name}</strong><small>{workspace.profile?.email} · {workspace.farm.roleName}</small></span></div>
               <dl><div><dt>云端修订</dt><dd>#{workspace.farm.revision?.toLocaleString("zh-CN")}</dd></div><div><dt>权限策略</dt><dd>RLS 已启用</dd></div><div><dt>当前模式</dt><dd>读取基础投影</dd></div></dl>
               <div className="settings-actions"><button type="button" className="secondary-button" onClick={onReloadCloud}><CloudArrowDown size={19} />刷新云端</button><button type="button" className="text-danger-button" onClick={onSignOut}><SignOut size={19} />退出登录</button></div>

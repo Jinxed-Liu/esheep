@@ -13,9 +13,9 @@ test("streams a farm-scoped assistant turn after authorization", async () => {
   const harness = {
     async *runTurn(input) {
       calls.push(input);
-      yield { type: "session", sessionID: "11111111-1111-4111-8111-111111111111", model: "mimo-v2.5", multimodal: true };
+      yield { type: "session", sessionID: "11111111-1111-4111-8111-111111111111", model: "mimo-v2.6-pro", multimodal: true };
       yield { type: "assistant", itemID: "answer-1", text: "已核对" };
-      yield { type: "done", model: "mimo-v2.5" };
+      yield { type: "done", model: "mimo-v2.6-pro" };
     },
   };
   const api = createAssistantAPI({
@@ -59,12 +59,12 @@ test("rejects a snapshot for a different farm before invoking the harness", asyn
   assert.equal((await response.json()).code, "SNAPSHOT_SCOPE_MISMATCH");
 });
 
-test("status exposes both model names but no key or endpoint", async () => {
+test("status exposes the unified model but no key or endpoint", async () => {
   const api = createAssistantAPI({ environment, harness: {}, authVerifier: async () => ({ userID: "user-1" }) });
   const response = await api(new Request("https://example.test/api/assistant/status"));
   const payload = await response.json();
-  assert.equal(payload.model, "mimo-v2.5-pro");
-  assert.equal(payload.multimodalModel, "mimo-v2.5");
+  assert.equal(payload.model, "mimo-v2.6-pro");
+  assert.equal("multimodalModel" in payload, false);
   assert.equal(payload.capabilities.includes("image_input"), true);
   assert.equal(payload.requiresUserAPIKey, true);
   assert.equal(JSON.stringify(payload).includes(userAPIKey), false);

@@ -1,3 +1,5 @@
+import { decodeCheckpointData } from "./checkpointData.js";
+
 export const labelColors = ["yellow", "green", "red", "white", "orange", "light-blue", "pink", "black", "purple", "dark-blue"];
 export const labelColorNames = { yellow:"黄色",green:"绿色",red:"红色",white:"白色",orange:"橙色","light-blue":"浅蓝色",pink:"粉色",black:"黑色",purple:"紫色","dark-blue":"深蓝色" };
 export const labelKinds = new Set(["care.sheepLabel.save", "care.sheepLabel.delete", "care.sheepLabels.edit", "care.sheepLabels.patchProfile"]);
@@ -74,7 +76,8 @@ export async function labelSpec(action,draft,workspace) {
   if(action==="patchProfile") {
     const stream={type:"sheepProfile",id:draft.sheepID};
     const raw=workspace.models.ESheepCloudStreamState?.find(s=>s.streamType===stream.type&&s.streamID===stream.id)?.fieldVersionsData;
-    const entries=raw?JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(raw),c=>c.charCodeAt(0)))):[];
+    const entries=raw?decodeCheckpointData(raw):[];
+    requireValue(Array.isArray(entries),"牧场字段版本记录格式不正确。");
     const nullDigest=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode('null'))),b=>b.toString(16).padStart(2,"0")).join("");
     const values={earTag:{type:"string",value:draft.earTag},breed:{type:"string",value:draft.breed},sex:{type:"string",value:draft.sex},birthAt:draft.birthAt==null?null:{type:"date",value:draft.birthAt},note:{type:"string",value:draft.note}};
     values.currentParity=draft.currentParity==null?null:{type:"integer",value:draft.currentParity};

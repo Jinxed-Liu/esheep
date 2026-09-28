@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  MIMO_MULTIMODAL_MODEL,
   MIMO_MODEL,
   MIMO_PAYGO_BASE_URL,
   MIMO_TOKEN_PLAN_BASE_URL,
@@ -20,12 +19,10 @@ const baseEnvironment = {
 };
 const userAPIKey = "sk-test-not-a-real-key";
 
-test("locks text and multimodal turns to the two requested MiMo models", () => {
+test("uses MiMo-V2.6-Pro for text and image turns", () => {
   const config = loadHarnessConfig(baseEnvironment);
   assert.equal(config.model, MIMO_MODEL);
-  assert.equal(config.multimodalModel, MIMO_MULTIMODAL_MODEL);
-  assert.equal(buildThreadOptions(config, "/tmp/session").model, "mimo-v2.5-pro");
-  assert.equal(buildThreadOptions(config, "/tmp/session", { multimodal: true }).model, "mimo-v2.5");
+  assert.equal(buildThreadOptions(config, "/tmp/session").model, "mimo-v2.6-pro");
 });
 
 test("uses the matching MiMo endpoint for pay-go and token-plan keys", () => {

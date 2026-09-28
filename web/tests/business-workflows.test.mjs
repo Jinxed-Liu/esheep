@@ -35,6 +35,12 @@ test('native purpose history includes explicit original purpose and correct acco
  const w=workflowFixture().workspace(),s=w.models.SheepRecord[0];w.models.DomainOperation.push({id:crypto.randomUUID(),entityID:s.id,kindRawValue:'care',occurredAt:Date.UTC(2026,7,1),createdAt:Date.UTC(2026,7,2),resultingRevision:2,accountID:crypto.randomUUID(),payload:{json:{careCommand:{setSheepPurpose:{sheepID:s.id,purpose:'育肥羊',reason:'转育肥',expectedRevision:1}},optionalStrings:{previousSheepPurpose:'未分类'},dates:{}}}});
  const event=(await nativeEventSnapshots(w.models)).find(e=>e.scope==='purpose');assert.equal(event.detail,'未分类 → 育肥羊');assert.equal(event.fields[0].label,'原用途');assert.equal(event.relatedSheepIDs[0],s.id);
 });
+test('native purpose history decodes Base64 checkpoint payload envelope',async()=>{
+ const w=workflowFixture().workspace(),s=w.models.SheepRecord[0];
+ const payload={careCommand:{setSheepPurpose:{sheepID:s.id,purpose:'育肥羊'}},optionalStrings:{previousSheepPurpose:'未分类'},dates:{}};
+ w.models.DomainOperation.push({id:crypto.randomUUID(),entityID:s.id,kindRawValue:'care',occurredAt:Date.UTC(2026,7,1),createdAt:Date.UTC(2026,7,2),resultingRevision:2,accountID:crypto.randomUUID(),payload:{base64:Buffer.from(JSON.stringify(payload)).toString('base64')}});
+ const event=(await nativeEventSnapshots(w.models)).find(e=>e.scope==='purpose');assert.equal(event.detail,'未分类 → 育肥羊');
+});
 test('WebCrypto command signature verifies exact bytes and duplicate rejection remains rejected',async()=>{
  const keys=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},false,['sign','verify']);const w=workflowFixture().workspace();const spec=(await buildBusinessCommands({sheet:'称重',values:{耳号:'A002',体重kg:'40',发生日期:'2026-08-01'}},w))[0];
  const accountID=crypto.randomUUID(),deviceID=crypto.randomUUID();const command=commandEnvelope(spec,{accountID,farm:w.farm,deviceID,sequence:1,sourceRequestID:crypto.randomUUID()});const signed=await signCommand(command,{privateKey:keys.privateKey});const text=['esheep-cloud-command-v2',w.farm.id,'3',accountID,deviceID,'1',command.commandID,signed.content_digest].join('\n');

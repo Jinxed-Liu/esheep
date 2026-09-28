@@ -111,6 +111,23 @@ test("reuses a section-complete workspace and accumulates route coverage", async
   assert.ok(workspaceHasSections(herdAndTMR, ["herd", "tmr"]));
 });
 
+test("complete V2 workspace opens every top-level tab without reloading the farm", async () => {
+  let loads = 0;
+  const source = new WorkspaceDataSource({
+    loadWorkspace: async (farmID) => {
+      loads += 1;
+      return cloudWorkspace({ farmID, loadedSections: normalizeWorkspaceSections() });
+    },
+  });
+  const verifiedV2 = cloudWorkspace({ loadedSections: normalizeWorkspaceSections() });
+  for (const page of ["home", "insights", "entry", "feeding", "search"]) {
+    assert.equal(await source.loadForPage(page, "farm-a", { currentWorkspace: verifiedV2 }), verifiedV2);
+  }
+  assert.equal(loads, 0);
+  await source.loadForPage("insights", "farm-a", { currentWorkspace: verifiedV2, bypassCache: true });
+  assert.equal(loads, 1, "explicit refresh must still fetch a verified projection");
+});
+
 test("pins an implicit route request to the current farm", async () => {
   const calls = [];
   const source = new WorkspaceDataSource({
