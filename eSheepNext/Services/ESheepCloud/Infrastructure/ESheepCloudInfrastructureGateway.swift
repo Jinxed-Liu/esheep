@@ -38,16 +38,10 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
         guard download.index == descriptor.index, download.url.scheme == "https" else {
             throw ESheepCloudCheckpointError.malformedRecord
         }
-        // Stream into a bounded buffer rather than allocating an unbounded
-        // response before checking the advertised compressed byte length.
-        let (bytes, response) = try await URLSession.shared.bytes(from: download.url)
-        _ = try Self.requireSuccess(response, allowed: [200])
-        var data = Data()
-        data.reserveCapacity(descriptor.compressedBytes)
-        for try await byte in bytes {
-            guard data.count < descriptor.compressedBytes else { throw ESheepCloudCheckpointError.sizeLimit }
-            data.append(byte)
-        }
+        let phase = ESheepCloudDiagnostics.Phase("checkpoint-download")
+        defer { phase.end(items: descriptor.compressedBytes) }
+        let data = try await ESheepCloudBoundedDownload(expectedBytes: descriptor.compressedBytes)
+            .receive(download.url)
         guard data.count == descriptor.compressedBytes,
               ESheepCloudCheckpointArchive.digest(data) == descriptor.compressedSHA256 else {
             throw ESheepCloudCheckpointError.digestMismatch

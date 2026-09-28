@@ -66,6 +66,33 @@ actor ESheepCloudCheckpointReceiver {
             }
     }
 
+    private func receiveChunk(_ descriptor: ESheepCloudCheckpointManifest.Chunk,
+                              ticket: ESheepCloudCheckpointTicket,
+                              manifest: ESheepCloudCheckpointManifest,
+                              directory: URL) async throws -> Data {
+        try Task.checkCancellation()
+        let file = directory.appending(path: String(format: "%05d.json.gz", descriptor.index))
+        if let cached = try? Data(contentsOf: file),
+           cached.count == descriptor.compressedBytes,
+           ESheepCloudCheckpointArchive.digest(cached) == descriptor.compressedSHA256 { return cached }
+        let compressed: Data
+        do {
+            compressed = try await transport.downloadCheckpointChunk(ticket.downloads[descriptor.index], descriptor: descriptor)
+        } catch {
+            guard case ESheepCloudInfrastructureError.transferFailed(let status) = error,
+                  [400, 401, 403].contains(status) else { throw error }
+            let renewed = try await transport.openCheckpoint(farmID: manifest.farmID,
+                farmGeneration: manifest.farmGeneration, checkpointID: manifest.checkpointID)
+            guard renewed.manifest == manifest, renewed.downloads.count == manifest.chunks.count else {
+                throw ESheepCloudCheckpointError.incomplete
+            }
+            compressed = try await transport.downloadCheckpointChunk(renewed.downloads[descriptor.index], descriptor: descriptor)
+        }
+        try Task.checkCancellation()
+        try compressed.write(to: file, options: .atomic)
+        return compressed
+    }
+
     private func receiveExclusively(ticket initialTicket: ESheepCloudCheckpointTicket,
                                     seed: ESheepCloudFarmSeedV2) async throws -> ESheepCloudInitialSyncReport {
         guard let manifest = initialTicket.manifest else { throw ESheepCloudCheckpointError.incomplete }
@@ -88,36 +115,38 @@ actor ESheepCloudCheckpointReceiver {
         do {
             let importer = try ESheepCloudCheckpointImporter(manifest: manifest,
                 accountID: seed.memberAccountID, storeURL: directory.appending(path: "verification.store"))
-            var ticket = initialTicket
             var received = 0
-            for descriptor in manifest.chunks {
-                try Task.checkCancellation()
-                let file = directory.appending(path: String(format: "%05d.json.gz", descriptor.index))
-                let compressed: Data
-                if let cached = try? Data(contentsOf: file),
-                   cached.count == descriptor.compressedBytes,
-                   ESheepCloudCheckpointArchive.digest(cached) == descriptor.compressedSHA256 {
-                    compressed = cached
-                } else {
-                    // Tickets are intentionally short lived. Refresh only for
-                    // an expired/denied URL, preserving the pinned manifest.
-                    do {
-                        compressed = try await transport.downloadCheckpointChunk(ticket.downloads[descriptor.index], descriptor: descriptor)
-                    } catch {
-                        guard case ESheepCloudInfrastructureError.transferFailed(let status) = error,
-                              [400, 401, 403].contains(status) else { throw error }
-                        let renewed = try await transport.openCheckpoint(farmID: seed.id, farmGeneration: manifest.farmGeneration, checkpointID: manifest.checkpointID)
-                        guard renewed.manifest == manifest, renewed.downloads.count == manifest.chunks.count else {
-                            throw ESheepCloudCheckpointError.incomplete
-                        }
-                        ticket = renewed
-                        compressed = try await transport.downloadCheckpointChunk(ticket.downloads[descriptor.index], descriptor: descriptor)
+            try await withThrowingTaskGroup(of: (Int, Data).self) { group in
+                var nextDownload = 0
+                var nextImport = 0
+                var ready: [Int: Data] = [:]
+                func enqueue() {
+                    guard nextDownload < manifest.chunks.count else { return }
+                    let descriptor = manifest.chunks[nextDownload]
+                    nextDownload += 1
+                    group.addTask {
+                        let data = try await self.receiveChunk(descriptor, ticket: initialTicket,
+                            manifest: manifest, directory: directory)
+                        return (descriptor.index, data)
                     }
-                    try compressed.write(to: file, options: .atomic)
                 }
-                try await importer.importChunk(compressed, index: descriptor.index)
-                received += compressed.count
-                try progress(sessionID: sessionID, state: .receiving, received: Int64(received), chunkIndex: descriptor.index)
+                for _ in 0..<min(3, manifest.chunks.count) { enqueue() }
+                while let (index, data) = try await group.next() {
+                    ready[index] = data
+                    received += data.count
+                    try progress(sessionID: sessionID, state: .receiving, received: Int64(received))
+                    while let compressed = ready.removeValue(forKey: nextImport) {
+                        try Task.checkCancellation()
+                        // Start the next transfer while this chunk is imported.
+                        enqueue()
+                        let phase = ESheepCloudDiagnostics.Phase("checkpoint-import")
+                        try await importer.importChunk(compressed, index: nextImport)
+                        phase.end(items: manifest.chunks[nextImport].recordCount)
+                        try progress(sessionID: sessionID, state: .receiving,
+                            received: Int64(received), chunkIndex: nextImport)
+                        nextImport += 1
+                    }
+                }
             }
             try progress(sessionID: sessionID, state: .verifying)
             try await importer.finish()
