@@ -388,7 +388,7 @@ final class FarmEventHistoryTests: XCTestCase {
         let pen = PenRecord(farmID: farmID, name: "羔羊一舍")
         let dam = SheepRecord(farmID: farmID, earTag: "D001", breed: "湖羊", sex: .ewe, penID: pen.id, enteredAt: .now)
         let sire = SheepRecord(farmID: farmID, earTag: "S001", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: pen.id, enteredAt: .now)
-        let birthAt = Date(timeIntervalSince1970: 1_735_689_600)
+        let birthAt = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2025, month: 1, day: 1)))
         let lamb = SheepRecord(
             farmID: farmID,
             earTag: "L001",
