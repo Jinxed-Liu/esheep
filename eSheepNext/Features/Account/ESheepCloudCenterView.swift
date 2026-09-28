@@ -843,7 +843,7 @@ private struct ESheepCloudPreparationSection: View {
         _ session: ESheepCloudInitialSyncSession
     ) -> String {
         let chunks = downloadChunkProgress(session)
-        let chunkText = chunks.map { "已接收 \($0.completed) / \($0.total) 个分片，" } ?? ""
+        let chunkText = chunks.map { "已整理 \($0.completed) / \($0.total) 个分片，" } ?? ""
         return "\(chunkText)已下载 \(formattedBytes(session.receivedByteCount))；本次预计下载 \(formattedBytes(session.expectedByteCount))。尚未计入后续新增变更。"
     }
 

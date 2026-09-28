@@ -11,6 +11,7 @@ actor ESheepCloudCheckpointImporter {
 
     init(manifest: ESheepCloudCheckpointManifest, accountID: UUID, storeURL: URL) throws {
         try manifest.validate()
+        try ESheepCloudCheckpointRegistry.validateCoverage()
         self.manifest = manifest
         self.accountID = accountID
         container = try AppSchema.makeContainer(name: "CheckpointVerification", url: storeURL)
@@ -22,7 +23,6 @@ actor ESheepCloudCheckpointImporter {
     }
 
     func importChunk(_ compressed: Data, index: Int) throws {
-        try ESheepCloudCheckpointRegistry.validateCoverage()
         guard manifest.chunks.indices.contains(index) else { throw ESheepCloudCheckpointError.malformedRecord }
         let descriptor = manifest.chunks[index]
         let records = try Self.decode(compressed, descriptor: descriptor)
@@ -156,6 +156,46 @@ actor ESheepCloudCheckpointImporter {
         let projection = try ESheepCloudProjectionTransaction(context: context, seed: seed,
             farmGeneration: manifest.farmGeneration, seedEmptyStore: false)
         return try projection.projectionSummary()
+    }
+
+    /// Controlled worker only: compact a verified cloud parent plus a sealed
+    /// event prefix. Sealed stream expectations are checked before export;
+    /// no caller can export an arbitrary device projection through this API.
+    func exportRefreshedCheckpoint(seed: ESheepCloudFarmSeedV2, head: Int64,
+                                   expectations: [ESheepCloudSnapshotRecordV2],
+                                   directory: URL) throws -> ESheepCloudCheckpointManifest {
+        guard seed.id == manifest.farmID, head > manifest.boundaryEventSequence,
+              try currentHead() == head else { throw ESheepCloudCheckpointError.incomplete }
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        guard expectations.allSatisfy({ record in
+            if case .event = record { return false }; return true
+        }) else { throw ESheepCloudCheckpointError.malformedRecord }
+        try ESheepCloudProjectionTransaction.seedFarm(seed, context: context)
+        let projection = try ESheepCloudProjectionTransaction(context: context, seed: seed,
+            farmGeneration: manifest.farmGeneration, seedEmptyStore: false)
+        try projection.applySnapshotRecords(expectations)
+        try projection.materializeZeroEventStreamsIfNeeded()
+        let summary = try projection.projectionSummary()
+        guard summary.eventHead == head, summary.streams.count == projection.expectedStreams.count,
+              summary.assetCount == expectations.filter({ if case .asset = $0 { true } else { false } }).count
+        else { throw ESheepCloudCheckpointError.incomplete }
+        for (key, expected) in projection.expectedStreams {
+            guard let actual = summary.streams[key], actual.streamVersion == expected.streamVersion,
+                  actual.contentDigest == expected.contentDigest, actual.lastEventSequence == expected.lastEventSequence,
+                  actual.fields == Dictionary(uniqueKeysWithValues: expected.fieldVersions.map {
+                      ($0.field, ESheepCloudVerifiedFieldSummary(version: $0.version, valueDigest: $0.valueDigest))
+                  }) else { throw ESheepCloudCheckpointError.digestMismatch }
+        }
+        let farmID = manifest.farmID
+        guard let state = try context.fetch(FetchDescriptor<ESheepCloudFarmState>(predicate: #Predicate {
+            $0.farmID == farmID
+        })).first else { throw ESheepCloudCheckpointError.incomplete }
+        state.integrityState = .passed
+        state.lastVerifiedEventSequence = head
+        state.activityState = .active
+        try context.save()
+        return try ESheepCloudCheckpointArchive.export(farmID: farmID, context: context, directory: directory)
     }
 
     static func decode(_ data: Data, descriptor: ESheepCloudCheckpointManifest.Chunk) throws -> [ESheepCloudCheckpointRecord] {
