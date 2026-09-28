@@ -87,7 +87,7 @@ final class InsightMessageRecord {
         createdAt: Date = .now,
         status: InsightMessageStatus = .completed,
         provider: String = "mimo",
-        model: String = "mimo-v2.5-pro",
+        model: String = MiMoCredential.model,
         toolName: String? = nil
     ) {
         self.id = id

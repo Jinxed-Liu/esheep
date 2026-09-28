@@ -17,8 +17,7 @@ enum MiMoCredentialKind: String, Codable, Sendable {
 }
 
 struct MiMoCredential: Codable, Equatable, Sendable {
-    static let textModel = "mimo-v2.5-pro"
-    static let multimodalModel = "mimo-v2.5"
+    static let model = "mimo-v2.6-pro"
 
     let apiKey: String
     let kind: MiMoCredentialKind

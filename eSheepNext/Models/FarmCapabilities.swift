@@ -45,9 +45,9 @@ struct CapabilitySet: Sendable, Equatable {
             true
         case .administrator:
             switch capability {
-            case .readFarm, .recordProduction, .editHistoricalFacts, .manageCatalogs, .viewAnalytics, .editFarmLocation, .exportEvents:
+            case .readFarm, .recordProduction, .editHistoricalFacts, .manageCatalogs, .viewAnalytics, .editFarmLocation, .exportEvents, .deleteProtectedFacts:
                 true
-            case .deleteProtectedFacts, .manageMembers, .manageFarm, .exportFarm, .resolveConflicts, .recoverFarm:
+            case .manageMembers, .manageFarm, .exportFarm, .resolveConflicts, .recoverFarm:
                 false
             }
         case .worker:

@@ -195,6 +195,14 @@ enum FarmCommandCloudPayloadDecoder {
                 sheepIDs: sheepIDs,
                 note: try string("note", in: payload)
             )
+        case .correctEvent: return .correctEvent(try FarmEventCorrectionDraft.decode(payload))
+        case .updateBatch:
+            return .updateBatch(
+                batchID: try identifier("batchID", in: payload),
+                name: try string("name", in: payload),
+                purpose: try string("purpose", in: payload),
+                startedAt: try date("startedAt", in: payload)
+            )
         case .assignBatchMembership:
             return .assignSheepToBatch(
                 batchID: try identifier("batchID", in: payload),

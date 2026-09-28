@@ -24,7 +24,7 @@ final class FarmDomainTests: XCTestCase {
         XCTAssertTrue(CapabilitySet(role: .administrator).allows(.recordProduction))
         XCTAssertTrue(CapabilitySet(role: .administrator).allows(.manageCatalogs))
         XCTAssertFalse(CapabilitySet(role: .administrator).allows(.manageMembers))
-        XCTAssertFalse(CapabilitySet(role: .administrator).allows(.deleteProtectedFacts))
+        XCTAssertTrue(CapabilitySet(role: .administrator).allows(.deleteProtectedFacts))
         XCTAssertTrue(CapabilitySet(role: .worker).allows(.recordProduction))
         XCTAssertFalse(CapabilitySet(role: .worker).allows(.manageCatalogs))
     }

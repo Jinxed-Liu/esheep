@@ -208,6 +208,10 @@ enum CloudOperationSecurity {
             case .care:
                 return payload.careCommand?.requiredCapability ?? .recordProduction
             case .updateFarmLocation: return .editFarmLocation
+            case .correctEvent:
+                guard let draft = try? FarmEventCorrectionDraft.decode(payload) else { return .manageCatalogs }
+                return draft.kind == .inventory || draft.kind == .semen ? .manageCatalogs : .editHistoricalFacts
+            case .updateBatch: return .manageCatalogs
             case .tombstoneEntity:
                 guard payload.strings["entityType"] == envelope.entityType else {
                     return .deleteProtectedFacts
@@ -216,7 +220,12 @@ enum CloudOperationSecurity {
                     for: envelope.entityType,
                     deletedAt: envelope.deletedAt ?? envelope.modifiedAt
                 )
-            case .restoreTombstonedEntity: return .deleteProtectedFacts
+            case .restoreTombstonedEntity:
+                if envelope.entityType == CloudEntityType.productionBatch.rawValue ||
+                    envelope.entityType == CloudEntityType.batchMembership.rawValue {
+                    return .manageCatalogs
+                }
+                return .deleteProtectedFacts
             case .correctWeight, .correctTransfer, .correctRemoval: return .editHistoricalFacts
             case .resolveConflict: return .resolveConflicts
             case .recoverEntity: return .recoverFarm

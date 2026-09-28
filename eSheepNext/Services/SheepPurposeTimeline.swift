@@ -36,7 +36,17 @@ enum SheepPurposeTimeline {
     }
 
     static func facts(from operations: [DomainOperation]) -> [SheepPurposeTimelineFact] {
-        let decoded = operations.compactMap(decode)
+        var corrections: [UUID: FarmEventCorrectionDraft] = [:]
+        for operation in operations.sorted(by: { $0.createdAt < $1.createdAt }) where operation.kindRawValue == DomainOperationKind.correctEvent.rawValue {
+            guard let payload = try? cloudDecoder.decode(FarmCommandCloudPayload.self, from: operation.payload),
+                  let draft = try? FarmEventCorrectionDraft.decode(payload), draft.kind == .purpose else { continue }
+            corrections[draft.sourceEventID] = draft
+        }
+        let decoded = operations.compactMap(decode).compactMap { fact -> SheepPurposeTimelineFact? in
+            guard let correction = corrections[fact.id] else { return fact }
+            guard !correction.withdraw, let purpose = SheepPurpose(rawValue: correction.value) else { return nil }
+            return SheepPurposeTimelineFact(id: fact.id, sheepID: fact.sheepID, previousPurpose: fact.previousPurpose, purpose: purpose, reason: correction.text, occurredAt: correction.occurredAt, recordedAt: fact.recordedAt, changedByAccountID: fact.changedByAccountID, resultingRevision: fact.resultingRevision)
+        }
             .sorted {
                 if $0.occurredAt != $1.occurredAt { return $0.occurredAt < $1.occurredAt }
                 if $0.recordedAt != $1.recordedAt { return $0.recordedAt < $1.recordedAt }
@@ -62,7 +72,7 @@ enum SheepPurposeTimeline {
         }
     }
 
-    private static func decode(
+    static func decode(
         _ operation: DomainOperation
     ) -> SheepPurposeTimelineFact? {
         guard operation.kindRawValue == DomainOperationKind.care.rawValue,
@@ -122,9 +132,10 @@ enum SheepLifecyclePurpose {
         // Include revoked weaning records to recover the pre-weaning baseline.
         let weanings = try context.fetch(FetchDescriptor<WeaningRecord>(predicate: #Predicate { $0.farmID == farmID }))
         let operations = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
-            $0.farmID == farmID && $0.kindRawValue == "care"
+            $0.farmID == farmID
         }))
         let weaningsBySheep = Dictionary(grouping: weanings, by: \.sheepID)
+        let originalBySheep = Dictionary(grouping: operations.compactMap(SheepPurposeTimeline.decode), by: \.sheepID)
         let explicitBySheep = Dictionary(grouping: SheepPurposeTimeline.facts(from: operations), by: \.sheepID)
         var result = [UUID: Timeline]()
         for item in sheep {
@@ -134,10 +145,10 @@ enum SheepLifecyclePurpose {
             let lifecycleManaged = current == .sucklingLamb || current == .weanedLamb || current == .unclassified
             // Preserve imported adult purposes when no dated explicit change can
             // establish when that purpose began.
-            guard !explicit.isEmpty || lifecycleManaged else { continue }
+            guard !explicit.isEmpty || !(originalBySheep[item.id] ?? []).isEmpty || lifecycleManaged else { continue }
             let bornHere = item.damProvenance == .lambing
-            guard bornHere || !records.isEmpty || !explicit.isEmpty else { continue }
-            let previous = explicit.first?.previousPurpose
+            guard bornHere || !records.isEmpty || !explicit.isEmpty || !(originalBySheep[item.id] ?? []).isEmpty else { continue }
+            let previous = originalBySheep[item.id]?.sorted { $0.occurredAt < $1.occurredAt }.first?.previousPurpose ?? explicit.first?.previousPurpose
             let initial = bornHere ? SheepPurpose.sucklingLamb.rawValue
                 : (previous ?? (!records.isEmpty ? SheepPurpose.sucklingLamb.rawValue : item.purpose))
             var changes = records.filter { $0.deletedAt == nil }.map {

@@ -1,8 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 
-export const MIMO_MODEL = "mimo-v2.5-pro";
-export const MIMO_MULTIMODAL_MODEL = "mimo-v2.5";
+export const MIMO_MODEL = "mimo-v2.6-pro";
 export const MIMO_PAYGO_BASE_URL = "https://api.xiaomimimo.com/v1";
 export const MIMO_TOKEN_PLAN_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1";
 
@@ -73,7 +72,6 @@ export function inspectHarnessEnvironment(environment = process.env) {
     configured: missing.length === 0,
     missing,
     model: MIMO_MODEL,
-    multimodalModel: MIMO_MULTIMODAL_MODEL,
     provider: "mimo",
     requiresUserAPIKey: true,
   };
@@ -87,7 +85,6 @@ export function loadHarnessConfig(environment = process.env) {
 
   return {
     model: MIMO_MODEL,
-    multimodalModel: MIMO_MULTIMODAL_MODEL,
     provider: "mimo",
     mimoBaseURLOverride: optionalString(environment.MIMO_API_BASE_URL),
     supabaseURL: optionalString(environment.SUPABASE_URL ?? environment.VITE_SUPABASE_URL),
@@ -143,9 +140,9 @@ export function buildCodexOptions(config, codexHome, environment = process.env) 
   };
 }
 
-export function buildThreadOptions(config, workingDirectory, { multimodal = false } = {}) {
+export function buildThreadOptions(config, workingDirectory) {
   return {
-    model: multimodal ? config.multimodalModel : config.model,
+    model: config.model,
     threadSource: "esheepnext_web_farm_assistant",
     sandboxMode: "read-only",
     workingDirectory,

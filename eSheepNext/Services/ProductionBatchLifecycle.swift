@@ -75,4 +75,68 @@ extension FarmCommandService {
         commands.append(.tombstoneEntity(entityType: .productionBatch, entityID: batchID, reason: reason))
         try executeBatch(commands, in: farm, context: context)
     }
+
+    /// Restore the batch and every membership removed by the same deletion.
+    /// Validation runs before staging any command so a later assignment cannot
+    /// silently create two active batches for one sheep.
+    func restoreDeletedProductionBatch(
+        deletionID: UUID,
+        in farm: FarmContext,
+        context: ModelContext
+    ) throws {
+        guard farm.capabilities.allows(.manageCatalogs) else {
+            throw FarmPermissionError.denied(.manageCatalogs)
+        }
+        let farmID = farm.farmID
+        guard let deletion = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+            $0.id == deletionID && $0.farmID == farmID && $0.restoredAt == nil
+        })).first,
+            deletion.entityType == CloudEntityType.productionBatch.rawValue else {
+            throw FarmCommandError.missingRequiredValue("可撤回的批次删除记录")
+        }
+        let batchID = deletion.entityID
+        guard let batch = try context.fetch(FetchDescriptor<ProductionBatchRecord>(predicate: #Predicate {
+            $0.id == batchID && $0.farmID == farmID && $0.deletedAt != nil
+        })).first,
+            batch.sourceRawValue == ProductionBatchSource.manual.rawValue else {
+            throw FarmCommandError.missingRequiredValue("可撤回的批次删除记录")
+        }
+
+        let allMembers = try context.fetch(FetchDescriptor<BatchMembershipRecord>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        let tombstones = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.restoredAt == nil
+        }))
+        // Match each still-deleted membership to its own active tombstone.
+        // Server replay can assign different timestamps to the batch commands,
+        // so a wall-clock deletion window would break undo after a fresh sync.
+        let deletedMembers = allMembers.filter {
+            $0.batchID == batch.id && $0.deletedAt != nil
+        }
+        var memberDeletions: [TombstoneRecord] = []
+        for member in deletedMembers {
+            guard let memberDeletion = tombstones.first(where: {
+                    $0.entityType == CloudEntityType.batchMembership.rawValue &&
+                    $0.entityID == member.id &&
+                    $0.reason == deletion.reason
+            }) else {
+                throw FarmCommandError.missingRequiredValue("完整的批次成员删除记录")
+            }
+            memberDeletions.append(memberDeletion)
+        }
+        let restoredActiveIDs = Set(deletedMembers.filter { $0.leftAt == nil }.map(\.sheepID))
+        guard !allMembers.contains(where: {
+            $0.farmID == farmID && $0.deletedAt == nil && $0.leftAt == nil &&
+                restoredActiveIDs.contains($0.sheepID)
+        }) else {
+            throw FarmCommandError.duplicateBatchMembership
+        }
+
+        let commands: [FarmCommand] = [.restoreTombstonedEntity(tombstoneID: deletion.id)] +
+            memberDeletions.sorted { $0.id.uuidString < $1.id.uuidString }.map {
+                .restoreTombstonedEntity(tombstoneID: $0.id)
+            }
+        try executeBatch(commands, in: farm, context: context)
+    }
 }

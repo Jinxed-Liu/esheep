@@ -181,10 +181,17 @@ enum FarmOperationalAlertDigestPlan {
 
 enum FarmBackgroundRefresh {
     static let identifier = "com.sheepfarm.esheepnext.refresh"
+    @MainActor private static var didRegister = false
+    @MainActor private static weak var bootstrap: AppBootstrapController?
 
     @MainActor
-    static func register(collaboration: CloudCollaborationStore, modelContainer: ModelContainer) {
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in
+    static func register(bootstrap: AppBootstrapController) {
+        self.bootstrap = bootstrap
+        guard !didRegister else { return }
+        didRegister = true
+        // The launch handler inherits MainActor isolation from register(bootstrap:).
+        // Register during app initialization and invoke the handler on its required queue.
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { task in
             guard let refreshTask = task as? BGAppRefreshTask else {
                 task.setTaskCompleted(success: false)
                 return
@@ -195,9 +202,15 @@ enum FarmBackgroundRefresh {
             }
             schedule()
             let work = Task { @MainActor in
+                guard let dependencies = await self.bootstrap?.backgroundRefreshDependencies() else {
+                    refreshTask.setTaskCompleted(success: false)
+                    return
+                }
+                let (collaboration, modelContainer) = dependencies
                 await collaboration.synchronizeNow()
                 var alertsScheduled = true
                 do {
+                    try Task.checkCancellation()
                     let actor = FarmOperationalAlertSnapshotActor(container: modelContainer)
                     let farmIDs = try await actor.availableFarmIDs()
                     let notifications = FarmNotificationService()
@@ -212,10 +225,10 @@ enum FarmBackgroundRefresh {
                     alertsScheduled = false
                 }
                 refreshTask.setTaskCompleted(
-                    success: collaboration.lastErrorMessage == nil && alertsScheduled
+                    success: !Task.isCancelled && collaboration.lastErrorMessage == nil && alertsScheduled
                 )
             }
-            refreshTask.expirationHandler = { work.cancel() }
+            refreshTask.expirationHandler = { @Sendable in work.cancel() }
         }
     }
 

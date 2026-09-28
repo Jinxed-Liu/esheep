@@ -1,6 +1,7 @@
 import { decimalRound } from "./decimal.js";
 import { farmDateText } from "./eventExport.js";
 import { sha256 } from "./cloudV2Writes.js";
+import { decodeCheckpointData } from "./checkpointData.js";
 
 export async function stableUUID(namespace, name) {
   const hex = await sha256(new TextEncoder().encode(`${namespace.toLowerCase()}\n${name}`));
@@ -44,7 +45,7 @@ export async function nativeEventSnapshots(models, { timeZone = "Asia/Shanghai",
   }
   const previousBySheep = new Map();
   const purposes = rows("DomainOperation").filter(r=>r.kindRawValue==="care").flatMap(row=>{
-    const payload=typeof row.payload==="string"?JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(row.payload),c=>c.charCodeAt(0)))):row.payload?.json??row.payload;
+    const payload=decodeCheckpointData(row.payload);
     const args=payload?.careCommand?.setSheepPurpose;
     if(!args||(args.sheepID??args._0)?.toLowerCase()!==row.entityID)return [];
     return [{...row,args,previous:payload.optionalStrings?.previousSheepPurpose,occurredAt:payload.dates?.sheepPurposeChangedAt?Date.parse(payload.dates.sheepPurposeChangedAt):row.occurredAt}];

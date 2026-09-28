@@ -16,12 +16,7 @@ enum InsightInputOrigin: Sendable {
     case voiceAudio
 
     var model: String {
-        switch self {
-        case .text:
-            MiMoCredential.textModel
-        case .image, .voiceAudio:
-            MiMoCredential.multimodalModel
-        }
+        MiMoCredential.model
     }
 }
 

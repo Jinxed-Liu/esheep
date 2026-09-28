@@ -41,7 +41,7 @@ if (result.sandboxPassed) {
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
-    const config = { model: "mimo-v2.5-pro", multimodalModel: "mimo-v2.5", mimoAPIKey: "sk-synthetic-runtime-check",
+    const config = { model: "mimo-v2.6-pro", mimoAPIKey: "sk-synthetic-runtime-check",
       mimoBaseURL: `http://127.0.0.1:${server.address().port}/v1` };
     const codex = new Codex(buildCodexOptions(config, path.join(root, "home"), childEnv));
     const thread = codex.startThread(buildThreadOptions(config, root));

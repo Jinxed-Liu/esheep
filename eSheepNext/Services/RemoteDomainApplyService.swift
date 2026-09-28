@@ -1171,6 +1171,21 @@ struct RemoteDomainApplyService {
                 ), context: context)
             }
             return .applied(rebuildHistoryFrom: nil)
+        case .correctEvent:
+            let draft = try FarmEventCorrectionDraft.decode(payload)
+            guard draft.entityID == envelope.entityID, draft.entityType.rawValue == envelope.entityType else { throw RemoteDomainApplyError.missingReference("eventID") }
+            try FarmEventCorrection.apply(draft, farmID: envelope.farmID, context: context)
+            return .applied(rebuildHistoryFrom: draft.kind == .purpose || draft.kind == .weaning ? .distantPast : nil)
+        case .updateBatch:
+            guard let batch = try fetch(ProductionBatchRecord.self, id: envelope.entityID, context: context),
+                  batch.farmID == envelope.farmID else {
+                throw RemoteDomainApplyError.missingReference("batchID")
+            }
+            batch.name = try string("name", payload)
+            batch.purpose = try string("purpose", payload)
+            batch.startedAt = try date("startedAt", payload)
+            batch.updatedAt = envelope.modifiedAt
+            return .applied(rebuildHistoryFrom: nil)
         case .assignBatchMembership:
             if let existing = try fetch(
                 BatchMembershipRecord.self,
@@ -1847,6 +1862,9 @@ struct RemoteDomainApplyService {
                   let entityType = CloudEntityType(rawValue: tombstone.entityType) else {
                 throw RemoteDomainApplyError.missingReference("tombstoneID")
             }
+            guard envelope.entityType == entityType.rawValue && envelope.entityID == tombstone.entityID else {
+                throw RemoteDomainApplyError.invalidPayload("tombstoneID")
+            }
             if tombstone.restoredByOperationID == envelope.operationID { return .duplicate }
             if !preservesLegacySnapshotAuthority {
                 try releaseLegacyHistoryProjectionAuthority(
@@ -2077,7 +2095,7 @@ struct RemoteDomainApplyService {
         case .createBreedingProgram: .breedingProgram
         case .transferSheep, .correctTransfer: .transfer
         case .removeSheep, .correctRemoval, .restoreSheep: .removal
-        case .createBatch: .productionBatch
+        case .createBatch, .updateBatch: .productionBatch
         case .assignBatchMembership, .leaveBatchMembership, .restoreBatchMembership: .batchMembership
         case .addIngredient: .feedIngredient
         case .createRecipe: .feedRecipe
@@ -2105,7 +2123,7 @@ struct RemoteDomainApplyService {
         case .recordReproduction: .reproduction
         case .addNote: .note
         case .addPhoto: .photoAsset
-        case .care, .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: nil
+        case .correctEvent, .care, .tombstoneEntity, .restoreTombstonedEntity, .resolveConflict, .recoverEntity, .bootstrapEntity: nil
         }
     }
 

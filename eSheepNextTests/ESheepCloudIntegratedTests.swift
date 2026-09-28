@@ -6,6 +6,53 @@ import XCTest
 
 @MainActor
 final class ESheepCloudIntegratedTests: XCTestCase {
+    func testCheckpointPipelineImportsOutOfOrderDownloadsInManifestOrder() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "CheckpointPipeline-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let farmID = UUID(), ownerID = UUID(), memberID = UUID()
+        let profile = ESheepCloudFarmProfileV2(farmID: farmID, ownerAccountID: ownerID,
+            name: "检查点恢复测试", createdAt: .now, updatedAt: .now,
+            locationDisplayName: nil, latitude: nil, longitude: nil, coordinateReferenceSystem: "wgs84",
+            addressSnapshot: nil, timeZoneIdentifier: "Asia/Shanghai", locationSourceRawValue: nil,
+            horizontalAccuracyMeters: nil, locationUpdatedAt: nil)
+        let seed = ESheepCloudFarmSeedV2(profile: profile, memberAccountID: memberID, memberRole: .worker, membershipStatus: "active")
+        let baseline = try AppSchema.makeContainer(name: "baseline", isStoredInMemoryOnly: true)
+        let context = ModelContext(baseline)
+        context.insert(FarmRecord(id: farmID, ownerAccountID: ownerID, name: profile.name))
+        let state = ESheepCloudFarmState(farmID: farmID, farmGeneration: 3, activityState: .active)
+        state.integrityState = .passed
+        context.insert(state)
+        for _ in 0..<7 {
+            context.insert(NoteRecord(farmID: farmID, text: String(repeating: "x", count: 450_000), occurredAt: .now))
+        }
+        try context.save()
+        let manifest = try ESheepCloudCheckpointArchive.export(farmID: farmID, context: context, directory: root.appending(path: "archive"))
+        let ticket = ESheepCloudCheckpointTicket(manifest: manifest, downloads: manifest.chunks.map {
+            .init(index: $0.index, url: URL(string: "https://example.invalid/\($0.index)")!)
+        })
+        let transport = CheckpointTransportStub(ticket: ticket, directory: root.appending(path: "archive"))
+        let legacy = ESheepCloudSnapshotManifestV2(snapshotID: UUID(), farmID: farmID, farmGeneration: 3,
+            schemaVersion: ESheepCloudProtocolV2.schemaVersion, boundaryEventSequence: 0, eventHeadAtCreation: 0,
+            recordCounts: [], chunks: [], businessHistoryStartedAt: nil, businessHistoryEndedAt: nil,
+            relationshipDigest: String(repeating: "0", count: 64), fieldVersionDigest: String(repeating: "0", count: 64),
+            farmProfileDigest: try ESheepCloudCanonicalCodec.digest(profile), assets: [],
+            totalDigest: String(repeating: "0", count: 64), createdAt: .now)
+        let gateway = InitialSyncGatewayStub(ticket: .init(manifest: legacy, farmProfile: profile,
+            memberAccountID: memberID, memberRole: .worker, membershipStatus: "active", expiresAt: .now.addingTimeInterval(1800)))
+        let target = try AppSchema.makeContainer(name: "target", isStoredInMemoryOnly: true)
+        XCTAssertGreaterThan(manifest.chunks.count, 3)
+        await transport.enableOutOfOrderDownloads()
+        let receiver = ESheepCloudCheckpointReceiver(container: target, support: root, gateway: gateway, transport: transport)
+        _ = try await receiver.receive(ticket: ticket, seed: seed)
+        XCTAssertEqual(try ModelContext(target).fetchCount(FetchDescriptor<NoteRecord>()), 7)
+        let concurrency = await transport.maxConcurrentDownloads
+        let calls = await transport.downloadCount
+        XCTAssertGreaterThan(concurrency, 1)
+        XCTAssertLessThanOrEqual(concurrency, 3)
+        XCTAssertEqual(calls, manifest.chunks.count)
+    }
+
     func testCheckpointReceiverResumesAfterImportAndActivatesForCurrentMember() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "CheckpointReceiver-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -291,7 +338,13 @@ final class ESheepCloudIntegratedTests: XCTestCase {
         let output = ProcessInfo.processInfo.environment["ESHEEP_CHECKPOINT_OUTPUT"].map { URL(fileURLWithPath: $0) }
             ?? source.deletingLastPathComponent().appending(path: "checkpoint-candidate-\(UUID().uuidString)")
         let start = Date()
-        let manifest = try await ESheepCloudCheckpointBuilder().build(sourceURL: source, outputURL: output)
+        let builder = ESheepCloudCheckpointBuilder()
+        let manifest: ESheepCloudCheckpointManifest
+        if FileManager.default.fileExists(atPath: source.appending(path: "parent.json").path) {
+            manifest = try await builder.refresh(sourceURL: source, outputURL: output)
+        } else {
+            manifest = try await builder.build(sourceURL: source, outputURL: output)
+        }
         let importer = try ESheepCloudCheckpointImporter(manifest: manifest, accountID: UUID(),
                                                         storeURL: output.appending(path: "imported.store"))
         for descriptor in manifest.chunks {
@@ -422,6 +475,10 @@ private actor CheckpointTransportStub: ESheepCloudCheckpointGateway {
     let ticket: ESheepCloudCheckpointTicket
     let directory: URL
     private(set) var downloadCount = 0
+    private var outOfOrder = false
+    private var activeDownloads = 0
+    private(set) var maxConcurrentDownloads = 0
+    func enableOutOfOrderDownloads() { outOfOrder = true }
     private var shouldExpire = false
     private var shouldCorrupt = false
     private(set) var renewedCheckpointIDs: [UUID] = []
@@ -437,6 +494,11 @@ private actor CheckpointTransportStub: ESheepCloudCheckpointGateway {
     func downloadCheckpointChunk(_ download: ESheepCloudCheckpointTicket.Download,
                                  descriptor: ESheepCloudCheckpointManifest.Chunk) async throws -> Data {
         downloadCount += 1
+        activeDownloads += 1
+        maxConcurrentDownloads = max(maxConcurrentDownloads, activeDownloads)
+        defer { activeDownloads -= 1 }
+        if outOfOrder { try await Task.sleep(for: .milliseconds(descriptor.index == 0 ? 80 : 10)) }
+
         if shouldExpire {
             shouldExpire = false
             throw ESheepCloudInfrastructureError.transferFailed(403)

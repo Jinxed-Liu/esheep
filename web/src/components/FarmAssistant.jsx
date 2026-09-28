@@ -63,8 +63,8 @@ function introMessage(workspace, resumed = false) {
     return "请先登录并进入你有权访问的云端牧场，然后再使用牧场助手。";
   }
   return resumed
-    ? "已恢复这座牧场的 Codex harness 上下文。纯文字由 mimo-v2.5-pro 回答；附加图片时自动切换到 mimo-v2.5。"
-    : "这是围绕 Codex harness 建立的只读牧场助手。纯文字使用 mimo-v2.5-pro；附加图片时使用 mimo-v2.5，并且所有牧场数字都通过 App 同口径查询工具核对。";
+    ? "已恢复这座牧场的 Codex harness 上下文。文字和图片均由 mimo-v2.6-pro 回答。"
+    : "这是围绕 Codex harness 建立的只读牧场助手。文字和图片均使用 mimo-v2.6-pro；所有牧场数字都通过 App 同口径查询工具核对。";
 }
 
 function formattedMessage(text) {
@@ -354,7 +354,7 @@ export default function FarmAssistant({ workspace, onBack }) {
 
   return (
     <main className="page feature-page assistant-page">
-      <PageTop title="Codex 牧场助手" description="由 Codex harness 执行；纯文字使用 mimo-v2.5-pro，图片使用 mimo-v2.5。" />
+      <PageTop title="Codex 牧场助手" description="由 Codex harness 执行；文字和图片统一使用 mimo-v2.6-pro。" />
       <div className="assistant-page-actions">
         <button className="text-button back-link" type="button" onClick={onBack}>返回洞察</button>
         <button className="text-button" type="button" onClick={clearSession} disabled={running}>新会话</button>
@@ -406,7 +406,7 @@ export default function FarmAssistant({ workspace, onBack }) {
           <div>
             <strong>{activity}</strong>
             <small>{status?.configured
-              ? `文字 ${status.model} · 图片 ${status.multimodalModel} · 只读线程`
+              ? `${status.model} · 文字与图片 · 只读线程`
               : configurationMessage || "正在读取服务状态"}</small>
           </div>
           {sessionID ? <code title="服务端会话已恢复">线程已连接</code> : <code>新线程</code>}

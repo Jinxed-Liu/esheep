@@ -8,7 +8,7 @@ final class DesignExperienceTests: XCTestCase {
     func testEventExportDoesNotEscalateAdministratorOtherPrivileges() {
         let admin = CapabilitySet(role: .administrator)
         XCTAssertTrue(admin.allows(.exportEvents))
-        for capability: FarmCapability in [.exportFarm, .deleteProtectedFacts, .recoverFarm, .manageMembers, .resolveConflicts] {
+        for capability: FarmCapability in [.exportFarm, .recoverFarm, .manageMembers, .resolveConflicts] {
             XCTAssertFalse(admin.allows(capability))
         }
         XCTAssertTrue(CapabilitySet(role: .owner).allows(.exportEvents))

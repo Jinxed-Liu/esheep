@@ -10,11 +10,13 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 ## Durable eSheep+ Web decisions
 
+- On 2026-09-27 the user selected `design-qa-assets/pasture-approved.png` for implementation. The direction uses a sunny pasture background, two photographic production rows, quiet translucent main sheets, open operation rows with fine dividers, a blue primary action, and the exact App-exported ear-tag logo. Earlier image-generation attempts made the glass too strong or too weak; avoid thick glowing borders, plastic-looking icon tiles, and nested glass cards.
+
 - The public product, website, Web App, domain, and Cloudflare resources are named eSheep+ / eSheepPlus / esheepplus. `eSheepNext` is only the current development-era repository and code-project name; do not expose it as the product brand.
 
 - The user rejected the previous Web product because it was visually dated and its feature hierarchy did not match the iOS App. Do not treat this as a cosmetic-only restyle.
 - The Web top-level navigation must mirror `FarmWorkspaceView`: `首页 / 洞察 / 录入 / 投喂 / 搜索`. Sheep and pens open from Home; TMR stays inside Feeding; health/reproduction, production batches, and event history stay inside Records; account and farm settings stay behind the avatar.
-- The current user-approved visual target (2026-09-17) is `design-qa-assets/skyglass-approved.png` at 1586 × 992. It supersedes the old left-rail design: use horizontal capsule navigation, a green/ink 今日牧场 title, pale blue/mint/gold atmosphere, a two-row production area, a right-hand 今日操作 panel, and a recent-activity feed. Keep 新建记录 inside the 今日操作 header, beside its title; never float it above the overview. The user rejected the flatter, all-black-title refinement: preserve the original color and glass character.
+- The 2026-09-17 visual target was `design-qa-assets/skyglass-approved.png` at 1586 × 992. The 2026-09-27 pasture concept above supersedes its home visuals while keeping horizontal navigation, a green 今日牧场 title, the two-row production area, a right-hand 今日操作 panel, and the recent-activity feed. Keep 新建记录 inside the 今日操作 header, beside its title.
 - Use `public/assets/esheepplus-icon.png`, exported directly from the user-supplied `/Users/jinxliu/Desktop/eSheep+.icon`, for the product logo and favicon. Do not replace it with a generated approximation.
 - Desktop has no sidebar. At <=600px the five destinations become a full-width floating bottom navigation. Preserve working farm/account menus and the Codex assistant (under the account menu and Insights).
 - Mock figures and day-over-day deltas are design examples only. Home uses `workspace.metrics` and newest `workspace.events`; never fabricate comparisons or display preview fixtures in the authenticated app. `design-qa-assets/skyglass-review.html` is a separate local component harness excluded from production builds.

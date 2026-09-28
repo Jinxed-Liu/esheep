@@ -24,7 +24,7 @@ const count = (value) => Number.isFinite(value) ? value.toLocaleString("zh-CN") 
 
 function GlassIcon({ icon: Icon, tone, sheep = false }) {
   return sheep
-    ? <img className="sky-sheep-icon" src="/assets/skyglass-sheep.png" alt="" />
+    ? <span className="sky-icon green" aria-hidden="true"><Tag size={36} weight="bold" /></span>
     : <span className={`sky-icon ${tone}`} aria-hidden="true"><Icon size={36} weight="bold" /></span>;
 }
 
@@ -74,20 +74,20 @@ export function HomeDashboard({ workspace, onNavigate, onCreateRecord }) {
             </button>
           ))}
         </div>
-        <p className="sky-motto">与羊相伴，<br /><span>让每一天都有收获。</span></p>
       </section>
 
       <div className="sky-workspace-grid">
         <section className="sky-panel sky-production" aria-label="生产状态">
+          <div className="sky-panel-heading"><h2>生产档案</h2><span>核心数据，一目了然</span></div>
           <button className="sky-production-row" type="button" onClick={() => onNavigate("flock")}>
             <GlassIcon sheep />
-            <span className="sky-row-copy"><strong>羊只档案</strong><small>查看在场羊只、当前圈舍、体重与生产阶段</small></span>
-            <span className="sky-row-number">{count(workspace.metrics.activeSheep)}<small>只</small></span><CaretRight size={23} />
+            <span className="sky-row-copy"><strong>羊只档案</strong><small>记录每一只羊的成长轨迹</small><span className="sky-row-details">个体信息<span>·</span>生长记录<span>·</span>健康管理<span>·</span>繁殖记录</span></span>
+            <CaretRight size={23} />
           </button>
           <button className="sky-production-row" type="button" onClick={() => onNavigate("pens")}>
-            <GlassIcon icon={Barn} tone="gold" />
-            <span className="sky-row-copy"><strong>圈舍状态</strong><small>查看圈舍用途与当前存栏</small></span>
-            <span className="sky-row-number">{count(workspace.metrics.activePens)}<small>个</small></span><CaretRight size={23} />
+            <GlassIcon icon={Barn} tone="blue" />
+            <span className="sky-row-copy"><strong>圈舍状态</strong><small>查看各圈舍羊只分布与状态</small><span className="sky-row-details">圈舍信息<span>·</span>存栏数量<span>·</span>羊只状态<span>·</span>管理记录</span></span>
+            <CaretRight size={23} />
           </button>
         </section>
 
@@ -108,7 +108,7 @@ export function HomeDashboard({ workspace, onNavigate, onCreateRecord }) {
       </div>
 
       <section className="sky-panel sky-activity" aria-labelledby="recent-activity-title">
-        <div className="sky-panel-heading"><h2 id="recent-activity-title">最近动态</h2><button className="sky-text-link" type="button" onClick={() => onNavigate("events")}>查看全部<CaretRight size={16} /></button></div>
+        <div className="sky-panel-heading"><div className="sky-heading-group"><h2 id="recent-activity-title">最近动态</h2><span>最新操作记录</span></div><button className="sky-text-link" type="button" onClick={() => onNavigate("events")}>查看全部<CaretRight size={16} /></button></div>
         {recentEvents.length ? <div className="sky-activity-list">{recentEvents.map(event => (
           <button className={`sky-activity-row ${eventTone(event)}`} key={event.id} type="button" onClick={() => onNavigate("events", { selectedID: event.id })}>
             <span className="sky-event-dot" aria-hidden="true" />

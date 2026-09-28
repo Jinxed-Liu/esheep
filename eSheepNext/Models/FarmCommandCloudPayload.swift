@@ -298,6 +298,12 @@ enum FarmCommandCloudPayloadEncoder {
                 "sheepIDs": sheepIDs.map { $0.uuidString.lowercased() }.joined(separator: ","),
             ]
             payload.dates = ["startedAt": startedAt]
+        case .correctEvent(let draft):
+            payload.strings["eventCorrectionJSON"] = String(decoding: try ESheepCloudCanonicalCodec.encode(draft), as: UTF8.self)
+        case .updateBatch(let batchID, let name, let purpose, let startedAt):
+            payload.identifiers = ["batchID": batchID]
+            payload.strings = ["name": name, "purpose": purpose]
+            payload.dates = ["startedAt": startedAt]
         case .assignSheepToBatch(let batchID, let sheepID, let joinedAt):
             payload.identifiers = ["batchID": batchID, "sheepID": sheepID]
             payload.dates = ["joinedAt": joinedAt]

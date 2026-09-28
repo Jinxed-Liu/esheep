@@ -360,6 +360,9 @@ private extension ESheepCloudCommandPayloadV2 {
                     return .createBreedingProgram(name: name, createdAt: createdAt, steps: steps)
                 case .createBatch(let name, let purpose, let startedAt, let sheepIDs, let note):
                     return .createBatch(name: name, purpose: purpose, startedAt: startedAt, sheepIDs: sheepIDs, note: note)
+                case .correctEvent(let draft): return .correctEvent(draft)
+                case .updateBatch(let batchID, let name, let purpose, let startedAt):
+                    return .updateBatch(batchID: batchID, name: name, purpose: purpose, startedAt: startedAt)
                 case .assignSheepToBatch(let batchID, let sheepID, let joinedAt):
                     return .assignSheepToBatch(batchID: batchID, sheepID: sheepID, joinedAt: joinedAt)
                 case .leaveBatch(let batchID, let sheepID, let leftAt, let reason):

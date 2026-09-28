@@ -100,15 +100,25 @@ struct RemovalEntryView: View {
 }
 
 struct ProductionBatchListView: View {
-    @Query(sort: \ProductionBatchRecord.startedAt, order: .reverse) private var batches: [ProductionBatchRecord]
+    @Query private var batches: [ProductionBatchRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
     @State private var isCreating = false
-    @State private var batchToDelete: ProductionBatchRecord?
+    @State private var batchToDelete: ProductionBatchDeletionRequest?
 
-    private var farmBatches: [ProductionBatchRecord] {
-        ProductionBatchVisibility.userManaged(farmID: farm.id, batches: batches)
+    init(account: AccountProfile, farm: FarmRecord) {
+        self.account = account
+        self.farm = farm
+        let farmID = farm.id
+        let manualSource = ProductionBatchSource.manual.rawValue
+        _batches = Query(
+            filter: #Predicate<ProductionBatchRecord> {
+                $0.farmID == farmID && $0.deletedAt == nil && $0.sourceRawValue == manualSource
+            },
+            sort: \ProductionBatchRecord.startedAt,
+            order: .reverse
+        )
     }
 
     private var canDeleteBatches: Bool {
@@ -117,7 +127,7 @@ struct ProductionBatchListView: View {
 
     var body: some View {
         List {
-            ForEach(farmBatches, id: \.id) { batch in
+            ForEach(batches, id: \.id) { batch in
                 NavigationLink { ProductionBatchDetailView(account: account, farm: farm, batch: batch) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(batch.name).font(.headline)
@@ -137,7 +147,7 @@ struct ProductionBatchListView: View {
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     Button(role: .destructive) {
-                        batchToDelete = batch
+                        batchToDelete = ProductionBatchDeletionRequest(batch)
                     } label: {
                         Label("删除批次", systemImage: "trash")
                     }
@@ -146,7 +156,7 @@ struct ProductionBatchListView: View {
             }
         }
         .overlay {
-            if farmBatches.isEmpty {
+            if batches.isEmpty {
                 ContentUnavailableView("还没有生产批次", systemImage: "square.3.layers.3d", description: Text("批次用于追踪育肥、实验或其他生产阶段。"))
             }
         }
@@ -164,11 +174,21 @@ struct ProductionBatchListView: View {
     }
 }
 
+private struct ProductionBatchDeletionRequest {
+    let id: UUID
+    let name: String
+
+    init(_ batch: ProductionBatchRecord) {
+        id = batch.id
+        name = batch.name
+    }
+}
+
 private struct ProductionBatchDeletionModifier: ViewModifier {
     @Environment(\.modelContext) private var modelContext
     let account: AccountProfile
     let farm: FarmRecord
-    @Binding var batch: ProductionBatchRecord?
+    @Binding var batch: ProductionBatchDeletionRequest?
     var onDeleted: () -> Void = {}
     @State private var errorMessage: String?
 
@@ -178,7 +198,13 @@ private struct ProductionBatchDeletionModifier: ViewModifier {
                 get: { batch != nil },
                 set: { if !$0 { batch = nil } }
             ), titleVisibility: .visible, presenting: batch) { selected in
-                Button("删除批次", role: .destructive) { delete(selected) }
+                Button("删除批次", role: .destructive) {
+                    batch = nil
+                    Task { @MainActor in
+                        await Task.yield()
+                        delete(selected)
+                    }
+                }
                 Button("取消", role: .cancel) {}
             } message: { selected in
                 Text("将删除“\(selected.name)”及其成员关联，该批次将不再用于批次分析。羊只及其称重、治疗等生产记录会保留，原成员可加入其他批次。")
@@ -186,7 +212,7 @@ private struct ProductionBatchDeletionModifier: ViewModifier {
             .recordErrorAlert($errorMessage)
     }
 
-    private func delete(_ selected: ProductionBatchRecord) {
+    private func delete(_ selected: ProductionBatchDeletionRequest) {
         do {
             try FarmCommandService().deleteProductionBatch(
                 batchID: selected.id,
@@ -194,10 +220,8 @@ private struct ProductionBatchDeletionModifier: ViewModifier {
                 in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
                 context: modelContext
             )
-            batch = nil
             onDeleted()
         } catch {
-            batch = nil
             errorMessage = error.localizedDescription
         }
     }
@@ -344,7 +368,7 @@ private struct ProductionBatchDetailView: View {
     private let commandService = FarmCommandService()
     @State private var errorMessage: String?
     @State private var pendingBatchAction: ProductionBatchMembershipAction?
-    @State private var batchToDelete: ProductionBatchRecord?
+    @State private var batchToDelete: ProductionBatchDeletionRequest?
 
     private var batchMemberships: [BatchMembershipRecord] {
         memberships.filter { $0.farmID == farm.id && $0.batchID == batch.id && $0.deletedAt == nil }
@@ -413,7 +437,7 @@ private struct ProductionBatchDetailView: View {
                 systemImage: "trash",
                 role: .destructive,
                 isEnabled: CapabilitySet(role: farm.role).allows(.manageCatalogs),
-                action: { batchToDelete = batch }
+                action: { batchToDelete = ProductionBatchDeletionRequest(batch) }
             )
         )
         .modifier(ProductionBatchDeletionModifier(account: account, farm: farm, batch: $batchToDelete) {

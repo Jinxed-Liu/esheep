@@ -629,7 +629,7 @@ final class InsightAssistantTests: XCTestCase {
         var reviewCount = 0
 
         let result = try await harness.run(
-            model: MiMoCredential.textModel,
+            model: MiMoCredential.model,
             instructions: "回答用户实际问题。",
             messages: [MiMoInputMessage(role: .user, text: "大棚十二舍之前日增重多少")],
             tools: [tool],
@@ -668,7 +668,7 @@ final class InsightAssistantTests: XCTestCase {
         XCTAssertTrue(requests[0].functionExchanges.isEmpty)
         XCTAssertEqual(requests[1].functionExchanges.count, 1)
         XCTAssertEqual(requests[2].functionExchanges.count, 1)
-        XCTAssertEqual(requests.map(\.model), Array(repeating: MiMoCredential.textModel, count: 3))
+        XCTAssertEqual(requests.map(\.model), Array(repeating: MiMoCredential.model, count: 3))
     }
 
     func testNativeHarnessResolvesRepeatedReviewFailureInsideTheSameRequest() async throws {
@@ -687,7 +687,7 @@ final class InsightAssistantTests: XCTestCase {
         var fallbackCount = 0
 
         let result = try await harness.run(
-            model: MiMoCredential.textModel,
+            model: MiMoCredential.model,
             instructions: "回答用户实际问题。",
             messages: [MiMoInputMessage(role: .user, text: "S2-U033什么时候出生的")],
             tools: [],
@@ -734,7 +734,7 @@ final class InsightAssistantTests: XCTestCase {
         )
 
         let result = try await harness.run(
-            model: MiMoCredential.textModel,
+            model: MiMoCredential.model,
             instructions: "回答用户实际问题。",
             messages: [MiMoInputMessage(role: .user, text: "说明当前情况")],
             tools: [],
@@ -773,7 +773,7 @@ final class InsightAssistantTests: XCTestCase {
             candidate: "S2-U033 不在牧场记录中。",
             exchanges: [],
             successfulToolNames: [],
-            model: MiMoCredential.textModel,
+            model: MiMoCredential.model,
             credential: credential,
             client: client
         )
@@ -1661,9 +1661,9 @@ final class InsightAssistantTests: XCTestCase {
         XCTAssertEqual(tokenPlan.kind, .tokenPlan)
         XCTAssertEqual(tokenPlan.responsesURL.absoluteString, "https://token-plan-cn.xiaomimimo.com/v1/responses")
         XCTAssertFalse(standard.maskedValue.contains("1234567890"))
-        XCTAssertEqual(InsightInputOrigin.text.model, "mimo-v2.5-pro")
-        XCTAssertEqual(InsightInputOrigin.image.model, "mimo-v2.5")
-        XCTAssertEqual(InsightInputOrigin.voiceAudio.model, "mimo-v2.5")
+        XCTAssertEqual(InsightInputOrigin.text.model, "mimo-v2.6-pro")
+        XCTAssertEqual(InsightInputOrigin.image.model, "mimo-v2.6-pro")
+        XCTAssertEqual(InsightInputOrigin.voiceAudio.model, "mimo-v2.6-pro")
     }
 
     func testCredentialVaultPersistsAndRemovesCredentialForAccount() async throws {

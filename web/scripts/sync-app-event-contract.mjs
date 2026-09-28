@@ -6,10 +6,11 @@ const history = read("../../eSheepNext/Features/Workspace/FarmEventHistoryView.s
 const strings = (value) => [...value.matchAll(/"([^"\\]*)"/g)].map((match) => match[1]);
 const fixedColumns = strings(source.match(/static let fixedColumnTitles = \[([^\]]+)\]/)[1]);
 const names = (text) => [...text.matchAll(/case \.(\w+): "([^"]+)"/g)].map((match) => ({ id: match[1], name: match[2] }));
+const declaredScopes = [...source.split("enum FarmEventExportScope:")[1].split("var id:")[0].matchAll(/\bcase (\w+)/g)].map((match) => match[1]);
 const scopes = names(source.split("var displayName: String")[1].split("var symbol:")[0]);
 const categories = names(history.split("var displayName: String")[1].split("var symbol:")[0]);
 const fieldLabels = [...new Set([...history.split("struct FarmEventHistoryView:")[0].matchAll(/label: "([^"]+)"/g)].map((match) => match[1]))];
-if (scopes.length !== 13 || fixedColumns.length !== 6 || fieldLabels.length < 35) throw new Error("App 事件导出契约解析失败，停止构建。");
+if (declaredScopes.length < 13 || scopes.length !== declaredScopes.length || declaredScopes.some((id, index) => scopes[index]?.id !== id) || fixedColumns.length !== 6 || fieldLabels.length < 35) throw new Error("App 事件导出契约解析失败，停止构建。");
 const contract = { source: "FarmEventCSVExport.swift / FarmEventHistoryView.swift", format: "csv", encoding: "UTF-8-BOM",
   fixedColumns, trailingColumns: ["备注", "记录ID"], scopes, categories, fieldLabels,
   dateTimeFormat: "yyyy-MM-dd HH:mm:ss", sort: ["occurredAt:desc", "recordedAt:desc", "id:desc"] };

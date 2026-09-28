@@ -19,6 +19,8 @@ enum DomainOperationKind: String, Codable, Sendable, Hashable {
     case correctRemoval
     case restoreSheep
     case createBatch
+    case correctEvent
+    case updateBatch
     case assignBatchMembership
     case leaveBatchMembership
     case restoreBatchMembership

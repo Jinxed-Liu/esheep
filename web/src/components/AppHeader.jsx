@@ -9,6 +9,7 @@ import { Robot } from "@phosphor-icons/react/Robot";
 import { SignOut } from "@phosphor-icons/react/SignOut";
 import { Sparkle } from "@phosphor-icons/react/Sparkle";
 import { UserCircle } from "@phosphor-icons/react/UserCircle";
+import { AccountAvatar } from "./AccountAvatar.jsx";
 
 export const NAV_ITEMS = [
   { id: "home", label: "首页", icon: House },
@@ -148,14 +149,14 @@ export function AppHeader({
               aria-expanded={accountMenuOpen}
               aria-label={`${personName}账户菜单`}
             >
-              <img src="/assets/mimo-assistant.png" alt="" />
+              <AccountAvatar userID={workspace.profile?.userID} name={personName} />
               <span>{personName}</span>
               <CaretDown size={15} weight="bold" />
             </button>
             {accountMenuOpen ? (
               <div className="popover account-menu">
                 <div className="account-summary">
-                  <img src="/assets/mimo-assistant.png" alt="" />
+                  <AccountAvatar userID={workspace.profile?.userID} name={personName} />
                   <span>
                     <strong>{personName}</strong>
                     <small>{workspace.profile?.email ?? "当前云端账户"}</small>

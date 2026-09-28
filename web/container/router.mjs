@@ -35,7 +35,7 @@ export function createContainerRouter({ verifyAccess, validateKey }) {
       }
       if (request.method === "GET" && url.pathname === "/api/assistant/status") {
         return json({ configured: Boolean(env.SUPABASE_URL && env.SUPABASE_PUBLISHABLE_KEY && env.HARNESS_RUNTIME_VERIFIED === "true"),
-          execution: "codex-harness", provider: "mimo", model: "mimo-v2.5-pro", multimodalModel: "mimo-v2.5",
+          execution: "codex-harness", provider: "mimo", model: "mimo-v2.6-pro",
           requiresUserAPIKey: true, capabilities: ["thread_resume", "farm_query_tools", "image_input", "user_api_key"],
           sessionStorage: "ephemeral", idleMinutes: 10 });
       }

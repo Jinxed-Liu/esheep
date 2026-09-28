@@ -522,6 +522,8 @@ enum FarmCommand: Sendable {
     case correctRemoval(originalID: UUID, kind: RemovalKind, reason: String, amountText: String?, occurredAt: Date, note: String, correctionReason: String)
     case restoreSheep(removalID: UUID)
     case createBatch(name: String, purpose: String, startedAt: Date, sheepIDs: [UUID], note: String)
+    case correctEvent(FarmEventCorrectionDraft)
+    case updateBatch(batchID: UUID, name: String, purpose: String, startedAt: Date)
     case assignSheepToBatch(batchID: UUID, sheepID: UUID, joinedAt: Date)
     case leaveBatch(batchID: UUID, sheepID: UUID, leftAt: Date, reason: String)
     case restoreBatchMembership(membershipID: UUID, restoredAt: Date, reason: String)
@@ -556,9 +558,11 @@ enum FarmCommand: Sendable {
             .manageCatalogs
         case .restoreSheep, .tombstoneEntity, .restoreTombstonedEntity:
             .deleteProtectedFacts
+        case .correctEvent(let draft):
+            draft.kind == .inventory || draft.kind == .semen ? .manageCatalogs : .editHistoricalFacts
         case .correctWeight, .correctTransfer, .correctRemoval:
             .editHistoricalFacts
-        case .addIngredient, .createRecipe, .addRecipeComponent, .saveFeedIngredient, .saveFeedBatch, .adjustFeedStock, .countFeedStock, .saveFeedRecipe, .createBreedingProgram:
+        case .updateBatch, .addIngredient, .createRecipe, .addRecipeComponent, .saveFeedIngredient, .saveFeedBatch, .adjustFeedStock, .countFeedStock, .saveFeedRecipe, .createBreedingProgram:
             .manageCatalogs
         case .care(let command):
             command.requiredCapability
@@ -587,6 +591,8 @@ enum FarmCommand: Sendable {
         case .correctRemoval: .correctRemoval
         case .restoreSheep: .restoreSheep
         case .createBatch: .createBatch
+        case .correctEvent: .correctEvent
+        case .updateBatch: .updateBatch
         case .assignSheepToBatch: .assignBatchMembership
         case .leaveBatch: .leaveBatchMembership
         case .restoreBatchMembership: .restoreBatchMembership
@@ -632,6 +638,8 @@ enum FarmCommand: Sendable {
         case .correctRemoval(_, let kind, _, _, _, _, _): "修正\(kind.displayName)记录"
         case .restoreSheep: "恢复离场羊只"
         case .createBatch(let name, _, _, _, _): "新建生产批次：\(name)"
+        case .correctEvent: "修正或撤回事件记录"
+        case .updateBatch(_, let name, _, _): "编辑生产批次：\(name)"
         case .assignSheepToBatch: "加入生产批次"
         case .leaveBatch: "离开生产批次"
         case .restoreBatchMembership: "撤回移出生产批次"
@@ -1633,8 +1641,19 @@ final class FarmCommandService {
         batchState: BatchExecutionState? = nil
     ) throws -> StagedCommandResult {
         let farmID = farm.farmID
-        guard farm.capabilities.allows(command.requiredCapability) else {
-            throw FarmPermissionError.denied(command.requiredCapability)
+        let requiredCapability: FarmCapability
+        if case .restoreTombstonedEntity(let tombstoneID) = command,
+           let tombstone = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+               $0.id == tombstoneID && $0.farmID == farmID
+           })).first,
+           tombstone.entityType == CloudEntityType.productionBatch.rawValue ||
+                tombstone.entityType == CloudEntityType.batchMembership.rawValue {
+            requiredCapability = .manageCatalogs
+        } else {
+            requiredCapability = command.requiredCapability
+        }
+        guard farm.capabilities.allows(requiredCapability) else {
+            throw FarmPermissionError.denied(requiredCapability)
         }
 
         try validate(
@@ -2743,6 +2762,8 @@ final class FarmCommandService {
         switch command {
         case .addSheep, .recordWeaning, .transferSheep, .correctTransfer, .removeSheep, .correctRemoval, .restoreSheep:
             true
+        case .correctEvent(let draft):
+            draft.kind == .purpose || draft.kind == .weaning
         case .care(.setSheepPurpose):
             true
         case .tombstoneEntity(let entityType, _, _):
@@ -2764,6 +2785,9 @@ final class FarmCommandService {
         switch command {
         case .addSheep(_, _, _, _, let occurredAt, _, _, _):
             impact = HistoryImpact(sheepID: result.entityID, changedAt: occurredAt)
+        case .correctEvent(let draft):
+            impact = try historyImpact(entityType: draft.entityType, entityID: draft.entityID, farmID: farmID, context: context)
+                .map { HistoryImpact(sheepID: $0.sheepID, changedAt: .distantPast) }
         case .care(.setSheepPurpose(let sheepID, _, _, _)):
             impact = HistoryImpact(sheepID: sheepID, changedAt: .now)
         case .recordWeaning(let sheepID, _, let occurredAt, _, _, _, _, _, _):
@@ -3145,6 +3169,23 @@ final class FarmCommandService {
                 guard let item = sheepByID[sheepID], item.isCurrentlyPresent else { throw FarmCommandError.sheepNotFound }
                 guard item.enteredAt <= startedAt else { throw FarmCommandError.missingRequiredValue("不早于羊只入场时间的批次开始时间") }
                 guard !unavailableIDs.contains(sheepID) else { throw FarmCommandError.duplicateBatchMembership }
+            }
+        case .correctEvent(let draft):
+            try FarmEventCorrection.validate(draft, farmID: farmID, context: context)
+        case .updateBatch(let batchID, let name, let purpose, let startedAt):
+            _ = try required(name, label: "批次名称")
+            _ = try required(purpose, label: "生产目的")
+            guard let batch = try context.fetch(FetchDescriptor<ProductionBatchRecord>(predicate: #Predicate {
+                $0.id == batchID && $0.farmID == farmID
+            })).first,
+                batch.sourceRawValue == ProductionBatchSource.manual.rawValue else {
+                throw FarmCommandError.batchNotFound
+            }
+            let members = try context.fetch(FetchDescriptor<BatchMembershipRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.batchID == batchID
+            }))
+            guard members.allSatisfy({ $0.joinedAt >= startedAt }) else {
+                throw FarmCommandError.missingRequiredValue("不晚于最早成员加入时间的批次开始时间")
             }
         case .assignSheepToBatch(let batchID, let sheepID, _):
             try assertBatch(batchID, farmID: farmID, context: context)
@@ -3869,6 +3910,21 @@ final class FarmCommandService {
                 ))
             }
             return appliedResult(.productionBatch, record.id)
+        case .correctEvent(let draft):
+            let base = try latestRevision(entityType: draft.entityType, entityID: draft.entityID, farmID: farm.farmID, context: context)
+            try FarmEventCorrection.apply(draft, farmID: farm.farmID, context: context)
+            return appliedResult(draft.entityType, draft.entityID, baseRevision: base, revision: base + 1)
+        case .updateBatch(let batchID, let name, let purpose, let startedAt):
+            let farmID = farm.farmID
+            guard let record = try context.fetch(FetchDescriptor<ProductionBatchRecord>(predicate: #Predicate {
+                $0.id == batchID && $0.farmID == farmID
+            })).first else { throw FarmCommandError.batchNotFound }
+            let baseRevision = try latestRevision(entityType: .productionBatch, entityID: batchID, farmID: farm.farmID, context: context)
+            record.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.purpose = purpose.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.startedAt = startedAt
+            record.updatedAt = .now
+            return appliedResult(.productionBatch, batchID, baseRevision: baseRevision, revision: baseRevision + 1)
         case .assignSheepToBatch(let batchID, let sheepID, let joinedAt):
             let record = BatchMembershipRecord(farmID: farm.farmID, batchID: batchID, sheepID: sheepID, joinedAt: joinedAt)
             context.insert(record)

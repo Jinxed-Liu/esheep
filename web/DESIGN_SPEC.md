@@ -1,6 +1,8 @@
 # eSheep+ Web — 晴空玻璃
 
-Approved target: `design-qa-assets/skyglass-approved.png`, 1586 × 992. User approval on 2026-09-17 applies to the last revision with 新建记录 inside 今日操作.
+2026-09-27 homepage refresh: the selected pasture concept is `design-qa-assets/pasture-approved.png`. It supersedes the older home visual below. Keep authentic data, actions and navigation while using the new pasture background, photographic production entries, restrained translucent panels, open operation rows and blue New Record action. Continue to use the exact App-exported logo asset.
+
+Earlier target: `design-qa-assets/skyglass-approved.png`, 1586 × 992. Its visual styling was superseded by the 2026-09-27 pasture concept above.
 
 ## Layout and visual decisions
 

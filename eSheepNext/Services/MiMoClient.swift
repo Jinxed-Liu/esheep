@@ -222,7 +222,7 @@ struct MiMoConversationRequest: Sendable {
     let maximumOutputTokens: Int
 
     init(
-        model: String = MiMoCredential.textModel,
+        model: String = MiMoCredential.model,
         instructions: String,
         messages: [MiMoInputMessage],
         functionExchanges: [MiMoFunctionExchange] = [],

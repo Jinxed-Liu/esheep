@@ -239,7 +239,7 @@ export class FarmAssistantHarness {
       const { directory, metadata, metadataPath } = await this.prepareSession({ sessionID, userID, farmID, snapshot, requireExistingSession });
       const imagePaths = await this.materializeImages(directory, attachments);
       const multimodal = imagePaths.length > 0;
-      const selectedModel = multimodal ? turnConfig.multimodalModel : turnConfig.model;
+      const selectedModel = turnConfig.model;
       metadata.lastModel = selectedModel;
       metadata.updatedAt = new Date().toISOString();
       await atomicJSON(metadataPath, metadata);
@@ -254,7 +254,7 @@ export class FarmAssistantHarness {
         },
       });
       const codex = this.codexFactory(buildCodexOptions({ ...turnConfig, mimoBaseURL: providerStream.baseURL }, codexHome, this.environment));
-      const threadOptions = buildThreadOptions(turnConfig, directory, { multimodal });
+      const threadOptions = buildThreadOptions(turnConfig, directory);
       const thread = metadata.threadID
         ? codex.resumeThread(metadata.threadID, threadOptions)
         : codex.startThread(threadOptions);

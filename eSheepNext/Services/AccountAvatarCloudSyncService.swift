@@ -57,7 +57,10 @@ actor SupabaseAccountAvatarRemoteClient: AccountAvatarRemoteClient {
         }
         let data = try await client.storage
             .from(Self.bucket)
-            .download(path: objectPath(userID: session.user.id))
+            .download(
+                path: objectPath(userID: session.user.id),
+                cacheNonce: String(row.avatarRevision)
+            )
         return response(row: row, data: data)
     }
 

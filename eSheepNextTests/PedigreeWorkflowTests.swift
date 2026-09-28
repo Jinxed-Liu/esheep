@@ -15,7 +15,7 @@ final class PedigreeWorkflowTests: XCTestCase {
         let samePen = SheepRecord(farmID: fixture.farm.id, earTag: "BR001", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penA.id, enteredAt: date("2025-01-01"), birthAt: date("2024-01-01"))
         let ordinaryRam = SheepRecord(farmID: fixture.farm.id, earTag: "R002", breed: "杜泊", isBreedingRam: false, sex: .ram, penID: penA.id, enteredAt: date("2025-01-01"))
         let legacyPurposeHint = SheepRecord(farmID: fixture.farm.id, earTag: "LEGACY-RAM", breed: "萨福克", purpose: "种公羊", isBreedingRam: false, sex: .ram, penID: penA.id, enteredAt: date("2025-01-01"))
-        let notEntered = SheepRecord(farmID: fixture.farm.id, earTag: "BR003", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penA.id, enteredAt: conceptionAt.addingTimeInterval(21 * 86_400))
+        let notEntered = SheepRecord(farmID: fixture.farm.id, earTag: "BR003", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penA.id, enteredAt: Calendar.current.date(byAdding: .day, value: 21, to: conceptionAt)!)
         let alreadyRemoved = SheepRecord(farmID: fixture.farm.id, earTag: "BR004", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penA.id, enteredAt: date("2025-01-01"))
         alreadyRemoved.removedAt = conceptionAt.addingTimeInterval(-1)
         let movedWithinPrematurityWindow = SheepRecord(farmID: fixture.farm.id, earTag: "BR005", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: penB.id, enteredAt: date("2025-01-01"))
@@ -26,8 +26,8 @@ final class PedigreeWorkflowTests: XCTestCase {
         [ewe, samePen, ordinaryRam, legacyPurposeHint, notEntered, alreadyRemoved, movedWithinPrematurityWindow, movedBefore, movedOnLastToleranceDay, movedOutsideTolerance, child].forEach { fixture.context.insert($0) }
         fixture.context.insert(TransferRecord(farmID: fixture.farm.id, sheepID: movedWithinPrematurityWindow.id, fromPenID: penB.id, toPenID: penA.id, occurredAt: conceptionAt.addingTimeInterval(86_400), note: "早产容差第 1 天转入"))
         fixture.context.insert(TransferRecord(farmID: fixture.farm.id, sheepID: movedBefore.id, fromPenID: penB.id, toPenID: penA.id, occurredAt: conceptionAt.addingTimeInterval(-1), note: "受胎前转入"))
-        fixture.context.insert(TransferRecord(farmID: fixture.farm.id, sheepID: movedOnLastToleranceDay.id, fromPenID: penB.id, toPenID: penA.id, occurredAt: conceptionAt.addingTimeInterval(20 * 86_400), note: "早产容差第 20 天转入"))
-        fixture.context.insert(TransferRecord(farmID: fixture.farm.id, sheepID: movedOutsideTolerance.id, fromPenID: penB.id, toPenID: penA.id, occurredAt: conceptionAt.addingTimeInterval(21 * 86_400), note: "超出早产容差"))
+        fixture.context.insert(TransferRecord(farmID: fixture.farm.id, sheepID: movedOnLastToleranceDay.id, fromPenID: penB.id, toPenID: penA.id, occurredAt: Calendar.current.date(byAdding: .day, value: 20, to: conceptionAt)!, note: "早产容差第 20 天转入"))
+        fixture.context.insert(TransferRecord(farmID: fixture.farm.id, sheepID: movedOutsideTolerance.id, fromPenID: penB.id, toPenID: penA.id, occurredAt: Calendar.current.date(byAdding: .day, value: 21, to: conceptionAt)!, note: "超出早产容差"))
         try fixture.context.save()
 
         let candidates = try PedigreeAnalysis.sireCandidates(eweID: ewe.id, lambingAt: lambingAt, gestationDays: 150, farmID: fixture.farm.id, context: fixture.context)
@@ -765,7 +765,7 @@ final class PedigreeWorkflowTests: XCTestCase {
     }
 
     private func date(_ value: String) -> Date {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = TimeZone(secondsFromGMT: 0); formatter.dateFormat = "yyyy-MM-dd"
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = .current; formatter.dateFormat = "yyyy-MM-dd"
         return formatter.date(from: value)!
     }
 

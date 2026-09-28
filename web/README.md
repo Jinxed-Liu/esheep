@@ -10,7 +10,7 @@ eSheep+ 的网页工作台，采用 React、Vite 与 Supabase 浏览器客户端
 - 投喂：投喂历史、原料库、配方，以及受控的 `早 / 中 / 晚 / 全天` 顿次。
 - TMR：当日计划、配方/生产与偏差监控。
 - 洞察：核心指标、趋势与可解释异常规则。
-- Codex 牧场助手：服务端 Codex harness 线程、MiMo 双模型、App 同口径只读查询与图片理解。
+- Codex 牧场助手：服务端 Codex harness 线程、MiMo-V2.6-Pro、App 同口径只读查询与图片理解。
 - 事件记录：可筛选审计台账。
 - 设置：Supabase 邮箱密码 / Apple 登录、云端状态、角色能力与写入安全边界。
 
@@ -26,7 +26,7 @@ Apple 登录使用 Supabase Auth 的 OAuth 重定向流程，回调地址为当�
 
 ## Codex harness 与 MiMo
 
-网页 AI 助手不再使用浏览器里的固定回复。每个账号与牧场获得独立的服务端 Codex 线程：纯文字和确定性牧场查询固定使用 `mimo-v2.5-pro`，用户主动附加 JPEG、PNG 或 WebP 图片时，同一线程本轮自动使用 `mimo-v2.5`。Codex 运行目录为只读沙箱，禁用网络、Web 搜索和审批式命令，只能调用随会话生成的 `query-farm.mjs`，该工具复用网页与 App 对齐的体重、产羔、繁殖和采食统计语义。
+网页 AI 助手不再使用浏览器里的固定回复。每个账号与牧场获得独立的服务端 Codex 线程：文字、确定性牧场查询和用户主动附加的 JPEG、PNG 或 WebP 图片统一使用 `mimo-v2.6-pro`。Codex 运行目录为只读沙箱，禁用网络、Web 搜索和审批式命令，只能调用随会话生成的 `query-farm.mjs`，该工具复用网页与 App 对齐的体重、产羔、繁殖和采食统计语义。
 
 浏览器继续只持有 Supabase publishable key。每次助手请求都会把当前访问令牌发给服务端；服务端使用 Supabase `getUser` 验证令牌，并重新调用 `list_my_active_farm_access` 核对牧场成员关系。
 

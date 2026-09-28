@@ -42,6 +42,7 @@ struct FarmEventSnapshot: Identifiable, Sendable {
     /// uses IDs rather than matching the rendered subject text so batch health
     /// records and similarly named animals remain correctly isolated.
     let relatedSheepIDs: [UUID]
+    let productionBatchID: UUID?
     let occurredAt: Date
     let recordedAt: Date
     let title: String
@@ -51,6 +52,8 @@ struct FarmEventSnapshot: Identifiable, Sendable {
     let fields: [FarmEventField]
     /// 从档案字段投影出的生命周期事实没有可独立删除的底层实体。
     let isDerived: Bool
+    let canUndoBatchDeletion: Bool
+    let canWithdrawBatchCreation: Bool
     let searchableText: String
 
     init(
@@ -58,6 +61,7 @@ struct FarmEventSnapshot: Identifiable, Sendable {
         entityType: CloudEntityType,
         category: FarmEventCategory,
         relatedSheepIDs: [UUID] = [],
+        productionBatchID: UUID? = nil,
         occurredAt: Date,
         recordedAt: Date,
         title: String,
@@ -65,7 +69,9 @@ struct FarmEventSnapshot: Identifiable, Sendable {
         detail: String,
         note: String,
         fields: [FarmEventField],
-        isDerived: Bool = false
+        isDerived: Bool = false,
+        canUndoBatchDeletion: Bool = false,
+        canWithdrawBatchCreation: Bool = false
     ) {
         self.id = id
         self.entityType = entityType
@@ -73,6 +79,7 @@ struct FarmEventSnapshot: Identifiable, Sendable {
         self.relatedSheepIDs = Array(Set(relatedSheepIDs)).sorted {
             $0.uuidString < $1.uuidString
         }
+        self.productionBatchID = productionBatchID
         self.occurredAt = occurredAt
         self.recordedAt = recordedAt
         self.title = title
@@ -81,6 +88,8 @@ struct FarmEventSnapshot: Identifiable, Sendable {
         self.note = note
         self.fields = fields
         self.isDerived = isDerived
+        self.canUndoBatchDeletion = canUndoBatchDeletion
+        self.canWithdrawBatchCreation = canWithdrawBatchCreation
         searchableText = FarmEventSearch.normalized(
             ([title, subject, detail, note] + fields.flatMap { [$0.label, $0.value] })
                 .joined(separator: " ")
@@ -106,16 +115,10 @@ extension FarmEventSnapshot {
     }
 
     var editCapability: FarmCapability? {
-        guard !isDerived else { return nil }
-        return switch entityType {
-        case .sheep:
-            .recordProduction
-        case .weight, .transfer, .removal, .health, .reproduction:
-            .editHistoricalFacts
-        case .feed where title == "TMR 投喂":
-            .editHistoricalFacts
-        default:
-            nil
+        switch entityType {
+        case .productionBatch, .inventoryTransaction, .semenTransaction: .manageCatalogs
+        case .sheep where !isDerived: .recordProduction
+        default: .editHistoricalFacts
         }
     }
 
@@ -207,9 +210,8 @@ actor FarmEventHistoryActor {
             )
         })
 
-        let careKind = DomainOperationKind.care.rawValue
         let purposeOperations = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
-            $0.farmID == farmID && $0.kindRawValue == careKind
+            $0.farmID == farmID
         }))
         events.append(contentsOf: SheepPurposeTimeline.facts(from: purposeOperations).map { fact in
             let previousPurpose = fact.previousPurpose?
@@ -398,6 +400,60 @@ actor FarmEventHistoryActor {
             $0.sourceRawValue == ProductionBatchSource.manual.rawValue
         }
         let productionBatchByID = Dictionary(uniqueKeysWithValues: productionBatches.map { ($0.id, $0) })
+        let allBatches = try context.fetch(FetchDescriptor<ProductionBatchRecord>(predicate: #Predicate {
+            $0.farmID == farmID
+        }))
+        let batchByID = Dictionary(uniqueKeysWithValues: allBatches.map { ($0.id, $0) })
+        events.append(contentsOf: allBatches.compactMap { batch in
+            guard batch.sourceRawValue == ProductionBatchSource.manual.rawValue else { return nil }
+            return FarmEventSnapshot(
+                id: batch.id,
+                entityType: .productionBatch,
+                category: .herd,
+                productionBatchID: batch.id,
+                occurredAt: batch.createdAt,
+                recordedAt: batch.createdAt,
+                title: "建立生产批次",
+                subject: batch.name,
+                detail: batch.purpose,
+                note: batch.note,
+                fields: [
+                    .init(label: "生产目的", value: batch.purpose),
+                    .init(label: "开始时间", value: batch.startedAt.formatted(date: .numeric, time: .shortened)),
+                    .init(label: "当前状态", value: batch.deletedAt == nil ? "保留中" : "已删除")
+                ],
+                isDerived: true,
+                canWithdrawBatchCreation: batch.deletedAt == nil
+            )
+        })
+        let batchDeletionType = CloudEntityType.productionBatch.rawValue
+        let batchDeletions = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.entityType == batchDeletionType
+        }))
+        events.append(contentsOf: batchDeletions.compactMap { deletion in
+            guard let batch = batchByID[deletion.entityID],
+                  batch.sourceRawValue == ProductionBatchSource.manual.rawValue else { return nil }
+            let undone = deletion.restoredAt != nil
+            return FarmEventSnapshot(
+                id: deletion.id,
+                entityType: .productionBatch,
+                category: .herd,
+                productionBatchID: batch.id,
+                occurredAt: deletion.deletedAt,
+                recordedAt: deletion.deletedAt,
+                title: "删除生产批次",
+                subject: batch.name,
+                detail: undone ? "已撤回删除" : "可撤回删除",
+                note: deletion.reason,
+                fields: [
+                    .init(label: "生产目的", value: batch.purpose),
+                    .init(label: "删除状态", value: undone ? "已撤回" : "待撤回"),
+                    .init(label: "删除账号ID", value: deletion.deletedByAccountID.uuidString.lowercased())
+                ],
+                isDerived: true,
+                canUndoBatchDeletion: !undone && batch.deletedAt != nil
+            )
+        })
         let batchMemberships = try context.fetch(FetchDescriptor<BatchMembershipRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
         }))
@@ -632,6 +688,7 @@ struct FarmEventHistoryView: View {
     @State private var query = ""
     @State private var pendingEditor: FarmEventEditDestination?
     @State private var pendingDeletion: FarmEventSnapshot?
+    @State private var pendingBatchWithdrawal: FarmEventSnapshot?
     @State private var isPresentingExport = false
     @State private var isPresentingFilters = false
     @State private var isLoading = true
@@ -647,21 +704,25 @@ struct FarmEventHistoryView: View {
     }
 
     private func canEdit(_ event: FarmEventSnapshot) -> Bool {
-        guard !isParityConfirmation(event) else { return false }
         guard let capability = event.editCapability else { return false }
         return CapabilitySet(role: farm.role).allows(capability)
     }
 
     private func canDelete(_ event: FarmEventSnapshot) -> Bool {
-        canDelete &&
-            !event.isDerived &&
-            !event.isRestorableBatchDeparture &&
-            !isParityConfirmation(event)
+        canDelete && event.entityType != .productionBatch && !event.isRestorableBatchDeparture
     }
 
     private func canRestoreBatchDeparture(_ event: FarmEventSnapshot) -> Bool {
         event.isRestorableBatchDeparture &&
             CapabilitySet(role: farm.role).allows(.recordProduction)
+    }
+
+    private func canUndoBatchDeletion(_ event: FarmEventSnapshot) -> Bool {
+        event.canUndoBatchDeletion && CapabilitySet(role: farm.role).allows(.manageCatalogs)
+    }
+
+    private func canWithdrawBatchCreation(_ event: FarmEventSnapshot) -> Bool {
+        event.canWithdrawBatchCreation && CapabilitySet(role: farm.role).allows(.manageCatalogs)
     }
 
     private func isParityConfirmation(_ event: FarmEventSnapshot) -> Bool {
@@ -726,28 +787,40 @@ struct FarmEventHistoryView: View {
                         canEdit: canEdit(event),
                         canDelete: canDelete(event),
                         canRestoreBatchDeparture: canRestoreBatchDeparture(event),
+                        canUndoBatchDeletion: canUndoBatchDeletion(event),
+                        canWithdrawBatchCreation: canWithdrawBatchCreation(event),
                         requestEditing: { beginEditing(event) },
                         requestDeletion: { pendingDeletion = event },
-                        restoreBatchDeparture: { try restoreBatchDeparture(event) }
+                        requestBatchDeletionUndo: { pendingBatchWithdrawal = event },
+                        restoreBatchDeparture: { try restoreBatchDeparture(event) },
+                        undoBatchDeletion: { try undoBatchDeletion(event) }
                     )
                     .listRowInsets(.init(top: 7, leading: 16, bottom: 7, trailing: 12))
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        if canDelete(event) {
-                            Button("删除", systemImage: "trash", role: .destructive) {
-                                pendingDeletion = event
+                        FarmEventSwipeActions(
+                            canEdit: canEdit(event),
+                            canWithdraw: canDelete(event) || canRestoreBatchDeparture(event) || canUndoBatchDeletion(event) || canWithdrawBatchCreation(event),
+                            edit: { beginEditing(event) },
+                            withdraw: {
+                                if canUndoBatchDeletion(event) || canWithdrawBatchCreation(event) {
+                                    pendingBatchWithdrawal = event
+                                } else if canRestoreBatchDeparture(event) {
+                                    Task { @MainActor in
+                                        await Task.yield()
+                                        do { try restoreBatchDeparture(event) }
+                                        catch { errorMessage = error.localizedDescription }
+                                    }
+                                } else {
+                                    pendingDeletion = event
+                                }
                             }
-                        }
-                        if canEdit(event) {
-                            Button("编辑", systemImage: "pencil") {
-                                beginEditing(event)
-                            }
-                            .tint(AppTheme.brand)
-                        }
+                        )
                     }
                 }
             }
         }
 
+        .id(listSnapshotRevision)
         .navigationTitle("事件记录")
         .searchable(
             text: $query,
@@ -805,6 +878,25 @@ struct FarmEventHistoryView: View {
         }) { event in
             FarmEventDeletionSheet(account: account, farm: farm, event: event)
                 .presentationDetents([.medium])
+        }
+        .alert("撤回批次事件？", isPresented: Binding(
+            get: { pendingBatchWithdrawal != nil },
+            set: { if !$0 { pendingBatchWithdrawal = nil } }
+        )) {
+            Button("确认撤回") {
+                guard let event = pendingBatchWithdrawal else { return }
+                pendingBatchWithdrawal = nil
+                Task { @MainActor in
+                    await Task.yield()
+                    do { try withdrawBatchEvent(event) }
+                    catch { errorMessage = error.localizedDescription }
+                }
+            }
+            Button("取消", role: .cancel) { pendingBatchWithdrawal = nil }
+        } message: {
+            Text(pendingBatchWithdrawal?.canUndoBatchDeletion == true
+                 ? "会恢复原批次及删除时的成员关系，保留删除和撤回的审计记录。"
+                 : "会删除该批次及成员关联，羊只和生产记录保留；操作可从删除事件撤回。")
         }
         .sheet(isPresented: $isPresentingFilters) {
             FarmEventFilterSheet(category: $category, scope: $recordScope, usesDateRange: $usesDateRange, startDate: $startDate, endDate: $endDate)
@@ -902,7 +994,22 @@ struct FarmEventHistoryView: View {
         let farmID = farm.id
         do {
             switch event.entityType {
+            case .productionBatch:
+                guard let batchID = event.productionBatchID,
+                      let record = try modelContext.fetch(FetchDescriptor<ProductionBatchRecord>(predicate: #Predicate {
+                          $0.id == batchID && $0.farmID == farmID
+                      })).first else { throw FarmEventEditError.recordUnavailable }
+                pendingEditor = .productionBatch(record)
+            case .sheep where event.title == "用途变更":
+                pendingEditor = .correction(try FarmEventCorrection.draft(for: event, farmID: farmID, context: modelContext))
+            case .weaning, .note, .inventoryTransaction, .semenTransaction, .batchMembership:
+                pendingEditor = .correction(try FarmEventCorrection.draft(for: event, farmID: farmID, context: modelContext))
+            case .feed where event.title != "TMR 投喂":
+                pendingEditor = .correction(try FarmEventCorrection.draft(for: event, farmID: farmID, context: modelContext))
+            case .reproduction where isParityConfirmation(event):
+                pendingEditor = .correction(try FarmEventCorrection.draft(for: event, farmID: farmID, context: modelContext))
             case .sheep:
+                let entityID = event.relatedSheepIDs.first ?? event.id
                 guard let record = try modelContext.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
                     $0.id == entityID && $0.farmID == farmID && $0.deletedAt == nil
                 })).first else { throw FarmEventEditError.recordUnavailable }
@@ -972,6 +1079,34 @@ struct FarmEventHistoryView: View {
         )
         Task { await reloadAfterMutation() }
     }
+
+    @MainActor
+    private func undoBatchDeletion(_ event: FarmEventSnapshot) throws {
+        guard canUndoBatchDeletion(event) else { throw FarmEventEditError.unsupported }
+        try FarmCommandService().restoreDeletedProductionBatch(
+            deletionID: event.id,
+            in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
+            context: modelContext
+        )
+        Task { await reloadAfterMutation() }
+    }
+
+    @MainActor
+    private func withdrawBatchEvent(_ event: FarmEventSnapshot) throws {
+        if canUndoBatchDeletion(event) {
+            try undoBatchDeletion(event)
+        } else if canWithdrawBatchCreation(event), let batchID = event.productionBatchID {
+            try FarmCommandService().deleteProductionBatch(
+                batchID: batchID,
+                reason: "用户从事件记录撤回建立生产批次",
+                in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
+                context: modelContext
+            )
+            Task { await reloadAfterMutation() }
+        } else {
+            throw FarmEventEditError.unsupported
+        }
+    }
 }
 
 private struct FarmEventFilterRequest: Equatable, Sendable {
@@ -990,9 +1125,13 @@ private struct FarmEventHistoryRowLink: View {
     let canEdit: Bool
     let canDelete: Bool
     let canRestoreBatchDeparture: Bool
+    let canUndoBatchDeletion: Bool
+    let canWithdrawBatchCreation: Bool
     let requestEditing: () -> Void
     let requestDeletion: () -> Void
+    let requestBatchDeletionUndo: () -> Void
     let restoreBatchDeparture: () throws -> Void
+    let undoBatchDeletion: () throws -> Void
 
     var body: some View {
         NavigationLink {
@@ -1003,8 +1142,10 @@ private struct FarmEventHistoryRowLink: View {
                 canExport: canExport,
                 canEdit: canEdit,
                 canRestoreBatchDeparture: canRestoreBatchDeparture,
+                canUndoBatchDeletion: canUndoBatchDeletion,
                 requestEditing: requestEditing,
-                performBatchDepartureRestore: restoreBatchDeparture
+                performBatchDepartureRestore: restoreBatchDeparture,
+                performBatchDeletionUndo: undoBatchDeletion
             )
         } label: {
             FarmEventRow(event: event)
@@ -1015,7 +1156,10 @@ private struct FarmEventHistoryRowLink: View {
                 Button("编辑事件", systemImage: "pencil", action: requestEditing)
             }
             if canDelete {
-                Button("删除事件", systemImage: "trash", role: .destructive, action: requestDeletion)
+                Button("撤回事件", systemImage: "arrow.uturn.backward", role: .destructive, action: requestDeletion)
+            }
+            if canUndoBatchDeletion || canWithdrawBatchCreation {
+                Button("撤回", systemImage: "arrow.uturn.backward", action: requestBatchDeletionUndo)
             }
         }
     }
@@ -1023,6 +1167,7 @@ private struct FarmEventHistoryRowLink: View {
 
 private struct FarmEventRow: View {
     let event: FarmEventSnapshot
+    @ScaledMetric(relativeTo: .subheadline) private var contentHeight: CGFloat = 82
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
@@ -1032,13 +1177,21 @@ private struct FarmEventRow: View {
                 .frame(width: 30, height: 30)
                 .background(AppTheme.brand.opacity(0.12), in: .circle)
             VStack(alignment: .leading, spacing: 2) {
-                Text(LocalizedStringKey(event.title)).font(.subheadline.weight(.semibold))
-                Text(LocalizedStringKey(event.subject)).font(.subheadline)
+                Text(LocalizedStringKey(event.title))
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text(LocalizedStringKey(event.subject))
+                    .font(.subheadline)
+                    .lineLimit(2)
                 if !event.detail.isEmpty {
-                    Text(LocalizedStringKey(event.detail)).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                    Text(LocalizedStringKey(event.detail))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: contentHeight, alignment: .center)
             Text(event.occurredAt, format: .dateTime.month().day().hour().minute())
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -1060,12 +1213,15 @@ private struct FarmEventDetailView: View {
     let canExport: Bool
     let canEdit: Bool
     let canRestoreBatchDeparture: Bool
+    let canUndoBatchDeletion: Bool
     let requestEditing: () -> Void
     let performBatchDepartureRestore: () throws -> Void
+    let performBatchDeletionUndo: () throws -> Void
 
     @State private var document: FarmEventCSVExportDocument?
     @State private var isExporting = false
     @State private var isConfirmingBatchRestore = false
+    @State private var isConfirmingBatchDeletionUndo = false
     @State private var isRestoringBatchDeparture = false
     @State private var message: String?
     @State private var errorMessage: String?
@@ -1099,6 +1255,17 @@ private struct FarmEventDetailView: View {
                     }
                     .disabled(isRestoringBatchDeparture)
                     Text("恢复后会保留原加入时间；移出事件将从当前事实时间线消失，但移出和撤回的审计操作都会保留。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if canUndoBatchDeletion {
+                Section("可恢复操作") {
+                    Button("撤回删除批次", systemImage: "arrow.uturn.backward") {
+                        isConfirmingBatchDeletionUndo = true
+                    }
+                    .disabled(isRestoringBatchDeparture)
+                    Text("将恢复批次及删除时的全部成员关系；如果羊只已加入其他进行中的批次，撤回会暂停并提示处理冲突。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -1146,6 +1313,12 @@ private struct FarmEventDetailView: View {
         } message: {
             Text("将恢复这只羊在原生产批次中的成员关系和原加入时间。")
         }
+        .alert("撤回删除批次？", isPresented: $isConfirmingBatchDeletionUndo) {
+            Button("恢复批次和成员") { undoBatchDeletion() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("会恢复原批次及删除时的成员关系，保留删除和撤回的审计记录。")
+        }
         .recordErrorAlert($errorMessage, title: "事件操作未完成")
         .onChange(of: session.selectedFarmID) { _, _ in isExporting = false; document = nil }
         .onChange(of: session.activeAccountProfileID) { _, _ in isExporting = false; document = nil }
@@ -1180,9 +1353,27 @@ private struct FarmEventDetailView: View {
             }
         }
     }
+
+    @MainActor
+    private func undoBatchDeletion() {
+        guard !isRestoringBatchDeparture else { return }
+        isRestoringBatchDeparture = true
+        Task { @MainActor in
+            await Task.yield()
+            do {
+                try performBatchDeletionUndo()
+                dismiss()
+            } catch {
+                isRestoringBatchDeparture = false
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
 }
 
 private enum FarmEventEditDestination: Identifiable {
+    case correction(FarmEventCorrectionDraft)
+    case productionBatch(ProductionBatchRecord)
     case sheep(SheepRecord)
     case weight(WeightRecord)
     case transfer(TransferRecord)
@@ -1193,6 +1384,9 @@ private enum FarmEventEditDestination: Identifiable {
 
     var id: FarmEventRowIdentity {
         switch self {
+        case .correction(let draft): FarmEventRowIdentity(entityType: draft.entityType.rawValue, entityID: draft.sourceEventID)
+        case .productionBatch(let record):
+            FarmEventRowIdentity(entityType: CloudEntityType.productionBatch.rawValue, entityID: record.id)
         case .sheep(let record):
             FarmEventRowIdentity(entityType: CloudEntityType.sheep.rawValue, entityID: record.id)
         case .weight(let record):
@@ -1233,6 +1427,10 @@ private struct FarmEventEditSheet: View {
     var body: some View {
         NavigationStack {
             switch destination {
+            case .correction(let draft):
+                FarmEventCorrectionView(account: account, farm: farm, initial: draft)
+            case .productionBatch(let record):
+                EditProductionBatchView(account: account, farm: farm, batch: record)
             case .sheep(let record):
                 EditSheepProfileView(account: account, farm: farm, sheep: record)
             case .weight(let record):
@@ -1256,6 +1454,77 @@ private struct FarmEventEditSheet: View {
     }
 }
 
+private struct EditProductionBatchView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+
+    let account: AccountProfile
+    let farm: FarmRecord
+    let batch: ProductionBatchRecord
+
+    @State private var name: String
+    @State private var purpose: String
+    @State private var startedAt: Date
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    init(account: AccountProfile, farm: FarmRecord, batch: ProductionBatchRecord) {
+        self.account = account
+        self.farm = farm
+        self.batch = batch
+        _name = State(initialValue: batch.name)
+        _purpose = State(initialValue: batch.purpose)
+        _startedAt = State(initialValue: batch.startedAt)
+    }
+
+    var body: some View {
+        Form {
+            Section("生产批次") {
+                TextField("批次名称", text: $name)
+                TextField("生产目的", text: $purpose)
+                DatePicker("开始时间", selection: $startedAt, displayedComponents: [.date, .hourAndMinute])
+            }
+            if batch.deletedAt != nil {
+                Section {
+                    Text("这里只修正已删除批次的历史资料；批次仍保持删除状态。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("编辑生产批次")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存") { save() }
+                    .disabled(isSaving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .disabled(isSaving)
+        .recordErrorAlert($errorMessage, title: "批次编辑未完成")
+    }
+
+    @MainActor
+    private func save() {
+        guard !isSaving else { return }
+        isSaving = true
+        Task { @MainActor in
+            await Task.yield()
+            do {
+                try FarmCommandService().execute(
+                    .updateBatch(batchID: batch.id, name: name, purpose: purpose, startedAt: startedAt),
+                    in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role),
+                    context: modelContext
+                )
+                dismiss()
+            } catch {
+                isSaving = false
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
 private struct FarmEventDeletionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -1271,16 +1540,16 @@ private struct FarmEventDeletionSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("将删除") {
+                Section("将撤回") {
                     LabeledContent(event.title, value: event.subject)
                     Text(event.occurredAt, format: .dateTime.year().month().day().hour().minute())
                         .foregroundStyle(.secondary)
                 }
                 Section {
-                    TextField("请填写删除原因", text: $reason, axis: .vertical)
+                    TextField("请填写撤回原因", text: $reason, axis: .vertical)
                         .lineLimit(2...4)
                 } header: {
-                    Text("删除原因")
+                    Text("撤回原因")
                 } footer: {
                     if event.entityType == .feed && event.title == "TMR 投喂" {
                         Text("删除会撤销所属的整次出锅投喂；若该次包含多个圈舍，将一起撤销并恢复 TMR 批次余额，原料库存不会变化。审计记录不会被抹除。")
@@ -1289,12 +1558,12 @@ private struct FarmEventDeletionSheet: View {
                     }
                 }
             }
-            .navigationTitle("删除事件")
+            .navigationTitle("撤回事件")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("删除", role: .destructive) { delete() }
+                    Button("撤回", role: .destructive) { delete() }
                         .disabled(reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isDeleting)
                 }
             }
@@ -1343,6 +1612,16 @@ enum FarmEventDeletionCommandResolver {
         context: ModelContext
     ) throws -> FarmCommand {
         let normalizedReason = "事件记录删除：" + reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        if event.title == "用途变更" || (event.entityType == .reproduction && event.title == ReproductionRecordKind.parityBaseline.displayName) {
+            var draft = try FarmEventCorrection.draft(for: event, farmID: farmID, context: context)
+            draft.withdraw = true
+            return .correctEvent(draft)
+        }
+        if event.entityType == .sheep && event.title == "出生" {
+            guard let sheepID = event.relatedSheepIDs.first,
+                  let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.id == sheepID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sourceRecordNotFound }
+            return .updateSheepProfile(sheepID: sheep.id, earTag: sheep.earTag, breed: sheep.breed, sex: sheep.sex, birthAt: nil, currentParity: nil, parityRecordedAt: nil, note: sheep.note)
+        }
         if event.entityType == .feed {
             let feedRecordID = event.id
             let allocation = try context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>(predicate: #Predicate {
@@ -1431,6 +1710,89 @@ private struct FarmEventFilterSheet: View {
             .navigationTitle("筛选事件")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+        }
+    }
+}
+
+/// Every event uses the same two actions, labels, symbols, order and colors.
+private struct FarmEventSwipeActions: View {
+    let canEdit: Bool
+    let canWithdraw: Bool
+    let edit: () -> Void
+    let withdraw: () -> Void
+
+    var body: some View {
+        Button("撤回", systemImage: "arrow.uturn.backward", action: withdraw)
+            .tint(.red)
+            .disabled(!canWithdraw)
+        Button("编辑", systemImage: "pencil", action: edit)
+            .tint(AppTheme.brand)
+            .disabled(!canEdit)
+    }
+}
+
+private struct FarmEventCorrectionView: View {
+    @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
+    let account: AccountProfile
+    let farm: FarmRecord
+    @State private var draft: FarmEventCorrectionDraft
+    @State private var saving = false
+    @State private var errorMessage: String?
+
+    init(account: AccountProfile, farm: FarmRecord, initial: FarmEventCorrectionDraft) {
+        self.account = account; self.farm = farm; _draft = State(initialValue: initial)
+    }
+
+    private var availablePurposes: [SheepPurpose] {
+        let sheep = try? context.fetch(FetchDescriptor<SheepRecord>()).first { $0.id == draft.entityID && $0.farmID == farm.id }
+        guard let sheep else { return [] }
+        return SheepPurpose.allCases.filter { $0.isAllowed(for: sheep.sex) }
+    }
+
+    private var valueLabel: String? {
+        switch draft.kind {
+        case .weaning: "断奶体重（kg）"
+        case .inventory, .semen: "数量变化"
+        case .parity: "确认胎次"
+        default: nil
+        }
+    }
+
+    var body: some View {
+        Form {
+            Section("事件资料") {
+                DatePicker("发生时间", selection: $draft.occurredAt, displayedComponents: [.date, .hourAndMinute])
+                if draft.kind == .purpose {
+                    Picker("用途", selection: $draft.value) {
+                        ForEach(availablePurposes, id: \.rawValue) { value in Text(value.displayName).tag(value.rawValue) }
+                    }
+                } else if let valueLabel {
+                    TextField(valueLabel, text: $draft.value).keyboardType(.numbersAndPunctuation)
+                }
+                TextField(draft.kind == .note ? "内容" : draft.kind == .departure || draft.kind == .purpose ? "原因" : "备注", text: $draft.text, axis: .vertical)
+                    .lineLimit(3...8)
+            }
+        }
+        .navigationTitle("编辑事件")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) { Button("保存") { save() }.disabled(saving) }
+        }
+        .disabled(saving)
+        .recordErrorAlert($errorMessage, title: "事件编辑未完成")
+    }
+
+    private func save() {
+        guard !saving else { return }
+        saving = true
+        Task { @MainActor in
+            await Task.yield()
+            do {
+                try FarmCommandService().execute(.correctEvent(draft), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: context)
+                dismiss()
+            } catch { saving = false; errorMessage = error.localizedDescription }
         }
     }
 }

@@ -86,12 +86,11 @@ struct InsightAssistantSettingsView: View {
 
             Section {
                 LabeledContent("服务商", value: "MiMo")
-                LabeledContent("文字与工具", value: "mimo-v2.5-pro")
-                LabeledContent("图片与语音", value: "mimo-v2.5")
+                LabeledContent("文字、图片与语音", value: MiMoCredential.model)
             } header: {
                 Text("模型")
             } footer: {
-                Text("模型由输入类型自动切换，不开放自定义模型或第三方地址。")
+                Text("所有输入均使用 MiMo-V2.6-Pro，不开放自定义模型或第三方地址。")
             }
 
             Section {

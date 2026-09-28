@@ -68,6 +68,8 @@ enum ESheepCloudCommandRegistryV2 {
         "photoAsset.register",
         "photoAsset.restore",
         "productionBatch.create",
+        "productionBatch.update",
+        "event.correct",
         "record.restore",
         "record.revoke",
         "removal.correct",
@@ -135,6 +137,8 @@ enum ESheepCloudCommandRegistryV2 {
         case "removal.restore": "restoreSheep"
         case "breedingProgram.create": "createBreedingProgram"
         case "productionBatch.create": "createBatch"
+        case "event.correct": "correctEvent"
+        case "productionBatch.update": "updateBatch"
         case "batchMembership.assign": "assignSheepToBatch"
         case "batchMembership.leave": "leaveBatch"
         case "batchMembership.restore": "restoreBatchMembership"
@@ -210,6 +214,7 @@ enum ESheepCloudCommandRegistryV2 {
         case "farm.updateLocation", "pen.update", "pen.setActive",
              "sheep.patchProfile", "sheepAvatar.set", "sheepAvatar.clear":
             "field_patch"
+        case "event.correct", "productionBatch.update": "state_machine"
         case "weight.record", "weaning.record", "note.add", "photoAsset.register",
              "feed.recordLegacy", "feedTrough.record", "feed.importHistorical",
              "care.operationalAlert.defer", "tmr.acknowledgeTMRDeviation":
@@ -286,6 +291,8 @@ enum ESheepCloudCommandRegistryV2 {
         case "removal.restore": "removal.restore"
         case "breedingProgram.create": "breedingProgram.create"
         case "productionBatch.create": "productionBatch.create"
+        case "event.correct": "event.correct"
+        case "productionBatch.update": "productionBatch.update"
         case "batchMembership.assign": "batchMembership.assign"
         case "batchMembership.leave": "batchMembership.leave"
         case "batchMembership.restore": "batchMembership.restore"

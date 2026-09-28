@@ -1,4 +1,5 @@
 import { decimalRound } from "./decimal.js";
+import { decodeCheckpointData } from "./checkpointData.js";
 import checkpointSchema from "../../../tools/esheep_cloud_checkpoint_schema_v1.json" with { type: "json" };
 
 // The checkpoint's field types come from the same closed registry as the
@@ -160,10 +161,11 @@ function applyFieldPatch(projection, event, changes) {
   const row = get(projection, model, event.stream_id);
   const stateTable=projection.models.get("ESheepCloudStreamState");
   let state=[...stateTable.values()].find(s=>s.streamType===event.stream_type&&s.streamID===event.stream_id.toLowerCase());
-  if(!state){state={id:event.event_id,farmID:projection.farmID,streamType:event.stream_type,streamID:event.stream_id.toLowerCase(),fieldVersionsData:btoa("[]")};stateTable.set(state.id,state);}
-  const versions=JSON.parse(atob(state.fieldVersionsData??btoa("[]")));
+  if(!state){state={id:event.event_id,farmID:projection.farmID,streamType:event.stream_type,streamID:event.stream_id.toLowerCase(),fieldVersionsData:{json:[]}};stateTable.set(state.id,state);}
+  const versions=decodeCheckpointData(state.fieldVersionsData);
+  if(!Array.isArray(versions))throw invalid("字段版本记录格式不正确。");
   for(const change of changes){const entry={field:change.field,version:change.field_version,valueDigest:change.value_digest,value:change.value};const i=versions.findIndex(v=>v.field===change.field);if(i<0)versions.push(entry);else versions[i]=entry;}
-  state.fieldVersionsData=btoa(unescape(encodeURIComponent(JSON.stringify(versions))));
+  state.fieldVersionsData={json:versions};
 
   for (const change of changes) {
     const field = patchFields[event.stream_type][change.field];
@@ -280,7 +282,7 @@ export function applyV2Event(projection, event, body) {
       target = get(projection, model, entityID);
       // Sheep/pen deletion has cascades; it must not masquerade as a scalar
       // tombstone in this read adapter.
-      if (["sheep", "pen", "farm", "productionBatch"].includes(entityType)) throw unsupported(`record.revoke:${entityType}`);
+      if (["sheep", "pen", "farm"].includes(entityType)) throw unsupported(`record.revoke:${entityType}`);
       target.deletedAt = event.received_at_millis;
       // Native tombstones use the original operation ID for restoration;
       // checkpoint tombstones keep their own IDs and are also indexed below.
@@ -293,7 +295,7 @@ export function applyV2Event(projection, event, body) {
       const tombstone = get(projection, "TombstoneRecord", args.tombstoneID, true);
       entityType = tombstone.entityType; entityID = tombstone.entityID;
       const model = entityModels[entityType];
-      if (!model || ["sheep", "pen", "farm", "productionBatch"].includes(entityType)) throw unsupported(`record.restore:${entityType}`);
+      if (!model || ["sheep", "pen", "farm"].includes(entityType)) throw unsupported(`record.restore:${entityType}`);
       target = get(projection, model, entityID, true);
       target.deletedAt = null;
       tombstone.restoredAt = event.received_at_millis;
@@ -350,11 +352,7 @@ export function applyV2Event(projection, event, body) {
 }
 
 function decodeData(value) {
-  if (value && typeof value === "object" && Object.hasOwn(value, "json")) return value.json;
-  const base64 = typeof value === "string" ? value : value?.base64;
-  if (!base64) throw invalid();
-  const bytes = Uint8Array.from(atob(base64.replace(/\s/g, "")), (character) => character.charCodeAt(0));
-  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  return decodeCheckpointData(value);
 }
 
 function classifyPurpose(value) {

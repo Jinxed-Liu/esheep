@@ -303,6 +303,8 @@ enum ESheepCloudFactCommandV2: Codable, Sendable, Equatable {
 enum ESheepCloudCollectionCommandV2: Codable, Sendable, Equatable {
     case createBreedingProgram(name: String, createdAt: Date, steps: [BreedingProgramStepDraft])
     case createBatch(name: String, purpose: String, startedAt: Date, sheepIDs: [UUID], note: String)
+    case correctEvent(FarmEventCorrectionDraft)
+    case updateBatch(batchID: UUID, name: String, purpose: String, startedAt: Date)
     case assignSheepToBatch(batchID: UUID, sheepID: UUID, joinedAt: Date)
     case leaveBatch(batchID: UUID, sheepID: UUID, leftAt: Date, reason: String)
     case restoreBatchMembership(membershipID: UUID, restoredAt: Date, reason: String)
@@ -425,6 +427,8 @@ enum ESheepCloudCommandPayloadV2: Codable, Sendable, Equatable {
             switch command {
             case .createBreedingProgram: "breedingProgram.create"
             case .createBatch: "productionBatch.create"
+            case .correctEvent: "event.correct"
+            case .updateBatch: "productionBatch.update"
             case .assignSheepToBatch: "batchMembership.assign"
             case .leaveBatch: "batchMembership.leave"
             case .restoreBatchMembership: "batchMembership.restore"
@@ -488,7 +492,7 @@ enum ESheepCloudCommandPayloadV2: Codable, Sendable, Equatable {
              "removal.correct", "removal.restore", "health.record",
              "inventory.receive", "semen.add", "reproduction.record", "note.add":
             decoded = .fact(try container.decode(ESheepCloudFactCommandV2.self, forKey: .body))
-        case "breedingProgram.create", "productionBatch.create",
+        case "event.correct", "breedingProgram.create", "productionBatch.create", "productionBatch.update",
              "batchMembership.assign", "batchMembership.leave",
              "batchMembership.restore", "feedIngredient.add",
              "feedRecipe.create", "feedRecipe.member.add":

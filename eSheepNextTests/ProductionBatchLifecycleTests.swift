@@ -405,6 +405,17 @@ final class ProductionBatchLifecycleTests: XCTestCase {
         XCTAssertNotNil(batch.deletedAt)
         XCTAssertNotNil(member.deletedAt)
         XCTAssertNil(fixture.first.deletedAt)
+
+        let deletion = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<TombstoneRecord>()).first {
+            $0.entityID == batch.id
+        })
+        let administrator = FarmContext(accountID: fixture.account.id, farmID: farmID, role: .administrator)
+        try fixture.service.restoreDeletedProductionBatch(deletionID: deletion.id, in: administrator, context: fixture.context)
+        let restoredIntents = try fixture.context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
+        XCTAssertEqual(restoredIntents.count, 4)
+        XCTAssertEqual(restoredIntents.filter { $0.commandKind == "record.restore" }.count, 2)
+        XCTAssertNil(batch.deletedAt)
+        XCTAssertNil(member.deletedAt)
     }
 
     func testDeleteCompletedAndEmptyBatches() throws {
@@ -416,6 +427,115 @@ final class ProductionBatchLifecycleTests: XCTestCase {
         try fixture.service.deleteProductionBatch(batchID: batch.id, reason: "清理空批次", in: fixture.farmContext, context: fixture.context)
         XCTAssertNotNil(batch.deletedAt)
         XCTAssertThrowsError(try fixture.service.deleteProductionBatch(batchID: batch.id, reason: "重复删除", in: fixture.farmContext, context: fixture.context))
+    }
+
+    func testAdministratorCanCorrectDeletedBatchHistoryWithoutRestoringIt() throws {
+        let fixture = try makeFixture()
+        try fixture.service.execute(
+            .createBatch(name: "原批次", purpose: "育肥", startedAt: fixture.enteredAt, sheepIDs: [fixture.first.id], note: ""),
+            in: fixture.farmContext, context: fixture.context
+        )
+        let batch = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ProductionBatchRecord>()).first)
+        let membership = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<BatchMembershipRecord>()).first)
+        try fixture.service.deleteProductionBatch(batchID: batch.id, reason: "资料录入错误", in: fixture.farmContext, context: fixture.context)
+        let deletedAt = try XCTUnwrap(batch.deletedAt)
+        let earlierStart = fixture.enteredAt.addingTimeInterval(-3600)
+        let admin = FarmContext(accountID: fixture.account.id, farmID: fixture.farm.id, role: .administrator)
+
+        XCTAssertThrowsError(try fixture.service.execute(
+            .updateBatch(batchID: batch.id, name: "修正批次", purpose: "选育", startedAt: earlierStart),
+            in: FarmContext(accountID: fixture.account.id, farmID: fixture.farm.id, role: .worker),
+            context: fixture.context
+        ))
+        try fixture.service.execute(
+            .updateBatch(batchID: batch.id, name: "修正批次", purpose: "选育", startedAt: earlierStart),
+            in: admin, context: fixture.context
+        )
+
+        XCTAssertEqual(batch.name, "修正批次")
+        XCTAssertEqual(batch.purpose, "选育")
+        XCTAssertEqual(batch.startedAt, earlierStart)
+        XCTAssertEqual(batch.deletedAt, deletedAt)
+        XCTAssertNotNil(membership.deletedAt)
+        let operation = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<DomainOperation>()).last {
+            $0.kindRawValue == DomainOperationKind.updateBatch.rawValue
+        })
+        XCTAssertEqual(operation.entityID, batch.id)
+        let payload = try decodePayload(operation.payload)
+        XCTAssertEqual(payload.identifiers["batchID"], batch.id)
+        XCTAssertEqual(payload.strings["name"], "修正批次")
+
+        let draft = try ESheepCloudCommandFactoryV2.make(
+            command: .updateBatch(batchID: batch.id, name: "修正批次", purpose: "选育", startedAt: earlierStart),
+            farmID: fixture.farm.id,
+            primaryEntityType: CloudEntityType.productionBatch.rawValue,
+            primaryEntityID: batch.id
+        )
+        XCTAssertEqual(draft.kind, "productionBatch.update")
+        XCTAssertEqual(ESheepCloudCommandRegistryV2.mergeMode(for: draft.kind), "state_machine")
+        XCTAssertTrue(draft.fieldChanges.isEmpty)
+    }
+
+    func testDeletedBatchEventCanBeUndoneByAdministratorWithMembersAndAudit() async throws {
+        let fixture = try makeFixture()
+        try fixture.service.execute(
+            .createBatch(name: "可恢复批次", purpose: "育肥", startedAt: fixture.enteredAt, sheepIDs: [fixture.first.id, fixture.second.id], note: ""),
+            in: fixture.farmContext, context: fixture.context
+        )
+        let batch = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ProductionBatchRecord>()).first)
+        let members = try fixture.context.fetch(FetchDescriptor<BatchMembershipRecord>())
+        var events = try await FarmEventHistoryActor(container: fixture.context.container).load(farmID: fixture.farm.id)
+        let creation = try XCTUnwrap(events.first { $0.id == batch.id && $0.title == "建立生产批次" })
+        XCTAssertEqual(creation.occurredAt, batch.createdAt)
+        XCTAssertEqual(creation.subject, "可恢复批次")
+        XCTAssertEqual(FarmEventExportScope.scope(for: creation), .batch)
+        try fixture.service.deleteProductionBatch(batchID: batch.id, reason: "误删", in: fixture.farmContext, context: fixture.context)
+        let deletion = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<TombstoneRecord>()).first {
+            $0.entityID == batch.id
+        })
+        events = try await FarmEventHistoryActor(container: fixture.context.container).load(farmID: fixture.farm.id)
+        let event = try XCTUnwrap(events.first { $0.id == deletion.id })
+        XCTAssertEqual(event.title, "删除生产批次")
+        XCTAssertEqual(event.subject, "可恢复批次")
+        XCTAssertTrue(event.canUndoBatchDeletion)
+        XCTAssertTrue(events.contains { $0.id == batch.id && $0.title == "建立生产批次" })
+        XCTAssertEqual(FarmEventExportScope.scope(for: event), .batch)
+
+        let administrator = FarmContext(accountID: fixture.account.id, farmID: fixture.farm.id, role: .administrator)
+        try fixture.service.restoreDeletedProductionBatch(deletionID: deletion.id, in: administrator, context: fixture.context)
+        XCTAssertNil(batch.deletedAt)
+        XCTAssertTrue(members.allSatisfy { $0.deletedAt == nil })
+        XCTAssertNotNil(deletion.restoredAt)
+        XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<TombstoneRecord>()).filter { $0.restoredAt != nil }.count, 3)
+        XCTAssertEqual(try fixture.context.fetch(FetchDescriptor<DomainOperation>()).filter {
+            $0.kindRawValue == DomainOperationKind.restoreTombstonedEntity.rawValue
+        }.count, 3)
+        events = try await FarmEventHistoryActor(container: fixture.context.container).load(farmID: fixture.farm.id)
+        let restoredEvent = try XCTUnwrap(events.first { $0.id == deletion.id })
+        XCTAssertFalse(restoredEvent.canUndoBatchDeletion)
+        XCTAssertEqual(restoredEvent.detail, "已撤回删除")
+    }
+
+    func testBatchUndoRejectsActiveMembershipConflictWithoutPartialRestore() throws {
+        let fixture = try makeFixture()
+        try fixture.service.execute(
+            .createBatch(name: "原批次", purpose: "育肥", startedAt: fixture.enteredAt, sheepIDs: [fixture.first.id], note: ""),
+            in: fixture.farmContext, context: fixture.context
+        )
+        let batch = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<ProductionBatchRecord>()).first)
+        try fixture.service.deleteProductionBatch(batchID: batch.id, reason: "误删", in: fixture.farmContext, context: fixture.context)
+        let deletion = try XCTUnwrap(try fixture.context.fetch(FetchDescriptor<TombstoneRecord>()).first { $0.entityID == batch.id })
+        try fixture.service.execute(
+            .createBatch(name: "新批次", purpose: "育肥", startedAt: fixture.enteredAt, sheepIDs: [fixture.first.id], note: ""),
+            in: fixture.farmContext, context: fixture.context
+        )
+        XCTAssertThrowsError(try fixture.service.restoreDeletedProductionBatch(
+            deletionID: deletion.id,
+            in: fixture.farmContext,
+            context: fixture.context
+        ))
+        XCTAssertNotNil(batch.deletedAt)
+        XCTAssertNil(deletion.restoredAt)
     }
 
     private func makeFixture() throws -> Fixture {

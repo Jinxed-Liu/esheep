@@ -27,6 +27,7 @@
     },
     "production": {
       "name": "esheepplus-web",
+      "services": [{ "binding": "CODEX_HARNESS", "service": "esheepplus-harness" }],
       "workers_dev": false,
       "preview_urls": false,
       "routes": [

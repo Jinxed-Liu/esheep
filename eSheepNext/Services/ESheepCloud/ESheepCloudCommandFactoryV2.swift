@@ -206,6 +206,13 @@ enum ESheepCloudCommandFactoryV2 {
                 occurredAt: startedAt,
                 stream: primaryStream
             )
+        case .correctEvent(let value):
+            return draft(.collection(.correctEvent(value)), stream: .init(type: value.entityType.rawValue, id: value.entityID))
+        case .updateBatch(let batchID, let name, let purpose, let startedAt):
+            return draft(
+                .collection(.updateBatch(batchID: batchID, name: name, purpose: purpose, startedAt: startedAt)),
+                stream: .init(type: "productionBatch", id: batchID)
+            )
         case .assignSheepToBatch(let batchID, let sheepID, let joinedAt):
             return draft(
                 .collection(.assignSheepToBatch(batchID: batchID, sheepID: sheepID, joinedAt: joinedAt)),

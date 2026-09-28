@@ -7,6 +7,7 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
     case all
     case birth
     case sheep
+    case batch
     case purpose
     case weight
     case weaning
@@ -25,6 +26,7 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
         case .all: "全部记录"
         case .birth: "出生记录"
         case .sheep: "羊只建档"
+        case .batch: "生产批次"
         case .purpose: "用途变更"
         case .weight: "称重记录"
         case .weaning: "断奶羔羊"
@@ -43,6 +45,7 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
         case .all: "clock.arrow.circlepath"
         case .birth: "calendar.badge.plus"
         case .sheep: "tag"
+        case .batch: "square.stack.3d.up"
         case .purpose: "arrow.trianglehead.2.clockwise.rotate.90"
         case .weight: "scalemass"
         case .weaning: "leaf.circle.fill"
@@ -61,6 +64,7 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
         case .all: true
         case .birth: event.entityType == .sheep && event.isDerived && event.title == "出生"
         case .sheep: event.entityType == .sheep && !event.isDerived
+        case .batch: event.entityType == .productionBatch || event.entityType == .batchMembership
         case .purpose: event.entityType == .sheep && event.isDerived && event.title == "用途变更"
         case .weight: event.entityType == .weight
         case .weaning: event.entityType == .weaning

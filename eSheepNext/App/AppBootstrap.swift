@@ -124,11 +124,20 @@ final class AppBootstrapController {
     private(set) var isRetrying = false
     @ObservationIgnored private var openTask: Task<Void, Never>?
 
-    init() {}
+    init() {
+        FarmBackgroundRefresh.register(bootstrap: self)
+    }
 
     func start() {
         guard modelContainer == nil, failure == nil else { return }
         beginOpeningStore()
+    }
+
+    func backgroundRefreshDependencies() async -> (CloudCollaborationStore, ModelContainer)? {
+        start()
+        await openTask?.value
+        guard let collaboration, let modelContainer else { return nil }
+        return (collaboration, modelContainer)
     }
 
     func retry() {
@@ -205,10 +214,6 @@ final class AppBootstrapController {
         modelContainer = prepared.container
         self.collaboration = collaboration
         failure = nil
-        FarmBackgroundRefresh.register(
-            collaboration: collaboration,
-            modelContainer: prepared.container
-        )
     }
 }
 

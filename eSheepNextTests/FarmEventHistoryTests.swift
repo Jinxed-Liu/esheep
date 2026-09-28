@@ -3,7 +3,7 @@ import XCTest
 @testable import eSheepNext
 
 final class FarmEventHistoryTests: XCTestCase {
-    func testEventEditCapabilitiesDistinguishFactsFromLedgers() {
+    func testAllDisplayedEventsHaveEditCapabilities() {
         func event(_ entityType: CloudEntityType) -> FarmEventSnapshot {
             FarmEventSnapshot(
                 id: UUID(),
@@ -25,13 +25,13 @@ final class FarmEventHistoryTests: XCTestCase {
         XCTAssertEqual(event(.removal).editCapability, .editHistoricalFacts)
         XCTAssertEqual(event(.health).editCapability, .editHistoricalFacts)
         XCTAssertEqual(event(.reproduction).editCapability, .editHistoricalFacts)
-        XCTAssertNil(event(.feed).editCapability)
-        XCTAssertNil(event(.inventoryTransaction).editCapability)
-        XCTAssertNil(event(.semenTransaction).editCapability)
+        XCTAssertEqual(event(.feed).editCapability, .editHistoricalFacts)
+        XCTAssertEqual(event(.inventoryTransaction).editCapability, .manageCatalogs)
+        XCTAssertEqual(event(.semenTransaction).editCapability, .manageCatalogs)
     }
 
     @MainActor
-    func testAdministratorCanCorrectHistoryButCannotDeleteIt() throws {
+    func testAdministratorCanCorrectAndWithdrawHistory() throws {
         let container = try AppSchema.makeContainer(name: "event-edit-permission-\(UUID().uuidString)", isStoredInMemoryOnly: true)
         let context = ModelContext(container)
         let farmID = UUID()
@@ -60,15 +60,10 @@ final class FarmEventHistoryTests: XCTestCase {
             try context.fetch(FetchDescriptor<WeightRecord>()).first(where: { $0.deletedAt == nil })?.kilogramsText,
             "41.5"
         )
-        XCTAssertThrowsError(
-            try service.execute(
-                .tombstoneEntity(entityType: .weight, entityID: weight.id, reason: "删除"),
-                in: farmContext,
-                context: context
-            )
-        ) { error in
-            XCTAssertEqual(error.localizedDescription, FarmPermissionError.denied(.deleteProtectedFacts).localizedDescription)
-        }
+        let replacement = try XCTUnwrap(context.fetch(FetchDescriptor<WeightRecord>()).first(where: { $0.deletedAt == nil }))
+        try service.execute(.tombstoneEntity(entityType: .weight, entityID: replacement.id, reason: "撤回"), in: farmContext, context: context)
+        XCTAssertNotNil(replacement.deletedAt)
+
     }
 
     func testSearchMatchesNormalizedEventContentAndKeepsCurrentOrder() {
@@ -323,7 +318,7 @@ final class FarmEventHistoryTests: XCTestCase {
         XCTAssertEqual(birth.occurredAt, birthAt)
         XCTAssertTrue(birth.isDerived)
         XCTAssertEqual(birth.relatedSheepIDs, [lamb.id])
-        XCTAssertNil(birth.editCapability)
+        XCTAssertEqual(birth.editCapability, .editHistoricalFacts)
         XCTAssertEqual(fields["初始圈舍"], "产房")
         XCTAssertEqual(fields["母本"], "D001")
         XCTAssertEqual(fields["父本来源"], "S001")
@@ -388,7 +383,7 @@ final class FarmEventHistoryTests: XCTestCase {
         let pen = PenRecord(farmID: farmID, name: "羔羊一舍")
         let dam = SheepRecord(farmID: farmID, earTag: "D001", breed: "湖羊", sex: .ewe, penID: pen.id, enteredAt: .now)
         let sire = SheepRecord(farmID: farmID, earTag: "S001", breed: "杜泊", isBreedingRam: true, sex: .ram, penID: pen.id, enteredAt: .now)
-        let birthAt = Date(timeIntervalSince1970: 1_735_689_600)
+        let birthAt = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2025, month: 1, day: 1)))
         let lamb = SheepRecord(
             farmID: farmID,
             earTag: "L001",
