@@ -13,6 +13,8 @@ test("WeatherKit cloud codes keep partly cloudy distinct from overcast", () => {
   assert.equal(weatherKind("MostlyClear"), "cloudy");
   assert.equal(weatherKind("MostlyCloudy"), "overcast");
   assert.equal(weatherKind("Cloudy"), "overcast");
+  assert.equal(weatherKind("Windy"), "wind");
+  assert.equal(weatherKind("Breezy"), "wind");
 });
 
 test("solar events follow longitude, farm-local date, and polar availability", () => {

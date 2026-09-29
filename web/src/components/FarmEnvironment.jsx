@@ -15,7 +15,7 @@ export const phaseLabels = {
 };
 export const conditionLabels = {
   clear: "晴", cloudy: "多云", overcast: "阴", rain: "雨", sleet: "雨夹雪",
-  snow: "雪", fog: "雾", thunder: "雷雨", unknown: "天气暂不可用",
+  snow: "雪", fog: "雾", wind: "有风", thunder: "雷雨", unknown: "天气暂不可用",
 };
 
 function localTime(value, timeZone, options = {}) {
@@ -33,6 +33,7 @@ function dayLabel(value, timeZone) {
 function iconFor(condition, night = false) {
   if (condition === "rain" || condition === "sleet" || condition === "thunder") return CloudRain;
   if (condition === "snow") return CloudSnow;
+  if (condition === "wind") return Wind;
   if (condition === "cloudy" || condition === "overcast" || condition === "fog") return Cloud;
   return night ? Moon : Sun;
 }
@@ -114,11 +115,14 @@ function Precipitation({ kind, intensity, mode, paused }) {
 export function FarmEnvironmentBackground({ environment, mode, paused, surface = "home" }) {
   const scene = environment.scene;
   const condition = environment.weather?.condition ?? "unknown";
+  const windCloudOpacity = condition === "wind" && Number.isFinite(environment.weather?.cloudCover)
+    ? Math.min(.72, Math.max(0, environment.weather.cloudCover * .72)) : null;
   const nightBlend = scene.phase === "night" ? 1 : ["twilight", "dawn"].includes(scene.phase)
     ? Math.max(0, Math.min(1, (0.37 - scene.light) / 0.29)) : 0;
   return <div className={`farm-environment ${mode === "off" ? "is-off" : ""} ${paused ? "is-paused" : ""}`}
     data-phase={scene.phase} data-weather={condition} data-motion={mode} data-surface={surface} aria-hidden="true"
-    style={{ "--farm-light": scene.light, "--farm-warmth": scene.warmth, "--night-blend": nightBlend }}>
+    style={{ "--farm-light": scene.light, "--farm-warmth": scene.warmth, "--night-blend": nightBlend,
+      ...(windCloudOpacity == null ? {} : { "--cloud-opacity": windCloudOpacity }) }}>
     <div className="farm-environment-photo" />
     <div className="farm-environment-color" />
     <div className="farm-environment-clouds" />

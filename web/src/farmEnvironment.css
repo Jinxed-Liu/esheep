@@ -28,6 +28,7 @@ body:has(.farm-environment) { background: #e8f5fb; }
 .farm-environment[data-phase="night"] { --photo-filter: none; --sky-overlay: linear-gradient(180deg, #0718371a 0%, #0d2b5216 47%, #183d6720 75%, #213d6330 100%); }
 .farm-environment[data-phase="unknown"] { --photo-filter: saturate(.82); --weather-overlay: linear-gradient(180deg, #eaf2f2a0, #e8f5fb4a); }
 .farm-environment[data-weather="cloudy"] { --cloud-opacity: .48; }
+.farm-environment[data-weather="wind"] .farm-environment-clouds { animation-duration: 26s; }
 .farm-environment[data-weather="overcast"] { --cloud-opacity: .82; --photo-filter: brightness(.78) saturate(.66); --weather-overlay: linear-gradient(180deg, #647e95a0, #9baeb084 48%, #e8f5fb98); }
 .farm-environment[data-weather="rain"], .farm-environment[data-weather="sleet"] { --cloud-opacity: .88; --haze-opacity: .36; --photo-filter: brightness(.66) saturate(.68); --weather-overlay: linear-gradient(180deg, #354b66ba, #66809b9c 48%, #c7dbe4bf 100%); }
 .farm-environment[data-weather="thunder"] { --cloud-opacity: .9; --haze-opacity: .43; --photo-filter: brightness(.5) saturate(.55); --weather-overlay: linear-gradient(180deg, #182b45d1, #405776b7 48%, #a7bdcfcc 100%); }

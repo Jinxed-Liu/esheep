@@ -50,6 +50,7 @@ export function weatherKind(code) {
   if (/snow|blizzard|flurr/.test(text)) return "snow";
   if (/rain|drizzle|showers/.test(text)) return "rain";
   if (/fog|haze|smoke|mist/.test(text)) return "fog";
+  if (/breezy|windy/.test(text)) return "wind";
   if (/partlycloudy|mostlyclear/.test(text)) return "cloudy";
   if (/mostlycloudy|overcast|cloudy/.test(text)) return "overcast";
   if (/clear|sunny/.test(text)) return "clear";
