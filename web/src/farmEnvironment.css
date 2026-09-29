@@ -338,6 +338,13 @@ body:has(.farm-environment) { background: #e8f5fb; }
 .app-shell[data-content-theme="dark"] .sky-activity-row { border-color: var(--surface-edge); }
 .app-shell[data-content-theme="dark"] .sky-action-list > button:hover,
 .app-shell[data-content-theme="dark"] .sky-activity-row:hover { background: var(--surface-active); }
+.app-shell .sky-operational-context .operational-row:focus-visible { outline: 2px solid #237fee; outline-offset: -2px; border-radius: 9px; }
+.app-shell[data-content-theme="dark"] .sky-operational-context .operational-row { border-color: var(--surface-edge); color: var(--surface-text); }
+.app-shell[data-content-theme="dark"] .sky-operational-context .operational-row .row-copy strong { color: var(--surface-text); }
+.app-shell[data-content-theme="dark"] .sky-operational-context .operational-row .row-copy small,
+.app-shell[data-content-theme="dark"] .sky-operational-context .operational-row > svg:last-child { color: var(--surface-muted); }
+.app-shell[data-content-theme="dark"] .sky-operational-context .operational-row:is(:hover, :focus-visible, :active) { background: rgb(73 111 143 / .28); }
+.app-shell[data-content-theme="dark"] .sky-operational-context .operational-row:focus-visible { outline-color: #9fd0fb; }
 .app-shell[data-content-theme="dark"] .sky-production-row { background-color: rgb(10 28 47 / .55); }
 .app-shell[data-content-theme="dark"] .sky-production-row::before { filter: brightness(.63) saturate(.75); }
 .app-shell[data-content-theme="dark"] .sky-production-row::after { content: ''; position: absolute; z-index: -1; inset: 0; background: linear-gradient(90deg, #0b203bed, #0b2948b8 55%, transparent 96%); }
