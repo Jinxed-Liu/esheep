@@ -3,6 +3,9 @@ import { env } from "cloudflare:workers";
 import { verifyFarmAccess } from "../server/auth.mjs";
 import { validateMiMoAPIKey } from "../server/config.mjs";
 import { createContainerRouter } from "./router.mjs";
+import { createWeatherAPI } from "../server/weather-api.mjs";
+
+const weatherAPI = createWeatherAPI();
 
 export class HarnessContainer extends Container {
   defaultPort = 8080;
@@ -48,4 +51,9 @@ export class HarnessContainer extends Container {
   }
 }
 
-export default { fetch: createContainerRouter({ verifyAccess: verifyFarmAccess, validateKey: validateMiMoAPIKey }) };
+const assistantRouter = createContainerRouter({ verifyAccess: verifyFarmAccess, validateKey: validateMiMoAPIKey });
+export default { fetch(request, runtimeEnv) {
+  return new URL(request.url).pathname.startsWith("/api/weather/")
+    ? weatherAPI(request, runtimeEnv)
+    : assistantRouter(request, runtimeEnv);
+} };

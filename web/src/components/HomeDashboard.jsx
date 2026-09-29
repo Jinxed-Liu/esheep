@@ -6,7 +6,7 @@ import { CaretRight } from "@phosphor-icons/react/CaretRight";
 import { CloudCheck } from "@phosphor-icons/react/CloudCheck";
 import { Plus } from "@phosphor-icons/react/Plus";
 import { Scales } from "@phosphor-icons/react/Scales";
-import { Sun } from "@phosphor-icons/react/Sun";
+import { FarmWeatherSummary } from "./FarmEnvironment.jsx";
 import { Tag } from "@phosphor-icons/react/Tag";
 import { WarningCircle } from "@phosphor-icons/react/WarningCircle";
 
@@ -46,16 +46,17 @@ function displayTime(value, timeZone, now) {
   }).format(date);
 }
 
-export function HomeDashboard({ workspace, onNavigate, onCreateRecord }) {
-  const timeZone = workspace.farm?.timeZoneIdentifier || "Asia/Shanghai";
-  const now = new Date();
-  const dateText = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", timeZone }).format(now)
-    + " " + new Intl.DateTimeFormat("zh-CN", { weekday: "long", timeZone }).format(now);
+export function HomeDashboard({ workspace, environment, onNavigate, onCreateRecord, onWeatherDetailChange }) {
+  const timeZone = environment.timeZone || workspace.farm?.timeZoneIdentifier || "Asia/Shanghai";
+  const now = environment.now;
+  const dateText = environment.localDate
+    ? new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", timeZone }).format(now)
+      + " " + new Intl.DateTimeFormat("zh-CN", { weekday: "long", timeZone }).format(now)
+    : "牧场日期待确认";
   const recentEvents = useMemo(() => [...(workspace.events ?? [])]
     .sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0)).slice(0, 3), [workspace.events]);
   const alerts = workspace.alerts ?? [];
   const meals = workspace.tmrMeals ?? [];
-  const weather = workspace.weather;
 
   return (
     <main className="page sky-home">
@@ -63,8 +64,7 @@ export function HomeDashboard({ workspace, onNavigate, onCreateRecord }) {
         <div className="sky-intro">
           <h1><span>今日</span>牧场</h1>
           <p className="sky-date">{dateText}</p>
-          <p className="sky-greeting">好好照顾每一只羊，让牧场更美好。</p>
-          {weather ? <p className="sky-weather"><Sun size={18} />{weather.temperature}° {weather.condition}{weather.location ? ` · ${weather.location}` : ""}</p> : null}
+          <FarmWeatherSummary environment={environment} onOpenChange={onWeatherDetailChange} />
         </div>
         <div className="sky-metrics">
           {metrics.map(({ key, label, unit, icon, tone, page }) => (
@@ -78,7 +78,7 @@ export function HomeDashboard({ workspace, onNavigate, onCreateRecord }) {
 
       <div className="sky-workspace-grid">
         <section className="sky-panel sky-production" aria-label="生产状态">
-          <div className="sky-panel-heading"><h2>生产档案</h2><span>核心数据，一目了然</span></div>
+          <div className="sky-panel-heading"><h2>生产档案</h2></div>
           <button className="sky-production-row" type="button" onClick={() => onNavigate("flock")}>
             <GlassIcon sheep />
             <span className="sky-row-copy"><strong>羊只档案</strong><small>记录每一只羊的成长轨迹</small><span className="sky-row-details">个体信息<span>·</span>生长记录<span>·</span>健康管理<span>·</span>繁殖记录</span></span>

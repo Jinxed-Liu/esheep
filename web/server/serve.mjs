@@ -6,11 +6,13 @@ import { fileURLToPath } from "node:url";
 import { loadEnv } from "vite";
 import { createAssistantAPI } from "./api.mjs";
 import { handleNodeRequest } from "./node-adapter.mjs";
+import { createWeatherAPI } from "./weather-api.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const clientRoot = path.join(root, "dist", "client");
 const environment = { ...loadEnv("production", root, ""), ...process.env };
 const assistantAPI = createAssistantAPI({ environment });
+const weatherAPI = createWeatherAPI({ environment });
 const port = Number.parseInt(environment.PORT ?? "4173", 10);
 const host = environment.HOST ?? "0.0.0.0";
 const mimeTypes = new Map([
@@ -33,8 +35,8 @@ async function existingFile(urlPath) {
 
 const server = http.createServer(async (request, response) => {
   try {
-    if ((request.url ?? "").startsWith("/api/assistant/")) {
-      await handleNodeRequest(request, response, assistantAPI);
+    if ((request.url ?? "").startsWith("/api/assistant/") || (request.url ?? "").startsWith("/api/weather/")) {
+      await handleNodeRequest(request, response, (request.url ?? "").startsWith("/api/weather/") ? weatherAPI : assistantAPI);
       return;
     }
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);

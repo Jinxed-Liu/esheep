@@ -1,0 +1,369 @@
+/* Pasture light and weather are a view-only layer. Production facts stay in the panels above it. */
+body:has(.farm-environment) { background: #e8f5fb; }
+.app-shell:has(.farm-environment) { isolation: isolate; }
+.farm-environment { position: fixed; z-index: -1; inset: 0; overflow: hidden; pointer-events: none; background: #e8f5fb; }
+.farm-environment-photo, .farm-environment-color, .farm-environment-clouds, .farm-environment-haze {
+  position: absolute; inset: 0; transition: opacity 2.4s ease, filter 2.4s ease, background 2.4s ease;
+}
+.farm-environment-photo { background: url('/assets/pasture-dashboard.jpg') center -110px / cover no-repeat; filter: var(--photo-filter, none); }
+.farm-environment-photo::after { content: ''; position: absolute; inset: 0; opacity: var(--night-blend, 0); background: url('/assets/pasture-dashboard-night.jpg') center -110px / cover no-repeat; transition: opacity 2.4s ease; }
+.farm-environment-color { background-image: var(--weather-overlay, linear-gradient(transparent, transparent)), var(--sky-overlay, linear-gradient(transparent, transparent)); }
+.farm-environment-color::before, .farm-environment-color::after { content: ''; position: absolute; inset: 0; transition: opacity 2.4s ease; }
+.farm-environment-color::before { opacity: var(--farm-warmth, 0); background: linear-gradient(160deg, #f5a76577, #ffddb43d 40%, transparent 72%); }
+.farm-environment-color::after { opacity: var(--night-blend, 0); background: linear-gradient(180deg, #0b1d4520, #15325110 52%, #142b482a); }
+.farm-environment-clouds { opacity: var(--cloud-opacity, 0); background:
+  radial-gradient(ellipse 220px 52px at 30% 18%, #eff8ffbd 3%, transparent 80%),
+  radial-gradient(ellipse 300px 64px at 72% 26%, #e7f3fbc9 3%, transparent 82%);
+  animation: farm-cloud-drift 80s linear infinite alternate;
+}
+.farm-environment-haze { opacity: var(--haze-opacity, 0); background: linear-gradient(180deg, transparent 25%, #e5f3f9ae 61%, transparent 90%); }
+.farm-environment-precipitation { position: absolute; inset: 0 0 auto; width: 100%; height: min(72vh, 710px); opacity: .85; mask-image: linear-gradient(to bottom, #000 0%, #000 45%, transparent 95%); }
+.farm-environment[data-phase="dawn"] { --photo-filter: brightness(.82) saturate(.84) sepia(.13); --sky-overlay: linear-gradient(180deg, #2949698a, #e6aa7b60 34%, #fff2c91c 57%, #dceaf3c0 100%); }
+.farm-environment[data-phase="earlyMorning"] { --photo-filter: brightness(.96) saturate(.98) sepia(.1); --sky-overlay: linear-gradient(150deg, #ffe1b348, transparent 45%, #e8f5fb1c 100%); }
+.farm-environment[data-phase="morning"] { --photo-filter: brightness(1) saturate(1.02); --sky-overlay: linear-gradient(180deg, #fff9e916, transparent 58%, #e8f5fb18); }
+.farm-environment[data-phase="noon"] { --photo-filter: brightness(1) saturate(1); --sky-overlay: linear-gradient(180deg, transparent 0%, transparent 55%, #e8f5fb18 100%); }
+.farm-environment[data-phase="afternoon"] { --photo-filter: brightness(.98) saturate(1.02); --sky-overlay: linear-gradient(180deg, #fff1d510, transparent 63%, #e8f5fb24 100%); }
+.farm-environment[data-phase="evening"] { --photo-filter: brightness(.78) saturate(1.14) sepia(.15); --sky-overlay: linear-gradient(180deg, #554b7880 0%, #f5a47069 35%, #f6d49e3a 58%, #c8ddebaf 100%); }
+.farm-environment[data-phase="twilight"] { --photo-filter: brightness(.5) saturate(.72) hue-rotate(11deg); --sky-overlay: linear-gradient(180deg, #19284ac6 0%, #694a78a4 32%, #c7838b5c 56%, #526b92c9 100%); }
+.farm-environment[data-phase="night"] { --photo-filter: none; --sky-overlay: linear-gradient(180deg, #0718371a 0%, #0d2b5216 47%, #183d6720 75%, #213d6330 100%); }
+.farm-environment[data-phase="unknown"] { --photo-filter: saturate(.82); --weather-overlay: linear-gradient(180deg, #eaf2f2a0, #e8f5fb4a); }
+.farm-environment[data-weather="cloudy"] { --cloud-opacity: .48; }
+.farm-environment[data-weather="wind"] .farm-environment-clouds { animation-duration: 26s; }
+.farm-environment[data-weather="overcast"] { --cloud-opacity: .82; --photo-filter: brightness(.78) saturate(.66); --weather-overlay: linear-gradient(180deg, #647e95a0, #9baeb084 48%, #e8f5fb98); }
+.farm-environment[data-weather="rain"], .farm-environment[data-weather="sleet"] { --cloud-opacity: .88; --haze-opacity: .36; --photo-filter: brightness(.66) saturate(.68); --weather-overlay: linear-gradient(180deg, #354b66ba, #66809b9c 48%, #c7dbe4bf 100%); }
+.farm-environment[data-weather="thunder"] { --cloud-opacity: .9; --haze-opacity: .43; --photo-filter: brightness(.5) saturate(.55); --weather-overlay: linear-gradient(180deg, #182b45d1, #405776b7 48%, #a7bdcfcc 100%); }
+.farm-environment[data-weather="snow"] { --cloud-opacity: .67; --haze-opacity: .33; --photo-filter: brightness(.85) saturate(.55); --weather-overlay: linear-gradient(180deg, #9bb4c5a9, #c9d9e29c 54%, #e8f5fb9c 100%); }
+.farm-environment[data-weather="fog"] { --haze-opacity: .86; --photo-filter: brightness(.91) saturate(.55); --weather-overlay: linear-gradient(180deg, #d5e4e69c, #edf3f1a3 74%, #e8f5fbaf); }
+.farm-environment[data-phase="night"][data-weather="rain"],
+.farm-environment[data-phase="night"][data-weather="sleet"],
+.farm-environment[data-phase="night"][data-weather="thunder"],
+.farm-environment[data-phase="night"][data-weather="snow"],
+.farm-environment[data-phase="night"][data-weather="fog"] { --photo-filter: saturate(.65); --weather-overlay: linear-gradient(180deg, #07172e91, #18365682 64%, #213d63a0); }
+.farm-environment[data-phase="night"][data-weather="snow"] { --weather-overlay: linear-gradient(180deg, #0b1d364a, #23476648 64%, #3e5c7358); }
+.farm-environment[data-surface]:not([data-surface="home"]) .farm-environment-photo { opacity: .12; }
+.farm-environment[data-surface]:not([data-surface="home"]) .farm-environment-clouds,
+.farm-environment[data-surface]:not([data-surface="home"]) .farm-environment-haze,
+.farm-environment[data-surface]:not([data-surface="home"]) .farm-environment-precipitation { display: none; }
+.farm-environment.is-off { background: #f6fbff; }
+.farm-environment.is-off > * { display: none; }
+.farm-environment.is-paused .farm-environment-clouds,
+.farm-environment[data-motion="static"] .farm-environment-clouds { animation-play-state: paused; }
+@keyframes farm-cloud-drift { from { transform: translateX(-5%); } to { transform: translateX(5%); } }
+
+.farm-weather-line { display: inline-flex; align-items: center; max-width: 100%; margin-top: 20px; overflow: hidden; border-radius: 13px; }
+.review-fixture-banner { position: relative; z-index: 2; width: max-content; max-width: calc(100% - 24px); margin: 0 3.5%; padding: 4px 9px; border: 1px solid #ae7e42; border-radius: 5px; background: #fff4d9; color: #654117; font-size: 11px; }
+.farm-weather-summary { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 42px; padding: 6px 10px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.farm-weather-summary:hover { background: #ffffff26; }
+.farm-weather-summary > svg { flex: 0 0 auto; color: #357fb1; }
+.farm-weather-summary strong { color: #133b5b; font-size: 14px; font-weight: 720; white-space: nowrap; }
+.farm-weather-attribution { display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 32px; padding: 3px 5px; border-radius: 5px; }
+.farm-weather-attribution img { display: block; max-width: 80px; max-height: 24px; object-fit: contain; }
+.farm-weather-attribution .farm-weather-logo-dark { display: none; }
+.farm-weather-attribution.is-compact { align-self: stretch; margin: 5px 0; padding: 0 8px; border-left: 1px solid #7892a05c; border-radius: 0; }
+.farm-weather-attribution.is-compact img { max-width: 72px; max-height: 20px; }
+.app-shell[data-environment-phase="dawn"] .sky-overview,
+.app-shell[data-environment-phase="evening"] .sky-overview,
+.app-shell[data-environment-phase="twilight"] .sky-overview { background: linear-gradient(90deg, #eff8f9db, #edf7f8a3 65%, transparent); border-radius: 18px; }
+.app-shell[data-environment-phase="night"] .sky-overview { background: linear-gradient(90deg, #102b4ea8, #1b406389 64%, transparent); border-radius: 18px; }
+.app-shell[data-environment-phase="night"] .sky-intro h1,
+.app-shell[data-environment-phase="night"] .sky-date { color: #f5fafc; }
+.app-shell[data-environment-phase="dawn"] .sky-brand span,
+.app-shell[data-environment-phase="twilight"] .sky-brand span,
+.app-shell[data-environment-phase="night"] .sky-brand span { color: #e6f8f3; }
+.app-shell[data-environment-phase="night"] .sky-production-row::before { filter: brightness(.82) saturate(.73); }
+.app-shell[data-environment-weather="rain"] .sky-overview,
+.app-shell[data-environment-weather="sleet"] .sky-overview,
+.app-shell[data-environment-weather="thunder"] .sky-overview { background: linear-gradient(90deg, #e9f2f6d9, #e9f2f6a8 68%, transparent); border-radius: 18px; }
+.app-shell[data-environment-weather="rain"] .sky-brand span,
+.app-shell[data-environment-weather="sleet"] .sky-brand span,
+.app-shell[data-environment-weather="thunder"] .sky-brand span { color: #f0faf8; }
+.app-shell[data-environment-phase="night"][data-environment-weather="rain"] .sky-overview,
+.app-shell[data-environment-phase="night"][data-environment-weather="sleet"] .sky-overview,
+.app-shell[data-environment-phase="night"][data-environment-weather="thunder"] .sky-overview { background: linear-gradient(90deg, #102b4ec6, #1b4063a0 64%, transparent); }
+
+.farm-weather-backdrop { position: fixed; z-index: 1000; inset: 0; display: flex; justify-content: flex-end; background: #0b1c38a3; backdrop-filter: blur(5px); }
+.farm-weather-detail { display: flex; flex-direction: column; width: min(440px, 100%); min-height: 100%; max-height: 100dvh; background: #f6faff; color: #142b43; box-shadow: -14px 0 40px #081d333b; }
+.farm-weather-detail-header { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 25px 27px 16px; border-bottom: 1px solid #dce8f2; }
+.farm-weather-detail-header small { color: #53718c; font-size: 12px; }
+.farm-weather-detail-header h2 { margin: 5px 0 0; font-size: 26px; }
+.farm-weather-detail-header button { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid #d1e1ed; border-radius: 50%; background: #fff; cursor: pointer; }
+.farm-weather-detail-body { min-height: 0; overflow-y: auto; padding: 16px 27px 35px; }
+.farm-weather-local-time { margin: 0 0 14px; color: #526f88; font-size: 13px; }
+.farm-weather-current { display: flex; gap: 15px; align-items: center; padding: 15px 18px; border: 1px solid #d4e6f2; border-radius: 20px; background: linear-gradient(125deg, #e4f3fb, #ffffff); }
+.farm-weather-current > svg { color: #2c82be; }
+.farm-weather-current span { display: flex; flex-direction: column; }
+.farm-weather-current strong { font-size: 45px; line-height: 1; }
+.farm-weather-current small { margin-top: 5px; color: #48657d; font-size: 14px; }
+.farm-weather-feels, .farm-weather-status, .farm-weather-alert-note { color: #58738b; font-size: 12px; line-height: 1.5; }
+.farm-weather-status { padding: 9px 11px; border-radius: 9px; background: #eaf1f7; }
+.farm-weather-detail-section { margin-top: 22px; }
+.farm-weather-detail-section h3 { margin: 0 0 10px; font-size: 16px; }
+.farm-weather-detail-section > small { display: block; margin-top: 10px; color: #647e94; }
+.farm-weather-sun-grid, .farm-weather-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.farm-weather-sun-grid span, .farm-weather-facts span { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px; border-radius: 10px; background: #e9f3fa; font-size: 12px; }
+.farm-weather-sun-grid svg, .farm-weather-facts svg { color: #3980b1; }
+.farm-weather-sun-grid b, .farm-weather-facts b { margin-left: auto; font-weight: 700; }
+.farm-weather-hourly { display: flex; gap: 8px; overflow-x: auto; padding: 3px 1px 9px; }
+.farm-weather-hourly > div { flex: 0 0 83px; display: flex; flex-direction: column; gap: 4px; padding: 9px; border-radius: 10px; background: #eaf3fa; font-size: 11px; }
+.farm-weather-hourly strong { font-size: 17px; }
+.farm-weather-hourly small { color: #617b91; }
+.farm-weather-daily > div { display: grid; grid-template-columns: 105px 1fr auto; gap: 7px; padding: 10px 0; border-bottom: 1px solid #dfebf2; font-size: 12px; }
+.farm-weather-daily strong { font-weight: 650; }
+.farm-weather-alert-note { margin: 22px 0 0; }
+.farm-weather-source { display: flex; align-items: center; justify-content: space-between; gap: 7px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #dce8f2; color: #60778d; font-size: 11px; }
+.setting-select-row { min-height: 76px; padding: 12px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+.setting-select-row > span { display: flex; flex-direction: column; gap: 4px; }
+.setting-select-row strong { font-size: 12px; }
+.setting-select-row small { color: var(--muted); font-size: 10px; line-height: 1.4; }
+.setting-select-row select { min-width: 88px; border: 1px solid #cbdbe9; border-radius: 9px; padding: 6px; background: #fff; color: #172d45; }
+
+.app-shell[data-content-theme="dark"] { color-scheme: dark; color: #eaf3fb; --text: #eaf3fb; --muted: #aabdd0; --faint: #849bb3; --line: #354b63; --line-strong: #52718d; --surface: #162a41; --surface-subtle: #1e354c; }
+.app-shell[data-content-theme="dark"] .farm-environment.is-off { background: #0d1d31; }
+.app-shell[data-content-theme="dark"][data-environment-phase="unknown"] .sky-intro h1,
+.app-shell[data-content-theme="dark"][data-environment-phase="unknown"] .sky-date,
+.app-shell[data-content-theme="dark"][data-environment-phase="unknown"] .sky-brand span { color: #eff7ff; }
+.app-shell[data-content-theme="dark"] .sky-header .farm-switcher-button { color: #17344e; }
+.app-shell[data-content-theme="dark"] .sky-header .account-avatar-fallback { background: #eaf6ff; color: #075ae4; }
+.app-shell[data-content-theme="dark"] .farm-environment:not([data-surface="home"]) { background: #0d1d31; }
+.app-shell[data-content-theme="dark"] .sky-panel,
+.app-shell[data-content-theme="dark"] .feature-page .workspace-panel,
+.app-shell[data-content-theme="dark"] .feature-page .hub-group,
+.app-shell[data-content-theme="dark"] .feature-page .recent-records-panel,
+.app-shell[data-content-theme="dark"] .master-detail-layout { background-color: var(--surface-glass); border-color: var(--surface-edge); color: var(--surface-text); }
+.app-shell[data-content-theme="dark"] .sky-panel-heading h2,
+.app-shell[data-content-theme="dark"] .sky-row-copy strong,
+.app-shell[data-content-theme="dark"] .sky-activity-row strong,
+.app-shell[data-content-theme="dark"] .feature-page-top h1,
+.app-shell[data-content-theme="dark"] .feature-page h2,
+.app-shell[data-content-theme="dark"] .feature-page h3,
+.app-shell[data-content-theme="dark"] .feature-page strong,
+.app-shell[data-content-theme="dark"] .feature-page b { color: #eff7ff; }
+.app-shell[data-content-theme="dark"] .sky-panel-heading > span,
+.app-shell[data-content-theme="dark"] .sky-heading-group > span,
+.app-shell[data-content-theme="dark"] .sky-row-copy small,
+.app-shell[data-content-theme="dark"] .sky-row-details,
+.app-shell[data-content-theme="dark"] .sky-activity-row time,
+.app-shell[data-content-theme="dark"] .sky-event-detail,
+.app-shell[data-content-theme="dark"] .feature-page-top p { color: #b5c9dc; }
+.app-shell[data-content-theme="dark"] .sky-production-row { background: #142940b0; }
+.app-shell[data-content-theme="dark"] .sky-production-row .sky-row-copy strong { color: #15314c; }
+.app-shell[data-content-theme="dark"] .sky-production-row .sky-row-copy small { color: #294b66; }
+.app-shell[data-content-theme="dark"] .sky-production-row .sky-row-details { color: #38617b; }
+.app-shell[data-content-theme="dark"] .sky-production-row:hover,
+.app-shell[data-content-theme="dark"] .sky-action-list > button:hover,
+.app-shell[data-content-theme="dark"] .sky-metric:hover { background-color: #2b4661b8; }
+.app-shell[data-content-theme="dark"] .sky-production-row > svg,
+.app-shell[data-content-theme="dark"] .sky-action-list button > svg { color: #bcd4e6; }
+.app-shell[data-content-theme="dark"] .sky-action-list > button { border-color: #3a526b; }
+.app-shell[data-content-theme="dark"] .sky-activity-row { border-color: #3b536c; }
+.app-shell[data-content-theme="dark"] .sky-event-kind { color: #bad2e6; }
+.app-shell[data-content-theme="dark"] .data-table th,
+.app-shell[data-content-theme="dark"] .panel-footer { background: #1e354c; color: #bad0e2; }
+.app-shell[data-content-theme="dark"] .selectable-table tbody tr:hover,
+.app-shell[data-content-theme="dark"] .selectable-table tbody tr.selected,
+.app-shell[data-content-theme="dark"] .master-list > button:hover,
+.app-shell[data-content-theme="dark"] .master-list > button.active { background: #284360; }
+.app-shell[data-content-theme="dark"] .secondary-button,
+.app-shell[data-content-theme="dark"] .setting-select-row select { background: #20394f; border-color: #5a7892; color: #eaf3fb; }
+.app-shell[data-content-theme="dark"] .setting-select-row small,
+.app-shell[data-content-theme="dark"] .setting-toggle-row small,
+.app-shell[data-content-theme="dark"] .setting-readonly-row small { color: #afc4d6; }
+.app-shell[data-content-theme="dark"] :is(input,textarea,select) { color-scheme: dark; }
+.app-shell[data-content-theme="dark"] .farm-weather-detail { background: #142940; color: #eaf3fb; }
+.app-shell[data-content-theme="dark"] .farm-weather-detail-header button { background: #294764; border-color: #6885a0; color: #f4faff; }
+.app-shell[data-content-theme="dark"] .farm-weather-detail-header,
+.app-shell[data-content-theme="dark"] .farm-weather-source { border-color: #3a536c; }
+.app-shell[data-content-theme="dark"] .farm-weather-detail-header small,
+.app-shell[data-content-theme="dark"] .farm-weather-local-time,
+.app-shell[data-content-theme="dark"] .farm-weather-feels,
+.app-shell[data-content-theme="dark"] .farm-weather-alert-note,
+.app-shell[data-content-theme="dark"] .farm-weather-source { color: #b9cfe0; }
+.app-shell[data-content-theme="dark"] .farm-weather-current,
+.app-shell[data-content-theme="dark"] .farm-weather-sun-grid span,
+.app-shell[data-content-theme="dark"] .farm-weather-facts span,
+.app-shell[data-content-theme="dark"] .farm-weather-hourly > div,
+.app-shell[data-content-theme="dark"] .farm-weather-status { background: #203d58; border-color: #456b87; color: #eaf3fb; }
+.app-shell[data-content-theme="dark"] .farm-weather-current small,
+.app-shell[data-content-theme="dark"] .farm-weather-detail-section > small { color: #b9cfe0; }
+
+@media (max-width: 600px) {
+  .farm-environment-photo { background-position: 61% top; background-size: auto 850px; }
+  .farm-environment-photo::after { background-position: 61% top; background-size: auto 850px; }
+  .farm-weather-line { margin-top: 13px; }
+  .farm-weather-attribution.is-compact img { max-width: 62px; }
+  .farm-weather-backdrop { align-items: flex-end; }
+  .farm-weather-detail { min-height: 0; max-height: 92dvh; width: 100%; border-radius: 22px 22px 0 0; box-shadow: 0 -12px 36px #081d333b; }
+  .farm-weather-detail-header { padding: 17px 20px 12px; }
+  .farm-weather-detail-body { padding: 14px 20px 28px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .farm-environment * { animation: none !important; transition-duration: .01ms !important; }
+}
+
+/* The same local sun and weather that tint the pasture also illuminate its surfaces. */
+.app-shell {
+  --surface-glass: rgb(247 252 255 / .82);
+  --surface-glass-soft: rgb(246 251 255 / .68);
+  --surface-edge: rgb(255 255 255 / .78);
+  --surface-text: #17344e;
+  --surface-muted: #48677d;
+  --surface-reflect-rgb: 239 249 255;
+  --surface-sheen: rgb(255 255 255 / .16);
+  --surface-shadow: rgb(28 63 88 / .16);
+  --surface-active: rgb(255 255 255 / .66);
+}
+.app-shell[data-environment-phase="dawn"],
+.app-shell[data-environment-phase="earlyMorning"],
+.app-shell[data-environment-phase="evening"] { --surface-reflect-rgb: 255 224 179; }
+.app-shell[data-environment-phase="twilight"] { --surface-reflect-rgb: 229 194 232; }
+.app-shell[data-environment-weather="overcast"],
+.app-shell[data-environment-weather="fog"] { --surface-glass: rgb(227 239 245 / .83); --surface-glass-soft: rgb(222 235 242 / .7); --surface-reflect-rgb: 228 238 245; }
+.app-shell[data-environment-weather="rain"],
+.app-shell[data-environment-weather="sleet"],
+.app-shell[data-environment-weather="thunder"] { --surface-glass: rgb(215 229 241 / .82); --surface-glass-soft: rgb(213 229 242 / .7); --surface-reflect-rgb: 199 224 246; --surface-edge: rgb(240 250 255 / .67); }
+.app-shell[data-environment-weather="snow"] { --surface-glass: rgb(244 250 254 / .87); --surface-glass-soft: rgb(240 248 253 / .76); --surface-reflect-rgb: 255 255 255; }
+.app-shell[data-content-theme="dark"] {
+  --surface-glass: rgb(15 35 57 / .87);
+  --surface-glass-soft: rgb(23 45 69 / .76);
+  --surface-edge: rgb(172 210 237 / .25);
+  --surface-text: #ecf7ff;
+  --surface-muted: #b5cbdc;
+  --surface-reflect-rgb: 186 217 247;
+  --surface-sheen: rgb(225 243 255 / .08);
+  --surface-shadow: rgb(2 12 28 / .38);
+  --surface-active: rgb(73 111 143 / .36);
+}
+.app-shell[data-content-theme="dark"][data-environment-phase="dawn"],
+.app-shell[data-content-theme="dark"][data-environment-phase="evening"],
+.app-shell[data-content-theme="dark"][data-environment-phase="twilight"] { --surface-reflect-rgb: 238 187 180; }
+.app-shell[data-content-theme="dark"]:is([data-environment-weather="rain"], [data-environment-weather="sleet"], [data-environment-weather="thunder"]) {
+  --surface-glass: rgb(10 26 47 / .91);
+  --surface-glass-soft: rgb(17 37 61 / .82);
+  --surface-reflect-rgb: 169 207 245;
+}
+.app-shell[data-content-theme="dark"][data-environment-weather="snow"] { --surface-glass: rgb(31 50 68 / .88); --surface-reflect-rgb: 220 241 255; }
+
+.app-shell .sky-metrics { gap: 9px; padding: 10px 0 0; background: none; border-radius: 0; }
+.app-shell .sky-metric,
+.app-shell .sky-metric:first-child,
+.app-shell .sky-metric:last-child {
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--surface-edge);
+  border-radius: 16px;
+  background-color: var(--surface-glass-soft);
+  background-image: radial-gradient(ellipse 105% 90% at var(--surface-light-x, 50%) -28%, rgb(var(--surface-reflect-rgb) / var(--surface-reflection-opacity, .12)), transparent 78%);
+  box-shadow: inset 0 1px var(--surface-sheen), 0 5px 18px var(--surface-shadow);
+}
+.app-shell .sky-metric:hover { background-color: var(--surface-active); }
+.app-shell .sky-metric-copy { color: var(--surface-muted); }
+.app-shell[data-content-theme="dark"] .sky-metric-copy strong { color: #a9f3d1; }
+.app-shell[data-content-theme="dark"] .sky-metric:nth-child(2) .sky-metric-copy strong { color: #a7d4ff; }
+.app-shell[data-content-theme="dark"] .sky-metric:nth-child(3) .sky-metric-copy strong { color: #ffdb9b; }
+
+.app-shell .sky-panel,
+.app-shell .sky-navigation,
+.app-shell .sky-header .farm-switcher-button,
+.app-shell .sky-header .popover,
+.app-shell .farm-weather-line,
+.app-shell .feature-page .workspace-panel,
+.app-shell .feature-page .hub-group,
+.app-shell .feature-page .recent-records-panel,
+.app-shell .master-detail-layout,
+.app-shell .record-hub-group,
+.app-shell .feeding-hub-section,
+.app-shell .tmr-hub-grid > button,
+.app-shell .insight-destination-grid > button,
+.app-shell .analysis-metric-strip,
+.app-shell .tmr-overview-band,
+.app-shell .insight-principle,
+.app-shell .batch-guidance,
+.app-shell .feature-page .projection-notice,
+.app-shell .search-hero-field,
+.app-shell .inline-search {
+  border: 1px solid var(--surface-edge);
+  background-color: var(--surface-glass);
+  background-image: radial-gradient(ellipse 90% 70% at var(--surface-light-x, 50%) -35%, rgb(var(--surface-reflect-rgb) / var(--surface-reflection-opacity, .12)), transparent 78%),
+    linear-gradient(125deg, var(--surface-sheen), transparent 34%);
+  box-shadow: inset 0 1px var(--surface-sheen), 0 10px 30px var(--surface-shadow);
+  color: var(--surface-text);
+  backdrop-filter: blur(18px) saturate(112%);
+  -webkit-backdrop-filter: blur(18px) saturate(112%);
+  transition: background-color 1.4s ease, border-color 1.4s ease, color 1.4s ease, box-shadow 1.4s ease;
+}
+.app-shell .sky-navigation button { color: var(--surface-text); }
+.app-shell .feature-page :is(.tmr-hub-grid > button, .insight-destination-grid > button, .analysis-metric-strip, .tmr-overview-band, .insight-principle, .batch-guidance) { color: var(--surface-text); }
+.app-shell .feature-page :is(.tmr-hub-grid > button, .insight-destination-grid > button):hover { background-color: var(--surface-active); }
+.app-shell .feature-page :is(.hub-action-grid > button, .feeding-action-grid > button) { background: var(--surface-glass-soft); border-color: var(--surface-edge); color: var(--surface-text); }
+.app-shell .feature-page :is(.hub-action-grid > button, .feeding-action-grid > button):hover { background: var(--surface-active); }
+.app-shell .search-hero-field input { background: transparent; color: var(--surface-text); }
+.app-shell .search-hero-field input::placeholder { color: var(--surface-muted); }
+.app-shell .feature-page .workspace-toolbar select,
+.app-shell .feature-page .workspace-toolbar input[type="date"] { background: var(--surface-glass-soft); border-color: var(--surface-edge); color: var(--surface-text); }
+.app-shell .feature-page :is(.entity-detail-pane, .detail-pane) { background: var(--surface-glass); color: var(--surface-text); }
+.app-shell[data-content-theme="dark"] .feature-page :is(.entity-detail-pane, .detail-pane) h2 { color: var(--surface-text); }
+.app-shell[data-content-theme="dark"] .feature-page :is(.entity-detail-pane, .detail-pane) .icon-button { background: var(--surface-glass-soft); border-color: var(--surface-edge); color: var(--surface-text); }
+.app-shell .segmented { background: var(--surface-glass-soft); border: 1px solid var(--surface-edge); }
+.app-shell .segmented button { color: var(--surface-muted); }
+.app-shell .segmented button.active { background: var(--surface-active); color: #075ae4; }
+.app-shell[data-content-theme="dark"] .segmented button.active { color: #b7d9ff; }
+.app-shell[data-content-theme="dark"] .search-result-list > button:hover { background: var(--surface-active); }
+.app-shell .sky-navigation button:hover { background: var(--surface-active); }
+.app-shell .sky-navigation button.active { color: #075ae4; }
+.app-shell .sky-nav-indicator { border-color: var(--surface-edge); background: var(--surface-active); box-shadow: inset 0 1px var(--surface-sheen), 0 3px 9px var(--surface-shadow); }
+.app-shell[data-content-theme="dark"] .sky-navigation button.active { color: #b7d9ff; }
+.app-shell .sky-header .farm-switcher-button { color: var(--surface-text); }
+.app-shell[data-content-theme="dark"] .sky-header .farm-switcher-button { color: var(--surface-text); }
+.app-shell .sky-header .popover :is(.farm-menu-item, .account-menu > button) { color: var(--surface-text); }
+.app-shell .sky-header .popover :is(.farm-menu-item, .account-menu > button):hover { background: var(--surface-active); }
+.app-shell .farm-weather-line { box-shadow: inset 0 1px var(--surface-sheen), 0 3px 13px var(--surface-shadow); }
+.app-shell .farm-weather-summary strong { color: var(--surface-text); }
+.app-shell .farm-weather-summary > svg { color: var(--surface-text); }
+.app-shell[data-content-theme="dark"] .farm-weather-attribution:has(.farm-weather-logo-dark) .farm-weather-logo-light { display: none; }
+.app-shell[data-content-theme="dark"] .farm-weather-attribution .farm-weather-logo-dark { display: block; }
+.app-shell[data-content-theme="dark"] .farm-weather-attribution:not(:has(.farm-weather-logo-dark)) { background: #f7fbff; }
+.app-shell[data-content-theme="dark"] .farm-weather-attribution.is-compact { border-color: rgb(209 232 248 / .3); }
+
+.app-shell[data-content-theme="dark"] .sky-overview { background: linear-gradient(90deg, #0b203bbd, #18365590 65%, transparent); border-radius: 18px; }
+.app-shell[data-content-theme="dark"] .sky-intro h1,
+.app-shell[data-content-theme="dark"] .sky-date { color: #f4faff; }
+.app-shell[data-content-theme="dark"] .sky-panel-heading h2,
+.app-shell[data-content-theme="dark"] .sky-action-list .sky-row-copy strong,
+.app-shell[data-content-theme="dark"] .sky-activity-row strong { color: var(--surface-text); }
+.app-shell[data-content-theme="dark"] .sky-action-list .sky-row-copy small,
+.app-shell[data-content-theme="dark"] .sky-event-detail,
+.app-shell[data-content-theme="dark"] .sky-activity-row time,
+.app-shell[data-content-theme="dark"] .sky-home-footer { color: var(--surface-muted); }
+.app-shell[data-content-theme="dark"] .sky-action-list > button,
+.app-shell[data-content-theme="dark"] .sky-activity-row { border-color: var(--surface-edge); }
+.app-shell[data-content-theme="dark"] .sky-action-list > button:hover,
+.app-shell[data-content-theme="dark"] .sky-activity-row:hover { background: var(--surface-active); }
+.app-shell .sky-operational-context .operational-row:focus-visible { outline: 2px solid #237fee; outline-offset: -2px; border-radius: 9px; }
+.app-shell[data-content-theme="dark"] .sky-operational-context .operational-row { border-color: var(--surface-edge); color: var(--surface-text); }
+.app-shell[data-content-theme="dark"] .sky-operational-context .operational-row .row-copy strong { color: var(--surface-text); }
+.app-shell[data-content-theme="dark"] .sky-operational-context .operational-row .row-copy small,
+.app-shell[data-content-theme="dark"] .sky-operational-context .operational-row > svg:last-child { color: var(--surface-muted); }
+.app-shell[data-content-theme="dark"] .sky-operational-context .operational-row:is(:hover, :focus-visible, :active) { background: rgb(73 111 143 / .28); }
+.app-shell[data-content-theme="dark"] .sky-operational-context .operational-row:focus-visible { outline-color: #9fd0fb; }
+.app-shell[data-content-theme="dark"] .sky-production-row { background-color: rgb(10 28 47 / .55); }
+.app-shell[data-content-theme="dark"] .sky-production-row::before { filter: brightness(.63) saturate(.75); }
+.app-shell[data-content-theme="dark"] .sky-production-row::after { content: ''; position: absolute; z-index: -1; inset: 0; background: linear-gradient(90deg, #0b203bed, #0b2948b8 55%, transparent 96%); }
+.app-shell[data-content-theme="dark"] .sky-production-row .sky-row-copy strong { color: #f1f9ff; }
+.app-shell[data-content-theme="dark"] .sky-production-row .sky-row-copy small,
+.app-shell[data-content-theme="dark"] .sky-production-row .sky-row-details { color: #d5e9f7; }
+.app-shell[data-content-theme="dark"] .sky-production-row > svg { color: #e0f0fa; }
+.app-shell[data-content-theme="dark"] .sky-home-footer button { color: #b8d0e4; }
+
+@media (max-width: 600px) {
+  .app-shell .sky-metrics { gap: 6px; padding-top: 0; }
+  .app-shell .sky-metric,
+  .app-shell .sky-metric:first-child,
+  .app-shell .sky-metric:last-child { padding: 9px 3px; border-radius: 13px; }
+  .app-shell .sky-metric-copy { font-size: 11px; }
+  .app-shell .sky-metric-copy strong { font-size: clamp(25px, 7vw, 30px); }
+  .app-shell .sky-navigation { background-color: var(--surface-glass); }
+  .app-shell .farm-weather-line { max-width: min(100%, 270px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-shell :is(.sky-panel, .sky-metric, .sky-navigation, .farm-weather-line) { transition: none; }
+}

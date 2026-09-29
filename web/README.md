@@ -5,6 +5,7 @@ eSheep+ 的网页工作台，采用 React、Vite 与 Supabase 浏览器客户端
 ## 已实现工作区
 
 - 首页：待办与异常、最近事件、牧场指标、快捷录入、当日 TMR 执行。
+- 牧场环境：首页随当前牧场的当地太阳阶段和 WeatherKit 当前天气显示天色、云雨雪与天气详情；服务缺失时仅保留有依据的当地时间和日照。
 - 羊群：羊只与圈舍切换、筛选、表格和生产记录入口。
 - 录入：建档、称重、转群、离场、健康、繁殖与投喂动作。
 - 投喂：投喂历史、原料库、配方，以及受控的 `早 / 中 / 晚 / 全天` 顿次。
@@ -35,6 +36,21 @@ MiMo 采用严格的 BYOK（Bring Your Own Key）：服务端不配置、不共�
 localStorage 只保存一个按账号/牧场分区的随机会话 ID；服务端会话、所选图片和 Codex 状态默认 12 小时后清理，也可在界面点击“新会话”立即删除。
 
 Codex SDK 需要 Node.js 进程和本地可执行环境，不能直接运行在只提供静态资源的 Sites Worker 中。`worker/index.js` 会把 `/api/assistant/*` 转发给 `CODEX_HARNESS` 服务绑定或 HTTPS `CODEX_HARNESS_URL`；未绑定时明确返回 503，不会退回伪造答案。
+
+## 牧场天气与当地日照
+
+天气接口 `GET /api/weather/farm?farm_id=<UUID>` 复用同一服务绑定，但直接在服务端 Worker 中执行，不启动 Codex 容器。它先核对当前登录用户的牧场成员权限，再调用 `esheep_cloud_weather_location_v1` 从 Cloud V2 的权威 `farm_profiles` 读取经纬度、时区和位置修订。天气只用于展示，不写入生产事实。首屏获取当前天气与太阳事件，打开详情再获取小时预报。服务端按牧场、位置修订和当地日期缓存，并在每次缓存命中前重新核对权限。
+
+事实生产项目已部署 `supabase/migrations/20260929120730_esheep_cloud_weather_location.sql`；其他环境需先在受控迁移流程中部署该迁移。随后为本地 API 或 `esheepplus-harness(-staging)` Worker 配置以下服务端变量或 secrets：
+
+```dotenv
+WEATHERKIT_TEAM_ID=ABCDEFGHIJ
+WEATHERKIT_SERVICE_ID=com.example.esheepplus.weather
+WEATHERKIT_KEY_ID=KLMNOPQRST
+WEATHERKIT_PRIVATE_KEY='-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----'
+```
+
+私钥只进入服务端 secrets；不要加 `VITE_` 前缀，也不要提交 `.p8`。WeatherKit REST 需要已授权的 Service ID 与 ES256 签名私钥。网页展示 Apple Weather 来源标识与法律归属链接。若天气配置缺失，接口明确返回 `WEATHER_NOT_CONFIGURED` 和计算的太阳事件，不生成示例天气。当前接口只读取 Cloud V2 的权威位置；旧版牧场返回 `LOCATION_UNAVAILABLE`，避免使用陈旧坐标。气象预警因缺少可靠国家代码，暂不请求，详情明确标出预警资料未提供。
 
 ## 本地配置
 

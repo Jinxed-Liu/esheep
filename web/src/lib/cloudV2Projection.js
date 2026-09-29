@@ -419,7 +419,7 @@ export function rebuildCurrentState(projection, now) {
 }
 
 function recordPayload(model, record) {
-  const payload = { strings: {}, optionalStrings: {}, identifiers: {}, optionalIdentifiers: {}, dates: {}, optionalDates: {}, integers: {} };
+  const payload = { strings: {}, optionalStrings: {}, identifiers: {}, optionalIdentifiers: {}, dates: {}, optionalDates: {}, integers: {}, decimals: {} };
   for (const [name, type] of Object.entries(checkpointSchema[model].fields)) {
     const value = record[name];
     if (value === undefined) continue;
@@ -427,6 +427,7 @@ function recordPayload(model, record) {
     if (type.startsWith("Date")) payload[type.endsWith("?") ? "optionalDates" : "dates"][field] = value == null ? null : new Date(value).toISOString();
     else if (type.startsWith("UUID")) payload[type.endsWith("?") ? "optionalIdentifiers" : "identifiers"][field] = value;
     else if (type.startsWith("String")) payload[type.endsWith("?") ? "optionalStrings" : "strings"][field] = value;
+    else if (type.startsWith("Double")) payload.decimals[field] = value;
     else if (type.startsWith("Bool")) payload.integers[field] = value == null ? null : Number(value);
     else if (type.startsWith("Int")) payload.integers[field] = value;
   }

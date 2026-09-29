@@ -943,6 +943,14 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections, on
   const farmTimeZone = firstPayloadValue(farmPayload, "strings", "timeZoneIdentifier") || "Asia/Shanghai";
   farm.name = resolvedFarmName;
   farm.timeZoneIdentifier = farmTimeZone;
+  farm.hasAuthoritativeTimeZone = Boolean(firstPayloadValue(farmPayload, "strings", "timeZoneIdentifier"));
+  farm.locationDisplayName = firstPayloadValue(farmPayload, "optionalStrings", "locationDisplayName", "displayName") ??
+    firstPayloadValue(farmPayload, "strings", "locationDisplayName", "displayName") ?? null;
+  farm.latitude = parseNumber(firstPayloadValue(farmPayload, "decimals", "latitude") ??
+    firstPayloadValue(farmPayload, "strings", "latitude"));
+  farm.longitude = parseNumber(firstPayloadValue(farmPayload, "decimals", "longitude") ??
+    firstPayloadValue(farmPayload, "strings", "longitude"));
+  farm.locationUpdatedAt = firstPayloadValue(farmPayload, "optionalDates", "locationUpdatedAt") ?? null;
 
   const latestWeightBySheep = latestWeights(expandedWeightRows);
   const latestTransferBySheep = latestTransfers(expandedTransferRows);

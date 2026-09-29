@@ -48,6 +48,17 @@ test("checkpoint dates use Apple's reference epoch, preserving fractional second
   assert.equal(new Date(decoded.occurredAt).toISOString(), "2026-09-02T00:00:00.125Z");
 });
 
+test("verified V2 farm projection retains location coordinates for the environment", () => {
+  const { records, manifest } = source();
+  records[0].values.latitude = 39.9042;
+  records[0].values.longitude = 116.4074;
+  records[0].values.locationDisplayName = "北京牧场";
+  const farm = finishV2Projection(createV2Projection(records, manifest)).rowsByType.get("farm")[0];
+  assert.equal(farm.payload_json.decimals.latitude, 39.9042);
+  assert.equal(farm.payload_json.decimals.longitude, 116.4074);
+  assert.equal(farm.payload_json.optionalStrings.locationDisplayName, "北京牧场");
+});
+
 test("checkpoint field versions replay from JSON and Base64 envelopes without invalid characters", () => {
   const entries = [{ field: "breed", version: 2, valueDigest: "a".repeat(64) }];
   for (const fieldVersionsData of [
