@@ -208,11 +208,21 @@ final class ESheepCloudIntegratedTests: XCTestCase {
         context.insert(state)
         try context.save()
         let sheepID = UUID(), commandID = UUID()
-        state.lastAppliedEventSequence = 1
-        state.projectionDigest = String(repeating: "b", count: 64)
+        let genesisDigest = String(repeating: "0", count: 64)
+        let firstEventDigest = String(repeating: "a", count: 64)
+        let secondEventDigest = String(repeating: "b", count: 64)
+        let boundaryEventDigest = String(repeating: "c", count: 64)
+        let firstChainDigest = ESheepCloudCheckpointArchive.digest(
+            Data("\(genesisDigest)\n\(firstEventDigest)".utf8))
+        let secondChainDigest = ESheepCloudCheckpointArchive.digest(
+            Data("\(firstChainDigest)\n\(secondEventDigest)".utf8))
+        let boundaryChainDigest = ESheepCloudCheckpointArchive.digest(
+            Data("\(secondChainDigest)\n\(boundaryEventDigest)".utf8))
+        state.lastAppliedEventSequence = 3
+        state.projectionDigest = boundaryChainDigest
         let sourceReceipt = ESheepCloudEventReceipt(eventID: UUID(), farmID: farmID, farmGeneration: 3,
-            eventSequence: 1, commandID: commandID, eventDigest: String(repeating: "a", count: 64),
-            appliedProjectionDigest: state.projectionDigest)
+            eventSequence: 3, commandID: commandID, eventDigest: boundaryEventDigest,
+            appliedProjectionDigest: String(repeating: "f", count: 64))
         context.insert(sourceReceipt)
         context.insert(SheepRecord(id: sheepID, farmID: farmID, earTag: "history-source",
             breed: "湖羊", sex: .ewe, penID: nil, enteredAt: .distantPast))
@@ -239,11 +249,22 @@ final class ESheepCloudIntegratedTests: XCTestCase {
         live.insert(FarmRecord(id: farmID, ownerAccountID: ownerID, name: "Keep current farm"))
         let liveState = ESheepCloudFarmState(farmID: farmID, farmGeneration: 3, activityState: .active)
         liveState.integrityState = .passed
-        liveState.lastAppliedEventSequence = 1
+        liveState.lastAppliedEventSequence = 3
         liveState.projectionDigest = state.projectionDigest
+        let previousManifest = ESheepCloudCheckpointManifest(formatVersion: 1, minimumClientCapability: 1,
+            checkpointID: UUID(), farmID: farmID, farmGeneration: 3, boundaryEventSequence: 1,
+            boundaryEventDigest: firstEventDigest, receiptChainDigest: firstChainDigest,
+            businessDigest: genesisDigest, modelCounts: ["DomainOperation": 0], chunks: [])
+        let previousAnchor = try ESheepCloudCheckpointState(manifest: previousManifest, accountID: memberID)
+        previousAnchor.stateRawValue = "active"
+        live.insert(previousAnchor)
+        let middleReceipt = ESheepCloudEventReceipt(eventID: UUID(), farmID: farmID, farmGeneration: 3,
+            eventSequence: 2, commandID: UUID(), eventDigest: secondEventDigest,
+            appliedProjectionDigest: String(repeating: "e", count: 64))
+        live.insert(middleReceipt)
         let liveReceipt = ESheepCloudEventReceipt(eventID: sourceReceipt.id, farmID: farmID, farmGeneration: 3,
-            eventSequence: 1, commandID: commandID, eventDigest: String(repeating: "c", count: 64),
-            appliedProjectionDigest: state.projectionDigest)
+            eventSequence: 3, commandID: commandID, eventDigest: String(repeating: "d", count: 64),
+            appliedProjectionDigest: sourceReceipt.appliedProjectionDigest)
         live.insert(liveReceipt)
         live.insert(liveState)
         live.insert(SheepRecord(id: sheepID, farmID: farmID, earTag: "Keep current sheep",
@@ -273,13 +294,20 @@ final class ESheepCloudIntegratedTests: XCTestCase {
         let beforeAnchorRepair = await transport.downloadCount
         XCTAssertEqual(beforeAnchorRepair, 0)
         liveReceipt.eventDigest = sourceReceipt.eventDigest
-        liveState.lastAppliedEventSequence = 0; try live.save()
+        liveState.lastAppliedEventSequence = 2; try live.save()
         let catchingUp = try await history.restore(farmID: farmID, accountID: memberID, generation: 3,
             gateway: gateway, transport: transport)
         XCTAssertFalse(catchingUp.verified, "A newer published checkpoint must wait for ordinary sync to catch up")
         let behindDownloads = await transport.downloadCount
         XCTAssertEqual(behindDownloads, 0)
-        liveState.lastAppliedEventSequence = 1; try live.save()
+        liveState.lastAppliedEventSequence = 3; try live.save()
+        middleReceipt.eventSequence = 4; try live.save()
+        do {
+            _ = try await history.restore(farmID: farmID, accountID: memberID, generation: 3,
+                gateway: gateway, transport: transport)
+            XCTFail("Missing receipts between verified checkpoints must stop history backfill")
+        } catch ESheepCloudCheckpointError.incomplete { }
+        middleReceipt.eventSequence = 2; try live.save()
         await transport.corruptNextDownload()
         do {
             _ = try await history.restore(farmID: farmID, accountID: memberID, generation: 3,
@@ -305,11 +333,12 @@ final class ESheepCloudIntegratedTests: XCTestCase {
         XCTAssertTrue(results.0.verified && results.1.verified)
         let after = ModelContext(target)
         XCTAssertEqual(try after.fetch(FetchDescriptor<DomainOperation>()).map(\.id), [commandID])
-        XCTAssertEqual(try after.fetchCount(FetchDescriptor<ESheepCloudCheckpointState>()), 1)
+        XCTAssertEqual(try after.fetchCount(FetchDescriptor<ESheepCloudCheckpointState>()), 2)
         XCTAssertEqual(try after.fetch(FetchDescriptor<SheepRecord>()).first?.earTag, "Keep current sheep")
         XCTAssertEqual(try after.fetch(FetchDescriptor<FarmRecord>()).first?.name, "Keep current farm")
-        XCTAssertEqual(try after.fetch(FetchDescriptor<ESheepCloudFarmState>()).first?.lastAppliedEventSequence, 1)
-        XCTAssertEqual(try after.fetch(FetchDescriptor<ESheepCloudEventReceipt>()).map(\.id), [sourceReceipt.id])
+        XCTAssertEqual(try after.fetch(FetchDescriptor<ESheepCloudFarmState>()).first?.lastAppliedEventSequence, 3)
+        XCTAssertEqual(Set(try after.fetch(FetchDescriptor<ESheepCloudEventReceipt>()).map(\.id)),
+            Set([middleReceipt.id, sourceReceipt.id]))
         let downloads = await transport.downloadCount
         let repeatResult = try await ESheepCloudCheckpointBusinessHistory(container: target).restore(
             farmID: farmID, accountID: memberID, generation: 3, gateway: gateway, transport: transport)

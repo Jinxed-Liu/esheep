@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftData
 
@@ -125,11 +126,6 @@ actor ESheepCloudCheckpointBusinessHistory {
               state.integrityState == .passed, state.activityState == .active,
               state.lastAppliedEventSequence >= head else { return false }
         if head == 0 { return true }
-        let receipts = try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>(predicate: #Predicate {
-            $0.farmID == farmID && $0.farmGeneration == generation && $0.eventSequence == head
-        }))
-        if receipts.contains(where: { $0.eventDigest == manifest.boundaryEventDigest &&
-            $0.appliedProjectionDigest == manifest.receiptChainDigest }) { return true }
         let anchors = try context.fetch(FetchDescriptor<ESheepCloudCheckpointState>(predicate: #Predicate {
             $0.farmID == farmID && $0.farmGeneration == generation &&
                 $0.accountID == accountID && $0.stateRawValue == "active"
@@ -156,7 +152,37 @@ actor ESheepCloudCheckpointBusinessHistory {
                         $0.activationProjectionEventSequence == anchor.boundaryEventSequence
                 })
         }) { return true }
-        throw ESheepCloudCheckpointError.digestMismatch
+
+        // A receipt's appliedProjectionDigest is the affected stream's afterDigest,
+        // not the farm-wide receipt chain stored in the checkpoint manifest.
+        // Rebuild that chain from the last verified checkpoint (or genesis) and
+        // require every intervening receipt to be present and in order.
+        let anchor = anchors.filter { $0.boundaryEventSequence < head }
+            .max { $0.boundaryEventSequence < $1.boundaryEventSequence }
+        let startSequence = anchor?.boundaryEventSequence ?? 0
+        var chainDigest = anchor?.receiptChainDigest ?? String(repeating: "0", count: 64)
+        var expectedSequence = startSequence + 1
+        let receipts = try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>(
+            predicate: #Predicate {
+                $0.farmID == farmID && $0.farmGeneration == generation &&
+                    $0.eventSequence > startSequence && $0.eventSequence <= head
+            },
+            sortBy: [SortDescriptor(\.eventSequence)]
+        ))
+        for receipt in receipts {
+            guard receipt.eventSequence == expectedSequence else {
+                throw ESheepCloudCheckpointError.incomplete
+            }
+            chainDigest = SHA256.hash(data: Data("\(chainDigest)\n\(receipt.eventDigest)".utf8))
+                .map { String(format: "%02x", $0) }.joined()
+            expectedSequence += 1
+        }
+        guard expectedSequence == head + 1,
+              receipts.last?.eventDigest == manifest.boundaryEventDigest,
+              chainDigest == manifest.receiptChainDigest else {
+            throw ESheepCloudCheckpointError.digestMismatch
+        }
+        return true
     }
 }
 
