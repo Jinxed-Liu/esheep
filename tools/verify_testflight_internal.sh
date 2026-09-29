@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="${0:A:h:h}"
 developer_dir="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 expected_xcode_build="${EXPECTED_XCODE_BUILD:-27A266a}"
-expected_app_build="${EXPECTED_APP_BUILD:-26}"
+expected_app_build="${EXPECTED_APP_BUILD:-51}"
 expected_app_version="${EXPECTED_APP_VERSION:-3.2}"
 release_config="$repo_root/Config/ReleaseEnvironment.local.xcconfig"
 test_destination="${TEST_DESTINATION:-platform=iOS Simulator,name=iPhone 18 Pro}"
