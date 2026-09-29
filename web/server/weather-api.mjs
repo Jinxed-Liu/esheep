@@ -120,6 +120,7 @@ function normalizeWeather(raw, location, detail, now, attribution) {
     attribution: {
       serviceName: attribution?.serviceName ?? "Apple Weather",
       logoURL: safeURL(attribution?.["logoLight@2x"] ?? attribution?.["logoLight@1x"], WEATHERKIT_ORIGIN),
+      logoDarkURL: safeURL(attribution?.["logoDark@2x"] ?? attribution?.["logoDark@1x"], WEATHERKIT_ORIGIN),
       legalURL: safeURL(metadata.attributionURL) ?? "https://weatherkit.apple.com/legal-attribution.html",
     },
   };

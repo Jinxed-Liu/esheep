@@ -131,12 +131,13 @@ export function FarmEnvironmentBackground({ environment, mode, paused, surface =
   </div>;
 }
 
-function Attribution({ snapshot }) {
+function Attribution({ snapshot, compact = false }) {
   const attribution = snapshot?.current && snapshot?.attribution;
   if (!attribution?.logoURL) return null;
-  return <a className="farm-weather-attribution" href={attribution.legalURL} target="_blank" rel="noopener noreferrer"
+  return <a className={`farm-weather-attribution${compact ? " is-compact" : ""}`} href={attribution.legalURL} target="_blank" rel="noopener noreferrer"
     aria-label={`${attribution.serviceName} 数据来源及法律归属`}>
-    <img src={attribution.logoURL} alt={attribution.serviceName} />
+    <img className="farm-weather-logo-light" src={attribution.logoURL} alt={attribution.serviceName} />
+    {attribution.logoDarkURL ? <img className="farm-weather-logo-dark" src={attribution.logoDarkURL} alt="" aria-hidden="true" /> : null}
   </a>;
 }
 
@@ -187,12 +188,12 @@ export function FarmWeatherSummary({ environment, onOpenChange }) {
 
   return <>
     <div className="farm-weather-line">
-      <button ref={triggerRef} className="farm-weather-summary" type="button" onClick={openDetail} aria-haspopup="dialog">
+      <button ref={triggerRef} className="farm-weather-summary" type="button" onClick={openDetail} aria-haspopup="dialog"
+        aria-label={`${status}。${hasLocation ? `${phaseLabels[environment.scene.phase]}，牧场当地 ${clockText}${nextSun ? `，${nextSun}` : ""}` : "查看天气与日照"}。查看天气详情`}>
         <Icon size={23} weight="duotone" aria-hidden="true" />
-        <span><strong>{status}</strong><small>{hasLocation ? `${phaseLabels[environment.scene.phase]} · 牧场当地 ${clockText}${nextSun ? ` · ${nextSun}` : ""}` : environment.localDate ? `牧场当地 ${clockText} · 请设置位置` : "查看天气与日照"}</small></span>
-        <span className="farm-weather-more" aria-hidden="true">查看天气</span>
+        <strong>{status}</strong>
       </button>
-      <Attribution snapshot={weather ? snapshot : null} />
+      <Attribution snapshot={weather ? snapshot : null} compact />
     </div>
     {open ? <div className="farm-weather-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) closeDetail(); }}>
       <section ref={dialogRef} className="farm-weather-detail" role="dialog" aria-modal="true" aria-labelledby="farm-weather-title">

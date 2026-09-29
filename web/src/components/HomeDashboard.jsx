@@ -78,7 +78,7 @@ export function HomeDashboard({ workspace, environment, onNavigate, onCreateReco
 
       <div className="sky-workspace-grid">
         <section className="sky-panel sky-production" aria-label="生产状态">
-          <div className="sky-panel-heading"><h2>生产档案</h2><span>核心数据，一目了然</span></div>
+          <div className="sky-panel-heading"><h2>生产档案</h2></div>
           <button className="sky-production-row" type="button" onClick={() => onNavigate("flock")}>
             <GlassIcon sheep />
             <span className="sky-row-copy"><strong>羊只档案</strong><small>记录每一只羊的成长轨迹</small><span className="sky-row-details">个体信息<span>·</span>生长记录<span>·</span>健康管理<span>·</span>繁殖记录</span></span>

@@ -61,7 +61,7 @@ test("weather endpoint authorizes every cache hit and uses the trusted location"
     authVerifier: async () => { authorizations += 1; if (!authorized) throw { status: 403, code: "FARM_ACCESS_DENIED", message: "禁止访问" }; },
     locationResolver: async () => { locationCalls += 1; return location; },
     fetcher: async (url) => {
-      if (String(url).includes("/attribution/")) return Response.json({ serviceName: "Apple Weather", "logoLight@2x": "/logo.png" });
+      if (String(url).includes("/attribution/")) return Response.json({ serviceName: "Apple Weather", "logoLight@2x": "/logo.png", "logoDark@2x": "/logo-dark.png" });
       weatherCalls += 1;
       if (!providerAvailable) throw new Error("weather provider offline");
       return Response.json({ currentWeather: { conditionCode: "Rain", temperature: 12, temperatureApparent: 10,
@@ -80,6 +80,7 @@ test("weather endpoint authorizes every cache hit and uses the trusted location"
   assert.equal(body.solar.source, "provider");
   assert.equal(body.location.latitude, location.latitude);
   assert.equal(body.attribution.logoURL, "https://weatherkit.apple.com/logo.png");
+  assert.equal(body.attribution.logoDarkURL, "https://weatherkit.apple.com/logo-dark.png");
   assert.equal((await api(request())).status, 200);
   assert.equal(weatherCalls, 1);
   authorized = false;

@@ -573,10 +573,22 @@ export function App() {
     default: content = <HomeDashboard workspace={workspace} environment={environment} onNavigate={navigate} onCreateRecord={openRecord} onWeatherDetailChange={setWeatherDetailOpen} />;
   }
 
+  const { scene, solar, now, weather } = environment;
+  const farmTheme = scene.light < 0.32 ? "dark" : "light";
+  const contentTheme = environmentPreferences.contentTheme === "farm" ? farmTheme : environmentPreferences.resolvedTheme;
+  const sunrise = Date.parse(solar?.sunriseAt ?? "");
+  const sunset = Date.parse(solar?.sunsetAt ?? "");
+  const sunProgress = Number.isFinite(sunrise) && Number.isFinite(sunset) && sunset > sunrise
+    ? Math.max(0, Math.min(1, (+now - sunrise) / (sunset - sunrise))) : 0.5;
+  const cloudCover = Math.max(0, Math.min(1, weather?.cloudCover ?? 0));
+  const reflectionOpacity = environmentPreferences.effectMode === "off" ? 0
+    : Math.round((0.06 + scene.light * 0.19) * (1 - cloudCover * 0.7) * 1000) / 1000;
+
   return (
-    <div className="app-shell" data-content-theme={environmentPreferences.resolvedTheme}
+    <div className="app-shell" data-content-theme={contentTheme}
       data-environment-phase={environmentPreferences.effectMode === "off" ? "unknown" : environment.scene.phase}
-      data-environment-weather={environmentPreferences.effectMode === "off" ? "unknown" : environment.weather?.condition ?? "unknown"}>
+      data-environment-weather={environmentPreferences.effectMode === "off" ? "unknown" : environment.weather?.condition ?? "unknown"}
+      style={{ "--surface-light-x": `${Math.round(12 + sunProgress * 76)}%`, "--surface-reflection-opacity": reflectionOpacity }}>
       <FarmEnvironmentBackground environment={environment} mode={environmentPreferences.effectMode} surface={activePage} paused={recordDialog.open || weatherDetailOpen || activePage !== "home"} />
       <AppHeader
         activePage={routeRequest.page}

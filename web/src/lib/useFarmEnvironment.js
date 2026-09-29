@@ -14,7 +14,7 @@ function storedChoice(key, allowed, fallback) {
 
 export function useEnvironmentPreferences() {
   const [effectMode, setEffectMode] = useState(() => storedChoice(preferenceKey, ["auto", "static", "off"], "auto"));
-  const [contentTheme, setContentTheme] = useState(() => storedChoice(themeKey, ["system", "light", "dark"], "system"));
+  const [contentTheme, setContentTheme] = useState(() => storedChoice(themeKey, ["farm", "system", "light", "dark"], "farm"));
   const [systemDark, setSystemDark] = useState(() => typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -28,7 +28,7 @@ export function useEnvironmentPreferences() {
     try { localStorage.setItem(preferenceKey, next); } catch { /* storage may be disabled */ }
   }, []);
   const changeContentTheme = useCallback((next) => {
-    if (!["system", "light", "dark"].includes(next)) return;
+    if (!["farm", "system", "light", "dark"].includes(next)) return;
     setContentTheme(next);
     try { localStorage.setItem(themeKey, next); } catch { /* storage may be disabled */ }
   }, []);
