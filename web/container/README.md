@@ -13,6 +13,11 @@ credential is baked into either image.
   credentials, farm exports, build output, and developer configuration.
 - Supply `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` as Worker secrets/environment
   values before enabling the frontend binding. Never supply a service-role key.
+- The separate `/api/weather/farm` route runs in this Worker without starting a
+  container. Set `WEATHERKIT_TEAM_ID`, `WEATHERKIT_SERVICE_ID`, `WEATHERKIT_KEY_ID`,
+  and `WEATHERKIT_PRIVATE_KEY` as Worker secrets. Deploy the member-scoped weather
+  location RPC first. The WeatherKit private key must never enter frontend or
+  Docker build inputs.
 - Verify the Linux Codex binary, read-only sandbox, query execution, streamed
   responses, cancellation, and session expiry in the deployed container before
   adding `CODEX_HARNESS` as a staging service binding.

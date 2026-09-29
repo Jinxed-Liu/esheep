@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App.jsx";
 import "./styles.css";
 import "./skyglass.css";
+import "./farmEnvironment.css";
 import "./motion.css";
 
 if (import.meta.env.PROD) {

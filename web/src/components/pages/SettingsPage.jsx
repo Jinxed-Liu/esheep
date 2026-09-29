@@ -27,7 +27,7 @@ const capabilityRows = [
   ["管理成员与牧场", "可用", "受限", "不可用"],
 ];
 
-export default function SettingsPage({ workspace, authState, isConfigured, onSignIn, onAppleSignIn, onSignOut, onReloadCloud }) {
+export default function SettingsPage({ workspace, authState, isConfigured, onSignIn, onAppleSignIn, onSignOut, onReloadCloud, environmentPreferences }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -134,6 +134,8 @@ export default function SettingsPage({ workspace, authState, isConfigured, onSig
           <div className="panel-heading"><h2>偏好</h2><Globe size={24} /></div>
           <label className="setting-toggle-row"><span><strong>显示公制单位</strong><small>体重使用 kg，温度使用摄氏度。</small></span><input type="checkbox" checked={showMetricUnits} onChange={(event) => setShowMetricUnits(event.target.checked)} /></label>
           <div className="setting-readonly-row"><span><strong>时区</strong><small>业务日期按牧场时区计算。</small></span><b>{workspace.farm.timeZoneIdentifier || "Asia/Shanghai"}</b></div>
+          <label className="setting-select-row"><span><strong>天气效果</strong><small>自动遵循系统的减少动态效果设置。</small></span><select value={environmentPreferences.effectMode} onChange={(event) => environmentPreferences.changeEffectMode(event.target.value)}><option value="auto">自动</option><option value="static">静态</option><option value="off">关闭</option></select></label>
+          <label className="setting-select-row"><span><strong>内容主题</strong><small>调整面板阅读颜色，牧场天色继续跟随当地日照。</small></span><select value={environmentPreferences.contentTheme} onChange={(event) => environmentPreferences.changeContentTheme(event.target.value)}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
         </section>
 
         <section className="workspace-panel privacy-card">

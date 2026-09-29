@@ -83,6 +83,21 @@ test("proxies assistant requests to a bound Codex harness service", async () => 
   assert.deepEqual(await response.json(), { configured: true, model: "mimo-v2.6-pro" });
 });
 
+test("proxies authenticated weather reads without serving the app shell", async () => {
+  const seen = [];
+  const response = await worker.fetch(new Request("https://example.test/api/weather/farm?farm_id=farm-1", {
+    headers: { authorization: "Bearer member" },
+  }), {
+    CODEX_HARNESS: { fetch: async (request) => {
+      seen.push({ path: new URL(request.url).pathname, token: request.headers.get("authorization") });
+      return Response.json({ current: null, code: "WEATHER_NOT_CONFIGURED" });
+    } },
+    ASSETS: { fetch: async () => { throw new Error("weather must not become an asset request"); } },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(seen, [{ path: "/api/weather/farm", token: "Bearer member" }]);
+});
+
 test("returns an explicit unavailable response when the harness is not bound", async () => {
   const response = await worker.fetch(new Request("https://example.test/api/assistant/status"), {});
   assert.equal(response.status, 503);

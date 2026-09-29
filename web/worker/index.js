@@ -1,7 +1,7 @@
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname.startsWith("/api/assistant/")) {
+    if (url.pathname.startsWith("/api/assistant/") || url.pathname.startsWith("/api/weather/")) {
       try {
         if (env.CODEX_HARNESS?.fetch) return env.CODEX_HARNESS.fetch(request);
         if (env.CODEX_HARNESS_URL) {
@@ -13,12 +13,12 @@ export default {
           return fetch(new Request(target, request));
         }
       } catch {
-        return new Response(JSON.stringify({ error: "Codex harness 代理连接失败。", code: "HARNESS_PROXY_FAILED" }), {
+        return new Response(JSON.stringify({ error: "服务端连接失败。", code: "SERVICE_PROXY_FAILED" }), {
           status: 502,
           headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
         });
       }
-      return new Response(JSON.stringify({ error: "Codex harness 尚未绑定到网页运行环境。", code: "HARNESS_NOT_BOUND" }), {
+      return new Response(JSON.stringify({ error: "服务端尚未绑定到网页运行环境。", code: "HARNESS_NOT_BOUND" }), {
         status: 503,
         headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
       });

@@ -4,10 +4,12 @@ import { fileURLToPath } from "node:url";
 import { createServer as createViteServer, loadEnv } from "vite";
 import { createAssistantAPI } from "./api.mjs";
 import { handleNodeRequest } from "./node-adapter.mjs";
+import { createWeatherAPI } from "./weather-api.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const environment = { ...loadEnv("development", root, ""), ...process.env };
 const assistantAPI = createAssistantAPI({ environment });
+const weatherAPI = createWeatherAPI({ environment });
 const vite = await createViteServer({
   root,
   appType: "spa",
@@ -18,8 +20,8 @@ const host = environment.HOST ?? "0.0.0.0";
 
 const server = http.createServer(async (request, response) => {
   try {
-    if ((request.url ?? "").startsWith("/api/assistant/")) {
-      await handleNodeRequest(request, response, assistantAPI);
+    if ((request.url ?? "").startsWith("/api/assistant/") || (request.url ?? "").startsWith("/api/weather/")) {
+      await handleNodeRequest(request, response, (request.url ?? "").startsWith("/api/weather/") ? weatherAPI : assistantAPI);
       return;
     }
     vite.middlewares(request, response, (error) => {
