@@ -77,3 +77,21 @@ test("checkpoint preflight permits the Web without bypassing authentication", as
   assert.equal(native.status, 401);
   assert.equal(calls, 2);
 });
+
+test("checkpoint CORS permits the documented local preview origins only", async () => {
+  let calls = 0;
+  const handler = withCheckpointCors(async () => { calls++; return new Response("unauthorized", { status: 401 }); });
+  for (const origin of ["http://localhost:5173", "http://127.0.0.1:5173"]) {
+    const preflight = await handler(new Request("https://example.com", { method: "OPTIONS", headers: { origin } }));
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), origin);
+    const response = await handler(new Request("https://example.com", { method: "POST", headers: { origin } }));
+    assert.equal(response.status, 401);
+    assert.equal(response.headers.get("access-control-allow-origin"), origin);
+  }
+  const unrelated = await handler(new Request("https://example.com", {
+    method: "OPTIONS", headers: { origin: "http://localhost:5174" },
+  }));
+  assert.equal(unrelated.status, 403);
+  assert.equal(calls, 2);
+});

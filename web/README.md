@@ -41,7 +41,7 @@ Codex SDK 需要 Node.js 进程和本地可执行环境，不能直接运行在�
 
 天气接口 `GET /api/weather/farm?farm_id=<UUID>` 复用同一服务绑定，但直接在服务端 Worker 中执行，不启动 Codex 容器。它先核对当前登录用户的牧场成员权限，再调用 `esheep_cloud_weather_location_v1` 从 Cloud V2 的权威 `farm_profiles` 读取经纬度、时区和位置修订。天气只用于展示，不写入生产事实。首屏获取当前天气与太阳事件，打开详情再获取小时预报。服务端按牧场、位置修订和当地日期缓存，并在每次缓存命中前重新核对权限。
 
-先在受控迁移流程中部署 `supabase/migrations/20260929110000_esheep_cloud_weather_location.sql`，再为本地 API 或 `esheepplus-harness(-staging)` Worker 配置以下服务端变量或 secrets：
+事实生产项目已部署 `supabase/migrations/20260929120730_esheep_cloud_weather_location.sql`；其他环境需先在受控迁移流程中部署该迁移。随后为本地 API 或 `esheepplus-harness(-staging)` Worker 配置以下服务端变量或 secrets：
 
 ```dotenv
 WEATHERKIT_TEAM_ID=ABCDEFGHIJ
