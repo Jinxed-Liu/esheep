@@ -10,7 +10,7 @@
     "build": "npm run sync:excel-template && vite build && node scripts/prepare-sites-build.mjs",
     "cloudflare:check": "npm run build && wrangler deploy --dry-run --env production",
     "cloudflare:deploy:staging": "npm run build && wrangler deploy --env staging",
-    "cloudflare:deploy:production": "npm run build && wrangler deploy --env production",
+    "cloudflare:deploy:production": "npm run build && node scripts/preserve-production-assets.mjs && wrangler deploy --env production",
     "preview": "node server/serve.mjs",
     "start": "node server/serve.mjs",
     "test": "node --test tests/*.test.mjs",
