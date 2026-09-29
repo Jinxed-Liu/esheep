@@ -1,0 +1,200 @@
+/* Responsive motion: reveal, follow, press, and settle. Never loop at rest. */
+:root {
+  --motion-quick: 140ms;
+  --motion-settle: 460ms;
+  --motion-spring: cubic-bezier(0.22, 1.35, 0.36, 1);
+  --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+.page-motion { display: contents; }
+.sky-navigation { position: relative; isolation: isolate; }
+.sky-navigation button { position: relative; z-index: 1; }
+.sky-nav-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  border-radius: 30px;
+  border: 1px solid #dbeaff;
+  background: #edf6ff;
+  box-shadow: inset 0 2px 6px #fff, 0 4px 9px #699ddb25;
+}
+.sky-navigation:has(.sky-nav-indicator) button.active {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+@media (max-width: 600px) {
+  .sky-navigation { position: fixed; }
+  .sky-nav-indicator { border-radius: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sky-nav-indicator { transition-duration: 0s !important; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sky-nav-indicator {
+    transition: transform var(--motion-settle) var(--motion-spring),
+      width var(--motion-settle) var(--motion-ease), height var(--motion-settle) var(--motion-ease);
+  }
+  .popover { transform-origin: top right; animation: pasture-popover 300ms var(--motion-ease); }
+  .modal-backdrop { animation: pasture-fade 160ms ease-out; }
+  .record-dialog { animation: pasture-dialog 420ms var(--motion-ease); }
+  .toast { animation: pasture-enter 360ms var(--motion-ease); }
+  :is(.sky-navigation button, .sky-new-record, .primary-button, .secondary-button,
+    .icon-button, .sky-production-row, .sky-action-list > button, .sky-activity-row,
+    .sky-metric, .farm-switcher-button, .account-button, .record-type-grid > button) {
+    transition: translate var(--motion-quick) var(--motion-ease),
+      scale var(--motion-quick) var(--motion-ease), background-color var(--motion-quick) ease,
+      border-color var(--motion-quick) ease, color var(--motion-quick) ease;
+  }
+  :is(.sky-new-record, .primary-button, .secondary-button, .icon-button,
+    .sky-metric, .record-type-grid > button):not(:disabled):active { scale: 0.98; }
+  :is(.sky-production-row, .sky-action-list > button):not(:disabled):active { scale: 0.995; }
+  .sky-production-row > svg, .sky-action-list button > svg, .sky-text-link > svg,
+  .farm-switcher-button > svg:last-child, .account-button > svg:last-child {
+    transition: translate 180ms var(--motion-ease), rotate 180ms var(--motion-ease);
+  }
+  :is(.farm-switcher-button, .account-button)[aria-expanded="true"] > svg:last-child { rotate: 180deg; }
+  @media (hover: hover) and (pointer: fine) {
+    :is(.sky-new-record, .primary-button, .secondary-button):not(:disabled):hover { translate: 0 -3px; }
+    .sky-metric:hover { translate: 0 -4px; }
+    :is(.sky-production-row, .sky-action-list button, .sky-text-link):hover > svg { translate: 6px 0; }
+  }
+}
+@keyframes pasture-enter {
+  from { opacity: 0; translate: 0 16px; }
+  to { opacity: 1; translate: 0 0; }
+}
+@keyframes pasture-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pasture-popover {
+  from { opacity: 0; translate: 0 -10px; scale: 0.96; }
+  to { opacity: 1; translate: 0 0; scale: 1; }
+}
+@keyframes pasture-dialog {
+  from { opacity: 0; translate: 0 22px; scale: 0.965; }
+  to { opacity: 1; translate: 0 0; scale: 1; }
+}
+
+
+/* Secondary responses are attached to the control, so touch and keyboard users
+   get the same hierarchy without continuous animation or moving hit targets. */
+@media (prefers-reduced-motion: no-preference) {
+  .sky-navigation button.active > :is(svg, span) { animation: pasture-select 460ms var(--motion-spring); }
+  .sky-navigation button > span { transition: translate 240ms var(--motion-spring); }
+  .sky-icon, .hub-action-icon, .sky-row-copy, .sky-new-record > svg {
+    transition: transform 440ms var(--motion-spring), translate 360ms var(--motion-ease),
+      box-shadow 300ms ease;
+  }
+  .sky-production-row {
+    transition: box-shadow 350ms ease, background-color 250ms ease, scale 180ms var(--motion-ease);
+  }
+  .sky-production-row::before {
+    transition: transform 650ms var(--motion-ease);
+    transform: translate(var(--photo-x, 0px), var(--photo-y, 0px)) scale(1);
+  }
+  .sky-production-row::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    background: radial-gradient(240px circle at var(--light-x, 50%) var(--light-y, 50%), #ffffff55, transparent 75%);
+    opacity: 0;
+    transition: opacity 350ms ease;
+  }
+  :is(.sky-action-list > button, .sky-activity-row, .hub-action-grid > button,
+    .feeding-action-grid > button, .management-action-list > button, .record-type-grid > button) {
+    transition: background-color 220ms ease, box-shadow 250ms ease,
+      scale 160ms var(--motion-ease), border-color 220ms ease;
+  }
+  :is(.hub-action-grid, .feeding-action-grid, .management-action-list) > button > svg {
+    transition: translate 350ms var(--motion-spring), rotate 350ms var(--motion-spring);
+  }
+  :is(.hub-action-grid, .feeding-action-grid, .management-action-list, .record-type-grid) > button:not(:disabled):active {
+    scale: 0.97;
+  }
+  .sky-new-record { position: relative; overflow: hidden; }
+  .sky-new-record::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+    inset: -50% -100%;
+    background: linear-gradient(110deg, transparent 40%, #ffffff55 50%, transparent 60%);
+    transform: translateX(-60%);
+  }
+  .sky-new-record:focus-visible::after { animation: pasture-sheen 700ms ease-out; }
+  .sky-new-record:focus-visible > svg { transform: rotate(90deg); }
+  :is(.sky-production-row, .sky-action-list > button, .sky-metric):focus-visible .sky-icon {
+    transform: translateY(-3px) rotate(-5deg) scale(1.08);
+  }
+  .sky-event-dot { transition: scale 350ms var(--motion-spring), box-shadow 350ms ease; }
+  .record-dialog > form, .record-type-grid { animation: pasture-enter 340ms var(--motion-ease); }
+  .record-type-grid > button { animation: pasture-enter 380ms var(--motion-ease) backwards; }
+  .record-type-grid > button:nth-child(3n + 2) { animation-delay: 45ms; }
+  .record-type-grid > button:nth-child(3n) { animation-delay: 90ms; }
+  .record-field :is(input, textarea), .search-field, .search-box {
+    transition: border-color 180ms ease, box-shadow 220ms ease, background-color 180ms ease;
+  }
+  .record-field:focus-within > span { color: #0864e8; }
+  .record-field :is(input, textarea):focus-visible { box-shadow: 0 0 0 3px #1684ec1c; }
+  :is(.segmented, .analysis-segmented) button {
+    transition: background-color 220ms ease, box-shadow 260ms ease, color 180ms ease, scale 160ms ease;
+  }
+  :is(.segmented, .analysis-segmented) button.active { animation: pasture-select 350ms var(--motion-spring); }
+  .form-error { animation: pasture-error 300ms ease-out; }
+  @media (hover: hover) and (pointer: fine) {
+    .sky-navigation button:hover > span { translate: 0 -2px; }
+    .sky-production-row:hover { box-shadow: 0 8px 22px #1f618e20; }
+    .sky-production-row:hover::before {
+      transform: translate(var(--photo-x, 0px), var(--photo-y, 0px)) scale(1.065);
+    }
+    .sky-production-row:hover::after { opacity: 1; }
+    :is(.sky-production-row, .sky-action-list > button):hover .sky-row-copy { translate: 4px 0; }
+    :is(.sky-production-row, .sky-action-list > button, .sky-metric):hover .sky-icon {
+      transform: translateY(-4px) rotate(-6deg) scale(1.09);
+      box-shadow: 0 8px 16px #246a8b15;
+    }
+    .sky-action-list > button:hover .sky-icon > svg { animation: pasture-icon-nod 550ms ease-out; }
+    .sky-action-list > button:nth-child(2):hover .sky-icon > svg { animation-name: pasture-transfer; }
+    .sky-action-list > button:nth-child(3):hover .sky-icon > svg { animation-name: pasture-feed; }
+    .sky-new-record:hover > svg { transform: rotate(90deg); }
+    .sky-new-record:hover::after { animation: pasture-sheen 700ms ease-out; }
+    .sky-activity-row:hover .sky-event-dot { scale: 1.35; box-shadow: 0 0 0 5px #159cd212; }
+    :is(.hub-action-grid, .feeding-action-grid, .management-action-list) > button:hover .hub-action-icon {
+      transform: translateY(-3px) rotate(-5deg) scale(1.08);
+    }
+    :is(.hub-action-grid, .feeding-action-grid, .management-action-list) > button:hover > svg { translate: 4px 0; }
+    .record-type-grid > button:hover { box-shadow: 0 5px 14px #1b6db31a; }
+  }
+  @media (hover: none) {
+    :is(.sky-production-row, .sky-action-list > button, .sky-metric):active .sky-icon {
+      transform: scale(0.9) rotate(-5deg);
+    }
+  }
+}
+@keyframes pasture-select {
+  0% { scale: 0.92; translate: 0 3px; }
+  65% { scale: 1.04; translate: 0 -1px; }
+  100% { scale: 1; translate: 0 0; }
+}
+@keyframes pasture-icon-nod {
+  0%, 100% { rotate: 0deg; }
+  30% { rotate: -12deg; }
+  65% { rotate: 7deg; }
+}
+@keyframes pasture-transfer {
+  0%, 100% { translate: 0 0; }
+  30% { translate: 5px 0; }
+  65% { translate: -3px 0; }
+}
+@keyframes pasture-feed {
+  0%, 100% { translate: 0 0; scale: 1; }
+  40% { translate: 0 -5px; scale: 1.06; }
+  75% { translate: 0 1px; scale: 0.98; }
+}
+@keyframes pasture-sheen { to { transform: translateX(60%); } }
+@keyframes pasture-error {
+  0%, 100% { translate: 0 0; }
+  30% { translate: -3px 0; }
+  65% { translate: 2px 0; }
+}

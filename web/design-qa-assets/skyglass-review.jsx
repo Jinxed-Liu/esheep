@@ -13,6 +13,8 @@ import InsightsPage from '../src/components/pages/InsightsPage.jsx';
 import {SearchPage,AlertsPage} from '../src/components/pages/AppAlignedPages.jsx';
 import '../src/styles.css';
 import '../src/skyglass.css';
+import '../src/motion.css';
+import {PageMotion} from '../src/components/PageMotion.jsx';
 const empty=new URLSearchParams(location.search).has('empty');
 const farm={id:'visual-review',name:'示范牧场',role:'owner',timeZoneIdentifier:'Asia/Shanghai'};
 const baseDate=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai'}).format(new Date());
@@ -39,7 +41,7 @@ function Review(){
  case 'insights':content=<InsightsPage workspace={data} onNavigate={navigate}/>;break;
  default:content=<main className="page feature-page"><h1>{page==='settings'?'账户与牧场设置':'Codex 助手'}</h1><p>此本地验收页只用于界面检查，不连接云端服务。</p></main>;
  }
- return <div className="app-shell"><AppHeader activePage={page} workspace={data} onNavigate={navigate} onFarmChange={id=>setFarm(data.farms.find(f=>f.id===id))} onSignOut={()=>{}}/>{page!=='home'?<div style={{padding:'0 3.5%',color:'#7384a4',fontSize:12}}>本地视觉验收 · 示例数据 · 不提交云端</div>:null}{content}{record?<RecordDialog requestedType={record} workspace={data} onClose={()=>setRecord(null)} onSave={safeSave}/>:null}{notice?<div role="status" className="toast">{notice}</div>:null}</div>;
+ return <div className="app-shell"><AppHeader activePage={page} workspace={data} onNavigate={navigate} onFarmChange={id=>setFarm(data.farms.find(f=>f.id===id))} onSignOut={()=>{}}/>{page!=='home'?<div style={{padding:'0 3.5%',color:'#7384a4',fontSize:12}}>本地视觉验收 · 示例数据 · 不提交云端</div>:null}<PageMotion route={page}>{content}</PageMotion>{record?<RecordDialog requestedType={record} workspace={data} onClose={()=>setRecord(null)} onSave={safeSave}/>:null}{notice?<div role="status" className="toast">{notice}</div>:null}</div>;
 }
 const reviewRoot = createRoot(document.getElementById('root'));
 reviewRoot.render(<Review/>);

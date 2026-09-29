@@ -32,3 +32,13 @@ Earlier target: `design-qa-assets/skyglass-approved.png`, 1586 × 992. Its visua
 - Home renders newest three events from the existing workspace; record dialogs use the existing canonical schema and save callbacks.
 - Local review harness `design-qa-assets/skyglass-review.html` mounts the real components with clearly identified fixture data and a no-op save. It imports no cloud client and is not a production build input.
 - Validation covers local UI, routing, responsive layouts and existing unit tests. It does not constitute live farm submission, production deployment, or physical-device acceptance.
+
+## Motion — 2026-09-29, second pass
+
+- Motion is more expressive in response to intent: a 460ms spring-like navigation capsule, coordinated icon/copy/arrow feedback, 650ms photographic card zoom and bounded pointer tracking, and a single light sweep on New Record.
+- `PageMotion` reveals headings, metrics, production/action rows and feature sections with 22px travel and 560ms ease-out. Initial stagger is capped at 270ms; offscreen content reveals once when scrolled into view. Do not animate farm values or individual table rows.
+- Entrances use an IntersectionObserver with cleanup and cancellation. There are no scroll listeners, keyed page remounts, new animation dependencies, or animations on every data update. Pointer tracking uses one cancellable animation frame, no React state updates, and resets on leave.
+- Feature entry/feeding controls, record-type choices, form focus, segment selection and validation feedback share the same motion vocabulary. Distinct home action icons respond with a tilt, horizontal exchange, or soft bounce.
+- Hover/parallax only run on fine pointers. Touch receives press feedback and viewport reveals. Everything comes to rest; backgrounds and numeric values stay still. Menus/dialogs close immediately.
+- Reduced motion disables new CSS animations, pointer tracking and reveals, including cancellation when the preference changes live. Content remains visible without entrance effects.
+- Validate desktop/mobile, fast navigation, scrolled-in sections, pointer reset, form state, and reduced motion in the isolated development harness. It contains explicitly labeled fixtures and no cloud writes.

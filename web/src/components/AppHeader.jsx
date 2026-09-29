@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BowlFood } from "@phosphor-icons/react/BowlFood";
 import { CaretDown } from "@phosphor-icons/react/CaretDown";
 import { Check } from "@phosphor-icons/react/Check";
@@ -74,6 +74,20 @@ export function AppHeader({
   const farmMenuRef = useRef(null);
   const accountMenuRef = useRef(null);
   const activePrimaryPage = primaryPageFor(activePage);
+  const navigationRef = useRef(null);
+  const [indicator, setIndicator] = useState(null);
+  useLayoutEffect(() => {
+    const nav = navigationRef.current;
+    const measure = () => {
+      const active = nav.querySelector('[aria-current="page"]');
+      setIndicator(active ? { left: active.offsetLeft, top: active.offsetTop, width: active.offsetWidth, height: active.offsetHeight } : null);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(nav);
+    for (const button of nav.querySelectorAll('button')) observer.observe(button);
+    return () => observer.disconnect();
+  }, [activePrimaryPage]);
   const personName = workspace.profile?.displayName ?? "牧场成员";
 
   useOutsideDismiss(farmMenuRef, () => setFarmMenuOpen(false));
@@ -86,7 +100,8 @@ export function AppHeader({
           <span>eSheep+</span>
         </button>
 
-        <nav className="sky-navigation" aria-label="主要导航">
+        <nav className="sky-navigation" aria-label="主要导航" ref={navigationRef}>
+          {indicator ? <span className="sky-nav-indicator" aria-hidden="true" style={{ width: indicator.width, height: indicator.height, transform: `translate(${indicator.left}px, ${indicator.top}px)` }} /> : null}
           {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}

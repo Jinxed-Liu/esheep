@@ -1,3 +1,4 @@
+import { PageMotion } from "./components/PageMotion.jsx";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { CheckCircle } from "@phosphor-icons/react/CheckCircle";
 import { SpinnerGap } from "@phosphor-icons/react/SpinnerGap";
@@ -577,7 +578,7 @@ export function App() {
         onSignOut={handleSignOut}
       />
       <Suspense fallback={<div className="route-loading"><SpinnerGap size={26} className="spin" />正在打开工作区…</div>}>
-        {content}
+        <PageMotion route={activePage}>{content}</PageMotion>
         {recordDialog.open ? <RecordDialog open requestedType={recordDialog.type} initialDraft={recordDialog.draft} initialValues={recordDialog.values} workspace={workspace} onClose={closeRecordDialog} onSave={persistRecord} /> : null}
       </Suspense>
       {routeLoading || routeTransitionPending ? <div className="route-progress" role="status" aria-label="正在载入页面数据" /> : null}

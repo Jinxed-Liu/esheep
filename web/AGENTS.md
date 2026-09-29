@@ -1,26 +1,8 @@
-# Prototype Instructions
+# eSheep+ Web guidance
 
-Run the local server yourself and open the preview in the browser available to this environment. Do not give the user server-start instructions when you can run it.
+For visual work, use the current approved reference `design-qa-assets/pasture-approved.png` and `DESIGN_SPEC.md`; inspect the rendered UI when appearance matters. The pasture direction uses two photographic production rows, restrained translucent panels, open operation rows, and a blue primary action. The older skyglass image is historical. Keep the exact App-exported `public/assets/esheepplus-icon.png`. Build UI in `src/`.
 
-Before making substantial visual changes, use the Product Design plugin's `get-context` skill when the visual source is unclear or no longer matches the current goal. When the user gives durable prototype-specific design feedback, preferences, or decisions, record them in `AGENTS.md`.
-
-When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
-
-Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
-
-## Durable eSheep+ Web decisions
-
-- On 2026-09-27 the user selected `design-qa-assets/pasture-approved.png` for implementation. The direction uses a sunny pasture background, two photographic production rows, quiet translucent main sheets, open operation rows with fine dividers, a blue primary action, and the exact App-exported ear-tag logo. Earlier image-generation attempts made the glass too strong or too weak; avoid thick glowing borders, plastic-looking icon tiles, and nested glass cards.
-
-- The public product, website, Web App, domain, and Cloudflare resources are named eSheep+ / eSheepPlus / esheepplus. `eSheepNext` is only the current development-era repository and code-project name; do not expose it as the product brand.
-
-- The user rejected the previous Web product because it was visually dated and its feature hierarchy did not match the iOS App. Do not treat this as a cosmetic-only restyle.
-- The Web top-level navigation must mirror `FarmWorkspaceView`: `首页 / 洞察 / 录入 / 投喂 / 搜索`. Sheep and pens open from Home; TMR stays inside Feeding; health/reproduction, production batches, and event history stay inside Records; account and farm settings stay behind the avatar.
-- The 2026-09-17 visual target was `design-qa-assets/skyglass-approved.png` at 1586 × 992. The 2026-09-27 pasture concept above supersedes its home visuals while keeping horizontal navigation, a green 今日牧场 title, the two-row production area, a right-hand 今日操作 panel, and the recent-activity feed. Keep 新建记录 inside the 今日操作 header, beside its title.
-- Use `public/assets/esheepplus-icon.png`, exported directly from the user-supplied `/Users/jinxliu/Desktop/eSheep+.icon`, for the product logo and favicon. Do not replace it with a generated approximation.
-- Desktop has no sidebar. At <=600px the five destinations become a full-width floating bottom navigation. Preserve working farm/account menus and the Codex assistant (under the account menu and Insights).
-- Mock figures and day-over-day deltas are design examples only. Home uses `workspace.metrics` and newest `workspace.events`; never fabricate comparisons or display preview fixtures in the authenticated app. `design-qa-assets/skyglass-review.html` is a separate local component harness excluded from production builds.
-- Cloud projection and production-write truth remain product requirements. Never label a browser-only draft, preview fixture, or unavailable App capability as synced or submitted.
-- The Records page must expose Excel batch entry with the App's canonical template contract; Web builds generate the downloadable workbook from `FarmExcelImportService` instead of maintaining an independent schema.
-- Event history must lead with the sheep ear tag and a concrete business event name/value. Raw entity IDs are diagnostic fallbacks only and must not replace an available ear tag; `CareCommand` tuple payloads such as purpose changes require explicit decoding.
-- Web registration creates a free account only. It must never offer or imply cloud-farm creation; an authenticated account without a farm sees only the invite-redemption state. Creating a cloud farm is entitlement-gated server-side, while accepting an invitation remains available to free accounts.
+- Public branding is eSheep+ / eSheepPlus / esheepplus; `eSheepNext` is the development repository name. The five top-level destinations match the App: 首页 / 洞察 / 录入 / 投喂 / 搜索. Desktop has no sidebar; narrow screens use bottom navigation. Keep sheep and pens under Home, TMR under Feeding, health/reproduction, production batches, and event history in Records, and farm settings behind the account menu. Preserve the Codex assistant access.
+- Authenticated views use real `workspace` metrics and events. Keep preview fixtures and invented comparisons out of production. Show cloud projection and write status truthfully; a local draft is not a synced submission.
+- Excel batch entry follows the App's canonical template generated from `FarmExcelImportService`. Event history leads with an ear tag and decoded business event; raw IDs are fallback diagnostics. Registration creates a free account; an account without a farm sees invitation redemption. Farm creation remains entitlement-gated, while free accounts can redeem invitations.
+- For local Web verification, use `./tools/verify_local.sh web` from the repository root. It builds the Sites output and runs the full Web test suite, including `sites-worker.test.mjs`. Before an actual Sites handoff, confirm `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json` exist.

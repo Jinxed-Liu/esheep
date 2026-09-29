@@ -266,7 +266,8 @@ verify_web() {
   require_command perl
   (cd "$repo_root/web" && npm run build)
   run_node_test_with_discovery_gate "$repo_root/web"
-  (cd "$repo_root/web" && npm run test:sites && npm audit)
+  # npm test discovers tests/sites-worker.test.mjs; avoid running it twice.
+  (cd "$repo_root/web" && npm audit)
 }
 
 verify_backend() {
