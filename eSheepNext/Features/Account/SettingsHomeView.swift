@@ -14,9 +14,9 @@ struct SettingsHomeView: View {
     let account: AccountProfile
     let farm: FarmRecord
 
-    @State private var scrollOffset: CGFloat = 0
-    @State private var scrollOrigin: CGFloat?
-    @State private var hasScrollInteraction = false
+    @State private var avatarMotion = AccountAvatarMotionCoordinator()
+    @State private var isEditingAvatar = false
+    @Namespace private var avatarNamespace
 
     private var unresolvedConflictCount: Int {
         conflicts.count {
@@ -59,31 +59,16 @@ struct SettingsHomeView: View {
         storageProfiles.first(where: { $0.farmID == farm.id })?.mode ?? .localOnly
     }
 
-    private var collapseProgress: CGFloat {
-        min(max(scrollOffset / 94, 0), 1)
-    }
-
-    private var avatarMotionProgress: CGFloat {
-        guard hasScrollInteraction else { return 0 }
-        guard preferences.avatarMotionEnabled,
-              !preferences.shouldReduceMotion,
-              !systemReduceMotion else {
-            return scrollOffset >= 76 ? 1 : 0
-        }
-        return collapseProgress
-    }
-
-    private var pullScale: CGFloat {
-        guard preferences.avatarMotionEnabled,
-              !preferences.shouldReduceMotion,
-              !systemReduceMotion else { return 1 }
-        return 1 + min(max(-scrollOffset, 0) / 700, 0.08)
+    private var avatarAnimationsEnabled: Bool {
+        preferences.avatarMotionEnabled
+            && !preferences.shouldReduceMotion
+            && !systemReduceMotion
     }
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 20) {
-                accountHeader
+                SettingsAvatarHeader(account: account, farm: farm, motion: avatarMotion)
 
                 AccountAccessNoticeCard(
                     authenticationMethod: account.authenticationMethod
@@ -250,42 +235,63 @@ struct SettingsHomeView: View {
         .background(AppTheme.pageBackground)
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
             geometry.contentOffset.y + geometry.contentInsets.top
-        } action: { _, newValue in
-            guard hasScrollInteraction else {
-                scrollOrigin = newValue
-                scrollOffset = 0
-                return
-            }
-            if let scrollOrigin {
-                scrollOffset = newValue - scrollOrigin
-            } else {
-                scrollOrigin = newValue
-                scrollOffset = 0
+        } action: { _, offsetY in
+            avatarMotion.updateScroll(offsetY: offsetY, hasImage: account.avatarImageData != nil)
+        }
+        .onScrollPhaseChange { oldPhase, newPhase in
+            let isDragging = newPhase == .tracking || newPhase == .interacting
+            let wasDragging = oldPhase == .tracking || oldPhase == .interacting
+            if isDragging {
+                avatarMotion.beginDragging()
+            } else if wasDragging {
+                avatarMotion.endDragging()
             }
         }
-        .onScrollPhaseChange { _, newPhase, context in
-            guard !hasScrollInteraction,
-                  newPhase == .tracking || newPhase == .interacting else {
-                return
+        .overlay {
+            SettingsAvatarOverlay(
+                account: account,
+                motion: avatarMotion,
+                namespace: avatarNamespace,
+                onTap: {
+                    if account.avatarImageData == nil {
+                        isEditingAvatar = true
+                    } else {
+                        avatarMotion.tapAvatar()
+                    }
+                },
+                onEdit: { isEditingAvatar = true }
+            )
+            .sensoryFeedback(.impact(weight: .medium, intensity: 0.8), trigger: avatarMotion.expansionFeedback)
+            .sensoryFeedback(.selection, trigger: avatarMotion.collapseFeedback)
+            .sensoryFeedback(.impact(weight: .medium, intensity: 0.8), trigger: avatarMotion.viewerFeedback)
+        }
+        .onChange(of: avatarAnimationsEnabled, initial: true) { _, enabled in
+            avatarMotion.configure(animationsEnabled: enabled)
+        }
+        .fullScreenCover(
+            isPresented: Binding(
+                get: { avatarMotion.isViewerPresented },
+                set: { if !$0 { avatarMotion.requestDismissal() } }
+            ),
+            onDismiss: {
+                if avatarMotion.viewerDidDismiss() {
+                    isEditingAvatar = true
+                }
             }
-            let geometry = context.geometry
-            scrollOrigin =
-                geometry.contentOffset.y + geometry.contentInsets.top
-            scrollOffset = 0
-            hasScrollInteraction = true
+        ) {
+            avatarViewer
+        }
+        .navigationDestination(isPresented: $isEditingAvatar) {
+            AccountAvatarSettingsView(account: account)
+        }
+        .onDisappear {
+            avatarMotion.resetIfNotPresenting()
         }
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                HStack(spacing: 8) {
-                    AccountAvatarView(account: account, size: 28)
-                    Text(account.displayName)
-                        .font(.headline)
-                        .lineLimit(1)
-                }
-                .opacity(avatarMotionProgress)
-                .offset(y: (1 - avatarMotionProgress) * 7)
-                .accessibilityHidden(avatarMotionProgress < 0.8)
+                SettingsAvatarToolbarTitle(account: account, motion: avatarMotion)
             }
 
             ToolbarItem(placement: .confirmationAction) {
@@ -326,42 +332,23 @@ struct SettingsHomeView: View {
         return "空间占用、导入导出与备份"
     }
 
-    private var accountHeader: some View {
-        VStack(spacing: 11) {
-            NavigationLink {
-                AccountAvatarSettingsView(account: account)
-            } label: {
-                VStack(spacing: 14) {
-                    AccountAvatarView(account: account, size: 96)
-                        .padding(6)
-                        .background(.background, in: .circle)
-                        .overlay { Circle().strokeBorder(.primary.opacity(0.05), lineWidth: 1) }
-                }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("更换账号头像")
-            .accessibilityIdentifier("account-avatar-entry")
-
-            VStack(spacing: 4) {
-                Text(account.displayName)
-                    .font(.title2.bold())
-                    .lineLimit(1)
-                HStack(spacing: 0) {
-                    Text(verbatim: farm.name)
-                    Text(" · ")
-                    Text(LocalizedStringKey(farm.role.displayName))
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            }
-            .accessibilityElement(children: .combine)
+    @ViewBuilder
+    private var avatarViewer: some View {
+        let viewer = AccountAvatarViewer(
+            account: account,
+            reduceMotion: !avatarAnimationsEnabled,
+            initialImage: avatarMotion.previewImage,
+            initialDigest: avatarMotion.previewDigest,
+            onPresented: { avatarMotion.viewerDidPresent() },
+            onClose: { avatarMotion.requestDismissal() },
+            onEdit: { avatarMotion.requestDismissal(editAvatar: true) }
+        )
+        .presentationBackground(.clear)
+        if avatarAnimationsEnabled {
+            viewer.navigationTransition(.zoom(sourceID: account.id, in: avatarNamespace))
+        } else {
+            viewer
         }
-        .scaleEffect(pullScale)
-        .scaleEffect(1 - avatarMotionProgress * 0.06)
-        .opacity(1 - avatarMotionProgress * 0.28)
-        .padding(.top, 14)
-        .padding(.bottom, 2)
     }
 
     private var notificationStatusText: String {
@@ -373,6 +360,20 @@ struct SettingsHomeView: View {
         case .ephemeral: "当前会话已开启"
         @unknown default: "查看通知设置"
         }
+    }
+}
+
+private struct SettingsAvatarToolbarTitle: View {
+    let account: AccountProfile
+    let motion: AccountAvatarMotionCoordinator
+
+    var body: some View {
+        Text(account.displayName)
+            .font(.headline)
+            .lineLimit(1)
+            .opacity(motion.titleProgress)
+            .offset(y: (1 - motion.titleProgress) * 7)
+            .accessibilityHidden(motion.titleProgress < 0.8)
     }
 }
 

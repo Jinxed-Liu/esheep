@@ -1,6 +1,66 @@
 {
   "sourceLanguage" : "zh-Hans",
   "strings" : {
+    "放大头像" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zoom in on avatar"
+          }
+        }
+      }
+    },
+    "缩小头像" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zoom out of avatar"
+          }
+        }
+      }
+    },
+    "还原头像大小" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reset avatar zoom"
+          }
+        }
+      }
+    },
+    "双指缩放，或使用放大和缩小操作" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pinch to zoom, or use the zoom in and zoom out actions"
+          }
+        }
+      }
+    },
+    "点按查看头像" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap to view the avatar"
+          }
+        }
+      }
+    },
+    "点按展开头像" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap to expand the avatar"
+          }
+        }
+      }
+    },
     "期末圈舍：%@" : {
       "localizations" : {
         "en" : {
