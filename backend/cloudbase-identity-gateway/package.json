@@ -15,7 +15,7 @@
     "@cloudbase/node-sdk": "^4.0.3"
   },
   "overrides": {
-    "axios": "^1.13.4"
+    "axios": "1.20.0"
   },
   "allowScripts": {
     "core-js-pure@3.49.0": true
