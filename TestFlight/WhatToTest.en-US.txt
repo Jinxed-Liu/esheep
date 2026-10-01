@@ -1,0 +1,10 @@
+Focus on the settings avatar interactions.
+
+1. Scroll up: the avatar should smoothly shrink, morph and merge with the Dynamic Island, then recover when scrolling back. Devices without an island, landscape and iPad should use the standard collapse effect.
+2. First downward pull: the round avatar expands into a square with a spring and one haptic. Continuing the same drag should not open the viewer.
+3. Release, then pull again: dragging from either the square photo or the settings list should open the full-screen viewer.
+4. Test pinch zoom, double-tap zoom/reset, canceling a dismissal drag and dragging down to close. A zoomed image should pan normally.
+5. Closing should restore the round avatar. Change avatar should use the existing crop and save flow.
+6. Test Reduce Motion, disabled avatar motion and power saving. Expansion, viewing and closing should remain functional without visual jumps.
+
+Check responsiveness, spring strength, haptic timing, rapid direction reversals and repeated opening/closing for photo flashes.
