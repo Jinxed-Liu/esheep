@@ -8,6 +8,8 @@ struct SettingsAvatarHeader: View {
     let account: AccountProfile
     let farm: FarmRecord
     let motion: AccountAvatarMotionCoordinator
+    let onTap: () -> Void
+    let onEdit: () -> Void
 
     private var expandedSide: CGFloat {
         max(96, min(motion.availableWidth, 420))
@@ -15,15 +17,28 @@ struct SettingsAvatarHeader: View {
 
     var body: some View {
         VStack(spacing: 11) {
-            Color.clear
-                .frame(height: 96 + (expandedSide - 96) * motion.expansion)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-                .onGeometryChange(for: CGRect.self) { geometry in
-                    geometry.frame(in: .global)
-                } action: { frame in
-                    motion.updateSourceFrame(frame)
-                }
+            // Keep the hit target inside ScrollView's content so a pull that
+            // starts on the photo participates in the same native scroll gesture.
+            Button(action: onTap) {
+                Color.clear
+                    .frame(
+                        width: 96 + (expandedSide - 96) * motion.expansion,
+                        height: 96 + (expandedSide - 96) * motion.expansion
+                    )
+                    .contentShape(SettingsAvatarContour(expansion: motion.expansion, islandProgress: 0))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("头像")
+            .accessibilityHint(Text(LocalizedStringKey(motion.expansion > 0.5 ? "点按查看头像" : "点按展开头像")))
+            .accessibilityIdentifier("account-avatar-entry")
+            .accessibilityHidden(motion.titleProgress > 0.95)
+            .allowsHitTesting(motion.titleProgress < 1)
+            .accessibilityAction(named: Text("更换头像"), onEdit)
+            .onGeometryChange(for: CGRect.self) { geometry in
+                geometry.frame(in: .global)
+            } action: { frame in
+                motion.updateSourceFrame(frame)
+            }
 
             VStack(spacing: 4) {
                 Text(account.displayName)
@@ -54,8 +69,8 @@ struct SettingsAvatarHeader: View {
     }
 }
 
-/// Only the bounded avatar button receives touches; the rest of the overlay
-/// and its window probe let the settings scroll view receive input.
+/// Renders the photo and the native zoom source. SettingsHomeView forwards
+/// input to the matching button inside the scroll content.
 @MainActor
 struct SettingsAvatarOverlay: View {
     let account: AccountProfile
@@ -442,7 +457,7 @@ private final class SettingsAvatarWindowProbeUIView: UIView {
         if let window {
             guard !bounds.isEmpty else { return }
             let safeTop = window.safeAreaInsets.top
-            let portrait = window.windowScene?.interfaceOrientation.isPortrait
+            let portrait = window.windowScene?.effectiveGeometry.interfaceOrientation.isPortrait
                 ?? (window.bounds.height > window.bounds.width)
             metrics = SettingsAvatarWindowMetrics(
                 supportsIsland: window.traitCollection.userInterfaceIdiom == .phone

@@ -68,7 +68,13 @@ struct SettingsHomeView: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 20) {
-                SettingsAvatarHeader(account: account, farm: farm, motion: avatarMotion)
+                SettingsAvatarHeader(
+                    account: account,
+                    farm: farm,
+                    motion: avatarMotion,
+                    onTap: openAvatar,
+                    onEdit: { isEditingAvatar = true }
+                )
 
                 AccountAccessNoticeCard(
                     authenticationMethod: account.authenticationMethod
@@ -252,15 +258,13 @@ struct SettingsHomeView: View {
                 account: account,
                 motion: avatarMotion,
                 namespace: avatarNamespace,
-                onTap: {
-                    if account.avatarImageData == nil {
-                        isEditingAvatar = true
-                    } else {
-                        avatarMotion.tapAvatar()
-                    }
-                },
+                onTap: openAvatar,
                 onEdit: { isEditingAvatar = true }
             )
+            // The visible photo supplies the zoom snapshot; its scroll-content
+            // counterpart owns input and accessibility.
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
             .sensoryFeedback(.impact(weight: .medium, intensity: 0.8), trigger: avatarMotion.expansionFeedback)
             .sensoryFeedback(.selection, trigger: avatarMotion.collapseFeedback)
             .sensoryFeedback(.impact(weight: .medium, intensity: 0.8), trigger: avatarMotion.viewerFeedback)
@@ -330,6 +334,14 @@ struct SettingsHomeView: View {
             return "有待处理的数据异常"
         }
         return "空间占用、导入导出与备份"
+    }
+
+    private func openAvatar() {
+        if account.avatarImageData == nil {
+            isEditingAvatar = true
+        } else {
+            avatarMotion.tapAvatar()
+        }
     }
 
     @ViewBuilder
