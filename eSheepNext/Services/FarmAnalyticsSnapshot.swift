@@ -1041,7 +1041,7 @@ struct WeightRegressionPoint: Identifiable, Sendable { let x: Double; let y: Dou
 struct WeightCohort: Sendable { let sheepIDs: [UUID]; let latestAverageWeight: Double?; let latestAverageADG: Double?; let weightTrend: [WeightTrendPoint]; let adgTrend: [WeightTrendPoint]; let scatter: [WeightScatterPoint] }
 
 /// 增重分析只允许在明确的对象范围内计算。批次和圈舍可以组合成显式的
-/// 动态交集；不选择圈舍时，批次分析覆盖该批次当前分布的所有圈舍。
+/// 期末名单交集；不选择圈舍时，批次分析覆盖该批次的期间称重。
 enum WeightGainAnalysisScope: Hashable, Sendable {
     case farm
     case batch(UUID)
@@ -1148,7 +1148,12 @@ struct WeightGainAnalysisRow: Identifiable, Sendable, Hashable {
     let sex: SheepSex
     let purpose: String
     let status: SheepStatus
-    let currentPenID: UUID?
+    let analysisEndDate: Date
+    let analysisEndPenID: UUID?
+    let analysisEndPenName: String?
+    let penHistoryStartDate: Date
+    let penHistoryStartPenName: String?
+    let penHistory: [WeightGainTransferEvidence]
     let startDate: Date
     let endDate: Date
     let startWeight: Double
@@ -1220,7 +1225,7 @@ struct WeightGainAnalysisInterval: Identifiable, Sendable, Hashable {
         startPenID: UUID? = nil,
         endPenID: UUID? = nil,
         isCalculable: Bool = true,
-        canBeAttributedToSinglePen: Bool = true,
+        canBeAttributedToSinglePen: Bool? = nil,
         exclusionReason: WeightGainExclusionReason? = nil
     ) {
         self.sheepID = sheepID
@@ -1236,7 +1241,8 @@ struct WeightGainAnalysisInterval: Identifiable, Sendable, Hashable {
         self.startPenID = startPenID
         self.endPenID = endPenID
         self.isCalculable = isCalculable
-        self.canBeAttributedToSinglePen = canBeAttributedToSinglePen
+        self.canBeAttributedToSinglePen = canBeAttributedToSinglePen ??
+            (startPenID != nil && startPenID == endPenID && crossedTransfers.isEmpty)
         self.exclusionReason = exclusionReason
     }
 
@@ -1629,7 +1635,7 @@ enum WeightGainAnalyticsEngine {
 
         let rows = candidates.compactMap { sheep -> WeightGainAnalysisRow? in
             guard let intervals = intervalsBySheep[sheep.id], !intervals.isEmpty else { return nil }
-            return aggregateRow(sheep: sheep, intervals: intervals)
+            return aggregateRow(sheep: sheep, intervals: intervals, filter: filter, snapshot: snapshot, index: index)
         }
         let allScopedSamples = candidates.flatMap { sheep in
             (samplesBySheep[sheep.id] ?? []).filter {
@@ -1747,7 +1753,7 @@ enum WeightGainAnalyticsEngine {
         let removedIDs = Set(index.removalsBySheep.compactMap { sheepID, removals in
             removals.contains { $0.occurredAt <= rangeEndExclusive(filter: filter, snapshot: snapshot) } ? sheepID : nil
         })
-        let trackedIDs = filter.population == .trackedCohort ? cohortMembers(snapshot: snapshot, filter: filter, index: index).map(\.sheepID) : nil
+        let trackedIDs = filter.population == .trackedCohort ? Set(cohortMembers(snapshot: snapshot, filter: filter, index: index).map(\.sheepID)) : nil
         return snapshot.sheep
             .filter { sheep in
                 guard !sheep.isHistoricalArchive,
@@ -1842,14 +1848,17 @@ enum WeightGainAnalyticsEngine {
         let first = calendar.startOfDay(for: min(filter.startDate, filter.endDate))
         let last = calendar.startOfDay(for: max(filter.startDate, filter.endDate))
         let customDate = filter.cohortDate.map { calendar.startOfDay(for: min(max($0, first), last)) }
+        // 普通圈舍分析按结束日的名单跟踪同羊称重，转群不会切断增重。
+        // 显式的在舍绩效分析仍由 .inPen 保留连续居舍口径。
+        let usesEndPenCohort = filter.population == .wholeObject && isPenScoped(filter.scope)
         return WeightGainAnalysisFilter(
             scope: filter.scope,
             mode: filter.mode,
             startDate: first,
             endDate: last,
             sampleScope: filter.sampleScope,
-            population: filter.population,
-            cohortAnchor: filter.cohortAnchor,
+            population: usesEndPenCohort ? .trackedCohort : filter.population,
+            cohortAnchor: usesEndPenCohort ? .analysisEnd : filter.cohortAnchor,
             cohortDate: customDate
         )
     }
@@ -2039,7 +2048,8 @@ enum WeightGainAnalyticsEngine {
                     scope: filter.scope,
                     snapshot: snapshot,
                     population: filter.population,
-                    cohortIDs: cohortIDs
+                    cohortIDs: cohortIDs,
+                    index: index
                 )
                 if continuous {
                     current.append(sample)
@@ -2183,25 +2193,28 @@ enum WeightGainAnalyticsEngine {
         from start: Date,
         to end: Date,
         snapshot: FarmAnalyticsSnapshot,
+        includesStart: Bool = false,
         index: PreparedIndex? = nil
     ) -> [WeightGainTransferEvidence] {
         let index = index ?? PreparedIndex(snapshot: snapshot)
         guard let sheep = index.sheepByID[sheepID] else { return [] }
-        return (index.transfersBySheep[sheepID] ?? [])
-            .filter { $0.occurredAt > start && $0.occurredAt <= end }
-            .sorted(by: transferSort)
-            .map {
-                WeightGainTransferEvidence(
-                    id: $0.id,
+        let transfers = index.transfersBySheep[sheepID] ?? []
+        return transfers.enumerated().compactMap { offset, transfer in
+                guard (transfer.occurredAt > start || (includesStart && transfer.occurredAt == start)),
+                      transfer.occurredAt <= end else { return nil }
+                // 旧转群记录可能没有原舍字段；用完整时间线还原前一圈舍。
+                let fromPenID = transfer.fromPenID ?? (offset > 0 ? transfers[offset - 1].toPenID : sheep.initialPenID)
+                return WeightGainTransferEvidence(
+                    id: transfer.id,
                     sheepID: sheepID,
                     earTag: sheep.earTag,
-                    occurredAt: $0.occurredAt,
-                    recordedAt: $0.recordedAt,
-                    fromPenID: $0.fromPenID,
-                    toPenID: $0.toPenID,
-                    fromPenName: $0.fromPenID.flatMap { index.penNames[$0] },
-                    toPenName: $0.toPenID.flatMap { index.penNames[$0] },
-                    note: $0.note
+                    occurredAt: transfer.occurredAt,
+                    recordedAt: transfer.recordedAt,
+                    fromPenID: fromPenID,
+                    toPenID: transfer.toPenID,
+                    fromPenName: fromPenID.map { index.penNames[$0] ?? "历史圈舍" },
+                    toPenName: transfer.toPenID.map { index.penNames[$0] ?? "历史圈舍" },
+                    note: transfer.note
                 )
             }
     }
@@ -2214,41 +2227,45 @@ enum WeightGainAnalyticsEngine {
         index: PreparedIndex? = nil
     ) -> [WeightGainTransferEvidence] {
         let index = index ?? PreparedIndex(snapshot: snapshot)
-        return sheepIDs.flatMap { index.transfersBySheep[$0] ?? [] }
-            .filter { $0.occurredAt >= startDate && $0.occurredAt <= endDate }
-            .sorted(by: transferSort)
-            .compactMap { transfer in
-                guard let sheep = index.sheepByID[transfer.sheepID] else { return nil }
-                return WeightGainTransferEvidence(
-                    id: transfer.id,
-                    sheepID: transfer.sheepID,
-                    earTag: sheep.earTag,
-                    occurredAt: transfer.occurredAt,
-                    recordedAt: transfer.recordedAt,
-                    fromPenID: transfer.fromPenID,
-                    toPenID: transfer.toPenID,
-                    fromPenName: transfer.fromPenID.flatMap { index.penNames[$0] },
-                    toPenName: transfer.toPenID.flatMap { index.penNames[$0] },
-                    note: transfer.note
-                )
+        return sheepIDs.flatMap {
+                transferEvidence(sheepID: $0, from: startDate, to: endDate,
+                                 snapshot: snapshot, includesStart: true, index: index)
+            }
+            .sorted { lhs, rhs in
+                if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt < rhs.occurredAt }
+                if lhs.recordedAt != rhs.recordedAt { return lhs.recordedAt < rhs.recordedAt }
+                return lhs.id.uuidString < rhs.id.uuidString
             }
     }
 
     private static func aggregateRow(
         sheep: FarmAnalyticsSnapshot.Sheep,
-        intervals: [WeightGainAnalysisInterval]
+        intervals: [WeightGainAnalysisInterval],
+        filter: WeightGainAnalysisFilter,
+        snapshot: FarmAnalyticsSnapshot,
+        index: PreparedIndex
     ) -> WeightGainAnalysisRow {
         let ordered = intervals.sorted { $0.startDate < $1.startDate }
         let totalDays = ordered.reduce(0) { $0 + $1.intervalDays }
         let totalGain = ordered.reduce(0.0) { $0 + $1.totalGainKilograms }
         let gramsPerDay = totalDays > 0 ? totalGain * 1_000 / Double(totalDays) : 0
+        let analysisEnd = rangeEndExclusive(filter: filter, snapshot: snapshot)
+        let analysisEndPenID = index.penID(for: sheep, at: analysisEnd)
+        let historyStart = max(filter.startDate, sheep.enteredAt)
+        let historyStartPenID = index.penID(for: sheep, at: historyStart)
         return WeightGainAnalysisRow(
             sheepID: sheep.id,
             earTag: sheep.earTag,
             sex: sheep.sex,
             purpose: sheep.purpose,
             status: sheep.status,
-            currentPenID: sheep.currentPenID,
+            analysisEndDate: analysisEnd,
+            analysisEndPenID: analysisEndPenID,
+            analysisEndPenName: analysisEndPenID.map { index.penNames[$0] ?? "历史圈舍" },
+            penHistoryStartDate: historyStart,
+            penHistoryStartPenName: historyStartPenID.map { index.penNames[$0] ?? "历史圈舍" },
+            penHistory: transferEvidence(sheepID: sheep.id, from: historyStart, to: analysisEnd,
+                                        snapshot: snapshot, includesStart: true, index: index),
             startDate: ordered.first?.startDate ?? .distantPast,
             endDate: ordered.last?.endDate ?? .distantPast,
             startWeight: ordered.first?.startWeight ?? 0,

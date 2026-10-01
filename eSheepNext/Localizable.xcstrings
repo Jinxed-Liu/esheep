@@ -1,6 +1,198 @@
 {
   "sourceLanguage" : "zh-Hans",
   "strings" : {
+    "期末圈舍：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pen at analysis end: %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "期末圈舍：%@"
+          }
+        }
+      }
+    },
+    "期间转群 %lld 次 · 查看圈舍历史" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld transfers during analysis · View pen history"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "期间转群 %lld 次 · 查看圈舍历史"
+          }
+        }
+      }
+    },
+    "分析结束圈舍" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pen at analysis end"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分析结束圈舍"
+          }
+        }
+      }
+    },
+    "圈舍历史" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pen history"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "圈舍历史"
+          }
+        }
+      }
+    },
+    "起始圈舍" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Initial pen"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "起始圈舍"
+          }
+        }
+      }
+    },
+    "分析期间没有转群记录" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No transfers recorded during analysis"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分析期间没有转群记录"
+          }
+        }
+      }
+    },
+    "整批表现 · 圈舍显示分析结束日归属" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Whole-batch performance · Pens reflect the analysis end date"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "整批表现 · 圈舍显示分析结束日归属"
+          }
+        }
+      }
+    },
+    "圈舍以分析结束日期为准 · 转群前后称重连续配对" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pens reflect the analysis end date · Weights remain paired across transfers"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "圈舍以分析结束日期为准 · 转群前后称重连续配对"
+          }
+        }
+      }
+    },
+    "期末名单与圈舍历史" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "End-date cohort and pen history"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "期末名单与圈舍历史"
+          }
+        }
+      }
+    },
+    "%lld只转群 · 增重连续计算" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld sheep transferred · Weight gain remains continuous"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld只转群 · 增重连续计算"
+          }
+        }
+      }
+    },
+    "转群前后称重配对" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paired weights across transfers"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "转群前后称重配对"
+          }
+        }
+      }
+    },
+    "圈舍显示分析结束日归属" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pens reflect the analysis end date"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "圈舍显示分析结束日归属"
+          }
+        }
+      }
+    },
     "本机占用，包含业务库、照片和接收副本；不是云端下载大小。" : {
       "localizations" : {
         "en" : {

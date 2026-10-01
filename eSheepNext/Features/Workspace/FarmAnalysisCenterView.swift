@@ -277,9 +277,6 @@ private struct WeightGainAnalysisView: View {
     @State private var mode = WeightGainAnalysisMode.period
     @State private var selectedPenIDs: Set<UUID> = []
     @State private var selectedBatchID: UUID?
-    @State private var population = WeightGainAnalysisPopulation.wholeObject
-    @State private var cohortAnchor = WeightGainCohortAnchor.analysisEnd
-    @State private var cohortDate = Calendar.current.startOfDay(for: .now)
     @State private var startDate = Calendar.current.date(byAdding: .day, value: -30, to: Calendar.current.startOfDay(for: .now)) ?? .now
     @State private var endDate = Calendar.current.startOfDay(for: .now)
     @State private var selectionSheet: WeightGainSelectionSheet?
@@ -323,7 +320,7 @@ private struct WeightGainAnalysisView: View {
             let batchName = farmBatches.first(where: { $0.id == selectedBatchID })?.name ?? "请选择批次"
             if !selectedPenIDs.isEmpty {
                 if population == .trackedCohort {
-                    let anchorTitle = cohortAnchor == .analysisEnd ? "期末" : cohortAnchor == .analysisStart ? "期初" : "历史时点"
+                    let anchorTitle = "期末"
                     let count = analytics.result.map { "的 \($0.cohortMembers.count) 只羊" } ?? "名单"
                     object = "\(batchName) · \(anchorTitle)在 \(penNames(selectedPenIDs)) \(count)"
                 } else {
@@ -337,7 +334,7 @@ private struct WeightGainAnalysisView: View {
             if let selectedBatchID,
                let batchName = farmBatches.first(where: { $0.id == selectedBatchID })?.name {
                 if population == .trackedCohort {
-                    let anchorTitle = cohortAnchor == .analysisEnd ? "期末" : cohortAnchor == .analysisStart ? "期初" : "历史时点"
+                    let anchorTitle = "期末"
                     let count = analytics.result.map { "的 \($0.cohortMembers.count) 只羊" } ?? "名单"
                     object = "\(batchName) · \(anchorTitle)在 \(penName) \(count)"
                 } else {
@@ -345,7 +342,7 @@ private struct WeightGainAnalysisView: View {
                 }
             } else {
                 if population == .trackedCohort {
-                    let anchorTitle = cohortAnchor == .analysisEnd ? "期末" : cohortAnchor == .analysisStart ? "期初" : "历史时点"
+                    let anchorTitle = "期末"
                     let count = analytics.result.map { "的 \($0.cohortMembers.count) 只羊" } ?? "名单"
                     object = "\(anchorTitle)在 \(penName) \(count) · 全部批次"
                 } else {
@@ -353,8 +350,12 @@ private struct WeightGainAnalysisView: View {
                 }
             }
         }
-        let populationTitle = population.rawValue
+        let populationTitle = population == .trackedCohort ? "期末圈舍羊群" : population.rawValue
         return "\(object) · \(populationTitle) · \(weightDate(startDate))–\(weightDate(endDate))"
+    }
+
+    private var population: WeightGainAnalysisPopulation {
+        tab != .overview && !selectedPenIDs.isEmpty ? .trackedCohort : .wholeObject
     }
 
     private func penNames(_ ids: Set<UUID>) -> String {
@@ -422,18 +423,11 @@ private struct WeightGainAnalysisView: View {
         .onChange(of: mode) { _, _ in calculate() }
         .onChange(of: startDate) { _, _ in calculate() }
         .onChange(of: endDate) { _, _ in calculate() }
-        .onChange(of: selectedPenIDs) { _, _ in
-            if selectedPenIDs.isEmpty { population = .wholeObject }
-            else if population == .wholeObject { population = .trackedCohort }
-            calculate()
-        }
+        .onChange(of: selectedPenIDs) { _, _ in calculate() }
         .onChange(of: selectedBatchID) { _, _ in
             selectedPenIDs = selectedPenIDs.intersection(Set(selectablePens.map(\.id)))
             calculate()
         }
-        .onChange(of: population) { _, _ in calculate() }
-        .onChange(of: cohortAnchor) { _, _ in calculate() }
-        .onChange(of: cohortDate) { _, _ in calculate() }
     }
 
     private var filterCard: some View {
@@ -492,11 +486,7 @@ private struct WeightGainAnalysisView: View {
                     ) {
                         selectionSheet = .pens
                     }
-                    if !selectedPenIDs.isEmpty {
-                        populationPicker
-                        if population == .trackedCohort { cohortAnchorPicker }
-                    }
-                    Text(selectedPenIDs.isEmpty ? "整批表现" : population == .trackedCohort ? "固定名单跟踪 · 调群连续保留" : "真实在舍区间")
+                    Text(selectedPenIDs.isEmpty ? "整批表现 · 圈舍显示分析结束日归属" : "圈舍以分析结束日期为准 · 转群前后称重连续配对")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if tab == .pen {
@@ -518,9 +508,7 @@ private struct WeightGainAnalysisView: View {
                     ) {
                         selectionSheet = .batch
                     }
-                    populationPicker
-                    if population == .trackedCohort { cohortAnchorPicker }
-                    Text(selectedBatchID == nil ? "按真实在舍阶段计算 · 跨舍区间单列" : "批次与圈舍取真实交集")
+                    Text("圈舍以分析结束日期为准 · 转群前后称重连续配对")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -591,30 +579,6 @@ private struct WeightGainAnalysisView: View {
         .disabled(isDisabled)
     }
 
-    private var populationPicker: some View {
-        Picker("分析方式", selection: $population) {
-            Text(WeightGainAnalysisPopulation.trackedCohort.rawValue).tag(WeightGainAnalysisPopulation.trackedCohort)
-            Text(WeightGainAnalysisPopulation.inPen.rawValue).tag(WeightGainAnalysisPopulation.inPen)
-        }
-        .pickerStyle(.segmented)
-    }
-
-    @ViewBuilder
-    private var cohortAnchorPicker: some View {
-        Picker("名单基准", selection: $cohortAnchor) {
-            ForEach(WeightGainCohortAnchor.allCases, id: \.self) { anchor in
-                Text(anchor.rawValue).tag(anchor)
-            }
-        }
-        .pickerStyle(.menu)
-        if cohortAnchor == .custom {
-            DatePicker("固定名单时点", selection: $cohortDate, in: startDate...endDate, displayedComponents: .date)
-        }
-        Text("基准时点确定名单，调群不改变名单。")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-    }
-
     @ViewBuilder
     private var analysisContent: some View {
         if tab == .overview {
@@ -645,7 +609,6 @@ private struct WeightGainAnalysisView: View {
                             Button {
                                 selectedBatchID = batchID
                                 selectedPenIDs.removeAll()
-                                population = .wholeObject
                                 tab = .batch
                             } label: {
                                 groupRow(group)
@@ -732,7 +695,7 @@ private struct WeightGainAnalysisView: View {
 
         if result.population == .trackedCohort {
             AnalysisCard(
-                title: "固定名单与调群",
+                title: "期末名单与圈舍历史",
                 caption: "\(result.cohortMembers.count)只名单 · \(result.transferSheepCount)只调群"
             ) {
                 if result.cohortMembers.isEmpty {
@@ -750,7 +713,7 @@ private struct WeightGainAnalysisView: View {
 
                 if let anchorDate = result.cohortAnchorDate {
                     Label(
-                        "基准 \(anchorDate.formatted(date: .abbreviated, time: .shortened)) · \(result.analysisTimeZoneIdentifier)",
+                        "基准 \(weightGainEvidenceDate(anchorDate, timeZoneIdentifier: result.analysisTimeZoneIdentifier)) · \(result.analysisTimeZoneIdentifier)",
                         systemImage: "calendar"
                     )
                     .font(.caption)
@@ -774,12 +737,12 @@ private struct WeightGainAnalysisView: View {
                     }
                 }
             }
-        } else if result.crossPenIntervalCount > 0 {
-            AnalysisCard(title: "跨舍未归属区间", caption: "不估算分摊") {
+        } else if !result.transferEvents.isEmpty {
+            AnalysisCard(title: "圈舍历史", caption: "\(result.transferSheepCount)只转群 · 增重连续计算") {
                 AnalysisRow(
-                    title: Text("保留在羊只历史"),
-                    detail: Text("保留整体证据 · 不计单舍"),
-                    trailing: Text("\(result.unassignedIntervals.count)段")
+                    title: Text("转群前后称重配对"),
+                    detail: Text("圈舍显示分析结束日归属"),
+                    trailing: Text("\(result.crossPenIntervalCount)段")
                 )
                 if !result.unassignedIntervals.isEmpty {
                     NavigationLink {
@@ -980,9 +943,8 @@ private struct WeightGainAnalysisView: View {
                 mode: mode,
                 startDate: normalizedStart,
                 endDate: normalizedEnd,
-                population: tab == .overview ? .wholeObject : population,
-                cohortAnchor: cohortAnchor,
-                cohortDate: cohortDate
+                population: population,
+                cohortAnchor: .analysisEnd
             ),
             batches: farmBatches
         )

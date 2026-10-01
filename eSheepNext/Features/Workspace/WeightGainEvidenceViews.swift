@@ -1,6 +1,12 @@
 import Charts
 import SwiftUI
 
+func weightGainEvidenceDate(_ date: Date, timeZoneIdentifier: String) -> String {
+    var style = Date.FormatStyle(date: .numeric, time: .shortened)
+    style.timeZone = TimeZone(identifier: timeZoneIdentifier) ?? .current
+    return date.formatted(style)
+}
+
 struct WeightGainEvidenceList: View {
     let account: AccountProfile
     let farm: FarmRecord
@@ -36,13 +42,20 @@ struct WeightGainEvidenceList: View {
                     ForEach(rows) { row in
                         NavigationLink {
                             WeightGainIndividualEvidence(account: account, farm: farm, row: row,
-                                intervals: result.intervals.filter { $0.sheepID == row.sheepID })
+                                intervals: result.intervals.filter { $0.sheepID == row.sheepID },
+                                timeZoneIdentifier: result.analysisTimeZoneIdentifier)
                         } label: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(row.earTag)
+                                    Text("期末圈舍：\(row.analysisEndPenName ?? "未分舍")")
+                                        .font(.caption).foregroundStyle(.secondary)
                                     Text("\(row.intervalCount) 个区间 · \(row.intervalDays) 个观察日")
                                         .font(.caption).foregroundStyle(.secondary)
+                                    if !row.penHistory.isEmpty {
+                                        Text("期间转群 \(row.penHistory.count) 次 · 查看圈舍历史")
+                                            .font(.caption).foregroundStyle(.orange)
+                                    }
                                 }
                                 Spacer()
                                 Text(row.gramsPerDay, format: .number.precision(.fractionLength(1)))
@@ -64,15 +77,35 @@ private struct WeightGainIndividualEvidence: View {
     let farm: FarmRecord
     let row: WeightGainAnalysisRow
     let intervals: [WeightGainAnalysisInterval]
+    let timeZoneIdentifier: String
 
     var body: some View {
         List {
             Section("本次分析") {
+                LabeledContent("分析结束圈舍", value: row.analysisEndPenName ?? "未分舍")
+                Text(verbatim: weightGainEvidenceDate(row.analysisEndDate, timeZoneIdentifier: timeZoneIdentifier))
+                    .font(.caption).foregroundStyle(.secondary)
                 LabeledContent("日增重", value: "\(row.gramsPerDay.formatted(.number.precision(.fractionLength(1)))) g/天")
                 LabeledContent("有效区间总增重", value: "\(row.totalGainKilograms.formatted(.number.precision(.fractionLength(2)))) kg")
                 LabeledContent("有效观察天数", value: "\(row.intervalDays) 天")
                 Text("日增重 = 总增重 ÷ 观察天数")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("圈舍历史") {
+                LabeledContent("起始圈舍", value: row.penHistoryStartPenName ?? "未分舍")
+                Text(verbatim: weightGainEvidenceDate(row.penHistoryStartDate, timeZoneIdentifier: timeZoneIdentifier))
+                    .font(.caption).foregroundStyle(.secondary)
+                if row.penHistory.isEmpty {
+                    Text("分析期间没有转群记录")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(row.penHistory) { event in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(verbatim: "\(event.fromPenName ?? "未分舍") → \(event.toPenName ?? "未分舍")")
+                        Text(verbatim: weightGainEvidenceDate(event.occurredAt, timeZoneIdentifier: timeZoneIdentifier))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             ForEach(intervals) { interval in
                 Section("\(interval.intervalDays) 天 · \(interval.gramsPerDay.formatted(.number.precision(.fractionLength(1)))) g/天") {
@@ -85,7 +118,7 @@ private struct WeightGainIndividualEvidence: View {
                             Label("期间调群 · 增重连续", systemImage: "arrow.left.arrow.right")
                                 .font(.caption.weight(.semibold))
                             ForEach(interval.crossedTransfers) { event in
-                                Text("\(event.occurredAt.formatted(date: .numeric, time: .shortened)) · \(event.fromPenName ?? "未分配") → \(event.toPenName ?? "未分配")")
+                                Text(verbatim: "\(weightGainEvidenceDate(event.occurredAt, timeZoneIdentifier: timeZoneIdentifier)) · \(event.fromPenName ?? "未分舍") → \(event.toPenName ?? "未分舍")")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -106,9 +139,9 @@ private struct WeightGainIndividualEvidence: View {
     private func sampleRow(_ title: String, sample: SheepWeightSample) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text("\(title)：\(sample.kilogramsText) kg · \(sample.source.displayName)")
-            Text(sample.occurredAt.formatted(date: .numeric, time: .shortened))
+            Text(verbatim: weightGainEvidenceDate(sample.occurredAt, timeZoneIdentifier: timeZoneIdentifier))
             if sample.recordedAt != .distantPast {
-                Text("录入：\(sample.recordedAt.formatted(date: .numeric, time: .shortened))")
+                Text("录入：\(weightGainEvidenceDate(sample.recordedAt, timeZoneIdentifier: timeZoneIdentifier))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -142,7 +175,7 @@ struct WeightGainCohortEvidenceList: View {
                             Text(member.anchorPenName ?? "未分舍")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        Text("基准：\(member.anchorDate.formatted(date: .numeric, time: .shortened))")
+                        Text("基准：\(weightGainEvidenceDate(member.anchorDate, timeZoneIdentifier: result.analysisTimeZoneIdentifier))")
                             .font(.caption).foregroundStyle(.secondary)
                         DisclosureGroup("查看历史身份标识") {
                             Text("羊只 ID：\(member.sheepID.uuidString)")
@@ -177,8 +210,8 @@ struct WeightGainTransferEvidenceList: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("\(event.earTag) · \(event.fromPenName ?? "未分配") → \(event.toPenName ?? "未分配")")
                             .font(.headline)
-                        Text("发生：\(event.occurredAt.formatted(date: .numeric, time: .shortened))")
-                        Text("录入：\(event.recordedAt.formatted(date: .numeric, time: .shortened))")
+                        Text("发生：\(weightGainEvidenceDate(event.occurredAt, timeZoneIdentifier: result.analysisTimeZoneIdentifier))")
+                        Text("录入：\(weightGainEvidenceDate(event.recordedAt, timeZoneIdentifier: result.analysisTimeZoneIdentifier))")
                             .font(.caption).foregroundStyle(.secondary)
                         if !event.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             Text("备注：\(event.note)").font(.caption).foregroundStyle(.secondary)

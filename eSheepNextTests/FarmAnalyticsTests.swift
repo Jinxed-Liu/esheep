@@ -511,7 +511,7 @@ final class FarmAnalyticsTests: XCTestCase {
 
         let result = WeightGainAnalyticsEngine.calculate(
             snapshot: snapshot,
-            filter: .init(scope: .pen(penA), startDate: start, endDate: end)
+            filter: .init(scope: .pen(penA), startDate: start, endDate: end, population: .inPen)
         )
 
         XCTAssertEqual(result.objectCount, 1)
@@ -575,14 +575,14 @@ final class FarmAnalyticsTests: XCTestCase {
                 .init(id: UUID(), sheepID: sheep, toPenID: pen, occurredAt: days[3], recordedAt: days[3])
             ])
         let result = WeightGainAnalyticsEngine.calculate(snapshot: snapshot,
-            filter: .init(scope: .pen(pen), startDate: start, endDate: days[5]))
+            filter: .init(scope: .pen(pen), startDate: start, endDate: days[5], population: .inPen))
         let row = try XCTUnwrap(result.rows.first)
         XCTAssertEqual(row.intervalCount, 2)
         XCTAssertEqual(row.intervalDays, 2)
         XCTAssertEqual(row.totalGainKilograms, 3, accuracy: 0.001)
         XCTAssertEqual(row.gramsPerDay, 1500, accuracy: 0.001)
         let paired = WeightGainAnalyticsEngine.calculate(snapshot: snapshot,
-            filter: .init(scope: .pen(pen), mode: .paired, startDate: start, endDate: days[5]))
+            filter: .init(scope: .pen(pen), mode: .paired, startDate: start, endDate: days[5], population: .inPen))
         XCTAssertEqual(paired.calculableCount, 0)
     }
 
@@ -631,7 +631,7 @@ final class FarmAnalyticsTests: XCTestCase {
 
         let penAResult = WeightGainAnalyticsEngine.calculate(
             snapshot: snapshot,
-            filter: .init(scope: .batchAndPen(batchID: batch, penID: penA), startDate: start, endDate: end)
+            filter: .init(scope: .batchAndPen(batchID: batch, penID: penA), startDate: start, endDate: end, population: .inPen)
         )
         XCTAssertEqual(penAResult.objectCount, 1)
         XCTAssertEqual(penAResult.rows.first?.earTag, "M-001")
@@ -640,7 +640,7 @@ final class FarmAnalyticsTests: XCTestCase {
 
         let penBResult = WeightGainAnalyticsEngine.calculate(
             snapshot: snapshot,
-            filter: .init(scope: .batchAndPen(batchID: batch, penID: penB), startDate: start, endDate: end)
+            filter: .init(scope: .batchAndPen(batchID: batch, penID: penB), startDate: start, endDate: end, population: .inPen)
         )
         XCTAssertEqual(penBResult.objectCount, 2)
         XCTAssertEqual(Set(penBResult.rows.map(\.earTag)), ["S-001"])
@@ -839,6 +839,92 @@ final class FarmAnalyticsTests: XCTestCase {
             filter: .init(scope: .pen(penA), startDate: start, endDate: end, population: .inPen))
         XCTAssertEqual(result.calculableCount, 0)
         XCTAssertEqual(try? XCTUnwrap(result.exclusions.first?.reason), .conflictingEventTime)
+    }
+
+    func testWeightGainDefaultPenScopesRetainCrossPenGainAndFullHistoryAtAnalysisEnd() throws {
+        let sheep = UUID(), batch = UUID(), penA = UUID(), penB = UUID(), penC = UUID()
+        let start = makeDate(year: 2026, month: 9, day: 1)
+        let firstTransfer = makeDate(year: 2026, month: 9, day: 5)
+        let lastWeight = makeDate(year: 2026, month: 9, day: 11).addingTimeInterval(8 * 3600)
+        let secondTransfer = makeDate(year: 2026, month: 9, day: 11).addingTimeInterval(15 * 3600)
+        let end = makeDate(year: 2026, month: 9, day: 12)
+        let futureTransfer = makeDate(year: 2026, month: 9, day: 13)
+        let snapshot = FarmAnalyticsSnapshot(farmID: UUID(),
+            sheep: [.init(id: sheep, earTag: "MOVED", breed: "湖羊", purpose: "育肥羊", sex: .ram, status: .active,
+                          initialPenID: penA, currentPenID: penA, birthAt: nil, enteredAt: start, removedAt: nil)],
+            pens: [.init(id: penA, name: "大棚九舍"), .init(id: penB, name: "大棚十二舍"), .init(id: penC, name: "育肥三舍")],
+            weights: [.init(id: UUID(), sheepID: sheep, kilograms: 30, occurredAt: start),
+                      .init(id: UUID(), sheepID: sheep, kilograms: 36, occurredAt: lastWeight)],
+            weanings: [], lambings: [], removals: [],
+            transfers: [
+                .init(id: UUID(), sheepID: sheep, toPenID: penB, occurredAt: firstTransfer, recordedAt: futureTransfer),
+                .init(id: UUID(), sheepID: sheep, fromPenID: penB, toPenID: penC, occurredAt: secondTransfer, recordedAt: futureTransfer),
+                .init(id: UUID(), sheepID: sheep, fromPenID: penC, toPenID: penA, occurredAt: futureTransfer, recordedAt: futureTransfer)
+            ], batchMemberships: [.init(batchID: batch, sheepID: sheep, joinedAt: start, leftAt: nil)], feeds: [],
+            timeZoneIdentifier: TimeZone.current.identifier)
+        let scopes: [WeightGainAnalysisScope] = [.pen(penC), .pens([penC]), .batchAndPen(batchID: batch, penID: penC), .batchAndPens(batchID: batch, penIDs: [penC])]
+        for scope in scopes {
+            for mode in WeightGainAnalysisMode.allCases {
+                let result = WeightGainAnalyticsEngine.calculate(snapshot: snapshot,
+                    filter: .init(scope: scope, mode: mode, startDate: start, endDate: end))
+                let row = try XCTUnwrap(result.rows.first)
+                XCTAssertEqual(result.calculableCount, 1)
+                XCTAssertEqual(row.gramsPerDay, 600, accuracy: 0.001)
+                XCTAssertEqual(row.analysisEndPenID, penC, "不能读当前圈舍，也不能用末次称重的圈舍代替分析结束日")
+                XCTAssertEqual(row.analysisEndPenName, "育肥三舍")
+                XCTAssertEqual(row.penHistory.map(\.occurredAt), [firstTransfer, secondTransfer])
+                XCTAssertEqual(row.penHistory.first?.fromPenName, "大棚九舍", "旧记录缺少原舍字段时从完整时间线还原")
+                XCTAssertEqual(row.penHistory.last?.fromPenName, "大棚十二舍")
+                XCTAssertEqual(row.penHistoryStartPenName, "大棚九舍")
+                XCTAssertEqual(result.intervals.first?.crossedTransfers.count, 1)
+                XCTAssertEqual(result.intervals.first?.canBeAttributedToSinglePen, false)
+                let report = result.csvReport(scopeName: "期末圈舍")
+                XCTAssertTrue(report.contains("期末圈舍"))
+                XCTAssertTrue(report.contains("转群日期"))
+                XCTAssertTrue(report.contains("大棚九舍 → 大棚十二舍"))
+                XCTAssertTrue(report.contains("大棚十二舍 → 育肥三舍"))
+            }
+        }
+        let oldPen = WeightGainAnalyticsEngine.calculate(snapshot: snapshot,
+            filter: .init(scope: .pen(penA), startDate: start, endDate: end))
+        XCTAssertEqual(oldPen.objectCount, 0, "期末已转出的羊不应重复计入原舍名单")
+    }
+
+    func testWeightGainEndDayTransferAfterLastWeightIsIncludedButNextDayTransferIsNot() throws {
+        let sheep = UUID(), penA = UUID(), penB = UUID()
+        let start = makeDate(year: 2026, month: 9, day: 1)
+        let end = makeDate(year: 2026, month: 9, day: 10)
+        let lastWeight = end.addingTimeInterval(8 * 3600)
+        let afternoon = end.addingTimeInterval(15 * 3600)
+        let nextDay = end.addingTimeInterval(86400)
+        let snapshot = gainFixture(ids: [sheep], start: start, pen: penA,
+            weights: [(sheep, 30, start), (sheep, 36, lastWeight)],
+            transfers: [.init(id: UUID(), sheepID: sheep, fromPenID: penA, toPenID: penB, occurredAt: afternoon, recordedAt: nextDay),
+                        .init(id: UUID(), sheepID: sheep, fromPenID: penB, toPenID: penA, occurredAt: nextDay, recordedAt: nextDay)])
+        let result = WeightGainAnalyticsEngine.calculate(snapshot: snapshot, filter: .init(scope: .pen(penB), startDate: start, endDate: end))
+        let row = try XCTUnwrap(result.rows.first)
+        XCTAssertEqual(row.analysisEndPenID, penB)
+        XCTAssertEqual(row.endDate, lastWeight)
+        XCTAssertEqual(row.penHistory.map(\.occurredAt), [afternoon])
+        XCTAssertEqual(row.gramsPerDay, 6000.0 / 9, accuracy: 0.001)
+        XCTAssertEqual(result.intervals.first?.crossedTransfers.count, 0)
+    }
+
+    func testWeightGainFarmRowsPreserveUnassignedTransferAndNegativeGain() throws {
+        let sheep = UUID(), pen = UUID()
+        let start = makeDate(year: 2026, month: 9, day: 1)
+        let transfer = makeDate(year: 2026, month: 9, day: 2)
+        let end = makeDate(year: 2026, month: 9, day: 3)
+        let snapshot = gainFixture(ids: [sheep], start: start, pen: pen,
+            weights: [(sheep, 30, start), (sheep, 28, end)],
+            transfers: [.init(id: UUID(), sheepID: sheep, fromPenID: pen, toPenID: nil, occurredAt: transfer, recordedAt: transfer)])
+        let result = WeightGainAnalyticsEngine.calculate(snapshot: snapshot, filter: .init(startDate: start, endDate: end))
+        let row = try XCTUnwrap(result.rows.first)
+        XCTAssertNil(row.analysisEndPenID)
+        XCTAssertEqual(row.penHistory.first?.fromPenID, pen)
+        XCTAssertNil(row.penHistory.first?.toPenID)
+        XCTAssertEqual(row.gramsPerDay, -1000, accuracy: 0.001)
+        XCTAssertTrue(row.isDown)
     }
 
     private func gainFixture(
