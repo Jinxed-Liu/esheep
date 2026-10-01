@@ -32,7 +32,7 @@ def find_test_plan(environment):
 
 
 def main():
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[1]
     plan = find_test_plan(os.environ)
     devices = json.loads(subprocess.check_output(['xcrun','simctl','list','devices','available','--json']))
     candidates = [(runtime, d) for runtime, rows in devices['devices'].items() if 'iOS-' in runtime
