@@ -313,15 +313,15 @@ private final class AccountAvatarZoomContainer: UIView,
         accessibilityCustomActions = [
             UIAccessibilityCustomAction(
                 name: String(localized: "放大头像"),
-                target: self, selector: #selector(accessibilityZoomIn)
+                target: self, selector: #selector(handleAvatarZoomIn)
             ),
             UIAccessibilityCustomAction(
                 name: String(localized: "缩小头像"),
-                target: self, selector: #selector(accessibilityZoomOut)
+                target: self, selector: #selector(handleAvatarZoomOut)
             ),
             UIAccessibilityCustomAction(
                 name: String(localized: "还原头像大小"),
-                target: self, selector: #selector(accessibilityResetZoom)
+                target: self, selector: #selector(handleAvatarResetZoom)
             ),
         ]
         updateAccessibilityValue()
@@ -436,7 +436,7 @@ private final class AccountAvatarZoomContainer: UIView,
         )
     }
 
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard !isDismissing else { return false }
         if gestureRecognizer === dismissPan {
             let velocity = dismissPan.velocity(in: self)
@@ -566,15 +566,15 @@ private final class AccountAvatarZoomContainer: UIView,
         return true
     }
 
-    @objc private func accessibilityZoomIn() -> Bool {
+    @objc private func handleAvatarZoomIn() -> Bool {
         changeZoom(by: 0.5)
     }
 
-    @objc private func accessibilityZoomOut() -> Bool {
+    @objc private func handleAvatarZoomOut() -> Bool {
         changeZoom(by: -0.5)
     }
 
-    @objc private func accessibilityResetZoom() -> Bool {
+    @objc private func handleAvatarResetZoom() -> Bool {
         guard !isDismissing else { return false }
         resetDismissal(animated: false)
         scrollView.setZoomScale(1, animated: !reduceMotion)
