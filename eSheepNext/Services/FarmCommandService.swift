@@ -1415,21 +1415,22 @@ final class FarmCommandService {
             previousUndoManager = context.undoManager
             previousAutosaveEnabled = context.autosaveEnabled
             context.autosaveEnabled = false
-            undoManager.groupsByEvent = false
-            undoManager.beginUndoGrouping()
+            // SwiftData manages event groups, including during fetches.
+            // Explicit groups can be closed by a fetch before cleanup runs.
             context.undoManager = undoManager
         }
 
         func finish(committed: Bool) {
             context.processPendingChanges()
-            undoManager.endUndoGrouping()
             if !committed {
                 // Undo restores the registered model references as well as
                 // their pending fields. Rollback alone can leave them stale.
                 // It also clears the undo stack, so it must run after undo.
-                if undoManager.canUndo { undoManager.undo() }
-                // Cleanup must not register new actions outside the group.
-                context.undoManager = nil
+                while undoManager.canUndo { undoManager.undo() }
+            }
+            // Detach before discarding the private history or rolling back.
+            context.undoManager = nil
+            if !committed {
                 context.processPendingChanges()
                 context.rollback()
             }
