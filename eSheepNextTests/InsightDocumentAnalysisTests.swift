@@ -91,18 +91,19 @@ final class InsightDocumentAnalysisTests: XCTestCase {
     }
 
     func testScanPDFIsRecoverableErrorAndMixedPDFReportsMissingPage() throws {
-        let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 300, height: 300))
-        let scan = renderer.pdfData { $0.beginPage() }
+        let bounds = CGRect(x: 0, y: 0, width: 300, height: 300)
+        let scan = UIGraphicsPDFRenderer(bounds: bounds).pdfData { $0.beginPage() }
         XCTAssertThrowsError(try InsightDocumentAnalysis.parse(data: scan, fileName: "scan.pdf")) { error in
             guard let documentError = error as? InsightDocumentError,
                   case .noReadableContent(let reason) = documentError else { return XCTFail("Expected OCR recovery error") }
             XCTAssertTrue(reason.contains("OCR"))
         }
-        let mixed = renderer.pdfData { context in
+        let mixed = UIGraphicsPDFRenderer(bounds: bounds).pdfData { context in
             context.beginPage()
             ("Actual page one fact" as NSString).draw(at: CGPoint(x: 20, y: 20), withAttributes: [.font: UIFont.systemFont(ofSize: 16)])
             context.beginPage()
         }
+        XCTAssertFalse(mixed.isEmpty)
         let document = try InsightDocumentAnalysis.parse(data: mixed, fileName: "mixed.pdf")
         XCTAssertEqual(document.sections.count, 2)
         XCTAssertEqual(document.sections.first?.blocks.first?.citation, "mixed.pdf，第 1 页")
