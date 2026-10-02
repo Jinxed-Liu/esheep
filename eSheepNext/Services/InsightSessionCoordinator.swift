@@ -13,6 +13,9 @@ final class InsightSessionCoordinator {
     @ObservationIgnored private var loadedScopes = Set<InsightSessionScope>()
     @ObservationIgnored private var connectedContexts: [ObjectIdentifier: ObjectIdentifier] = [:]
     @ObservationIgnored private var accountCleanupTasks: [UUID: (id: UUID, task: Task<Void, Error>)] = [:]
+#if DEBUG
+    @ObservationIgnored private var designAcceptanceClients: [InsightSessionScope: any MiMoResponding] = [:]
+#endif
     private(set) var deletedConversations = Set<String>()
 
     init(maximumConcurrentRequests: Int = 2) {
@@ -24,11 +27,33 @@ final class InsightSessionCoordinator {
         let key = controllerKey(scope: scope, conversationID: conversationID,
             draftID: draftID ?? draft(scope: scope, conversationID: nil).draftID)
         if let existing = controllers[key] { return existing }
+#if DEBUG
+        let client: any MiMoResponding = designAcceptanceClients[sessionScope(scope)] ?? MiMoClient.shared
+        let created = InsightConversationController(account: account, farm: farm, client: client)
+#else
         let created = InsightConversationController(account: account, farm: farm)
+#endif
         controllers[key] = created
         controllerScopes[ObjectIdentifier(created)] = sessionScope(scope)
         return created
     }
+
+#if DEBUG
+    /// Sends through the real controller using an offline responder only for
+    /// the explicitly launched, synthetic acceptance account and farm.
+    func configureDesignAcceptanceClient(_ client: any MiMoResponding, account: AccountProfile, farm: FarmRecord) throws {
+        let arguments = ProcessInfo.processInfo.arguments
+        let scope = InsightSessionScope(accountID: account.effectiveAccountID, farmID: farm.id)
+        guard arguments.contains("--design-acceptance"),
+              arguments.contains("--design-insight-offline-send"),
+              account.appleSubjectHash == AppleIdentityHash.value(for: "design-acceptance-local"),
+              account.serverAccountID == nil, farm.ownerAccountID == account.id,
+              !controllerScopes.values.contains(scope) else {
+            throw InsightSecurityError.accountMismatch
+        }
+        designAcceptanceClients[scope] = client
+    }
+#endif
 
     func connect(_ controller: InsightConversationController, to context: ModelContext, preferredConversationID: UUID? = nil) async {
         let controllerID = ObjectIdentifier(controller)

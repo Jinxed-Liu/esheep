@@ -130,7 +130,10 @@ struct FarmInsightConversationListView: View, Equatable {
                 if let draftSaveError {
                     Text(draftSaveError).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16)
                 }
-                if !showSearch { listComposer }
+                if !showSearch {
+                    availabilityBanner
+                    listComposer
+                }
             }
         }
         .navigationDestination(item: $destination) { route in
@@ -176,7 +179,9 @@ struct FarmInsightConversationListView: View, Equatable {
             text: $draft.text, isFocused: $composerFocused,
             audioRecorder: composerAudioRecorder, pendingAudio: nil, isPlayingAudio: false,
             isGenerating: controller.isGenerating, isSubmitting: isSubmitting,
-            isEnabled: isReady && !isSubmitting, isListEntry: true, hasAttachments: hasDraftAttachments,
+            isEnabled: isReady && !isSubmitting,
+            isAudioEnabled: controller.canUseAssistant && coordinator.allowsWork(scope: scope),
+            isListEntry: true, hasAttachments: hasDraftAttachments,
             attachmentsReady: draft.documents.allSatisfy(\.isReadyToSend),
             modeTitle: mode == .conversation ? nil : mode.title,
             isPlanSelected: mode == .plan, isGoalSelected: mode == .goal,
@@ -236,6 +241,43 @@ struct FarmInsightConversationListView: View, Equatable {
         .popover(isPresented: $isContextUsagePresented) {
             InsightContextUsageDetail(usage: draftController.contextWindowUsage).presentationCompactAdaptation(.popover)
         }
+    }
+
+    @ViewBuilder
+    private var availabilityBanner: some View {
+        switch draftController.availability {
+        case .loading:
+            HStack(spacing: 7) {
+                ProgressView()
+                Text("正在检查 AI 助手配置")
+                Spacer(minLength: 8)
+                Button("AI 设置", action: openAssistantSettings)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("insight.availability.settings")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 24)
+        case .ready:
+            EmptyView()
+        case .missingCredential:
+            InsightAvailabilityNotice(
+                title: "配置 MiMo API Key",
+                detail: "请在 AI 助手设置中连接服务后发送。eSheep 不内置公共 Key。",
+                action: openAssistantSettings
+            )
+        case .unavailable(let message):
+            InsightAvailabilityNotice(
+                title: "AI 助手暂不可用",
+                detail: message,
+                action: openAssistantSettings
+            )
+        }
+    }
+
+    private func openAssistantSettings() {
+        composerFocused = false
+        showSettings = true
     }
 
     private var isReady: Bool { if case .ready = draftController.availability { true } else { false } }

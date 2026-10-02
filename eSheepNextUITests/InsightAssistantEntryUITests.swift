@@ -2,6 +2,75 @@ import XCTest
 
 final class InsightAssistantEntryUITests: XCTestCase {
     @MainActor
+    func testListComposerUsesReturnForNewlineAndSendPersistsConversation() {
+        continueAfterFailure = false
+        let firstLine = "Composer \(UUID().uuidString.prefix(8))"
+        let message = firstLine + "\nSecond line"
+        let response = "离线发送验收：已收到两行输入。"
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "--design-acceptance", "--design-insight-ready", "--design-insight-offline-send",
+            "--design-insight-expected-message", message,
+            "--design-role", "administrator",
+            "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+        ]
+        app.launch()
+        openAssistantEntry(in: app)
+        assertConversationList(in: app, screenshotName: "composer-empty-before-send")
+
+        let composer = composerField(in: app)
+        let emptyValue = composer.value as? String ?? ""
+        XCTAssertTrue(emptyValue.isEmpty || emptyValue == "信息", "The new draft was not empty.")
+        composer.tap()
+        composer.typeText(firstLine)
+        let returnKey = app.keyboards.buttons.matching(
+            NSPredicate(format: "label IN %@", ["Return", "return", "换行", "回车"])
+        ).firstMatch
+        XCTAssertTrue(returnKey.waitForExistence(timeout: 5), "The multiline editor has no native Return key.")
+        returnKey.tap()
+        XCTAssertEqual(composer.value as? String, firstLine + "\n", "Return must insert a newline into the draft.")
+        XCTAssertFalse(app.staticTexts[response].exists, "Return unexpectedly submitted the draft.")
+        composer.typeText("Second line")
+        XCTAssertEqual(composer.value as? String, message)
+
+        let send = app.buttons["insight.composer.send"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: send)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
+        XCTAssertTrue(send.isHittable, "The dedicated send button is covered or unreachable.")
+        XCTAssertEqual(send.label, "发送")
+        let microphone = app.buttons["insight.audio.record"]
+        XCTAssertTrue(microphone.isEnabled, "Local recording is incorrectly disabled.")
+        XCTAssertTrue(microphone.isHittable, "The recording button is not reachable.")
+        attachScreenshot(of: app, named: "composer-typed-ready-to-send")
+        send.tap()
+
+        XCTAssertTrue(app.staticTexts[message].waitForExistence(timeout: 20), "The send button did not create the user message.")
+        XCTAssertTrue(app.staticTexts[response].waitForExistence(timeout: 30), "The real controller did not complete the offline model response.")
+        let cleared = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", emptyValue), object: composerField(in: app)
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 10), .completed, "A sent draft remained in the composer.")
+        XCTAssertFalse(app.buttons["insight.composer.stop"].exists, "The completed response still appears to be generating.")
+        attachScreenshot(of: app, named: "composer-after-send")
+
+        // Re-launch the process so neither cached controllers nor an in-memory
+        // view can stand in for saved conversation and message records.
+        app.terminate()
+        app.launch()
+        openAssistantEntry(in: app)
+        XCTAssertEqual(composerField(in: app).value as? String ?? "", emptyValue, "The consumed list draft returned after relaunch.")
+        let savedConversation = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", firstLine)
+        ).firstMatch
+        XCTAssertTrue(savedConversation.waitForExistence(timeout: 15), "The sent conversation was not saved in history.")
+        savedConversation.tap()
+        XCTAssertTrue(app.staticTexts[message].waitForExistence(timeout: 15), "The persisted user message lost its newline or text.")
+        XCTAssertTrue(app.staticTexts[response].exists, "The completed assistant response was not persisted.")
+        XCTAssertEqual(app.state, .runningForeground)
+        attachScreenshot(of: app, named: "composer-persisted-conversation-after-relaunch")
+    }
+
+    @MainActor
     func testConfiguredAssistantOpensHistoryAndNewChatComposer() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -96,6 +165,49 @@ final class InsightAssistantEntryUITests: XCTestCase {
 
         assistantEntry.tap()
         assertConversationList(in: app, screenshotName: "assistant-reentry")
+
+        // Recording is local. It must remain actionable before model service
+        // setup and route into the real system permission workflow.
+        XCTAssertTrue(app.buttons["insight.availability.settings"].waitForExistence(timeout: 10))
+        let microphone = app.buttons["insight.audio.record"]
+        XCTAssertTrue(microphone.isEnabled, "Recording must not require a model credential.")
+        XCTAssertTrue(microphone.isHittable, "The microphone is covered or unreachable.")
+        microphone.tap()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let deny = springboard.alerts.buttons.matching(
+            NSPredicate(format: "label IN %@", ["不允许", "Don’t Allow", "Don't Allow"])
+        ).firstMatch
+        if deny.waitForExistence(timeout: 8) { deny.tap() }
+        let permissionFailure = app.alerts["AI 助手"]
+        XCTAssertTrue(permissionFailure.waitForExistence(timeout: 15), "The microphone tap did not reach the permission workflow.")
+        XCTAssertTrue(permissionFailure.staticTexts["未获得麦克风权限。"].exists, "The denied microphone permission was not explained.")
+        attachScreenshot(of: app, named: "microphone-permission-denied-feedback")
+        permissionFailure.buttons["好"].tap()
+        XCTAssertTrue(app.buttons["新建聊天"].exists, "Recording did not open the editable chat screen.")
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
+    @MainActor
+    private func openAssistantEntry(in app: XCUIApplication) {
+        let analysisTab = app.tabBars.buttons["分析"]
+        XCTAssertTrue(analysisTab.waitForExistence(timeout: 30))
+        analysisTab.tap()
+        let entry = app.buttons["analysis-assistant-entry"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 10))
+        entry.tap()
+    }
+
+    @MainActor
+    private func composerField(in app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: "insight.composer.text").firstMatch
+    }
+
+    @MainActor
+    private func attachScreenshot(of app: XCUIApplication, named name: String) {
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = name
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
     }
 
     @MainActor

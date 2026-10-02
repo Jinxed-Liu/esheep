@@ -623,6 +623,7 @@ struct FarmInsightConversationView: View {
             isGenerating: controller.isGenerating,
             isSubmitting: isSubmitting || isRestoringDraft,
             isEnabled: isReady,
+            isAudioEnabled: isAudioEnabled,
             hasAttachments: !pendingImages.isEmpty || !pendingDocuments.isEmpty || isProcessingPhotos || !processingDocumentNames.isEmpty,
             attachmentsReady: attachmentsReady,
             modeTitle: submissionMode == .conversation ? nil : submissionMode.title,
@@ -937,17 +938,22 @@ struct FarmInsightConversationView: View {
             case .missingCredential:
                 InsightAvailabilityNotice(
                     title: "配置 MiMo API Key",
-                    detail: "请前往账户头像中的“AI 助手”设置。eSheep 不内置公共 Key。",
-                    action: nil
+                    detail: "请在 AI 助手设置中连接服务后发送。eSheep 不内置公共 Key。",
+                    action: openAssistantSettings
                 )
             case .unavailable(let message):
                 InsightAvailabilityNotice(
                     title: "AI 助手暂不可用",
                     detail: message,
-                    action: nil
+                    action: openAssistantSettings
                 )
             }
         }
+    }
+
+    private func openAssistantSettings() {
+        isComposerFocused = false
+        isAssistantSettingsPresented = true
     }
 
     private var suggestions: [String] {
@@ -968,6 +974,11 @@ struct FarmInsightConversationView: View {
             return isControllerBoundToFarm && controller.canUseAssistant
         }
         return false
+    }
+
+    private var isAudioEnabled: Bool {
+        isControllerBoundToFarm && controller.canUseAssistant &&
+            InsightSessionCoordinator.shared.allowsWork(scope: boundScope)
     }
 
     private var isControllerBoundToFarm: Bool {
@@ -1039,7 +1050,8 @@ struct FarmInsightConversationView: View {
     }
 
     private func activateMicrophoneLongPress() {
-        guard !isSubmitting, !isRestoringDraft, isReady,
+        guard !isSubmitting, !isRestoringDraft, isAudioEnabled,
+              !didActivateMicrophoneLongPress,
               pendingAudio == nil,
               !controller.isGenerating else {
             return
@@ -1048,9 +1060,12 @@ struct FarmInsightConversationView: View {
         isComposerFocused = false
         audioPlayer.stop()
         Task {
-            guard isChatVisible, scenePhase == .active else { return }
+            guard isChatVisible, scenePhase == .active, isAudioEnabled else {
+                didActivateMicrophoneLongPress = false
+                return
+            }
             await audioRecorder.start()
-            guard isChatVisible, scenePhase == .active else {
+            guard isChatVisible, scenePhase == .active, isAudioEnabled else {
                 audioRecorder.discard()
                 didActivateMicrophoneLongPress = false
                 return
@@ -1363,7 +1378,7 @@ private struct InsightGeneratedFileExportView: View {
     }
 }
 
-private struct InsightAvailabilityNotice: View {
+struct InsightAvailabilityNotice: View {
     let title: String
     let detail: String
     let action: (() -> Void)?
@@ -1379,10 +1394,12 @@ private struct InsightAvailabilityNotice: View {
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
             if let action {
-                Button("打开设置", action: action)
+                Button("AI 设置", action: action)
                     .font(.caption.weight(.semibold))
                     .buttonStyle(.plain)
                     .foregroundStyle(AppTheme.brand)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("insight.availability.settings")
             }
         }
         .frame(maxWidth: .infinity)
@@ -1629,15 +1646,19 @@ private struct InsightMessageBubble: View {
                         voiceMessage
                     }
                     if !message.text.isEmpty && message.text != "语音消息" {
-                        InsightMarkdownView(
-                            message.text,
-                            foregroundColor: isUser ? .white : .primary,
-                            tableBackgroundColor: isUser
-                                ? .white.opacity(0.12)
-                                : Color(uiColor: .systemBackground).opacity(0.68),
-                            tableAccentColor: isUser ? .white : AppTheme.brand,
-                            expandsHorizontally: !isUser
-                        )
+                        if isUser {
+                            Text(verbatim: message.text)
+                                .foregroundStyle(.white)
+                                .textSelection(.enabled)
+                        } else {
+                            InsightMarkdownView(
+                                message.text,
+                                foregroundColor: .primary,
+                                tableBackgroundColor: Color(uiColor: .systemBackground).opacity(0.68),
+                                tableAccentColor: AppTheme.brand,
+                                expandsHorizontally: true
+                            )
+                        }
                     }
                 }
                 .padding(.horizontal, 14)

@@ -14,6 +14,7 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
     let isGenerating: Bool
     let isSubmitting: Bool
     let isEnabled: Bool
+    let isAudioEnabled: Bool
     var isListEntry: Bool = false
     let hasAttachments: Bool
     let attachmentsReady: Bool
@@ -44,6 +45,9 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
     }
     private var canSend: Bool {
         isEnabled && !isSubmitting && !audioRecorder.isRecording && attachmentsReady && (hasText || hasAttachments || pendingAudio != nil)
+    }
+    private var mainActionEnabled: Bool {
+        isGenerating || audioRecorder.isRecording || (hasContent ? canSend : (isAudioEnabled && !isListEntry))
     }
 
     var body: some View {
@@ -113,8 +117,9 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
             .focused(isFocused)
             .textFieldStyle(.plain)
             .disabled(isSubmitting)
-            .submitLabel(.send)
-            .onSubmit { if canSend && !isGenerating { onSend() } }
+            // A multiline composer keeps Return for newlines. Sending uses
+            // the separate arrow button, matching the mobile chat layout.
+            .submitLabel(.return)
             .frame(minHeight: 24)
             .accessibilityIdentifier("insight.composer.text")
     }
@@ -168,7 +173,7 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
                 .frame(width: 44, height: 44)
         }
         .buttonStyle(.plain)
-        .disabled(!isEnabled || isGenerating || isSubmitting || pendingAudio != nil)
+        .disabled(!isAudioEnabled || isGenerating || isSubmitting || pendingAudio != nil)
         .accessibilityLabel(audioRecorder.isRecording ? "结束录音" : "开始录音")
         .accessibilityIdentifier("insight.audio.record")
     }
@@ -180,16 +185,18 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
             else if hasContent { if canSend { onSend() } }
             else if !isListEntry { onMicrophone() }
         } label: {
-            Image(systemName: isGenerating || audioRecorder.isRecording ? "stop.fill" : (hasContent || isListEntry ? "arrow.up" : "waveform"))
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Color(uiColor: .systemBackground))
+            ZStack {
+                Circle().fill(Color(uiColor: mainActionEnabled ? .label : .systemGray5))
+                Image(systemName: isGenerating || audioRecorder.isRecording ? "stop.fill" : (hasContent || isListEntry ? "arrow.up" : "waveform"))
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color(uiColor: mainActionEnabled ? .systemBackground : .secondaryLabel))
+            }
                 .frame(width: 34, height: 34)
-                .background(Color.primary, in: .circle)
-                .opacity(isGenerating || audioRecorder.isRecording || (hasContent ? canSend : (isEnabled && !isListEntry)) ? 1 : 0.35)
                 .frame(width: 44, height: 44)
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .disabled(!isGenerating && !audioRecorder.isRecording && (hasContent ? !canSend : (!isEnabled || isListEntry)))
+        .disabled(!mainActionEnabled)
         .onLongPressGesture(minimumDuration: 0.15, maximumDistance: 80, pressing: { pressed in
             if !hasContent && !isGenerating && !isListEntry { onMicrophonePressChanged(pressed) }
         }, perform: {

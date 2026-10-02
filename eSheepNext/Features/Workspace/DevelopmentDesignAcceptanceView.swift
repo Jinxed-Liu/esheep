@@ -80,12 +80,14 @@ private final class DesignAcceptanceFixture {
 
     init() throws {
         let insightReady = ProcessInfo.processInfo.arguments.contains("--design-insight-ready")
+        let offlineSend = insightReady && ProcessInfo.processInfo.arguments.contains("--design-insight-offline-send")
         let workspaceDirectory = URL.applicationSupportDirectory.appending(path: "DesignAcceptance", directoryHint: .isDirectory)
         let directory = insightReady
-            ? workspaceDirectory.appending(path: "InsightReady", directoryHint: .isDirectory)
+            ? workspaceDirectory.appending(path: offlineSend ? "InsightOfflineSend" : "InsightReady", directoryHint: .isDirectory)
             : workspaceDirectory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        container = try AppSchema.makeContainer(name: insightReady ? "DesignInsightReadyAcceptance" : "DesignAcceptance",
+        let storeName = offlineSend ? "DesignInsightOfflineSendAcceptance" : (insightReady ? "DesignInsightReadyAcceptance" : "DesignAcceptance")
+        container = try AppSchema.makeContainer(name: storeName,
             url: directory.appending(path: "acceptance.store"))
         let context = container.mainContext
         if let existing = try context.fetch(FetchDescriptor<AccountProfile>()).first,
@@ -115,8 +117,8 @@ private final class DesignAcceptanceFixture {
         collaboration = CloudCollaborationStore(container: container, allowsRemoteConnections: false)
     }
 
-    /// Exercises consent, credential loading, and history without validating a
-    /// credential or sending a model request. The account belongs to this store.
+    /// Exercises consent, credential loading, and history in the isolated store.
+    /// Sending is available only with an explicitly installed offline responder.
     func prepareInsightReady() async throws {
         guard account.appleSubjectHash == AppleIdentityHash.value(for: "design-acceptance-local"),
               account.serverAccountID == nil, farm.ownerAccountID == account.id else {
@@ -124,6 +126,17 @@ private final class DesignAcceptanceFixture {
         }
         let accountID = account.effectiveAccountID
         let farmID = farm.id
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--design-insight-offline-send") {
+            guard let index = arguments.firstIndex(of: "--design-insight-expected-message"),
+                  arguments.indices.contains(index + 1), arguments[index + 1].contains("\n") else {
+                throw MiMoClientError.invalidRequest
+            }
+            try InsightSessionCoordinator.shared.configureDesignAcceptanceClient(
+                DesignAcceptanceMiMoResponder(expectedInput: arguments[index + 1]),
+                account: account, farm: farm
+            )
+        }
         try AIPrivacyConsentStore.saveCurrentConsent(for: accountID)
         _ = try await MiMoCredentialVault.shared.save(
             apiKey: "sk-design-acceptance-fixture-not-a-real-key", for: accountID
@@ -153,6 +166,35 @@ private final class DesignAcceptanceFixture {
         }
         try context.save()
         InsightSessionCoordinator.shared.activate(scope: InsightConversationScope(accountID: accountID, farmID: farmID))
+    }
+}
+
+/// The real conversation controller and persistence run unchanged. Only the
+/// external model boundary is replaced, and unexpected input fails the test.
+private struct DesignAcceptanceMiMoResponder: MiMoResponding {
+    let expectedInput: String
+
+    func stream(
+        request: MiMoConversationRequest,
+        credential: MiMoCredential
+    ) -> AsyncThrowingStream<InsightModelEvent, Error> {
+        AsyncThrowingStream { continuation in
+            guard credential.apiKey == "sk-design-acceptance-fixture-not-a-real-key",
+                  request.messages.last(where: { $0.role == .user })?.text == expectedInput else {
+                continuation.finish(throwing: MiMoClientError.invalidRequest)
+                return
+            }
+            continuation.yield(.responseStarted(id: "design-offline-send"))
+            continuation.yield(.textDelta("离线发送验收：已收到两行输入。"))
+            continuation.yield(.completed(responseID: "design-offline-send", usage: nil))
+            continuation.finish()
+        }
+    }
+
+    func validate(credential: MiMoCredential) async throws {
+        guard credential.apiKey == "sk-design-acceptance-fixture-not-a-real-key" else {
+            throw MiMoClientError.authenticationFailed
+        }
     }
 }
 #endif

@@ -129,7 +129,7 @@ jobs:
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/ios-unit.log"
       - name: Run the real assistant entry UI regression
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           python3 -u - <<'PYMONITOR' &
@@ -160,12 +160,36 @@ jobs:
             -resultBundlePath "$RUNNER_TEMP/assistant-entry.xcresult" \
             -parallel-testing-enabled NO \
             -test-timeouts-enabled YES \
-            -default-test-execution-time-allowance 180 \
-            -maximum-test-execution-time-allowance 180 \
+            -default-test-execution-time-allowance 240 \
+            -maximum-test-execution-time-allowance 240 \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-entry.log"
+      - name: Export assistant UI screenshots
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -d "$RUNNER_TEMP/assistant-entry.xcresult" ]; then
+            xcrun xcresulttool export attachments \
+              --path "$RUNNER_TEMP/assistant-entry.xcresult" \
+              --output-path "$RUNNER_TEMP/assistant-ui-screenshots"
+            python3 - <<'PY'
+          import os
+          from pathlib import Path
+          directory = Path(os.environ['RUNNER_TEMP']) / 'assistant-ui-screenshots'
+          for path in directory.rglob('*'):
+              if path.is_file() and path.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.json'}:
+                  path.unlink()
+          PY
+          fi
+      - name: Preserve assistant UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistant-ui-screenshots-${{ github.sha }}
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/assistant-ui-screenshots
       - name: Print runtime result and crash details
         if: always()
         run: |
