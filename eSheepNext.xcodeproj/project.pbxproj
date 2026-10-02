@@ -497,8 +497,7 @@
 				APS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = "eSheep+";
 				CODE_SIGN_ENTITLEMENTS = eSheepNext/eSheepNext.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Distribution: Jianxin Liu (7BBQMZ87SM)";
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 36;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -506,6 +505,7 @@
 				INFOPLIST_KEY_APP_ENVIRONMENT = "$(APP_ENVIRONMENT)";
 				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
 				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_CFBundleURLTypes = "{ CFBundleURLName = \"com.sheepfarm.esheep.deep-link\"; CFBundleURLSchemes = (esheep); }";
 				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
@@ -532,7 +532,6 @@
 				MARKETING_VERSION = 3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				PROVISIONING_PROFILE_SPECIFIER = "eSheep+ 3.1 App Store";
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUBSCRIPTIONS_ENABLED = NO;
@@ -737,8 +736,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm;
 				CODE_SIGN_ENTITLEMENTS = eSheepNextWidget/eSheepNextWidget.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Distribution: Jianxin Liu (7BBQMZ87SM)";
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 36;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -755,7 +753,6 @@
 				MARKETING_VERSION = 3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sheepfarm.ios.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				PROVISIONING_PROFILE_SPECIFIER = "eSheep+ 3.1 Widget App Store";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
