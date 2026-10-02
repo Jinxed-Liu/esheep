@@ -30,7 +30,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 40
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v6
         with:
@@ -41,12 +41,16 @@ jobs:
           xcodebuild -version
           xcrun simctl list devices available --json > "$RUNNER_TEMP/simulators.json"
           python3 - <<'PY'
-          import json, os
+          import json, os, subprocess
+          sdk_version = tuple(map(int, subprocess.check_output(
+              ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], text=True
+          ).strip().split('.')))
           with open(os.path.join(os.environ['RUNNER_TEMP'], 'simulators.json')) as file:
               devices = json.load(file)['devices']
           candidates = [
               (tuple(map(int, runtime.rsplit('iOS-', 1)[1].split('-'))), device)
               for runtime, values in devices.items() if 'iOS-' in runtime
+              if tuple(map(int, runtime.rsplit('iOS-', 1)[1].split('-'))) <= sdk_version
               for device in values
               if device.get('isAvailable') and device['name'] == 'iPhone 17 Pro'
           ]
