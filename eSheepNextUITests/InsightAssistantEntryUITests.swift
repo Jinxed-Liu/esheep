@@ -183,6 +183,12 @@ final class InsightAssistantEntryUITests: XCTestCase {
         XCTAssertTrue(permissionFailure.staticTexts["未获得麦克风权限。"].exists, "The denied microphone permission was not explained.")
         attachScreenshot(of: app, named: "microphone-permission-denied-feedback")
         permissionFailure.buttons["好"].tap()
+        let retryMicrophone = app.buttons["insight.audio.record"]
+        XCTAssertTrue(retryMicrophone.isEnabled)
+        retryMicrophone.tap()
+        XCTAssertTrue(permissionFailure.waitForExistence(timeout: 15), "A repeated permission failure became a silent microphone tap.")
+        XCTAssertTrue(permissionFailure.staticTexts["未获得麦克风权限。"].exists)
+        permissionFailure.buttons["好"].tap()
         XCTAssertTrue(app.buttons["新建聊天"].exists, "Recording did not open the editable chat screen.")
         XCTAssertEqual(app.state, .runningForeground)
     }

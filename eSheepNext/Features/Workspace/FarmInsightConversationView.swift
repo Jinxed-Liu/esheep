@@ -1071,6 +1071,9 @@ struct FarmInsightConversationView: View {
                 return
             }
             guard audioRecorder.isRecording else {
+                // A retry can produce the same recorder error. Present it
+                // directly instead of depending on an error-value change.
+                if let error = audioRecorder.errorMessage { controller.errorMessage = error }
                 didActivateMicrophoneLongPress = false
                 return
             }
