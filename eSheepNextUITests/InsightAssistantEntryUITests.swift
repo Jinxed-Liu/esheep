@@ -55,6 +55,13 @@ final class InsightAssistantEntryUITests: XCTestCase {
         XCTAssertFalse(app.buttons["insight.composer.stop"].exists, "The completed response still appears to be generating.")
         attachScreenshot(of: app, named: "composer-after-send")
 
+        let listBack = app.navigationBars.buttons["BackButton"]
+        XCTAssertTrue(listBack.waitForExistence(timeout: 10))
+        listBack.tap()
+        XCTAssertTrue(app.buttons["聊天菜单"].waitForExistence(timeout: 15))
+        XCTAssertEqual(composerField(in: app).value as? String ?? "", emptyValue, "The submitted list draft was not consumed.")
+        attachScreenshot(of: app, named: "composer-list-draft-cleared-after-send")
+
         // Re-launch the process so neither cached controllers nor an in-memory
         // view can stand in for saved conversation and message records.
         app.terminate()

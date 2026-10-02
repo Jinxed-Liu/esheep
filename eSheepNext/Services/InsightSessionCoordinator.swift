@@ -89,11 +89,11 @@ final class InsightSessionCoordinator {
         draftStore.draft(scope: sessionScope(scope), conversationID: conversationID)
     }
 
-    func completeDraft(scope: InsightConversationScope, draftID: UUID, conversationID: UUID, controller: InsightConversationController, expectedDraftRevision: Int? = nil) {
+    func completeDraft(scope: InsightConversationScope, draftID: UUID, conversationID: UUID, controller: InsightConversationController, expectedDraftRevision: Int? = nil) async throws {
         guard controllerScopes[ObjectIdentifier(controller)] == sessionScope(scope) else { return }
         controllers[controllerKey(scope: scope, conversationID: conversationID, draftID: nil)] = controller
         controllers.removeValue(forKey: controllerKey(scope: scope, conversationID: nil, draftID: draftID))
-        draftStore.consumeNewDraft(scope: sessionScope(scope), expectedRevision: expectedDraftRevision)
+        try await draftStore.consumeNewDraftAndSave(scope: sessionScope(scope), expectedRevision: expectedDraftRevision)
     }
 
     func acquire(scope: InsightConversationScope, requestID: UUID, conversationID: UUID? = nil) async throws {

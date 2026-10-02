@@ -54,6 +54,32 @@ struct InsightComposerDraftRegression {
         try require(restored.text == draft.text && restored.modeRawValue == "plan" && restored.images == draft.images && restored.audio == draft.audio && restored.documents == draft.documents && restored.draftID == draft.draftID, "Draft content/media/mode/identity failed to restore.")
         print("PASS: account/farm draft isolation and media/mode/identity round trip")
 
+        let unchangedScope = InsightSessionScope(accountID: scope.accountID, farmID: UUID())
+        let unchanged = store.draft(scope: unchangedScope, conversationID: nil)
+        unchanged.text = "Composer\nSecond line"
+        unchanged.images = draft.images
+        unchanged.audio = draft.audio
+        unchanged.documents = draft.documents
+        unchanged.modeRawValue = draft.modeRawValue
+        try await store.save(scope: unchangedScope, conversationID: nil)
+        let unchangedRevision = unchanged.revision
+        // Focus/disabled updates can write the same binding values after send.
+        let sentText = unchanged.text
+        let sentImages = unchanged.images
+        let sentAudio = unchanged.audio
+        let sentDocuments = unchanged.documents
+        let sentMode = unchanged.modeRawValue
+        unchanged.text = sentText
+        unchanged.images = sentImages
+        unchanged.audio = sentAudio
+        unchanged.documents = sentDocuments
+        unchanged.modeRawValue = sentMode
+        store.consumeNewDraft(scope: unchangedScope, expectedRevision: unchangedRevision)
+        try await store.save(scope: unchangedScope, conversationID: nil)
+        let consumedText = try await restoredText(root, unchangedScope)
+        try require(!unchanged.hasContent && consumedText.isEmpty, "Same-value binding writes preserved the sent draft after cold restore.")
+        print("PASS: same-value binding writes cannot preserve a sent draft on cold restore")
+
         let submittedRevision = draft.revision
         let oldIdentity = draft.draftID
         draft.text = "保存期间继续输入的新问题"
@@ -64,6 +90,20 @@ struct InsightComposerDraftRegression {
         store.consumeNewDraft(scope: scope, expectedRevision: acceptedRevision)
         try require(!draft.hasContent && draft.modeRawValue == "conversation" && draft.draftID != acceptedIdentity, "Successful unchanged first send did not clear/renew draft.")
         print("PASS: first-send revision protects newer edits and renews each draft identity")
+
+        draft.text = "saved before send"
+        try await store.save(scope: scope, conversationID: nil)
+        let durableRevision = draft.revision
+        let durableIdentity = draft.draftID
+        draft.text = "edited during send\nKeep this line"
+        try await store.consumeNewDraftAndSave(scope: scope, expectedRevision: durableRevision)
+        let preservedText = try await restoredText(root, scope)
+        try require(preservedText == draft.text && draft.draftID != durableIdentity, "Durable consumption lost the next draft's real edits.")
+        let finalRevision = draft.revision
+        try await store.consumeNewDraftAndSave(scope: scope, expectedRevision: finalRevision)
+        let durablyClearedText = try await restoredText(root, scope)
+        try require(durablyClearedText.isEmpty && !FileManager.default.fileExists(atPath: fileURL(root, scope).path), "Awaited consumption returned before the sent draft was removed.")
+        print("PASS: awaited consumption persists genuine later edits and removes an unchanged sent draft")
 
         draft.text = "old snapshot"
         await InsightPersonalCryptoActor.shared.holdNextSeal()
@@ -144,6 +184,6 @@ struct InsightComposerDraftRegression {
         try await store.waitForAccountRemoval(accountID: corruptedScope.accountID)
         try require(!FileManager.default.fileExists(atPath: corruptURL.path), "Awaited account purge left the original sidecar on disk.")
         print("PASS: sensitive account cleanup can be awaited to physical file removal")
-        print("Composer draft regression passed: 8 behavioral checks; identity cipher fixture only, no iOS build.")
+        print("Composer draft regression passed: 10 behavioral checks; identity cipher fixture only, no iOS build.")
     }
 }

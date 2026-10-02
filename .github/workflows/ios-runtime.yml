@@ -90,6 +90,9 @@ jobs:
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-build.log"
+      - name: Wait for the simulator to finish booting
+        timeout-minutes: 3
+        run: xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
       - name: Run the real assistant entry UI regression
         timeout-minutes: 15
         run: |

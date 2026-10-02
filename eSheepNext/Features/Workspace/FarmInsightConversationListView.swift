@@ -320,8 +320,15 @@ struct FarmInsightConversationListView: View, Equatable {
                 errorMessage = controller.errorMessage
                 return
             }
-            coordinator.completeDraft(scope: submittedScope, draftID: draftID, conversationID: id, controller: controller,
-                expectedDraftRevision: draftRevision)
+            draftSaveTask?.cancel()
+            do {
+                try await coordinator.completeDraft(scope: submittedScope, draftID: draftID, conversationID: id, controller: controller,
+                    expectedDraftRevision: draftRevision)
+            } catch {
+                // The message is already sent. Show the storage error on its
+                // conversation rather than leaving a retryable submitted draft.
+                controller.errorMessage = "消息已发送，但清理本机草稿失败：\(error.localizedDescription)"
+            }
             guard coordinator.requestQueue.activeScope == submittedSessionScope, scope == submittedScope else { return }
             composerFocused = false
             destination = .init(id: id, controller: controller, conversationID: id, draftID: nil, messageID: nil, initialAction: nil)

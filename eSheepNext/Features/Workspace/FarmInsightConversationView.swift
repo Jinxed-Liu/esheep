@@ -1019,11 +1019,15 @@ struct FarmInsightConversationView: View {
             ) else { return }
             guard isControllerBoundToFarm, controller.conversationScope == submittedScope else { return }
             if wasNewConversation, let id = controller.currentConversationID {
-                InsightSessionCoordinator.shared.completeDraft(
-                    scope: submittedScope, draftID: submittedDraftID,
-                    conversationID: id, controller: controller,
-                    expectedDraftRevision: submittedRevision
-                )
+                do {
+                    try await InsightSessionCoordinator.shared.completeDraft(
+                        scope: submittedScope, draftID: submittedDraftID,
+                        conversationID: id, controller: controller,
+                        expectedDraftRevision: submittedRevision
+                    )
+                } catch {
+                    controller.errorMessage = "消息已发送，但清理本机草稿失败：\(error.localizedDescription)"
+                }
                 composerDraft = InsightSessionCoordinator.shared.draft(scope: submittedScope, conversationID: id)
             } else if submittedDraft.revision == submittedRevision {
                 submittedDraft.clear()
