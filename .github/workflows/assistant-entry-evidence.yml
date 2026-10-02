@@ -1,0 +1,109 @@
+name: Extract assistant entry evidence
+
+on:
+  push:
+    branches: ['codex/assistant-entry-baseline']
+    paths: ['.github/workflows/assistant-entry-evidence.yml']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  extract:
+    runs-on: macos-26
+    timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Download the completed failing run evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: assistant-entry-639d19bc02f84b615709d55ced01f33f1505a07a
+          run-id: 36975992984
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/assistant-entry-original
+      - name: Export screenshots and text without rerunning the app
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          python3 -u - <<'PY'
+          import hashlib, json, os, shutil, subprocess
+          from pathlib import Path
+
+          temp = Path(os.environ['RUNNER_TEMP'])
+          source = temp / 'assistant-entry-original'
+          output = temp / 'assistant-entry-small'
+          exported = temp / 'assistant-entry-exported'
+          output.mkdir()
+          bundles = list(source.rglob('assistant-entry.xcresult'))
+          if len(bundles) != 1:
+              raise SystemExit(f'Expected one result bundle, found {len(bundles)}')
+          bundle = bundles[0]
+          print('Result bundle:', bundle)
+
+          def command(arguments, filename):
+              result = subprocess.run(['xcrun', 'xcresulttool', *arguments], capture_output=True, text=True)
+              (output / filename).write_text(result.stdout)
+              if result.stderr:
+                  (output / (filename + '.stderr.txt')).write_text(result.stderr)
+              print('xcresulttool', arguments[0:3], 'exit:', result.returncode)
+              print((result.stdout + result.stderr)[:12000])
+              return result
+
+          command(['export', 'attachments', '--help'], 'export-attachments-help.txt')
+          for kind in ['summary', 'tests']:
+              command(['get', 'test-results', kind, '--path', str(bundle)], kind + '.json')
+          command(['get', 'test-results', 'activities', '--help'], 'activities-help.txt')
+          for method in ['testAssistantEntryOpensConversationListAndCanReenter', 'testConfiguredAssistantOpensHistoryAndNewChatComposer']:
+              command(['get', 'test-results', 'activities', '--path', str(bundle),
+                       '--test-id', f'InsightAssistantEntryUITests/{method}()'], method + '-activities.json')
+          command(['export', 'attachments', '--path', str(bundle), '--output-path', str(exported)], 'export-attachments.txt')
+
+          for index, path in enumerate(sorted(source.rglob('StandardOutputAndStandardError-com.sheepfarm.next.dev.txt'))):
+              target = output / f'app-{index}-stderr.txt'
+              shutil.copy2(path, target)
+              lines = path.read_text(errors='replace').splitlines()
+              changes = [line for line in lines if 'FarmInsightConversationListView:' in line]
+              print('App stderr:', path, 'bytes:', path.stat().st_size)
+              print('List body changes:', '\n'.join(changes[:100]))
+              relevant = [i for i, line in enumerate(lines) if any(token in line for token in
+                          ['insight.composer', '聊天菜单', '新聊天', '入口回归历史聊天', 'TextView,', 'TextField,'])]
+              print('Relevant accessibility lines:')
+              for index in relevant[-100:]:
+                  print(f'{index + 1}: {lines[index]}')
+          for path in source.rglob('assistant-entry.log'):
+              shutil.copy2(path, output / 'assistant-entry.log.txt')
+
+          listing = []
+          budget = 28 * 1024 * 1024
+          total = sum(path.stat().st_size for path in output.rglob('*') if path.is_file())
+          for path in sorted(exported.rglob('*')) if exported.exists() else []:
+              if not path.is_file():
+                  continue
+              size = path.stat().st_size
+              allowed = path.suffix.lower() in {'.png', '.txt', '.json'}
+              copied = allowed and total + size < budget
+              relative = path.relative_to(exported)
+              listing.append({'path': str(relative), 'bytes': size, 'copied': copied})
+              if copied:
+                  target = output / 'attachments' / relative
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(path, target)
+                  total += size
+          (output / 'attachments-list.json').write_text(json.dumps(listing, indent=2))
+          print('Exported attachment inventory:', json.dumps(listing, indent=2))
+          actual = sum(path.stat().st_size for path in output.rglob('*') if path.is_file())
+          print('Reduced evidence total bytes:', actual)
+          if actual >= 30 * 1024 * 1024:
+              raise SystemExit('Reduced evidence exceeds the download budget')
+          if not any(path.suffix.lower() == '.png' for path in output.rglob('*')):
+              raise SystemExit('No failure screenshots were exported')
+          PY
+      - name: Preserve the small screenshots and text evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistant-entry-639d19b-small
+          if-no-files-found: error
+          path: ${{ runner.temp }}/assistant-entry-small
