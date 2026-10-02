@@ -90,6 +90,21 @@ jobs:
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-build.log"
+      - name: Run the complete existing XCTest suites
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project eSheepNext.xcodeproj \
+            -scheme eSheepNext \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/ios-unit.xcresult" \
+            -parallel-testing-enabled NO \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/ios-unit.log"
       - name: Run the real assistant entry UI regression
         timeout-minutes: 10
         run: |
@@ -128,21 +143,6 @@ jobs:
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-entry.log"
-      - name: Run the complete existing XCTest suites
-        run: |
-          set -euo pipefail
-          xcodebuild test \
-            -project eSheepNext.xcodeproj \
-            -scheme eSheepNext \
-            -configuration Debug \
-            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
-            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
-            -resultBundlePath "$RUNNER_TEMP/ios-unit.xcresult" \
-            -parallel-testing-enabled NO \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
-            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
-            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
-            2>&1 | tee "$RUNNER_TEMP/ios-unit.log"
       - name: Print runtime result and crash details
         if: always()
         run: |

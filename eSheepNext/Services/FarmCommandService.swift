@@ -911,7 +911,7 @@ final class FarmCommandService {
     func execute(_ command: FarmCommand, in farm: FarmContext, context: ModelContext) throws {
         var committed = false
         defer {
-            if !committed { context.rollback() }
+            if !committed { rollbackPendingChanges(in: context) }
         }
         try validateStorageRoute(in: farm, context: context)
         if let impact = try executeWithoutSaving(command, in: farm, context: context) {
@@ -935,7 +935,7 @@ final class FarmCommandService {
     ) throws {
         var committed = false
         defer {
-            if !committed { context.rollback() }
+            if !committed { rollbackPendingChanges(in: context) }
         }
         try validateStorageRoute(in: farm, context: context)
         let sheep = try sheepRecord(sheepID, farmID: farm.farmID, context: context)
@@ -1046,7 +1046,7 @@ final class FarmCommandService {
 
         var committed = false
         defer {
-            if !committed { context.rollback() }
+            if !committed { rollbackPendingChanges(in: context) }
         }
         try validateStorageRoute(in: farm, context: context)
         let route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
@@ -1148,7 +1148,7 @@ final class FarmCommandService {
 
         var committed = false
         defer {
-            if !committed { context.rollback() }
+            if !committed { rollbackPendingChanges(in: context) }
         }
         try validateStorageRoute(in: farm, context: context)
         if let impact = try executeWithoutSaving(
@@ -1225,7 +1225,7 @@ final class FarmCommandService {
 
         var committed = false
         defer {
-            if !committed { context.rollback() }
+            if !committed { rollbackPendingChanges(in: context) }
         }
         try validateStorageRoute(in: farm, context: context)
 
@@ -1360,7 +1360,7 @@ final class FarmCommandService {
     ) throws {
         var committed = false
         defer {
-            if !committed { context.rollback() }
+            if !committed { rollbackPendingChanges(in: context) }
         }
         try validateStorageRoute(in: farm, context: context)
         var pendingHistory: [HistoryImpact] = []
@@ -1399,6 +1399,13 @@ final class FarmCommandService {
         if try FarmStorageRouter.route(farmID: farm.farmID, context: context).requiresOutbox {
             CloudRuntimeNotification.postSyncWake(farmID: farm.farmID)
         }
+    }
+
+    private func rollbackPendingChanges(in context: ModelContext) {
+        // Register queued property writes and inserts with the transaction
+        // before reverting it. This does not save any part of the command.
+        context.processPendingChanges()
+        context.rollback()
     }
 
     private func legacyPhotoFilenameRepairPlans(
