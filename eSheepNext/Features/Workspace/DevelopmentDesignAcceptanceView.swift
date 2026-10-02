@@ -115,6 +115,9 @@ private final class DesignAcceptanceFixture {
         session = AppSession(activeAccountProfileID: account.id, persistedLocalSessionAccountID: nil, persistActiveAccountProfileID: { _ in }, clearActiveAccountProfileID: {})
         session.selectedFarmID = farm.id
         collaboration = CloudCollaborationStore(container: container, allowsRemoteConnections: false)
+        InsightSessionCoordinator.shared.activate(scope: InsightConversationScope(
+            accountID: account.effectiveAccountID, farmID: farm.id
+        ))
     }
 
     /// Exercises consent, credential loading, and history in the isolated store.
