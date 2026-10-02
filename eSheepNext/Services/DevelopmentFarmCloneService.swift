@@ -1587,51 +1587,53 @@ enum DevelopmentFarmCloneService {
         farmID: UUID,
         context: ModelContext
     ) throws -> Int {
-        try farmRecords(FarmActivity.self, farmID: farmID, context: context).count
-            + farmRecords(PenRecord.self, farmID: farmID, context: context).count
-            + farmRecords(SheepRecord.self, farmID: farmID, context: context).count
-            + farmRecords(WeightRecord.self, farmID: farmID, context: context).count
-            + farmRecords(WeaningRecord.self, farmID: farmID, context: context).count
-            + farmRecords(BreedingProgramRecord.self, farmID: farmID, context: context).count
-            + farmRecords(BreedingProgramStepRecord.self, farmID: farmID, context: context).count
-            + farmRecords(TransferRecord.self, farmID: farmID, context: context).count
-            + farmRecords(RemovalRecord.self, farmID: farmID, context: context).count
-            + farmRecords(ProductionBatchRecord.self, farmID: farmID, context: context).count
-            + farmRecords(BatchMembershipRecord.self, farmID: farmID, context: context).count
-            + farmRecords(DailyPenCountRecord.self, farmID: farmID, context: context).count
-            + farmRecords(FeedIngredientRecord.self, farmID: farmID, context: context).count
-            + farmRecords(FeedRecipeRecord.self, farmID: farmID, context: context).count
-            + farmRecords(FeedRecipeComponentRecord.self, farmID: farmID, context: context).count
-            + farmRecords(FeedIngredientBatchRecord.self, farmID: farmID, context: context).count
-            + farmRecords(FeedRecord.self, farmID: farmID, context: context).count
-            + farmRecords(FeedRecordLine.self, farmID: farmID, context: context).count
-            + farmRecords(FeedTroughObservationRecord.self, farmID: farmID, context: context).count
-            + farmRecords(FeedStockTransactionRecord.self, farmID: farmID, context: context).count
-            + farmRecords(FeedStockCountRecord.self, farmID: farmID, context: context).count
-            + farmRecords(HealthCatalogItemRecord.self, farmID: farmID, context: context).count
-            + farmRecords(InventoryLotRecord.self, farmID: farmID, context: context).count
-            + farmRecords(InventoryTransactionRecord.self, farmID: farmID, context: context).count
-            + farmRecords(CareBatchRecord.self, farmID: farmID, context: context).count
-            + farmRecords(HealthRecord.self, farmID: farmID, context: context).count
-            + farmRecords(HealthSubjectLink.self, farmID: farmID, context: context).count
-            + farmRecords(SemenDonorRecord.self, farmID: farmID, context: context).count
-            + farmRecords(SemenRecord.self, farmID: farmID, context: context).count
-            + farmRecords(SemenTransactionRecord.self, farmID: farmID, context: context).count
-            + farmRecords(ReproductionRecord.self, farmID: farmID, context: context).count
-            + farmRecords(LambingOffspringRecord.self, farmID: farmID, context: context).count
-            + farmRecords(PedigreeChangeRecord.self, farmID: farmID, context: context).count
-            + farmRecords(NoteRecord.self, farmID: farmID, context: context).count
-            + farmRecords(FarmCareRuleRecord.self, farmID: farmID, context: context).count
-            + farmRecords(CareReminderRecord.self, farmID: farmID, context: context).count
-            + farmRecords(FarmAlertDeferralRecord.self, farmID: farmID, context: context).count
-            + farmRecords(PhotoAssetRecord.self, farmID: farmID, context: context).count
-            + farmRecords(SheepAvatarRecord.self, farmID: farmID, context: context).count
-            + farmRecords(InsightConversationRecord.self, farmID: farmID, context: context).count
-            + farmRecords(InsightMessageRecord.self, farmID: farmID, context: context).count
-            + farmRecords(InsightAttachmentRecord.self, farmID: farmID, context: context).count
-            + farmRecords(InsightActionDraftRecord.self, farmID: farmID, context: context).count
-            + farmRecords(InsightExecutionReceiptRecord.self, farmID: farmID, context: context).count
-            + farmRecords(TombstoneRecord.self, farmID: farmID, context: context).count
+        var count = 0
+        count += try farmRecords(FarmActivity.self, farmID: farmID, context: context).count
+        count += try farmRecords(PenRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(SheepRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(WeightRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(WeaningRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(BreedingProgramRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(BreedingProgramStepRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(TransferRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(RemovalRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(ProductionBatchRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(BatchMembershipRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(DailyPenCountRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(FeedIngredientRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(FeedRecipeRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(FeedRecipeComponentRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(FeedIngredientBatchRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(FeedRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(FeedRecordLine.self, farmID: farmID, context: context).count
+        count += try farmRecords(FeedTroughObservationRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(FeedStockTransactionRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(FeedStockCountRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(HealthCatalogItemRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(InventoryLotRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(InventoryTransactionRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(CareBatchRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(HealthRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(HealthSubjectLink.self, farmID: farmID, context: context).count
+        count += try farmRecords(SemenDonorRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(SemenRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(SemenTransactionRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(ReproductionRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(LambingOffspringRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(PedigreeChangeRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(NoteRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(FarmCareRuleRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(CareReminderRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(FarmAlertDeferralRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(PhotoAssetRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(SheepAvatarRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(InsightConversationRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(InsightMessageRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(InsightAttachmentRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(InsightActionDraftRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(InsightExecutionReceiptRecord.self, farmID: farmID, context: context).count
+        count += try farmRecords(TombstoneRecord.self, farmID: farmID, context: context).count
+        return count
     }
 }
 
