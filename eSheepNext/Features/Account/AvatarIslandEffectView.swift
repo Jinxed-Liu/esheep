@@ -53,7 +53,11 @@ final class AvatarIslandEffectUIView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         blurView.frame = bounds
-        radialShade.frame = bounds
+        // This artwork is a fixed-size rim at the top of the effect canvas.
+        // Stretching it to 171pt moves the clear center below the avatar neck.
+        radialShade.frame = CGRect(
+            x: (bounds.width - 100) / 2, y: 0, width: 100, height: 100
+        )
         blackCover.frame = bounds
     }
 
@@ -125,8 +129,8 @@ final class AvatarIslandEffectUIView: UIView {
     }
 }
 
-/// Scales a 100-point radial reference without approximating it with a vertical
-/// gradient. Drawing occurs on size changes; scrolling changes only effect values.
+/// A 100-point radial rim. Drawing occurs on size changes; scrolling changes
+/// only effect values, keeping the clear center at canvas y=88.
 @MainActor
 private final class AvatarIslandRadialShadeView: UIView {
     override init(frame: CGRect) {
