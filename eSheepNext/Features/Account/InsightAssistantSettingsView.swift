@@ -58,326 +58,16 @@ struct InsightAssistantSettingsView: View {
 
     var body: some View {
         Form {
-            Section {
-                if hasAcceptedAIPrivacy {
-                    Label("已同意当前 AI 数据说明", systemImage: "checkmark.shield.fill")
-                        .foregroundStyle(.green)
-                    LabeledContent("同意版本", value: LegalPolicyVersions.ai)
-                    Button("撤回 AI 数据处理同意", role: .destructive) {
-                        isWithdrawingAIConsent = true
-                    }
-                    .disabled(isUpdatingAIConsent)
-                } else {
-                    Toggle("我已阅读并同意 AI 数据处理说明", isOn: $hasReadAIPrivacy)
-                        .toggleStyle(ConsentCheckboxStyle())
-                        .accessibilityHint("默认关闭；同意只适用于可选 AI，不影响其他牧场功能")
-                    Button("同意并启用 AI") {
-                        acceptAIPrivacy()
-                    }
-                    .disabled(!hasReadAIPrivacy || isUpdatingAIConsent)
-                }
-
-                Button("查看 AI 数据处理说明") {
-                    selectedLegalDocument = .ai
-                }
-                Button("查看境外提供个人信息告知") {
-                    selectedLegalDocument = .crossBorder
-                }
-            } header: {
-                Text("单独同意")
-            } footer: {
-                Text("AI 会把你主动提交的文字、处理后图片、语音和有限授权牧场结果直接发送给 MiMo。拒绝或撤回不会影响非 AI 功能。")
-            }
-
-            Section {
-                LabeledContent("服务商", value: "MiMo")
-                LabeledContent("文字、图片与语音", value: MiMoCredential.model)
-            } header: {
-                Text("模型")
-            } footer: {
-                Text("所有输入均使用 MiMo-V2.6-Pro，不开放自定义模型或第三方地址。")
-            }
-
-            Section {
-                HStack {
-                    Text("分析深度")
-                    Spacer()
-                    Text(LocalizedStringKey(analysisConfiguration.effort.title))
-                        .foregroundStyle(AppTheme.brand)
-                }
-                Slider(value: Binding(
-                    get: { analysisConfiguration.effort.sliderValue },
-                    set: { analysisConfiguration.effort = .from(sliderValue: $0) }
-                ), in: 0...2, step: 1)
-                .tint(AppTheme.brand)
-                .accessibilityLabel("分析深度")
-                .accessibilityValue(Text(LocalizedStringKey(analysisConfiguration.effort.title)))
-                HStack {
-                    Text("低")
-                    Spacer()
-                    Text("中")
-                    Spacer()
-                    Text("高")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                Toggle("显示思考过程", isOn: $analysisConfiguration.showReasoning)
-            } header: {
-                Text("分析偏好")
-            } footer: {
-                Text("更深入的分析可进行更多查询和追加复核，可能增加耗时与用量。所有档位都保留必要的事实校验；思考过程只显示模型实际返回的内容。")
-            }
-            .onChange(of: analysisConfiguration) { _, configuration in
-                guard hasAcceptedAIPrivacy else { return }
-                InsightAnalysisPreference.save(configuration, for: account.effectiveAccountID)
-            }
-
-            Section {
-                Toggle("启用模型思考", isOn: $analysisConfiguration.thinkingEnabled)
-            } header: {
-                Text("高级设置")
-            } footer: {
-                Text("关闭后模型直接生成回答，仍会执行必要的证据核对与事实校验。")
-            }
-
-            Section {
-                LabeledContent("窗口上限", value: "约 512K")
-                LabeledContent("压缩后目标", value: "约 384K")
-            } header: {
-                Text("上下文窗口")
-            } footer: {
-                Text("AI 对话页顶部圆环显示当前会话的上下文使用比例。用量由 App 在本地保守估算；达到约 512K 时自动压缩较早内容并保留最近对话，聊天中会显示一次压缩提示。")
-            }
-
-            Section {
-                if let officialUsage {
-                    LabeledContent(
-                        "账户余额",
-                        value: officialCurrency(
-                            officialUsage.balance,
-                            code: officialUsage.currency
-                        )
-                    )
-                    if let planCode = officialUsage.planCode {
-                        LabeledContent("Token Plan", value: planCode)
-                    }
-                    if let used = officialUsage.tokenUsed,
-                       let limit = officialUsage.tokenLimit {
-                        LabeledContent("已用 Token", value: compactInteger(used))
-                        LabeledContent(
-                            "剩余 Token",
-                            value: compactInteger(max(0, limit - used))
-                        )
-                        LabeledContent("套餐总量", value: compactInteger(limit))
-                        if let fraction = officialUsage.tokenFraction {
-                            ProgressView(value: fraction)
-                                .tint(fraction >= 0.9 ? .orange : AppTheme.brand)
-                        }
-                    }
-                    if let periodEnd = officialUsage.planPeriodEnd {
-                        LabeledContent("本期结束") {
-                            Text(periodEnd, format: .dateTime.year().month().day())
-                        }
-                    }
-                    LabeledContent("官方更新") {
-                        Text(
-                            officialUsage.updatedAt,
-                            format: .dateTime.hour().minute().second()
-                        )
-                    }
-                } else {
-                    if let officialUsageMessage {
-                        Text(verbatim: officialUsageMessage)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("登录 MiMo 官方账户后可读取真实余额和 Token Plan 用量。")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Button {
-                    refreshOfficialUsage()
-                } label: {
-                    if isLoadingOfficialUsage {
-                        HStack {
-                            ProgressView()
-                            Text("正在查询官方额度")
-                        }
-                    } else {
-                        Text(officialUsage == nil ? LocalizedStringKey("查询官方额度") : LocalizedStringKey("刷新官方额度"))
-                    }
-                }
-                .disabled(isLoadingOfficialUsage || !hasAcceptedAIPrivacy)
-
-                Button("登录 MiMo 官方账户") {
-                    isOfficialLoginPresented = true
-                }
-                .disabled(!hasAcceptedAIPrivacy)
-            } header: {
-                Text("MiMo 官方额度")
-            } footer: {
-                Text("数据直接读取 MiMo 官方控制台。网页登录会话与 API Key 分开保存；App 不会读取或保存你的小米账号密码。")
-            }
-
-            Section {
-                if let masked = savedCredentialMask {
-                    LabeledContent("当前 Key", value: masked)
-                }
-
-                HStack {
-                    Group {
-                        if isRevealed {
-                            TextField("sk- 或 tp- 开头", text: $apiKey)
-                        } else {
-                            SecureField("sk- 或 tp- 开头", text: $apiKey)
-                        }
-                    }
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-
-                    Button {
-                        isRevealed.toggle()
-                    } label: {
-                        Image(systemName: isRevealed ? "eye.slash" : "eye")
-                    }
-                    .accessibilityLabel(isRevealed ? "隐藏 API Key" : "显示 API Key")
-                }
-
-                PasteButton(payloadType: String.self) { values in
-                    apiKey = values.first ?? ""
-                }
-                .labelStyle(.titleAndIcon)
-
-                Button {
-                    save()
-                } label: {
-                    if isSaving || controller.isTestingCredential {
-                        HStack {
-                            ProgressView()
-                            Text("正在测试连接")
-                        }
-                    } else {
-                        Text(savedCredentialMask == nil ? LocalizedStringKey("测试连接并保存") : LocalizedStringKey("测试连接并替换"))
-                    }
-                }
-                .disabled(
-                    apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || isSaving
-                        || controller.isTestingCredential
-                        || !hasAcceptedAIPrivacy
-                )
-
-                if savedCredentialMask != nil {
-                    Button("删除 API Key", role: .destructive) {
-                        isDeleteConfirmationPresented = true
-                    }
-                }
-            } header: {
-                Text("MiMo API Key")
-            } footer: {
-                Text("sk- 使用标准地址，tp- 使用 Token Plan 地址。Key 通过连接测试后保存在本机钥匙串。")
-            }
-
-            Section("数据与隐私") {
-                InsightAssistantPrivacyRow(
-                    systemImage: "iphone.and.arrow.forward",
-                    title: "请求直接发送",
-                    detail: "模型请求由此 iPhone 直接发往 MiMo，eSheep 服务端不接触明文 Key。"
-                )
-                Toggle(isOn: $retainsSentVoiceAudio) {
-                    Label {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("在本机保留已发送语音")
-                            Text("发送时直接提交 MiMo；用于回听的原始副本只保存在此 iPhone，不上传到 eSheep 云端或参与个人空间同步。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    } icon: {
-                        Image(systemName: "waveform")
-                            .foregroundStyle(AppTheme.brand)
-                    }
-                }
-                .accessibilityHint("只影响之后发送的语音")
-                .onChange(of: retainsSentVoiceAudio) { _, isEnabled in
-                    InsightVoicePrivacyPreference.setRetainsSentAudio(
-                        isEnabled,
-                        for: account.effectiveAccountID
-                    )
-                }
-                InsightAssistantPrivacyRow(
-                    systemImage: "photo",
-                    title: "图片先处理",
-                    detail: "图片移除位置与 EXIF 信息并压缩后，才会提交模型或进入加密同步。"
-                )
-                InsightAssistantPrivacyRow(
-                    systemImage: "chart.bar.doc.horizontal",
-                    title: "牧场数据按需提供",
-                    detail: "默认只发送当前问题和有限结果；敏感明细或扩展范围每次都需要单独授权。"
-                )
-            }
-
-            Section {
-                if IdentityWorkerConfiguration.baseURL == nil {
-                    Text("账号服务未配置，洞察历史和 Key 仅保存在本机。")
-                        .foregroundStyle(.secondary)
-                } else if let securityStatusMessage {
-                    Text("加密同步暂不可用：\(securityStatusMessage)\nMiMo Key 已安全保存在本机，不受影响。")
-                        .foregroundStyle(.secondary)
-                } else if insightDevices.isEmpty {
-                    Text(isLoadingSecurity ? LocalizedStringKey("正在读取设备…") : LocalizedStringKey("暂无设备信息"))
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(insightDevices) { device in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(device.displayName)
-                                deviceStatusView(device)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if device.status == "pending" {
-                                Button("批准") {
-                                    approve(device)
-                                }
-                            } else if device.status == "active",
-                                      device.deviceID != currentDeviceID {
-                                Button("撤销", role: .destructive) {
-                                    devicePendingRevocation = device
-                                }
-                            }
-                        }
-                    }
-                }
-            } header: {
-                Text("加密同步设备")
-            } footer: {
-                Text("批准和撤销需要 Face ID / Touch ID。撤销会轮换个人主密钥；旧设备已离线缓存的内容无法远程抹除。")
-            }
-
-            Section("恢复码") {
-                Button("生成并上传恢复包") {
-                    generateRecovery()
-                }
-
-                if !recoveryCode.isEmpty {
-                    Text(recoveryCode)
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                    Text("恢复码只显示在这里，请离线妥善保存。每个恢复包只能成功使用一次，恢复后请重新生成。")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-
-                SecureField("输入恢复码", text: $recoveryInput)
-                    .textInputAutocapitalization(.characters)
-                    .autocorrectionDisabled()
-
-                Button("使用恢复码恢复") {
-                    importRecovery()
-                }
-                .disabled(recoveryInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
+            consentSection
+            modelSection
+            analysisSection
+            advancedSection
+            contextSection
+            officialUsageSection
+            credentialSection
+            privacySection
+            devicesSection
+            recoverySection
         }
         .navigationTitle("AI 助手")
         .navigationBarTitleDisplayMode(.inline)
@@ -463,6 +153,347 @@ struct InsightAssistantSettingsView: View {
             await loadCredentialStatus()
             await loadSecurityDevices()
             await loadOfficialUsage(silent: true)
+        }
+    }
+
+    private var consentSection: some View {
+        Section {
+            if hasAcceptedAIPrivacy {
+                Label("已同意当前 AI 数据说明", systemImage: "checkmark.shield.fill")
+                    .foregroundStyle(.green)
+                LabeledContent("同意版本", value: LegalPolicyVersions.ai)
+                Button("撤回 AI 数据处理同意", role: .destructive) {
+                    isWithdrawingAIConsent = true
+                }
+                .disabled(isUpdatingAIConsent)
+            } else {
+                Toggle("我已阅读并同意 AI 数据处理说明", isOn: $hasReadAIPrivacy)
+                    .toggleStyle(ConsentCheckboxStyle())
+                    .accessibilityHint("默认关闭；同意只适用于可选 AI，不影响其他牧场功能")
+                Button("同意并启用 AI") {
+                    acceptAIPrivacy()
+                }
+                .disabled(!hasReadAIPrivacy || isUpdatingAIConsent)
+            }
+
+            Button("查看 AI 数据处理说明") {
+                selectedLegalDocument = .ai
+            }
+            Button("查看境外提供个人信息告知") {
+                selectedLegalDocument = .crossBorder
+            }
+        } header: {
+            Text("单独同意")
+        } footer: {
+            Text("AI 会把你主动提交的文字、处理后图片、语音和有限授权牧场结果直接发送给 MiMo。拒绝或撤回不会影响非 AI 功能。")
+        }
+    }
+
+    private var modelSection: some View {
+        Section {
+            LabeledContent("服务商", value: "MiMo")
+            LabeledContent("文字、图片与语音", value: MiMoCredential.model)
+        } header: {
+            Text("模型")
+        } footer: {
+            Text("所有输入均使用 MiMo-V2.6-Pro，不开放自定义模型或第三方地址。")
+        }
+    }
+
+    private var analysisSection: some View {
+        Section {
+            HStack {
+                Text("分析深度")
+                Spacer()
+                Text(LocalizedStringKey(analysisConfiguration.effort.title))
+                    .foregroundStyle(AppTheme.brand)
+            }
+            Slider(value: Binding(
+                get: { analysisConfiguration.effort.sliderValue },
+                set: { analysisConfiguration.effort = .from(sliderValue: $0) }
+            ), in: 0...2, step: 1)
+            .tint(AppTheme.brand)
+            .accessibilityLabel("分析深度")
+            .accessibilityValue(Text(LocalizedStringKey(analysisConfiguration.effort.title)))
+            HStack {
+                Text("低")
+                Spacer()
+                Text("中")
+                Spacer()
+                Text("高")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            Toggle("显示思考过程", isOn: $analysisConfiguration.showReasoning)
+        } header: {
+            Text("分析偏好")
+        } footer: {
+            Text("更深入的分析可进行更多查询和追加复核，可能增加耗时与用量。所有档位都保留必要的事实校验；思考过程只显示模型实际返回的内容。")
+        }
+        .onChange(of: analysisConfiguration) { _, configuration in
+            guard hasAcceptedAIPrivacy else { return }
+            InsightAnalysisPreference.save(configuration, for: account.effectiveAccountID)
+        }
+    }
+
+    private var advancedSection: some View {
+        Section {
+            Toggle("启用模型思考", isOn: $analysisConfiguration.thinkingEnabled)
+        } header: {
+            Text("高级设置")
+        } footer: {
+            Text("关闭后模型直接生成回答，仍会执行必要的证据核对与事实校验。")
+        }
+    }
+
+    private var contextSection: some View {
+        Section {
+            LabeledContent("窗口上限", value: "约 512K")
+            LabeledContent("压缩后目标", value: "约 384K")
+        } header: {
+            Text("上下文窗口")
+        } footer: {
+            Text("AI 对话页顶部圆环显示当前会话的上下文使用比例。用量由 App 在本地保守估算；达到约 512K 时自动压缩较早内容并保留最近对话，聊天中会显示一次压缩提示。")
+        }
+    }
+
+    private var officialUsageSection: some View {
+        Section {
+            if let officialUsage {
+                LabeledContent(
+                    "账户余额",
+                    value: officialCurrency(
+                        officialUsage.balance,
+                        code: officialUsage.currency
+                    )
+                )
+                if let planCode = officialUsage.planCode {
+                    LabeledContent("Token Plan", value: planCode)
+                }
+                if let used = officialUsage.tokenUsed,
+                   let limit = officialUsage.tokenLimit {
+                    LabeledContent("已用 Token", value: compactInteger(used))
+                    LabeledContent(
+                        "剩余 Token",
+                        value: compactInteger(max(0, limit - used))
+                    )
+                    LabeledContent("套餐总量", value: compactInteger(limit))
+                    if let fraction = officialUsage.tokenFraction {
+                        ProgressView(value: fraction)
+                            .tint(fraction >= 0.9 ? .orange : AppTheme.brand)
+                    }
+                }
+                if let periodEnd = officialUsage.planPeriodEnd {
+                    LabeledContent("本期结束") {
+                        Text(periodEnd, format: .dateTime.year().month().day())
+                    }
+                }
+                LabeledContent("官方更新") {
+                    Text(
+                        officialUsage.updatedAt,
+                        format: .dateTime.hour().minute().second()
+                    )
+                }
+            } else {
+                if let officialUsageMessage {
+                    Text(verbatim: officialUsageMessage)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("登录 MiMo 官方账户后可读取真实余额和 Token Plan 用量。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Button {
+                refreshOfficialUsage()
+            } label: {
+                if isLoadingOfficialUsage {
+                    HStack {
+                        ProgressView()
+                        Text("正在查询官方额度")
+                    }
+                } else {
+                    Text(officialUsage == nil ? LocalizedStringKey("查询官方额度") : LocalizedStringKey("刷新官方额度"))
+                }
+            }
+            .disabled(isLoadingOfficialUsage || !hasAcceptedAIPrivacy)
+
+            Button("登录 MiMo 官方账户") {
+                isOfficialLoginPresented = true
+            }
+            .disabled(!hasAcceptedAIPrivacy)
+        } header: {
+            Text("MiMo 官方额度")
+        } footer: {
+            Text("数据直接读取 MiMo 官方控制台。网页登录会话与 API Key 分开保存；App 不会读取或保存你的小米账号密码。")
+        }
+    }
+
+    private var credentialSection: some View {
+        Section {
+            if let masked = savedCredentialMask {
+                LabeledContent("当前 Key", value: masked)
+            }
+
+            HStack {
+                Group {
+                    if isRevealed {
+                        TextField("sk- 或 tp- 开头", text: $apiKey)
+                    } else {
+                        SecureField("sk- 或 tp- 开头", text: $apiKey)
+                    }
+                }
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+
+                Button {
+                    isRevealed.toggle()
+                } label: {
+                    Image(systemName: isRevealed ? "eye.slash" : "eye")
+                }
+                .accessibilityLabel(isRevealed ? "隐藏 API Key" : "显示 API Key")
+            }
+
+            PasteButton(payloadType: String.self) { values in
+                apiKey = values.first ?? ""
+            }
+            .labelStyle(.titleAndIcon)
+
+            Button {
+                save()
+            } label: {
+                if isSaving || controller.isTestingCredential {
+                    HStack {
+                        ProgressView()
+                        Text("正在测试连接")
+                    }
+                } else {
+                    Text(savedCredentialMask == nil ? LocalizedStringKey("测试连接并保存") : LocalizedStringKey("测试连接并替换"))
+                }
+            }
+            .disabled(
+                apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || isSaving
+                    || controller.isTestingCredential
+                    || !hasAcceptedAIPrivacy
+            )
+
+            if savedCredentialMask != nil {
+                Button("删除 API Key", role: .destructive) {
+                    isDeleteConfirmationPresented = true
+                }
+            }
+        } header: {
+            Text("MiMo API Key")
+        } footer: {
+            Text("sk- 使用标准地址，tp- 使用 Token Plan 地址。Key 通过连接测试后保存在本机钥匙串。")
+        }
+    }
+
+    private var privacySection: some View {
+        Section("数据与隐私") {
+            InsightAssistantPrivacyRow(
+                systemImage: "iphone.and.arrow.forward",
+                title: "请求直接发送",
+                detail: "模型请求由此 iPhone 直接发往 MiMo，eSheep 服务端不接触明文 Key。"
+            )
+            Toggle(isOn: $retainsSentVoiceAudio) {
+                Label {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("在本机保留已发送语音")
+                        Text("发送时直接提交 MiMo；用于回听的原始副本只保存在此 iPhone，不上传到 eSheep 云端或参与个人空间同步。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "waveform")
+                        .foregroundStyle(AppTheme.brand)
+                }
+            }
+            .accessibilityHint("只影响之后发送的语音")
+            .onChange(of: retainsSentVoiceAudio) { _, isEnabled in
+                InsightVoicePrivacyPreference.setRetainsSentAudio(
+                    isEnabled,
+                    for: account.effectiveAccountID
+                )
+            }
+            InsightAssistantPrivacyRow(
+                systemImage: "photo",
+                title: "图片先处理",
+                detail: "图片移除位置与 EXIF 信息并压缩后，才会提交模型或进入加密同步。"
+            )
+            InsightAssistantPrivacyRow(
+                systemImage: "chart.bar.doc.horizontal",
+                title: "牧场数据按需提供",
+                detail: "默认只发送当前问题和有限结果；敏感明细或扩展范围每次都需要单独授权。"
+            )
+        }
+    }
+
+    private var devicesSection: some View {
+        Section {
+            if IdentityWorkerConfiguration.baseURL == nil {
+                Text("账号服务未配置，洞察历史和 Key 仅保存在本机。")
+                    .foregroundStyle(.secondary)
+            } else if let securityStatusMessage {
+                Text("加密同步暂不可用：\(securityStatusMessage)\nMiMo Key 已安全保存在本机，不受影响。")
+                    .foregroundStyle(.secondary)
+            } else if insightDevices.isEmpty {
+                Text(isLoadingSecurity ? LocalizedStringKey("正在读取设备…") : LocalizedStringKey("暂无设备信息"))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(insightDevices) { device in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(device.displayName)
+                            deviceStatusView(device)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if device.status == "pending" {
+                            Button("批准") {
+                                approve(device)
+                            }
+                        } else if device.status == "active",
+                                  device.deviceID != currentDeviceID {
+                            Button("撤销", role: .destructive) {
+                                devicePendingRevocation = device
+                            }
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("加密同步设备")
+        } footer: {
+            Text("批准和撤销需要 Face ID / Touch ID。撤销会轮换个人主密钥；旧设备已离线缓存的内容无法远程抹除。")
+        }
+    }
+
+    private var recoverySection: some View {
+        Section("恢复码") {
+            Button("生成并上传恢复包") {
+                generateRecovery()
+            }
+
+            if !recoveryCode.isEmpty {
+                Text(recoveryCode)
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+                Text("恢复码只显示在这里，请离线妥善保存。每个恢复包只能成功使用一次，恢复后请重新生成。")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            SecureField("输入恢复码", text: $recoveryInput)
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+
+            Button("使用恢复码恢复") {
+                importRecovery()
+            }
+            .disabled(recoveryInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 

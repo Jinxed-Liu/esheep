@@ -30,7 +30,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 40
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v6
         with:
@@ -41,12 +41,16 @@ jobs:
           xcodebuild -version
           xcrun simctl list devices available --json > "$RUNNER_TEMP/simulators.json"
           python3 - <<'PY'
-          import json, os
+          import json, os, subprocess
+          sdk_version = tuple(map(int, subprocess.check_output(
+              ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], text=True
+          ).strip().split('.')))
           with open(os.path.join(os.environ['RUNNER_TEMP'], 'simulators.json')) as file:
               devices = json.load(file)['devices']
           candidates = [
               (tuple(map(int, runtime.rsplit('iOS-', 1)[1].split('-'))), device)
               for runtime, values in devices.items() if 'iOS-' in runtime
+              if tuple(map(int, runtime.rsplit('iOS-', 1)[1].split('-'))) <= sdk_version
               for device in values
               if device.get('isAvailable') and device['name'] == 'iPhone 17 Pro'
           ]
@@ -83,6 +87,7 @@ jobs:
             -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
             -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee "$RUNNER_TEMP/assistant-build.log"
       - name: Run the real assistant entry UI regression
@@ -100,6 +105,7 @@ jobs:
             -default-test-execution-time-allowance 180 \
             -maximum-test-execution-time-allowance 180 \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee "$RUNNER_TEMP/assistant-entry.log"
       - name: Print runtime result and crash details
