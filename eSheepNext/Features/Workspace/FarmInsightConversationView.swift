@@ -133,7 +133,7 @@ struct FarmInsightConversationView: View {
         .init(accountID: boundScope.accountID, farmID: boundScope.farmID)
     }
 
-    var body: some View {
+    private var conversationLayout: some View {
         conversationScroll
             .background(AppTheme.pageBackground.ignoresSafeArea())
             .navigationTitle("")
@@ -166,6 +166,10 @@ struct FarmInsightConversationView: View {
                     composer
                 }
             }
+    }
+
+    private var conversationLifecycle: some View {
+        conversationLayout
             .task(id: farm.id) {
                 guard isControllerBoundToFarm else {
                     controller.errorMessage = "牧场已切换，请重新进入 AI 助手。"
@@ -246,6 +250,10 @@ struct FarmInsightConversationView: View {
             .onChange(of: selectingDocument?.id) { _, id in
                 if id == nil { restorePickerFocus() }
             }
+    }
+
+    private var conversationSheets: some View {
+        conversationLifecycle
             .navigationDestination(isPresented: $isNewChatPresented) {
                 FarmInsightConversationView(account: account, farm: farm)
             }
@@ -306,6 +314,10 @@ struct FarmInsightConversationView: View {
                     }
                 }
             }
+    }
+
+    private var conversationActions: some View {
+        conversationSheets
             .alert("重命名聊天", isPresented: $isRenamePresented) {
                 TextField("聊天名称", text: $renamedTitle)
                 Button("取消", role: .cancel) {}
@@ -343,6 +355,10 @@ struct FarmInsightConversationView: View {
             } message: {
                 Text("这会替换当前文字和附件。原消息及操作卡会保留，恢复后由你决定是否发送。")
             }
+    }
+
+    private var conversationAttachments: some View {
+        conversationActions
             .sheet(item: $selectedDraft) { draft in
                 let presentation = controller.presentation(for: draft)
                 InsightDraftConfirmationView(
@@ -402,6 +418,10 @@ struct FarmInsightConversationView: View {
                 case .failure(let error): controller.errorMessage = "选择分析文件失败：\(error.localizedDescription)"
                 }
             }
+    }
+
+    var body: some View {
+        conversationAttachments
             .alert(
                 "AI 助手",
                 isPresented: Binding(
