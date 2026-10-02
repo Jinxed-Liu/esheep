@@ -60,6 +60,7 @@ jobs:
           print(f"Testing {device['name']} on iOS {'.'.join(map(str, version))}")
           with open(os.environ['GITHUB_ENV'], 'a') as file:
               file.write(f"IOS_SIMULATOR_ID={device['udid']}\n")
+          subprocess.run(['xcrun', 'simctl', 'boot', device['udid']], check=False)
           PY
       - name: Build the assistant entry UI regression
         run: |
@@ -91,6 +92,7 @@ jobs:
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-build.log"
       - name: Run the real assistant entry UI regression
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           python3 -u - <<'PYMONITOR' &

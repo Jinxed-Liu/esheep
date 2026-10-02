@@ -69,6 +69,9 @@ struct FarmInsightConversationListView: View {
     }
 
     var body: some View {
+#if DEBUG
+        let _ = traceBodyChanges()
+#endif
         @Bindable var draft = draft
         let matches = searchMatches
         let lastMessages = lastAssistantMessages
@@ -102,7 +105,6 @@ struct FarmInsightConversationListView: View {
                 composerFocused: $composerFocused
             )
         }
-        .searchable(text: $search, isPresented: $showSearch, prompt: "搜索聊天和消息")
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if let draftSaveError {
@@ -136,6 +138,15 @@ struct FarmInsightConversationListView: View {
             Button("好", role: .cancel) {}
         } message: { Text(errorMessage ?? "") }
     }
+
+#if DEBUG
+    private func traceBodyChanges() {
+        guard ProcessInfo.processInfo.arguments.contains("--design-acceptance"),
+              InsightListRenderDiagnostic.remaining > 0 else { return }
+        InsightListRenderDiagnostic.remaining -= 1
+        Self._printChanges()
+    }
+#endif
 
     private var listComposer: some View {
         @Bindable var draft = draft
@@ -279,6 +290,13 @@ struct FarmInsightConversationListView: View {
         if let error = draftController.errorMessage { errorMessage = error }
     }
 }
+
+#if DEBUG
+@MainActor
+private enum InsightListRenderDiagnostic {
+    static var remaining = 40
+}
+#endif
 
 private struct InsightChatDestination: Identifiable, Hashable {
     let id: UUID
