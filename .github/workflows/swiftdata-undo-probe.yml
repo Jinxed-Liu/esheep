@@ -1,0 +1,171 @@
+name: Probe native SwiftData undo grouping
+
+on:
+  push:
+    branches: ['codex/assistant-entry-baseline']
+    paths: ['.github/workflows/swiftdata-undo-probe.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-26
+    timeout-minutes: 8
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Compile and run independent SwiftData probes
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          python3 -u - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+
+          directory = Path(os.environ['RUNNER_TEMP']) / 'swiftdata-undo-probe'
+          directory.mkdir()
+          source = directory / 'Probe.swift'
+          source.write_text(r'''import Foundation
+          import SwiftData
+
+          @Model
+          final class ProbeEntity {
+              var name: String
+              var flag: Bool
+              var revision: Int
+              init(name: String, flag: Bool = false, revision: Int = 1) {
+                  self.name = name
+                  self.flag = flag
+                  self.revision = revision
+              }
+          }
+
+          @Model
+          final class ProbeFact {
+              var name: String
+              init(name: String) { self.name = name }
+          }
+
+          @main
+          struct Probe {
+              @MainActor
+              static func main() throws {
+                  let mode = CommandLine.arguments[1]
+                  func log(_ value: String) {
+                      FileHandle.standardOutput.write(Data((value + "\n").utf8))
+                  }
+                  let schema = Schema([ProbeEntity.self, ProbeFact.self])
+                  let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+                  let container = try ModelContainer(for: schema, configurations: [configuration])
+                  let context = ModelContext(container)
+                  context.autosaveEnabled = false
+                  let first = ProbeEntity(name: "first-original")
+                  let second = ProbeEntity(name: "second-original")
+                  context.insert(first)
+                  context.insert(second)
+                  try context.save()
+
+                  let manager = UndoManager()
+                  if mode != "default-manager" { manager.groupsByEvent = false }
+                  func report(_ stage: String) {
+                      log("STAGE \(stage) groupingLevel=\(manager.groupingLevel) canUndo=\(manager.canUndo) canRedo=\(manager.canRedo) hasChanges=\(context.hasChanges) first=\(first.name)/\(first.flag)/\(first.revision) second=\(second.name)/\(second.flag)/\(second.revision)")
+                  }
+                  log("MODE \(mode) groupsByEvent=\(manager.groupsByEvent)")
+                  report("before-attach")
+                  if mode == "begin-before-attach" {
+                      manager.beginUndoGrouping()
+                      report("begin-before-attach")
+                      context.undoManager = manager
+                  } else {
+                      context.undoManager = manager
+                      report("after-attach")
+                      if mode != "default-manager" {
+                          manager.beginUndoGrouping()
+                          report("begin-after-attach")
+                      }
+                  }
+                  report("attached")
+                  first.name = "first-updated"
+                  first.flag = true
+                  first.revision = 2
+                  report("first-fields-mutated")
+                  let fetched = try context.fetch(FetchDescriptor<ProbeEntity>())
+                  log("FETCH entities=\(fetched.count)")
+                  report("after-entity-fetch")
+                  second.name = "second-updated"
+                  second.flag = true
+                  second.revision = 3
+                  context.insert(ProbeFact(name: "new-fact"))
+                  report("second-fields-and-fact-mutated")
+                  let facts = try context.fetch(FetchDescriptor<ProbeFact>())
+                  log("FETCH facts=\(facts.count)")
+                  report("after-fact-fetch")
+                  context.processPendingChanges()
+                  report("after-process-pending")
+
+                  if mode == "guarded-all-private-undo" {
+                      var groups = 0
+                      while manager.groupingLevel > 0 && groups < 100 {
+                          manager.endUndoGrouping()
+                          groups += 1
+                          report("guarded-end-\(groups)")
+                      }
+                      var undos = 0
+                      while manager.canUndo && undos < 100 {
+                          manager.undo()
+                          undos += 1
+                          report("undo-\(undos)")
+                      }
+                      log("COUNTS closedGroups=\(groups) undoCalls=\(undos)")
+                  } else if mode == "default-manager" {
+                      report("before-default-undo")
+                      if manager.canUndo { manager.undo() }
+                      report("after-default-undo")
+                  } else {
+                      report("before-unconditional-end")
+                      manager.endUndoGrouping()
+                      report("after-unconditional-end")
+                      if manager.canUndo { manager.undo() }
+                      report("after-single-undo")
+                  }
+
+                  context.undoManager = nil
+                  report("after-detach")
+                  context.processPendingChanges()
+                  report("after-final-process-pending")
+                  context.rollback()
+                  report("after-rollback")
+                  let remainingFacts = try context.fetch(FetchDescriptor<ProbeFact>()).count
+                  let restored = first.name == "first-original" && !first.flag && first.revision == 1
+                      && second.name == "second-original" && !second.flag && second.revision == 1
+                      && remainingFacts == 0
+                  log("RESULT restored=\(restored) facts=\(remainingFacts)")
+              }
+          }
+          ''')
+          executable = directory / 'probe'
+          build = subprocess.run(['xcrun', 'swiftc', '-parse-as-library', str(source), '-o', str(executable)],
+                                 capture_output=True, text=True)
+          (directory / 'compile.txt').write_text(build.stdout + build.stderr)
+          print('Compiler exit:', build.returncode, build.stdout, build.stderr, flush=True)
+          if build.returncode != 0:
+              raise SystemExit(build.returncode)
+          for mode in ['begin-before-attach', 'attach-before-begin', 'default-manager', 'guarded-all-private-undo']:
+              try:
+                  result = subprocess.run([str(executable), mode], capture_output=True, text=True, timeout=60)
+                  content = result.stdout + result.stderr + f'\nPROCESS EXIT {result.returncode}\n'
+              except subprocess.TimeoutExpired as error:
+                  content = f'PROCESS TIMEOUT {mode}\n{error.stdout!r}\n{error.stderr!r}\n'
+              (directory / (mode + '.txt')).write_text(content)
+              print(content, flush=True)
+          PY
+      - name: Preserve probe source and small console results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiftdata-undo-probe
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/swiftdata-undo-probe/*.swift
+            ${{ runner.temp }}/swiftdata-undo-probe/*.txt
