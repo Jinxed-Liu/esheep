@@ -83,6 +83,7 @@ jobs:
             -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
             -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee "$RUNNER_TEMP/assistant-build.log"
       - name: Run the real assistant entry UI regression
@@ -100,6 +101,7 @@ jobs:
             -default-test-execution-time-allowance 180 \
             -maximum-test-execution-time-allowance 180 \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee "$RUNNER_TEMP/assistant-entry.log"
       - name: Run the complete existing XCTest suites
@@ -114,6 +116,7 @@ jobs:
             -resultBundlePath "$RUNNER_TEMP/ios-unit.xcresult" \
             -parallel-testing-enabled NO \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee "$RUNNER_TEMP/ios-unit.log"
       - name: Print runtime result and crash details
