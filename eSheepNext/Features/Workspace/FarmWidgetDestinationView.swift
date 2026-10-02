@@ -88,13 +88,12 @@ private struct FarmWidgetWeightDetailView: View {
     private func load() async {
         do {
             let source = try await FarmDeepAnalyticsSnapshotActor(container: modelContext.container).load(farmID: farm.id)
-            let name: String?
-            if profile.scope == .pen {
-                name = source.snapshot.pens.first { $0.id == profile.scopeID && $0.isActive }?.name
-            } else { name = source.batches.first { $0.id == profile.scopeID }?.name }
-            guard let name else { error = "所选圈舍或批次已不可用，请重新配置。"; return }
-            let profile = profile
-            let result = await Task.detached(priority: .userInitiated) {
+            let selectedProfile = profile
+            guard let name = Self.scopeName(for: selectedProfile, in: source) else {
+                error = "所选圈舍或批次已不可用，请重新配置。"
+                return
+            }
+            let result = await Task.detached(priority: .userInitiated) { [source, profile = selectedProfile, name] in
                 let now = source.snapshot.factsReadAt
                 let filter = FarmWidgetSnapshotBuilder.weightFilter(profile: profile, snapshot: source.snapshot, now: now)
                 let result = WeightGainAnalyticsEngine.calculate(snapshot: source.snapshot, filter: filter)
@@ -107,6 +106,14 @@ private struct FarmWidgetWeightDetailView: View {
             payload = result
         } catch is CancellationError { return }
         catch { self.error = error.localizedDescription }
+    }
+
+    // Keep synchronous search closures out of the async view-state lifetime.
+    private nonisolated static func scopeName(for profile: FarmWidgetProfile, in source: FarmDeepAnalyticsPayload) -> String? {
+        if profile.scope == .pen {
+            return source.snapshot.pens.first { $0.id == profile.scopeID && $0.isActive }?.name
+        }
+        return source.batches.first { $0.id == profile.scopeID }?.name
     }
 }
 private struct WidgetWeightEvidence: Sendable {
