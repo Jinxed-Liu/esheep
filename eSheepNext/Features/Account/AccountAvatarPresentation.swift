@@ -239,8 +239,12 @@ struct AccountAvatarGalleryPresenter: UIViewControllerRepresentable {
 
         private func makeViewer(state: AccountAvatarViewerTransitionState) -> AccountAvatarViewer {
             let source = enteringSource
-            let seed = configuration.initialImage ?? source?.image
-            let digest = configuration.initialDigest ?? currentAvatarDigest
+            let digest = currentAvatarDigest
+            // A previous avatar's thumbnail must not replace the current
+            // renderer snapshot while the new thumbnail is still decoding.
+            let hasMatchingPreview = configuration.initialDigest == digest &&
+                configuration.initialImage != nil
+            let seed = hasMatchingPreview ? configuration.initialImage : source?.image
             return AccountAvatarViewer(
                 account: configuration.account,
                 reduceMotion: configuration.reduceMotion,
