@@ -77,78 +77,30 @@ struct FarmInsightConversationListView: View {
             (!currentDeviceOnly || deviceIDs.contains($0.id)) &&
                 (normalizedSearch.isEmpty || $0.title.localizedStandardContains(normalizedSearch) || matches[$0.id] != nil)
         }
-        List {
-            Section {
-                HStack(spacing: 8) {
-                    filterButton("全部", selected: !currentDeviceOnly) { currentDeviceOnly = false }
-                    filterButton(UIDevice.current.userInterfaceIdiom == .pad ? "此 iPad" : "此 iPhone", selected: currentDeviceOnly) { currentDeviceOnly = true }
-                    Spacer()
-                }
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-            }
-            Section {
-                ForEach(filteredConversations, id: \.id) { conversation in
-                    Button { open(conversation, messageID: matches[conversation.id]?.id) } label: {
-                        InsightConversationListRow(
-                            title: conversation.title,
-                            excerpt: normalizedSearch.isEmpty ? nil : matches[conversation.id]?.text,
-                            state: coordinator.state(scope: scope, conversationID: conversation.id),
-                            goalStatus: coordinator.cachedController(scope: scope, conversationID: conversation.id)?.activeGoalStatus,
-                            lastMessage: lastMessages[conversation.id]
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .listRowBackground(Color(uiColor: .systemBackground))
-                    .contextMenu {
-                        Button("删除聊天", systemImage: "trash", role: .destructive) { delete(conversation) }
-                    }
-                }
-                if filteredConversations.isEmpty && !normalizedSearch.isEmpty {
-                    ContentUnavailableView.search(text: normalizedSearch)
-                        .listRowSeparator(.hidden)
-                }
-            } header: {
-                HStack {
-                    Text(normalizedSearch.isEmpty ? "最近" : "搜索结果").textCase(nil)
-                    Spacer()
-                    Button { openDraft() } label: {
-                        Image(systemName: "square.and.pencil").font(.body)
-                            .frame(width: 44, height: 44)
-                    }
-                    .accessibilityLabel("新聊天")
-                }
-            }
-        }
+        InsightConversationListContent(
+            conversations: filteredConversations,
+            matches: matches,
+            lastMessages: lastMessages,
+            normalizedSearch: normalizedSearch,
+            scope: scope,
+            coordinator: coordinator,
+            currentDeviceOnly: $currentDeviceOnly,
+            onOpen: open,
+            onNewConversation: { openDraft() },
+            onDelete: delete
+        )
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Color(uiColor: .systemBackground).ignoresSafeArea())
         .navigationTitle("聊天")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Menu {
-                    Text(farm.name)
-                    Button("AI 设置", systemImage: "gearshape") { showSettings = true }
-                } label: { Image(systemName: "line.3.horizontal") }
-                .accessibilityLabel("聊天菜单")
-            }
-            ToolbarItem(placement: .principal) {
-                Menu {
-                    Label("MiMo · 本机执行", systemImage: "checkmark")
-                } label: {
-                    HStack(spacing: 5) {
-                        Text("MiMo").font(.headline)
-                        Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
-                    }
-                    .foregroundStyle(.primary)
-                }
-                .accessibilityLabel("当前服务 MiMo")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { composerFocused = false; showSearch = true } label: { Image(systemName: "magnifyingglass") }
-                    .accessibilityLabel("搜索当前牧场聊天")
-            }
+            InsightConversationListToolbar(
+                farmName: farm.name,
+                showSettings: $showSettings,
+                showSearch: $showSearch,
+                composerFocused: $composerFocused
+            )
         }
         .searchable(text: $search, isPresented: $showSearch, prompt: "搜索聊天和消息")
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -257,14 +209,6 @@ struct FarmInsightConversationListView: View {
 
     private var isReady: Bool { if case .ready = draftController.availability { true } else { false } }
 
-    private func filterButton(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title).font(.subheadline.weight(selected ? .semibold : .regular))
-                .padding(.horizontal, 15).frame(minHeight: 38)
-                .background(selected ? Color.primary.opacity(0.08) : Color.clear, in: .capsule)
-        }.buttonStyle(.plain).foregroundStyle(.primary)
-    }
-
     private func open(_ conversation: InsightConversationRecord, messageID: UUID?) {
         let controller = coordinator.controller(account: account, farm: farm, conversationID: conversation.id)
         Task {
@@ -368,5 +312,133 @@ private struct InsightConversationListRow: View {
         .frame(minHeight: 36)
         .padding(.vertical, 4)
         .contentShape(.rect)
+    }
+}
+
+@MainActor
+private struct InsightConversationListContent: View {
+    let conversations: [InsightConversationRecord]
+    let matches: [UUID: InsightMessageRecord]
+    let lastMessages: [UUID: InsightMessageRecord]
+    let normalizedSearch: String
+    let scope: InsightConversationScope
+    let coordinator: InsightSessionCoordinator
+    @Binding var currentDeviceOnly: Bool
+    let onOpen: (InsightConversationRecord, UUID?) -> Void
+    let onNewConversation: () -> Void
+    let onDelete: (InsightConversationRecord) -> Void
+
+    var body: some View {
+        List {
+            Section {
+                HStack(spacing: 8) {
+                    filterButton("全部", selected: !currentDeviceOnly) { currentDeviceOnly = false }
+                    filterButton(UIDevice.current.userInterfaceIdiom == .pad ? "此 iPad" : "此 iPhone", selected: currentDeviceOnly) { currentDeviceOnly = true }
+                    Spacer()
+                }
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            }
+            Section {
+                ForEach(conversations, id: \.id) { conversation in
+                    let match: InsightMessageRecord? = matches[conversation.id]
+                    let state: InsightSessionRunState? = coordinator.state(scope: scope, conversationID: conversation.id)
+                    let goalStatus: InsightGoalStatus? = coordinator.cachedController(scope: scope, conversationID: conversation.id)?.activeGoalStatus
+                    InsightConversationListButton(
+                        title: conversation.title,
+                        excerpt: normalizedSearch.isEmpty ? nil : match?.text,
+                        state: state,
+                        goalStatus: goalStatus,
+                        lastMessage: lastMessages[conversation.id],
+                        onOpen: { onOpen(conversation, match?.id) },
+                        onDelete: { onDelete(conversation) }
+                    )
+                }
+                if conversations.isEmpty && !normalizedSearch.isEmpty {
+                    ContentUnavailableView.search(text: normalizedSearch)
+                        .listRowSeparator(.hidden)
+                }
+            } header: {
+                HStack {
+                    Text(normalizedSearch.isEmpty ? "最近" : "搜索结果").textCase(nil)
+                    Spacer()
+                    Button(action: onNewConversation) {
+                        Image(systemName: "square.and.pencil").font(.body)
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("新聊天")
+                }
+            }
+        }
+    }
+
+    private func filterButton(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.subheadline.weight(selected ? .semibold : .regular))
+                .padding(.horizontal, 15).frame(minHeight: 38)
+                .background(selected ? Color.primary.opacity(0.08) : Color.clear, in: .capsule)
+        }.buttonStyle(.plain).foregroundStyle(.primary)
+    }
+}
+
+@MainActor
+private struct InsightConversationListButton: View {
+    let title: String
+    let excerpt: String?
+    let state: InsightSessionRunState?
+    let goalStatus: InsightGoalStatus?
+    let lastMessage: InsightMessageRecord?
+    let onOpen: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            InsightConversationListRow(
+                title: title,
+                excerpt: excerpt,
+                state: state,
+                goalStatus: goalStatus,
+                lastMessage: lastMessage
+            )
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(Color(uiColor: .systemBackground))
+        .contextMenu {
+            Button("删除聊天", systemImage: "trash", role: .destructive, action: onDelete)
+        }
+    }
+}
+
+@MainActor
+private struct InsightConversationListToolbar: ToolbarContent {
+    let farmName: String
+    @Binding var showSettings: Bool
+    @Binding var showSearch: Bool
+    @FocusState.Binding var composerFocused: Bool
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Menu {
+                Text(farmName)
+                Button("AI 设置", systemImage: "gearshape") { showSettings = true }
+            } label: { Image(systemName: "line.3.horizontal") }
+            .accessibilityLabel("聊天菜单")
+        }
+        ToolbarItem(placement: .principal) {
+            Menu {
+                Label("MiMo · 本机执行", systemImage: "checkmark")
+            } label: {
+                HStack(spacing: 5) {
+                    Text("MiMo").font(.headline)
+                    Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                }
+                .foregroundStyle(.primary)
+            }
+            .accessibilityLabel("当前服务 MiMo")
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { composerFocused = false; showSearch = true } label: { Image(systemName: "magnifyingglass") }
+                .accessibilityLabel("搜索当前牧场聊天")
+        }
     }
 }

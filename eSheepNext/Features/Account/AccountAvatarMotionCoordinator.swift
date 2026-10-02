@@ -11,6 +11,7 @@ final class AccountAvatarMotionCoordinator {
     private(set) var expansion: CGFloat = 0
     private(set) var sourceFrame: CGRect = .zero
     private(set) var availableWidth: CGFloat = 100
+    private(set) var availableHeight: CGFloat = 0
     private(set) var contentOrigin: CGPoint = .zero
     private(set) var titleHeight: CGFloat = floor(
         UIFont.systemFont(ofSize: 28, weight: .medium).ascender -
@@ -53,6 +54,13 @@ final class AccountAvatarMotionCoordinator {
         let bounded = max(width, 100)
         if abs(availableWidth - bounded) > 0.5 {
             availableWidth = bounded
+        }
+    }
+
+    func updateAvailableHeight(_ height: CGFloat) {
+        guard height.isFinite, height > 0 else { return }
+        if abs(availableHeight - height) > 0.5 {
+            availableHeight = height
         }
     }
 

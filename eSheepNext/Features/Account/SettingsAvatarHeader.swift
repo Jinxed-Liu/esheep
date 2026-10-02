@@ -21,15 +21,17 @@ struct SettingsAvatarHeader: View, Animatable {
 
     var body: some View {
         let width = metrics.width > 0 ? metrics.width : max(100, motion.availableWidth)
+        let expandedSide = settingsAvatarExpandedSide(width: width, height: motion.availableHeight)
         let status = metrics.statusBarHeight
         let progress = boundedSettingsAvatarProgress(expansion)
         let titleHeight = SettingsAvatarTypography.titleHeight
         let subtitleHeight = SettingsAvatarTypography.subtitleHeight
         let normalHeight = status + 131 + titleHeight + 4 + subtitleHeight
-        let expandedHeight = width + 60 - 21
+        let expandedHeight = expandedSide + 60 - 21
         let height = max(0, normalHeight + (expandedHeight - normalHeight) * progress - motion.contentOrigin.y)
         let layout = SettingsAvatarRenderLayout(
-            width: width, statusBarHeight: status, windowOrigin: .zero,
+            width: width, expandedSide: expandedSide,
+            statusBarHeight: status, windowOrigin: .zero,
             offset: motion.scrollOffset, titleProgress: motion.titleProgress,
             expansion: progress, animationsEnabled: motion.animationsEnabled
         )
@@ -105,8 +107,10 @@ struct SettingsAvatarOverlay: View, Animatable {
     var body: some View {
         GeometryReader { geometry in
             let width = metrics.width > 0 ? metrics.width : max(100, geometry.size.width)
+            let expandedSide = settingsAvatarExpandedSide(width: width, height: geometry.size.height)
             let layout = SettingsAvatarRenderLayout(
-                width: width, statusBarHeight: metrics.statusBarHeight,
+                width: width, expandedSide: expandedSide,
+                statusBarHeight: metrics.statusBarHeight,
                 windowOrigin: metrics.windowOriginInView,
                 offset: motion.scrollOffset, titleProgress: motion.titleProgress,
                 expansion: boundedSettingsAvatarProgress(expansion),
@@ -132,6 +136,11 @@ struct SettingsAvatarOverlay: View, Animatable {
                 }
             )
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                geometry.size.height
+            } action: { height in
+                motion.updateAvailableHeight(height)
+            }
         }
         .ignoresSafeArea(.container, edges: .top)
         .allowsHitTesting(false)
@@ -180,6 +189,7 @@ private enum SettingsAvatarTypography {
 
 private struct SettingsAvatarRenderLayout {
     let width: CGFloat
+    let expandedSide: CGFloat
     let statusBarHeight: CGFloat
     let windowOrigin: CGPoint
     let offset: CGFloat
@@ -196,13 +206,13 @@ private struct SettingsAvatarRenderLayout {
         let normalScale = animationsEnabled ? 1 - 0.45 * fraction : 1
         let normalSide = 100 * normalScale
         let normalCenterY = statusBarHeight + 72 - offset + (animationsEnabled ? 17 * fraction : 0)
-        let pull = animationsEnabled ? max(0, -offset / width) : 0
-        let expandedSide = width * (1 + pull)
+        let pull = animationsEnabled ? max(0, -offset / expandedSide) : 0
+        let stretchedSide = expandedSide * (1 + pull)
         // Stretch around the square's center. For a negative offset this keeps
         // its upper edge at the screen top and grows the lower edge with the pull.
-        let expandedTop = -offset / 2 - (expandedSide - width) / 2
+        let expandedTop = -offset / 2 - (stretchedSide - expandedSide) / 2
         let normalTop = normalCenterY - normalSide / 2
-        let side = normalSide + (expandedSide - normalSide) * expansion
+        let side = normalSide + (stretchedSide - normalSide) * expansion
         let top = normalTop + (expandedTop - normalTop) * expansion
         return CGRect(
             x: windowOrigin.x + (width - side) / 2,
@@ -464,22 +474,23 @@ private final class SettingsAvatarRendererUIView: UIView {
         subtitle.font = .systemFont(ofSize: 17 - expansion)
         let currentTitleHeight = floor(title.font.ascender - title.font.descender)
         let currentSubtitleHeight = floor(subtitle.font.ascender - subtitle.font.descender)
-        let maxWidth = max(0, layout.width - 32)
+        let maxWidth = max(0, layout.width - 32 + (layout.expandedSide - layout.width) * expansion)
+        let expandedLeft = layout.windowOrigin.x + (layout.width - layout.expandedSide) / 2 + 16
         let nameWidth = min(maxWidth, title.sizeThatFits(CGSize(width: .greatestFiniteMagnitude, height: currentTitleHeight)).width)
         let subtitleWidth = min(maxWidth, subtitle.sizeThatFits(CGSize(width: .greatestFiniteMagnitude, height: currentSubtitleHeight)).width)
         let normalTop = layout.windowOrigin.y + layout.statusBarHeight + 131 - layout.offset
             - (layout.animationsEnabled ? 5.5 * boundedSettingsAvatarProgress(layout.titleProgress) : 0)
-        let expandedTop = layout.windowOrigin.y + layout.width + 60 - 58
+        let expandedTop = layout.windowOrigin.y + layout.expandedSide + 60 - 58
             - 1 / max(1, displayScale) - layout.offset
         let top = normalTop + (expandedTop - normalTop) * expansion
         let nameX = layout.windowOrigin.x + (layout.width - nameWidth) / 2
         let subX = layout.windowOrigin.x + (layout.width - subtitleWidth) / 2
         title.frame = CGRect(
-            x: nameX + (layout.windowOrigin.x + 16 - nameX) * expansion,
+            x: nameX + (expandedLeft - nameX) * expansion,
             y: top, width: nameWidth, height: currentTitleHeight
         )
         subtitle.frame = CGRect(
-            x: subX + (layout.windowOrigin.x + 16 - subX) * expansion,
+            x: subX + (expandedLeft - subX) * expansion,
             y: top + currentTitleHeight + 4,
             width: subtitleWidth, height: currentSubtitleHeight
         )
@@ -773,6 +784,14 @@ private func settingsAvatarWindowMetrics(view: UIView, window: UIWindow) -> Sett
             && portrait && window.safeAreaInsets.top >= 59
             && window.windowScene?.statusBarManager?.isStatusBarHidden != true
     )
+}
+
+private func settingsAvatarExpandedSide(width: CGFloat, height: CGFloat) -> CGFloat {
+    // The overlay supplies the viewport height, never the animated header's
+    // reserved height. Portrait keeps a full-width square; shorter windows
+    // preserve room for the 60pt extension and its visible account title.
+    guard height.isFinite, height > 0 else { return width }
+    return min(width, max(100, height - 60))
 }
 
 private func boundedSettingsAvatarProgress(_ value: CGFloat) -> CGFloat {

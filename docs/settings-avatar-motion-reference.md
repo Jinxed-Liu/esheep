@@ -21,6 +21,8 @@ The round photo keeps its own circular clip and scale; a separate 171-point effe
 
 The app uses independently constructed Bézier geometry for those stages. The reference's topology, placement, progress and effects guide it, but it is not the original TGS vector and must not be described as a pixel-identical copy.
 
+On a short landscape viewport, the independently adapted expanded square is capped at viewportHeight−60 and centered horizontally so the name and subtitle remain visible. Portrait phones with sufficient height retain the screen-width square. The same side drives the photo, text and scroll placeholder; this is a responsive adaptation, not a claim about Telegram's landscape layout.
+
 The header placeholder and visible renderer share the explicit expansion value. Geometry measurements establish the stable content origin and window dimensions; they do not infer expansion from an animated image height. The gallery asks the actual image renderer for its current window-space frame, and asks again on return after the covered header restores the circle.
 
 ## Acceptance
