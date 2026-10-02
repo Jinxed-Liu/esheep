@@ -26,10 +26,11 @@ enum FarmDataQuerySkill {
     - 产羔次数：query_kind=lambing_events。技能统计产羔事件条数，不能与出生羔羊数混用。
     - 羊只档案及档案出生日期：query_kind=sheep_profiles。只有用户明确询问档案字段时使用。
     - 称重、繁殖明细、健康、饲喂、库存分别使用对应 query_kind。
-    - 派生体重计算不增加专用指标名：由模型组合 source、cohort、pen_membership、partition、window、transform、analysis_scope、group 和 reduce；App 只执行并审计这份计算计划。cohort=current_in_herd 表示以截止时点仍在群的羊，cohort=all_profiles 表示全部非历史归档档案；pen_membership=at_cutoff 按截止时点圈舍，at_measurement 在完整羊只时间线上验证每个真实相邻区间的圈舍归属。必须按问题的对象和时间口径选择，不能默认套用当前圈舍。
-    - 用户询问一个圈舍、批次或群体的变化率而未明确只要某个日期、某一批次、某种生命周期或单一总体值时，analysis_scope=complete；必须用 window=adjacent 和 transform=difference_per_day，完整列出总体结论、不同称重区间、生产批次、截至时点生命周期及数据完整性。单个跨期首末平均值只能作为补充，不能替代相邻区间分析。
-    - 历史圈舍表现使用 cohort=all_profiles + pen_membership=at_measurement，并在生命周期维度把当前在群、出售、死亡、淘汰、转出分别展示；用户明确询问“当前仍在群这些羊”时才改用 current_in_herd + at_cutoff。生产批次仅在区间两端属于同一唯一批次时归入该批次，跨批次、重叠和未分批次必须单列。
-    用户要求按月时给出明确日期范围。无法覆盖全部条件时说明不支持，不得改用近似指标。
+    - 派生体重计算由模型组合 source、sample_policy、cohort、pen_membership、partition、window、transform、analysis_scope、group 和 reduce，App 执行并审计计算计划。默认增重分析与 App 增重分析页共用 WeightGainAnalyticsEngine：sample_policy=canonical_timeline、cohort=all_profiles、pen_membership=at_cutoff。同日统计点采用常规称重优先，其次可追溯断奶重、初生重，同来源取当天最后一次。
+    - 圈舍筛选确定分析结束日牧场时区日末的羊群；分析结束日为当天时截至本轮已读取事实时间。pen_names 数组一次传入用户要求的全部精确圈舍名称；单舍可用兼容字段 pen_name，不筛圈舍时数组和字符串均为空。不能只回答多舍请求中的一个舍，不能用当前圈舍或末次称重圈舍替代历史期末圈舍。跨舍同羊称重连续配对，展示实际转群发生日期及原舍、目标舍，末次称重之后且截止之前的转群也保留。跨舍增重不能推断为某一圈舍独立贡献。
+    - 用户询问群体变化率时，即使指定多个圈舍或日期范围也使用 analysis_scope=complete、window=adjacent、transform=difference_per_day；只有明确要求单一值或单一分组才用 focused。返回总体、真实称重区间、生产批次、截止时点生命周期及数据完整性，多舍还逐舍展示结果，零有效样本显示 0 只、日增重 —。单羊先以有效区间总增重除以总观察天数，再按羊只等权平均；区间等权平均仅作明确标注的补充。
+    - 仅用户明确询问历史“在舍期间表现”或要求区间全程连续在舍时，使用 pen_membership=at_measurement；recorded_only 可用于明确只分析常规称重。该独立口径验证完整时间线的连续归属，不能删掉中间样本再拼区间。生产批次归属核查整个区间连续且唯一，退出重入、重叠、跨批次和未分批次单列。负增重和零增重保留。用户明确要求截止时仍在群的子样本时才用 cohort=current_in_herd。
+    用户给定日期或月份时传入明确范围。date_from/date_to 接受 YYYY-MM-DD（牧场时区完整日）或 ISO 8601；as_of 为空时按分析结束日截止，无结束日则截至本轮事实时间。App 默认增重口径的显式 as_of 也以分析结束日封顶，期末名单与生命周期采用同一截止时间。真实称重区间两端须位于分析范围，不插值，不借范围外称重点补足。无法覆盖全部条件时说明不支持，不得改用近似指标。
     """
 
     static func normalize(arguments: [String: Any]) throws -> [String: Any] {

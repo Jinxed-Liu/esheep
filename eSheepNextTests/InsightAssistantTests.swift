@@ -468,9 +468,7 @@ final class InsightAssistantTests: XCTestCase {
         )
 
         for (key, invalidValue) in [
-            ("sample_policy", "canonical_timeline"),
             ("cohort", "current_in_herd"),
-            ("pen_membership", "at_cutoff"),
             ("group_by", "weighing_interval"),
         ] {
             var invalidPlan = plan

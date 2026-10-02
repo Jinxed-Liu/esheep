@@ -9,28 +9,56 @@ private enum InsightAudioPlaybackSource: Equatable {
     case sentMessage(UUID)
 }
 
+enum InsightChatInitialAction: Hashable {
+    case camera, photos, files, voice
+}
+
 struct FarmInsightConversationView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @Query private var attachments: [InsightAttachmentRecord]
 
     let account: AccountProfile
     let farm: FarmRecord
     let initialPrompt: String?
+    let conversationID: UUID?
+    let boundScope: InsightConversationScope
+    let initialAction: InsightChatInitialAction?
+    let onNewConversation: (() -> Void)?
 
     @State private var controller: InsightConversationController
     @State private var audioRecorder = InsightAudioRecorder()
     @State private var audioPlayer = InsightAudioPreviewPlayer()
-    @State private var input = ""
+    @State private var composerDraft: InsightComposerDraft
     @State private var inputOrigin = InsightInputOrigin.text
     @State private var photoItems: [PhotosPickerItem] = []
-    @State private var pendingImages: [PendingInsightImage] = []
-    @State private var pendingAudio: PendingInsightAudio?
     @State private var storedAudioByMessageID: [UUID: StoredInsightAudio] = [:]
     @State private var audioPlaybackSource: InsightAudioPlaybackSource?
     @State private var isPhotoLibraryPresented = false
     @State private var isCameraPresented = false
     @State private var isImportFilePresented = false
-    @State private var isHistoryPresented = false
+    @State private var isAnalysisFilePresented = false
+    @State private var isAnalysisSettingsPresented = false
+    @State private var isAssistantSettingsPresented = false
+    @State private var isDetailsPresented = false
+    @State private var isRenamePresented = false
+    @State private var isDeletePresented = false
+    @State private var isNewChatPresented = false
+    @State private var renamedTitle = ""
+    @State private var selectingDocument: PendingInsightDocument?
+    @State private var processingDocumentNames: [String] = []
+    @State private var isProcessingPhotos = false
+    @State private var isSubmitting = false
+    @State private var isRestoringDraft = false
+    @State private var pendingRestoreMessageID: UUID?
+    @State private var storedDocumentsByMessageID: [UUID: [InsightStoredDocumentPreview]] = [:]
+    @State private var inspectedDocument: InsightStoredDocumentPreview?
+    @State private var focusBeforePicker = false
+    @State private var focusBeforeSettings = false
+    @State private var focusBeforeContext = false
+    @State private var didHandleInitialAction = false
+    @State private var isChatVisible = false
     @State private var isConversationSearchPresented = false
     @State private var isContextUsagePresented = false
     @State private var searchResultTargetID: UUID?
@@ -41,83 +69,133 @@ struct FarmInsightConversationView: View {
     private let conversationBottomID = "insight-conversation-bottom"
 
     init(account: AccountProfile, farm: FarmRecord, initialPrompt: String? = nil) {
+        self.init(
+            account: account, farm: farm,
+            controller: InsightSessionCoordinator.shared.controller(account: account, farm: farm, conversationID: nil),
+            initialPrompt: initialPrompt
+        )
+    }
+
+    init(
+        account: AccountProfile,
+        farm: FarmRecord,
+        controller: InsightConversationController,
+        conversationID: UUID? = nil,
+        draftID: UUID? = nil,
+        searchTargetMessageID: UUID? = nil,
+        initialPrompt: String? = nil,
+        initialAction: InsightChatInitialAction? = nil,
+        onNewConversation: (() -> Void)? = nil
+    ) {
         self.account = account
         self.farm = farm
         self.initialPrompt = initialPrompt
-        _input = State(initialValue: initialPrompt ?? "")
-        _controller = State(initialValue: InsightConversationController(account: account, farm: farm))
+        self.conversationID = conversationID ?? controller.currentConversationID
+        self.boundScope = controller.conversationScope
+        self.initialAction = initialAction
+        self.onNewConversation = onNewConversation
+        _controller = State(initialValue: controller)
+        let draft = InsightSessionCoordinator.shared.draft(
+            scope: controller.conversationScope,
+            conversationID: conversationID ?? controller.currentConversationID
+        )
+        if let initialPrompt, draft.text.isEmpty { draft.text = initialPrompt }
+        _composerDraft = State(initialValue: draft)
+        _searchResultTargetID = State(initialValue: searchTargetMessageID)
+    }
+
+    private var input: String {
+        get { composerDraft.text }
+        nonmutating set { composerDraft.text = newValue }
+    }
+    private var pendingImages: [PendingInsightImage] {
+        get { composerDraft.images }
+        nonmutating set { composerDraft.images = newValue }
+    }
+    private var pendingAudio: PendingInsightAudio? {
+        get { composerDraft.audio }
+        nonmutating set { composerDraft.audio = newValue }
+    }
+    private var pendingDocuments: [PendingInsightDocument] {
+        get { composerDraft.documents }
+        nonmutating set { composerDraft.documents = newValue }
+    }
+    private var inputBinding: Binding<String> {
+        Binding(get: { input }, set: { input = $0 })
+    }
+    private var imagesBinding: Binding<[PendingInsightImage]> {
+        Binding(get: { pendingImages }, set: { pendingImages = $0 })
+    }
+    private var submissionMode: InsightSubmissionMode {
+        InsightSubmissionMode(rawValue: composerDraft.modeRawValue) ?? .conversation
+    }
+    private var draftScope: InsightSessionScope {
+        .init(accountID: boundScope.accountID, farmID: boundScope.farmID)
     }
 
     var body: some View {
         conversationScroll
             .background(AppTheme.pageBackground.ignoresSafeArea())
-            .navigationTitle("AI 助手")
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    assistantIdentity
-                }
+                ToolbarItem(placement: .topBarLeading) { assistantIdentity }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isComposerFocused = false
-                        isConversationSearchPresented = true
-                    } label: {
-                        Image(systemName: "magnifyingglass")
+                    HStack(spacing: 0) {
+                        Button(action: newChat) {
+                            Image(systemName: "square.and.pencil").frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isSubmitting || isRestoringDraft)
+                        .accessibilityLabel("新建聊天")
+                        assistantMenu.frame(width: 44, height: 44)
                     }
-                    .accessibilityLabel("搜索当前对话")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    assistantMenu
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                InsightComposerBar(
-                    text: $input,
-                    isFocused: $isComposerFocused,
-                    audioRecorder: audioRecorder,
-                    isKeyboardPresented: isComposerFocused,
-                    isGenerating: controller.isGenerating,
-                    isEnabled: isReady,
-                    hasPendingImages: !pendingImages.isEmpty,
-                    pendingAudio: pendingAudio,
-                    isPlayingAudio: audioPlayer.isPlaying && audioPlaybackSource == .pending,
-                    onPhotoLibrary: {
-                        guard pendingImages.count < 4 else {
-                            controller.errorMessage = "每条消息最多选择 4 张图片。"
-                            return
+                VStack(spacing: 4) {
+                    if let reason = controller.pausedReason, controller.activeGoalStatus == nil {
+                        HStack(spacing: 8) {
+                            Text(reason).font(.caption).foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                            Button("继续") { controller.resumePausedConversation() }
+                                .frame(minHeight: 44)
                         }
-                        isComposerFocused = false
-                        isPhotoLibraryPresented = true
-                    },
-                    onCamera: { isCameraPresented = true },
-                    onImportData: { isImportFilePresented = true },
-                    onMicrophonePressChanged: microphonePressChanged,
-                    onMicrophoneLongPress: activateMicrophoneLongPress,
-                    onMicrophoneAccessibilityAction: toggleSpeechForAccessibility,
-                    onToggleAudioPlayback: toggleAudioPlayback,
-                    onDiscardAudio: discardPendingAudio,
-                    suggestions: suggestions,
-                    onSuggestion: selectSuggestion,
-                    onSend: send,
-                    onStop: controller.stopGenerating
-                )
+                        .padding(.horizontal, 20)
+                    }
+                    composer
+                }
             }
             .task(id: farm.id) {
                 guard isControllerBoundToFarm else {
                     controller.errorMessage = "牧场已切换，请重新进入 AI 助手。"
                     return
                 }
-                await controller.connect(to: modelContext)
+                if case .loading = controller.availability {
+                    await InsightSessionCoordinator.shared.connect(
+                        controller, to: modelContext, preferredConversationID: conversationID
+                    )
+                }
+                do {
+                    try await InsightSessionCoordinator.shared.draftStore.restore(
+                        scope: draftScope, conversationID: controller.currentConversationID
+                    )
+                } catch { controller.errorMessage = "恢复本机草稿失败：\(error.localizedDescription)" }
+                controller.submissionMode = submissionMode
                 if initialPrompt != nil { isComposerFocused = true }
+                handleInitialAction()
 #if DEBUG
                 if case .ready = controller.availability,
                    let prompt = InsightAcceptanceLaunchRequest.takePrompt() {
-                    controller.send(text: prompt)
+                    await controller.send(text: prompt)
                 }
 #endif
             }
             .task(id: storedAudioRevision) {
                 await loadStoredAudio()
+            }
+            .task(id: storedDocumentRevision) {
+                await loadStoredDocuments()
             }
             .onChange(of: photoItems) { _, items in
                 loadPhotos(items)
@@ -125,10 +203,51 @@ struct FarmInsightConversationView: View {
             .onChange(of: audioRecorder.errorMessage) { _, error in
                 if let error { controller.errorMessage = error }
             }
+            .task(id: composerDraft.revision) {
+                do {
+                    try await Task.sleep(for: .milliseconds(350))
+                    try Task.checkCancellation()
+                    try await InsightSessionCoordinator.shared.draftStore.save(
+                        scope: draftScope, conversationID: controller.currentConversationID
+                    )
+                } catch is CancellationError { } catch {
+                    controller.errorMessage = "保存本机草稿失败：\(error.localizedDescription)"
+                }
+            }
+            .onChange(of: composerDraft.modeRawValue) { _, _ in
+                controller.submissionMode = submissionMode
+            }
+            .onAppear { isChatVisible = true }
             .onDisappear {
-                controller.stopGenerating()
-                audioRecorder.discard()
+                isChatVisible = false
+                if audioRecorder.isRecording { finishSpeechRecording() }
                 audioPlayer.stop()
+                persistDraft()
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active {
+                    if audioRecorder.isRecording { finishSpeechRecording() }
+                    audioPlayer.stop()
+                    persistDraft()
+                }
+            }
+            .onChange(of: isPhotoLibraryPresented) { _, presented in
+                if !presented { restorePickerFocus() }
+            }
+            .onChange(of: isCameraPresented) { _, presented in
+                if !presented { restorePickerFocus() }
+            }
+            .onChange(of: isImportFilePresented) { _, presented in
+                if !presented { restorePickerFocus() }
+            }
+            .onChange(of: isAnalysisFilePresented) { _, presented in
+                if !presented { restorePickerFocus() }
+            }
+            .onChange(of: selectingDocument?.id) { _, id in
+                if id == nil { restorePickerFocus() }
+            }
+            .navigationDestination(isPresented: $isNewChatPresented) {
+                FarmInsightConversationView(account: account, farm: farm)
             }
             .photosPicker(
                 isPresented: $isPhotoLibraryPresented,
@@ -136,9 +255,6 @@ struct FarmInsightConversationView: View {
                 maxSelectionCount: max(1, 4 - pendingImages.count),
                 matching: .images
             )
-            .sheet(isPresented: $isHistoryPresented) {
-                InsightConversationHistoryView(controller: controller)
-            }
             .sheet(isPresented: $isConversationSearchPresented) {
                 InsightConversationSearchView(
                     messages: displayMessages,
@@ -148,6 +264,85 @@ struct FarmInsightConversationView: View {
                     isConversationSearchPresented = false
                 }
             }
+            .sheet(item: $selectingDocument) { document in
+                InsightDocumentSelectionSheet(document: document, onSelect: { selected in
+                    if let index = pendingDocuments.firstIndex(where: { $0.id == selected.id }) {
+                        pendingDocuments[index] = selected
+                    }
+                    selectingDocument = nil
+                    restorePickerFocus()
+                }, onCancel: {
+                    selectingDocument = nil
+                    restorePickerFocus()
+                })
+            }
+            .sheet(item: $inspectedDocument) { document in
+                InsightStoredDocumentView(document: document)
+            }
+            .sheet(isPresented: $isAssistantSettingsPresented) {
+                NavigationStack {
+                    InsightAssistantSettingsView(account: account, farm: farm)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("完成") { isAssistantSettingsPresented = false }
+                            }
+                        }
+                }
+            }
+            .sheet(isPresented: $isDetailsPresented) {
+                NavigationStack {
+                    Form {
+                        LabeledContent("聊天", value: conversationTitle)
+                        LabeledContent("牧场", value: farm.name)
+                        LabeledContent("模型", value: controller.modelDisplayName)
+                        Text("此聊天只读取和操作当前牧场。业务操作继续使用操作卡确认，已执行记录不会随聊天删除。")
+                            .foregroundStyle(.secondary)
+                    }
+                    .navigationTitle("聊天详情")
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("完成") { isDetailsPresented = false }
+                        }
+                    }
+                }
+            }
+            .alert("重命名聊天", isPresented: $isRenamePresented) {
+                TextField("聊天名称", text: $renamedTitle)
+                Button("取消", role: .cancel) {}
+                Button("保存") {
+                    if let id = controller.currentConversationID {
+                        controller.renameConversation(id: id, title: renamedTitle)
+                    }
+                }
+            }
+            .confirmationDialog("删除这个聊天？", isPresented: $isDeletePresented, titleVisibility: .visible) {
+                Button("删除聊天", role: .destructive) {
+                    if let conversation = currentConversation {
+                        InsightSessionCoordinator.shared.delete(conversation, using: controller)
+                        if conversation.deletedAt != nil { dismiss() }
+                    }
+                }
+            } message: {
+                Text("将停止相关任务并核对回执；已经执行的牧场业务记录会保留。")
+            }
+            .confirmationDialog(
+                "替换当前未发送草稿？",
+                isPresented: Binding(
+                    get: { pendingRestoreMessageID != nil },
+                    set: { if !$0 { pendingRestoreMessageID = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let messageID = pendingRestoreMessageID {
+                    Button("替换并恢复原输入") {
+                        pendingRestoreMessageID = nil
+                        restoreDraft(messageID: messageID)
+                    }
+                }
+                Button("保留当前草稿", role: .cancel) { pendingRestoreMessageID = nil }
+            } message: {
+                Text("这会替换当前文字和附件。原消息及操作卡会保留，恢复后由你决定是否发送。")
+            }
             .sheet(item: $selectedDraft) { draft in
                 let presentation = controller.presentation(for: draft)
                 InsightDraftConfirmationView(
@@ -156,20 +351,27 @@ struct FarmInsightConversationView: View {
                     initialPayloadText: presentation.editablePayloadText,
                     initialPayloadError: presentation.editablePayloadError,
                     onConfirm: {
+                        let approved = controller.confirmationSnapshots(for: draft)
                         selectedDraft = nil
-                        Task { await controller.execute(draft) }
+                        Task { await controller.execute(draft, confirmedSnapshots: approved) }
                     }
                 )
             }
             .sheet(item: $controller.pendingGeneratedFile) { file in
-                InsightGeneratedFileExportView(file: file)
+                InsightGeneratedFileExportView(file: file) { fileID in
+                    guard controller.conversationScope == boundScope else { return }
+                    controller.recordExportSaved(fileID: fileID)
+                }
             }
             .sheet(isPresented: $isCameraPresented) {
-                InsightCameraPicker { image in
+                InsightCameraPicker(onImage: { image in
                     isCameraPresented = false
                     guard let data = image.jpegData(compressionQuality: 0.95) else { return }
                     optimizeAndAppend(data)
-                }
+                }, onCancel: {
+                    isCameraPresented = false
+                    restorePickerFocus()
+                })
                 .ignoresSafeArea()
             }
             .fileImporter(
@@ -187,6 +389,17 @@ struct FarmInsightConversationView: View {
                     Task { await controller.prepareImport(from: url) }
                 case .failure(let error):
                     controller.errorMessage = "选择导入文件失败：\(error.localizedDescription)"
+                }
+            }
+            .fileImporter(
+                isPresented: $isAnalysisFilePresented,
+                allowedContentTypes: analysisDocumentTypes,
+                allowsMultipleSelection: true
+            ) { result in
+                restorePickerFocus()
+                switch result {
+                case .success(let urls): loadDocuments(urls)
+                case .failure(let error): controller.errorMessage = "选择分析文件失败：\(error.localizedDescription)"
                 }
             }
             .alert(
@@ -252,12 +465,45 @@ struct FarmInsightConversationView: View {
                                 onReview: review,
                                 onReject: reject
                             )
+                            InsightRuntimeDisclosure(
+                                records: controller.runtimeRecords(for: message.id),
+                                showReasoning: controller.showReasoning
+                            )
+                            if let documents = storedDocumentsByMessageID[message.id], !documents.isEmpty {
+                                ForEach(documents) { document in
+                                    Button {
+                                        inspectedDocument = document
+                                    } label: {
+                                        Label(document.fileName, systemImage: "doc.text")
+                                            .font(.caption)
+                                            .frame(minHeight: 44)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("查看\(document.fileName)的已发送内容与引用")
+                                }
+                            }
+                            if let plan = controller.plan(for: message.id) {
+                                InsightPlanCard(plan: plan, onEdit: { editPlan(plan) },
+                                    onContinue: { controller.continuePlan(plan) },
+                                    onDismiss: { controller.dismissPlan(plan) })
+                            }
+                            if let goal = controller.goal(for: message.id) {
+                                InsightGoalCard(goal: goal,
+                                    awaitingFileName: controller.pendingExportFileName(for: goal.id),
+                                    onPause: { controller.pauseGoal(goal) },
+                                    onResume: { controller.resumeGoal(goal) },
+                                    onStop: { controller.stopGoal(goal) })
+                            }
+                            if message.role == .assistant,
+                               message.status == .failed || message.status == .cancelled || message.status == .pending,
+                               controller.canRestoreDraft(for: message.id) {
+                                Button("恢复到输入框", systemImage: "arrow.uturn.backward") {
+                                    requestDraftRecovery(messageID: message.id)
+                                }
+                                .frame(minHeight: 44)
+                                .disabled(isSubmitting || isRestoringDraft || controller.isGenerating)
+                            }
                         }
-                    }
-                    if !pendingImages.isEmpty {
-                        InsightPendingInputPreview(
-                            pendingImages: $pendingImages
-                        )
                     }
                     if controller.isGenerating {
                         InsightAssistantTypingIndicator()
@@ -280,10 +526,10 @@ struct FarmInsightConversationView: View {
             )
             .scrollDismissesKeyboard(.interactively)
             .onAppear {
-                scrollToBottom(proxy, animated: false)
+                scrollToRequestedMessageOrBottom(proxy, animated: false)
             }
             .onChange(of: scrollRevision) { _, _ in
-                scrollToBottom(proxy, animated: true)
+                scrollToRequestedMessageOrBottom(proxy, animated: true)
             }
             .onChange(of: searchResultTargetID) { _, messageID in
                 guard let messageID else { return }
@@ -295,60 +541,338 @@ struct FarmInsightConversationView: View {
         }
     }
 
+    private var currentConversation: InsightConversationRecord? {
+        controller.conversations.first { $0.id == controller.currentConversationID }
+    }
+
+    private var conversationTitle: String { currentConversation?.title ?? "新聊天" }
+
     private var assistantIdentity: some View {
-        let usage = controller.contextWindowUsage
-        return HStack(spacing: 8) {
-            Image("MiMoAssistantAvatar")
-                .resizable()
-                .scaledToFill()
-                .frame(width: 32, height: 32)
-                .clipShape(.circle)
-                .overlay {
-                    Circle()
-                        .stroke(.white.opacity(0.82), lineWidth: 1)
-                }
-                .shadow(color: AppTheme.brand.opacity(0.12), radius: 4, y: 2)
-
-            VStack(alignment: .leading, spacing: 0) {
-                Text("AI 助手")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text(farm.name)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Button {
-                isContextUsagePresented.toggle()
-            } label: {
-                InsightContextUsageRing(usage: usage)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(
-                "上下文窗口已使用约 \(usage.percentage)%"
-            )
-            .popover(isPresented: $isContextUsagePresented) {
-                InsightContextUsageDetail(
-                    usage: usage
-                )
-                .presentationCompactAdaptation(.popover)
-            }
+        VStack(alignment: .leading, spacing: 1) {
+            Text(conversationTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
+            Text(farm.name).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
+        .frame(maxWidth: 200, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     private var assistantMenu: some View {
         Menu {
-            Button("新会话", systemImage: "square.and.pencil") {
-                controller.startNewConversation()
+            Button("重命名", systemImage: "pencil") {
+                renamedTitle = conversationTitle
+                isRenamePresented = true
+            }.disabled(currentConversation == nil)
+            Button("聊天详情", systemImage: "info.circle") { isDetailsPresented = true }
+            Button("搜索聊天", systemImage: "magnifyingglass") {
+                isComposerFocused = false
+                isConversationSearchPresented = true
             }
-            Button("历史会话", systemImage: "clock.arrow.circlepath") {
-                isHistoryPresented = true
+            Button("上下文用量", systemImage: "chart.pie") {
+                focusBeforeContext = isComposerFocused
+                isContextUsagePresented = true
             }
+            Button("AI 设置", systemImage: "gearshape") { isAssistantSettingsPresented = true }
+            Menu("建议问题", systemImage: "sparkles") {
+                ForEach(suggestions, id: \.self) { suggestion in
+                    Button(suggestion) { selectSuggestion(suggestion) }
+                }
+            }
+            Button("导入牧场数据", systemImage: "square.and.arrow.down") {
+                focusBeforePicker = isComposerFocused
+                isImportFilePresented = true
+            }
+            Button("删除聊天", systemImage: "trash", role: .destructive) { isDeletePresented = true }
+                .disabled(currentConversation == nil)
         } label: {
-            Image(systemName: "ellipsis")
+            Image(systemName: "ellipsis").frame(width: 44, height: 44)
         }
-        .accessibilityLabel("AI 助手菜单")
+        .buttonStyle(.plain)
+        .disabled(isSubmitting || isRestoringDraft)
+        .accessibilityLabel("聊天更多选项")
+    }
+
+    private var composer: some View {
+        InsightComposerView(
+            text: inputBinding,
+            isFocused: $isComposerFocused,
+            audioRecorder: audioRecorder,
+            pendingAudio: pendingAudio,
+            isPlayingAudio: audioPlayer.isPlaying && audioPlaybackSource == .pending,
+            isGenerating: controller.isGenerating,
+            isSubmitting: isSubmitting || isRestoringDraft,
+            isEnabled: isReady,
+            hasAttachments: !pendingImages.isEmpty || !pendingDocuments.isEmpty || isProcessingPhotos || !processingDocumentNames.isEmpty,
+            attachmentsReady: attachmentsReady,
+            modeTitle: submissionMode == .conversation ? nil : submissionMode.title,
+            isPlanSelected: submissionMode == .plan,
+            isGoalSelected: submissionMode == .goal,
+            onCamera: { presentInput(.camera) },
+            onPhotos: { presentInput(.photos) },
+            onFiles: { presentInput(.files) },
+            onPlan: { selectMode(.plan) },
+            onGoal: { selectMode(.goal) },
+            onRemoveMode: { selectMode(.conversation) },
+            onSettings: {
+                controller.reloadAnalysisPreference()
+                focusBeforeSettings = isComposerFocused
+                isAnalysisSettingsPresented = true
+            },
+            onMicrophonePressChanged: microphonePressChanged,
+            onMicrophoneLongPress: activateMicrophoneLongPress,
+            onMicrophone: toggleSpeechForAccessibility,
+            onToggleAudioPlayback: toggleAudioPlayback,
+            onDiscardAudio: discardPendingAudio,
+            onSend: send,
+            onStop: controller.stopGenerating,
+            attachments: { composerAttachments },
+            context: { contextUsageButton }
+        )
+        .popover(isPresented: $isAnalysisSettingsPresented) {
+            InsightAnalysisSettingsPopover(
+                effortIndex: Binding(
+                    get: { controller.analysisEffort.sliderValue },
+                    set: { controller.analysisEffort = .from(sliderValue: $0) }
+                ),
+                thinkingEnabled: Binding(get: { controller.thinkingEnabled }, set: { controller.thinkingEnabled = $0 }),
+                showReasoning: Binding(get: { controller.showReasoning }, set: { controller.showReasoning = $0 }),
+                modelName: controller.modelDisplayName
+            )
+            .presentationCompactAdaptation(.popover)
+            .presentationBackground(.clear)
+        }
+        .onChange(of: isAnalysisSettingsPresented) { _, presented in
+            if !presented && focusBeforeSettings { isComposerFocused = true }
+        }
+        .popover(isPresented: $isContextUsagePresented) {
+            InsightContextUsageDetail(usage: controller.contextWindowUsage)
+                .presentationCompactAdaptation(.popover)
+        }
+        .onChange(of: isContextUsagePresented) { _, presented in
+            if !presented && focusBeforeContext { isComposerFocused = true }
+        }
+        .onChange(of: isAssistantSettingsPresented) { _, presented in
+            guard !presented else { return }
+            let configuration = InsightAnalysisPreference.load(for: account.effectiveAccountID)
+            controller.analysisEffort = configuration.effort
+            controller.thinkingEnabled = configuration.thinkingEnabled
+            controller.showReasoning = configuration.showReasoning
+            Task { await controller.refreshCredential() }
+        }
+    }
+
+    private var contextUsageButton: some View {
+        Button {
+            focusBeforeContext = isComposerFocused
+            isContextUsagePresented.toggle()
+        } label: {
+            InsightContextUsageRing(usage: controller.contextWindowUsage)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("上下文窗口已使用约 \(controller.contextWindowUsage.percentage)%")
+    }
+
+    private var attachmentsReady: Bool {
+        !isProcessingPhotos && processingDocumentNames.isEmpty && pendingDocuments.allSatisfy(\.isReadyToSend)
+    }
+
+    private var composerAttachments: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !pendingImages.isEmpty {
+                InsightPendingInputPreview(pendingImages: imagesBinding)
+            }
+            if isProcessingPhotos {
+                Label("正在处理照片", systemImage: "photo")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(Array(processingDocumentNames.enumerated()), id: \.offset) { _, name in
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("正在解析 \(name)").font(.caption).lineLimit(1)
+                }
+                .frame(minHeight: 44)
+            }
+            ForEach(pendingDocuments) { document in
+                HStack(spacing: 4) {
+                    Button {
+                        focusBeforePicker = isComposerFocused
+                        selectingDocument = document
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "doc.text")
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(document.fileName).font(.caption.weight(.medium)).lineLimit(1)
+                                Text(document.isReadyToSend ? "已选内容 · 可发送" : "请选择要发送的页、工作表或范围")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .frame(minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(document.fileName)，\(document.isReadyToSend ? "可发送，修改选区" : "需选择发送范围")")
+                    Button {
+                        pendingDocuments.removeAll { $0.id == document.id }
+                    } label: {
+                        Image(systemName: "xmark").frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("移除\(document.fileName)")
+                }
+                .padding(.leading, 10)
+                .background(.fill.tertiary, in: .rect(cornerRadius: 12))
+            }
+        }
+        .disabled(isSubmitting || isRestoringDraft)
+    }
+
+    private var analysisDocumentTypes: [UTType] {
+        ["pdf", "docx", "txt", "md", "xlsx", "csv", "json"].compactMap { UTType(filenameExtension: $0) }
+    }
+
+    private func selectMode(_ mode: InsightSubmissionMode) {
+        composerDraft.modeRawValue = (submissionMode == mode ? InsightSubmissionMode.conversation : mode).rawValue
+        controller.submissionMode = submissionMode
+    }
+
+    private func presentInput(_ action: InsightChatInitialAction) {
+        guard !isSubmitting, !isRestoringDraft else { return }
+        if action != .voice, audioRecorder.isRecording {
+            isMicrophonePressed = false
+            finishSpeechRecording()
+        }
+        focusBeforePicker = isComposerFocused
+        switch action {
+        case .camera, .photos:
+            guard pendingImages.count < 4 else {
+                controller.errorMessage = "每条消息最多选择 4 张图片。"
+                return
+            }
+            if action == .camera { isCameraPresented = true }
+            else { isPhotoLibraryPresented = true }
+        case .files:
+            guard pendingDocuments.count < 3 else {
+                controller.errorMessage = "每条消息最多选择 3 份分析文档。"
+                return
+            }
+            isAnalysisFilePresented = true
+        case .voice:
+            toggleSpeechForAccessibility()
+        }
+    }
+
+    private func handleInitialAction() {
+        guard !didHandleInitialAction else { return }
+        didHandleInitialAction = true
+        if let initialAction { presentInput(initialAction) }
+    }
+
+    private func restorePickerFocus() {
+        if focusBeforePicker { isComposerFocused = true }
+    }
+
+    private func loadDocuments(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        guard pendingDocuments.count + processingDocumentNames.count + urls.count <= 3 else {
+            controller.errorMessage = "每条消息最多选择 3 份分析文档，请重新选择。"
+            return
+        }
+        processingDocumentNames.append(contentsOf: urls.map(\.lastPathComponent))
+        Task { @MainActor in
+            for url in urls {
+                do {
+                    let document = try await InsightDocumentAnalysis.load(from: url)
+                    guard pendingDocuments.reduce(document.byteCount, { $0 + $1.byteCount }) <= InsightDocumentAnalysis.maximumTotalBytes else {
+                        throw InsightDocumentError.totalFilesTooLarge
+                    }
+                    pendingDocuments.append(document)
+                } catch {
+                    controller.errorMessage = "解析 \(url.lastPathComponent) 失败：\(error.localizedDescription)"
+                }
+                if let index = processingDocumentNames.firstIndex(of: url.lastPathComponent) {
+                    processingDocumentNames.remove(at: index)
+                }
+            }
+            if selectingDocument == nil {
+                selectingDocument = pendingDocuments.first { !$0.isReadyToSend }
+            }
+        }
+    }
+
+    private func editPlan(_ plan: InsightPlan) {
+        guard controller.revisePlan(plan) else { return }
+        let request = "请修改这个方案：\(plan.title)\n\(plan.analysis)\n需要调整："
+        input = input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? request : input + "\n\n" + request
+        composerDraft.modeRawValue = InsightSubmissionMode.plan.rawValue
+        controller.submissionMode = .plan
+        isComposerFocused = true
+    }
+
+    private func newChat() {
+        if audioRecorder.isRecording { finishSpeechRecording() }
+        audioPlayer.stop()
+        persistDraft()
+        if let onNewConversation { onNewConversation() }
+        else { isNewChatPresented = true }
+    }
+
+    private func persistDraft() {
+        let scope = draftScope
+        let id = controller.currentConversationID
+        Task { @MainActor in
+            do { try await InsightSessionCoordinator.shared.draftStore.save(scope: scope, conversationID: id) }
+            catch { controller.errorMessage = "保存本机草稿失败：\(error.localizedDescription)" }
+        }
+    }
+
+    private func requestDraftRecovery(messageID: UUID) {
+        guard !isSubmitting, !isRestoringDraft, !controller.isGenerating else { return }
+        guard !isProcessingPhotos, processingDocumentNames.isEmpty, !audioRecorder.isRecording else {
+            controller.errorMessage = "请先结束录音并等待附件处理完成，再恢复输入。"
+            return
+        }
+        if composerDraft.hasContent {
+            pendingRestoreMessageID = messageID
+        } else {
+            restoreDraft(messageID: messageID)
+        }
+    }
+
+    private func restoreDraft(messageID: UUID) {
+        let targetDraft = composerDraft
+        let expectedRevision = targetDraft.revision
+        isRestoringDraft = true
+        Task { @MainActor in
+            defer { isRestoringDraft = false }
+            do {
+                let recovered = try await controller.restoreDraft(for: messageID)
+                guard isControllerBoundToFarm, targetDraft.revision == expectedRevision else {
+                    controller.errorMessage = "草稿已经改变，恢复内容尚未替换当前输入，请重新选择恢复。"
+                    return
+                }
+                guard !recovered.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    !recovered.images.isEmpty || !recovered.documents.isEmpty || recovered.audio != nil else {
+                    controller.errorMessage = recovered.warning ?? "这条消息没有可恢复的输入。"
+                    return
+                }
+                guard recovered.images.count <= 4, recovered.documents.count <= 3 else {
+                    controller.errorMessage = "原附件超过当前单条消息限制，请重新选择要发送的内容。"
+                    return
+                }
+                audioPlayer.stop()
+                targetDraft.text = recovered.text
+                targetDraft.images = recovered.images
+                targetDraft.documents = recovered.documents
+                targetDraft.audio = recovered.audio
+                targetDraft.modeRawValue = recovered.mode.rawValue
+                controller.submissionMode = recovered.mode
+                inputOrigin = recovered.audio == nil ? .text : .voiceAudio
+                isComposerFocused = true
+                if let warning = recovered.warning { controller.errorMessage = warning }
+            } catch {
+                controller.errorMessage = "恢复输入失败：\(error.localizedDescription)"
+            }
+        }
     }
 
     private var conversationMetadata: some View {
@@ -425,35 +949,59 @@ struct FarmInsightConversationView: View {
     }
 
     private var isControllerBoundToFarm: Bool {
-        controller.conversationScope == InsightConversationScope(
+        boundScope == controller.conversationScope && boundScope == InsightConversationScope(
             accountID: account.effectiveAccountID,
             farmID: farm.id
         )
     }
 
     private func send() {
+        guard !isSubmitting, !isRestoringDraft else { return }
+        guard attachmentsReady else {
+            controller.errorMessage = "附件尚未准备好，请等待解析完成并选择要发送的内容。"
+            return
+        }
         guard isReady else {
-            controller.errorMessage = "请先前往账户头像中的“AI 助手”设置，配置并保存 MiMo API Key。"
+            controller.errorMessage = "请先前往账户头像中的“AI 助手”设置，完成数据说明同意和服务连接。"
             return
         }
         let submitted = input
         let images = pendingImages
+        let audio = pendingAudio
+        let documents = pendingDocuments
+        let origin = audio == nil ? inputOrigin : .voiceAudio
+        let submittedDraft = composerDraft
+        let submittedDraftID = submittedDraft.draftID
+        let submittedRevision = submittedDraft.revision
+        let submittedScope = boundScope
+        let wasNewConversation = controller.currentConversationID == nil
+        controller.submissionMode = submissionMode
         audioPlayer.stop()
-        controller.send(
-            text: submitted,
-            images: images,
-            audio: pendingAudio,
-            origin: inputOrigin
-        )
-        input = ""
-        pendingImages = []
-        pendingAudio = nil
-        photoItems = []
-        inputOrigin = .text
+        isSubmitting = true
+        Task { @MainActor in
+            defer { isSubmitting = false }
+            guard await controller.send(
+                text: submitted, images: images, audio: audio,
+                documents: documents, origin: origin
+            ) else { return }
+            guard isControllerBoundToFarm, controller.conversationScope == submittedScope else { return }
+            if wasNewConversation, let id = controller.currentConversationID {
+                InsightSessionCoordinator.shared.completeDraft(
+                    scope: submittedScope, draftID: submittedDraftID,
+                    conversationID: id, controller: controller,
+                    expectedDraftRevision: submittedRevision
+                )
+                composerDraft = InsightSessionCoordinator.shared.draft(scope: submittedScope, conversationID: id)
+            } else if submittedDraft.revision == submittedRevision {
+                submittedDraft.clear()
+            }
+            photoItems = []
+            inputOrigin = .text
+        }
     }
 
     private func selectSuggestion(_ prompt: String) {
-        input = prompt
+        input = input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? prompt : input + "\n\n" + prompt
         inputOrigin = .text
         isComposerFocused = true
     }
@@ -469,16 +1017,22 @@ struct FarmInsightConversationView: View {
     }
 
     private func activateMicrophoneLongPress() {
-        guard input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              pendingImages.isEmpty,
+        guard !isSubmitting, !isRestoringDraft, isReady,
               pendingAudio == nil,
               !controller.isGenerating else {
             return
         }
         didActivateMicrophoneLongPress = true
+        isComposerFocused = false
         audioPlayer.stop()
         Task {
+            guard isChatVisible, scenePhase == .active else { return }
             await audioRecorder.start()
+            guard isChatVisible, scenePhase == .active else {
+                audioRecorder.discard()
+                didActivateMicrophoneLongPress = false
+                return
+            }
             guard audioRecorder.isRecording else {
                 didActivateMicrophoneLongPress = false
                 return
@@ -542,8 +1096,9 @@ struct FarmInsightConversationView: View {
 
     private func loadPhotos(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
+        isProcessingPhotos = true
         Task { @MainActor in
-            defer { photoItems = [] }
+            defer { photoItems = []; isProcessingPhotos = false }
             for item in items.prefix(max(0, 4 - pendingImages.count)) {
                 do {
                     guard let data = try await item.loadTransferable(type: Data.self) else {
@@ -585,10 +1140,34 @@ struct FarmInsightConversationView: View {
 
     private var storedAudioRevision: String {
         let audioMessageIDs = controller.messages
-            .filter { $0.toolName == "audio_input" }
+            .filter { $0.toolName == "audio_input" || $0.toolName == "audio_document_input" }
             .map(\.id.uuidString)
             .joined(separator: ",")
         return "\(controller.currentConversationID?.uuidString ?? "none"):\(audioMessageIDs)"
+    }
+
+    private var storedDocumentRevision: String {
+        let ids = displayMessages.filter { $0.role == .user }.map(\.id.uuidString).joined(separator: ",")
+        return "\(controller.currentConversationID?.uuidString ?? "none"):\(ids)"
+    }
+
+    private func loadStoredDocuments() async {
+        guard let conversationID = controller.currentConversationID else {
+            storedDocumentsByMessageID = [:]
+            return
+        }
+        var loaded: [UUID: [InsightStoredDocumentPreview]] = [:]
+        for message in displayMessages where message.role == .user {
+            guard !Task.isCancelled else { return }
+            if let documents = try? await InsightLocalDocumentStore.shared.previews(
+                messageID: message.id, conversationID: conversationID,
+                accountID: boundScope.accountID, farmID: boundScope.farmID
+            ), !documents.isEmpty {
+                loaded[message.id] = documents
+            }
+        }
+        guard !Task.isCancelled, controller.currentConversationID == conversationID else { return }
+        storedDocumentsByMessageID = loaded
     }
 
     private func loadStoredAudio() async {
@@ -596,7 +1175,7 @@ struct FarmInsightConversationView: View {
             storedAudioByMessageID = [:]
             return
         }
-        let audioMessages = controller.messages.filter { $0.toolName == "audio_input" }
+        let audioMessages = controller.messages.filter { $0.toolName == "audio_input" || $0.toolName == "audio_document_input" }
         var loaded: [UUID: StoredInsightAudio] = [:]
         for message in audioMessages {
             if let audio = try? await controller.storedAudio(
@@ -612,7 +1191,8 @@ struct FarmInsightConversationView: View {
 
     private func review(_ draft: InsightActionDraftRecord) {
         if draft.risk == .high {
-            Task { await controller.execute(draft) }
+            let approved = controller.confirmationSnapshots(for: draft)
+            Task { await controller.execute(draft, confirmedSnapshots: approved) }
         } else {
             selectedDraft = draft
         }
@@ -669,15 +1249,27 @@ struct FarmInsightConversationView: View {
             proxy.scrollTo(conversationBottomID, anchor: .bottom)
         }
     }
+
+    private func scrollToRequestedMessageOrBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        if let messageID = searchResultTargetID {
+            guard displayMessages.contains(where: { $0.id == messageID }) else { return }
+            proxy.scrollTo(messageID, anchor: .center)
+            searchResultTargetID = nil
+        } else {
+            scrollToBottom(proxy, animated: animated)
+        }
+    }
 }
 
 private struct InsightGeneratedFileExportView: View {
     @Environment(\.dismiss) private var dismiss
 
     let file: InsightGeneratedFile
+    let onSaved: (UUID) -> Void
 
     @State private var isExporting = false
     @State private var message: String?
+    @State private var didReportSave = false
 
     private var contentType: UTType {
         switch file.kind {
@@ -721,8 +1313,16 @@ private struct InsightGeneratedFileExportView: View {
                 switch result {
                 case .success:
                     message = "文件已保存。"
+                    if !didReportSave {
+                        didReportSave = true
+                        onSaved(file.id)
+                    }
                 case .failure(let error):
-                    message = "保存失败：\(error.localizedDescription)"
+                    if let cancellation = error as? CocoaError, cancellation.code == .userCancelled {
+                        message = nil
+                    } else {
+                        message = "保存失败：\(error.localizedDescription)"
+                    }
                 }
             }
             .alert("导出文件", isPresented: Binding(
@@ -770,7 +1370,7 @@ private struct InsightAvailabilityNotice: View {
     }
 }
 
-private struct InsightContextUsageRing: View {
+struct InsightContextUsageRing: View {
     let usage: InsightContextWindowUsage
     var diameter: CGFloat = 29
 
@@ -817,7 +1417,7 @@ private struct InsightContextUsageRing: View {
     }
 }
 
-private struct InsightContextUsageDetail: View {
+struct InsightContextUsageDetail: View {
     let usage: InsightContextWindowUsage
 
     var body: some View {
@@ -1045,7 +1645,7 @@ private struct InsightMessageBubble: View {
     }
 
     private var isVoiceMessage: Bool {
-        message.toolName == "audio_input"
+        message.toolName == "audio_input" || message.toolName == "audio_document_input"
     }
 
     @ViewBuilder
@@ -1136,15 +1736,19 @@ private struct InsightConversationMessageRow: View {
             InsightContextCompressionNotice()
             .id(message.id)
         } else {
-            InsightMessageBubble(
-                message: message,
-                attachments: attachments,
-                storedAudio: storedAudio,
-                isPlayingAudio: isPlayingAudio,
-                endsRoleGroup: endsRoleGroup,
-                onToggleAudio: onToggleAudio
-            )
+            if message.role != .assistant || message.status != .streaming || !message.text.isEmpty || !attachments.isEmpty {
+                InsightMessageBubble(
+                    message: message,
+                    attachments: attachments,
+                    storedAudio: storedAudio,
+                    isPlayingAudio: isPlayingAudio,
+                    endsRoleGroup: endsRoleGroup,
+                    onToggleAudio: onToggleAudio
+                )
                 .id(message.id)
+            } else {
+                Color.clear.frame(height: 0).id(message.id)
+            }
             ForEach(drafts, id: \.id) { draft in
                 InsightActionDraftCard(
                     draft: draft,
@@ -1201,7 +1805,7 @@ private struct InsightAssistantTypingIndicator: View {
         HStack(spacing: 6) {
             ProgressView()
                 .controlSize(.small)
-            Text("AI 助手正在输入…")
+            Text("AI 助手正在处理…")
                 .font(.subheadline)
         }
         .foregroundStyle(.secondary)
@@ -1209,7 +1813,7 @@ private struct InsightAssistantTypingIndicator: View {
         .padding(.vertical, 10)
         .background(Color(uiColor: .secondarySystemFill), in: .capsule)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityLabel("AI 助手正在输入")
+        .accessibilityLabel("AI 助手正在处理")
     }
 }
 
@@ -1408,6 +2012,7 @@ private struct InsightPendingInputPreview: View {
                                         Image(systemName: "xmark.circle.fill")
                                             .symbolRenderingMode(.palette)
                                             .foregroundStyle(.white, .black.opacity(0.65))
+                                            .frame(width: 44, height: 44)
                                     }
                                     .offset(x: 5, y: -5)
                                 }
@@ -1422,329 +2027,6 @@ private struct InsightPendingInputPreview: View {
             .background(.fill.tertiary, in: .rect(cornerRadius: 18))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct InsightComposerBar: View {
-    @Binding var text: String
-    var isFocused: FocusState<Bool>.Binding
-    let audioRecorder: InsightAudioRecorder
-    let isKeyboardPresented: Bool
-    let isGenerating: Bool
-    let isEnabled: Bool
-    let hasPendingImages: Bool
-    let pendingAudio: PendingInsightAudio?
-    let isPlayingAudio: Bool
-    let onPhotoLibrary: () -> Void
-    let onCamera: () -> Void
-    let onImportData: () -> Void
-    let onMicrophonePressChanged: (Bool) -> Void
-    let onMicrophoneLongPress: () -> Void
-    let onMicrophoneAccessibilityAction: () -> Void
-    let onToggleAudioPlayback: () -> Void
-    let onDiscardAudio: () -> Void
-    let suggestions: [String]
-    let onSuggestion: (String) -> Void
-    let onSend: () -> Void
-    let onStop: () -> Void
-    @Namespace private var glassNamespace
-
-    var body: some View {
-        GlassEffectContainer(spacing: 10) {
-            HStack(spacing: 10) {
-                if !audioRecorder.isRecording {
-                    leadingControl
-                        .glassEffectID("composer-leading", in: glassNamespace)
-                        .glassEffectTransition(.matchedGeometry)
-                        .transition(.blurReplace.combined(with: .scale(0.9)))
-                        .zIndex(2)
-                }
-
-                InsightComposerField(
-                    text: $text,
-                    isFocused: isFocused,
-                    audioRecorder: audioRecorder,
-                    isGenerating: isGenerating,
-                    isEnabled: isEnabled,
-                    hasPendingImages: hasPendingImages,
-                    pendingAudio: pendingAudio,
-                    isPlayingAudio: isPlayingAudio,
-                    onMicrophonePressChanged: onMicrophonePressChanged,
-                    onMicrophoneLongPress: onMicrophoneLongPress,
-                    onMicrophoneAccessibilityAction: onMicrophoneAccessibilityAction,
-                    onToggleAudioPlayback: onToggleAudioPlayback,
-                    onSend: onSend,
-                    onStop: onStop
-                )
-                .padding(.horizontal, 14)
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .contentShape(.capsule)
-                .glassEffect(.regular.interactive(), in: .capsule)
-                .glassEffectID("composer-field", in: glassNamespace)
-                .glassEffectTransition(.matchedGeometry)
-            }
-        }
-        .animation(.snappy(duration: 0.3, extraBounce: 0.04), value: composerMode)
-        .padding(.horizontal, 27)
-        .padding(.top, 6)
-        .padding(.bottom, isKeyboardPresented ? 8 : -6)
-    }
-
-    @ViewBuilder
-    private var leadingControl: some View {
-        if pendingAudio != nil {
-            Button {
-                onDiscardAudio()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.title3.weight(.medium))
-                    .frame(width: 32, height: 32)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .frame(width: 44, height: 44)
-            .contentShape(.circle)
-            .accessibilityLabel("取消语音")
-            .accessibilityIdentifier("insight.audio.discard")
-        } else {
-            Menu {
-                Button {
-                    onPhotoLibrary()
-                } label: {
-                    Label("从相册选择", systemImage: "photo.on.rectangle")
-                }
-                Button("拍照", systemImage: "camera", action: onCamera)
-                Button("导入数据文件", systemImage: "square.and.arrow.down", action: onImportData)
-                Menu("建议问题", systemImage: "sparkles") {
-                    ForEach(suggestions, id: \.self) { suggestion in
-                        Button(suggestion) {
-                            onSuggestion(suggestion)
-                        }
-                    }
-                }
-            } label: {
-                Image(systemName: "plus")
-                    .font(.title2.weight(.medium))
-                    .frame(width: 32, height: 32)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .frame(width: 44, height: 44)
-            .contentShape(.circle)
-            .disabled(isGenerating)
-            .accessibilityLabel("添加附件或选择建议问题")
-            .accessibilityIdentifier("insight.attachment.menu")
-        }
-    }
-
-    private var composerMode: InsightComposerMode {
-        if audioRecorder.isRecording {
-            return .recording
-        }
-        if pendingAudio != nil {
-            return .audioPreview
-        }
-        return .text
-    }
-}
-
-private enum InsightComposerMode: Hashable {
-    case text
-    case recording
-    case audioPreview
-}
-
-private struct InsightComposerField: View {
-    @Binding var text: String
-    var isFocused: FocusState<Bool>.Binding
-    let audioRecorder: InsightAudioRecorder
-    let isGenerating: Bool
-    let isEnabled: Bool
-    let hasPendingImages: Bool
-    let pendingAudio: PendingInsightAudio?
-    let isPlayingAudio: Bool
-    let onMicrophonePressChanged: (Bool) -> Void
-    let onMicrophoneLongPress: () -> Void
-    let onMicrophoneAccessibilityAction: () -> Void
-    let onToggleAudioPlayback: () -> Void
-    let onSend: () -> Void
-    let onStop: () -> Void
-
-    var body: some View {
-        ZStack {
-            if audioRecorder.isRecording {
-                recordingContent
-                    .transition(.blurReplace)
-            } else if let pendingAudio {
-                audioPreview(pendingAudio)
-                    .transition(.blurReplace)
-            } else {
-                textComposer
-                    .transition(.blurReplace)
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: 44)
-        .animation(.snappy(duration: 0.3, extraBounce: 0.04), value: composerMode)
-        .overlay(alignment: .trailing) {
-            if shouldCaptureMicrophonePress {
-                Color.clear
-                    .frame(width: 50, height: 44)
-                    .contentShape(.rect)
-                    .onLongPressGesture(
-                        minimumDuration: 0.15,
-                        maximumDistance: 80,
-                        pressing: onMicrophonePressChanged,
-                        perform: onMicrophoneLongPress
-                    )
-                    .accessibilityElement()
-                    .accessibilityLabel(audioRecorder.isRecording ? "松开结束录音" : "按住录音")
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityAction {
-                        onMicrophoneAccessibilityAction()
-                    }
-            }
-        }
-    }
-
-    private var textComposer: some View {
-        HStack(spacing: 8) {
-            TextField("信息", text: $text, axis: .vertical)
-                .lineLimit(1...4)
-                .focused(isFocused)
-                .submitLabel(.send)
-                .onSubmit(onSend)
-                .textFieldStyle(.plain)
-                .frame(minWidth: 160, maxWidth: .infinity)
-                .disabled(isGenerating)
-
-            if isGenerating {
-                Button(action: onStop) {
-                    Image(systemName: "stop.fill")
-                        .font(.caption.bold())
-                        .foregroundStyle(.white)
-                        .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.circle)
-                .tint(.red)
-                .frame(width: 34, height: 34)
-                .accessibilityLabel("停止生成")
-            } else if hasSendableContent {
-                Button(action: onSend) {
-                    Image(systemName: "arrow.up")
-                        .font(.caption.bold())
-                        .foregroundStyle(.white)
-                        .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.glassProminent)
-                .buttonBorderShape(.circle)
-                .tint(AppTheme.brand)
-                .frame(width: 34, height: 34)
-                .disabled(!isEnabled)
-                .accessibilityLabel("发送")
-            } else {
-                Image(systemName: "waveform")
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(isEnabled ? .secondary : .tertiary)
-                    .frame(width: 36, height: 36)
-                    .accessibilityHidden(true)
-            }
-        }
-    }
-
-    private var recordingContent: some View {
-        HStack(spacing: 12) {
-            InsightAudioWaveform(
-                samples: audioRecorder.waveformSamples,
-                color: .red,
-                inactiveOpacity: 0.28
-            )
-            .frame(maxWidth: .infinity)
-
-            Text(formatDuration(audioRecorder.duration))
-                .font(.body.monospacedDigit())
-                .foregroundStyle(.red)
-
-            ZStack {
-                Circle()
-                    .fill(.red.opacity(0.14))
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(.red)
-                    .frame(width: 14, height: 14)
-            }
-            .frame(width: 38, height: 38)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("正在录音，\(formatDuration(audioRecorder.duration))，松开结束")
-    }
-
-    private func audioPreview(_ audio: PendingInsightAudio) -> some View {
-        HStack(spacing: 10) {
-            Button(action: onToggleAudioPlayback) {
-                Image(systemName: isPlayingAudio ? "pause.fill" : "play.fill")
-                    .font(.caption.bold())
-                    .frame(width: 18, height: 18)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .frame(width: 34, height: 34)
-            .contentTransition(.symbolEffect(.replace))
-            .accessibilityLabel(isPlayingAudio ? "暂停语音" : "播放语音")
-
-            InsightAudioWaveform(
-                samples: audio.waveformSamples,
-                color: .secondary,
-                inactiveOpacity: 0.52
-            )
-            .frame(maxWidth: .infinity)
-
-            Text("+ \(formatDuration(audio.duration))")
-                .font(.body.monospacedDigit())
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
-                .background(.fill.tertiary, in: .capsule)
-
-            Button(action: onSend) {
-                Image(systemName: "arrow.up")
-                    .font(.body.bold())
-                    .foregroundStyle(.white)
-                    .frame(width: 20, height: 20)
-            }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.circle)
-            .tint(.green)
-            .frame(width: 38, height: 38)
-            .disabled(!isEnabled)
-            .accessibilityLabel("发送语音")
-        }
-    }
-
-    private var hasSendableContent: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || hasPendingImages
-    }
-
-    private var shouldCaptureMicrophonePress: Bool {
-        audioRecorder.isRecording || (
-            !isGenerating &&
-                pendingAudio == nil &&
-                !hasSendableContent
-        )
-    }
-
-    private var composerMode: InsightComposerMode {
-        if audioRecorder.isRecording {
-            return .recording
-        }
-        if pendingAudio != nil {
-            return .audioPreview
-        }
-        return .text
-    }
-
-    private func formatDuration(_ duration: TimeInterval) -> String {
-        let totalSeconds = max(0, Int(duration.rounded(.down)))
-        return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
 }
 
@@ -1776,49 +2058,6 @@ private struct InsightAudioWaveform: View {
         let stride = Double(samples.count - 1) / Double(maximumCount - 1)
         return (0..<maximumCount).map { index in
             samples[Int((Double(index) * stride).rounded())]
-        }
-    }
-}
-
-private struct InsightConversationHistoryView: View {
-    @Environment(\.dismiss) private var dismiss
-    let controller: InsightConversationController
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("当前牧场：\(controller.boundFarmName)") {
-                    if controller.conversations.isEmpty {
-                        ContentUnavailableView("暂无历史会话", systemImage: "bubble.left.and.bubble.right")
-                    } else {
-                        ForEach(controller.conversations, id: \.id) { conversation in
-                            Button {
-                                controller.selectConversation(conversation.id)
-                                dismiss()
-                            } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(LocalizedStringKey(conversation.title))
-                                        .foregroundStyle(.primary)
-                                    Text(conversation.updatedAt, format: .dateTime.month().day().hour().minute())
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .onDelete { offsets in
-                            for index in offsets {
-                                controller.deleteConversation(controller.conversations[index])
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("历史会话")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("完成") { dismiss() }
-                }
-            }
         }
     }
 }
@@ -1907,9 +2146,10 @@ private struct InsightDraftConfirmationView: View {
 
 private struct InsightCameraPicker: UIViewControllerRepresentable {
     let onImage: (UIImage) -> Void
+    let onCancel: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onImage: onImage)
+        Coordinator(onImage: onImage, onCancel: onCancel)
     }
 
     func makeUIViewController(context: Context) -> UIImagePickerController {
@@ -1923,9 +2163,11 @@ private struct InsightCameraPicker: UIViewControllerRepresentable {
 
     final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
         let onImage: (UIImage) -> Void
+        let onCancel: () -> Void
 
-        init(onImage: @escaping (UIImage) -> Void) {
+        init(onImage: @escaping (UIImage) -> Void, onCancel: @escaping () -> Void) {
             self.onImage = onImage
+            self.onCancel = onCancel
         }
 
         func imagePickerController(
@@ -1935,12 +2177,12 @@ private struct InsightCameraPicker: UIViewControllerRepresentable {
             if let image = info[.originalImage] as? UIImage {
                 onImage(image)
             } else {
-                picker.dismiss(animated: true)
+                onCancel()
             }
         }
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            picker.dismiss(animated: true)
+            onCancel()
         }
     }
 }

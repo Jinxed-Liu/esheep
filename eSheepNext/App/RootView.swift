@@ -123,7 +123,14 @@ struct RootView: View {
         .onChange(of: session.selectedFarmID) { _, _ in
             PerformanceTrace.event(.farmSwitch, count: visibleFarms.count)
         }
+        .onChange(of: insightSessionScope, initial: true) { _, scope in
+            InsightSessionCoordinator.shared.activate(scope: scope.map {
+                InsightConversationScope(accountID: $0.accountID, farmID: $0.farmID)
+            })
+        }
         .onChange(of: scenePhase) { _, phase in
+            if phase == .background { InsightSessionCoordinator.shared.setForeground(false) }
+            else if phase == .active { InsightSessionCoordinator.shared.setForeground(true) }
             // Only a visible first-receive page may keep the device awake.
             // All other screens retain the system's normal auto-lock policy.
             updateInitialSyncIdleTimer()
@@ -157,6 +164,7 @@ struct RootView: View {
             updateInitialSyncIdleTimer()
         }
         .onChange(of: session.authenticationRevision) { _, _ in
+            InsightSessionCoordinator.shared.pauseAll(reason: "登录状态已变更，请重新检查后继续。")
             // A login switch or explicit sign-out is not guaranteed to change
             // the scene phase. Stop any receive that was admitted under the
             // previous identity before allowing the new account to discover
@@ -189,6 +197,7 @@ struct RootView: View {
             }
         }
         .onAppear {
+            InsightSessionCoordinator.shared.setForeground(scenePhase != .background)
             updateInitialSyncIdleTimer()
         }
         .onReceive(NotificationCenter.default.publisher(for: FarmWidgetProfileStore.changeNotification)) { _ in
@@ -284,6 +293,15 @@ struct RootView: View {
                 await discoverRemoteFarmsIfNeeded(lease: lease)
             }
         }
+    }
+
+    private var insightSessionScope: InsightSessionScope? {
+        guard let account = activeAccount,
+              hasPersistedLocalAccount(for: account),
+              hasCurrentLegalConsent(for: account),
+              let farmID = session.selectedFarmID,
+              visibleFarms.contains(where: { $0.id == farmID && FarmContext(accountID: account.effectiveAccountID, farmID: $0.id, role: $0.role).capabilities.allows(.readFarm) }) else { return nil }
+        return InsightSessionScope(accountID: account.effectiveAccountID, farmID: farmID)
     }
 
     private var activeAccount: AccountProfile? {

@@ -212,6 +212,14 @@ struct PrivacyAndTermsSettingsView: View {
         Task { @MainActor in
             var warnings: [String] = []
             let accountID = account.effectiveAccountID
+            let hadAIConsent = AIPrivacyConsentStore.hasCurrentConsent(for: accountID)
+            let aiWithdrawalEvent = AIPrivacyConsentEvent(action: .withdrawn)
+            let legalWithdrawalEvent = LegalConsentWithdrawalEvent()
+            do { try AIPrivacyConsentStore.withdraw(for: accountID) }
+            catch { warnings.append("本机 AI 同意撤回失败：\(error.localizedDescription)") }
+            InsightSessionCoordinator.shared.pauseAll(reason: "已撤回数据处理同意")
+            InsightSessionCoordinator.shared.clearAccountRuntime(accountID: accountID)
+            InsightAnalysisPreference.remove(for: accountID)
             let identity: (any AccountIdentityClient)?
 
             do {
@@ -224,18 +232,17 @@ struct PrivacyAndTermsSettingsView: View {
             if let identity {
                 do {
                     try await identity.recordLegalConsentWithdrawal(
-                        LegalConsentWithdrawalEvent()
+                        legalWithdrawalEvent
                     )
                 } catch {
                     warnings.append("服务器未能写入撤回凭证：\(error.localizedDescription)")
                 }
             }
 
-            if AIPrivacyConsentStore.hasCurrentConsent(for: accountID),
-               let identity {
+            if hadAIConsent, let identity {
                 do {
                     try await identity.recordAIPrivacyConsent(
-                        AIPrivacyConsentEvent(action: .withdrawn)
+                        aiWithdrawalEvent
                     )
                 } catch {
                     warnings.append("AI 撤回凭证未能同步：\(error.localizedDescription)")
@@ -244,10 +251,11 @@ struct PrivacyAndTermsSettingsView: View {
 
             do {
                 try LegalConsentStore.remove(for: accountID)
-                try AIPrivacyConsentStore.withdraw(for: accountID)
             } catch {
                 warnings.append("本机安全凭证清理失败：\(error.localizedDescription)")
             }
+            do { try await InsightSessionCoordinator.shared.waitForAccountCleanup(accountID: accountID) }
+            catch { warnings.append("本机 AI 记录清理未完成：\(error.localizedDescription)") }
 
             account.acceptedTermsVersion = ""
             account.acceptedPrivacyVersion = ""
@@ -324,10 +332,22 @@ struct AccountDeletionButton: View {
                 _ = try await AccountIdentityClients.active().refreshSession()
                 try await AccountDeletionAuthorization.confirmBiometrics()
                 let deletion = try await AccountIdentityClients.active().deleteAccount()
-                modelContext.delete(account)
-                try modelContext.save()
+                let accountID = account.effectiveAccountID
+                InsightSessionCoordinator.shared.pauseAll(reason: "账号删除申请已提交")
+                InsightSessionCoordinator.shared.clearAccountRuntime(accountID: accountID)
+                InsightAnalysisPreference.remove(for: accountID)
+                var warnings: [String] = []
+                do { try await InsightSessionCoordinator.shared.waitForAccountCleanup(accountID: accountID) }
+                catch { warnings.append("本机 AI 记录清理未完成：\(error.localizedDescription)") }
+                do {
+                    modelContext.delete(account)
+                    try modelContext.save()
+                } catch {
+                    modelContext.rollback()
+                    warnings.append("本机账号记录清理未完成：\(error.localizedDescription)")
+                }
                 session.authenticationDidSignOut(
-                    warning: "删除申请已提交（任务 \(deletion.deletionJobID)）。服务器将在完成检查后处理；请保存任务编号。"
+                    warning: (["删除申请已提交（任务 \(deletion.deletionJobID)）。服务器将在完成检查后处理；请保存任务编号。"] + warnings).joined(separator: "\n")
                 )
             } catch {
                 errorMessage = error.localizedDescription

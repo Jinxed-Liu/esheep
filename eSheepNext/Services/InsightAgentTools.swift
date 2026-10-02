@@ -53,8 +53,8 @@ struct InsightAgentContext: Sendable {
     }
 }
 
-struct InsightGeneratedFile: Sendable, Equatable, Identifiable {
-    enum FileKind: String, Sendable, Equatable {
+struct InsightGeneratedFile: Codable, Sendable, Equatable, Identifiable {
+    enum FileKind: String, Codable, Sendable, Equatable {
         case xlsx
         case json
         case csv
@@ -289,14 +289,14 @@ final class InsightToolRegistry {
             ),
             Self.tool(
                 InsightFarmCalculationEngine.toolName,
-                "在当前设备的权威牧场事实上执行通用数值流水线：选择样本源和群体，按羊分区，选择单点/相邻/首末窗口，再计算值、差值、日历间隔或单位日变化，最后分组并聚合。完整群体变化率分析可一次确定性返回总体、真实相邻称重区间、生产批次和截至时点生命周期四个维度。工具不理解自然语言指标；模型必须根据用户问题自行组合算子。结果是证据而不是最终答复。当前仅支持体重样本源。",
+                "在本机牧场事实上执行确定性数值计算。默认增重以 canonical_timeline/all_profiles/at_cutoff 复用 App 的 WeightGainAnalyticsEngine，按分析结束日牧场时区日末确定圈舍羊群，保留同羊跨舍称重与完整转群证据，先逐羊汇总有效区间再等权平均。完整分析一次返回总体、真实称重区间、生产批次、截止时点生命周期及数据完整性，多舍还逐舍返回含零样本的结果。仅明确要求历史连续在舍绩效才用 at_measurement。结果是证据而不是最终答复，当前仅支持体重样本源。",
                 properties: [
                     "source": Self.enumString(
                         "本地数值事实源",
                         values: ["weight_samples"]
                     ),
                     "sample_policy": Self.enumString(
-                        "recorded_only 只用常规称重；canonical_timeline 使用按牧场日去重的统一体重时间线",
+                        "默认 canonical_timeline 与 App 统一体重时间线一致，按牧场日择优，包含可追溯断奶/初生重；仅明确要求常规称重时用 recorded_only",
                         values: ["recorded_only", "canonical_timeline"]
                     ),
                     "cohort": Self.enumString(
@@ -304,19 +304,25 @@ final class InsightToolRegistry {
                         values: ["all_profiles", "current_in_herd", "removed"]
                     ),
                     "pen_membership": Self.enumString(
-                        "圈舍筛选时点：at_cutoff 按 as_of 时点归属；at_measurement 按每条样本发生时归属",
+                        "默认 at_cutoff 按分析结束日或显式 as_of 的历史圈舍名单跟踪同羊，跨舍增重保留；仅明确要求连续在舍绩效才选 at_measurement",
                         values: ["at_cutoff", "at_measurement"]
                     ),
                     "pen_name": Self.string("精确圈舍名称；不筛选时传空字符串"),
+                    "pen_names": .object([
+                        "type": .string("array"),
+                        "description": .string("用户要求的全部精确圈舍名称；多舍必须一次完整传入；单舍兼容 pen_name，不筛选时传空数组"),
+                        "maxItems": .number(50),
+                        "items": Self.string("一个精确圈舍名称"),
+                    ]),
                     "ear_tag": Self.string("耳号关键词；不筛选时传空字符串"),
                     "breed": Self.string("品种关键词；不筛选时传空字符串"),
                     "sex": Self.enumString(
                         "性别；不筛选时传空字符串",
                         values: ["", "ewe", "ram", "unknown"]
                     ),
-                    "date_from": Self.string("样本 ISO 8601 开始时间；不限制时传空字符串"),
-                    "date_to": Self.string("样本 ISO 8601 结束时间；不限制时传空字符串"),
-                    "as_of": Self.string("群体状态和样本截止时点 ISO 8601；当前时点传空字符串"),
+                    "date_from": Self.string("分析开始日期 YYYY-MM-DD（牧场时区当天零点）或 ISO 8601；不限制时空字符串"),
+                    "date_to": Self.string("分析结束日期 YYYY-MM-DD（牧场时区整天）或 ISO 8601；不限制时空字符串"),
+                    "as_of": Self.string("显式事实截止时点 ISO 8601；App 默认增重口径同时以 date_to 封顶，不能把期末名单推到分析范围之后；空字符串按分析结束日截止，无结束日用本轮事实读取时间"),
                     "partition_by": Self.enumString(
                         "窗口计算必须按 sheep 分区；单点聚合可用 none",
                         values: ["sheep", "none"]
@@ -330,11 +336,11 @@ final class InsightToolRegistry {
                         values: ["value", "difference", "elapsed_days", "difference_per_day"]
                     ),
                     "analysis_scope": Self.enumString(
-                        "complete 用于未明确限定单一视角的群体变化率分析，并强制返回总体、称重区间、生产批次、生命周期及完整性；focused 仅用于用户明确指定单一值或单一分组",
+                        "complete 用于群体变化率分析，包括指定日期或多舍请求，返回总体、称重区间、生产批次、生命周期及完整性，多舍还逐舍返回；focused 仅用于明确指定单一值或单一分组",
                         values: ["focused", "complete"]
                     ),
                     "group_by": Self.enumString(
-                        "主结果按整体、真实起止称重区间、区间终点日/月、生产批次、截至时点生命周期、羊只或圈舍分组；complete 还会自动返回四个完整分析维度",
+                        "主结果按整体、真实起止称重区间、区间终点日/月、生产批次、截至时点生命周期、羊只或期末圈舍分组；complete 自动返回完整分析维度及多舍明细",
                         values: [
                             "none", "weighing_interval", "interval_end_day", "interval_end_month",
                             "production_batch", "lifecycle_status", "sheep", "pen",
@@ -356,7 +362,7 @@ final class InsightToolRegistry {
                     ]),
                 ],
                 required: [
-                    "source", "sample_policy", "cohort", "pen_membership", "pen_name",
+                    "source", "sample_policy", "cohort", "pen_membership", "pen_name", "pen_names",
                     "ear_tag", "breed", "sex", "date_from", "date_to", "as_of",
                     "partition_by", "window", "transform", "analysis_scope", "group_by", "reduce",
                     "selection", "limit",

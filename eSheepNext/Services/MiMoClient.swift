@@ -10,22 +10,49 @@ struct MiMoInputAudio: Sendable, Equatable {
     let data: Data
 }
 
+struct MiMoReasoningRecord: Codable, Sendable, Equatable, Identifiable {
+    enum Source: String, Codable, Sendable { case responses, chat }
+    let id: String
+    let text: String
+    let source: Source
+    let contentTexts: [String]
+
+    init(id: String, text: String, source: Source = .responses, contentTexts: [String]? = nil) {
+        self.id = id
+        self.text = text
+        self.source = source
+        self.contentTexts = contentTexts ?? [text]
+    }
+
+    var responsesObject: [String: Any] {
+        [
+            "id": id,
+            "type": "reasoning",
+            "content": contentTexts.map { ["type": "reasoning_text", "text": $0] },
+            "status": "completed",
+        ]
+    }
+}
+
 struct MiMoInputMessage: Sendable, Equatable {
     let role: InsightMessageRole
     let text: String
     let images: [MiMoInputImage]
     let audios: [MiMoInputAudio]
+    let reasoningRecords: [MiMoReasoningRecord]
 
     init(
         role: InsightMessageRole,
         text: String,
         images: [MiMoInputImage] = [],
-        audios: [MiMoInputAudio] = []
+        audios: [MiMoInputAudio] = [],
+        reasoningRecords: [MiMoReasoningRecord] = []
     ) {
         self.role = role
         self.text = text
         self.images = images
         self.audios = audios
+        self.reasoningRecords = reasoningRecords
     }
 }
 
@@ -90,7 +117,8 @@ enum InsightContextCompressor {
                     role: message.role,
                     text: String(message.text.prefix(characterBudget)) + "\n[本条消息已按上下文上限截断]",
                     images: message.images,
-                    audios: message.audios
+                    audios: message.audios,
+                    reasoningRecords: message.reasoningRecords
                 ))
                 recentTokens = estimatedTokens(for: recent[0])
                 break
@@ -151,6 +179,7 @@ enum InsightContextCompressor {
 
     static func estimatedTokens(for message: MiMoInputMessage) -> Int {
         estimatedTokens(for: message.text) +
+            message.reasoningRecords.reduce(0) { $0 + estimatedTokens(for: $1.text) } +
             message.images.count * 2_048 +
             message.audios.count * 8_192 +
             12
@@ -202,9 +231,29 @@ enum InsightContextCompressor {
     }
 }
 
-struct MiMoFunctionExchange: Sendable, Equatable {
+struct MiMoFunctionExchange: Codable, Sendable, Equatable {
     let call: InsightFunctionCall
     let output: String
+    let reasoningRecords: [MiMoReasoningRecord]
+    let assistantTurnID: String?
+    let assistantText: String
+    let succeeded: Bool
+
+    init(
+        call: InsightFunctionCall,
+        output: String,
+        reasoningRecords: [MiMoReasoningRecord] = [],
+        assistantTurnID: String? = nil,
+        assistantText: String = "",
+        succeeded: Bool = true
+    ) {
+        self.call = call
+        self.output = output
+        self.reasoningRecords = reasoningRecords
+        self.assistantTurnID = assistantTurnID
+        self.assistantText = assistantText
+        self.succeeded = succeeded
+    }
 }
 
 struct InsightToolDefinition: Sendable, Equatable {
@@ -220,6 +269,7 @@ struct MiMoConversationRequest: Sendable {
     let functionExchanges: [MiMoFunctionExchange]
     let tools: [InsightToolDefinition]
     let maximumOutputTokens: Int
+    let thinkingEnabled: Bool
 
     init(
         model: String = MiMoCredential.model,
@@ -227,18 +277,32 @@ struct MiMoConversationRequest: Sendable {
         messages: [MiMoInputMessage],
         functionExchanges: [MiMoFunctionExchange] = [],
         tools: [InsightToolDefinition] = [],
-        maximumOutputTokens: Int = 1_200
+        maximumOutputTokens: Int = 1_200,
+        thinkingEnabled: Bool = true
     ) {
         self.model = model
         self.instructions = instructions
         self.messages = messages
         self.functionExchanges = functionExchanges
         self.tools = tools
-        self.maximumOutputTokens = min(max(128, maximumOutputTokens), 4_096)
+        self.maximumOutputTokens = min(max(128, maximumOutputTokens), 8_192)
+        self.thinkingEnabled = thinkingEnabled
+    }
+
+    func withMaximumOutputTokens(_ maximum: Int) -> Self {
+        Self(
+            model: model,
+            instructions: instructions,
+            messages: messages,
+            functionExchanges: functionExchanges,
+            tools: tools,
+            maximumOutputTokens: maximum,
+            thinkingEnabled: thinkingEnabled
+        )
     }
 }
 
-struct InsightFunctionCall: Sendable, Equatable {
+struct InsightFunctionCall: Codable, Sendable, Equatable {
     let callID: String
     let name: String
     let argumentsJSON: String
@@ -248,17 +312,37 @@ struct InsightTokenUsage: Sendable, Equatable {
     let inputTokens: Int
     let outputTokens: Int
     let totalTokens: Int
+    let reasoningTokens: Int
+    let cachedInputTokens: Int
+
+    init(
+        inputTokens: Int,
+        outputTokens: Int,
+        totalTokens: Int,
+        reasoningTokens: Int = 0,
+        cachedInputTokens: Int = 0
+    ) {
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.totalTokens = totalTokens
+        self.reasoningTokens = reasoningTokens
+        self.cachedInputTokens = cachedInputTokens
+    }
 }
 
 enum InsightModelEvent: Sendable, Equatable {
     case responseStarted(id: String)
     case textDelta(String)
+    case reasoningDelta(String)
+    case reasoningRecorded(MiMoReasoningRecord)
     case functionCall(InsightFunctionCall)
     case completed(responseID: String?, usage: InsightTokenUsage?)
+    case usage(InsightTokenUsage)
 }
 
 enum MiMoClientError: LocalizedError, Equatable {
     case invalidRequest
+    case requestTooLarge(maximumBytes: Int)
     case invalidResponse
     case authenticationFailed
     case rateLimited
@@ -282,7 +366,7 @@ enum MiMoClientError: LocalizedError, Equatable {
         case .server(let status, _):
             status == 200 || status == 408 || status == 409 || status == 425 ||
                 (500...599).contains(status)
-        case .invalidRequest, .authenticationFailed, .quotaExceeded, .incomplete:
+        case .invalidRequest, .requestTooLarge, .authenticationFailed, .quotaExceeded, .incomplete:
             false
         }
     }
@@ -291,6 +375,8 @@ enum MiMoClientError: LocalizedError, Equatable {
         switch self {
         case .invalidRequest:
             "发送给 MiMo 的请求无效。"
+        case .requestTooLarge(let maximumBytes):
+            "本次请求超过 \(maximumBytes / (1_024 * 1_024)) MiB 容量上限，已停止发送；请减少附件或上下文范围后继续。"
         case .invalidResponse:
             "MiMo 返回了无法解析的响应。"
         case .authenticationFailed:
@@ -381,15 +467,18 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
                                 continuation.yield(event)
                             }
                         }
-                        for event in parser.finish() {
+                        for event in try parser.finishStream() {
                             continuation.yield(event)
                         }
                     } else {
+                        var didComplete = false
                         for try await line in bytes.lines {
                             try Task.checkCancellation()
                             guard let event = try MiMoSSEParser.parse(line: line) else { continue }
+                            if case .completed = event { didComplete = true }
                             continuation.yield(event)
                         }
+                        guard didComplete else { throw MiMoClientError.invalidResponse }
                     }
                     continuation.finish()
                 } catch is CancellationError {
@@ -412,7 +501,8 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
         let request = MiMoConversationRequest(
             instructions: "Return exactly OK.",
             messages: [MiMoInputMessage(role: .user, text: "OK")],
-            maximumOutputTokens: 8
+            maximumOutputTokens: 128,
+            thinkingEnabled: false
         )
         let urlRequest = try makeResponsesURLRequest(
             request: request,
@@ -432,11 +522,12 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
         }
     }
 
-    private func makeResponsesURLRequest(
+    func makeResponsesURLRequest(
         request: MiMoConversationRequest,
         credential: MiMoCredential,
         stream: Bool
     ) throws -> URLRequest {
+        try Self.validatePayloadSize(request)
         var urlRequest = URLRequest(url: credential.responsesURL)
         urlRequest.httpMethod = "POST"
         urlRequest.timeoutInterval = stream ? 120 : 30
@@ -446,19 +537,39 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
         urlRequest.setValue(credential.apiKey, forHTTPHeaderField: "api-key")
         urlRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
 
-        var input = request.messages.map(Self.responsesMessageObject)
-        for exchange in request.functionExchanges {
-            input.append([
-                "type": "function_call",
-                "call_id": exchange.call.callID,
-                "name": exchange.call.name,
-                "arguments": exchange.call.argumentsJSON,
-            ])
-            input.append([
-                "type": "function_call_output",
-                "call_id": exchange.call.callID,
-                "output": exchange.output,
-            ])
+        var input: [[String: Any]] = []
+        var replayedReasoningIDs: Set<String> = []
+        for message in request.messages {
+            if message.role == .assistant {
+                for record in message.reasoningRecords where replayedReasoningIDs.insert(record.id).inserted {
+                    input.append(record.responsesObject)
+                }
+            }
+            input.append(Self.responsesMessageObject(message))
+        }
+        for turn in Self.functionTurns(request.functionExchanges) {
+            // Keep the actual reasoning item immediately before the matching
+            // function-call turn. Multiple calls share one reasoning item.
+            for exchange in turn {
+                for record in exchange.reasoningRecords where replayedReasoningIDs.insert(record.id).inserted {
+                    input.append(record.responsesObject)
+                }
+            }
+            for exchange in turn {
+                input.append([
+                    "type": "function_call",
+                    "call_id": exchange.call.callID,
+                    "name": exchange.call.name,
+                    "arguments": exchange.call.argumentsJSON,
+                ])
+            }
+            for exchange in turn {
+                input.append([
+                    "type": "function_call_output",
+                    "call_id": exchange.call.callID,
+                    "output": exchange.output,
+                ])
+            }
         }
         var body: [String: Any] = [
             "model": request.model,
@@ -466,7 +577,7 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
             "input": input,
             "max_output_tokens": request.maximumOutputTokens,
             "stream": stream,
-            "reasoning": ["effort": "none"],
+            "reasoning": ["effort": request.thinkingEnabled ? "high" : "none"],
         ]
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map {
@@ -480,17 +591,15 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
             }
             body["tool_choice"] = "auto"
         }
-        guard JSONSerialization.isValidJSONObject(body) else {
-            throw MiMoClientError.invalidRequest
-        }
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
+        urlRequest.httpBody = try Self.requestBody(body)
         return urlRequest
     }
 
-    private func makeChatURLRequest(
+    func makeChatURLRequest(
         request: MiMoConversationRequest,
         credential: MiMoCredential
     ) throws -> URLRequest {
+        try Self.validatePayloadSize(request)
         var urlRequest = URLRequest(url: credential.chatCompletionsURL)
         urlRequest.httpMethod = "POST"
         urlRequest.timeoutInterval = 120
@@ -501,34 +610,47 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
         urlRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
 
         var messages: [[String: Any]] = [
-            ["role": "system", "content": String(request.instructions.prefix(24_000))]
+            ["role": "system", "content": request.instructions]
         ]
-        messages.append(contentsOf: request.messages.map(Self.chatMessageObject))
-        for exchange in request.functionExchanges {
-            messages.append([
+        messages.append(contentsOf: request.messages.map { message in
+            var object = Self.chatMessageObject(message)
+            if message.role == .assistant, !message.reasoningRecords.isEmpty {
+                object["reasoning_content"] = message.reasoningRecords.map(\.text).joined(separator: "\n")
+            }
+            return object
+        })
+        for turn in Self.functionTurns(request.functionExchanges) {
+            guard let first = turn.first else { continue }
+            var assistant: [String: Any] = [
                 "role": "assistant",
-                "content": "",
-                "tool_calls": [[
+                "content": first.assistantText,
+                "tool_calls": turn.map { exchange in [
                     "id": exchange.call.callID,
                     "type": "function",
                     "function": [
                         "name": exchange.call.name,
                         "arguments": exchange.call.argumentsJSON,
                     ],
-                ]],
-            ])
-            messages.append([
-                "role": "tool",
-                "tool_call_id": exchange.call.callID,
-                "content": exchange.output,
-            ])
+                ] },
+            ]
+            if request.thinkingEnabled || !first.reasoningRecords.isEmpty {
+                assistant["reasoning_content"] = first.reasoningRecords.map(\.text).joined(separator: "\n")
+            }
+            messages.append(assistant)
+            for exchange in turn {
+                messages.append([
+                    "role": "tool",
+                    "tool_call_id": exchange.call.callID,
+                    "content": exchange.output,
+                ])
+            }
         }
         var body: [String: Any] = [
             "model": request.model,
             "messages": messages,
             "max_completion_tokens": request.maximumOutputTokens,
             "stream": true,
-            "thinking": ["type": "disabled"],
+            "thinking": ["type": request.thinkingEnabled ? "enabled" : "disabled"],
         ]
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map {
@@ -544,11 +666,66 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
             }
             body["tool_choice"] = "auto"
         }
-        guard JSONSerialization.isValidJSONObject(body) else {
+        urlRequest.httpBody = try Self.requestBody(body)
+        return urlRequest
+    }
+
+    // Existing recordings allow up to 50 MiB after base64 encoding. Keep
+    // room for optimized images and text, and reject the complete body rather
+    // than silently clipping any user-selected input or tool evidence.
+    static let maximumRequestBodyBytes = 64 * 1_024 * 1_024
+
+    private static func validatePayloadSize(_ request: MiMoConversationRequest) throws {
+        // A lower-bound check prevents allocating huge base64 strings for an
+        // already oversized media history. The final serialized-body check
+        // below still enforces the exact byte limit including JSON overhead.
+        var bytes = 0
+        func include(_ count: Int) throws {
+            guard count <= maximumRequestBodyBytes - bytes else {
+                throw MiMoClientError.requestTooLarge(maximumBytes: maximumRequestBodyBytes)
+            }
+            bytes += count
+        }
+        try include(request.instructions.utf8.count)
+        for message in request.messages {
+            try include(message.text.utf8.count)
+            guard message.images.count <= 4, message.audios.count <= 1 else {
+                throw MiMoClientError.invalidRequest
+            }
+            if message.role == .user {
+                for image in message.images { try include(((image.data.count + 2) / 3) * 4) }
+                for audio in message.audios { try include(((audio.data.count + 2) / 3) * 4) }
+            }
+        }
+        for exchange in request.functionExchanges {
+            try include(exchange.call.argumentsJSON.utf8.count)
+            try include(exchange.output.utf8.count)
+        }
+    }
+
+    static func requestBody(_ object: [String: Any]) throws -> Data {
+        guard JSONSerialization.isValidJSONObject(object) else {
             throw MiMoClientError.invalidRequest
         }
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
-        return urlRequest
+        let body = try JSONSerialization.data(withJSONObject: object)
+        guard body.count <= maximumRequestBodyBytes else {
+            throw MiMoClientError.requestTooLarge(maximumBytes: maximumRequestBodyBytes)
+        }
+        return body
+    }
+
+    private static func functionTurns(_ exchanges: [MiMoFunctionExchange]) -> [[MiMoFunctionExchange]] {
+        var turns: [[MiMoFunctionExchange]] = []
+        for exchange in exchanges {
+            if let id = exchange.assistantTurnID,
+               let previous = turns.last?.first,
+               previous.assistantTurnID == id {
+                turns[turns.count - 1].append(exchange)
+            } else {
+                turns.append([exchange])
+            }
+        }
+        return turns
     }
 
     private static func responsesMessageObject(_ message: MiMoInputMessage) -> [String: Any] {
@@ -563,7 +740,7 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
         if !message.text.isEmpty {
             content.append([
                 "type": role == "assistant" ? "output_text" : "input_text",
-                "text": String(message.text.prefix(24_000)),
+                "text": message.text,
             ])
         }
         if role == "user" {
@@ -580,7 +757,7 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
     private static func chatMessageObject(_ message: MiMoInputMessage) -> [String: Any] {
         let role = message.role == .assistant ? "assistant" : "user"
         guard role == "user", !message.images.isEmpty || !message.audios.isEmpty else {
-            return ["role": role, "content": String(message.text.prefix(24_000))]
+            return ["role": role, "content": message.text]
         }
         var content = [[String: Any]]()
         content.append(contentsOf: message.audios.prefix(1).map {
@@ -602,7 +779,7 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
         if !message.text.isEmpty {
             content.append([
                 "type": "text",
-                "text": String(message.text.prefix(24_000)),
+                "text": message.text,
             ])
         }
         return ["role": role, "content": content]
@@ -658,9 +835,36 @@ enum MiMoSSEParser {
                 throw MiMoClientError.invalidResponse
             }
             return .textDelta(delta)
+        case "response.reasoning_text.delta":
+            guard let delta = object["delta"] as? String else {
+                throw MiMoClientError.invalidResponse
+            }
+            return delta.isEmpty ? nil : .reasoningDelta(delta)
+        case "response.reasoning_text.done":
+            guard let text = object["text"] as? String,
+                  let itemID = object["item_id"] as? String else {
+                throw MiMoClientError.invalidResponse
+            }
+            return text.isEmpty ? nil : .reasoningRecorded(.init(id: itemID, text: text))
         case "response.output_item.done":
-            guard let item = object["item"] as? [String: Any],
-                  item["type"] as? String == "function_call",
+            guard let item = object["item"] as? [String: Any] else { return nil }
+            if item["type"] as? String == "reasoning" {
+                guard let id = item["id"] as? String,
+                      let content = item["content"] as? [[String: Any]] else {
+                    throw MiMoClientError.invalidResponse
+                }
+                let texts = content.compactMap { part -> String? in
+                    guard part["type"] as? String == "reasoning_text" else { return nil }
+                    return part["text"] as? String
+                }
+                guard texts.contains(where: { !$0.isEmpty }) else { return nil }
+                return .reasoningRecorded(.init(
+                    id: id,
+                    text: texts.joined(separator: "\n"),
+                    contentTexts: texts
+                ))
+            }
+            guard item["type"] as? String == "function_call",
                   let name = item["name"] as? String,
                   let arguments = item["arguments"] as? String else {
                 return nil
@@ -671,10 +875,14 @@ enum MiMoSSEParser {
             let response = object["response"] as? [String: Any]
             let usageObject = response?["usage"] as? [String: Any]
             let usage = usageObject.map {
-                InsightTokenUsage(
+                let outputDetails = $0["output_tokens_details"] as? [String: Any]
+                let inputDetails = $0["input_tokens_details"] as? [String: Any]
+                return InsightTokenUsage(
                     inputTokens: $0["input_tokens"] as? Int ?? 0,
                     outputTokens: $0["output_tokens"] as? Int ?? 0,
-                    totalTokens: $0["total_tokens"] as? Int ?? 0
+                    totalTokens: $0["total_tokens"] as? Int ?? 0,
+                    reasoningTokens: outputDetails?["reasoning_tokens"] as? Int ?? 0,
+                    cachedInputTokens: inputDetails?["cached_tokens"] as? Int ?? 0
                 )
             }
             return .completed(responseID: response?["id"] as? String, usage: usage)
@@ -682,8 +890,9 @@ enum MiMoSSEParser {
             let response = object["response"] as? [String: Any]
             let details = response?["incomplete_details"] as? [String: Any]
             throw MiMoClientError.incomplete(reason: details?["reason"] as? String)
-        case "error":
+        case "error", "response.failed":
             let error = object["error"] as? [String: Any]
+                ?? (object["response"] as? [String: Any])?["error"] as? [String: Any]
             throw MiMoClientError.server(
                 status: 200,
                 message: error?["message"] as? String ?? "MiMo 流式响应发生错误。"
@@ -694,7 +903,7 @@ enum MiMoSSEParser {
     }
 }
 
-private struct MiMoChatSSEParser {
+struct MiMoChatSSEParser {
     private struct PendingCall {
         var callID = ""
         var name = ""
@@ -703,6 +912,10 @@ private struct MiMoChatSSEParser {
 
     private var calls: [Int: PendingCall] = [:]
     private var didFinish = false
+    private var responseID: String?
+    private var reasoning = ""
+    private var reportedUsage: InsightTokenUsage?
+    private var didStart = false
 
     mutating func parse(line: String) throws -> [InsightModelEvent] {
         guard line.hasPrefix("data:") else { return [] }
@@ -721,11 +934,35 @@ private struct MiMoChatSSEParser {
                 message: error["message"] as? String ?? "MiMo 流式响应发生错误。"
             )
         }
+        var events: [InsightModelEvent] = []
+        if let id = object["id"] as? String {
+            responseID = id
+            if !didStart {
+                didStart = true
+                events.append(.responseStarted(id: id))
+            }
+        }
+        if let usage = object["usage"] as? [String: Any] {
+            let completionDetails = usage["completion_tokens_details"] as? [String: Any]
+            let promptDetails = usage["prompt_tokens_details"] as? [String: Any]
+            let value = InsightTokenUsage(
+                inputTokens: usage["prompt_tokens"] as? Int ?? 0,
+                outputTokens: usage["completion_tokens"] as? Int ?? 0,
+                totalTokens: usage["total_tokens"] as? Int ?? 0,
+                reasoningTokens: completionDetails?["reasoning_tokens"] as? Int ?? 0,
+                cachedInputTokens: promptDetails?["cached_tokens"] as? Int ?? 0
+            )
+            reportedUsage = value
+            events.append(.usage(value))
+        }
         guard let choice = (object["choices"] as? [[String: Any]])?.first,
               let delta = choice["delta"] as? [String: Any] else {
-            return []
+            return events
         }
-        var events: [InsightModelEvent] = []
+        if let content = delta["reasoning_content"] as? String, !content.isEmpty {
+            reasoning += content
+            events.append(.reasoningDelta(content))
+        }
         if let content = delta["content"] as? String, !content.isEmpty {
             events.append(.textDelta(content))
         }
@@ -743,7 +980,13 @@ private struct MiMoChatSSEParser {
                 calls[index] = pending
             }
         }
-        if choice["finish_reason"] is String {
+        if let reason = choice["finish_reason"] as? String {
+            if reason == "length" {
+                throw MiMoClientError.incomplete(reason: "max_output_tokens")
+            }
+            if reason == "content_filter" {
+                throw MiMoClientError.incomplete(reason: "content_filter")
+            }
             events.append(contentsOf: finish())
         }
         return events
@@ -760,7 +1003,20 @@ private struct MiMoChatSSEParser {
                 argumentsJSON: call.arguments.isEmpty ? "{}" : call.arguments
             ))
         }
-        return functionEvents + [.completed(responseID: nil, usage: nil)]
+        var events: [InsightModelEvent] = []
+        if !reasoning.isEmpty {
+            events.append(.reasoningRecorded(.init(
+                id: responseID ?? UUID().uuidString,
+                text: reasoning,
+                source: .chat
+            )))
+        }
+        return events + functionEvents + [.completed(responseID: responseID, usage: reportedUsage)]
+    }
+
+    mutating func finishStream() throws -> [InsightModelEvent] {
+        guard didFinish else { throw MiMoClientError.invalidResponse }
+        return []
     }
 }
 
