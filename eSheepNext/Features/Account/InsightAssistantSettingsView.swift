@@ -4,6 +4,7 @@ import WebKit
 
 struct InsightAssistantSettingsView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(AppSession.self) private var session
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -32,6 +33,7 @@ struct InsightAssistantSettingsView: View {
     @State private var isWithdrawingAIConsent = false
     @State private var selectedLegalDocument: LegalDocument?
     @State private var isUpdatingAIConsent = false
+    @State private var analysisConfiguration: InsightRunConfiguration
 
     init(account: AccountProfile, farm: FarmRecord) {
         self.account = account
@@ -49,6 +51,9 @@ struct InsightAssistantSettingsView: View {
                 for: account.effectiveAccountID
             )
         )
+        _analysisConfiguration = State(initialValue: InsightAnalysisPreference.load(
+            for: account.effectiveAccountID
+        ))
     }
 
     var body: some View {
@@ -91,6 +96,48 @@ struct InsightAssistantSettingsView: View {
                 Text("模型")
             } footer: {
                 Text("所有输入均使用 MiMo-V2.6-Pro，不开放自定义模型或第三方地址。")
+            }
+
+            Section {
+                HStack {
+                    Text("分析深度")
+                    Spacer()
+                    Text(LocalizedStringKey(analysisConfiguration.effort.title))
+                        .foregroundStyle(AppTheme.brand)
+                }
+                Slider(value: Binding(
+                    get: { analysisConfiguration.effort.sliderValue },
+                    set: { analysisConfiguration.effort = .from(sliderValue: $0) }
+                ), in: 0...2, step: 1)
+                .tint(AppTheme.brand)
+                .accessibilityLabel("分析深度")
+                .accessibilityValue(Text(LocalizedStringKey(analysisConfiguration.effort.title)))
+                HStack {
+                    Text("低")
+                    Spacer()
+                    Text("中")
+                    Spacer()
+                    Text("高")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Toggle("显示思考过程", isOn: $analysisConfiguration.showReasoning)
+            } header: {
+                Text("分析偏好")
+            } footer: {
+                Text("更深入的分析可进行更多查询和追加复核，可能增加耗时与用量。所有档位都保留必要的事实校验；思考过程只显示模型实际返回的内容。")
+            }
+            .onChange(of: analysisConfiguration) { _, configuration in
+                guard hasAcceptedAIPrivacy else { return }
+                InsightAnalysisPreference.save(configuration, for: account.effectiveAccountID)
+            }
+
+            Section {
+                Toggle("启用模型思考", isOn: $analysisConfiguration.thinkingEnabled)
+            } header: {
+                Text("高级设置")
+            } footer: {
+                Text("关闭后模型直接生成回答，仍会执行必要的证据核对与事实校验。")
             }
 
             Section {
@@ -430,13 +477,23 @@ struct InsightAssistantSettingsView: View {
 
     private func acceptAIPrivacy() {
         guard !isUpdatingAIConsent else { return }
+        let accountID = account.effectiveAccountID
+        let authenticationRevision = session.authenticationRevision
+        let event = AIPrivacyConsentEvent(action: .accepted)
+        let identity = Result { try AccountIdentityClients.active() }
         isUpdatingAIConsent = true
         Task {
             defer { isUpdatingAIConsent = false }
             do {
-                let event = AIPrivacyConsentEvent(action: .accepted)
-                try await AccountIdentityClients.active().recordAIPrivacyConsent(event)
-                try AIPrivacyConsentStore.saveCurrentConsent(for: account.effectiveAccountID)
+                try await InsightSessionCoordinator.shared.waitForAccountCleanup(accountID: accountID)
+                guard session.activeAccountProfileID == account.id,
+                      session.authenticationRevision == authenticationRevision,
+                      account.effectiveAccountID == accountID else { throw InsightWorkflowError.scopeChanged }
+                try await identity.get().recordAIPrivacyConsent(event)
+                guard session.activeAccountProfileID == account.id,
+                      session.authenticationRevision == authenticationRevision,
+                      account.effectiveAccountID == accountID else { throw InsightWorkflowError.scopeChanged }
+                try AIPrivacyConsentStore.saveCurrentConsent(for: accountID)
                 hasAcceptedAIPrivacy = true
                 hasReadAIPrivacy = false
                 await controller.refreshCredential()
@@ -448,25 +505,49 @@ struct InsightAssistantSettingsView: View {
     }
 
     private func withdrawAIPrivacy() {
+        guard !isUpdatingAIConsent else { return }
+        isUpdatingAIConsent = true
+        let accountID = account.effectiveAccountID
+        let authenticationRevision = session.authenticationRevision
+        let event = AIPrivacyConsentEvent(action: .withdrawn)
+        let identity = Result { try AccountIdentityClients.active() }
         do {
-            try AIPrivacyConsentStore.withdraw(for: account.effectiveAccountID)
+            try AIPrivacyConsentStore.withdraw(for: accountID)
+            InsightSessionCoordinator.shared.pauseAll(reason: "已撤回 AI 同意")
+            InsightSessionCoordinator.shared.clearAccountRuntime(accountID: accountID)
+            InsightAnalysisPreference.remove(for: accountID)
             hasAcceptedAIPrivacy = false
+            analysisConfiguration = InsightRunConfiguration()
             hasReadAIPrivacy = false
             Task { await controller.refreshCredential() }
         } catch {
+            isUpdatingAIConsent = false
             errorMessage = error.localizedDescription
             return
         }
 
         Task {
+            defer { isUpdatingAIConsent = false }
+            var warnings: [String] = []
             do {
-                try await AccountIdentityClients.active().recordAIPrivacyConsent(
-                    AIPrivacyConsentEvent(action: .withdrawn)
-                )
+                try await InsightSessionCoordinator.shared.waitForAccountCleanup(accountID: accountID)
+            } catch {
+                warnings.append("本机 AI 记录清理未完成：\(error.localizedDescription)")
+            }
+            do {
+                guard session.activeAccountProfileID == account.id,
+                      session.authenticationRevision == authenticationRevision,
+                      account.effectiveAccountID == accountID else { throw InsightWorkflowError.scopeChanged }
+                try await identity.get().recordAIPrivacyConsent(event)
             } catch {
                 // Withdrawal is effective locally immediately. A server-log
                 // failure must never resume AI processing or undo withdrawal.
-                errorMessage = "AI 已在本机停用，但撤回留痕暂未同步：\(error.localizedDescription)"
+                warnings.append("撤回留痕暂未同步：\(error.localizedDescription)")
+            }
+            if !warnings.isEmpty {
+                let state = AIPrivacyConsentStore.hasCurrentConsent(for: accountID)
+                    ? "先前撤回过程有事项未完成。" : "AI 已在本机停用。"
+                errorMessage = state + "\n" + warnings.joined(separator: "\n")
             }
         }
     }

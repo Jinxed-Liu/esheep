@@ -130,6 +130,7 @@ struct InsightFarmCalculationEngine {
         let cohort: Cohort
         let penMembership: PenMembership
         let penName: String
+        let penNames: [String]
         let earTag: String
         let breed: String
         let sex: String
@@ -240,7 +241,15 @@ struct InsightFarmCalculationEngine {
         let membershipsBySheep = Dictionary(grouping: batchMemberships, by: \.sheepID)
         let penByID = Dictionary(uniqueKeysWithValues: pens.map { ($0.id, $0) })
         let batchLabels = batchLabels(for: productionBatches)
-        let selectedPen = try resolvePen(named: request.penName, from: pens)
+        var resolvedPenIDs = Set<UUID>()
+        let selectedPens = try request.penNames.compactMap { name -> PenRecord? in
+            guard let pen = try resolvePen(named: name, from: pens), resolvedPenIDs.insert(pen.id).inserted else { return nil }
+            return pen
+        }
+        let selectedPenIDs = Set(selectedPens.map(\.id))
+        let usesAppWeightGainEngine = request.samplePolicy == .canonicalTimeline &&
+            request.penMembership == .atCutoff && request.partition == .sheep &&
+            request.window == .adjacent && request.transform == .differencePerDay
 
         var audit = Audit()
         var stateFactsBySheep = [UUID: FarmSheepStateFact]()
@@ -276,27 +285,48 @@ struct InsightFarmCalculationEngine {
                   request.sex.isEmpty || item.sex.rawValue == request.sex else {
                 continue
             }
-            if let selectedPen, request.penMembership == .atCutoff,
-               fact.penID != selectedPen.id {
+            if !usesAppWeightGainEngine, !selectedPenIDs.isEmpty, request.penMembership == .atCutoff,
+               !(fact.penID.map(selectedPenIDs.contains) ?? false) {
                 continue
             }
             eligibleSheep.append(item)
         }
 
-        let snapshot = FarmAnalyticsSnapshot.make(
+        var snapshot = FarmAnalyticsSnapshot.make(
             farmID: farmID,
-            sheep: sheep,
+            sheep: usesAppWeightGainEngine ? eligibleSheep : sheep,
             pens: pens,
-            weights: weights,
-            weanings: weanings,
-            reproduction: reproduction,
+            weights: weights.filter { $0.occurredAt <= request.asOf },
+            weanings: weanings.filter { $0.occurredAt <= request.asOf },
+            reproduction: reproduction.filter { $0.occurredAt <= request.asOf },
             offspring: offspring,
             removals: removals,
             transfers: transfers,
             memberships: batchMemberships,
             feeds: [],
-            feedLines: []
+            feedLines: [],
+            timeZoneIdentifier: request.timeZoneIdentifier,
+            factsReadAt: min(now, request.asOf)
         )
+        if usesAppWeightGainEngine {
+            snapshot = clippingWeightSources(snapshot, from: request.dateFrom, through: request.asOf)
+        }
+        let nativeResult: WeightGainAnalysisResult?
+        if usesAppWeightGainEngine {
+            let scope: WeightGainAnalysisScope = selectedPenIDs.isEmpty ? .farm : .pens(selectedPenIDs)
+            nativeResult = WeightGainAnalyticsEngine.calculate(
+                snapshot: snapshot,
+                filter: WeightGainAnalysisFilter(
+                    scope: scope,
+                    mode: .period,
+                    startDate: request.dateFrom ?? snapshot.weightSamples.map(\.occurredAt).min() ?? request.asOf,
+                    endDate: min(request.dateTo ?? request.asOf, request.asOf),
+                    sampleScope: .all
+                )
+            )
+        } else {
+            nativeResult = nil
+        }
         let rawSamples: [SheepWeightSample]
         switch request.samplePolicy {
         case .recordedOnly:
@@ -337,125 +367,158 @@ struct InsightFarmCalculationEngine {
         var insufficientProfiles = 0
         var relevantProfiles = 0
         var qualifiedSampleIDs = Set<UUID>()
-        for profile in eligibleSheep.sorted(by: { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }) {
-            let samples = samplesBySheep[profile.id] ?? []
-            let profileTransfers = transfersBySheep[profile.id] ?? []
-            let hasRelevantMeasurement: Bool
-            if let selectedPen, request.penMembership == .atMeasurement {
-                hasRelevantMeasurement = samples.contains { sample in
-                    FarmHistoryTimeline.pen(
-                        for: profile,
-                        at: sample.occurredAt,
-                        transfers: profileTransfers
-                    ) == selectedPen.id
-                }
-            } else {
-                hasRelevantMeasurement = true
-            }
-            if hasRelevantMeasurement { relevantProfiles += 1 }
-
-            let intervals: [(SheepWeightSample?, SheepWeightSample)]
-            switch request.window {
-            case .none:
-                intervals = samples.map { (nil, $0) }
-            case .adjacent:
-                intervals = Array(zip(samples, samples.dropFirst())).map { ($0.0, $0.1) }
-            case .firstToLast:
-                if let first = samples.first, let last = samples.last, first.id != last.id {
-                    intervals = [(first, last)]
-                } else {
-                    intervals = []
-                }
-            }
-            let observationCountBeforeProfile = observations.count
-            for (start, end) in intervals {
-                let startPenID = start.map {
-                    FarmHistoryTimeline.pen(
-                        for: profile,
-                        at: $0.occurredAt,
-                        transfers: profileTransfers
-                    )
-                } ?? nil
-                let endPenID = FarmHistoryTimeline.pen(
-                    for: profile,
-                    at: end.occurredAt,
-                    transfers: profileTransfers
-                )
-                if let selectedPen, request.penMembership == .atMeasurement {
-                    let isQualified: Bool
-                    if let start {
-                        isQualified = intervalIsContinuouslyInPen(
-                            selectedPen.id,
-                            startAt: start.occurredAt,
-                            endAt: end.occurredAt,
-                            startPenID: startPenID,
-                            endPenID: endPenID,
-                            transfers: profileTransfers
-                        )
-                    } else {
-                        isQualified = endPenID == selectedPen.id
-                    }
-                    guard isQualified else {
-                        if startPenID == selectedPen.id || endPenID == selectedPen.id {
-                            audit.excludedNonContinuousPenIntervals += 1
-                        }
-                        continue
-                    }
-                }
-                let startDay = start.map { request.calendar.startOfDay(for: $0.occurredAt) }
-                let endDay = request.calendar.startOfDay(for: end.occurredAt)
-                let elapsedDays = startDay.flatMap {
-                    request.calendar.dateComponents([.day], from: $0, to: endDay).day
-                }
-                let value: Double
-                switch request.transform {
-                case .value:
-                    value = end.kilograms
-                case .difference:
-                    guard let start else { continue }
-                    value = end.kilograms - start.kilograms
-                case .elapsedDays:
-                    guard let elapsedDays else { continue }
-                    value = Double(elapsedDays)
-                case .differencePerDay:
-                    guard let start, let elapsedDays, elapsedDays > 0 else {
-                        audit.excludedNonPositiveDayIntervals += 1
-                        continue
-                    }
-                    value = (end.kilograms - start.kilograms) / Double(elapsedDays)
-                }
-                guard value.isFinite else { continue }
+        if let nativeResult {
+            let rowsBySheep = Dictionary(uniqueKeysWithValues: nativeResult.rows.map { ($0.sheepID, $0) })
+            relevantProfiles = nativeResult.objectCount
+            insufficientProfiles = nativeResult.missingPairCount
+            for interval in nativeResult.intervals {
+                guard let row = rowsBySheep[interval.sheepID] else { continue }
                 let batch = batchAttribution(
-                    sheepID: profile.id,
-                    startAt: start?.occurredAt,
-                    endAt: end.occurredAt,
-                    memberships: membershipsBySheep[profile.id] ?? [],
+                    sheepID: interval.sheepID,
+                    startAt: interval.startDate,
+                    endAt: interval.endDate,
+                    memberships: membershipsBySheep[interval.sheepID] ?? [],
                     labelsByID: batchLabels
                 )
-                let lifecycle = lifecycleStatus(
-                    for: stateFactsBySheep[profile.id]
-                )
                 observations.append(Observation(
-                    sheepID: profile.id,
-                    earTag: profile.earTag,
-                    penName: endPenID.flatMap { penByID[$0]?.name } ?? "未分圈",
+                    sheepID: interval.sheepID,
+                    earTag: row.earTag,
+                    penName: row.analysisEndPenName ?? "未分圈",
                     productionBatch: batch.label,
                     batchAttributionQuality: batch.quality,
-                    lifecycleStatus: lifecycle,
-                    startAt: start?.occurredAt,
-                    endAt: end.occurredAt,
-                    startValue: start?.kilograms,
-                    endValue: end.kilograms,
-                    elapsedDays: elapsedDays,
-                    value: value
+                    lifecycleStatus: lifecycleStatus(for: stateFactsBySheep[interval.sheepID]),
+                    startAt: interval.startDate,
+                    endAt: interval.endDate,
+                    startValue: interval.startWeight,
+                    endValue: interval.endWeight,
+                    elapsedDays: interval.intervalDays,
+                    value: interval.gramsPerDay / 1_000
                 ))
-                if let start { qualifiedSampleIDs.insert(start.id) }
-                qualifiedSampleIDs.insert(end.id)
+                qualifiedSampleIDs.insert(interval.startSample.id)
+                qualifiedSampleIDs.insert(interval.endSample.id)
             }
-            if request.window != .none,
-               hasRelevantMeasurement,
-               observations.count == observationCountBeforeProfile {
-                insufficientProfiles += 1
+        } else {
+            for profile in eligibleSheep.sorted(by: { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }) {
+                let samples = samplesBySheep[profile.id] ?? []
+                let profileTransfers = transfersBySheep[profile.id] ?? []
+                let hasRelevantMeasurement: Bool
+                if !selectedPenIDs.isEmpty, request.penMembership == .atMeasurement {
+                    hasRelevantMeasurement = samples.contains { sample in
+                        FarmHistoryTimeline.pen(
+                            for: profile,
+                            at: sample.occurredAt,
+                            transfers: profileTransfers
+                        ).map(selectedPenIDs.contains) ?? false
+                    }
+                } else {
+                    hasRelevantMeasurement = true
+                }
+                if hasRelevantMeasurement { relevantProfiles += 1 }
+
+                let intervals: [(SheepWeightSample?, SheepWeightSample)]
+                switch request.window {
+                case .none:
+                    intervals = samples.map { (nil, $0) }
+                case .adjacent:
+                    intervals = Array(zip(samples, samples.dropFirst())).map { ($0.0, $0.1) }
+                case .firstToLast:
+                    if let first = samples.first, let last = samples.last, first.id != last.id {
+                        intervals = [(first, last)]
+                    } else {
+                        intervals = []
+                    }
+                }
+                let observationCountBeforeProfile = observations.count
+                for (start, end) in intervals {
+                    let startPenID = start.map {
+                        FarmHistoryTimeline.pen(
+                            for: profile,
+                            at: $0.occurredAt,
+                            transfers: profileTransfers
+                        )
+                    } ?? nil
+                    let endPenID = FarmHistoryTimeline.pen(
+                        for: profile,
+                        at: end.occurredAt,
+                        transfers: profileTransfers
+                    )
+                    if !selectedPenIDs.isEmpty, request.penMembership == .atMeasurement {
+                        let isQualified: Bool
+                        if let start {
+                            isQualified = intervalIsContinuouslyInPens(
+                                selectedPenIDs,
+                                startAt: start.occurredAt,
+                                endAt: end.occurredAt,
+                                startPenID: startPenID,
+                                endPenID: endPenID,
+                                transfers: profileTransfers
+                            )
+                        } else {
+                            isQualified = endPenID.map(selectedPenIDs.contains) ?? false
+                        }
+                        guard isQualified else {
+                            if (startPenID.map(selectedPenIDs.contains) ?? false) || (endPenID.map(selectedPenIDs.contains) ?? false) {
+                                audit.excludedNonContinuousPenIntervals += 1
+                            }
+                            continue
+                        }
+                    }
+                    let startDay = start.map { request.calendar.startOfDay(for: $0.occurredAt) }
+                    let endDay = request.calendar.startOfDay(for: end.occurredAt)
+                    let elapsedDays = startDay.flatMap {
+                        request.calendar.dateComponents([.day], from: $0, to: endDay).day
+                    }
+                    let value: Double
+                    switch request.transform {
+                    case .value:
+                        value = end.kilograms
+                    case .difference:
+                        guard let start else { continue }
+                        value = end.kilograms - start.kilograms
+                    case .elapsedDays:
+                        guard let elapsedDays else { continue }
+                        value = Double(elapsedDays)
+                    case .differencePerDay:
+                        guard let start, let elapsedDays, elapsedDays > 0 else {
+                            audit.excludedNonPositiveDayIntervals += 1
+                            continue
+                        }
+                        value = (end.kilograms - start.kilograms) / Double(elapsedDays)
+                    }
+                    guard value.isFinite else { continue }
+                    let batch = batchAttribution(
+                        sheepID: profile.id,
+                        startAt: start?.occurredAt,
+                        endAt: end.occurredAt,
+                        memberships: membershipsBySheep[profile.id] ?? [],
+                        labelsByID: batchLabels
+                    )
+                    let lifecycle = lifecycleStatus(
+                        for: stateFactsBySheep[profile.id]
+                    )
+                    observations.append(Observation(
+                        sheepID: profile.id,
+                        earTag: profile.earTag,
+                        penName: (request.penMembership == .atCutoff ? stateFactsBySheep[profile.id]?.penID : endPenID)
+                            .flatMap { penByID[$0]?.name } ?? "未分圈",
+                        productionBatch: batch.label,
+                        batchAttributionQuality: batch.quality,
+                        lifecycleStatus: lifecycle,
+                        startAt: start?.occurredAt,
+                        endAt: end.occurredAt,
+                        startValue: start?.kilograms,
+                        endValue: end.kilograms,
+                        elapsedDays: elapsedDays,
+                        value: value
+                    ))
+                    if let start { qualifiedSampleIDs.insert(start.id) }
+                    qualifiedSampleIDs.insert(end.id)
+                }
+                if request.window != .none,
+                   hasRelevantMeasurement,
+                   observations.count == observationCountBeforeProfile {
+                    insufficientProfiles += 1
+                }
             }
         }
 
@@ -465,9 +528,10 @@ struct InsightFarmCalculationEngine {
             reduction: request.reduction,
             selection: request.selection,
             limit: request.limit,
-            calendar: request.calendar
+            calendar: request.calendar,
+            sheepWeightedRate: usesAppWeightGainEngine
         )
-        let analysisSections: [[String: Any]]
+        var analysisSections: [[String: Any]]
         if request.analysisScope == .complete {
             analysisSections = [
                 analysisSection(
@@ -476,7 +540,8 @@ struct InsightFarmCalculationEngine {
                     observations: observations,
                     reduction: request.reduction,
                     limit: request.limit,
-                    calendar: request.calendar
+                    calendar: request.calendar,
+                    sheepWeightedRate: usesAppWeightGainEngine
                 ),
                 analysisSection(
                     title: "不同称重区间",
@@ -484,7 +549,8 @@ struct InsightFarmCalculationEngine {
                     observations: observations,
                     reduction: request.reduction,
                     limit: request.limit,
-                    calendar: request.calendar
+                    calendar: request.calendar,
+                    sheepWeightedRate: usesAppWeightGainEngine
                 ),
                 analysisSection(
                     title: "生产批次",
@@ -492,7 +558,8 @@ struct InsightFarmCalculationEngine {
                     observations: observations,
                     reduction: request.reduction,
                     limit: request.limit,
-                    calendar: request.calendar
+                    calendar: request.calendar,
+                    sheepWeightedRate: usesAppWeightGainEngine
                 ),
                 analysisSection(
                     title: "生命周期",
@@ -500,11 +567,31 @@ struct InsightFarmCalculationEngine {
                     observations: observations,
                     reduction: request.reduction,
                     limit: request.limit,
-                    calendar: request.calendar
+                    calendar: request.calendar,
+                    sheepWeightedRate: usesAppWeightGainEngine
                 ),
             ]
         } else {
             analysisSections = []
+        }
+        if request.analysisScope == .complete, usesAppWeightGainEngine, selectedPens.count > 1 {
+            var penSection = analysisSection(
+                title: "期末圈舍", dimension: .pen, observations: observations,
+                reduction: request.reduction, limit: request.limit, calendar: request.calendar,
+                sheepWeightedRate: true
+            )
+            let populated = penSection["groups"] as? [[String: Any]] ?? []
+            let byName = Dictionary(uniqueKeysWithValues: populated.compactMap { group -> (String, [String: Any])? in
+                guard let name = group["key"] as? String else { return nil }
+                return (name, group)
+            })
+            let penGroups = selectedPens.map { pen -> [String: Any] in
+                byName[pen.name] ?? ["key": pen.name, "sample_count": 0, "sheep_count": 0, "value": NSNull()]
+            }
+            penSection["groups"] = Array(penGroups.prefix(request.limit))
+            penSection["group_count"] = penGroups.count
+            penSection["is_complete"] = penGroups.count <= request.limit
+            analysisSections.append(penSection)
         }
         let analysisSectionsComplete = analysisSections.allSatisfy {
             ($0["is_complete"] as? Bool) == true
@@ -567,26 +654,82 @@ struct InsightFarmCalculationEngine {
             "groups": primaryGroups.values,
         ]
         if request.analysisScope == .complete {
+            let dimensions = [Group.none, .weighingInterval, .productionBatch, .lifecycleStatus] +
+                (usesAppWeightGainEngine && selectedPens.count > 1 ? [.pen] : [])
             object["analysis_contract"] = [
                 "kind": "multidimensional_adjacent_rate_analysis",
-                "aggregation_basis": "每个有效相邻称重区间先独立计算变化率；总体同时给出区间等权、羊只等权和总增重除以总观察天数三种口径。",
-                "required_dimensions": [
-                    Group.none.rawValue,
-                    Group.weighingInterval.rawValue,
-                    Group.productionBatch.rawValue,
-                    Group.lifecycleStatus.rawValue,
-                ],
+                "aggregation_basis": usesAppWeightGainEngine
+                    ? "与 App 增重分析共用引擎：先按羊汇总有效相邻区间总增重除以总观察天数，再逐羊等权平均；区间等权和汇总观察天数口径另列。"
+                    : "每个有效相邻称重区间先独立计算变化率；总体同时给出区间等权、羊只等权和总增重除以总观察天数三种口径。",
+                "required_dimensions": dimensions.map(\.rawValue),
                 "required_answer_sections": [
                     "总体结论", "称重区间", "生产批次", "生命周期", "数据完整性",
                 ],
                 "lifecycle_basis": "截至 as_of 的 App 统一状态事实；离场羊按出售、死亡、淘汰、转出分开。",
-                "batch_basis": "相邻区间起点和终点属于同一且唯一的生产批次时才归入该批次；跨批次、重叠或未分批次单列。",
-                "pen_basis": "先建立羊只完整称重时间线，再验证相邻区间两端和区间内连续圈舍归属；不会删除中间样本后伪造相邻区间。",
+                "batch_basis": "完整区间连续属于同一且唯一的生产批次时才归入该批次；退出重入、跨批次、重叠或未分批次单列。",
+                "pen_basis": usesAppWeightGainEngine
+                    ? "按分析结束日牧场时区日末还原期末圈舍并确定羊群；同羊跨舍有效称重连续配对，不能解释为单个圈舍独立造成的增重。"
+                    : "先建立羊只完整称重时间线，再验证相邻区间两端和区间内连续圈舍归属；不会删除中间样本后伪造相邻区间。",
             ]
             object["analysis_sections"] = analysisSections
         }
+        if let nativeResult {
+            object["analysis_engine"] = "WeightGainAnalyticsEngine"
+            object["eligible_profile_count"] = nativeResult.objectCount
+            object["weighed_profile_count"] = nativeResult.weighedCount
+            object["downward_profile_count"] = nativeResult.downwardCount
+            object["cross_pen_interval_count"] = nativeResult.crossPenIntervalCount
+            object["cross_pen_sheep_count"] = nativeResult.crossPenSheepCount
+            object["transfer_sheep_count"] = nativeResult.transferSheepCount
+            object["transfer_event_count"] = nativeResult.transferEvents.count
+            object["pen_basis"] = "按分析结束日的期末圈舍确定羊群，同羊跨舍连续计算。"
+            object["pen_history_basis"] = "调群按发生时间还原，包含末次称重后至分析截止的调群；截止后的调群不影响结果。"
+            object["exclusion_counts"] = Dictionary(grouping: nativeResult.exclusions, by: { $0.reason.rawValue }).mapValues(\.count)
+            object["excluded_native_intervals"] = nativeResult.unassignedIntervals.count
+            let transferEvents = nativeResult.transferEvents.prefix(request.limit).map { event -> [String: Any] in
+                ["ear_tag": event.earTag, "occurred_at": Self.iso8601(event.occurredAt),
+                 "from_pen": event.fromPenName ?? "未分圈", "to_pen": event.toPenName ?? "未分圈"]
+            }
+            object["transfer_events"] = transferEvents
+            object["transfer_events_truncated"] = nativeResult.transferEvents.count > transferEvents.count
+            return try boundedAnalysisJSON(object)
+        }
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         guard data.count <= 64 * 1_024 else { throw InsightToolError.resultTooLarge }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Keep the full-cohort totals when detailed dimensions exceed the tool's
+    /// byte budget. Every shortened list is explicitly marked as truncated.
+    private func boundedAnalysisJSON(_ original: [String: Any]) throws -> String {
+        var object = original
+        var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        while data.count > 64 * 1_024 {
+            var sections = object["analysis_sections"] as? [[String: Any]] ?? []
+            let largest = sections.indices.filter { sections[$0]["dimension"] as? String != Group.pen.rawValue }.max {
+                (sections[$0]["groups"] as? [[String: Any]] ?? []).count <
+                    (sections[$1]["groups"] as? [[String: Any]] ?? []).count
+            }
+            if let largest, let groups = sections[largest]["groups"] as? [[String: Any]], groups.count > 1 {
+                sections[largest]["groups"] = Array(groups.prefix(max(1, groups.count / 2)))
+                sections[largest]["is_complete"] = false
+                object["analysis_sections"] = sections
+            } else if let groups = object["groups"] as? [[String: Any]], groups.count > 1 {
+                object["groups"] = Array(groups.prefix(max(1, groups.count / 2)))
+            } else if let events = object["transfer_events"] as? [[String: Any]], !events.isEmpty {
+                object["transfer_events"] = Array(events.prefix(events.count / 2))
+                object["transfer_events_truncated"] = true
+            } else if var groups = object["groups"] as? [[String: Any]],
+                      let records = groups.first?["records"] as? [[String: Any]], records.count > 1 {
+                groups[0]["records"] = Array(records.prefix(max(1, records.count / 2)))
+                object["groups"] = groups
+            } else {
+                throw InsightToolError.resultTooLarge
+            }
+            object["is_complete"] = false
+            object["completeness"] = "limited_or_unknown"
+            data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        }
         return String(decoding: data, as: UTF8.self)
     }
 
@@ -615,10 +758,36 @@ struct InsightFarmCalculationEngine {
         guard ["", SheepSex.ewe.rawValue, SheepSex.ram.rawValue, SheepSex.unknown.rawValue].contains(sex) else {
             throw InsightToolError.invalidArguments("sex")
         }
-        let dateFrom = try optionalDate(string(values, "date_from"))
-        let dateTo = try optionalDate(string(values, "date_to"))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let dateFrom = try optionalDate(string(values, "date_from"), calendar: calendar)
+        var dateTo = try optionalDate(string(values, "date_to"), calendar: calendar, endOfDay: true)
         let asOfText = string(values, "as_of")
-        let asOf = try optionalDate(asOfText) ?? now
+        if let end = dateTo, calendar.isDate(end, inSameDayAs: now), end > now, asOfText.isEmpty {
+            dateTo = now
+        }
+        let explicitAsOf = try optionalDate(asOfText, calendar: calendar, endOfDay: true)
+        let usesAppWeightGainEngine = samplePolicy == .canonicalTimeline &&
+            penMembership == .atCutoff && partition == .sheep &&
+            window == .adjacent && transform == .differencePerDay
+        let asOf = usesAppWeightGainEngine
+            ? min(explicitAsOf ?? now, dateTo ?? now, now)
+            : explicitAsOf ?? min(dateTo ?? now, now)
+        if usesAppWeightGainEngine, let end = dateTo, end > asOf {
+            dateTo = asOf
+        }
+        let penName = string(values, "pen_name")
+        var penNames: [String] = []
+        if let raw = values["pen_names"] {
+            guard let names = raw as? [String], names.count <= 50 else {
+                throw InsightToolError.invalidArguments("pen_names")
+            }
+            penNames = names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard penNames.allSatisfy({ !$0.isEmpty }) else { throw InsightToolError.invalidArguments("pen_names") }
+        }
+        if !penName.isEmpty { penNames.insert(penName, at: 0) }
+        var seenNames = Set<String>()
+        penNames = penNames.filter { seenNames.insert(normalized($0)).inserted }
         if let dateFrom, let dateTo, dateTo < dateFrom {
             throw InsightToolError.invalidArguments("date range")
         }
@@ -639,8 +808,7 @@ struct InsightFarmCalculationEngine {
             throw InsightToolError.invalidArguments("reduce=records requires group_by=none")
         }
         if analysisScope == .complete {
-            guard samplePolicy == .recordedOnly,
-                  cohort == .allProfiles,
+            guard cohort == .allProfiles,
                   partition == .sheep,
                   window == .adjacent,
                   transform == .differencePerDay,
@@ -648,13 +816,7 @@ struct InsightFarmCalculationEngine {
                   reduction == .average,
                   selection == .all else {
                 throw InsightToolError.invalidArguments(
-                    "analysis_scope=complete requires recorded_only + all_profiles + sheep + adjacent + difference_per_day + none + average + all"
-                )
-            }
-            if !string(values, "pen_name").isEmpty,
-               penMembership != .atMeasurement {
-                throw InsightToolError.invalidArguments(
-                    "analysis_scope=complete with pen_name requires pen_membership=at_measurement"
+                    "analysis_scope=complete requires all_profiles + sheep + adjacent + difference_per_day + none + average + all"
                 )
             }
         }
@@ -665,20 +827,19 @@ struct InsightFarmCalculationEngine {
             throw InsightToolError.invalidArguments("limit")
         }
         guard (1...100).contains(limit) else { throw InsightToolError.invalidArguments("limit") }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = timeZone
         let canonicalArguments: [String: Any] = [
             "source": "weight_samples",
             "sample_policy": samplePolicy.rawValue,
             "cohort": cohort.rawValue,
             "pen_membership": penMembership.rawValue,
-            "pen_name": string(values, "pen_name"),
+            "pen_name": penName,
+            "pen_names": penNames,
             "ear_tag": string(values, "ear_tag"),
             "breed": string(values, "breed"),
             "sex": sex,
             "date_from": dateFrom.map(Self.iso8601) ?? "",
             "date_to": dateTo.map(Self.iso8601) ?? "",
-            "as_of": asOfText.isEmpty ? "" : Self.iso8601(asOf),
+            "as_of": asOfText.isEmpty && dateTo == nil ? "" : Self.iso8601(asOf),
             "partition_by": partition.rawValue,
             "window": window.rawValue,
             "transform": transform.rawValue,
@@ -692,14 +853,15 @@ struct InsightFarmCalculationEngine {
             samplePolicy: samplePolicy,
             cohort: cohort,
             penMembership: penMembership,
-            penName: string(values, "pen_name"),
+            penName: penName,
+            penNames: penNames,
             earTag: string(values, "ear_tag"),
             breed: string(values, "breed"),
             sex: sex,
             dateFrom: dateFrom,
             dateTo: dateTo,
             asOf: asOf,
-            hasExplicitAsOf: !asOfText.isEmpty,
+            hasExplicitAsOf: !asOfText.isEmpty || dateTo != nil,
             partition: partition,
             window: window,
             transform: transform,
@@ -730,6 +892,34 @@ struct InsightFarmCalculationEngine {
         return (timeZone, farm.timeZoneIdentifier)
     }
 
+    /// App date filters cover whole days. The calculation tool also accepts
+    /// exact instants, so clip every weight source before daily canonicalization
+    /// rather than letting the App's day normalization broaden an ISO boundary.
+    private func clippingWeightSources(
+        _ snapshot: FarmAnalyticsSnapshot, from start: Date?, through cutoff: Date
+    ) -> FarmAnalyticsSnapshot {
+        func includes(_ date: Date) -> Bool {
+            date <= cutoff && (start.map { date >= $0 } ?? true)
+        }
+        return FarmAnalyticsSnapshot(
+            farmID: snapshot.farmID, sheep: snapshot.sheep, pens: snapshot.pens,
+            weights: snapshot.weights.filter { includes($0.occurredAt) },
+            weanings: snapshot.weanings.filter { includes($0.occurredAt) }.map { record in
+                FarmAnalyticsSnapshot.Weaning(
+                    id: record.id, sheepID: record.sheepID, occurredAt: record.occurredAt,
+                    weanWeight: record.weanWeight,
+                    birthAt: record.birthAt.flatMap { includes($0) ? $0 : nil },
+                    birthWeight: record.birthWeight, damID: record.damID, litterSize: record.litterSize
+                )
+            },
+            lambings: snapshot.lambings.filter { includes($0.occurredAt) },
+            removals: snapshot.removals, transfers: snapshot.transfers,
+            batchMemberships: snapshot.batchMemberships, feeds: snapshot.feeds,
+            timeZoneIdentifier: snapshot.timeZoneIdentifier, factsReadAt: snapshot.factsReadAt,
+            parityEvidence: snapshot.parityEvidence, purposeFacts: snapshot.purposeFacts
+        )
+    }
+
     private func resolvePen(named name: String, from pens: [PenRecord]) throws -> PenRecord? {
         let key = normalized(name)
         guard !key.isEmpty else { return nil }
@@ -749,7 +939,8 @@ struct InsightFarmCalculationEngine {
         reduction: Reduction,
         selection: Selection,
         limit: Int,
-        calendar: Calendar
+        calendar: Calendar,
+        sheepWeightedRate: Bool = false
     ) -> RenderedGroups {
         let grouped = Dictionary(grouping: observations) { observation in
             groupKey(for: observation, group: group, calendar: calendar)
@@ -759,7 +950,8 @@ struct InsightFarmCalculationEngine {
                 key: key,
                 values: observations,
                 reduction: reduction,
-                recordLimit: limit
+                recordLimit: limit,
+                sheepWeightedRate: sheepWeightedRate
             )
         }.sorted { lhs, rhs in
             let lhsKey = lhs["key"] as? String ?? ""
@@ -786,7 +978,8 @@ struct InsightFarmCalculationEngine {
         observations: [Observation],
         reduction: Reduction,
         limit: Int,
-        calendar: Calendar
+        calendar: Calendar,
+        sheepWeightedRate: Bool = false
     ) -> [String: Any] {
         let rendered = renderGroups(
             observations,
@@ -794,7 +987,8 @@ struct InsightFarmCalculationEngine {
             reduction: reduction,
             selection: .all,
             limit: limit,
-            calendar: calendar
+            calendar: calendar,
+            sheepWeightedRate: sheepWeightedRate
         )
         return [
             "title": title,
@@ -840,7 +1034,8 @@ struct InsightFarmCalculationEngine {
         key: String,
         values: [Observation],
         reduction: Reduction,
-        recordLimit: Int
+        recordLimit: Int,
+        sheepWeightedRate: Bool = false
     ) -> [String: Any] {
         let numbers = values.map(\.value)
         let result: Double
@@ -912,6 +1107,11 @@ struct InsightFarmCalculationEngine {
             object["sheep_weighted_daily_rate"] = perSheepRates.isEmpty
                 ? 0
                 : perSheepRates.reduce(0, +) / Double(perSheepRates.count)
+            object["interval_weighted_daily_rate"] = average
+            if sheepWeightedRate && reduction == .average {
+                object["value"] = object["sheep_weighted_daily_rate"]
+                object["average"] = object["sheep_weighted_daily_rate"]
+            }
         }
         if let minimum = values.map(\.endAt).min(), let maximum = values.map(\.endAt).max() {
             object["first_interval_end"] = Self.iso8601(minimum)
@@ -947,19 +1147,20 @@ struct InsightFarmCalculationEngine {
         return object
     }
 
-    private func intervalIsContinuouslyInPen(
-        _ penID: UUID,
+    private func intervalIsContinuouslyInPens(
+        _ penIDs: Set<UUID>,
         startAt: Date,
         endAt: Date,
         startPenID: UUID?,
         endPenID: UUID?,
         transfers: [TransferRecord]
     ) -> Bool {
-        guard startPenID == penID, endPenID == penID else { return false }
+        guard startPenID.map(penIDs.contains) ?? false,
+              endPenID.map(penIDs.contains) ?? false else { return false }
         return !transfers.contains { transfer in
             transfer.occurredAt > startAt &&
                 transfer.occurredAt <= endAt &&
-                transfer.toPenID != penID
+                !(transfer.toPenID.map(penIDs.contains) ?? false)
         }
     }
 
@@ -993,15 +1194,43 @@ struct InsightFarmCalculationEngine {
         let startIDs = startAt.map {
             activeBatchIDs(at: $0, memberships: relevantMemberships)
         } ?? endIDs
+        let intervalStart = startAt ?? endAt
+        let intervalMemberships = relevantMemberships.filter {
+            $0.joinedAt <= endAt && ($0.leftAt.map { $0 >= intervalStart } ?? true)
+        }
+
+        // Endpoint membership alone would falsely assign an interval when a
+        // sheep left and rejoined the same batch between its two weighings.
+        let hasOverlap = intervalMemberships.indices.contains { index in
+            intervalMemberships.indices.contains { other in
+                guard other > index else { return false }
+                let lhs = intervalMemberships[index]
+                let rhs = intervalMemberships[other]
+                return max(lhs.joinedAt, rhs.joinedAt, intervalStart) <=
+                    min(lhs.leftAt ?? endAt, rhs.leftAt ?? endAt, endAt)
+            }
+        }
+        if hasOverlap {
+            return BatchAttribution(label: "生产批次归属重叠", quality: .overlapping)
+        }
 
         guard startIDs == endIDs else {
             return BatchAttribution(label: "跨生产批次区间", quality: .crossBatch)
         }
         guard !endIDs.isEmpty else {
-            return BatchAttribution(label: "未分生产批次", quality: .unassigned)
+            return intervalMemberships.isEmpty
+                ? BatchAttribution(label: "未分生产批次", quality: .unassigned)
+                : BatchAttribution(label: "跨生产批次区间", quality: .crossBatch)
         }
         guard endIDs.count == 1, let batchID = endIDs.first else {
             return BatchAttribution(label: "生产批次归属重叠", quality: .overlapping)
+        }
+        guard intervalMemberships.count == 1,
+              let membership = intervalMemberships.first,
+              membership.batchID == batchID,
+              membership.joinedAt <= intervalStart,
+              membership.leftAt.map({ $0 >= endAt }) ?? true else {
+            return BatchAttribution(label: "跨生产批次区间", quality: .crossBatch)
         }
         guard let label = labelsByID[batchID] else {
             return BatchAttribution(label: "生产批次定义缺失", quality: .missingDefinition)
@@ -1058,8 +1287,21 @@ struct InsightFarmCalculationEngine {
         (values[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    private func optionalDate(_ value: String) throws -> Date? {
+    private func optionalDate(_ value: String, calendar: Calendar, endOfDay: Bool = false) throws -> Date? {
         guard !value.isEmpty else { return nil }
+        if value.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil {
+            let formatter = DateFormatter()
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy-MM-dd"
+            formatter.isLenient = false
+            guard let day = formatter.date(from: value), formatter.string(from: day) == value,
+                  let next = calendar.date(byAdding: .day, value: 1, to: day) else {
+                throw InsightToolError.invalidArguments("date")
+            }
+            return endOfDay ? next.addingTimeInterval(-0.001) : day
+        }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = formatter.date(from: value) { return date }
