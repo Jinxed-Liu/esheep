@@ -911,7 +911,7 @@ final class FarmCommandService {
     func execute(_ command: FarmCommand, in farm: FarmContext, context: ModelContext) throws {
         var committed = false
         defer {
-            if !committed { rollbackPendingChanges(in: context) }
+            if !committed { context.rollback() }
         }
         try validateStorageRoute(in: farm, context: context)
         if let impact = try executeWithoutSaving(command, in: farm, context: context) {
@@ -935,7 +935,7 @@ final class FarmCommandService {
     ) throws {
         var committed = false
         defer {
-            if !committed { rollbackPendingChanges(in: context) }
+            if !committed { context.rollback() }
         }
         try validateStorageRoute(in: farm, context: context)
         let sheep = try sheepRecord(sheepID, farmID: farm.farmID, context: context)
@@ -1046,7 +1046,7 @@ final class FarmCommandService {
 
         var committed = false
         defer {
-            if !committed { rollbackPendingChanges(in: context) }
+            if !committed { context.rollback() }
         }
         try validateStorageRoute(in: farm, context: context)
         let route = try FarmStorageRouter.route(farmID: farm.farmID, context: context)
@@ -1148,7 +1148,7 @@ final class FarmCommandService {
 
         var committed = false
         defer {
-            if !committed { rollbackPendingChanges(in: context) }
+            if !committed { context.rollback() }
         }
         try validateStorageRoute(in: farm, context: context)
         if let impact = try executeWithoutSaving(
@@ -1223,9 +1223,10 @@ final class FarmCommandService {
             throw FarmCommandError.invalidRemovalBatch("操作草案标识重复")
         }
 
+        let rollback = BatchRollback(context: context)
         var committed = false
         defer {
-            if !committed { rollbackPendingChanges(in: context) }
+            rollback.finish(committed: committed)
         }
         try validateStorageRoute(in: farm, context: context)
 
@@ -1358,9 +1359,10 @@ final class FarmCommandService {
         pedigreeSheepByID: [UUID: SheepRecord]? = nil,
         nextCommand: () throws -> FarmCommand?
     ) throws {
+        let rollback = BatchRollback(context: context)
         var committed = false
         defer {
-            if !committed { rollbackPendingChanges(in: context) }
+            rollback.finish(committed: committed)
         }
         try validateStorageRoute(in: farm, context: context)
         var pendingHistory: [HistoryImpact] = []
@@ -1401,11 +1403,40 @@ final class FarmCommandService {
         }
     }
 
-    private func rollbackPendingChanges(in context: ModelContext) {
-        // Register queued property writes and inserts with the transaction
-        // before reverting it. This does not save any part of the command.
-        context.processPendingChanges()
-        context.rollback()
+    @MainActor
+    private final class BatchRollback {
+        private let context: ModelContext
+        private let previousUndoManager: UndoManager?
+        private let previousAutosaveEnabled: Bool
+        private let undoManager = UndoManager()
+
+        init(context: ModelContext) {
+            self.context = context
+            previousUndoManager = context.undoManager
+            previousAutosaveEnabled = context.autosaveEnabled
+            context.autosaveEnabled = false
+            undoManager.groupsByEvent = false
+            undoManager.beginUndoGrouping()
+            context.undoManager = undoManager
+        }
+
+        func finish(committed: Bool) {
+            context.processPendingChanges()
+            undoManager.endUndoGrouping()
+            if !committed {
+                // Undo restores the registered model references as well as
+                // their pending fields. Rollback alone can leave them stale.
+                // It also clears the undo stack, so it must run after undo.
+                if undoManager.canUndo { undoManager.undo() }
+                // Cleanup must not register new actions outside the group.
+                context.undoManager = nil
+                context.processPendingChanges()
+                context.rollback()
+            }
+            undoManager.removeAllActions()
+            context.undoManager = previousUndoManager
+            context.autosaveEnabled = previousAutosaveEnabled
+        }
     }
 
     private func legacyPhotoFilenameRepairPlans(

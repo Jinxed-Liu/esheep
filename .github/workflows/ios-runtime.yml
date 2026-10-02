@@ -90,6 +90,29 @@ jobs:
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-build.log"
+      - name: Verify atomic rollback on existing model references
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project eSheepNext.xcodeproj \
+            -scheme eSheepNext \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/ios-rollback.xcresult" \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 180 \
+            -maximum-test-execution-time-allowance 180 \
+            -only-testing:eSheepNextTests/CareWorkflowTests/testBatchPurposeRollsBackEverySheepWhenOneSelectionIsIllegal \
+            -only-testing:eSheepNextTests/FarmDataInterchangeTests/testCommandBatchFlushesRemovalProjectionBeforeLaterMembershipValidation \
+            -only-testing:eSheepNextTests/PedigreeWorkflowTests/testBatchSireConfirmationIsAtomicAndWritesOneAuditPerChild \
+            -only-testing:eSheepNextTests/FarmDataInterchangeTests/testCommandBatchRestoresContextConfigurationAfterCommitAndRollback \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/ios-rollback.log"
       - name: Run the complete existing XCTest suites
         run: |
           set -euo pipefail
@@ -152,6 +175,9 @@ jobs:
           if [ -d "$RUNNER_TEMP/ios-unit.xcresult" ]; then
             xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/ios-unit.xcresult" || true
           fi
+          if [ -d "$RUNNER_TEMP/ios-rollback.xcresult" ]; then
+            xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/ios-rollback.xcresult" || true
+          fi
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -182,6 +208,8 @@ jobs:
             ${{ runner.temp }}/assistant-entry.xcresult
             ${{ runner.temp }}/ios-unit.log
             ${{ runner.temp }}/ios-unit.xcresult
+            ${{ runner.temp }}/ios-rollback.log
+            ${{ runner.temp }}/ios-rollback.xcresult
             ${{ runner.temp }}/compiler-*.sample
             ${{ runner.temp }}/assistant-runtime-*.sample
             ~/Library/Logs/DiagnosticReports/*.ips

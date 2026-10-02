@@ -504,6 +504,34 @@ final class FarmDataInterchangeTests: XCTestCase {
         XCTAssertFalse(try context.fetch(FetchDescriptor<OutboxItem>()).contains { $0.farmID == farm.id })
     }
 
+    func testCommandBatchRestoresContextConfigurationAfterCommitAndRollback() throws {
+        let container = try AppSchema.makeContainer(name: "batch-context-\(UUID().uuidString)", isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let owner = AccountProfile(appleUserIdentifier: "batch-context-owner", displayName: "场主")
+        let farm = FarmRecord(ownerAccountID: owner.effectiveAccountID, name: "测试场")
+        context.insert(owner)
+        context.insert(farm)
+        try context.save()
+        let farmContext = FarmContext(accountID: owner.effectiveAccountID, farmID: farm.id, role: farm.role)
+        let originalUndoManager = UndoManager()
+        context.undoManager = originalUndoManager
+        context.autosaveEnabled = true
+        let service = FarmCommandService()
+
+        try service.executeBatch([.createPen(name: "已提交圈舍", note: "")], in: farmContext, context: context)
+        XCTAssertTrue(context.undoManager === originalUndoManager)
+        XCTAssertTrue(context.autosaveEnabled)
+
+        XCTAssertThrowsError(try service.executeBatch([
+            .createPen(name: "失败批次圈舍", note: ""),
+            .recordWeight(sheepID: UUID(), kilogramsText: "30", occurredAt: .now, note: ""),
+        ], in: farmContext, context: context))
+        XCTAssertTrue(context.undoManager === originalUndoManager)
+        XCTAssertTrue(context.autosaveEnabled)
+        let penNames = try context.fetch(FetchDescriptor<PenRecord>()).filter { $0.farmID == farm.id }.map(\.name)
+        XCTAssertEqual(penNames, ["已提交圈舍"])
+    }
+
     func testCommandBatchFlushesRemovalProjectionBeforeLaterMembershipValidation() throws {
         let container = try AppSchema.makeContainer(name: "excel-history-flush-\(UUID().uuidString)", isStoredInMemoryOnly: true)
         let context = ModelContext(container)
