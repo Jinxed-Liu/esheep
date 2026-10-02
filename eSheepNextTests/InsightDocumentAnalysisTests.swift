@@ -166,7 +166,8 @@ final class InsightDocumentAnalysisTests: XCTestCase {
         let previews = try await store.previews(messageID: messageID, conversationID: conversationID, accountID: accountID, farmID: farmID)
         XCTAssertEqual(try previews.first?.modelContextText(), try document.modelContextText())
         let files = try XCTUnwrap(FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey]))
-        for case let url as URL in files where url.pathExtension == "bin" {
+            .allObjects.compactMap { $0 as? URL }
+        for url in files where url.pathExtension == "bin" {
             let encrypted = try Data(contentsOf: url)
             XCTAssertFalse(String(decoding: encrypted, as: UTF8.self).contains("unique private document fact"))
         }
