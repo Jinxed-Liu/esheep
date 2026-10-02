@@ -19,8 +19,8 @@ jobs:
       - name: Download the completed assistant and unit test evidence
         uses: actions/download-artifact@v4
         with:
-          name: assistant-entry-f886a7b50e057f14ad8c4b5b01203dee4d003b94
-          run-id: 36977439256
+          name: assistant-entry-4469efff3691181d25925d1efb4bf726bcdd54be
+          run-id: 37011060841
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/assistant-entry-original
       - name: Export screenshots and text without rerunning the app
@@ -55,10 +55,14 @@ jobs:
           for kind in ['summary', 'tests']:
               command(['get', 'test-results', kind, '--path', str(bundle)], kind + '.json')
           command(['get', 'test-results', 'activities', '--help'], 'activities-help.txt')
-          for method in ['testAssistantEntryOpensConversationListAndCanReenter', 'testConfiguredAssistantOpensHistoryAndNewChatComposer']:
+          for method in ['testAssistantEntryOpensConversationListAndCanReenter', 'testConfiguredAssistantOpensHistoryAndNewChatComposer', 'testListComposerUsesReturnForNewlineAndSendPersistsConversation']:
               command(['get', 'test-results', 'activities', '--path', str(bundle),
                        '--test-id', f'InsightAssistantEntryUITests/{method}()'], method + '-activities.json')
           command(['export', 'attachments', '--path', str(bundle), '--output-path', str(exported)], 'export-attachments.txt')
+          for path in exported.rglob('*.txt'):
+              if path.name in {'237A093A-E654-4480-BD7C-6948F1D013D7.txt', '52758BCD-52B3-4617-8978-F1A45DB62439.txt'}:
+                  print('Exact failed accessibility hierarchy:', path.name)
+                  print(path.read_text(errors='replace')[:30000])
           unit_bundles = list(source.rglob('ios-unit.xcresult'))
           if len(unit_bundles) != 1:
               raise SystemExit(f'Expected one unit result bundle, found {len(unit_bundles)}')
@@ -92,9 +96,9 @@ jobs:
           for index, path in enumerate(sorted(set(stderr_sources))):
               target = output / f'app-{index}-stderr.txt'
               raw = path.read_bytes()
-              if len(raw) > 12 * 1024 * 1024:
-                  notice = f'Evidence truncated: original {len(raw)} bytes, retaining final 12 MiB.\n'.encode()
-                  target.write_bytes(notice + raw[-12 * 1024 * 1024:])
+              if len(raw) > 2 * 1024 * 1024:
+                  notice = f'Evidence truncated: original {len(raw)} bytes, retaining final 2 MiB.\n'.encode()
+                  target.write_bytes(notice + raw[-2 * 1024 * 1024:])
               else:
                   target.write_bytes(raw)
               lines = path.read_text(errors='replace').splitlines()
@@ -127,7 +131,7 @@ jobs:
                   print('Unlabelled attachment type:', path.name, kind.strip())
                   if any(token in kind for token in ['PNG image', 'JPEG image', 'HEIF', 'TIFF image']):
                       subprocess.run(['sips', '-s', 'format', 'png', str(path), '--out', str(path) + '.png'], check=True)
-          if not any(path.suffix.lower() == '.png' for path in exported.rglob('*')):
+          if any(path.suffix.lower() == '.mp4' for path in exported.rglob('*')):
               ffmpeg = shutil.which('ffmpeg')
               if not ffmpeg:
                   script = temp / 'export-video-frame.swift'
@@ -182,6 +186,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: assistant-entry-f886a7b-small
+          name: assistant-entry-4469eff-small
           if-no-files-found: error
           path: ${{ runner.temp }}/assistant-entry-small
