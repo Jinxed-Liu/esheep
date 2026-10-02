@@ -280,13 +280,21 @@ struct FarmInsightConversationListView: View {
     }
 }
 
-private struct InsightChatDestination: Identifiable {
+private struct InsightChatDestination: Identifiable, Hashable {
     let id: UUID
     let controller: InsightConversationController
     let conversationID: UUID?
     let draftID: UUID?
     let messageID: UUID?
     let initialAction: InsightChatInitialAction?
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    nonisolated func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 }
 
 private struct InsightConversationListRow: View {
