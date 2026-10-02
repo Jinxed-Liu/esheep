@@ -2,6 +2,40 @@ import XCTest
 
 final class InsightAssistantEntryUITests: XCTestCase {
     @MainActor
+    func testConfiguredAssistantOpensHistoryAndNewChatComposer() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "--design-acceptance", "--design-insight-ready",
+            "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+        ]
+        app.launch()
+        let analysisTab = app.tabBars.buttons["分析"]
+        XCTAssertTrue(analysisTab.waitForExistence(timeout: 30))
+        analysisTab.tap()
+        let assistantEntry = app.buttons["analysis-assistant-entry"]
+        XCTAssertTrue(assistantEntry.waitForExistence(timeout: 10))
+        assistantEntry.tap()
+        assertConversationList(in: app, screenshotName: "configured-assistant-entry")
+        XCTAssertTrue(app.staticTexts["入口回归历史聊天 1"].exists, "Persisted chat history did not render.")
+
+        app.buttons["新聊天"].tap()
+        XCTAssertTrue(app.buttons["新建聊天"].waitForExistence(timeout: 15), "The new-chat screen did not open.")
+        let composer = app.descendants(matching: .any).matching(identifier: "insight.composer.text").firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        composer.tap()
+        composer.typeText("Entry regression draft")
+        XCTAssertTrue(app.buttons["insight.reasoning.settings"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["insight.composer.send"].isEnabled, "The configured assistant did not become ready.")
+        XCTAssertEqual(app.state, .runningForeground)
+        // The fixture key exercises local initialization only; never send it.
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "configured-chat-composer"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
+    @MainActor
     func testAssistantEntryOpensConversationListAndCanReenter() {
         continueAfterFailure = false
 

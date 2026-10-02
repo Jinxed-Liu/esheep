@@ -31,7 +31,14 @@ struct DevelopmentDesignAcceptanceView: View {
         }
         .task {
             guard fixture == nil else { return }
-            do { fixture = try DesignAcceptanceFixture() }
+            do {
+                let prepared = try DesignAcceptanceFixture()
+                if ProcessInfo.processInfo.arguments.contains("--design-insight-ready") {
+                    try await prepared.prepareInsightReady()
+                }
+                try Task.checkCancellation()
+                fixture = prepared
+            } catch is CancellationError { }
             catch { failure = error.localizedDescription }
         }
     }
@@ -72,9 +79,14 @@ private final class DesignAcceptanceFixture {
     let collaboration: CloudCollaborationStore
 
     init() throws {
-        let directory = URL.applicationSupportDirectory.appending(path: "DesignAcceptance", directoryHint: .isDirectory)
+        let insightReady = ProcessInfo.processInfo.arguments.contains("--design-insight-ready")
+        let workspaceDirectory = URL.applicationSupportDirectory.appending(path: "DesignAcceptance", directoryHint: .isDirectory)
+        let directory = insightReady
+            ? workspaceDirectory.appending(path: "InsightReady", directoryHint: .isDirectory)
+            : workspaceDirectory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        container = try AppSchema.makeContainer(name: "DesignAcceptance", url: directory.appending(path: "acceptance.store"))
+        container = try AppSchema.makeContainer(name: insightReady ? "DesignInsightReadyAcceptance" : "DesignAcceptance",
+            url: directory.appending(path: "acceptance.store"))
         let context = container.mainContext
         if let existing = try context.fetch(FetchDescriptor<AccountProfile>()).first,
            let existingFarm = try context.fetch(FetchDescriptor<FarmRecord>()).first {
@@ -101,6 +113,46 @@ private final class DesignAcceptanceFixture {
         session = AppSession(activeAccountProfileID: account.id, persistedLocalSessionAccountID: nil, persistActiveAccountProfileID: { _ in }, clearActiveAccountProfileID: {})
         session.selectedFarmID = farm.id
         collaboration = CloudCollaborationStore(container: container, allowsRemoteConnections: false)
+    }
+
+    /// Exercises consent, credential loading, and history without validating a
+    /// credential or sending a model request. The account belongs to this store.
+    func prepareInsightReady() async throws {
+        guard account.appleSubjectHash == AppleIdentityHash.value(for: "design-acceptance-local"),
+              account.serverAccountID == nil, farm.ownerAccountID == account.id else {
+            throw InsightSecurityError.accountMismatch
+        }
+        let accountID = account.effectiveAccountID
+        let farmID = farm.id
+        try AIPrivacyConsentStore.saveCurrentConsent(for: accountID)
+        _ = try await MiMoCredentialVault.shared.save(
+            apiKey: "sk-design-acceptance-fixture-not-a-real-key", for: accountID
+        )
+        try Task.checkCancellation()
+
+        let context = container.mainContext
+        var descriptor = FetchDescriptor<InsightConversationRecord>(predicate: #Predicate {
+            $0.accountID == accountID && $0.farmID == farmID && $0.deletedAt == nil
+        })
+        descriptor.fetchLimit = 1
+        if try context.fetch(descriptor).isEmpty {
+            for index in 1...2 {
+                let createdAt = Date.now.addingTimeInterval(-Double(index) * 60)
+                let conversation = InsightConversationRecord(
+                    accountID: accountID, farmID: farmID,
+                    title: "入口回归历史聊天 \(index)", createdAt: createdAt
+                )
+                context.insert(conversation)
+                context.insert(InsightMessageRecord(
+                    conversationID: conversation.id, accountID: accountID, farmID: farmID,
+                    role: .assistant, text: "这是第 \(index) 条本机隔离验收聊天记录。",
+                    createdAt: createdAt, status: .completed,
+                    provider: "local", model: "design-acceptance"
+                ))
+            }
+            try context.save()
+        }
+        InsightSessionCoordinator.shared.activate(scope: InsightConversationScope(accountID: accountID, farmID: farmID))
     }
 }
 #endif
