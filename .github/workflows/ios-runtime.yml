@@ -71,6 +71,30 @@ jobs:
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee "$RUNNER_TEMP/assistant-entry.log"
+      - name: Print runtime result and crash details
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/assistant-entry.xcresult" ]; then
+            xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/assistant-entry.xcresult" || true
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          decoder = json.JSONDecoder()
+          for path in Path.home().joinpath('Library/Logs/DiagnosticReports').glob('eSheep*.ips'):
+              raw = path.read_text()
+              header, end = decoder.raw_decode(raw)
+              payload = decoder.raw_decode(raw[end:].lstrip())[0]
+              print(f'Crash report: {path.name}')
+              print(json.dumps({
+                  'exception': payload.get('exception'),
+                  'termination': payload.get('termination'),
+                  'asi': payload.get('asi'),
+                  'faultingThread': payload.get('faultingThread'),
+                  'threads': [thread for thread in payload.get('threads', []) if thread.get('triggered')],
+                  'usedImages': payload.get('usedImages'),
+              }, indent=2))
+          PY
       - name: Preserve test evidence and crash reports
         if: always()
         uses: actions/upload-artifact@v4
