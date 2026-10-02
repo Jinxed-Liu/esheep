@@ -20,6 +20,17 @@ final class InsightAssistantEntryUITests: XCTestCase {
         assertConversationList(in: app, screenshotName: "configured-assistant-entry")
         XCTAssertTrue(app.staticTexts["入口回归历史聊天 1"].exists, "Persisted chat history did not render.")
 
+        // A stable destination must continue receiving SwiftData changes.
+        let removableHistory = app.staticTexts["入口回归历史聊天 2"]
+        XCTAssertTrue(removableHistory.exists)
+        removableHistory.press(forDuration: 1)
+        let delete = app.buttons["删除聊天"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        delete.tap()
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: removableHistory)
+        XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed, "The list did not react to the deleted history record.")
+        XCTAssertTrue(app.staticTexts["入口回归历史聊天 1"].exists)
+
         app.buttons["新聊天"].tap()
         XCTAssertTrue(app.buttons["新建聊天"].waitForExistence(timeout: 15), "The new-chat screen did not open.")
         let composer = app.descendants(matching: .any).matching(identifier: "insight.composer.text").firstMatch

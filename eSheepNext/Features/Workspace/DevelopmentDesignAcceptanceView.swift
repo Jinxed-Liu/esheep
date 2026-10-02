@@ -131,12 +131,12 @@ private final class DesignAcceptanceFixture {
         try Task.checkCancellation()
 
         let context = container.mainContext
-        var descriptor = FetchDescriptor<InsightConversationRecord>(predicate: #Predicate {
+        let descriptor = FetchDescriptor<InsightConversationRecord>(predicate: #Predicate {
             $0.accountID == accountID && $0.farmID == farmID && $0.deletedAt == nil
         })
-        descriptor.fetchLimit = 1
-        if try context.fetch(descriptor).isEmpty {
-            for index in 1...2 {
+        let existingTitles = Set(try context.fetch(descriptor).map(\.title))
+        for index in 1...2 {
+            if !existingTitles.contains("入口回归历史聊天 \(index)") {
                 let createdAt = Date.now.addingTimeInterval(-Double(index) * 60)
                 let conversation = InsightConversationRecord(
                     accountID: accountID, farmID: farmID,
@@ -150,8 +150,8 @@ private final class DesignAcceptanceFixture {
                     provider: "local", model: "design-acceptance"
                 ))
             }
-            try context.save()
         }
+        try context.save()
         InsightSessionCoordinator.shared.activate(scope: InsightConversationScope(accountID: accountID, farmID: farmID))
     }
 }

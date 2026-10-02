@@ -2,13 +2,15 @@ import SwiftData
 import SwiftUI
 import UIKit
 
-struct FarmInsightConversationListView: View {
+struct FarmInsightConversationListView: View, Equatable {
     @Environment(\.modelContext) private var modelContext
     @Query private var conversations: [InsightConversationRecord]
     @Query private var messages: [InsightMessageRecord]
     let account: AccountProfile
     let farm: FarmRecord
     let initialPrompt: String?
+    private let accountIdentity: ObjectIdentifier
+    private let farmIdentity: ObjectIdentifier
     @State private var search = ""
     @State private var showSearch = false
     @State private var showSettings = false
@@ -30,6 +32,8 @@ struct FarmInsightConversationListView: View {
         self.account = account
         self.farm = farm
         self.initialPrompt = initialPrompt
+        accountIdentity = ObjectIdentifier(account)
+        farmIdentity = ObjectIdentifier(farm)
         let accountID = account.effectiveAccountID
         let farmID = farm.id
         _currentDeviceOnly = AppStorage(wrappedValue: false,
@@ -40,6 +44,15 @@ struct FarmInsightConversationListView: View {
         _messages = Query(filter: #Predicate<InsightMessageRecord> {
             $0.accountID == accountID && $0.farmID == farmID
         }, sort: [SortDescriptor(\.createdAt)])
+    }
+
+    // Navigation can rebuild this value while resolving the destination's
+    // layout. Compare the actual inputs, not freshly constructed query
+    // predicates. State, Query, and model observations still drive updates.
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.accountIdentity == rhs.accountIdentity &&
+            lhs.farmIdentity == rhs.farmIdentity &&
+            lhs.initialPrompt == rhs.initialPrompt
     }
 
     private var scope: InsightConversationScope { .init(accountID: account.effectiveAccountID, farmID: farm.id) }
@@ -105,6 +118,7 @@ struct FarmInsightConversationListView: View {
                 composerFocused: $composerFocused
             )
         }
+        .searchable(text: $search, isPresented: $showSearch, prompt: "搜索聊天和消息")
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if let draftSaveError {
