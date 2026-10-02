@@ -1,10 +1,10 @@
-Focus on the settings avatar interactions.
+Compare the settings avatar motion with Telegram.
 
-1. Scroll up: the avatar should smoothly shrink, morph and merge with the Dynamic Island, then recover when scrolling back. Devices without an island, landscape and iPad should use the standard collapse effect.
-2. First downward pull: the round avatar expands into a square with a spring and one haptic. Continuing the same drag should not open the viewer.
-3. Release, then pull again: dragging from either the square photo or the settings list should open the full-screen viewer.
-4. Test pinch zoom, double-tap zoom/reset, canceling a dismissal drag and dragging down to close. A zoomed image should pan normally.
-5. Closing should restore the round avatar. Change avatar should use the existing crop and save flow.
-6. Test Reduce Motion, disabled avatar motion and power saving. Expansion, viewing and closing should remain functional without visual jumps.
+1. Scroll slowly up and reverse direction: the round photo should form a neck beneath the Dynamic Island and retract; on downward scrolling it should emerge from the island, extend the neck, then narrow and detach into a circle. Check the join around 34 points of scrolling for clipping, flashes or an abrupt capsule shape.
+2. First pull: expand to an edge-to-edge square photo at the screen top, with the name at the lower left. Check native release bounce and one haptic. Continuing the same drag must not open the gallery.
+3. Release and pull again from either the photo or list: open the full-screen avatar. Check image movement, cropping and corner changes while controls fade separately.
+4. Test pinch, double-tap zoom/reset, cancelled downward dismissal and closing. A zoomed image should pan; closing should return to the current round avatar bounds.
+5. Test rotation before returning, repeated open/close, the existing change-avatar crop/save flow, and an account without a photo.
+6. Devices without an island, landscape and iPad use ordinary collapse. Reduced Motion, disabled avatar motion and power saving must preserve expansion, viewing and closing.
 
-Check responsiveness, spring strength, haptic timing, rapid direction reversals and repeated opening/closing for photo flashes.
+Compare actual screen recordings for tracking, connection shape, rebound and haptic timing. The new mask uses independently constructed curves and still needs frame-by-frame visual calibration.

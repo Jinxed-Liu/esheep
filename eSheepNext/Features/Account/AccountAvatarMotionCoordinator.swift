@@ -10,7 +10,14 @@ final class AccountAvatarMotionCoordinator {
     private(set) var scrollOffset: CGFloat = 0
     private(set) var expansion: CGFloat = 0
     private(set) var sourceFrame: CGRect = .zero
-    private(set) var availableWidth: CGFloat = 96
+    private(set) var availableWidth: CGFloat = 100
+    private(set) var contentOrigin: CGPoint = .zero
+    private(set) var titleHeight: CGFloat = floor(
+        UIFont.systemFont(ofSize: 28, weight: .medium).ascender -
+            UIFont.systemFont(ofSize: 28, weight: .medium).descender
+    )
+    private(set) var isSourceHidden = false
+    @ObservationIgnored private(set) var rendererSourceProvider: (@MainActor () -> AccountAvatarTransitionSource?)?
     private(set) var animationsEnabled = true
     private(set) var isViewerPresented = false
     private(set) var expansionFeedback = 0
@@ -22,10 +29,11 @@ final class AccountAvatarMotionCoordinator {
     private var editAfterDismissal = false
 
     var titleProgress: CGFloat {
+        let distance = 107 + titleHeight / 2
         if !animationsEnabled {
-            return scrollOffset >= 76 ? 1 : 0
+            return scrollOffset >= distance ? 1 : 0
         }
-        return min(max(scrollOffset / 94, 0), 1)
+        return min(max(scrollOffset / distance, 0), 1)
     }
 
     func configure(animationsEnabled: Bool) {
@@ -42,10 +50,33 @@ final class AccountAvatarMotionCoordinator {
 
     func updateAvailableWidth(_ width: CGFloat) {
         guard width.isFinite, width > 0 else { return }
-        let bounded = min(max(width, 96), 420)
+        let bounded = max(width, 100)
         if abs(availableWidth - bounded) > 0.5 {
             availableWidth = bounded
         }
+    }
+
+    func updateTitleHeight(_ height: CGFloat) {
+        guard height.isFinite, height > 0 else { return }
+        if abs(titleHeight - height) > 0.5 {
+            titleHeight = height
+        }
+    }
+
+    func updateContentOrigin(_ origin: CGPoint) {
+        guard origin.x.isFinite, origin.y.isFinite else { return }
+        if abs(contentOrigin.x - origin.x) > 0.5 || abs(contentOrigin.y - origin.y) > 0.5 {
+            contentOrigin = origin
+        }
+    }
+
+    func installRendererSourceProvider(_ provider: (@MainActor () -> AccountAvatarTransitionSource?)?) {
+        rendererSourceProvider = provider
+    }
+
+    func setSourceHidden(_ hidden: Bool) {
+        guard isSourceHidden != hidden else { return }
+        isSourceHidden = hidden
     }
 
     func updateSourceFrame(_ frame: CGRect) {
@@ -90,7 +121,7 @@ final class AccountAvatarMotionCoordinator {
     func viewerDidPresent() {
         interaction.viewerDidPresent()
         guard interaction.presentation == .viewing else { return }
-        // The presentation lifecycle callback runs after the zoom completes.
+        // The presentation lifecycle callback runs after all photo transition tracks complete.
         // Restore the return target while it is covered by the viewer.
         var transaction = Transaction()
         transaction.disablesAnimations = true
@@ -103,6 +134,11 @@ final class AccountAvatarMotionCoordinator {
         guard isViewerPresented else { return }
         editAfterDismissal = editAvatar
         interaction.beginDismissal()
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            expansion = 0
+        }
         isViewerPresented = false
     }
 
@@ -125,6 +161,7 @@ final class AccountAvatarMotionCoordinator {
         expansion = 0
         isViewerPresented = false
         editAfterDismissal = false
+        isSourceHidden = false
     }
 
     private func apply(_ effect: AccountAvatarInteractionEffect) {
@@ -145,7 +182,7 @@ final class AccountAvatarMotionCoordinator {
 
     private func animateExpansion(to value: CGFloat) {
         if animationsEnabled {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+            withAnimation(.timingCurve(0.38, 0.70, 0.125, 1, duration: 0.35)) {
                 expansion = value
             }
         } else {

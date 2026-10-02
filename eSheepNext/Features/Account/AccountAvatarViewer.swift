@@ -1,21 +1,20 @@
 import SwiftUI
 import UIKit
 
-/// The settings screen owns presentation and the matching zoom transition source.
+/// The presenter animates the photo independently of the controls and backdrop.
 @MainActor
 struct AccountAvatarViewer: View {
     @Environment(\.displayScale) private var displayScale
 
     let account: AccountProfile
     let reduceMotion: Bool
-    let onPresented: () -> Void
+    let transitionState: AccountAvatarViewerTransitionState
     let onClose: () -> Void
     let onEdit: () -> Void
 
     @State private var image: UIImage?
     @State private var loadedDigest: String?
     @State private var dragProgress: CGFloat = 0
-    @State private var hasReportedPresentation = false
     @State private var hasRequestedExit = false
 
     init(
@@ -23,93 +22,85 @@ struct AccountAvatarViewer: View {
         reduceMotion: Bool,
         initialImage: UIImage? = nil,
         initialDigest: String? = nil,
-        onPresented: @escaping () -> Void,
+        transitionState: AccountAvatarViewerTransitionState,
         onClose: @escaping () -> Void,
         onEdit: @escaping () -> Void
     ) {
         self.account = account
         self.reduceMotion = reduceMotion
-        self.onPresented = onPresented
+        self.transitionState = transitionState
         self.onClose = onClose
         self.onEdit = onEdit
-        // One-time seeds for this full-screen presentation preserve the source
-        // photo during entry. Account changes still reload through the image task,
-        // and a seed is displayed only while its digest matches the current request.
+        // These are one-time presentation seeds. Subsequent account changes
+        // reload through the task and only a matching digest is displayed.
         _image = State(initialValue: initialImage)
         _loadedDigest = State(initialValue: initialDigest)
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            let request = imageRequest(for: geometry.size)
-            AccountAvatarZoomView(
-                image: loadedDigest == request.digest ? image : nil,
-                imageID: request.digest,
-                initials: initials,
-                reduceMotion: reduceMotion,
-                onDragProgress: updateDragProgress,
-                onClose: requestClose
-            )
-            .task(id: request) {
-                await loadImage(for: request, viewport: geometry.size)
+        ZStack {
+            GeometryReader { geometry in
+                let request = imageRequest(for: geometry.size)
+                AccountAvatarZoomView(
+                    image: loadedDigest == request.digest ? image : nil,
+                    imageID: request.digest,
+                    initials: initials,
+                    reduceMotion: reduceMotion,
+                    transitionState: transitionState,
+                    onDragProgress: updateDragProgress,
+                    onClose: requestClose
+                )
+                .background(Color.black.opacity(
+                    transitionState.chromeOpacity * backgroundOpacity
+                ))
+                .task(id: request) {
+                    await loadImage(for: request, viewport: geometry.size)
+                }
             }
-        }
-        .background(Color.black.opacity(backgroundOpacity).ignoresSafeArea())
-        .safeAreaInset(edge: .top, spacing: 0) {
-            HStack(spacing: 12) {
-                Button(action: requestClose) {
-                    Image(systemName: "xmark")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 44, height: 44)
-                        .background(.white.opacity(0.12), in: .circle)
+            .ignoresSafeArea(.container)
+
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Button(action: requestClose) {
+                        Image(systemName: "xmark")
+                            .font(.body.weight(.semibold))
+                            .frame(width: 44, height: 44)
+                            .background(.white.opacity(0.12), in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("关闭")
+                    .accessibilityIdentifier("account-avatar-viewer-close")
+
+                    Text(account.displayName)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+                Spacer(minLength: 0)
+
+                Button(action: requestEdit) {
+                    Label("更换头像", systemImage: "photo.on.rectangle.angled")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .padding(.horizontal, 20)
+                        .background(.white.opacity(0.14), in: .capsule)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("关闭")
-                .accessibilityIdentifier("account-avatar-viewer-close")
-
-                Text(account.displayName)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: 440)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 16)
+                .accessibilityIdentifier("account-avatar-viewer-edit")
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 12)
-            .opacity(controlsOpacity)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            Button(action: requestEdit) {
-                Label("更换头像", systemImage: "photo.on.rectangle.angled")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity, minHeight: 48)
-                    .padding(.horizontal, 20)
-                    .background(.white.opacity(0.14), in: .capsule)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.white)
-            .frame(maxWidth: 440)
-            .padding(.horizontal, 24)
-            .padding(.top, 12)
-            .padding(.bottom, 16)
-            .opacity(controlsOpacity)
-            .accessibilityIdentifier("account-avatar-viewer-edit")
-        }
-        .background {
-            AccountAvatarPresentationObserver(onPresented: reportPresentation)
-                .frame(width: 0, height: 0)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+            .opacity(transitionState.chromeOpacity * controlsOpacity)
+            .allowsHitTesting(transitionState.allowsInteraction)
         }
         .preferredColorScheme(.dark)
-        // One pan recognizer owns dismissal. Programmatic dismissal still uses
-        // the native zoom transition supplied by SettingsHomeView.
-        .interactiveDismissDisabled(true)
         .accessibilityAction(.escape) {
-            requestClose()
-        }
-        .onDisappear {
-            // Also covers dismissal initiated by the system or presentation owner.
+            guard transitionState.allowsInteraction else { return }
             requestClose()
         }
     }
@@ -175,12 +166,6 @@ struct AccountAvatarViewer: View {
         }
     }
 
-    private func reportPresentation() {
-        guard !hasReportedPresentation, !hasRequestedExit else { return }
-        hasReportedPresentation = true
-        onPresented()
-    }
-
     private func requestClose() {
         guard !hasRequestedExit else { return }
         hasRequestedExit = true
@@ -207,6 +192,7 @@ private struct AccountAvatarZoomView: UIViewRepresentable {
     let imageID: String
     let initials: String
     let reduceMotion: Bool
+    let transitionState: AccountAvatarViewerTransitionState
     let onDragProgress: (CGFloat, Bool) -> Void
     let onClose: () -> Void
 
@@ -218,10 +204,26 @@ private struct AccountAvatarZoomView: UIViewRepresentable {
         view.onDragProgress = onDragProgress
         view.onClose = onClose
         view.reduceMotion = reduceMotion
+        view.isUserInteractionEnabled = transitionState.allowsInteraction
+        view.transitionState = transitionState
+        transitionState.install(
+            owner: view,
+            source: { [weak view] in view?.transitionSource() },
+            center: { [weak view] in view?.transitionCenterInWindow() },
+            size: { [weak view] in view?.transitionPhotoBaseSize },
+            setOpacity: { [weak view] value in view?.setPhotoOpacity(value) },
+            setTransform: { [weak view] transform in view?.setPhotoTransform(transform) },
+            setCorner: { [weak view] radius, duration in
+                view?.setPhotoCornerRadius(radius, duration: duration)
+            },
+            prepare: { [weak view] in view?.layoutIfNeeded() }
+        )
+        view.setPhotoOpacity(transitionState.photoOpacity)
         view.setImage(image, id: imageID, initials: initials)
     }
 
     static func dismantleUIView(_ view: AccountAvatarZoomContainer, coordinator: ()) {
+        view.transitionState?.uninstall(owner: view)
         view.onDragProgress = nil
         view.onClose = nil
         view.scrollView.delegate = nil
@@ -233,6 +235,7 @@ private struct AccountAvatarZoomView: UIViewRepresentable {
 private final class AccountAvatarZoomContainer: UIView,
     UIScrollViewDelegate, UIGestureRecognizerDelegate {
     let scrollView = UIScrollView()
+    weak var transitionState: AccountAvatarViewerTransitionState?
 
     var onDragProgress: ((CGFloat, Bool) -> Void)?
     var onClose: (() -> Void)?
@@ -247,6 +250,7 @@ private final class AccountAvatarZoomContainer: UIView,
         }
     }
 
+    private let transitionView = UIView()
     private let canvas = UIView()
     private let imageView = UIImageView()
     private let initialsLabel = UILabel()
@@ -280,8 +284,11 @@ private final class AccountAvatarZoomContainer: UIView,
         scrollView.showsVerticalScrollIndicator = false
         scrollView.decelerationRate = .fast
         scrollView.scrollsToTop = false
-        addSubview(scrollView)
+        transitionView.backgroundColor = .clear
+        addSubview(transitionView)
+        transitionView.addSubview(scrollView)
         scrollView.addSubview(canvas)
+        canvas.clipsToBounds = true
 
         imageView.contentMode = .scaleAspectFit
         imageView.isAccessibilityElement = false
@@ -352,6 +359,8 @@ private final class AccountAvatarZoomContainer: UIView,
 
         // Updating bounds.size and center preserves both the scroll offset and
         // a dismissal transform; assigning frame would reset a transformed view.
+        transitionView.bounds.size = bounds.size
+        transitionView.center = CGPoint(x: bounds.midX, y: bounds.midY)
         scrollView.bounds.size = bounds.size
         scrollView.center = CGPoint(x: bounds.midX, y: bounds.midY)
 
@@ -394,6 +403,68 @@ private final class AccountAvatarZoomContainer: UIView,
         }
         resetsZoom = false
         updateAccessibilityValue()
+    }
+
+    func transitionSource() -> AccountAvatarTransitionSource? {
+        guard let window, !canvas.bounds.isEmpty else { return nil }
+        let photo: UIImage
+        if let image = imageView.image {
+            photo = image
+        } else {
+            // A rendered fallback preserves the visible initials without decoding.
+            photo = UIGraphicsImageRenderer(bounds: canvas.bounds).image { context in
+                initialsLabel.layer.render(in: context.cgContext)
+            }
+        }
+        let layer = canvas.layer.presentation() ?? canvas.layer
+        let windowLayer = window.layer.presentation() ?? window.layer
+        let frame = layer.convert(layer.bounds, to: windowLayer)
+        let radius = layer.cornerRadius * frame.width / max(canvas.bounds.width, 1)
+        return AccountAvatarTransitionSource(
+            frameInWindow: frame,
+            image: photo,
+            cornerRadius: radius,
+            window: window
+        )
+    }
+
+    var transitionPhotoBaseSize: CGSize {
+        canvas.bounds.size
+    }
+
+    func transitionCenterInWindow() -> CGPoint? {
+        guard let window else { return nil }
+        return convert(
+            CGPoint(x: transitionView.center.x, y: transitionView.center.y),
+            to: window
+        )
+    }
+
+    func setPhotoOpacity(_ opacity: CGFloat) {
+        canvas.alpha = opacity
+    }
+
+    func setPhotoTransform(_ transform: CGAffineTransform) {
+        transitionView.transform = transform
+    }
+
+    func setPhotoCornerRadius(_ radius: CGFloat, duration: TimeInterval) {
+        let layer = canvas.layer
+        let initial = layer.presentation()?.cornerRadius ?? layer.cornerRadius
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.cornerRadius = max(radius, 0)
+        CATransaction.commit()
+        guard duration > 0 else {
+            layer.removeAnimation(forKey: "avatar-gallery-corner")
+            return
+        }
+        let animation = CABasicAnimation(keyPath: "cornerRadius")
+        animation.fromValue = initial
+        animation.toValue = max(radius, 0)
+        animation.duration = duration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(animation, forKey: "avatar-gallery-corner")
     }
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? {
@@ -582,38 +653,3 @@ private final class AccountAvatarZoomContainer: UIView,
     }
 }
 
-/// viewDidAppear runs after the containing full-screen presentation has appeared,
-/// so its source can be restored without changing the image during the zoom.
-@MainActor
-private struct AccountAvatarPresentationObserver: UIViewControllerRepresentable {
-    let onPresented: () -> Void
-
-    func makeUIViewController(context: Context) -> ObserverController {
-        let controller = ObserverController()
-        controller.onPresented = onPresented
-        return controller
-    }
-
-    func updateUIViewController(_ controller: ObserverController, context: Context) {
-        controller.onPresented = onPresented
-    }
-
-    final class ObserverController: UIViewController {
-        var onPresented: (() -> Void)?
-        private var hasAppeared = false
-
-        override func loadView() {
-            let view = UIView()
-            view.backgroundColor = .clear
-            view.isUserInteractionEnabled = false
-            self.view = view
-        }
-
-        override func viewDidAppear(_ animated: Bool) {
-            super.viewDidAppear(animated)
-            guard !hasAppeared else { return }
-            hasAppeared = true
-            onPresented?()
-        }
-    }
-}

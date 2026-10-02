@@ -1,252 +1,154 @@
 import SwiftUI
 import UIKit
 
-/// Reserves the avatar's space in the scroll content. The single image lives
-/// in SettingsAvatarOverlay so the header and navigation bar never duplicate it.
+/// The scroll-content button owns input. Its geometry never feeds back into
+/// expansion; the header and renderer receive the same explicit animation value.
 @MainActor
-struct SettingsAvatarHeader: View {
+struct SettingsAvatarHeader: View, Animatable {
     let account: AccountProfile
     let farm: FarmRecord
     let motion: AccountAvatarMotionCoordinator
+    nonisolated(unsafe) var expansion: CGFloat
     let onTap: () -> Void
     let onEdit: () -> Void
 
-    private var expandedSide: CGFloat {
-        max(96, min(motion.availableWidth, 420))
+    @State private var metrics = SettingsAvatarWindowMetrics.empty
+
+    nonisolated var animatableData: CGFloat {
+        get { expansion }
+        set { expansion = newValue }
     }
 
     var body: some View {
-        VStack(spacing: 11) {
-            // Keep the hit target inside ScrollView's content so a pull that
-            // starts on the photo participates in the same native scroll gesture.
+        let width = metrics.width > 0 ? metrics.width : max(100, motion.availableWidth)
+        let status = metrics.statusBarHeight
+        let progress = boundedSettingsAvatarProgress(expansion)
+        let titleHeight = SettingsAvatarTypography.titleHeight
+        let subtitleHeight = SettingsAvatarTypography.subtitleHeight
+        let normalHeight = status + 131 + titleHeight + 4 + subtitleHeight
+        let expandedHeight = width + 60 - 21
+        let height = max(0, normalHeight + (expandedHeight - normalHeight) * progress - motion.contentOrigin.y)
+        let layout = SettingsAvatarRenderLayout(
+            width: width, statusBarHeight: status, windowOrigin: .zero,
+            offset: motion.scrollOffset, titleProgress: motion.titleProgress,
+            expansion: progress, animationsEnabled: motion.animationsEnabled
+        )
+        ZStack(alignment: .topLeading) {
             Button(action: onTap) {
                 Color.clear
-                    .frame(
-                        width: 96 + (expandedSide - 96) * motion.expansion,
-                        height: 96 + (expandedSide - 96) * motion.expansion
-                    )
-                    .contentShape(SettingsAvatarContour(expansion: motion.expansion, islandProgress: 0))
+                    .frame(width: layout.photoFrame.width, height: layout.photoFrame.height)
+                    .contentShape(.rect(cornerRadius: layout.cornerRadius))
             }
             .buttonStyle(.plain)
+            .offset(
+                x: layout.photoFrame.minX - motion.contentOrigin.x,
+                y: layout.photoFrame.minY + motion.scrollOffset - motion.contentOrigin.y
+            )
             .accessibilityLabel("头像")
-            .accessibilityHint(Text(LocalizedStringKey(motion.expansion > 0.5 ? "点按查看头像" : "点按展开头像")))
+            .accessibilityHint(Text(LocalizedStringKey(progress > 0.5 ? "点按查看头像" : "点按展开头像")))
             .accessibilityIdentifier("account-avatar-entry")
-            .accessibilityHidden(motion.titleProgress > 0.95)
-            .allowsHitTesting(motion.titleProgress < 1)
+            .accessibilityHidden(motion.titleProgress > 0.99 && progress < 0.01)
+            .allowsHitTesting(motion.titleProgress < 1 || progress > 0.01)
             .accessibilityAction(named: Text("更换头像"), onEdit)
-            .onGeometryChange(for: CGRect.self) { geometry in
-                geometry.frame(in: .global)
-            } action: { frame in
-                motion.updateSourceFrame(frame)
-            }
-
-            VStack(spacing: 4) {
-                Text(account.displayName)
-                    .font(.title2.bold())
-                    .lineLimit(1)
-                HStack(spacing: 0) {
-                    Text(verbatim: farm.name)
-                    Text(" · ")
-                    Text(LocalizedStringKey(farm.role.displayName))
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            }
-            .opacity(1 - motion.titleProgress)
-            .offset(y: motion.animationsEnabled ? -6 * motion.titleProgress : 0)
-            .accessibilityElement(children: .combine)
-            .accessibilityHidden(motion.titleProgress > 0.95)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 14)
-        .padding(.bottom, 2)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: height, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
+        .accessibilityValue(Text(account.displayName + " · " + farm.name))
+        .onGeometryChange(for: CGPoint.self) { geometry in
+            geometry.frame(in: .global).origin
+        } action: { origin in
+            // Only the stable content origin is measured; expansion changes
+            // height beneath this point and never supplies animation progress.
+            motion.updateContentOrigin(CGPoint(
+                x: origin.x, y: origin.y + motion.scrollOffset
+            ))
+        }
         .onGeometryChange(for: CGFloat.self) { geometry in
             geometry.size.width
         } action: { width in
             motion.updateAvailableWidth(width)
         }
+        .background {
+            SettingsAvatarWindowProbe { value in
+                let stable = SettingsAvatarWindowMetrics(
+                    width: value.width, statusBarHeight: value.statusBarHeight,
+                    windowOriginInView: .zero, supportsIsland: value.supportsIsland
+                )
+                if metrics != stable { metrics = stable }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
     }
 }
 
-/// Renders the photo and the native zoom source. SettingsHomeView forwards
-/// input to the matching button inside the scroll content.
+/// The animation value is an explicit input. UIView geometry is queried only
+/// on demand for gallery transitions, never read back as expansion progress.
 @MainActor
-struct SettingsAvatarOverlay: View {
-    let account: AccountProfile
-    let motion: AccountAvatarMotionCoordinator
-    let namespace: Namespace.ID
-    let onTap: () -> Void
-    let onEdit: () -> Void
+struct SettingsAvatarOverlay: View, Animatable {
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.colorScheme) private var colorScheme
 
-    @State private var windowMetrics = SettingsAvatarWindowMetrics.empty
+    let account: AccountProfile
+    let farm: FarmRecord
+    let motion: AccountAvatarMotionCoordinator
+    nonisolated(unsafe) var expansion: CGFloat
+
+    @State private var metrics = SettingsAvatarWindowMetrics.empty
+
+    nonisolated var animatableData: CGFloat {
+        get { expansion }
+        set { expansion = newValue }
+    }
 
     var body: some View {
         GeometryReader { geometry in
-            let layout = avatarLayout(in: geometry)
-            ZStack(alignment: .topLeading) {
-                if !layout.frame.isEmpty {
-                    avatarButton(layout: layout)
-                        .position(x: layout.frame.midX, y: layout.frame.midY)
+            let width = metrics.width > 0 ? metrics.width : max(100, geometry.size.width)
+            let layout = SettingsAvatarRenderLayout(
+                width: width, statusBarHeight: metrics.statusBarHeight,
+                windowOrigin: metrics.windowOriginInView,
+                offset: motion.scrollOffset, titleProgress: motion.titleProgress,
+                expansion: boundedSettingsAvatarProgress(expansion),
+                animationsEnabled: motion.animationsEnabled
+            )
+            SettingsAvatarRenderer(
+                image: motion.previewDigest == digest ? motion.previewImage : nil,
+                initials: initials,
+                name: account.displayName,
+                subtitle: farm.name + " · " + Bundle.main.localizedString(
+                    forKey: farm.role.displayName, value: farm.role.displayName, table: nil
+                ),
+                layout: layout,
+                supportsIsland: metrics.supportsIsland,
+                sourceHidden: motion.isSourceHidden,
+                darkAppearance: colorScheme == .dark,
+                displayScale: displayScale,
+                motion: motion,
+                onMetrics: { value in
+                    if metrics != value { metrics = value }
+                    motion.updateAvailableWidth(value.width)
+                    motion.updateTitleHeight(SettingsAvatarTypography.titleHeight)
                 }
-            }
-            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
-            .background {
-                SettingsAvatarWindowProbe { metrics in
-                    if windowMetrics != metrics {
-                        windowMetrics = metrics
-                    }
-                }
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-            }
+            )
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .ignoresSafeArea(.container, edges: .top)
-    }
-
-    private func avatarButton(layout: SettingsAvatarOverlayLayout) -> some View {
-        let contour = SettingsAvatarContour(
-            expansion: layout.expansion,
-            islandProgress: layout.islandProgress
-        )
-        return Button(action: onTap) {
-            SettingsAvatarImage(
-                account: account,
-                motion: motion,
-                targetSide: max(96, min(motion.availableWidth, 420))
-            )
-            .frame(width: layout.frame.width, height: layout.frame.height)
-            .overlay {
-                AvatarIslandEffectView(progress: layout.islandProgress)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            }
-            .clipShape(contour)
-            .overlay {
-                contour.stroke(.primary.opacity(0.05 * (1 - layout.islandProgress)), lineWidth: 1)
-                    .allowsHitTesting(false)
-            }
-            .contentShape(contour)
-        }
-        .buttonStyle(.plain)
-        .frame(width: layout.frame.width, height: layout.frame.height)
-        .contentShape(contour)
-        .matchedTransitionSource(id: account.id, in: namespace)
-        .opacity(layout.opacity)
-        .disabled(layout.opacity < 0.01 || layout.islandProgress >= 1)
-        .allowsHitTesting(layout.opacity >= 0.01 && layout.islandProgress < 1)
-        .accessibilityLabel("头像")
-        .accessibilityHint("点按查看头像")
-        .accessibilityIdentifier("account-avatar-entry")
-        .accessibilityHidden(layout.opacity < 0.01)
-        .accessibilityAction(named: Text("更换头像"), onEdit)
-    }
-
-    private func avatarLayout(in geometry: GeometryProxy) -> SettingsAvatarOverlayLayout {
-        let source = motion.sourceFrame
-        guard source.width > 0, source.height > 0 else { return .empty }
-
-        let origin = geometry.frame(in: .global).origin
-        let squareSide = max(96, min(motion.availableWidth, 420))
-
-        // The placeholder's measured height follows the spring's presentation.
-        // Reading only the model's target expansion would jump the overlay
-        // directly to a square before the scroll layout finishes expanding.
-        let expansion = squareSide > 96
-            ? boundedSettingsAvatarProgress((source.height - 96) / (squareSide - 96))
-            : boundedSettingsAvatarProgress(motion.expansion)
-        let stretch = motion.animationsEnabled
-            ? 1 + min(max(-motion.scrollOffset, 0) / squareSide, 0.16)
-            : 1
-        let side = source.height * stretch
-        let ordinaryFrame = CGRect(
-            x: source.midX - origin.x - side / 2,
-            y: source.midY - origin.y - side / 2,
-            width: side,
-            height: side
-        )
-
-        let mergeWithIsland = windowMetrics.supportsIsland && motion.animationsEnabled
-        let collapse = motion.animationsEnabled
-            ? boundedSettingsAvatarProgress(motion.scrollOffset / 120)
-            : motion.titleProgress
-        let islandProgress = mergeWithIsland ? collapse * (1 - expansion) : 0
-
-        let frame: CGRect
-        let opacity: CGFloat
-        if mergeWithIsland {
-            // AvatarIslandMask exposes only the top 34% of this square at p=1.
-            // Its 39.44pt capsule aligns with the physical top-center cutout.
-            let target = CGRect(
-                x: windowMetrics.islandCenter.x - 58,
-                y: windowMetrics.islandCenter.y - 19.7,
-                width: 116,
-                height: 116
-            )
-            frame = CGRect(
-                x: ordinaryFrame.minX + (target.minX - ordinaryFrame.minX) * islandProgress,
-                y: ordinaryFrame.minY + (target.minY - ordinaryFrame.minY) * islandProgress,
-                width: ordinaryFrame.width + (target.width - ordinaryFrame.width) * islandProgress,
-                height: ordinaryFrame.height + (target.height - ordinaryFrame.height) * islandProgress
-            )
-            opacity = 1 - boundedSettingsAvatarProgress((islandProgress - 0.9) / 0.1)
-        } else {
-            frame = ordinaryFrame
-            opacity = 1 - collapse * (1 - expansion)
-        }
-        return SettingsAvatarOverlayLayout(
-            frame: frame,
-            expansion: expansion,
-            islandProgress: islandProgress,
-            opacity: opacity
-        )
-    }
-}
-
-/// Uses the existing thumbnail service with a fixed layout-size request.
-/// The coordinator keeps the same decoded photo as the viewer's entrance seed.
-@MainActor
-struct SettingsAvatarImage: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.displayScale) private var displayScale
-
-    let account: AccountProfile
-    let motion: AccountAvatarMotionCoordinator
-    let targetSide: CGFloat
-
-    @State private var thumbnail: ImageThumbnail?
-    @State private var loadedDigest: String?
-
-    var body: some View {
-        Group {
-            if let thumbnail, loadedDigest == digest {
-                Image(decorative: thumbnail.cgImage, scale: thumbnail.scale, orientation: .up)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                fallbackAvatar
-            }
-        }
+        .allowsHitTesting(false)
         .accessibilityHidden(true)
-        .task(id: requestID) {
+        .task(id: SettingsAvatarThumbnailRequest(
+            digest: digest,
+            pixelSide: Int(ceil(max(100, motion.availableWidth) * displayScale))
+        )) {
             let requestedDigest = digest
-            guard let data = account.avatarImageData else {
-                thumbnail = nil
-                loadedDigest = nil
-                return
-            }
+            guard let data = account.avatarImageData else { return }
+            let side = max(100, motion.availableWidth)
             let loaded = await ImageThumbnailPipeline.shared.thumbnail(
-                data: data,
-                digest: requestedDigest,
-                targetSize: CGSize(width: targetSide, height: targetSide),
-                scale: displayScale
+                data: data, digest: requestedDigest,
+                targetSize: CGSize(width: side, height: side), scale: displayScale
             )
-            guard !Task.isCancelled, requestedDigest == digest else { return }
-            thumbnail = loaded
-            loadedDigest = requestedDigest
-            if let loaded {
-                motion.storePreview(loaded, digest: requestedDigest)
-            }
+            guard !Task.isCancelled, requestedDigest == digest, let loaded else { return }
+            motion.storePreview(loaded, digest: requestedDigest)
         }
     }
 
@@ -255,148 +157,551 @@ struct SettingsAvatarImage: View {
             "account-avatar|\(account.id.uuidString)|\(account.updatedAt.timeIntervalSince1970)|\(account.avatarImageData?.count ?? 0)"
     }
 
-    private var requestID: RequestID {
-        RequestID(
-            digest: digest,
-            pixelSide: Int(ceil(targetSide * displayScale))
-        )
-    }
-
-    private var fallbackAvatar: some View {
-        GeometryReader { geometry in
-            ZStack {
-                Rectangle().fill(AppTheme.brand.opacity(colorScheme == .dark ? 0.24 : 0.10))
-                Text(initials)
-                    .font(.system(
-                        size: min(geometry.size.width, geometry.size.height) * 0.36,
-                        weight: .medium,
-                        design: .rounded
-                    ))
-                    .foregroundStyle(colorScheme == .dark ? AppTheme.brandSoft : AppTheme.brand)
-            }
-        }
-    }
-
     private var initials: String {
         account.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
             .first.map(String.init) ?? "羊"
     }
+}
 
-    private struct RequestID: Hashable {
-        let digest: String
-        let pixelSide: Int
+private struct SettingsAvatarThumbnailRequest: Hashable {
+    let digest: String
+    let pixelSide: Int
+}
+
+@MainActor
+private enum SettingsAvatarTypography {
+    static var titleFont: UIFont { .systemFont(ofSize: 28, weight: .medium) }
+    static var titleHeight: CGFloat { floor(titleFont.ascender - titleFont.descender) }
+    static var subtitleHeight: CGFloat {
+        let font = UIFont.systemFont(ofSize: 17)
+        return floor(font.ascender - font.descender)
     }
 }
 
-private struct SettingsAvatarContour: Shape {
-    var expansion: CGFloat
-    var islandProgress: CGFloat
+private struct SettingsAvatarRenderLayout {
+    let width: CGFloat
+    let statusBarHeight: CGFloat
+    let windowOrigin: CGPoint
+    let offset: CGFloat
+    let titleProgress: CGFloat
+    let expansion: CGFloat
+    let animationsEnabled: Bool
 
-    var animatableData: AnimatablePair<CGFloat, CGFloat> {
-        get { AnimatablePair(expansion, islandProgress) }
-        set {
-            expansion = newValue.first
-            islandProgress = newValue.second
+    var maskProgress: CGFloat {
+        animationsEnabled ? boundedSettingsAvatarProgress(offset / 120) * (1 - expansion) : 0
+    }
+
+    var photoFrame: CGRect {
+        let fraction = boundedSettingsAvatarProgress(titleProgress)
+        let normalScale = animationsEnabled ? 1 - 0.45 * fraction : 1
+        let normalSide = 100 * normalScale
+        let normalCenterY = statusBarHeight + 72 - offset + (animationsEnabled ? 17 * fraction : 0)
+        let pull = animationsEnabled ? max(0, -offset / width) : 0
+        let expandedSide = width * (1 + pull)
+        // Stretch around the square's center. For a negative offset this keeps
+        // its upper edge at the screen top and grows the lower edge with the pull.
+        let expandedTop = -offset / 2 - (expandedSide - width) / 2
+        let normalTop = normalCenterY - normalSide / 2
+        let side = normalSide + (expandedSide - normalSide) * expansion
+        let top = normalTop + (expandedTop - normalTop) * expansion
+        return CGRect(
+            x: windowOrigin.x + (width - side) / 2,
+            y: windowOrigin.y + top,
+            width: side, height: side
+        )
+    }
+
+    var cornerRadius: CGFloat {
+        photoFrame.width / 2 * (1 - expansion)
+    }
+
+    var extensionHeight: CGFloat { 60 * expansion }
+}
+
+private struct SettingsAvatarWindowMetrics: Equatable, Sendable {
+    let width: CGFloat
+    let statusBarHeight: CGFloat
+    let windowOriginInView: CGPoint
+    let supportsIsland: Bool
+
+    static let empty = Self(
+        width: 0, statusBarHeight: 0, windowOriginInView: .zero, supportsIsland: false
+    )
+}
+
+@MainActor
+private struct SettingsAvatarRenderer: UIViewRepresentable {
+    let image: UIImage?
+    let initials: String
+    let name: String
+    let subtitle: String
+    let layout: SettingsAvatarRenderLayout
+    let supportsIsland: Bool
+    let sourceHidden: Bool
+    let darkAppearance: Bool
+    let displayScale: CGFloat
+    let motion: AccountAvatarMotionCoordinator
+    let onMetrics: @MainActor (SettingsAvatarWindowMetrics) -> Void
+
+    func makeUIView(context: Context) -> SettingsAvatarRendererUIView {
+        let view = SettingsAvatarRendererUIView(frame: .zero)
+        view.onMetrics = onMetrics
+        view.onAttach = { [weak motion] renderer in
+            // The coordinator owns a weak query closure, not the renderer.
+            motion?.installRendererSourceProvider { [weak renderer] in
+                renderer?.transitionSource()
+            }
+        }
+        return view
+    }
+
+    func updateUIView(_ uiView: SettingsAvatarRendererUIView, context: Context) {
+        uiView.onMetrics = onMetrics
+        uiView.render(
+            image: image, initials: initials, name: name, subtitle: subtitle,
+            layout: layout, supportsIsland: supportsIsland,
+            sourceHidden: sourceHidden, darkAppearance: darkAppearance,
+            displayScale: displayScale
+        )
+    }
+
+    static func dismantleUIView(_ uiView: SettingsAvatarRendererUIView, coordinator: ()) {
+        // Never erase a newer renderer's registered provider. Its weak capture
+        // naturally becomes nil when this renderer is released.
+        uiView.invalidate()
+    }
+}
+
+@MainActor
+private final class SettingsAvatarRendererUIView: UIView {
+    var onMetrics: (@MainActor (SettingsAvatarWindowMetrics) -> Void)?
+    var onAttach: (@MainActor (SettingsAvatarRendererUIView) -> Void)?
+
+    private let clippingView = UIView()
+    private let composite = UIView()
+    private let photo = UIImageView()
+    private let fallback = UILabel()
+    private let extensionClip = UIView()
+    private let mirroredPhoto = UIImageView()
+    private let canvas = UIView()
+    private let blackUnderlay = UIView()
+    private let islandEffect = AvatarIslandEffectUIView(frame: .zero)
+    private let compositeMask = CAShapeLayer()
+    private let shadow = CAGradientLayer()
+    private let title = UILabel()
+    private let subtitle = UILabel()
+    private var lastMetrics: SettingsAvatarWindowMetrics?
+    private var pendingMetrics: Task<Void, Never>?
+    private var pendingAttach: Task<Void, Never>?
+    private var renderLayout: SettingsAvatarRenderLayout?
+    private var islandEligible = false
+    private var renderDisplayScale: CGFloat = 1
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        accessibilityElementsHidden = true
+        backgroundColor = .clear
+        clippingView.clipsToBounds = true
+        addSubview(clippingView)
+        clippingView.addSubview(composite)
+        composite.layer.mask = compositeMask
+
+        canvas.backgroundColor = .clear
+        blackUnderlay.backgroundColor = .black
+        canvas.addSubview(blackUnderlay)
+        composite.addSubview(canvas)
+        photo.contentMode = .scaleAspectFill
+        photo.clipsToBounds = true
+        composite.addSubview(photo)
+        fallback.textAlignment = .center
+        fallback.clipsToBounds = true
+        composite.addSubview(fallback)
+        canvas.addSubview(islandEffect)
+        // The effect sits above the real photo while keeping its independent
+        // 171pt canvas, so the neck has pixels even outside the photo rectangle.
+        islandEffect.removeFromSuperview()
+        composite.addSubview(islandEffect)
+
+        extensionClip.clipsToBounds = true
+        mirroredPhoto.contentMode = .scaleAspectFill
+        mirroredPhoto.transform = CGAffineTransform(scaleX: 1, y: -1)
+        extensionClip.addSubview(mirroredPhoto)
+        composite.addSubview(extensionClip)
+        shadow.colors = [
+            UIColor.clear.cgColor,
+            UIColor.black.withAlphaComponent(0.18).cgColor,
+            UIColor.black.withAlphaComponent(0.68).cgColor
+        ]
+        shadow.locations = [0, 0.35, 1]
+        composite.layer.addSublayer(shadow)
+
+        title.numberOfLines = 1
+        title.lineBreakMode = .byTruncatingTail
+        subtitle.numberOfLines = 1
+        subtitle.lineBreakMode = .byTruncatingTail
+        addSubview(title)
+        addSubview(subtitle)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        refreshMetrics()
+        pendingAttach?.cancel()
+        if window != nil {
+            pendingAttach = Task { @MainActor [weak self] in
+                guard !Task.isCancelled, let self, self.window != nil else { return }
+                self.pendingAttach = nil
+                self.onAttach?(self)
+            }
         }
     }
 
-    func path(in rect: CGRect) -> Path {
-        guard rect.width > 0, rect.height > 0 else { return Path() }
-        let expansion = boundedSettingsAvatarProgress(expansion)
-        let islandProgress = boundedSettingsAvatarProgress(islandProgress)
-        let morph = islandProgress * islandProgress * (3 - 2 * islandProgress)
-        let diameter = min(rect.width, rect.height)
-        let width = diameter + (rect.width - diameter) * morph
-        let height = diameter * (1 - 0.66 * morph)
-        let initialTop = rect.midY - diameter / 2
-        let top = initialTop + (rect.minY - initialTop) * morph
-        let bounds = CGRect(
-            x: rect.midX - width / 2, y: top, width: width, height: height
-        )
-        let circleRadius = min(bounds.width, bounds.height) / 2
-        let radius = circleRadius + (min(12, circleRadius) - circleRadius) * expansion
-        let control = radius * 0.5522847498307936
-        let left = bounds.minX
-        let right = bounds.maxX
-        let bottom = bounds.maxY
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        refreshMetrics()
+    }
 
-        // Both stages share the original island mask's eight cubic segments.
-        // Expansion changes the radius while islandProgress flattens the bounds,
-        // so reversing either input preserves every control-point correspondence.
-        var path = Path()
-        path.move(to: CGPoint(x: left + radius, y: top))
-        addStraightCurve(
-            to: &path,
-            from: CGPoint(x: left + radius, y: top),
-            to: CGPoint(x: right - radius, y: top)
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        refreshMetrics()
+        if let renderLayout { applyGeometry(renderLayout) }
+    }
+
+    func render(
+        image: UIImage?, initials: String, name: String, subtitle text: String,
+        layout: SettingsAvatarRenderLayout, supportsIsland: Bool,
+        sourceHidden: Bool, darkAppearance: Bool, displayScale: CGFloat
+    ) {
+        renderLayout = layout
+        islandEligible = supportsIsland && layout.animationsEnabled
+        renderDisplayScale = max(1, displayScale)
+        photo.image = image
+        mirroredPhoto.image = image
+        fallback.text = initials
+        fallback.isHidden = image != nil
+        let fallbackColor = UIColor(AppTheme.brand)
+        fallback.backgroundColor = fallbackColor.withAlphaComponent(darkAppearance ? 0.24 : 0.10)
+        fallback.textColor = UIColor(darkAppearance ? AppTheme.brandSoft : AppTheme.brand)
+        title.text = name
+        subtitle.text = text
+        composite.isHidden = sourceHidden
+        let progress = supportsIsland ? layout.maskProgress : 0
+        let shapeStrength = boundedSettingsAvatarProgress((progress - 0.03) / 0.03)
+        canvas.isHidden = progress <= 0.03
+        blackUnderlay.alpha = progress
+        islandEffect.setProgress(progress)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        compositeMask.path = SettingsAvatarMaskPath.make(
+            photo: layout.photoFrame,
+            extensionHeight: layout.extensionHeight,
+            cornerRadius: layout.cornerRadius,
+            maskOrigin: CGPoint(
+                x: layout.windowOrigin.x + (layout.width - 171) / 2,
+                y: layout.windowOrigin.y + 47.5
+            ),
+            progress: progress,
+            strength: shapeStrength * (1 - layout.expansion)
+        )
+        CATransaction.commit()
+
+        applyGeometry(layout)
+        applyTypography(layout, displayScale: displayScale)
+        // Unsupported devices and Reduce Motion use the regular scroll fade.
+        let fallbackAlpha = supportsIsland && layout.animationsEnabled
+            ? 1 : 1 - boundedSettingsAvatarProgress(layout.titleProgress) * (1 - layout.expansion)
+        composite.alpha = fallbackAlpha
+    }
+
+    private func applyGeometry(_ layout: SettingsAvatarRenderLayout) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let clipTop = layout.windowOrigin.y + (islandEligible ? 47 * (1 - layout.expansion) : 0)
+        clippingView.frame = CGRect(
+            x: layout.windowOrigin.x, y: clipTop,
+            width: layout.width, height: max(1000, bounds.height)
+        )
+        clippingView.layer.cornerRadius = islandEligible ? layout.width / 2.5 * (1 - layout.expansion) : 0
+        composite.frame = CGRect(
+            x: -clippingView.frame.minX, y: -clippingView.frame.minY,
+            width: bounds.width, height: max(bounds.height, layout.photoFrame.maxY + 60)
+        )
+        compositeMask.frame = composite.bounds
+        photo.frame = layout.photoFrame
+        photo.layer.cornerRadius = layout.cornerRadius
+        fallback.frame = layout.photoFrame
+        fallback.layer.cornerRadius = layout.cornerRadius
+        fallback.font = .systemFont(ofSize: layout.photoFrame.width * 0.36, weight: .medium)
+        extensionClip.frame = CGRect(
+            x: layout.photoFrame.minX, y: layout.photoFrame.maxY,
+            width: layout.photoFrame.width, height: layout.extensionHeight
+        )
+        extensionClip.alpha = layout.expansion
+        mirroredPhoto.bounds = CGRect(origin: .zero, size: layout.photoFrame.size)
+        mirroredPhoto.center = CGPoint(x: layout.photoFrame.width / 2, y: layout.photoFrame.height / 2)
+        canvas.frame = CGRect(
+            x: layout.windowOrigin.x + (layout.width - 171) / 2,
+            y: layout.windowOrigin.y + 47.5, width: 171, height: 171
+        )
+        blackUnderlay.frame = canvas.bounds
+        islandEffect.frame = canvas.frame
+        shadow.frame = CGRect(
+            x: layout.photoFrame.minX,
+            y: layout.photoFrame.maxY + layout.extensionHeight - 88,
+            width: layout.photoFrame.width, height: 88
+        )
+        shadow.opacity = Float(layout.expansion)
+        CATransaction.commit()
+    }
+
+    private func applyTypography(_ layout: SettingsAvatarRenderLayout, displayScale: CGFloat) {
+        let expansion = layout.expansion
+        title.font = .systemFont(ofSize: 28 * (1 - 0.2 * expansion), weight: .medium)
+        subtitle.font = .systemFont(ofSize: 17 - expansion)
+        let currentTitleHeight = floor(title.font.ascender - title.font.descender)
+        let currentSubtitleHeight = floor(subtitle.font.ascender - subtitle.font.descender)
+        let maxWidth = max(0, layout.width - 32)
+        let nameWidth = min(maxWidth, title.sizeThatFits(CGSize(width: .greatestFiniteMagnitude, height: currentTitleHeight)).width)
+        let subtitleWidth = min(maxWidth, subtitle.sizeThatFits(CGSize(width: .greatestFiniteMagnitude, height: currentSubtitleHeight)).width)
+        let normalTop = layout.windowOrigin.y + layout.statusBarHeight + 131 - layout.offset
+            - (layout.animationsEnabled ? 5.5 * boundedSettingsAvatarProgress(layout.titleProgress) : 0)
+        let expandedTop = layout.windowOrigin.y + layout.width + 60 - 58
+            - 1 / max(1, displayScale) - layout.offset
+        let top = normalTop + (expandedTop - normalTop) * expansion
+        let nameX = layout.windowOrigin.x + (layout.width - nameWidth) / 2
+        let subX = layout.windowOrigin.x + (layout.width - subtitleWidth) / 2
+        title.frame = CGRect(
+            x: nameX + (layout.windowOrigin.x + 16 - nameX) * expansion,
+            y: top, width: nameWidth, height: currentTitleHeight
+        )
+        subtitle.frame = CGRect(
+            x: subX + (layout.windowOrigin.x + 16 - subX) * expansion,
+            y: top + currentTitleHeight + 4,
+            width: subtitleWidth, height: currentSubtitleHeight
+        )
+        let normalColor = UIColor.label.resolvedColor(with: traitCollection)
+        let normalSubtitle = UIColor.secondaryLabel.resolvedColor(with: traitCollection)
+        title.textColor = blendedSettingsAvatarColor(normalColor, .white, progress: expansion)
+        subtitle.textColor = blendedSettingsAvatarColor(normalSubtitle, UIColor.white.withAlphaComponent(0.9), progress: expansion)
+        let alpha = 1 - boundedSettingsAvatarProgress(layout.titleProgress) * (1 - expansion)
+        title.alpha = alpha
+        subtitle.alpha = alpha
+    }
+
+    func transitionSource() -> AccountAvatarTransitionSource? {
+        guard let window, !photo.bounds.isEmpty else { return nil }
+        let image: UIImage
+        if let decoded = photo.image {
+            image = decoded
+        } else {
+            // Gallery must remain reachable while the first thumbnail decodes.
+            // Rendering this bounded placeholder also works when its ancestor
+            // is hidden during the gallery's return transition.
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = renderDisplayScale
+            format.opaque = false
+            image = UIGraphicsImageRenderer(size: fallback.bounds.size, format: format).image { context in
+                fallback.layer.render(in: context.cgContext)
+            }
+        }
+        let sourceLayer = photo.layer.presentation() ?? photo.layer
+        let targetLayer = window.layer.presentation() ?? window.layer
+        let frame = sourceLayer.convert(sourceLayer.bounds, to: targetLayer)
+        guard !frame.isEmpty else { return nil }
+        return AccountAvatarTransitionSource(
+            frameInWindow: frame, image: image,
+            cornerRadius: sourceLayer.cornerRadius, window: window
+        )
+    }
+
+    private func refreshMetrics() {
+        guard let window, !bounds.isEmpty else { return }
+        let value = settingsAvatarWindowMetrics(view: self, window: window)
+        guard lastMetrics != value else { return }
+        lastMetrics = value
+        pendingMetrics?.cancel()
+        pendingMetrics = Task { @MainActor [weak self] in
+            guard !Task.isCancelled, let self else { return }
+            self.pendingMetrics = nil
+            self.onMetrics?(value)
+        }
+    }
+
+    func invalidate() {
+        pendingMetrics?.cancel()
+        pendingAttach?.cancel()
+        pendingMetrics = nil
+        pendingAttach = nil
+        onMetrics = nil
+        onAttach = nil
+        islandEffect.setProgress(0)
+    }
+}
+
+/// Original control points, guided by Telegram's mask phase timing and bounds.
+/// This is an approximation of UserAvatarMask, not a copy of its TGS vectors.
+private enum SettingsAvatarMaskPath {
+    private struct Cubic {
+        var end: CGPoint
+        var first: CGPoint
+        var second: CGPoint
+    }
+
+    private struct Outline {
+        var start: CGPoint
+        var curves: [Cubic]
+    }
+
+    private struct Phase {
+        let offset: CGFloat
+        let centerY: CGFloat
+        let radiusX: CGFloat
+        let radiusY: CGFloat
+        let neck: CGFloat
+    }
+
+    private static let phases: [Phase] = [
+        Phase(offset: 0, centerY: 78.15, radiusX: 50.1, radiusY: 50.1, neck: 0),
+        Phase(offset: 20, centerY: 60.77, radiusX: 44.085, radiusY: 44.42, neck: 0),
+        Phase(offset: 24.67, centerY: 54.475, radiusX: 42.585, radiusY: 45.255, neck: 0),
+        Phase(offset: 26.67, centerY: 48.355, radiusX: 41.915, radiusY: 49.095, neck: 14),
+        Phase(offset: 34, centerY: 44.42, radiusX: 39.745, radiusY: 44.42, neck: 20.205),
+        Phase(offset: 40, centerY: 40.915, radiusX: 37.74, radiusY: 40.915, neck: 24.215),
+        Phase(offset: 53.333, centerY: 33.15, radiusX: 33.4, radiusY: 33.15, neck: 28.89),
+        Phase(offset: 73.333, centerY: 21.46, radiusX: 24.215, radiusY: 21.46, neck: 30.56),
+        Phase(offset: 93.333, centerY: 9.685, radiusX: 19.705, radiusY: 9.685, neck: 27.385),
+        Phase(offset: 110.667, centerY: 0, radiusX: 0, radiusY: 0, neck: 0),
+        Phase(offset: 120, centerY: 0, radiusX: 0, radiusY: 0, neck: 0)
+    ]
+
+    static func make(
+        photo: CGRect, extensionHeight: CGFloat, cornerRadius: CGFloat,
+        maskOrigin: CGPoint, progress: CGFloat, strength: CGFloat
+    ) -> CGPath {
+        let regular = rounded(
+            CGRect(x: photo.minX, y: photo.minY, width: photo.width, height: photo.height + extensionHeight),
+            radius: cornerRadius
+        )
+        let collapsed = bulb(progress: progress, origin: maskOrigin)
+        let strength = boundedSettingsAvatarProgress(strength)
+        let path = CGMutablePath()
+        path.move(to: blend(regular.start, collapsed.start, strength))
+        for index in regular.curves.indices {
+            let a = regular.curves[index]
+            let b = collapsed.curves[index]
+            path.addCurve(
+                to: blend(a.end, b.end, strength),
+                control1: blend(a.first, b.first, strength),
+                control2: blend(a.second, b.second, strength)
+            )
+        }
+        path.closeSubpath()
+        // The top strip gains a small lower-edge bulge before the circle
+        // reaches it. On reverse scrolling the bridge detaches through the same
+        // gap, instead of keeping a stem connected throughout the entire range.
+        let offset = boundedSettingsAvatarProgress(progress) * 120
+        let hang = offset < 16.667 ? 0
+            : offset < 24.667 ? 6.5 * (offset - 16.667) / 8
+            : offset < 34 ? 6.5
+            : offset < 110.667 ? 6.5 * (110.667 - offset) / (110.667 - 34)
+            : 0
+        let cx = maskOrigin.x + 85.5
+        let halfWidth: CGFloat = 96.855 / 2
+        let stripTop = maskOrigin.y - 1.67 * strength
+        let stripBottom = maskOrigin.y
+        let bottom = maskOrigin.y + hang * strength
+        path.move(to: CGPoint(x: cx - halfWidth, y: stripTop))
+        path.addLine(to: CGPoint(x: cx + halfWidth, y: stripTop))
+        path.addLine(to: CGPoint(x: cx + halfWidth, y: stripBottom))
+        path.addCurve(
+            to: CGPoint(x: cx, y: bottom),
+            control1: CGPoint(x: cx + 20, y: stripBottom),
+            control2: CGPoint(x: cx + 10, y: bottom)
         )
         path.addCurve(
-            to: CGPoint(x: right, y: top + radius),
-            control1: CGPoint(x: right - radius + control, y: top),
-            control2: CGPoint(x: right, y: top + radius - control)
-        )
-        addStraightCurve(
-            to: &path,
-            from: CGPoint(x: right, y: top + radius),
-            to: CGPoint(x: right, y: bottom - radius)
-        )
-        path.addCurve(
-            to: CGPoint(x: right - radius, y: bottom),
-            control1: CGPoint(x: right, y: bottom - radius + control),
-            control2: CGPoint(x: right - radius + control, y: bottom)
-        )
-        addStraightCurve(
-            to: &path,
-            from: CGPoint(x: right - radius, y: bottom),
-            to: CGPoint(x: left + radius, y: bottom)
-        )
-        path.addCurve(
-            to: CGPoint(x: left, y: bottom - radius),
-            control1: CGPoint(x: left + radius - control, y: bottom),
-            control2: CGPoint(x: left, y: bottom - radius + control)
-        )
-        addStraightCurve(
-            to: &path,
-            from: CGPoint(x: left, y: bottom - radius),
-            to: CGPoint(x: left, y: top + radius)
-        )
-        path.addCurve(
-            to: CGPoint(x: left + radius, y: top),
-            control1: CGPoint(x: left, y: top + radius - control),
-            control2: CGPoint(x: left + radius - control, y: top)
+            to: CGPoint(x: cx - halfWidth, y: stripBottom),
+            control1: CGPoint(x: cx - 10, y: bottom),
+            control2: CGPoint(x: cx - 20, y: stripBottom)
         )
         path.closeSubpath()
         return path
     }
 
-    private func addStraightCurve(
-        to path: inout Path,
-        from start: CGPoint,
-        to end: CGPoint
-    ) {
-        let delta = CGPoint(x: end.x - start.x, y: end.y - start.y)
-        path.addCurve(
-            to: end,
-            control1: CGPoint(x: start.x + delta.x / 3, y: start.y + delta.y / 3),
-            control2: CGPoint(x: start.x + delta.x * 2 / 3, y: start.y + delta.y * 2 / 3)
-        )
+    private static func rounded(_ rect: CGRect, radius: CGFloat) -> Outline {
+        let r = min(max(0, radius), min(rect.width, rect.height) / 2)
+        let k = r * 0.5522847498307936
+        let l = rect.minX, t = rect.minY, b = rect.maxY, z = rect.maxX
+        let points = [
+            CGPoint(x: l + r, y: t), CGPoint(x: z - r, y: t),
+            CGPoint(x: z, y: t + r), CGPoint(x: z, y: b - r),
+            CGPoint(x: z - r, y: b), CGPoint(x: l + r, y: b),
+            CGPoint(x: l, y: b - r), CGPoint(x: l, y: t + r)
+        ]
+        return Outline(start: points[0], curves: [
+            straight(points[0], points[1]),
+            Cubic(end: points[2], first: CGPoint(x: z-r+k, y: t), second: CGPoint(x: z, y: t+r-k)),
+            straight(points[2], points[3]),
+            Cubic(end: points[4], first: CGPoint(x: z, y: b-r+k), second: CGPoint(x: z-r+k, y: b)),
+            straight(points[4], points[5]),
+            Cubic(end: points[6], first: CGPoint(x: l+r-k, y: b), second: CGPoint(x: l, y: b-r+k)),
+            straight(points[6], points[7]),
+            Cubic(end: points[0], first: CGPoint(x: l, y: t+r-k), second: CGPoint(x: l+r-k, y: t))
+        ])
     }
-}
 
-private struct SettingsAvatarOverlayLayout {
-    let frame: CGRect
-    let expansion: CGFloat
-    let islandProgress: CGFloat
-    let opacity: CGFloat
+    private static func bulb(progress: CGFloat, origin: CGPoint) -> Outline {
+        let offset = boundedSettingsAvatarProgress(progress) * 120
+        let upper = phases.firstIndex(where: { $0.offset >= offset }) ?? (phases.count - 1)
+        let a = phases[max(0, upper - 1)], b = phases[upper]
+        let fraction = b.offset > a.offset ? (offset - a.offset) / (b.offset - a.offset) : 0
+        let cy = a.centerY + (b.centerY - a.centerY) * fraction
+        let rx = a.radiusX + (b.radiusX - a.radiusX) * fraction
+        let ry = a.radiusY + (b.radiusY - a.radiusY) * fraction
+        // The phase envelopes describe the artwork's extents; this authored
+        // contour narrows its upper stem so the shoulder has visible adhesion.
+        let neck = min(a.neck + (b.neck - a.neck) * fraction, rx * 0.67)
+        let cx = origin.x + 85.5
+        let centerY = origin.y + cy
+        let circleTop = cy - ry
+        let neckJoin = boundedSettingsAvatarProgress(neck / 14)
+        let top = origin.y + circleTop + (min(0, circleTop) - circleTop) * neckJoin
+        let left = CGPoint(x: cx - neck, y: top)
+        let right = CGPoint(x: cx + neck, y: top)
+        let east = CGPoint(x: cx + rx, y: centerY)
+        let south = CGPoint(x: cx, y: centerY + ry)
+        let west = CGPoint(x: cx - rx, y: centerY)
+        let k: CGFloat = 0.5522847498307936
+        let adhesion = boundedSettingsAvatarProgress((offset - 24.67) / (34 - 24.67))
+        let plainRight = CGPoint(x: right.x + (rx-neck)*k, y: top)
+        let plainLeft = CGPoint(x: left.x - (rx-neck)*k, y: top)
+        let concaveRight = CGPoint(x: right.x - neck * 0.25, y: top + neck * 0.4)
+        let concaveLeft = CGPoint(x: left.x + neck * 0.25, y: top + neck * 0.4)
+        let upperRight = blend(plainRight, concaveRight, adhesion)
+        let upperLeft = blend(plainLeft, concaveLeft, adhesion)
+        let shoulderY = centerY - ry * (k + (0.7 - k) * adhesion)
+        return Outline(start: left, curves: [
+            straight(left, right),
+            Cubic(end: east, first: upperRight, second: CGPoint(x: east.x, y: shoulderY)),
+            straight(east, east),
+            Cubic(end: south, first: CGPoint(x: east.x, y: centerY+ry*k), second: CGPoint(x: cx+rx*k, y: south.y)),
+            straight(south, south),
+            Cubic(end: west, first: CGPoint(x: cx-rx*k, y: south.y), second: CGPoint(x: west.x, y: centerY+ry*k)),
+            straight(west, west),
+            Cubic(end: left, first: CGPoint(x: west.x, y: shoulderY), second: upperLeft)
+        ])
+    }
 
-    static let empty = Self(frame: .zero, expansion: 0, islandProgress: 0, opacity: 0)
-}
+    private static func straight(_ start: CGPoint, _ end: CGPoint) -> Cubic {
+        Cubic(end: end, first: blend(start, end, 1/3), second: blend(start, end, 2/3))
+    }
 
-private struct SettingsAvatarWindowMetrics: Equatable, Sendable {
-    let supportsIsland: Bool
-    let islandCenter: CGPoint
-
-    static let empty = Self(supportsIsland: false, islandCenter: .zero)
+    private static func blend(_ a: CGPoint, _ b: CGPoint, _ p: CGFloat) -> CGPoint {
+        CGPoint(x: a.x + (b.x-a.x)*p, y: a.y + (b.y-a.y)*p)
+    }
 }
 
 @MainActor
@@ -422,74 +727,67 @@ private struct SettingsAvatarWindowProbe: UIViewRepresentable {
 @MainActor
 private final class SettingsAvatarWindowProbeUIView: UIView {
     var onUpdate: (@MainActor (SettingsAvatarWindowMetrics) -> Void)?
-    private var lastMetrics: SettingsAvatarWindowMetrics?
-    private var pendingUpdate: Task<Void, Never>?
+    private var last: SettingsAvatarWindowMetrics?
+    private var pending: Task<Void, Never>?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .clear
         isUserInteractionEnabled = false
         isAccessibilityElement = false
         accessibilityElementsHidden = true
+        backgroundColor = .clear
     }
 
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        refresh()
-    }
-
-    override func safeAreaInsetsDidChange() {
-        super.safeAreaInsetsDidChange()
-        refresh()
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        refresh()
-    }
+    override func didMoveToWindow() { super.didMoveToWindow(); refresh() }
+    override func safeAreaInsetsDidChange() { super.safeAreaInsetsDidChange(); refresh() }
+    override func layoutSubviews() { super.layoutSubviews(); refresh() }
 
     func refresh() {
-        let metrics: SettingsAvatarWindowMetrics
-        if let window {
-            guard !bounds.isEmpty else { return }
-            let safeTop = window.safeAreaInsets.top
-            let portrait = window.windowScene?.effectiveGeometry.interfaceOrientation.isPortrait
-                ?? (window.bounds.height > window.bounds.width)
-            metrics = SettingsAvatarWindowMetrics(
-                supportsIsland: window.traitCollection.userInterfaceIdiom == .phone
-                    && portrait && safeTop >= 59,
-                islandCenter: convert(
-                    CGPoint(x: window.bounds.midX, y: safeTop / 2),
-                    from: window
-                )
-            )
-        } else {
-            metrics = .empty
-        }
-        guard lastMetrics != metrics else { return }
-        lastMetrics = metrics
-        pendingUpdate?.cancel()
-        // Publish after UIKit layout instead of mutating SwiftUI state from
-        // updateUIView or a synchronous layout callback.
-        pendingUpdate = Task { @MainActor [weak self] in
+        guard let window, !bounds.isEmpty else { return }
+        let metrics = settingsAvatarWindowMetrics(view: self, window: window)
+        guard last != metrics else { return }
+        last = metrics
+        pending?.cancel()
+        pending = Task { @MainActor [weak self] in
             guard !Task.isCancelled, let self else { return }
-            self.pendingUpdate = nil
+            self.pending = nil
             self.onUpdate?(metrics)
         }
     }
 
-    func invalidate() {
-        pendingUpdate?.cancel()
-        pendingUpdate = nil
-        onUpdate = nil
-    }
+    func invalidate() { pending?.cancel(); pending = nil; onUpdate = nil }
+}
+
+@MainActor
+private func settingsAvatarWindowMetrics(view: UIView, window: UIWindow) -> SettingsAvatarWindowMetrics {
+    let status = window.windowScene?.statusBarManager?.statusBarFrame.height ?? window.safeAreaInsets.top
+    let portrait = window.windowScene?.effectiveGeometry.interfaceOrientation.isPortrait
+        ?? (window.bounds.height > window.bounds.width)
+    return SettingsAvatarWindowMetrics(
+        width: window.bounds.width,
+        statusBarHeight: status,
+        windowOriginInView: view.convert(.zero, from: window),
+        supportsIsland: window.traitCollection.userInterfaceIdiom == .phone
+            && portrait && window.safeAreaInsets.top >= 59
+            && window.windowScene?.statusBarManager?.isStatusBarHidden != true
+    )
 }
 
 private func boundedSettingsAvatarProgress(_ value: CGFloat) -> CGFloat {
     guard value.isFinite else { return 0 }
     return min(max(value, 0), 1)
+}
+
+@MainActor
+private func blendedSettingsAvatarColor(_ from: UIColor, _ to: UIColor, progress: CGFloat) -> UIColor {
+    var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+    var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+    from.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
+    to.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+    return UIColor(
+        red: r1 + (r2-r1)*progress, green: g1 + (g2-g1)*progress,
+        blue: b1 + (b2-b1)*progress, alpha: a1 + (a2-a1)*progress
+    )
 }

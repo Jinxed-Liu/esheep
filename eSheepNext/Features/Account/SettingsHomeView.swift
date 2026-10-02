@@ -16,7 +16,7 @@ struct SettingsHomeView: View {
 
     @State private var avatarMotion = AccountAvatarMotionCoordinator()
     @State private var isEditingAvatar = false
-    @Namespace private var avatarNamespace
+    @State private var avatarScrollPosition = ScrollPosition(edge: .top)
 
     private var unresolvedConflictCount: Int {
         conflicts.count {
@@ -67,177 +67,183 @@ struct SettingsHomeView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: 20) {
+            VStack(spacing: 0) {
                 SettingsAvatarHeader(
                     account: account,
                     farm: farm,
                     motion: avatarMotion,
+                    expansion: avatarMotion.expansion,
                     onTap: openAvatar,
                     onEdit: { isEditingAvatar = true }
                 )
 
-                AccountAccessNoticeCard(
-                    authenticationMethod: account.authenticationMethod
-                )
-
-                SettingsCard(title: "账户") {
-                    SettingsNavigationRow(
-                        title: "名称",
-                        subtitle: account.displayName,
-                        systemImage: "person.text.rectangle",
-                        iconColor: .blue
-                    ) {
-                        AccountDisplayNameEditor(account: account)
-                    }
-                    SettingsCardDivider()
-                    AccountAccessSettingsRow(
+                LazyVStack(spacing: 20) {
+                    AccountAccessNoticeCard(
                         authenticationMethod: account.authenticationMethod
                     )
 
-                    if policy.shows(.subscription) {
+                    SettingsCard(title: "账户") {
+                        SettingsNavigationRow(
+                            title: "名称",
+                            subtitle: account.displayName,
+                            systemImage: "person.text.rectangle",
+                            iconColor: .blue
+                        ) {
+                            AccountDisplayNameEditor(account: account)
+                        }
+                        SettingsCardDivider()
+                        AccountAccessSettingsRow(
+                            authenticationMethod: account.authenticationMethod
+                        )
+
+                        if policy.shows(.subscription) {
+                            SettingsCardDivider()
+                            SettingsNavigationRow(
+                                title: "订阅与购买",
+                                subtitle: "方案、权益与购买记录",
+                                systemImage: "star.fill",
+                                iconColor: .orange
+                            ) {
+                                SubscriptionSettingsView(account: account)
+                            }
+                        }
+                    }
+
+                    SettingsCard(title: "当前牧场") {
+                        if farm.role == .owner {
+                            SettingsNavigationRow(
+                                title: "eSheep+ 云",
+                                subtitle: cloudStorageSubtitle,
+                                systemImage: "externaldrive.connected.to.line.below",
+                                iconColor: .teal
+                            ) {
+                                FarmCloudStorageSettingsView(account: account, farm: farm)
+                            }
+                        }
+
+                        if farm.role == .owner, policy.shows(.farmLocation) {
+                            SettingsCardDivider()
+                        }
+
+                        if policy.shows(.farmLocation) {
+                            SettingsNavigationRow(
+                                title: "牧场位置",
+                                subtitle: farm.locationSnapshot?.displayName ?? "尚未设置",
+                                systemImage: "location.fill",
+                                iconColor: .cyan
+                            ) {
+                                FarmLocationSettingsView(account: account, farm: farm)
+                            }
+                        }
+
+                        if policy.shows(.farmLocation), policy.shows(.membersAndSharing) {
+                            SettingsCardDivider()
+                        }
+
+                        if policy.shows(.membersAndSharing) {
+                            SettingsNavigationRow(
+                                title: "成员与共享",
+                                subtitle: farm.role == .owner ? "邀请并管理牧场成员" : "查看牧场成员",
+                                systemImage: "person.2.fill",
+                                iconColor: .indigo
+                            ) {
+                                FarmMembersAndSharingView(account: account, farm: farm)
+                            }
+                        }
+                    }
+
+                    SettingsCard(title: "偏好设置") {
+                        SettingsNavigationRow(
+                            title: "小组件", subtitle: "组件库、圈舍与批次、独立配置",
+                            systemImage: "square.grid.2x2.fill", iconColor: .green
+                        ) {
+                            FarmWidgetSettingsView(farm: farm)
+                        }
                         SettingsCardDivider()
                         SettingsNavigationRow(
-                            title: "订阅与购买",
-                            subtitle: "方案、权益与购买记录",
-                            systemImage: "star.fill",
-                            iconColor: .orange
+                            title: "通知",
+                            subtitle: notificationStatusText,
+                            systemImage: "bell.fill",
+                            iconColor: .red
                         ) {
-                            SubscriptionSettingsView(account: account)
+                            SystemServicesSettingsView(farm: farm)
                         }
-                    }
-                }
-
-                SettingsCard(title: "当前牧场") {
-                    if farm.role == .owner {
-                        SettingsNavigationRow(
-                            title: "eSheep+ 云",
-                            subtitle: cloudStorageSubtitle,
-                            systemImage: "externaldrive.connected.to.line.below",
-                            iconColor: .teal
-                        ) {
-                            FarmCloudStorageSettingsView(account: account, farm: farm)
-                        }
-                    }
-
-                    if farm.role == .owner, policy.shows(.farmLocation) {
                         SettingsCardDivider()
-                    }
-
-                    if policy.shows(.farmLocation) {
                         SettingsNavigationRow(
-                            title: "牧场位置",
-                            subtitle: farm.locationSnapshot?.displayName ?? "尚未设置",
-                            systemImage: "location.fill",
-                            iconColor: .cyan
+                            title: "数据与存储",
+                            subtitle: dataStorageSubtitle,
+                            systemImage: "internaldrive.fill",
+                            iconColor: .green
                         ) {
-                            FarmLocationSettingsView(account: account, farm: farm)
+                            FarmDataInterchangeView(account: account, farm: farm)
                         }
-                    }
-
-                    if policy.shows(.farmLocation), policy.shows(.membersAndSharing) {
                         SettingsCardDivider()
+                        SettingsNavigationRow(
+                            title: "外观",
+                            subtitle: preferences.appearance.displayName,
+                            systemImage: "paintbrush.fill",
+                            iconColor: .blue
+                        ) {
+                            AppearanceSettingsView(account: account)
+                        }
+                        SettingsCardDivider()
+                        SettingsNavigationRow(
+                            title: "省电",
+                            subtitle: preferences.effectivePowerSavingEnabled ? "已开启" : "标准模式",
+                            systemImage: "battery.75percent",
+                            iconColor: .yellow
+                        ) {
+                            PowerSavingSettingsView()
+                        }
+                        SettingsCardDivider()
+                        SettingsNavigationRow(
+                            title: "语言",
+                            subtitle: preferences.language.displayName,
+                            systemImage: "globe",
+                            iconColor: .purple
+                        ) {
+                            LanguageSettingsView()
+                        }
                     }
 
-                    if policy.shows(.membersAndSharing) {
+                    SettingsCard(title: "AI 与隐私") {
                         SettingsNavigationRow(
-                            title: "成员与共享",
-                            subtitle: farm.role == .owner ? "邀请并管理牧场成员" : "查看牧场成员",
-                            systemImage: "person.2.fill",
-                            iconColor: .indigo
+                            title: "AI 助手",
+                            subtitle: "API Key、数据使用与加密同步",
+                            systemImage: "sparkles",
+                            iconColor: .blue
                         ) {
-                            FarmMembersAndSharingView(account: account, farm: farm)
+                            InsightAssistantSettingsView(account: account, farm: farm)
+                        }
+                        SettingsCardDivider()
+                        SettingsNavigationRow(
+                            title: "隐私与条款",
+                            subtitle: "条款、隐私与数据使用说明",
+                            systemImage: "hand.raised.fill",
+                            iconColor: .gray
+                        ) {
+                            PrivacyAndTermsSettingsView(account: account)
+                        }
+                    }
+
+                    SettingsCard(title: "账户操作") {
+                        SettingsActionContainer {
+                            AccountSignOutButton()
+                        }
+                        SettingsCardDivider(leading: 16)
+                        SettingsActionContainer {
+                            AccountDeletionButton(account: account)
                         }
                     }
                 }
-
-                SettingsCard(title: "偏好设置") {
-                    SettingsNavigationRow(
-                        title: "小组件", subtitle: "组件库、圈舍与批次、独立配置",
-                        systemImage: "square.grid.2x2.fill", iconColor: .green
-                    ) {
-                        FarmWidgetSettingsView(farm: farm)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "通知",
-                        subtitle: notificationStatusText,
-                        systemImage: "bell.fill",
-                        iconColor: .red
-                    ) {
-                        SystemServicesSettingsView(farm: farm)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "数据与存储",
-                        subtitle: dataStorageSubtitle,
-                        systemImage: "internaldrive.fill",
-                        iconColor: .green
-                    ) {
-                        FarmDataInterchangeView(account: account, farm: farm)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "外观",
-                        subtitle: preferences.appearance.displayName,
-                        systemImage: "paintbrush.fill",
-                        iconColor: .blue
-                    ) {
-                        AppearanceSettingsView(account: account)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "省电",
-                        subtitle: preferences.effectivePowerSavingEnabled ? "已开启" : "标准模式",
-                        systemImage: "battery.75percent",
-                        iconColor: .yellow
-                    ) {
-                        PowerSavingSettingsView()
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "语言",
-                        subtitle: preferences.language.displayName,
-                        systemImage: "globe",
-                        iconColor: .purple
-                    ) {
-                        LanguageSettingsView()
-                    }
-                }
-
-                SettingsCard(title: "AI 与隐私") {
-                    SettingsNavigationRow(
-                        title: "AI 助手",
-                        subtitle: "API Key、数据使用与加密同步",
-                        systemImage: "sparkles",
-                        iconColor: .blue
-                    ) {
-                        InsightAssistantSettingsView(account: account, farm: farm)
-                    }
-                    SettingsCardDivider()
-                    SettingsNavigationRow(
-                        title: "隐私与条款",
-                        subtitle: "条款、隐私与数据使用说明",
-                        systemImage: "hand.raised.fill",
-                        iconColor: .gray
-                    ) {
-                        PrivacyAndTermsSettingsView(account: account)
-                    }
-                }
-
-                SettingsCard(title: "账户操作") {
-                    SettingsActionContainer {
-                        AccountSignOutButton()
-                    }
-                    SettingsCardDivider(leading: 16)
-                    SettingsActionContainer {
-                        AccountDeletionButton(account: account)
-                    }
-                }
+                .padding(.horizontal, 16)
+                .padding(.top, 20 + 16 * avatarMotion.expansion)
             }
-            .padding(.horizontal, 16)
             .padding(.bottom, 28)
         }
         .scrollIndicators(.hidden)
+        .ignoresSafeArea(.container, edges: .top)
+        .scrollPosition($avatarScrollPosition)
         .background(AppTheme.pageBackground)
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
             geometry.contentOffset.y + geometry.contentInsets.top
@@ -256,34 +262,50 @@ struct SettingsHomeView: View {
         .overlay {
             SettingsAvatarOverlay(
                 account: account,
+                farm: farm,
                 motion: avatarMotion,
-                namespace: avatarNamespace,
-                onTap: openAvatar,
-                onEdit: { isEditingAvatar = true }
+                expansion: avatarMotion.expansion
             )
-            // The visible photo supplies the zoom snapshot; its scroll-content
-            // counterpart owns input and accessibility.
+            // The scroll-content button owns the native pull gesture and accessibility;
+            // the photo overlay supplies the current image bounds to the gallery.
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-            .sensoryFeedback(.impact(weight: .medium, intensity: 0.8), trigger: avatarMotion.expansionFeedback)
+            .sensoryFeedback(.impact(weight: .medium, intensity: 1), trigger: avatarMotion.expansionFeedback)
             .sensoryFeedback(.selection, trigger: avatarMotion.collapseFeedback)
-            .sensoryFeedback(.impact(weight: .medium, intensity: 0.8), trigger: avatarMotion.viewerFeedback)
+            .sensoryFeedback(.impact(weight: .medium, intensity: 1), trigger: avatarMotion.viewerFeedback)
         }
         .onChange(of: avatarAnimationsEnabled, initial: true) { _, enabled in
             avatarMotion.configure(animationsEnabled: enabled)
         }
-        .fullScreenCover(
-            isPresented: Binding(
-                get: { avatarMotion.isViewerPresented },
-                set: { if !$0 { avatarMotion.requestDismissal() } }
-            ),
-            onDismiss: {
-                if avatarMotion.viewerDidDismiss() {
-                    isEditingAvatar = true
+        .background {
+            AccountAvatarGalleryPresenter(
+                isPresented: avatarMotion.isViewerPresented,
+                account: account,
+                reduceMotion: !avatarAnimationsEnabled,
+                initialImage: avatarMotion.previewImage,
+                initialDigest: avatarMotion.previewDigest,
+                sourceProvider: { avatarMotion.rendererSourceProvider?() },
+                onSourceVisibilityChange: { avatarMotion.setSourceHidden($0) },
+                onPresented: {
+                    guard avatarMotion.isViewerPresented,
+                          avatarMotion.interaction.presentation == .presenting else { return }
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        avatarScrollPosition.scrollTo(edge: .top)
+                        avatarMotion.viewerDidPresent()
+                    }
+                },
+                onClose: { closeAvatarViewer() },
+                onEdit: { closeAvatarViewer(editAvatar: true) },
+                onDismiss: {
+                    if avatarMotion.viewerDidDismiss() {
+                        isEditingAvatar = true
+                    }
                 }
-            }
-        ) {
-            avatarViewer
+            )
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
         }
         .navigationDestination(isPresented: $isEditingAvatar) {
             AccountAvatarSettingsView(account: account)
@@ -292,7 +314,7 @@ struct SettingsHomeView: View {
             avatarMotion.resetIfNotPresenting()
         }
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 SettingsAvatarToolbarTitle(account: account, motion: avatarMotion)
@@ -336,30 +358,21 @@ struct SettingsHomeView: View {
         return "空间占用、导入导出与备份"
     }
 
+    private func closeAvatarViewer(editAvatar: Bool = false) {
+        guard avatarMotion.isViewerPresented else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            avatarScrollPosition.scrollTo(edge: .top)
+            avatarMotion.requestDismissal(editAvatar: editAvatar)
+        }
+    }
+
     private func openAvatar() {
         if account.avatarImageData == nil {
             isEditingAvatar = true
         } else {
             avatarMotion.tapAvatar()
-        }
-    }
-
-    @ViewBuilder
-    private var avatarViewer: some View {
-        let viewer = AccountAvatarViewer(
-            account: account,
-            reduceMotion: !avatarAnimationsEnabled,
-            initialImage: avatarMotion.previewImage,
-            initialDigest: avatarMotion.previewDigest,
-            onPresented: { avatarMotion.viewerDidPresent() },
-            onClose: { avatarMotion.requestDismissal() },
-            onEdit: { avatarMotion.requestDismissal(editAvatar: true) }
-        )
-        .presentationBackground(.clear)
-        if avatarAnimationsEnabled {
-            viewer.navigationTransition(.zoom(sourceID: account.id, in: avatarNamespace))
-        } else {
-            viewer
         }
     }
 

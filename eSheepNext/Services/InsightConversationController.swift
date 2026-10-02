@@ -2670,7 +2670,7 @@ final class InsightConversationController {
                             client: client,
                             workflowEvaluation: planning || checkpoint.goalID != nil,
                             budget: budget,
-                            onEvent: { recordHarnessEvent($0, messageID: assistantMessage.id, requestID: requestID) }
+                            onEvent: { self.recordHarnessEvent($0, messageID: assistantMessage.id, requestID: requestID) }
                         )
                         if (goalStep?.stepCompleted == true || goalCompletion?.completed == true),
                            !(review.claimScope == "farm_specific" && review.evidenceSufficient && !successfulToolNames.isEmpty) {
@@ -2692,7 +2692,7 @@ final class InsightConversationController {
                     },
                     configuration: checkpoint.configuration,
                     budget: budget,
-                    onEvent: { recordHarnessEvent($0, messageID: assistantMessage.id, requestID: requestID) },
+                    onEvent: { self.recordHarnessEvent($0, messageID: assistantMessage.id, requestID: requestID) },
                     onCheckpoint: { exchanges in
                         try requireActiveTurn(checkpoint)
                         runtime?.turn?.exchanges = exchanges

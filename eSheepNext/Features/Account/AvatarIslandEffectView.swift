@@ -1,103 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// An original, fixed-topology path; no Telegram artwork or mask data is used.
-/// The caller owns the avatar's position and size in the current window.
-struct AvatarIslandMask: Shape {
-    var progress: CGFloat
-
-    var animatableData: CGFloat {
-        get { boundedAvatarIslandProgress(progress) }
-        set { progress = boundedAvatarIslandProgress(newValue) }
-    }
-
-    func path(in rect: CGRect) -> Path {
-        guard rect.width > 0, rect.height > 0 else { return Path() }
-
-        let progress = boundedAvatarIslandProgress(progress)
-        let morph = progress * progress * (3 - 2 * progress)
-        let diameter = min(rect.width, rect.height)
-        let width = diameter + (rect.width - diameter) * morph
-        let height = diameter * (1 - 0.66 * morph)
-        let initialTop = rect.midY - diameter / 2
-        let top = initialTop + (rect.minY - initialTop) * morph
-        let bounds = CGRect(
-            x: rect.midX - width / 2,
-            y: top,
-            width: width,
-            height: height
-        )
-        let radius = min(bounds.width, bounds.height) / 2
-        let control = radius * 0.5522847498307936
-        let left = bounds.minX
-        let right = bounds.maxX
-        let bottom = bounds.maxY
-
-        var path = Path()
-        path.move(to: CGPoint(x: left + radius, y: top))
-
-        // Always emit eight cubic segments, including zero-length sides at p=0.
-        // This preserves the correspondence of every control point when reversed.
-        addStraightCurve(
-            to: &path,
-            from: CGPoint(x: left + radius, y: top),
-            to: CGPoint(x: right - radius, y: top)
-        )
-        path.addCurve(
-            to: CGPoint(x: right, y: top + radius),
-            control1: CGPoint(x: right - radius + control, y: top),
-            control2: CGPoint(x: right, y: top + radius - control)
-        )
-        addStraightCurve(
-            to: &path,
-            from: CGPoint(x: right, y: top + radius),
-            to: CGPoint(x: right, y: bottom - radius)
-        )
-        path.addCurve(
-            to: CGPoint(x: right - radius, y: bottom),
-            control1: CGPoint(x: right, y: bottom - radius + control),
-            control2: CGPoint(x: right - radius + control, y: bottom)
-        )
-        addStraightCurve(
-            to: &path,
-            from: CGPoint(x: right - radius, y: bottom),
-            to: CGPoint(x: left + radius, y: bottom)
-        )
-        path.addCurve(
-            to: CGPoint(x: left, y: bottom - radius),
-            control1: CGPoint(x: left + radius - control, y: bottom),
-            control2: CGPoint(x: left, y: bottom - radius + control)
-        )
-        addStraightCurve(
-            to: &path,
-            from: CGPoint(x: left, y: bottom - radius),
-            to: CGPoint(x: left, y: top + radius)
-        )
-        path.addCurve(
-            to: CGPoint(x: left + radius, y: top),
-            control1: CGPoint(x: left, y: top + radius - control),
-            control2: CGPoint(x: left + radius - control, y: top)
-        )
-        path.closeSubpath()
-        return path
-    }
-
-    private func addStraightCurve(
-        to path: inout Path,
-        from start: CGPoint,
-        to end: CGPoint
-    ) {
-        let delta = CGPoint(x: end.x - start.x, y: end.y - start.y)
-        path.addCurve(
-            to: end,
-            control1: CGPoint(x: start.x + delta.x / 3, y: start.y + delta.y / 3),
-            control2: CGPoint(x: start.x + delta.x * 2 / 3, y: start.y + delta.y * 2 / 3)
-        )
-    }
-}
-
-/// A decorative overlay over the existing avatar image.
-/// Clip the image and this overlay together with AvatarIslandMask.
+/// Effects above the image; the header owns the black backing and window-space
+/// neck mask. The three tracks follow Telegram's DynamicIslandBlurNode reference.
 @MainActor
 struct AvatarIslandEffectView: UIViewRepresentable {
     var progress: CGFloat
@@ -120,9 +25,8 @@ struct AvatarIslandEffectView: UIViewRepresentable {
 @MainActor
 final class AvatarIslandEffectUIView: UIView {
     private let blurView = UIVisualEffectView(effect: nil)
+    private let radialShade = AvatarIslandRadialShadeView()
     private let blackCover = UIView()
-    private let radialShade = CAGradientLayer()
-    private let topShade = CAGradientLayer()
     private var blurAnimator: UIViewPropertyAnimator?
     private var requestedProgress: CGFloat = 0
 
@@ -133,34 +37,12 @@ final class AvatarIslandEffectUIView: UIView {
         isUserInteractionEnabled = false
         isAccessibilityElement = false
         accessibilityElementsHidden = true
-
         blurView.isUserInteractionEnabled = false
         blackCover.isUserInteractionEnabled = false
         blackCover.backgroundColor = .black
         addSubview(blurView)
+        addSubview(radialShade)
         addSubview(blackCover)
-
-        radialShade.type = .radial
-        radialShade.startPoint = CGPoint(x: 0.5, y: 0.48)
-        radialShade.endPoint = CGPoint(x: 1, y: 1)
-        radialShade.colors = [
-            UIColor.clear.cgColor,
-            UIColor.clear.cgColor,
-            UIColor.black.withAlphaComponent(0.55).cgColor,
-            UIColor.black.cgColor
-        ]
-        radialShade.locations = [0, 0.55, 0.82, 1]
-
-        topShade.startPoint = CGPoint(x: 0.5, y: 0)
-        topShade.endPoint = CGPoint(x: 0.5, y: 1)
-        topShade.colors = [
-            UIColor.black.withAlphaComponent(0.8).cgColor,
-            UIColor.black.withAlphaComponent(0.35).cgColor,
-            UIColor.clear.cgColor
-        ]
-        topShade.locations = [0, 0.4, 1]
-        layer.addSublayer(radialShade)
-        layer.addSublayer(topShade)
         resetRendering()
     }
 
@@ -171,12 +53,8 @@ final class AvatarIslandEffectUIView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         blurView.frame = bounds
-        blackCover.frame = bounds
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         radialShade.frame = bounds
-        topShade.frame = bounds
-        CATransaction.commit()
+        blackCover.frame = bounds
     }
 
     override func didMoveToWindow() {
@@ -199,15 +77,12 @@ final class AvatarIslandEffectUIView: UIView {
     }
 
     private func renderProgress() {
-        guard window != nil, requestedProgress > 0 else {
+        guard window != nil, requestedProgress > 0.03 else {
             resetRendering()
             return
         }
-
         isHidden = false
         let blurFraction = boundedAvatarIslandProgress(-0.1 + 1.1 * requestedProgress)
-        let fadeAlpha = boundedAvatarIslandProgress(-0.25 + 1.55 * requestedProgress)
-
         if blurFraction > 0 {
             prepareBlurAnimatorIfNeeded()
             blurView.isHidden = false
@@ -216,16 +91,8 @@ final class AvatarIslandEffectUIView: UIView {
             stopBlurAnimator()
             blurView.isHidden = true
         }
-
-        // The shades darken the perimeter and the edge nearest the island first.
-        // At p=1, the solid cover is opaque and all photo detail disappears.
-        blackCover.alpha = fadeAlpha
-        let edgeAlpha = requestedProgress * (1 - fadeAlpha)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        radialShade.opacity = Float(edgeAlpha * 0.8)
-        topShade.opacity = Float(edgeAlpha)
-        CATransaction.commit()
+        // The radial edge is independent of the fade, as in the reference.
+        blackCover.alpha = boundedAvatarIslandProgress(-0.25 + 1.55 * requestedProgress)
     }
 
     private func prepareBlurAnimatorIfNeeded() {
@@ -255,11 +122,42 @@ final class AvatarIslandEffectUIView: UIView {
         blurView.isHidden = true
         blackCover.alpha = 0
         isHidden = true
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        radialShade.opacity = 0
-        topShade.opacity = 0
-        CATransaction.commit()
+    }
+}
+
+/// Scales a 100-point radial reference without approximating it with a vertical
+/// gradient. Drawing occurs on size changes; scrolling changes only effect values.
+@MainActor
+private final class AvatarIslandRadialShadeView: UIView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+        contentMode = .redraw
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard bounds.width > 0, bounds.height > 0,
+              let context = UIGraphicsGetCurrentContext(),
+              let gradient = CGGradient(
+                colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                colors: [UIColor.clear.cgColor, UIColor.clear.cgColor, UIColor.black.cgColor] as CFArray,
+                locations: [0, 0.87, 1]
+              ) else { return }
+        context.saveGState()
+        context.scaleBy(x: bounds.width / 100, y: bounds.height / 100)
+        context.drawRadialGradient(
+            gradient,
+            startCenter: CGPoint(x: 50, y: 88), startRadius: 0,
+            endCenter: CGPoint(x: 50, y: 88), endRadius: 90,
+            options: [.drawsAfterEndLocation]
+        )
+        context.restoreGState()
     }
 }
 
