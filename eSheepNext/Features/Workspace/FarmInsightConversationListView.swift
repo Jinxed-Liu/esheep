@@ -11,6 +11,8 @@ struct FarmInsightConversationListView: View, Equatable {
     let initialPrompt: String?
     private let accountIdentity: ObjectIdentifier
     private let farmIdentity: ObjectIdentifier
+    private let queryAccountID: UUID
+    private let queryFarmID: UUID
     @State private var search = ""
     @State private var showSearch = false
     @State private var showSettings = false
@@ -36,6 +38,8 @@ struct FarmInsightConversationListView: View, Equatable {
         farmIdentity = ObjectIdentifier(farm)
         let accountID = account.effectiveAccountID
         let farmID = farm.id
+        queryAccountID = accountID
+        queryFarmID = farmID
         _currentDeviceOnly = AppStorage(wrappedValue: false,
             "insights.list.current-device-only.\(accountID.uuidString).\(farmID.uuidString)")
         _conversations = Query(filter: #Predicate<InsightConversationRecord> {
@@ -52,6 +56,8 @@ struct FarmInsightConversationListView: View, Equatable {
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.accountIdentity == rhs.accountIdentity &&
             lhs.farmIdentity == rhs.farmIdentity &&
+            lhs.queryAccountID == rhs.queryAccountID &&
+            lhs.queryFarmID == rhs.queryFarmID &&
             lhs.initialPrompt == rhs.initialPrompt
     }
 
