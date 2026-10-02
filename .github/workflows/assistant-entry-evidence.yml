@@ -101,10 +101,28 @@ jobs:
           if not any(path.suffix.lower() == '.png' for path in exported.rglob('*')):
               ffmpeg = shutil.which('ffmpeg')
               if not ffmpeg:
-                  raise SystemExit('Snapshots are serialized and ffmpeg is unavailable for video frame export')
+                  script = temp / 'export-video-frame.swift'
+                  script.write_text('''import AVFoundation
+          import AppKit
+          import Foundation
+          let arguments = CommandLine.arguments
+          let asset = AVURLAsset(url: URL(fileURLWithPath: arguments[1]))
+          let duration = try await asset.load(.duration)
+          let generator = AVAssetImageGenerator(asset: asset)
+          generator.appliesPreferredTrackTransform = true
+          let time = CMTime(seconds: max(0, CMTimeGetSeconds(duration) - 0.2), preferredTimescale: 600)
+          let (image, _) = try await generator.image(at: time)
+          guard let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
+              throw NSError(domain: "EvidencePNGExport", code: 1)
+          }
+          try data.write(to: URL(fileURLWithPath: arguments[2]))
+          ''')
               for path in sorted(exported.rglob('*.mp4')):
-                  subprocess.run([ffmpeg, '-hide_banner', '-loglevel', 'error', '-sseof', '-0.1', '-i', str(path),
-                                  '-frames:v', '1', str(path.with_suffix('.png'))], check=True)
+                  if ffmpeg:
+                      subprocess.run([ffmpeg, '-hide_banner', '-loglevel', 'error', '-sseof', '-0.1', '-i', str(path),
+                                      '-frames:v', '1', str(path.with_suffix('.png'))], check=True)
+                  else:
+                      subprocess.run(['swift', str(script), str(path), str(path.with_suffix('.png'))], check=True)
 
           listing = []
           budget = 28 * 1024 * 1024
