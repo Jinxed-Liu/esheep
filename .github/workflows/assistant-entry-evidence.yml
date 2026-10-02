@@ -28,7 +28,7 @@ jobs:
           set -euo pipefail
           xcodebuild -version
           python3 -u - <<'PY'
-          import hashlib, json, os, shutil, subprocess
+          import json, os, shutil, subprocess, zipfile
           from pathlib import Path
 
           temp = Path(os.environ['RUNNER_TEMP'])
@@ -59,8 +59,23 @@ jobs:
               command(['get', 'test-results', 'activities', '--path', str(bundle),
                        '--test-id', f'InsightAssistantEntryUITests/{method}()'], method + '-activities.json')
           command(['export', 'attachments', '--path', str(bundle), '--output-path', str(exported)], 'export-attachments.txt')
+          diagnostics = temp / 'assistant-entry-diagnostics'
+          command(['export', 'diagnostics', '--help'], 'export-diagnostics-help.txt')
+          command(['export', 'diagnostics', '--path', str(bundle), '--output-path', str(diagnostics)], 'export-diagnostics.txt')
 
-          for index, path in enumerate(sorted(source.rglob('StandardOutputAndStandardError-com.sheepfarm.next.dev.txt'))):
+          # Completed result bundles keep diagnostics in archive attachments,
+          # unlike the Staging directory of interrupted runs.
+          stderr_sources = list(source.rglob('StandardOutputAndStandardError-com.sheepfarm.next.dev.txt'))
+          stderr_sources += list(diagnostics.rglob('StandardOutputAndStandardError-com.sheepfarm.next.dev.txt'))
+          for archive in diagnostics.rglob('*.zip'):
+              with zipfile.ZipFile(archive) as files:
+                  for name in files.namelist():
+                      if name.endswith('StandardOutputAndStandardError-com.sheepfarm.next.dev.txt'):
+                          target = diagnostics / ('unpacked-' + str(len(stderr_sources)) + '.txt')
+                          target.write_bytes(files.read(name))
+                          stderr_sources.append(target)
+
+          for index, path in enumerate(sorted(set(stderr_sources))):
               target = output / f'app-{index}-stderr.txt'
               shutil.copy2(path, target)
               lines = path.read_text(errors='replace').splitlines()
@@ -74,6 +89,22 @@ jobs:
                   print(f'{index + 1}: {lines[index]}')
           for path in source.rglob('assistant-entry.log'):
               shutil.copy2(path, output / 'assistant-entry.log.txt')
+
+          # XCTest may export snapshots without a file suffix. Convert image
+          # snapshots when possible; otherwise preserve a final video frame.
+          for path in sorted(exported.rglob('*')):
+              if path.is_file() and not path.suffix:
+                  kind = subprocess.run(['file', '-b', str(path)], capture_output=True, text=True).stdout
+                  print('Unlabelled attachment type:', path.name, kind.strip())
+                  if any(token in kind for token in ['PNG image', 'JPEG image', 'HEIF', 'TIFF image']):
+                      subprocess.run(['sips', '-s', 'format', 'png', str(path), '--out', str(path) + '.png'], check=True)
+          if not any(path.suffix.lower() == '.png' for path in exported.rglob('*')):
+              ffmpeg = shutil.which('ffmpeg')
+              if not ffmpeg:
+                  raise SystemExit('Snapshots are serialized and ffmpeg is unavailable for video frame export')
+              for path in sorted(exported.rglob('*.mp4')):
+                  subprocess.run([ffmpeg, '-hide_banner', '-loglevel', 'error', '-sseof', '-0.1', '-i', str(path),
+                                  '-frames:v', '1', str(path.with_suffix('.png'))], check=True)
 
           listing = []
           budget = 28 * 1024 * 1024
