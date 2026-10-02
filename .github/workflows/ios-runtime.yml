@@ -57,13 +57,13 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a') as file:
               file.write(f"IOS_SIMULATOR_ID={device['udid']}\n")
           PY
-      - name: Run the real assistant entry UI regression
+      - name: Build the assistant entry UI regression
         run: |
           set -euo pipefail
           python3 -u - <<'PY' &
           import os, re, subprocess, time
           from pathlib import Path
-          for _ in range(4):
+          for _ in range(3):
               time.sleep(60)
           processes = subprocess.run(['pgrep', '-x', 'swift-frontend'], capture_output=True, text=True)
           for pid in processes.stdout.split()[:3]:
@@ -76,7 +76,19 @@ jobs:
           PY
           compiler_monitor_pid=$!
           trap 'kill "$compiler_monitor_pid" 2>/dev/null || true' EXIT
-          xcodebuild test \
+          xcodebuild build-for-testing \
+            -project eSheepNext.xcodeproj \
+            -scheme eSheepNextUI \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/assistant-build.log"
+      - name: Run the real assistant entry UI regression
+        run: |
+          set -euo pipefail
+          xcodebuild test-without-building \
             -project eSheepNext.xcodeproj \
             -scheme eSheepNextUI \
             -configuration Debug \
@@ -138,6 +150,7 @@ jobs:
           name: assistant-entry-${{ github.sha }}
           if-no-files-found: warn
           path: |
+            ${{ runner.temp }}/assistant-build.log
             ${{ runner.temp }}/assistant-entry.log
             ${{ runner.temp }}/assistant-entry.xcresult
             ${{ runner.temp }}/ios-unit.log

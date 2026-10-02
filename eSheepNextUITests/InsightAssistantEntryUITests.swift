@@ -7,6 +7,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = [
             "--design-acceptance", "--design-insight-ready",
+            "--design-role", "administrator",
             "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
         ]
         app.launch()
@@ -26,7 +27,9 @@ final class InsightAssistantEntryUITests: XCTestCase {
         composer.tap()
         composer.typeText("Entry regression draft")
         XCTAssertTrue(app.buttons["insight.reasoning.settings"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["insight.composer.send"].isEnabled, "The configured assistant did not become ready.")
+        let send = app.buttons["insight.composer.send"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: send)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed, "The configured assistant did not become ready.")
         XCTAssertEqual(app.state, .runningForeground)
         // The fixture key exercises local initialization only; never send it.
         let screenshot = XCTAttachment(screenshot: app.screenshot())

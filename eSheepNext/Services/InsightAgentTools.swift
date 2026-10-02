@@ -1382,12 +1382,12 @@ final class InsightToolRegistry {
                     $0.farmID == farmID && $0.deletedAt == nil && matches($0.name, $0.note)
                 }
                 .prefix(limit)
-                .map {
+                .map { row -> [String: Any] in
                     [
-                        "id": $0.id.uuidString.lowercased(),
-                        "name": $0.name,
-                        "is_active": $0.isActive,
-                        "revision": $0.revision,
+                        "id": row.id.uuidString.lowercased(),
+                        "name": row.name,
+                        "is_active": row.isActive,
+                        "revision": row.revision,
                     ]
                 }
         case "production_batches":
@@ -1397,12 +1397,12 @@ final class InsightToolRegistry {
                         && matches($0.name, $0.purpose, $0.statusRawValue)
                 }
                 .prefix(limit)
-                .map {
+                .map { row -> [String: Any] in
                     [
-                        "id": $0.id.uuidString.lowercased(),
-                        "name": $0.name,
-                        "purpose": $0.purpose,
-                        "status": $0.statusRawValue,
+                        "id": row.id.uuidString.lowercased(),
+                        "name": row.name,
+                        "purpose": row.purpose,
+                        "status": row.statusRawValue,
                     ]
                 }
         case "ingredients":
@@ -1412,13 +1412,13 @@ final class InsightToolRegistry {
                         && matches($0.name, $0.category, $0.unit)
                 }
                 .prefix(limit)
-                .map {
+                .map { row -> [String: Any] in
                     [
-                        "id": $0.id.uuidString.lowercased(),
-                        "name": $0.name,
-                        "category": $0.category,
-                        "unit": $0.unit,
-                        "is_active": $0.isActive,
+                        "id": row.id.uuidString.lowercased(),
+                        "name": row.name,
+                        "category": row.category,
+                        "unit": row.unit,
+                        "is_active": row.isActive,
                     ]
                 }
         case "recipes":
@@ -1428,11 +1428,11 @@ final class InsightToolRegistry {
                         && matches($0.name, $0.note)
                 }
                 .prefix(limit)
-                .map {
+                .map { row -> [String: Any] in
                     [
-                        "id": $0.id.uuidString.lowercased(),
-                        "name": $0.name,
-                        "is_active": $0.isActive,
+                        "id": row.id.uuidString.lowercased(),
+                        "name": row.name,
+                        "is_active": row.isActive,
                     ]
                 }
         case "health_catalog":
@@ -1442,15 +1442,15 @@ final class InsightToolRegistry {
                         && matches($0.name, $0.category, $0.kindRawValue, $0.unit)
                 }
                 .prefix(limit)
-                .map {
+                .map { row -> [String: Any] in
                     [
-                        "id": $0.id.uuidString.lowercased(),
-                        "name": $0.name,
-                        "category": $0.category,
-                        "kind": $0.kindRawValue,
-                        "unit": $0.unit,
-                        "route": $0.defaultRoute,
-                        "is_active": $0.isActive,
+                        "id": row.id.uuidString.lowercased(),
+                        "name": row.name,
+                        "category": row.category,
+                        "kind": row.kindRawValue,
+                        "unit": row.unit,
+                        "route": row.defaultRoute,
+                        "is_active": row.isActive,
                     ]
                 }
         case "inventory_lots":
@@ -1460,15 +1460,15 @@ final class InsightToolRegistry {
                         && matches($0.catalogName, $0.batchNumber, $0.supplier)
                 }
                 .prefix(limit)
-                .map {
+                .map { row -> [String: Any] in
                     [
-                        "id": $0.id.uuidString.lowercased(),
-                        "catalog_name": $0.catalogName,
-                        "batch_number": $0.batchNumber,
-                        "supplier": $0.supplier,
-                        "unit": $0.unit,
-                        "kind": $0.kindRawValue,
-                        "is_active": $0.isActive,
+                        "id": row.id.uuidString.lowercased(),
+                        "catalog_name": row.catalogName,
+                        "batch_number": row.batchNumber,
+                        "supplier": row.supplier,
+                        "unit": row.unit,
+                        "kind": row.kindRawValue,
+                        "is_active": row.isActive,
                     ]
                 }
         case "semen":
@@ -1478,14 +1478,14 @@ final class InsightToolRegistry {
                         && matches($0.code, $0.breed, $0.batchNumber, $0.source)
                 }
                 .prefix(limit)
-                .map {
+                .map { row -> [String: Any] in
                     [
-                        "id": $0.id.uuidString.lowercased(),
-                        "code": $0.code,
-                        "breed": $0.breed,
-                        "batch_number": $0.batchNumber,
-                        "quantity": $0.quantityText,
-                        "revision": $0.revision,
+                        "id": row.id.uuidString.lowercased(),
+                        "code": row.code,
+                        "breed": row.breed,
+                        "batch_number": row.batchNumber,
+                        "quantity": row.quantityText,
+                        "revision": row.revision,
                     ]
                 }
         case "semen_donors":
@@ -1495,14 +1495,14 @@ final class InsightToolRegistry {
                         && matches($0.name, $0.registrationNumber, $0.breed)
                 }
                 .prefix(limit)
-                .map {
+                .map { row -> [String: Any] in
                     [
-                        "id": $0.id.uuidString.lowercased(),
-                        "name": $0.name,
-                        "registration_number": $0.registrationNumber,
-                        "breed": $0.breed,
-                        "status": $0.statusRawValue,
-                        "revision": $0.revision,
+                        "id": row.id.uuidString.lowercased(),
+                        "name": row.name,
+                        "registration_number": row.registrationNumber,
+                        "breed": row.breed,
+                        "status": row.statusRawValue,
+                        "revision": row.revision,
                     ]
                 }
         case "reminders":
@@ -1512,14 +1512,14 @@ final class InsightToolRegistry {
                         && matches($0.title, $0.kindRawValue, $0.statusRawValue)
                 }
                 .prefix(limit)
-                .map {
+                .map { row -> [String: Any] in
                     [
-                        "id": $0.id.uuidString.lowercased(),
-                        "title": $0.title,
-                        "kind": $0.kindRawValue,
-                        "status": $0.statusRawValue,
-                        "due_at": ISO8601DateFormatter().string(from: $0.dueAt),
-                        "revision": $0.revision,
+                        "id": row.id.uuidString.lowercased(),
+                        "title": row.title,
+                        "kind": row.kindRawValue,
+                        "status": row.statusRawValue,
+                        "due_at": ISO8601DateFormatter().string(from: row.dueAt),
+                        "revision": row.revision,
                     ]
                 }
         default:
@@ -1670,7 +1670,7 @@ final class InsightToolRegistry {
             return lhs.id.uuidString < rhs.id.uuidString
         }
         let now = Date.now
-        let result: [[String: Any]] = values.prefix(20).map { sheep in
+        let result: [[String: Any]] = values.prefix(20).map { sheep -> [String: Any] in
             let fact = FarmSheepStateResolver.resolve(
                 sheep,
                 cutoff: .current(now),
@@ -1787,14 +1787,14 @@ final class InsightToolRegistry {
                     $0.occurredAt <= to
             }.sorted { $0.occurredAt > $1.occurredAt }
             totalCount = values.count
-            rows = values.prefix(limit).map {
+            rows = values.prefix(limit).map { row -> [String: Any] in
                 [
-                    "id": $0.id.uuidString.lowercased(),
-                    "sheep_id": $0.sheepID?.uuidString.lowercased() ?? NSNull(),
-                    "pen_id": $0.penID?.uuidString.lowercased() ?? NSNull(),
-                    "occurred_at": Self.iso8601($0.occurredAt),
-                    "text": $0.text,
-                    "revision": $0.revision,
+                    "id": row.id.uuidString.lowercased(),
+                    "sheep_id": row.sheepID?.uuidString.lowercased() ?? NSNull(),
+                    "pen_id": row.penID?.uuidString.lowercased() ?? NSNull(),
+                    "occurred_at": Self.iso8601(row.occurredAt),
+                    "text": row.text,
+                    "revision": row.revision,
                 ]
             }
         case "health":
@@ -1805,18 +1805,18 @@ final class InsightToolRegistry {
                     $0.occurredAt <= to
             }.sorted { $0.occurredAt > $1.occurredAt }
             totalCount = values.count
-            rows = values.prefix(limit).map {
+            rows = values.prefix(limit).map { row -> [String: Any] in
                 [
-                    "id": $0.id.uuidString.lowercased(),
-                    "sheep_id": $0.sheepID?.uuidString.lowercased() ?? NSNull(),
-                    "pen_id": $0.penID?.uuidString.lowercased() ?? NSNull(),
-                    "kind": $0.kindRawValue,
-                    "item": $0.itemNameSnapshot,
-                    "occurred_at": Self.iso8601($0.occurredAt),
-                    "quantity": $0.quantityText ?? NSNull(),
-                    "unit": $0.unit,
-                    "route": $0.route,
-                    "note": $0.note,
+                    "id": row.id.uuidString.lowercased(),
+                    "sheep_id": row.sheepID?.uuidString.lowercased() ?? NSNull(),
+                    "pen_id": row.penID?.uuidString.lowercased() ?? NSNull(),
+                    "kind": row.kindRawValue,
+                    "item": row.itemNameSnapshot,
+                    "occurred_at": Self.iso8601(row.occurredAt),
+                    "quantity": row.quantityText ?? NSNull(),
+                    "unit": row.unit,
+                    "route": row.route,
+                    "note": row.note,
                 ]
             }
         case "reproduction":
@@ -1827,20 +1827,20 @@ final class InsightToolRegistry {
                     $0.occurredAt <= to
             }.sorted { $0.occurredAt > $1.occurredAt }
             totalCount = values.count
-            rows = values.prefix(limit).map {
+            rows = values.prefix(limit).map { row -> [String: Any] in
                 [
-                    "id": $0.id.uuidString.lowercased(),
-                    "ewe_id": $0.eweID.uuidString.lowercased(),
-                    "sire_id": $0.sireID?.uuidString.lowercased() ?? NSNull(),
-                    "semen_id": $0.semenID?.uuidString.lowercased() ?? NSNull(),
-                    "kind": $0.kindRawValue,
-                    "occurred_at": Self.iso8601($0.occurredAt),
-                    "result": $0.result,
-                    "lamb_count": $0.lambCount,
-                    "parity": $0.parity ?? NSNull(),
-                    "birth_dead_count": $0.birthDeadCount ?? NSNull(),
-                    "note": $0.note,
-                    "revision": $0.revision,
+                    "id": row.id.uuidString.lowercased(),
+                    "ewe_id": row.eweID.uuidString.lowercased(),
+                    "sire_id": row.sireID?.uuidString.lowercased() ?? NSNull(),
+                    "semen_id": row.semenID?.uuidString.lowercased() ?? NSNull(),
+                    "kind": row.kindRawValue,
+                    "occurred_at": Self.iso8601(row.occurredAt),
+                    "result": row.result,
+                    "lamb_count": row.lambCount,
+                    "parity": row.parity ?? NSNull(),
+                    "birth_dead_count": row.birthDeadCount ?? NSNull(),
+                    "note": row.note,
+                    "revision": row.revision,
                 ]
             }
         default:
@@ -1885,19 +1885,27 @@ final class InsightToolRegistry {
             let byBreed = Dictionary(grouping: active, by: {
                 $0.breed.isEmpty ? "未填写" : $0.breed
             })
+            let byPenCounts: [[String: Any]] = byPen.map { name, sheep -> [String: Any] in
+                ["name": name, "count": sheep.count]
+            }
+            let byBreedCounts: [[String: Any]] = byBreed.map { name, sheep -> [String: Any] in
+                ["name": name, "count": sheep.count]
+            }
+            let byPenRows: [[String: Any]] = byPenCounts
+                .sorted { ($0["count"] as? Int ?? 0) > ($1["count"] as? Int ?? 0) }
+                .prefix(50)
+                .map { $0 }
+            let byBreedRows: [[String: Any]] = byBreedCounts
+                .sorted { ($0["count"] as? Int ?? 0) > ($1["count"] as? Int ?? 0) }
+                .prefix(50)
+                .map { $0 }
             return try boundedJSON([
                 "focus": "population",
                 "active_count": active.count,
                 "ewe_count": active.count(where: { $0.sex == .ewe }),
                 "ram_count": active.count(where: { $0.sex == .ram }),
-                "by_pen": byPen.map { ["name": $0.key, "count": $0.value.count] }
-                    .sorted { ($0["count"] as? Int ?? 0) > ($1["count"] as? Int ?? 0) }
-                    .prefix(50)
-                    .map { $0 },
-                "by_breed": byBreed.map { ["name": $0.key, "count": $0.value.count] }
-                    .sorted { ($0["count"] as? Int ?? 0) > ($1["count"] as? Int ?? 0) }
-                    .prefix(50)
-                    .map { $0 },
+                "by_pen": byPenRows,
+                "by_breed": byBreedRows,
             ])
         case "weight":
             let result = WeightGainAnalyticsEngine.cohort(
@@ -1910,11 +1918,11 @@ final class InsightToolRegistry {
                 "sampled_sheep_count": result.sheepIDs.count,
                 "latest_average_weight_kg": Self.json(result.latestAverageWeight),
                 "latest_average_daily_gain_kg": Self.json(result.latestAverageADG),
-                "trend": result.weightTrend.suffix(12).map {
-                    ["date": Self.iso8601($0.date), "average_weight_kg": $0.value]
+                "trend": result.weightTrend.suffix(12).map { row -> [String: Any] in
+                    ["date": Self.iso8601(row.date), "average_weight_kg": row.value]
                 },
-                "adg_trend": result.adgTrend.suffix(12).map {
-                    ["date": Self.iso8601($0.date), "average_daily_gain_kg": $0.value]
+                "adg_trend": result.adgTrend.suffix(12).map { row -> [String: Any] in
+                    ["date": Self.iso8601(row.date), "average_daily_gain_kg": row.value]
                 },
             ])
         case "lamb":
@@ -1932,12 +1940,12 @@ final class InsightToolRegistry {
                 "average_weaning_adg_g": result.weaning.averageADG,
                 "abnormal_weaning_rows": result.weaning.abnormalCount,
                 "incomplete_lambing_rows": result.incompleteLambingCount,
-                "months": result.lambStats.months.prefix(12).map {
+                "months": result.lambStats.months.prefix(12).map { row -> [String: Any] in
                     [
-                        "month": $0.month,
-                        "total_lambs": $0.totalLambs,
-                        "birth_dead": $0.birthDead,
-                        "average_per_lambing": $0.avgPerLamb,
+                        "month": row.month,
+                        "total_lambs": row.totalLambs,
+                        "birth_dead": row.birthDead,
+                        "average_per_lambing": row.avgPerLamb,
                     ] as [String: Any]
                 },
             ])
@@ -1955,21 +1963,21 @@ final class InsightToolRegistry {
                 "male_count": result.maleCount,
                 "female_count": result.femaleCount,
                 "incomplete_lambing_rows": result.incompleteLambingCount,
-                "months": result.monthly.suffix(12).map {
+                "months": result.monthly.suffix(12).map { row -> [String: Any] in
                     [
-                        "month": $0.month,
-                        "lambings": $0.lambings,
-                        "total_lambs": $0.total,
-                        "male": $0.male,
-                        "female": $0.female,
+                        "month": row.month,
+                        "lambings": row.lambings,
+                        "total_lambs": row.total,
+                        "male": row.male,
+                        "female": row.female,
                     ] as [String: Any]
                 },
-                "breed_rows": result.breedRows.prefix(20).map {
+                "breed_rows": result.breedRows.prefix(20).map { row -> [String: Any] in
                     [
-                        "breed": $0.breed,
-                        "sheep_count": $0.sheepCount,
-                        "lambing_count": $0.lambingCount,
-                        "average_lambs": $0.averageLambs,
+                        "breed": row.breed,
+                        "sheep_count": row.sheepCount,
+                        "lambing_count": row.lambingCount,
+                        "average_lambs": row.averageLambs,
                     ] as [String: Any]
                 },
             ])
@@ -1981,7 +1989,7 @@ final class InsightToolRegistry {
             let byIngredient = Dictionary(grouping: rows) { (row: FarmAnalyticsSnapshot.Feed) in
                 row.ingredientName
             }
-            let byPenRows: [[String: Any]] = byPen.map { name, feeds in
+            let byPenRows: [[String: Any]] = byPen.map { name, feeds -> [String: Any] in
                 ["name": name, "kilograms": feeds.reduce(0) { $0 + $1.kilograms }]
             }
             .sorted { lhs, rhs in
@@ -1989,7 +1997,7 @@ final class InsightToolRegistry {
             }
             .prefix(50)
             .map { $0 }
-            let byIngredientRows: [[String: Any]] = byIngredient.map { name, feeds in
+            let byIngredientRows: [[String: Any]] = byIngredient.map { name, feeds -> [String: Any] in
                 ["name": name, "kilograms": feeds.reduce(0) { $0 + $1.kilograms }]
             }
             .sorted { lhs, rhs in
