@@ -88,11 +88,30 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-build.log"
       - name: Run the real assistant entry UI regression
         run: |
           set -euo pipefail
+          python3 -u - <<'PYMONITOR' &
+          import os, subprocess, time
+          from pathlib import Path
+          log = Path(os.environ['RUNNER_TEMP']) / 'assistant-entry.log'
+          for _ in range(360):
+              if log.exists() and 'Tap "analysis-assistant-entry" Button' in log.read_text(errors='replace'):
+                  time.sleep(15)
+                  processes = subprocess.run(['pgrep', '-x', 'eSheepNext'], capture_output=True, text=True)
+                  for pid in processes.stdout.split():
+                      path = Path(os.environ['RUNNER_TEMP']) / f'assistant-runtime-{pid}.sample'
+                      subprocess.run(['sample', pid, '2', '-file', str(path)], check=False)
+                      if path.exists():
+                          print('Assistant entry process sample:', flush=True)
+                          print(path.read_text(errors='replace')[:32000], flush=True)
+                  break
+              time.sleep(2)
+          PYMONITOR
+          runtime_monitor_pid=$!
+          trap 'kill "$runtime_monitor_pid" 2>/dev/null || true' EXIT
           xcodebuild test-without-building \
             -project eSheepNext.xcodeproj \
             -scheme eSheepNextUI \
@@ -106,7 +125,7 @@ jobs:
             -maximum-test-execution-time-allowance 180 \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-entry.log"
       - name: Print runtime result and crash details
         if: always()
@@ -148,5 +167,6 @@ jobs:
             ${{ runner.temp }}/ios-unit.log
             ${{ runner.temp }}/ios-unit.xcresult
             ${{ runner.temp }}/compiler-*.sample
+            ${{ runner.temp }}/assistant-runtime-*.sample
             ~/Library/Logs/DiagnosticReports/*.ips
             ~/Library/Logs/DiagnosticReports/*.crash
