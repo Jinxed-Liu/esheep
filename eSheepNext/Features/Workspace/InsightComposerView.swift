@@ -103,7 +103,6 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
         .padding(.bottom, isFocused.wrappedValue ? 8 : 10)
         .frame(maxWidth: .infinity)
         .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: expanded)
-        .accessibilityIdentifier("insight.composer")
     }
 
     private var textInput: some View {
