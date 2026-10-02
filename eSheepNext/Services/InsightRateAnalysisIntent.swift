@@ -140,9 +140,12 @@ struct InsightRateAnalysisIntent: Equatable, Sendable {
             if $0.count != $1.count { return $0.count > $1.count }
             return $0 < $1
         }
-        return neutralTokens.reduce(value) {
-            $0.replacingOccurrences(of: $1, with: "")
-        }.isEmpty
+        var remaining = value[...]
+        while !remaining.isEmpty {
+            guard let token = neutralTokens.first(where: { remaining.hasPrefix($0) }) else { return false }
+            remaining = remaining.dropFirst(token.count)
+        }
+        return true
     }
 
     private static func containsExplicitDateFilter(_ value: String) -> Bool {
