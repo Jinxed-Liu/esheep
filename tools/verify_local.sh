@@ -163,6 +163,7 @@ verify_static() {
   python3 "$repo_root/tools/check_esheep_checkpoint_schema.py"
   python3 "$repo_root/tools/check_esheep_history_consumers.py"
   python3 -m unittest discover -s "$repo_root/tools" -p 'test_checkpoint_cloud_products.py'
+  python3 -m unittest discover -s "$repo_root/tools" -p 'test_testflight_cloud_release.py'
   python3 "$repo_root/tools/verify_esheep_cloud_brand_boundary.py"
   if [[ "${ALLOW_V2_INCOMPLETE:-0}" == "1" ]]; then
     python3 "$repo_root/tools/verify_esheep_cloud_v2_completeness.py" "$repo_root" --allow-incomplete
