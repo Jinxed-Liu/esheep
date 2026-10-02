@@ -19,8 +19,8 @@ jobs:
       - name: Download the completed assistant and unit test evidence
         uses: actions/download-artifact@v4
         with:
-          name: assistant-entry-4469efff3691181d25925d1efb4bf726bcdd54be
-          run-id: 37011060841
+          name: assistant-entry-f7d45807f1b2ef2c8f2c19c418bb4b67cc0a7b8d
+          run-id: 37017795862
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/assistant-entry-original
       - name: Export screenshots and text without rerunning the app
@@ -64,19 +64,22 @@ jobs:
                   print('Exact failed accessibility hierarchy:', path.name)
                   print(path.read_text(errors='replace')[:30000])
           unit_bundles = list(source.rglob('ios-unit.xcresult'))
-          if len(unit_bundles) != 1:
-              raise SystemExit(f'Expected one unit result bundle, found {len(unit_bundles)}')
-          unit_bundle = unit_bundles[0]
-          unit_summary = command(['get', 'test-results', 'summary', '--path', str(unit_bundle)], 'ios-unit-summary.json')
-          command(['get', 'test-results', 'tests', '--path', str(unit_bundle)], 'ios-unit-tests.json')
-          if unit_summary.returncode == 0:
-              failures = json.loads(unit_summary.stdout).get('testFailures', [])
-              identifiers = sorted({failure['testIdentifierString'] for failure in failures})
-              for index, identifier in enumerate(identifiers):
-                  command(['get', 'test-results', 'activities', '--path', str(unit_bundle),
-                           '--test-id', identifier], f'ios-unit-failure-{index}-activities.json')
-          command(['export', 'attachments', '--path', str(unit_bundle), '--output-path', str(exported / 'unit'),
-                   '--only-failures'], 'export-unit-failures.txt')
+          if len(unit_bundles) > 1:
+              raise SystemExit(f'Expected at most one unit result bundle, found {len(unit_bundles)}')
+          if unit_bundles:
+              unit_bundle = unit_bundles[0]
+              unit_summary = command(['get', 'test-results', 'summary', '--path', str(unit_bundle)], 'ios-unit-summary.json')
+              command(['get', 'test-results', 'tests', '--path', str(unit_bundle)], 'ios-unit-tests.json')
+              if unit_summary.returncode == 0:
+                  failures = json.loads(unit_summary.stdout).get('testFailures', [])
+                  identifiers = sorted({failure['testIdentifierString'] for failure in failures})
+                  for index, identifier in enumerate(identifiers):
+                      command(['get', 'test-results', 'activities', '--path', str(unit_bundle),
+                               '--test-id', identifier], f'ios-unit-failure-{index}-activities.json')
+              command(['export', 'attachments', '--path', str(unit_bundle), '--output-path', str(exported / 'unit'),
+                       '--only-failures'], 'export-unit-failures.txt')
+          else:
+              print('The unit gate did not run after the UI failure; no unit result bundle is present.')
           diagnostics = temp / 'assistant-entry-diagnostics'
           command(['export', 'diagnostics', '--help'], 'export-diagnostics-help.txt')
           command(['export', 'diagnostics', '--path', str(bundle), '--output-path', str(diagnostics)], 'export-diagnostics.txt')
@@ -186,6 +189,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: assistant-entry-4469eff-small
+          name: assistant-entry-f7d4580-small
           if-no-files-found: error
           path: ${{ runner.temp }}/assistant-entry-small
