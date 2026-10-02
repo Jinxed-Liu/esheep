@@ -16,11 +16,11 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
-      - name: Download the completed failing run evidence
+      - name: Download the completed assistant and unit test evidence
         uses: actions/download-artifact@v4
         with:
-          name: assistant-entry-639d19bc02f84b615709d55ced01f33f1505a07a
-          run-id: 36975992984
+          name: assistant-entry-f886a7b50e057f14ad8c4b5b01203dee4d003b94
+          run-id: 36977439256
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/assistant-entry-original
       - name: Export screenshots and text without rerunning the app
@@ -59,6 +59,20 @@ jobs:
               command(['get', 'test-results', 'activities', '--path', str(bundle),
                        '--test-id', f'InsightAssistantEntryUITests/{method}()'], method + '-activities.json')
           command(['export', 'attachments', '--path', str(bundle), '--output-path', str(exported)], 'export-attachments.txt')
+          unit_bundles = list(source.rglob('ios-unit.xcresult'))
+          if len(unit_bundles) != 1:
+              raise SystemExit(f'Expected one unit result bundle, found {len(unit_bundles)}')
+          unit_bundle = unit_bundles[0]
+          unit_summary = command(['get', 'test-results', 'summary', '--path', str(unit_bundle)], 'ios-unit-summary.json')
+          command(['get', 'test-results', 'tests', '--path', str(unit_bundle)], 'ios-unit-tests.json')
+          if unit_summary.returncode == 0:
+              failures = json.loads(unit_summary.stdout).get('testFailures', [])
+              identifiers = sorted({failure['testIdentifierString'] for failure in failures})
+              for index, identifier in enumerate(identifiers):
+                  command(['get', 'test-results', 'activities', '--path', str(unit_bundle),
+                           '--test-id', identifier], f'ios-unit-failure-{index}-activities.json')
+          command(['export', 'attachments', '--path', str(unit_bundle), '--output-path', str(exported / 'unit'),
+                   '--only-failures'], 'export-unit-failures.txt')
           diagnostics = temp / 'assistant-entry-diagnostics'
           command(['export', 'diagnostics', '--help'], 'export-diagnostics-help.txt')
           command(['export', 'diagnostics', '--path', str(bundle), '--output-path', str(diagnostics)], 'export-diagnostics.txt')
@@ -77,9 +91,15 @@ jobs:
 
           for index, path in enumerate(sorted(set(stderr_sources))):
               target = output / f'app-{index}-stderr.txt'
-              shutil.copy2(path, target)
+              raw = path.read_bytes()
+              if len(raw) > 12 * 1024 * 1024:
+                  notice = f'Evidence truncated: original {len(raw)} bytes, retaining final 12 MiB.\n'.encode()
+                  target.write_bytes(notice + raw[-12 * 1024 * 1024:])
+              else:
+                  target.write_bytes(raw)
               lines = path.read_text(errors='replace').splitlines()
               changes = [line for line in lines if 'FarmInsightConversationListView:' in line]
+              (output / f'app-{index}-body-changes.txt').write_text('\n'.join(changes))
               print('App stderr:', path, 'bytes:', path.stat().st_size)
               print('List body changes:', '\n'.join(changes[:100]))
               relevant = [i for i, line in enumerate(lines) if any(token in line for token in
@@ -89,6 +109,15 @@ jobs:
                   print(f'{index + 1}: {lines[index]}')
           for path in source.rglob('assistant-entry.log'):
               shutil.copy2(path, output / 'assistant-entry.log.txt')
+          for path in source.rglob('ios-unit.log'):
+              raw = path.read_bytes()
+              if len(raw) > 6 * 1024 * 1024:
+                  raw = b'Evidence truncated: retaining final 6 MiB of unit log.\n' + raw[-6 * 1024 * 1024:]
+              (output / 'ios-unit.log.txt').write_bytes(raw)
+              lines = path.read_text(errors='replace').splitlines()
+              failures = [line for line in lines if any(token in line for token in ['error:', 'failed', 'Executed ', 'TEST FAILED'])]
+              (output / 'ios-unit-failure-lines.txt').write_text('\n'.join(failures))
+              print('Unit failure evidence:', '\n'.join(failures[-100:]))
 
           # XCTest may export snapshots without a file suffix. Convert image
           # snapshots when possible; otherwise preserve a final video frame.
@@ -153,6 +182,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: assistant-entry-639d19b-small
+          name: assistant-entry-f886a7b-small
           if-no-files-found: error
           path: ${{ runner.temp }}/assistant-entry-small
