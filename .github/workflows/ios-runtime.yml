@@ -90,44 +90,6 @@ jobs:
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-build.log"
-      - name: Verify atomic rollback on existing model references
-        timeout-minutes: 10
-        run: |
-          set -euo pipefail
-          xcodebuild test \
-            -project eSheepNext.xcodeproj \
-            -scheme eSheepNext \
-            -configuration Debug \
-            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
-            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
-            -resultBundlePath "$RUNNER_TEMP/ios-rollback.xcresult" \
-            -parallel-testing-enabled NO \
-            -test-timeouts-enabled YES \
-            -default-test-execution-time-allowance 180 \
-            -maximum-test-execution-time-allowance 180 \
-            -only-testing:eSheepNextTests/CareWorkflowTests/testBatchPurposeRollsBackEverySheepWhenOneSelectionIsIllegal \
-            -only-testing:eSheepNextTests/FarmDataInterchangeTests/testCommandBatchFlushesRemovalProjectionBeforeLaterMembershipValidation \
-            -only-testing:eSheepNextTests/PedigreeWorkflowTests/testBatchSireConfirmationIsAtomicAndWritesOneAuditPerChild \
-            -only-testing:eSheepNextTests/FarmDataInterchangeTests/testCommandBatchRestoresContextConfigurationAfterCommitAndRollback \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
-            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
-            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
-            2>&1 | tee "$RUNNER_TEMP/ios-rollback.log"
-      - name: Run the complete existing XCTest suites
-        run: |
-          set -euo pipefail
-          xcodebuild test \
-            -project eSheepNext.xcodeproj \
-            -scheme eSheepNext \
-            -configuration Debug \
-            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
-            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
-            -resultBundlePath "$RUNNER_TEMP/ios-unit.xcresult" \
-            -parallel-testing-enabled NO \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
-            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
-            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
-            2>&1 | tee "$RUNNER_TEMP/ios-unit.log"
       - name: Run the real assistant entry UI regression
         timeout-minutes: 15
         run: |
@@ -166,6 +128,44 @@ jobs:
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-entry.log"
+      - name: Verify atomic rollback on existing model references
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project eSheepNext.xcodeproj \
+            -scheme eSheepNext \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/ios-rollback.xcresult" \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 180 \
+            -maximum-test-execution-time-allowance 180 \
+            -only-testing:eSheepNextTests/CareWorkflowTests/testBatchPurposeRollsBackEverySheepWhenOneSelectionIsIllegal \
+            -only-testing:eSheepNextTests/FarmDataInterchangeTests/testCommandBatchFlushesRemovalProjectionBeforeLaterMembershipValidation \
+            -only-testing:eSheepNextTests/PedigreeWorkflowTests/testBatchSireConfirmationIsAtomicAndWritesOneAuditPerChild \
+            -only-testing:eSheepNextTests/FarmDataInterchangeTests/testCommandBatchRestoresContextConfigurationAfterCommitAndRollback \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/ios-rollback.log"
+      - name: Run the complete existing XCTest suites
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project eSheepNext.xcodeproj \
+            -scheme eSheepNext \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/ios-unit.xcresult" \
+            -parallel-testing-enabled NO \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/ios-unit.log"
       - name: Export assistant UI screenshots
         if: always()
         run: |
@@ -179,7 +179,9 @@ jobs:
           from pathlib import Path
           directory = Path(os.environ['RUNNER_TEMP']) / 'assistant-ui-screenshots'
           for path in directory.rglob('*'):
-              if path.is_file() and path.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.json'}:
+              # Keep accessibility hierarchies and UI snapshots for failures;
+              # omit only video and other large binary attachments.
+              if path.is_file() and path.suffix.lower() not in {'', '.png', '.jpg', '.jpeg', '.json', '.txt'}:
                   path.unlink()
           PY
           fi

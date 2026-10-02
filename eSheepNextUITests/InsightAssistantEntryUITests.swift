@@ -10,7 +10,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = [
             "--design-acceptance", "--design-insight-ready", "--design-insight-offline-send",
-            "--design-insight-expected-message", message,
+            "--design-insight-expected-message-base64", Data(message.utf8).base64EncodedString(),
             "--design-role", "administrator",
             "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
         ]
@@ -139,6 +139,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
             "-AppleLanguages", "(zh-Hans)",
             "-AppleLocale", "zh_CN",
         ]
+        app.resetAuthorizationStatus(for: .microphone)
         app.launch()
 
         let analysisTab = app.tabBars.buttons["分析"]
@@ -172,12 +173,29 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let microphone = app.buttons["insight.audio.record"]
         XCTAssertTrue(microphone.isEnabled, "Recording must not require a model credential.")
         XCTAssertTrue(microphone.isHittable, "The microphone is covered or unreachable.")
+        let denialMonitor = addUIInterruptionMonitor(withDescription: "Deny the microphone permission") { alert in
+            guard alert.label.localizedCaseInsensitiveContains("microphone") || alert.label.contains("麦克风") else {
+                return false
+            }
+            let deny = alert.buttons.matching(
+                NSPredicate(format: "label IN %@", ["不允许", "Don’t Allow", "Don't Allow"])
+            ).firstMatch
+            guard deny.exists else { return false }
+            deny.tap()
+            return true
+        }
+        defer { removeUIInterruptionMonitor(denialMonitor) }
         microphone.tap()
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let deny = springboard.alerts.buttons.matching(
-            NSPredicate(format: "label IN %@", ["不允许", "Don’t Allow", "Don't Allow"])
-        ).firstMatch
-        if deny.waitForExistence(timeout: 8) { deny.tap() }
+        let systemPermission = springboard.alerts.firstMatch
+        XCTAssertTrue(systemPermission.waitForExistence(timeout: 10), "Recording did not request microphone access.")
+        // App interaction invokes XCTest's interruption monitor and verifies
+        // dismissal, rather than assuming a direct SpringBoard tap succeeded.
+        app.tap()
+        let dismissed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: systemPermission
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 10), .completed, "The system permission prompt did not close after denial.")
         let permissionFailure = app.alerts["AI 助手"]
         XCTAssertTrue(permissionFailure.waitForExistence(timeout: 15), "The microphone tap did not reach the permission workflow.")
         XCTAssertTrue(permissionFailure.staticTexts["未获得麦克风权限。"].exists, "The denied microphone permission was not explained.")
@@ -196,7 +214,9 @@ final class InsightAssistantEntryUITests: XCTestCase {
     @MainActor
     private func openAssistantEntry(in app: XCUIApplication) {
         let analysisTab = app.tabBars.buttons["分析"]
-        XCTAssertTrue(analysisTab.waitForExistence(timeout: 30))
+        let didLaunch = analysisTab.waitForExistence(timeout: 30)
+        if !didLaunch { attachScreenshot(of: app, named: "assistant-workspace-launch-failure") }
+        XCTAssertTrue(didLaunch, "The isolated workspace did not launch: \(app.debugDescription)")
         analysisTab.tap()
         let entry = app.buttons["analysis-assistant-entry"]
         XCTAssertTrue(entry.waitForExistence(timeout: 10))

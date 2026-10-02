@@ -131,12 +131,17 @@ private final class DesignAcceptanceFixture {
         let farmID = farm.id
         let arguments = ProcessInfo.processInfo.arguments
         if arguments.contains("--design-insight-offline-send") {
-            guard let index = arguments.firstIndex(of: "--design-insight-expected-message"),
-                  arguments.indices.contains(index + 1), arguments[index + 1].contains("\n") else {
+            // XCTest launch argument transport does not preserve a raw newline.
+            // Decode the expectation only; the editor must still type Return.
+            guard let index = arguments.firstIndex(of: "--design-insight-expected-message-base64"),
+                  arguments.indices.contains(index + 1),
+                  let data = Data(base64Encoded: arguments[index + 1]),
+                  let expectedInput = String(data: data, encoding: .utf8),
+                  expectedInput.contains("\n") else {
                 throw MiMoClientError.invalidRequest
             }
             try InsightSessionCoordinator.shared.configureDesignAcceptanceClient(
-                DesignAcceptanceMiMoResponder(expectedInput: arguments[index + 1]),
+                DesignAcceptanceMiMoResponder(expectedInput: expectedInput),
                 account: account, farm: farm
             )
         }
