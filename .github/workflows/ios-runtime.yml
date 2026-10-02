@@ -68,6 +68,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
             -resultBundlePath "$RUNNER_TEMP/assistant-entry.xcresult" \
             -parallel-testing-enabled NO \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee "$RUNNER_TEMP/assistant-entry.log"
       - name: Preserve test evidence and crash reports
