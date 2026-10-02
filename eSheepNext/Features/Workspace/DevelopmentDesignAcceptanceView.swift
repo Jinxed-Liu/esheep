@@ -181,19 +181,53 @@ private final class DesignAcceptanceFixture {
 /// external model boundary is replaced, and unexpected input fails the test.
 private struct DesignAcceptanceMiMoResponder: MiMoResponding {
     let expectedInput: String
+    private static let responseText = "离线发送验收：已收到两行输入。"
+    private static let reviewToolName = "review_grounded_farm_answer"
 
     func stream(
         request: MiMoConversationRequest,
         credential: MiMoCredential
     ) -> AsyncThrowingStream<InsightModelEvent, Error> {
         AsyncThrowingStream { continuation in
-            guard credential.apiKey == "sk-design-acceptance-fixture-not-a-real-key",
+            guard credential.apiKey == "sk-design-acceptance-fixture-not-a-real-key" else {
+                continuation.finish(throwing: MiMoClientError.invalidRequest)
+                return
+            }
+            if request.tools.map(\.name) == [Self.reviewToolName] {
+                let expectedReviewPayload = """
+                用户问题：
+                当前用户消息：\(expectedInput)
+
+                待展示答案：
+                \(Self.responseText)
+
+                本轮已执行工具及结果：
+                （没有工具证据）
+
+                本轮成功工具名称：
+                """ + "\n"
+                guard request.functionExchanges.isEmpty, request.messages.count == 1,
+                      request.messages[0].role == .user,
+                      request.messages[0].text == expectedReviewPayload else {
+                    continuation.finish(throwing: MiMoClientError.invalidRequest)
+                    return
+                }
+                continuation.yield(.responseStarted(id: "design-offline-review"))
+                continuation.yield(.functionCall(.init(
+                    callID: "design-offline-review", name: Self.reviewToolName,
+                    argumentsJSON: #"{"verdict":"accept","claim_scope":"general","evidence_sufficient":false,"issue":"","corrective_instruction":""}"#
+                )))
+                continuation.yield(.completed(responseID: "design-offline-review", usage: nil))
+                continuation.finish()
+                return
+            }
+            guard !request.tools.contains(where: { $0.name == Self.reviewToolName }),
                   request.messages.last(where: { $0.role == .user })?.text == expectedInput else {
                 continuation.finish(throwing: MiMoClientError.invalidRequest)
                 return
             }
             continuation.yield(.responseStarted(id: "design-offline-send"))
-            continuation.yield(.textDelta("离线发送验收：已收到两行输入。"))
+            continuation.yield(.textDelta(Self.responseText))
             continuation.yield(.completed(responseID: "design-offline-send", usage: nil))
             continuation.finish()
         }
