@@ -178,11 +178,26 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
         .accessibilityIdentifier("insight.audio.record")
     }
 
+    @ViewBuilder
     private var mainButton: some View {
+        if !hasContent && !isGenerating && !isListEntry {
+            mainActionButton(isVoiceAction: true)
+                .onLongPressGesture(minimumDuration: 0.15, maximumDistance: 80, pressing: { pressed in
+                    if !hasContent && !isGenerating { onMicrophonePressChanged(pressed) }
+                }, perform: {
+                    if !hasContent && !isGenerating { onMicrophoneLongPress() }
+                })
+        } else {
+            // A send press must never compete with the voice recognizer.
+            mainActionButton(isVoiceAction: false)
+        }
+    }
+
+    private func mainActionButton(isVoiceAction: Bool) -> some View {
         Button {
             if isGenerating { onStop() }
             else if audioRecorder.isRecording { onMicrophone() }
-            else if hasContent { if canSend { onSend() } }
+            else if hasContent { if !isVoiceAction && canSend { onSend() } }
             else if !isListEntry { onMicrophone() }
         } label: {
             ZStack {
@@ -197,11 +212,6 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
         }
         .buttonStyle(.plain)
         .disabled(!mainActionEnabled)
-        .onLongPressGesture(minimumDuration: 0.15, maximumDistance: 80, pressing: { pressed in
-            if !hasContent && !isGenerating && !isListEntry { onMicrophonePressChanged(pressed) }
-        }, perform: {
-            if !hasContent && !isGenerating && !isListEntry { onMicrophoneLongPress() }
-        })
         .accessibilityLabel(isGenerating ? "停止生成" : (audioRecorder.isRecording ? "结束录音" : (hasContent || isListEntry ? "发送" : "语音输入")))
         .accessibilityIdentifier(isGenerating ? "insight.composer.stop" : "insight.composer.send")
     }

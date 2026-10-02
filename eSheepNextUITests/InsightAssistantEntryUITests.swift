@@ -42,7 +42,9 @@ final class InsightAssistantEntryUITests: XCTestCase {
         XCTAssertTrue(microphone.isEnabled, "Local recording is incorrectly disabled.")
         XCTAssertTrue(microphone.isHittable, "The recording button is not reachable.")
         attachScreenshot(of: app, named: "composer-typed-ready-to-send")
-        send.tap()
+        // Slightly longer normal presses must still send. The voice long-press
+        // recognizer previously participated even while this arrow was shown.
+        send.press(forDuration: 0.25)
 
         XCTAssertTrue(app.staticTexts[message].waitForExistence(timeout: 20), "The send button did not create the user message.")
         XCTAssertTrue(app.staticTexts[response].waitForExistence(timeout: 30), "The real controller did not complete the offline model response.")
