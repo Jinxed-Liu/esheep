@@ -1,0 +1,83 @@
+name: iOS runtime regression
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'eSheepNext/**'
+      - 'eSheepNextTests/**'
+      - 'eSheepNextUITests/**'
+      - 'eSheepNext.xcodeproj/**'
+      - '.github/workflows/ios-runtime.yml'
+  push:
+    branches: [main, 'codex/**']
+    paths:
+      - 'eSheepNext/**'
+      - 'eSheepNextTests/**'
+      - 'eSheepNextUITests/**'
+      - 'eSheepNext.xcodeproj/**'
+      - '.github/workflows/ios-runtime.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  assistant-entry:
+    runs-on: macos-26
+    timeout-minutes: 40
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Select stable Xcode and simulator
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun simctl list devices available --json > "$RUNNER_TEMP/simulators.json"
+          python3 - <<'PY'
+          import json, os
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'simulators.json')) as file:
+              devices = json.load(file)['devices']
+          candidates = [
+              (tuple(map(int, runtime.rsplit('iOS-', 1)[1].split('-'))), device)
+              for runtime, values in devices.items() if 'iOS-' in runtime
+              for device in values
+              if device.get('isAvailable') and device['name'] == 'iPhone 17 Pro'
+          ]
+          if not candidates:
+              raise SystemExit('The approved stable iPhone simulator is unavailable.')
+          version, device = max(candidates, key=lambda entry: entry[0])
+          print(f"Testing {device['name']} on iOS {'.'.join(map(str, version))}")
+          with open(os.environ['GITHUB_ENV'], 'a') as file:
+              file.write(f"IOS_SIMULATOR_ID={device['udid']}\n")
+          PY
+      - name: Run the real assistant entry UI regression
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project eSheepNext.xcodeproj \
+            -scheme eSheepNextUI \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/assistant-entry.xcresult" \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/assistant-entry.log"
+      - name: Preserve test evidence and crash reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistant-entry-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/assistant-entry.log
+            ${{ runner.temp }}/assistant-entry.xcresult
+            ~/Library/Logs/DiagnosticReports/*.ips
+            ~/Library/Logs/DiagnosticReports/*.crash
