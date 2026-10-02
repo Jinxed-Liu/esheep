@@ -134,7 +134,7 @@ enum FarmDataInterchange {
         let pedigreeSheep = allSheep.isEmpty ? [sheep] : allSheep.filter { $0.farmID == sheep.farmID && $0.deletedAt == nil }
         let byID = Dictionary(uniqueKeysWithValues: pedigreeSheep.map { ($0.id, $0) })
         let donor = sheep.semenDonorID.flatMap { id in semenDonors.first { $0.id == id && $0.farmID == sheep.farmID } }
-        let profileTable = [
+        let profileTable: [[String]] = [
             ["单羊档案", sheep.earTag, "", ""],
             ["字段", "值", "", ""],
             ["品种", sheep.breed, "", ""],
