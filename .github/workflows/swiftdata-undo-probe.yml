@@ -47,6 +47,8 @@ jobs:
               init(name: String) { self.name = name }
           }
 
+          enum ProbeFailure: Error { case expectedRollback }
+
           @main
           struct Probe {
               @MainActor
@@ -67,12 +69,42 @@ jobs:
                   try context.save()
 
                   let manager = UndoManager()
-                  if mode != "default-manager" { manager.groupsByEvent = false }
+                  if !mode.hasPrefix("default-") && !mode.hasPrefix("transaction-") { manager.groupsByEvent = false }
                   func report(_ stage: String) {
-                      log("STAGE \(stage) groupingLevel=\(manager.groupingLevel) canUndo=\(manager.canUndo) canRedo=\(manager.canRedo) hasChanges=\(context.hasChanges) first=\(first.name)/\(first.flag)/\(first.revision) second=\(second.name)/\(second.flag)/\(second.revision)")
+                      log("STAGE \(stage) groupsByEvent=\(manager.groupsByEvent) levelsOfUndo=\(manager.levelsOfUndo) registrationEnabled=\(manager.isUndoRegistrationEnabled) groupingLevel=\(manager.groupingLevel) canUndo=\(manager.canUndo) canRedo=\(manager.canRedo) hasChanges=\(context.hasChanges) first=\(first.name)/\(first.flag)/\(first.revision) second=\(second.name)/\(second.flag)/\(second.revision)")
                   }
                   log("MODE \(mode) groupsByEvent=\(manager.groupsByEvent)")
                   report("before-attach")
+                  if mode.hasPrefix("transaction-") {
+                      do {
+                          try context.transaction {
+                              first.name = "first-updated"
+                              first.flag = true
+                              first.revision = 2
+                              report("transaction-first-mutated")
+                              let _ = try context.fetch(FetchDescriptor<ProbeEntity>())
+                              report("transaction-after-fetch")
+                              second.name = "second-updated"
+                              second.flag = true
+                              second.revision = 3
+                              context.insert(ProbeFact(name: "new-fact"))
+                              context.processPendingChanges()
+                              report("transaction-second-and-fact-mutated")
+                              if mode == "transaction-throw" { throw ProbeFailure.expectedRollback }
+                          }
+                          log("TRANSACTION returned normally")
+                      } catch {
+                          log("TRANSACTION threw \(error)")
+                      }
+                      report("after-transaction")
+                      let beforeFacts = try context.fetch(FetchDescriptor<ProbeFact>()).count
+                      log("TRANSACTION factsBeforeExplicitRollback=\(beforeFacts)")
+                      context.rollback()
+                      report("after-explicit-rollback")
+                      let finalFacts = try context.fetch(FetchDescriptor<ProbeFact>()).count
+                      log("TRANSACTION factsAfterExplicitRollback=\(finalFacts)")
+                      return
+                  }
                   if mode == "begin-before-attach" {
                       manager.beginUndoGrouping()
                       report("begin-before-attach")
@@ -80,7 +112,7 @@ jobs:
                   } else {
                       context.undoManager = manager
                       report("after-attach")
-                      if mode != "default-manager" {
+                      if !mode.hasPrefix("default-") {
                           manager.beginUndoGrouping()
                           report("begin-after-attach")
                       }
@@ -118,6 +150,19 @@ jobs:
                           report("undo-\(undos)")
                       }
                       log("COUNTS closedGroups=\(groups) undoCalls=\(undos)")
+                  } else if mode == "default-no-registration" {
+                      manager.disableUndoRegistration()
+                      report("registration-disabled")
+                      var undos = 0
+                      while manager.canUndo && undos < 100 {
+                          manager.undo()
+                          context.processPendingChanges()
+                          undos += 1
+                          report("disabled-registration-undo-\(undos)")
+                      }
+                      manager.enableUndoRegistration()
+                      report("registration-enabled")
+                      log("COUNTS disabledRegistrationUndoCalls=\(undos)")
                   } else if mode == "default-manager" {
                       report("before-default-undo")
                       if manager.canUndo { manager.undo() }
@@ -151,7 +196,8 @@ jobs:
           print('Compiler exit:', build.returncode, build.stdout, build.stderr, flush=True)
           if build.returncode != 0:
               raise SystemExit(build.returncode)
-          for mode in ['begin-before-attach', 'attach-before-begin', 'default-manager', 'guarded-all-private-undo']:
+          for mode in ['begin-before-attach', 'attach-before-begin', 'default-manager', 'guarded-all-private-undo',
+                       'default-no-registration', 'transaction-success', 'transaction-throw']:
               try:
                   result = subprocess.run([str(executable), mode], capture_output=True, text=True, timeout=60)
                   content = result.stdout + result.stderr + f'\nPROCESS EXIT {result.returncode}\n'
