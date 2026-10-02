@@ -41,11 +41,6 @@ struct FarmInsightsView: View {
         .navigationDestination(isPresented: assistantPresentation) {
             FarmInsightConversationListView(account: account, farm: farm, initialPrompt: suggestedQuestion)
                 .id(farm.id)
-                .motionTransitionDestination(
-                    id: assistantTransitionID,
-                    in: assistantTransition,
-                    spec: assistantTransitionSpec
-                )
         }
     }
 

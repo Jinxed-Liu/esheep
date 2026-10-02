@@ -105,6 +105,7 @@ struct FarmInsightConversationListView: View {
                 composerFocused: $composerFocused
             )
         }
+        .searchable(text: $search, isPresented: $showSearch, prompt: "搜索聊天和消息")
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if let draftSaveError {
