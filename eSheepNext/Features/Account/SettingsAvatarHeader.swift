@@ -469,38 +469,68 @@ private final class SettingsAvatarRendererUIView: UIView {
     }
 
     private func applyTypography(_ layout: SettingsAvatarRenderLayout, displayScale: CGFloat) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         let expansion = layout.expansion
-        title.font = .systemFont(ofSize: 28 * (1 - 0.2 * expansion), weight: .medium)
-        subtitle.font = .systemFont(ofSize: 17 - expansion)
-        let currentTitleHeight = floor(title.font.ascender - title.font.descender)
-        let currentSubtitleHeight = floor(subtitle.font.ascender - subtitle.font.descender)
-        let maxWidth = max(0, layout.width - 32 + (layout.expandedSide - layout.width) * expansion)
+        let fraction = boundedSettingsAvatarProgress(layout.titleProgress)
+        let normalTitleScale = 1 - 0.4 * fraction
+        let normalSubtitleScale = 1 - 0.2 * fraction
+        let titleScale = normalTitleScale + (0.8 - normalTitleScale) * expansion
+        let subtitleScale = normalSubtitleScale + (16.0 / 17.0 - normalSubtitleScale) * expansion
+        title.font = SettingsAvatarTypography.titleFont
+        subtitle.font = .systemFont(ofSize: 17)
+        let baseTitleHeight = SettingsAvatarTypography.titleHeight
+        let baseSubtitleHeight = SettingsAvatarTypography.subtitleHeight
+        let expandedTitleHeight = baseTitleHeight * 0.8
+        let expandedSubtitleHeight = baseSubtitleHeight * (16.0 / 17.0)
+        let normalMaxWidth = max(0, layout.width - 32)
+        let expandedMaxWidth = max(0, layout.expandedSide - 32)
+        let titleMaxWidth = normalMaxWidth * normalTitleScale * (1 - expansion) + expandedMaxWidth * expansion
+        let subtitleMaxWidth = normalMaxWidth * normalSubtitleScale * (1 - expansion) + expandedMaxWidth * expansion
         let expandedLeft = layout.windowOrigin.x + (layout.width - layout.expandedSide) / 2 + 16
-        let nameWidth = min(maxWidth, title.sizeThatFits(CGSize(width: .greatestFiniteMagnitude, height: currentTitleHeight)).width)
-        let subtitleWidth = min(maxWidth, subtitle.sizeThatFits(CGSize(width: .greatestFiniteMagnitude, height: currentSubtitleHeight)).width)
-        let normalTop = layout.windowOrigin.y + layout.statusBarHeight + 131 - layout.offset
-            - (layout.animationsEnabled ? 5.5 * boundedSettingsAvatarProgress(layout.titleProgress) : 0)
+        let nameWidth = min(titleMaxWidth, title.sizeThatFits(CGSize(width: .greatestFiniteMagnitude, height: baseTitleHeight)).width * titleScale)
+        let subtitleWidth = min(subtitleMaxWidth, subtitle.sizeThatFits(CGSize(width: .greatestFiniteMagnitude, height: baseSubtitleHeight)).width * subtitleScale)
+        // One title scales about its center and then locks below the status bar.
+        // A fading header plus a separate navigation title creates two names
+        // during this interval and puts the smaller one inside the avatar neck.
+        let normalOffset = -min(layout.offset, 107 + baseTitleHeight / 2)
+        let normalTitleCenterY = layout.windowOrigin.y + layout.statusBarHeight + 131
+            + baseTitleHeight / 2 + normalOffset + 7 * fraction
+        let normalSubtitleCenterY = layout.windowOrigin.y + layout.statusBarHeight + 131
+            + baseTitleHeight + 1 + baseSubtitleHeight / 2 + normalOffset - 2 * fraction
         let expandedTop = layout.windowOrigin.y + layout.expandedSide + 60 - 58
             - 1 / max(1, displayScale) - layout.offset
-        let top = normalTop + (expandedTop - normalTop) * expansion
+        let expandedTitleCenterY = expandedTop + expandedTitleHeight / 2
+        let expandedSubtitleCenterY = expandedTop + expandedTitleHeight + 2 + expandedSubtitleHeight / 2
+        let titleCenterY = normalTitleCenterY + (expandedTitleCenterY - normalTitleCenterY) * expansion
+        let subtitleCenterY = normalSubtitleCenterY + (expandedSubtitleCenterY - normalSubtitleCenterY) * expansion
         let nameX = layout.windowOrigin.x + (layout.width - nameWidth) / 2
         let subX = layout.windowOrigin.x + (layout.width - subtitleWidth) / 2
-        title.frame = CGRect(
-            x: nameX + (expandedLeft - nameX) * expansion,
-            y: top, width: nameWidth, height: currentTitleHeight
+        // Keep text layout stable while the container scales; changing the
+        // font every scroll sample reflows text and rounds its height in steps.
+        title.bounds = CGRect(
+            x: 0, y: 0, width: nameWidth / titleScale, height: baseTitleHeight
         )
-        subtitle.frame = CGRect(
-            x: subX + (expandedLeft - subX) * expansion,
-            y: top + currentTitleHeight + 4,
-            width: subtitleWidth, height: currentSubtitleHeight
+        title.center = CGPoint(
+            x: nameX + (expandedLeft - nameX) * expansion + nameWidth / 2,
+            y: titleCenterY
         )
+        title.transform = CGAffineTransform(scaleX: titleScale, y: titleScale)
+        subtitle.bounds = CGRect(
+            x: 0, y: 0, width: subtitleWidth / subtitleScale, height: baseSubtitleHeight
+        )
+        subtitle.center = CGPoint(
+            x: subX + (expandedLeft - subX) * expansion + subtitleWidth / 2,
+            y: subtitleCenterY
+        )
+        subtitle.transform = CGAffineTransform(scaleX: subtitleScale, y: subtitleScale)
         let normalColor = UIColor.label.resolvedColor(with: traitCollection)
         let normalSubtitle = UIColor.secondaryLabel.resolvedColor(with: traitCollection)
         title.textColor = blendedSettingsAvatarColor(normalColor, .white, progress: expansion)
         subtitle.textColor = blendedSettingsAvatarColor(normalSubtitle, UIColor.white.withAlphaComponent(0.9), progress: expansion)
-        let alpha = 1 - boundedSettingsAvatarProgress(layout.titleProgress) * (1 - expansion)
-        title.alpha = alpha
-        subtitle.alpha = alpha
+        title.alpha = 1
+        subtitle.alpha = 1 - fraction * (1 - expansion)
     }
 
     func transitionSource() -> AccountAvatarTransitionSource? {
@@ -567,26 +597,45 @@ private enum SettingsAvatarMaskPath {
         var curves: [Cubic]
     }
 
+    // These are authored silhouette envelopes, not animation vertices. The
+    // shoulder may be wider than the body, especially during the final tuck.
     private struct Phase {
         let offset: CGFloat
-        let centerY: CGFloat
-        let radiusX: CGFloat
-        let radiusY: CGFloat
-        let neck: CGFloat
+        let bodyX: CGFloat
+        let bodyY: CGFloat
+        let bottom: CGFloat
+        let neckX: CGFloat
+        let neckY: CGFloat
     }
 
+    private static let attachmentPhase = Phase(offset: 34, bodyX: 39.7, bodyY: 49.8, bottom: 88.8, neckX: 20.2, neckY: 8.4)
+
     private static let phases: [Phase] = [
-        Phase(offset: 0, centerY: 78.15, radiusX: 50.1, radiusY: 50.1, neck: 0),
-        Phase(offset: 20, centerY: 60.77, radiusX: 44.085, radiusY: 44.42, neck: 0),
-        Phase(offset: 24.67, centerY: 54.475, radiusX: 42.585, radiusY: 45.255, neck: 0),
-        Phase(offset: 26.67, centerY: 48.355, radiusX: 41.915, radiusY: 49.095, neck: 14),
-        Phase(offset: 34, centerY: 44.42, radiusX: 39.745, radiusY: 44.42, neck: 20.205),
-        Phase(offset: 40, centerY: 40.915, radiusX: 37.74, radiusY: 40.915, neck: 24.215),
-        Phase(offset: 53.333, centerY: 33.15, radiusX: 33.4, radiusY: 33.15, neck: 28.89),
-        Phase(offset: 73.333, centerY: 21.46, radiusX: 24.215, radiusY: 21.46, neck: 30.56),
-        Phase(offset: 93.333, centerY: 9.685, radiusX: 19.705, radiusY: 9.685, neck: 27.385),
-        Phase(offset: 110.667, centerY: 0, radiusX: 0, radiusY: 0, neck: 0),
-        Phase(offset: 120, centerY: 0, radiusX: 0, radiusY: 0, neck: 0)
+        Phase(offset: 0, bodyX: 50.1, bodyY: 78.2, bottom: 128.3, neckX: 0, neckY: 28.1),
+        Phase(offset: 20, bodyX: 44.1, bodyY: 61.3, bottom: 105.2, neckX: 0, neckY: 16.4),
+        Phase(offset: 24.67, bodyX: 42.6, bodyY: 56.7, bottom: 99.7, neckX: 0, neckY: 9.2),
+        Phase(offset: 26.67, bodyX: 41.9, bodyY: 55.3, bottom: 97.5, neckX: 0, neckY: -0.7),
+        Phase(offset: 33.33, bodyX: 39.7, bodyY: 49.3, bottom: 89.5, neckX: 0, neckY: -0.7),
+        attachmentPhase,
+        Phase(offset: 40, bodyX: 37.7, bodyY: 43.8, bottom: 81.8, neckX: 24.2, neckY: 9.0),
+        Phase(offset: 53.33, bodyX: 33.4, bodyY: 33.7, bottom: 66.3, neckX: 28.9, neckY: 10.4),
+        Phase(offset: 73.33, bodyX: 24.2, bodyY: 28.1, bottom: 42.9, neckX: 30.6, neckY: 6.8),
+        Phase(offset: 93.33, bodyX: 19.7, bodyY: 7.7, bottom: 19.4, neckX: 27.4, neckY: 1.8),
+        Phase(offset: 110.67, bodyX: 12, bodyY: 0, bottom: 0, neckX: 24, neckY: 0),
+        Phase(offset: 120, bodyX: 12, bodyY: 0, bottom: 0, neckX: 24, neckY: 0)
+    ]
+
+    // The island first reaches down as a separate tongue. It grows into the
+    // photo before the connected shoulder takes over; reverse scroll samples
+    // exactly the same geometry without a timed attachment animation.
+    private static let tonguePhases: [Phase] = [
+        Phase(offset: 16.67, bodyX: 12, bodyY: 0, bottom: 0, neckX: 24, neckY: 0),
+        Phase(offset: 24.67, bodyX: 10, bodyY: 3.5, bottom: 5.7, neckX: 12, neckY: 2.4),
+        Phase(offset: 25.33, bodyX: 6.8, bodyY: 8.4, bottom: 10.7, neckX: 7, neckY: 5.8),
+        Phase(offset: 25.78, bodyX: 8, bodyY: 10.5, bottom: 13.3, neckX: 7.6, neckY: 5.2),
+        Phase(offset: 33.33, bodyX: 25, bodyY: 40, bottom: 57.4, neckX: 19.5, neckY: 8.7),
+        Phase(offset: 33.78, bodyX: 25, bodyY: 40, bottom: 57.4, neckX: 19.5, neckY: 8.7),
+        attachmentPhase
     ]
 
     static func make(
@@ -597,7 +646,10 @@ private enum SettingsAvatarMaskPath {
             CGRect(x: photo.minX, y: photo.minY, width: photo.width, height: photo.height + extensionHeight),
             radius: cornerRadius
         )
-        let collapsed = bulb(progress: progress, origin: maskOrigin)
+        let offset = boundedSettingsAvatarProgress(progress) * 120
+        let phase = sample(phases, at: offset)
+        let joined = boundedSettingsAvatarProgress((offset - 33.33) / 0.67)
+        let collapsed = body(phase, origin: maskOrigin, joined: joined, offset: offset)
         let strength = boundedSettingsAvatarProgress(strength)
         let path = CGMutablePath()
         path.move(to: blend(regular.start, collapsed.start, strength))
@@ -611,35 +663,24 @@ private enum SettingsAvatarMaskPath {
             )
         }
         path.closeSubpath()
-        // The top strip gains a small lower-edge bulge before the circle
-        // reaches it. On reverse scrolling the bridge detaches through the same
-        // gap, instead of keeping a stem connected throughout the entire range.
-        let offset = boundedSettingsAvatarProgress(progress) * 120
-        let hang = offset < 16.667 ? 0
-            : offset < 24.667 ? 6.5 * (offset - 16.667) / 8
-            : offset < 34 ? 6.5
-            : offset < 110.667 ? 6.5 * (110.667 - offset) / (110.667 - 34)
-            : 0
-        let cx = maskOrigin.x + 85.5
-        let halfWidth: CGFloat = 96.855 / 2
-        let stripTop = maskOrigin.y - 1.67 * strength
-        let stripBottom = maskOrigin.y
-        let bottom = maskOrigin.y + hang * strength
-        path.move(to: CGPoint(x: cx - halfWidth, y: stripTop))
-        path.addLine(to: CGPoint(x: cx + halfWidth, y: stripTop))
-        path.addLine(to: CGPoint(x: cx + halfWidth, y: stripBottom))
-        path.addCurve(
-            to: CGPoint(x: cx, y: bottom),
-            control1: CGPoint(x: cx + 20, y: stripBottom),
-            control2: CGPoint(x: cx + 10, y: bottom)
-        )
-        path.addCurve(
-            to: CGPoint(x: cx - halfWidth, y: stripBottom),
-            control1: CGPoint(x: cx - 10, y: bottom),
-            control2: CGPoint(x: cx - 20, y: stripBottom)
-        )
-        path.closeSubpath()
+        let connection = offset < 34 ? sample(tonguePhases, at: offset) : phase
+        appendConnection(connection, origin: maskOrigin, strength: strength, to: path)
         return path
+    }
+
+    private static func sample(_ values: [Phase], at offset: CGFloat) -> Phase {
+        let upper = values.firstIndex(where: { $0.offset >= offset }) ?? (values.count - 1)
+        let a = values[max(0, upper - 1)], b = values[upper]
+        let fraction = boundedSettingsAvatarProgress(
+            b.offset > a.offset ? (offset - a.offset) / (b.offset - a.offset) : 0
+        )
+        func mix(_ first: CGFloat, _ second: CGFloat) -> CGFloat {
+            first + (second - first) * fraction
+        }
+        return Phase(
+            offset: offset, bodyX: mix(a.bodyX, b.bodyX), bodyY: mix(a.bodyY, b.bodyY),
+            bottom: mix(a.bottom, b.bottom), neckX: mix(a.neckX, b.neckX), neckY: mix(a.neckY, b.neckY)
+        )
     }
 
     private static func rounded(_ rect: CGRect, radius: CGFloat) -> Outline {
@@ -664,46 +705,94 @@ private enum SettingsAvatarMaskPath {
         ])
     }
 
-    private static func bulb(progress: CGFloat, origin: CGPoint) -> Outline {
-        let offset = boundedSettingsAvatarProgress(progress) * 120
-        let upper = phases.firstIndex(where: { $0.offset >= offset }) ?? (phases.count - 1)
-        let a = phases[max(0, upper - 1)], b = phases[upper]
-        let fraction = b.offset > a.offset ? (offset - a.offset) / (b.offset - a.offset) : 0
-        let cy = a.centerY + (b.centerY - a.centerY) * fraction
-        let rx = a.radiusX + (b.radiusX - a.radiusX) * fraction
-        let ry = a.radiusY + (b.radiusY - a.radiusY) * fraction
-        // The phase envelopes describe the artwork's extents; this authored
-        // contour narrows its upper stem so the shoulder has visible adhesion.
-        let neck = min(a.neck + (b.neck - a.neck) * fraction, rx * 0.67)
+    private static func body(_ phase: Phase, origin: CGPoint, joined: CGFloat, offset: CGFloat) -> Outline {
         let cx = origin.x + 85.5
-        let centerY = origin.y + cy
-        let circleTop = cy - ry
-        let neckJoin = boundedSettingsAvatarProgress(neck / 14)
-        let top = origin.y + circleTop + (min(0, circleTop) - circleTop) * neckJoin
-        let left = CGPoint(x: cx - neck, y: top)
-        let right = CGPoint(x: cx + neck, y: top)
-        let east = CGPoint(x: cx + rx, y: centerY)
-        let south = CGPoint(x: cx, y: centerY + ry)
-        let west = CGPoint(x: cx - rx, y: centerY)
-        let k: CGFloat = 0.5522847498307936
-        let adhesion = boundedSettingsAvatarProgress((offset - 24.67) / (34 - 24.67))
-        let plainRight = CGPoint(x: right.x + (rx-neck)*k, y: top)
-        let plainLeft = CGPoint(x: left.x - (rx-neck)*k, y: top)
-        let concaveRight = CGPoint(x: right.x - neck * 0.25, y: top + neck * 0.4)
-        let concaveLeft = CGPoint(x: left.x + neck * 0.25, y: top + neck * 0.4)
-        let upperRight = blend(plainRight, concaveRight, adhesion)
-        let upperLeft = blend(plainLeft, concaveLeft, adhesion)
-        let shoulderY = centerY - ry * (k + (0.7 - k) * adhesion)
+        let left = CGPoint(x: cx - phase.neckX, y: origin.y + phase.neckY)
+        let right = CGPoint(x: cx + phase.neckX, y: left.y)
+        let east = CGPoint(x: cx + phase.bodyX, y: origin.y + phase.bodyY)
+        let south = CGPoint(x: cx, y: origin.y + phase.bottom)
+        let west = CGPoint(x: cx - phase.bodyX, y: east.y)
+        let height = max(0, phase.bodyY - phase.neckY)
+        let taper = boundedSettingsAvatarProgress((offset - 20) / 4.67)
+        let detachedHandle = phase.bodyX * (0.5523 - 0.46 * taper)
+        let shoulderInset = max(0, phase.neckX - phase.bodyX)
+        let connectedFirst = CGPoint(x: right.x - shoulderInset * 0.34, y: right.y + height * 0.3)
+        let connectedSecond = CGPoint(x: east.x + shoulderInset * 0.4, y: east.y - height * 0.55)
+        let upperFirst = blend(CGPoint(x: right.x + detachedHandle, y: right.y), connectedFirst, joined)
+        let upperSecond = blend(CGPoint(x: east.x, y: east.y - height * 0.55), connectedSecond, joined)
+        let lowerHeight = max(0, phase.bottom - phase.bodyY)
+        let late = boundedSettingsAvatarProgress((offset - 73.33) / 20)
+        let sideHandle = lowerHeight * (0.5 - 0.2 * late)
+        let sideInset = height > 0 ? shoulderInset * 0.4 * sideHandle / (height * 0.55) * joined : 0
+        let bottomHandle = phase.bodyX * 0.58
         return Outline(start: left, curves: [
             straight(left, right),
-            Cubic(end: east, first: upperRight, second: CGPoint(x: east.x, y: shoulderY)),
+            Cubic(end: east, first: upperFirst, second: upperSecond),
             straight(east, east),
-            Cubic(end: south, first: CGPoint(x: east.x, y: centerY+ry*k), second: CGPoint(x: cx+rx*k, y: south.y)),
+            Cubic(end: south, first: CGPoint(x: east.x - sideInset, y: east.y + sideHandle), second: CGPoint(x: cx + bottomHandle, y: south.y)),
             straight(south, south),
-            Cubic(end: west, first: CGPoint(x: cx-rx*k, y: south.y), second: CGPoint(x: west.x, y: centerY+ry*k)),
+            Cubic(end: west, first: CGPoint(x: cx - bottomHandle, y: south.y), second: CGPoint(x: west.x + sideInset, y: west.y + sideHandle)),
             straight(west, west),
-            Cubic(end: left, first: CGPoint(x: west.x, y: shoulderY), second: upperLeft)
+            Cubic(end: left, first: CGPoint(x: 2 * cx - upperSecond.x, y: upperSecond.y), second: CGPoint(x: 2 * cx - upperFirst.x, y: upperFirst.y))
         ])
+    }
+
+    private static func appendConnection(
+        _ phase: Phase, origin: CGPoint, strength: CGFloat, to path: CGMutablePath
+    ) {
+        let cx = origin.x + 85.5
+        let halfWidth: CGFloat = 48.4
+        let lip: CGFloat = 45.7
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: cx + x, y: origin.y + y * strength)
+        }
+        let right = point(phase.neckX, phase.neckY)
+        let topHandle = min(phase.neckY * 1.08, max(0, phase.bodyX - 16) * 0.5)
+        let neckToBody = max(0, phase.bodyY - phase.neckY)
+        let shoulderInset = max(0, phase.neckX - phase.bodyX)
+        let lowerHeight = max(0, phase.bottom - phase.bodyY)
+        let late = boundedSettingsAvatarProgress((phase.offset - 73.33) / 20)
+        let sideHandle = lowerHeight * (0.5 - 0.2 * late)
+        // Share each join's tangent across its two curves. This matters when
+        // the late shoulder widens beyond the body and becomes a shallow bowl.
+        let neckInset = neckToBody > 0 ? shoulderInset * 0.34 * topHandle / (neckToBody * 0.3) : 0
+        let sideInset = neckToBody > 0 ? shoulderInset * 0.4 * sideHandle / (neckToBody * 0.55) : 0
+        path.move(to: point(-halfWidth, -1.67))
+        path.addLine(to: point(halfWidth, -1.67))
+        path.addLine(to: point(halfWidth, 0))
+        path.addLine(to: point(lip, 0))
+        path.addCurve(
+            to: right,
+            control1: point(lip - (lip - phase.neckX) * 0.2, 0),
+            control2: point(phase.neckX + neckInset, phase.neckY - topHandle)
+        )
+        path.addCurve(
+            to: point(phase.bodyX, phase.bodyY),
+            control1: point(phase.neckX - shoulderInset * 0.34, phase.neckY + neckToBody * 0.3),
+            control2: point(phase.bodyX + shoulderInset * 0.4, phase.bodyY - neckToBody * 0.55)
+        )
+        path.addCurve(
+            to: point(0, phase.bottom),
+            control1: point(phase.bodyX - sideInset, phase.bodyY + sideHandle),
+            control2: point(phase.bodyX * 0.58, phase.bottom)
+        )
+        path.addCurve(
+            to: point(-phase.bodyX, phase.bodyY),
+            control1: point(-phase.bodyX * 0.58, phase.bottom),
+            control2: point(-phase.bodyX + sideInset, phase.bodyY + sideHandle)
+        )
+        path.addCurve(
+            to: point(-phase.neckX, phase.neckY),
+            control1: point(-phase.bodyX - shoulderInset * 0.4, phase.bodyY - neckToBody * 0.55),
+            control2: point(-phase.neckX + shoulderInset * 0.34, phase.neckY + neckToBody * 0.3)
+        )
+        path.addCurve(
+            to: point(-lip, 0),
+            control1: point(-phase.neckX - neckInset, phase.neckY - topHandle),
+            control2: point(-lip + (lip - phase.neckX) * 0.2, 0)
+        )
+        path.addLine(to: point(-halfWidth, 0))
+        path.closeSubpath()
     }
 
     private static func straight(_ start: CGPoint, _ end: CGPoint) -> Cubic {
