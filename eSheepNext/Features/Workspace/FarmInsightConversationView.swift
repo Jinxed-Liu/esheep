@@ -255,9 +255,7 @@ struct FarmInsightConversationView: View {
     private var conversationSheets: some View {
         conversationLifecycle
             .navigationDestination(isPresented: $isNewChatPresented) {
-                // Break the recursive opaque body type of the standalone
-                // new-chat destination. List-owned chats use their callback.
-                AnyView(FarmInsightConversationView(account: account, farm: farm))
+                FarmInsightConversationView(account: account, farm: farm)
             }
             .photosPicker(
                 isPresented: $isPhotoLibraryPresented,
