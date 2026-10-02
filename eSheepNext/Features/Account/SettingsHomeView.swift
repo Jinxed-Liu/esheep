@@ -242,6 +242,7 @@ struct SettingsHomeView: View {
             .padding(.bottom, 28)
         }
         .scrollIndicators(.hidden)
+        .scrollEdgeEffectHidden(true, for: .top)
         .ignoresSafeArea(.container, edges: .top)
         .scrollPosition($avatarScrollPosition)
         .background(AppTheme.pageBackground)
@@ -317,8 +318,16 @@ struct SettingsHomeView: View {
         .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                SettingsAvatarToolbarTitle(account: account, motion: avatarMotion)
+                // The overlay renders the same name all the way into its
+                // locked position. Reserve only a semantic navigation title.
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .accessibilityElement()
+                    .accessibilityLabel(account.displayName)
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityHidden(avatarMotion.titleProgress < 0.8)
             }
+            .sharedBackgroundVisibility(.hidden)
 
             ToolbarItem(placement: .confirmationAction) {
                 NavigationLink {
@@ -385,20 +394,6 @@ struct SettingsHomeView: View {
         case .ephemeral: "当前会话已开启"
         @unknown default: "查看通知设置"
         }
-    }
-}
-
-private struct SettingsAvatarToolbarTitle: View {
-    let account: AccountProfile
-    let motion: AccountAvatarMotionCoordinator
-
-    var body: some View {
-        Text(account.displayName)
-            .font(.headline)
-            .lineLimit(1)
-            .opacity(motion.titleProgress)
-            .offset(y: (1 - motion.titleProgress) * 7)
-            .accessibilityHidden(motion.titleProgress < 0.8)
     }
 }
 
