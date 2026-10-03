@@ -102,8 +102,18 @@ final class InsightAssistantEntryUITests: XCTestCase {
         XCTAssertTrue(bar.waitForExistence(timeout: 5))
         XCTAssertEqual(bar.value as? String, "0:06", "A new recording must not inherit the old seven-second history.")
         cancel.tap()
-        let cancelled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: bar)
-        XCTAssertEqual(XCTWaiter.wait(for: [cancelled], timeout: 5), .completed)
+        // Synchronize with the restored visible state and a fresh query. A
+        // reused bar handle can retain its previous snapshot during transition.
+        let cancelled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let restoredInput = self.composerField(in: app)
+            let currentBar = app.descendants(matching: .any)
+                .matching(identifier: "insight.audio.bar").firstMatch
+            return app.staticTexts["design.audio.fixture.state"].label == "样本数 0，发送次数 0" &&
+                restoredInput.exists && restoredInput.value as? String == originalDraft &&
+                !currentBar.exists
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [cancelled], timeout: 10), .completed,
+                       "Cancelling must restore the original draft with zero samples, no send, and no audio bar.")
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         XCTAssertEqual(input.value as? String, originalDraft)
         XCTAssertEqual(app.staticTexts["design.audio.fixture.state"].label, "样本数 0，发送次数 0")
@@ -117,8 +127,13 @@ final class InsightAssistantEntryUITests: XCTestCase {
         // from the actual silent samples, which are rendered as small dots.
         attachScreenshot(of: app, named: "voice-time-sample-fixture-one-second-origin-gap-and-silence")
         cancel.tap()
-        let originCancelled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: bar)
-        XCTAssertEqual(XCTWaiter.wait(for: [originCancelled], timeout: 5), .completed)
+        let originCancelled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let restoredInput = self.composerField(in: app)
+            return app.staticTexts["design.audio.fixture.state"].label == "样本数 0，发送次数 0" &&
+                restoredInput.exists && restoredInput.value as? String == originalDraft &&
+                !app.descendants(matching: .any).matching(identifier: "insight.audio.bar").firstMatch.exists
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [originCancelled], timeout: 10), .completed)
         XCTAssertEqual(input.value as? String, originalDraft)
         XCTAssertEqual(app.staticTexts["design.audio.fixture.state"].label, "样本数 0，发送次数 0")
     }
@@ -126,9 +141,11 @@ final class InsightAssistantEntryUITests: XCTestCase {
     @MainActor
     func testFloatingAttachmentPanelPreservesTheDraftAndPresentsTheSelectedAction() {
         continueAfterFailure = false
+        let fixtureID = UUID().uuidString
         let app = XCUIApplication()
         app.launchArguments = [
             "--design-acceptance", "--design-insight-ready", "--design-role", "administrator",
+            "--design-fixture-id", fixtureID,
             "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
         ]
         app.launch()

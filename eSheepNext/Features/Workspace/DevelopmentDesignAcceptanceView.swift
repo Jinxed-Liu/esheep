@@ -193,12 +193,21 @@ private final class DesignAcceptanceFixture {
     let collaboration: CloudCollaborationStore
 
     init() throws {
-        let insightReady = ProcessInfo.processInfo.arguments.contains("--design-insight-ready")
-        let offlineSend = insightReady && ProcessInfo.processInfo.arguments.contains("--design-insight-offline-send")
+        let args = ProcessInfo.processInfo.arguments
+        let insightReady = args.contains("--design-insight-ready")
+        let offlineSend = insightReady && args.contains("--design-insight-offline-send")
         let workspaceDirectory = URL.applicationSupportDirectory.appending(path: "DesignAcceptance", directoryHint: .isDirectory)
-        let directory = insightReady
+        var directory = insightReady
             ? workspaceDirectory.appending(path: offlineSend ? "InsightOfflineSend" : "InsightReady", directoryHint: .isDirectory)
             : workspaceDirectory
+        if insightReady, let index = args.firstIndex(of: "--design-fixture-id") {
+            guard args.indices.contains(index + 1), let fixtureID = UUID(uuidString: args[index + 1]) else {
+                throw MiMoClientError.invalidRequest
+            }
+            // A test can keep its namespace across relaunches without loading
+            // another test's persistent account, history, or encrypted drafts.
+            directory = directory.appending(path: fixtureID.uuidString, directoryHint: .isDirectory)
+        }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let storeName = offlineSend ? "DesignInsightOfflineSendAcceptance" : (insightReady ? "DesignInsightReadyAcceptance" : "DesignAcceptance")
         container = try AppSchema.makeContainer(name: storeName,
@@ -221,7 +230,6 @@ private final class DesignAcceptanceFixture {
                 try FarmCommandService().execute(.addSheep(earTag: String(format: "QA-%03d", index), breed: "湖羊", sex: .ewe, penID: pen.id, occurredAt: Date.now.addingTimeInterval(-200 * 86400), birthAt: Date.now.addingTimeInterval(-400 * 86400), currentParity: 0, note: "隔离验收数据"), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: .administrator), context: context)
             }
         }
-        let args = ProcessInfo.processInfo.arguments
         if let index = args.firstIndex(of: "--design-role"), args.indices.contains(index + 1), let role = FarmRole(rawValue: args[index + 1]) {
             farm.roleRawValue = role.rawValue
             try context.save()
