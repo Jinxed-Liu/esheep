@@ -3358,18 +3358,29 @@ final class InsightConversationController {
         """
     }
 
-    private static func estimatedRequestOverhead(
+    static func estimatedRequestOverhead(
         instructions: String,
         tools: [InsightToolDefinition]
     ) -> Int {
         let instructionTokens = InsightContextCompressor.estimatedTokens(for: instructions)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
         let toolTokens = tools.reduce(0) { partial, tool in
-            partial +
+            // Estimate the actual JSON schema. Dictionary debug descriptions
+            // have unstable ordering and also include Swift type names.
+            let parameterTokens: Int
+            if let data = try? encoder.encode(tool.parameters) {
+                parameterTokens = InsightContextCompressor.estimatedTokens(
+                    for: String(decoding: data, as: UTF8.self)
+                )
+            } else {
+                // An invalid schema must not make the request look smaller.
+                parameterTokens = InsightContextCompressor.compressionThresholdTokens
+            }
+            return partial +
                 InsightContextCompressor.estimatedTokens(for: tool.name) +
                 InsightContextCompressor.estimatedTokens(for: tool.description) +
-                InsightContextCompressor.estimatedTokens(
-                    for: String(describing: tool.parameters)
-                )
+                parameterTokens
         }
         // Reserve room for tool call/result envelopes and the requested answer.
         return instructionTokens + toolTokens + 8 * 1_024

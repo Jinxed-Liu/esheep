@@ -2747,10 +2747,10 @@ final class InsightAssistantTests: XCTestCase {
         controller.selectConversation(stardewConversation.id)
         XCTAssertEqual(Set(controller.messages.map(\.id)), Set([stardewMessage.id, persistedEvidence.id]))
         XCTAssertEqual(controller.visibleMessages.map(\.id), [stardewMessage.id])
-        XCTAssertLessThanOrEqual(
-            abs(controller.contextWindowUsage.estimatedTokens - baselineContextUsage.estimatedTokens),
-            8,
-            "隐藏证据不得进入模型上下文；这里仅允许当前时间文本造成的极小估算波动。"
+        XCTAssertEqual(
+            controller.contextWindowUsage.estimatedTokens,
+            baselineContextUsage.estimatedTokens,
+            "隐藏查询证据不得计入模型上下文用量。"
         )
         XCTAssertEqual(controller.contextWindowUsage.lastCompressedAt, baselineContextUsage.lastCompressedAt)
 
@@ -2759,6 +2759,76 @@ final class InsightAssistantTests: XCTestCase {
         XCTAssertTrue(controller.messages.isEmpty)
         XCTAssertTrue(controller.drafts.isEmpty)
         XCTAssertEqual(controller.errorMessage, "该会话不属于当前牧场，已停止打开。")
+    }
+
+    func testContextEstimateUsesCanonicalNestedToolSchemas() {
+        func tool(reversed: Bool, description: String = "羊只查询 ear_tag 与日期") -> InsightToolDefinition {
+            let fields: [(String, JSONValue)] = [
+                ("type", .string("string")),
+                ("description", .string(description)),
+                ("enum", .array([.string("sheep"), .string("weights")])),
+            ]
+            var field: [String: JSONValue] = [:]
+            for (key, value) in reversed ? Array(fields.reversed()) : fields {
+                field[key] = value
+            }
+            let pairs: [(String, JSONValue)] = [
+                ("type", .string("object")),
+                ("properties", .object(["subject": .object(field)])),
+                ("required", .array([.string("subject")])),
+                ("additionalProperties", .bool(false)),
+            ]
+            var parameters: [String: JSONValue] = [:]
+            for (key, value) in reversed ? Array(pairs.reversed()) : pairs {
+                parameters[key] = value
+            }
+            return InsightToolDefinition(
+                name: "read_farm_fixture",
+                description: "读取当前牧场的指定数据",
+                parameters: parameters
+            )
+        }
+
+        let instructions = "固定的牧场查询说明"
+        let baselineTool = tool(reversed: false)
+        let baseline = InsightConversationController.estimatedRequestOverhead(
+            instructions: instructions, tools: [baselineTool]
+        )
+        for index in 0..<128 {
+            let rebuilt = tool(reversed: index.isMultiple(of: 2))
+            XCTAssertEqual(rebuilt.parameters, baselineTool.parameters)
+            XCTAssertEqual(
+                InsightConversationController.estimatedRequestOverhead(
+                    instructions: instructions, tools: [rebuilt]
+                ),
+                baseline,
+                "相同嵌套 JSON schema 的字典插入顺序不得改变上下文估算。"
+            )
+        }
+        let expanded = InsightConversationController.estimatedRequestOverhead(
+            instructions: instructions,
+            tools: [tool(reversed: true, description: String(repeating: "羊", count: 1_000))]
+        )
+        XCTAssertGreaterThan(expanded, baseline + 900, "估算必须包含实际 schema 内容。")
+    }
+
+    func testContextEstimateConservativelyBudgetsAnUnencodableToolSchema() {
+        let instructions = "固定的牧场查询说明"
+        let baseline = InsightConversationController.estimatedRequestOverhead(
+            instructions: instructions, tools: []
+        )
+        let invalid = InsightToolDefinition(
+            name: "invalid_schema_fixture",
+            description: "不能编码为 JSON 的非有限数值",
+            parameters: ["limit": .number(.infinity)]
+        )
+        let estimate = InsightConversationController.estimatedRequestOverhead(
+            instructions: instructions, tools: [invalid]
+        )
+        XCTAssertGreaterThanOrEqual(
+            estimate, baseline + InsightContextCompressor.compressionThresholdTokens,
+            "无效 schema 不得被忽略而低估上下文。"
+        )
     }
 
     func testConversationControllerCachesCardPresentationAndContextUsageBeforeTap() throws {
