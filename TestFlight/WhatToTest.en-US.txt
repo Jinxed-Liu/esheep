@@ -1,10 +1,11 @@
-Compare the settings avatar motion with Telegram.
+Focus on AI assistant analysis stability, background recovery, live results, and the updated chat and voice composer.
 
-1. Scroll slowly up and reverse direction: the round photo should form a neck beneath the Dynamic Island and retract; on downward scrolling it should emerge from the island, extend the neck, then narrow and detach into a circle. Check the join around 34 points of scrolling for clipping, flashes or an abrupt capsule shape.
-2. First pull: expand to an edge-to-edge square photo at the screen top, with the name at the lower left. Check native release bounce and one haptic. Continuing the same drag must not open the gallery.
-3. Release and pull again from either the photo or list: open the full-screen avatar. Check image movement, cropping and corner changes while controls fade separately.
-4. Test pinch, double-tap zoom/reset, cancelled downward dismissal and closing. A zoomed image should pan; closing should return to the current round avatar bounds.
-5. Test rotation before returning, repeated open/close, the existing change-avatar crop/save flow, and an account without a photo.
-6. Devices without an island, landscape and iPad use ordinary collapse. Reduced Motion, disabled avatar motion and power saving must preserve expansion, viewing and closing.
+1. Analyze average daily weight gain for production batch eight across the six requested pens: 大棚一舍, 大棚四舍, 大棚十二舍, 大棚十三舍, 大棚十四舍 and 大棚十五舍. Check pen and batch selection, sample coverage, transfer evidence, calculation semantics and completeness. Missing weighing samples must not be treated as zero gain.
+2. Briefly background a long analysis, then return to the same conversation. Progress and the final answer should appear in place. Backgrounding alone must not be reported as an authentication change. After relaunch, interruption or recovery messages should match the actual task state.
+3. Check long-title readability, edge-swipe navigation, full-screen scrolling, and native glass and scroll-edge treatment. Lower content should remain visible through the edge rather than disappear behind a large opaque area.
+4. Check the narrower idle composer and its expansion on focus. Attachment, context, plan mode, reasoning gauge, microphone and send controls should share a vertical centre. Plan mode belongs in the bottom control row. The gauge and slider should reflect the selected analysis strength.
+5. Check the floating attachment menu, camera/photo/file entry points, outside dismissal and keyboard handoff. Check reasoning and context capsules, transitions, colour, haptics and Reduce Motion behaviour.
+6. Tap or hold to record. The grey single-row waveform should advance left with time and distinguish sound from silence. Release or stop to keep an unsent recording and play it back; send once, or cancel while retaining existing text and attachments. Check denied permission, retry and background return while recording.
+7. Check multiline input, a new draft after sending, conversation switching and draft recovery after relaunch. After upgrading, verify the existing account, farm, weighing and transfer history, then perform normal cloud sync.
 
-Compare actual screen recordings for tracking, connection shape, rebound and haptic timing. The new mask uses independently constructed curves and still needs frame-by-frame visual calibration.
+Automated checks and internal distribution are recorded separately. Real microphone and AI service behaviour, background interactions, upgrades and farm-data consistency still require internal tester verification.

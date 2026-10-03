@@ -16,6 +16,7 @@ struct InsightConversationRuntime: Codable, Sendable {
     var turn: InsightTurnCheckpoint?
     var pendingMessageID: UUID?
     var pausedReason: String?
+    var processExchangesByMessageID: [UUID: [MiMoFunctionExchange]]?
 }
 
 struct InsightTurnCheckpoint: Codable, Sendable {

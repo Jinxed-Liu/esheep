@@ -541,6 +541,7 @@ private struct InsightMarkdownTableView: View {
                         tableBody(widths: naturalColumnWidths)
                     }
                     .scrollIndicators(.hidden)
+                    .accessibilityIdentifier("insight.markdown.horizontal-table")
                 } else {
                     GeometryReader { proxy in
                         tableBody(widths: compactColumnWidths(totalWidth: proxy.size.width))

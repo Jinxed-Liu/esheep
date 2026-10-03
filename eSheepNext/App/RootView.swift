@@ -129,6 +129,7 @@ struct RootView: View {
             })
         }
         .onChange(of: scenePhase) { _, phase in
+            if phase == .inactive { InsightSessionCoordinator.shared.prepareForBackgroundTransition() }
             if phase == .background { InsightSessionCoordinator.shared.setForeground(false) }
             else if phase == .active { InsightSessionCoordinator.shared.setForeground(true) }
             // Only a visible first-receive page may keep the device awake.
@@ -164,7 +165,6 @@ struct RootView: View {
             updateInitialSyncIdleTimer()
         }
         .onChange(of: session.authenticationRevision) { _, _ in
-            InsightSessionCoordinator.shared.pauseAll(reason: "登录状态已变更，请重新检查后继续。")
             // A login switch or explicit sign-out is not guaranteed to change
             // the scene phase. Stop any receive that was admitted under the
             // previous identity before allowing the new account to discover
@@ -179,7 +179,16 @@ struct RootView: View {
                 )
             }
         }
+        .onChange(of: session.authenticationIdentityRevision) { _, _ in
+            InsightSessionCoordinator.shared.pauseAll(reason: "登录账号已变更，请重新检查后继续。")
+        }
         .onChange(of: session.accountAccessStatus) { _, status in
+            InsightSessionCoordinator.shared.resumeBackgroundPausesIfVerified(
+                scope: insightSessionScope.map {
+                    InsightConversationScope(accountID: $0.accountID, farmID: $0.farmID)
+                },
+                accessStatus: status
+            )
             // Token expiry/permission revocation updates access status without
             // necessarily incrementing authenticationRevision. Treat that as
             // the same account boundary: pause safely, and resume only after

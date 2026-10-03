@@ -23,7 +23,8 @@ struct FarmInsightConversationListView: View, Equatable {
     @State private var didApplyInitialPrompt = false
     @State private var isAnalysisSettingsPresented = false
     @State private var isContextUsagePresented = false
-    @State private var focusBeforeSettings = false
+    @State private var analysisGaugeFrame = CGRect.zero
+    @State private var contextUsageFrame = CGRect.zero
     @State private var composerAudioRecorder = InsightAudioRecorder()
     @State private var draftSaveTask: Task<Void, Never>?
     @State private var draftSaveError: String?
@@ -157,6 +158,12 @@ struct FarmInsightConversationListView: View, Equatable {
         }
         .onChange(of: draft.revision) { _, _ in saveDraft() }
         .onDisappear { saveDraft(immediately: true) }
+        .onChange(of: errorMessage) { _, error in
+            if error != nil {
+                isAnalysisSettingsPresented = false
+                isContextUsagePresented = false
+            }
+        }
         .alert("暂时无法完成", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("好", role: .cancel) {}
         } message: { Text(errorMessage ?? "") }
@@ -181,7 +188,8 @@ struct FarmInsightConversationListView: View, Equatable {
             isGenerating: controller.isGenerating, isSubmitting: isSubmitting,
             isEnabled: isReady && !isSubmitting,
             isAudioEnabled: controller.canUseAssistant && coordinator.allowsWork(scope: scope),
-            isListEntry: true, hasAttachments: hasDraftAttachments,
+            isListEntry: true, analysisEffort: controller.analysisEffort,
+            hasAttachments: hasDraftAttachments,
             attachmentsReady: draft.documents.allSatisfy(\.isReadyToSend),
             modeTitle: mode == .conversation ? nil : mode.title,
             isPlanSelected: mode == .plan, isGoalSelected: mode == .goal,
@@ -190,27 +198,30 @@ struct FarmInsightConversationListView: View, Equatable {
             onRemoveMode: { draft.modeRawValue = InsightSubmissionMode.conversation.rawValue },
             onSettings: {
                 controller.reloadAnalysisPreference()
-                focusBeforeSettings = composerFocused
+                isContextUsagePresented = false
                 isAnalysisSettingsPresented = true
             },
             onMicrophonePressChanged: { _ in }, onMicrophoneLongPress: {},
             onMicrophone: { openDraft(action: .voice) }, onToggleAudioPlayback: {}, onDiscardAudio: {},
             onSend: send, onStop: controller.stopGenerating,
-            attachments: { draftAttachmentSummary }, context: { contextUsageButton }
+            attachments: { draftAttachmentSummary }, context: { contextUsageButton },
+            onAnalysisGaugeFrameChange: { analysisGaugeFrame = $0 },
+            blocksAttachmentMenu: errorMessage != nil || isAnalysisSettingsPresented || isContextUsagePresented,
+            onContextUsageFrameChange: { contextUsageFrame = $0 }
         )
-        .popover(isPresented: $isAnalysisSettingsPresented) {
-            InsightAnalysisSettingsPopover(
+        .background(
+            InsightAnalysisSelectorPresentation(
+                isPresented: $isAnalysisSettingsPresented,
                 effortIndex: Binding(get: { controller.analysisEffort.sliderValue }, set: { controller.analysisEffort = .from(sliderValue: $0) }),
                 thinkingEnabled: Binding(get: { controller.thinkingEnabled }, set: { controller.thinkingEnabled = $0 }),
                 showReasoning: Binding(get: { controller.showReasoning }, set: { controller.showReasoning = $0 }),
-                modelName: controller.modelDisplayName
+                modelName: controller.modelDisplayName,
+                gaugeFrame: analysisGaugeFrame,
+                contextIsPresented: $isContextUsagePresented,
+                contextUsage: controller.contextWindowUsage,
+                contextFrame: contextUsageFrame
             )
-            .presentationCompactAdaptation(.popover)
-            .presentationBackground(.clear)
-        }
-        .onChange(of: isAnalysisSettingsPresented) { _, presented in
-            if !presented && focusBeforeSettings { composerFocused = true }
-        }
+        )
     }
 
     private var hasDraftAttachments: Bool { !draft.images.isEmpty || !draft.documents.isEmpty || draft.audio != nil }
@@ -233,14 +244,17 @@ struct FarmInsightConversationListView: View, Equatable {
     }
 
     private var contextUsageButton: some View {
-        Button { isContextUsagePresented.toggle() } label: {
-            InsightContextUsageRing(usage: draftController.contextWindowUsage).frame(width: 44, height: 44)
+        Button {
+            isAnalysisSettingsPresented = false
+            isContextUsagePresented.toggle()
+        } label: {
+            InsightContextUsageRing(usage: draftController.contextWindowUsage, diameter: 20)
+                .frame(width: 44, height: 44)
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("上下文窗口已使用约 \(draftController.contextWindowUsage.percentage)%")
-        .popover(isPresented: $isContextUsagePresented) {
-            InsightContextUsageDetail(usage: draftController.contextWindowUsage).presentationCompactAdaptation(.popover)
-        }
+        .accessibilityIdentifier("insight.context.usage")
     }
 
     @ViewBuilder

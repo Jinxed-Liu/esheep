@@ -156,20 +156,28 @@ final class InsightComposerDraftStore {
     }
 
     func consumeNewDraft(scope: InsightSessionScope, expectedRevision: Int?) {
+        consumeNewDraftInMemory(scope: scope, expectedRevision: expectedRevision)
+        Task { try? await save(scope: scope, conversationID: nil) }
+    }
+
+    private func consumeNewDraftInMemory(scope: InsightSessionScope, expectedRevision: Int?) {
         let current = draft(scope: scope, conversationID: nil)
         if expectedRevision == nil || current.revision == expectedRevision {
-            clear(scope: scope, conversationID: nil)
+            current.clear()
+            failedRestoreKeys.remove(Self.key(scope: scope, conversationID: nil))
         } else {
             // Content edited while an archive was saving belongs to the next chat.
             current.renewIdentity()
-            Task { try? await save(scope: scope, conversationID: nil) }
         }
     }
 
     /// Complete the sent draft's disk removal, or persist genuine later edits,
     /// before the caller replaces the list composer with the saved chat.
     func consumeNewDraftAndSave(scope: InsightSessionScope, expectedRevision: Int?) async throws {
-        consumeNewDraft(scope: scope, expectedRevision: expectedRevision)
+        // Calling the asynchronous convenience method here would schedule a
+        // competing save, allowing this awaited operation to be superseded
+        // before that second save has actually written the next draft.
+        consumeNewDraftInMemory(scope: scope, expectedRevision: expectedRevision)
         try await save(scope: scope, conversationID: nil)
     }
 

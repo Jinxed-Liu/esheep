@@ -131,6 +131,7 @@ struct InsightFarmCalculationEngine {
         let penMembership: PenMembership
         let penName: String
         let penNames: [String]
+        let batchID: UUID?
         let earTag: String
         let breed: String
         let sex: String
@@ -199,6 +200,7 @@ struct InsightFarmCalculationEngine {
         context: ModelContext,
         now: Date = .now
     ) throws -> String {
+        try Task.checkCancellation()
         let farmTimeZone = try farmTimeZone(farmID: farmID, context: context)
         let request = try parse(
             arguments,
@@ -206,35 +208,46 @@ struct InsightFarmCalculationEngine {
             timeZone: farmTimeZone.value,
             timeZoneIdentifier: farmTimeZone.identifier
         )
-        let sheep = try context.fetch(FetchDescriptor<SheepRecord>()).filter {
+        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
-        }
-        let pens = try context.fetch(FetchDescriptor<PenRecord>()).filter {
+        }))
+        let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
-        }
-        let weights = try context.fetch(FetchDescriptor<WeightRecord>()).filter {
+        }))
+        try Task.checkCancellation()
+        let weights = try context.fetch(FetchDescriptor<WeightRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
-        }
-        let weanings = try context.fetch(FetchDescriptor<WeaningRecord>()).filter {
+        }))
+        let needsCanonicalSources = request.samplePolicy == .canonicalTimeline
+        let weanings: [WeaningRecord] = needsCanonicalSources
+            ? try context.fetch(FetchDescriptor<WeaningRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            })) : []
+        let reproduction: [ReproductionRecord] = needsCanonicalSources
+            ? try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.deletedAt == nil
+            })) : []
+        let offspring: [LambingOffspringRecord] = needsCanonicalSources
+            ? try context.fetch(FetchDescriptor<LambingOffspringRecord>(predicate: #Predicate {
+                $0.farmID == farmID
+            })) : []
+        try Task.checkCancellation()
+        let removals = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
-        }
-        let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>()).filter {
+        }))
+        let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
-        }
-        let offspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>()).filter {
-            $0.farmID == farmID
-        }
-        let removals = try context.fetch(FetchDescriptor<RemovalRecord>()).filter {
+        }))
+        let productionBatches = try context.fetch(FetchDescriptor<ProductionBatchRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
-        }
-        let transfers = try context.fetch(FetchDescriptor<TransferRecord>()).filter {
+        }))
+        let batchMemberships = try context.fetch(FetchDescriptor<BatchMembershipRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
-        }
-        let productionBatches = try context.fetch(FetchDescriptor<ProductionBatchRecord>()).filter {
-            $0.farmID == farmID && $0.deletedAt == nil
-        }
-        let batchMemberships = try context.fetch(FetchDescriptor<BatchMembershipRecord>()).filter {
-            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        try Task.checkCancellation()
+        if let batchID = request.batchID,
+           !productionBatches.contains(where: { $0.id == batchID }) {
+            throw InsightToolError.invalidArguments("batch_id not found in current farm")
         }
         let transfersBySheep = Dictionary(grouping: transfers, by: \.sheepID)
         let removalsBySheep = Dictionary(grouping: removals, by: \.sheepID)
@@ -256,6 +269,7 @@ struct InsightFarmCalculationEngine {
         var eligibleSheep = [SheepRecord]()
         eligibleSheep.reserveCapacity(sheep.count)
         for item in sheep where !item.isHistoricalArchive {
+            try Task.checkCancellation()
             let cutoff: FarmFactContract.StateCutoff = request.hasExplicitAsOf
                 ? .historical(request.asOf)
                 : .current(request.asOf)
@@ -313,7 +327,14 @@ struct InsightFarmCalculationEngine {
         }
         let nativeResult: WeightGainAnalysisResult?
         if usesAppWeightGainEngine {
-            let scope: WeightGainAnalysisScope = selectedPenIDs.isEmpty ? .farm : .pens(selectedPenIDs)
+            let scope: WeightGainAnalysisScope
+            if let batchID = request.batchID {
+                scope = selectedPenIDs.isEmpty ? .batch(batchID)
+                    : .batchAndPens(batchID: batchID, penIDs: selectedPenIDs)
+            } else {
+                scope = selectedPenIDs.isEmpty ? .farm : .pens(selectedPenIDs)
+            }
+            try Task.checkCancellation()
             nativeResult = WeightGainAnalyticsEngine.calculate(
                 snapshot: snapshot,
                 filter: WeightGainAnalysisFilter(
@@ -327,6 +348,7 @@ struct InsightFarmCalculationEngine {
         } else {
             nativeResult = nil
         }
+        try Task.checkCancellation()
         let rawSamples: [SheepWeightSample]
         switch request.samplePolicy {
         case .recordedOnly:
@@ -372,6 +394,7 @@ struct InsightFarmCalculationEngine {
             relevantProfiles = nativeResult.objectCount
             insufficientProfiles = nativeResult.missingPairCount
             for interval in nativeResult.intervals {
+                try Task.checkCancellation()
                 guard let row = rowsBySheep[interval.sheepID] else { continue }
                 let batch = batchAttribution(
                     sheepID: interval.sheepID,
@@ -399,6 +422,7 @@ struct InsightFarmCalculationEngine {
             }
         } else {
             for profile in eligibleSheep.sorted(by: { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }) {
+                try Task.checkCancellation()
                 let samples = samplesBySheep[profile.id] ?? []
                 let profileTransfers = transfersBySheep[profile.id] ?? []
                 let hasRelevantMeasurement: Bool
@@ -777,6 +801,23 @@ struct InsightFarmCalculationEngine {
             dateTo = asOf
         }
         let penName = string(values, "pen_name")
+        let batchID: UUID?
+        if let raw = values["batch_id"] {
+            guard let text = raw as? String else { throw InsightToolError.invalidArguments("batch_id") }
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                batchID = nil
+            } else {
+                guard let id = UUID(uuidString: text) else { throw InsightToolError.invalidArguments("batch_id") }
+                batchID = id
+            }
+        } else {
+            batchID = nil
+        }
+        if batchID != nil, !usesAppWeightGainEngine {
+            throw InsightToolError.invalidArguments(
+                "batch_id requires canonical_timeline + at_cutoff + sheep + adjacent + difference_per_day"
+            )
+        }
         var penNames: [String] = []
         if let raw = values["pen_names"] {
             guard let names = raw as? [String], names.count <= 50 else {
@@ -834,6 +875,7 @@ struct InsightFarmCalculationEngine {
             "pen_membership": penMembership.rawValue,
             "pen_name": penName,
             "pen_names": penNames,
+            "batch_id": batchID?.uuidString.lowercased() ?? "",
             "ear_tag": string(values, "ear_tag"),
             "breed": string(values, "breed"),
             "sex": sex,
@@ -855,6 +897,7 @@ struct InsightFarmCalculationEngine {
             penMembership: penMembership,
             penName: penName,
             penNames: penNames,
+            batchID: batchID,
             earTag: string(values, "ear_tag"),
             breed: string(values, "breed"),
             sex: sex,

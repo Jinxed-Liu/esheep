@@ -105,6 +105,7 @@ struct InsightAgentHarness {
             var transportRecoveryCount = 0
 
             while true {
+                try Task.checkCancellation()
                 functionCalls.removeAll(keepingCapacity: true)
                 roundText = ""
                 roundReasoning.removeAll(keepingCapacity: true)
@@ -189,6 +190,7 @@ struct InsightAgentHarness {
                     // levels make additional real review calls using the same
                     // closure and shared budget, never a simulated progress row.
                     for index in 0...extraReviews {
+                        try Task.checkCancellation()
                         try runBudget.checkActiveTime()
                         reviewIndex += 1
                         onEvent(.phase(.reviewing))
@@ -202,10 +204,12 @@ struct InsightAgentHarness {
                     onEvent(.paused(pause))
                     throw pause
                 } catch {
+                    try Task.checkCancellation()
                     decision = .retry(
                         "内部语义复核没有返回有效结果：\(error.localizedDescription)"
                     )
                 }
+                try Task.checkCancellation()
                 switch decision {
                 case .accept:
                     try runBudget.checkActiveTime()
@@ -251,6 +255,7 @@ struct InsightAgentHarness {
             let turnID = responseID ?? UUID().uuidString
 
             for call in functionCalls {
+                try Task.checkCancellation()
                 try runBudget.checkActiveTime()
                 onEvent(.toolStarted(callID: call.callID, name: call.name))
                 let observation = await execute(call)
