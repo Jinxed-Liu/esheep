@@ -1,4 +1,5 @@
 import ImageIO
+import Observation
 import SwiftData
 import UIKit
 import UniformTypeIdentifiers
@@ -7,6 +8,480 @@ import XCTest
 
 @MainActor
 final class InsightAssistantTests: XCTestCase {
+    func testCurrentConversationPublishesToolProgressAndCompletedAnswerWithoutReload() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-live-observation-\(UUID().uuidString)", isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let account = AccountProfile(appleUserIdentifier: "live-observation-\(UUID().uuidString)", displayName: "观察测试")
+        let farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: "观察测试牧场")
+        context.insert(account)
+        context.insert(farm)
+        try context.save()
+        try AIPrivacyConsentStore.saveCurrentConsent(for: account.effectiveAccountID)
+        _ = try await MiMoCredentialVault.shared.save(
+            apiKey: "sk-1234567890-live-observation", for: account.effectiveAccountID
+        )
+        let client = ControlledObservationMiMoResponder()
+        let controller = InsightConversationController(account: account, farm: farm, client: client)
+        InsightSessionCoordinator.shared.setForeground(true)
+        InsightSessionCoordinator.shared.activate(scope: controller.conversationScope)
+        defer {
+            controller.stopGenerating()
+            client.finishAll()
+            InsightAnalysisPreference.remove(for: account.effectiveAccountID)
+            InsightSessionCoordinator.shared.activate(scope: nil)
+            let conversationID = controller.currentConversationID
+            Task {
+                try? await MiMoCredentialVault.shared.remove(for: account.effectiveAccountID)
+                try? AIPrivacyConsentStore.withdraw(for: account.effectiveAccountID)
+                if let conversationID {
+                    try? await InsightRuntimeStore.shared.removeConversation(
+                        accountID: account.effectiveAccountID, farmID: farm.id, conversationID: conversationID
+                    )
+                }
+            }
+        }
+        await controller.connect(to: context)
+        // This fixture releases one baseline semantic review. The production
+        // medium default requests an additional real review, so leaving effort
+        // implicit would keep that fourth request suspended in the test.
+        controller.analysisEffort = .low
+        let accepted = await controller.send(text: "读取牧场概况")
+        XCTAssertTrue(accepted)
+        XCTAssertEqual(controller.runtime?.turn?.configuration.additionalReviewCount, 0)
+        try await client.waitForRequestCount(1)
+        let assistant = try XCTUnwrap(controller.visibleMessages.last { $0.role == .assistant })
+        XCTAssertEqual(assistant.status, .streaming)
+        let processSignal = InsightObservationTestSignal()
+        withObservationTracking {
+            _ = controller.runtimeRecords(for: assistant.id)
+        } onChange: {
+            processSignal.recordChange()
+        }
+        let toolCall = InsightFunctionCall(callID: "live-overview", name: "get_farm_overview", argumentsJSON: "{}")
+        XCTAssertTrue(client.finishRequest(at: 0, events: [
+            .responseStarted(id: "live-tool"), .functionCall(toolCall),
+            .completed(responseID: "live-tool", usage: nil),
+        ]))
+        try await client.waitForRequestCount(2)
+        XCTAssertTrue(processSignal.didChange, "An observed current-page process must invalidate when its tool runs.")
+        XCTAssertTrue(controller.runtimeRecords(for: assistant.id).contains {
+            $0.callID == toolCall.callID && $0.state == .completed
+        })
+
+        let textSignal = InsightObservationTestSignal()
+        let statusSignal = InsightObservationTestSignal()
+        let runningSignal = InsightObservationTestSignal()
+        withObservationTracking { _ = assistant.text } onChange: { textSignal.recordChange() }
+        withObservationTracking { _ = assistant.status } onChange: { statusSignal.recordChange() }
+        withObservationTracking { _ = controller.isGenerating } onChange: { runningSignal.recordChange() }
+        let answer = "查询已完成。\n\n当前回复已经过复核。"
+        XCTAssertTrue(client.finishRequest(at: 1, events: [
+            .responseStarted(id: "live-answer"), .textDelta(answer),
+            .completed(responseID: "live-answer", usage: nil),
+        ]))
+        try await client.waitForRequestCount(3)
+        XCTAssertTrue(assistant.text.isEmpty, "A provisional candidate must remain hidden until review accepts it.")
+        XCTAssertFalse(textSignal.didChange)
+        let review = InsightFunctionCall(
+            callID: "live-review", name: "review_grounded_farm_answer",
+            argumentsJSON: #"{"verdict":"accept","claim_scope":"general","evidence_sufficient":true,"issue":"","corrective_instruction":""}"#
+        )
+        XCTAssertTrue(client.finishRequest(at: 2, events: [
+            .responseStarted(id: "live-review"), .functionCall(review),
+            .completed(responseID: "live-review", usage: nil),
+        ]))
+        for _ in 0..<500 {
+            if !controller.isGenerating { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(controller.isGenerating, controller.errorMessage ?? "")
+        XCTAssertTrue(textSignal.didChange)
+        XCTAssertTrue(statusSignal.didChange)
+        XCTAssertTrue(runningSignal.didChange)
+        XCTAssertEqual(assistant.text, answer)
+        XCTAssertEqual(assistant.status, .completed)
+        XCTAssertTrue(controller.visibleMessages.last { $0.role == .assistant } === assistant,
+                      "The same observed message must expose its answer without selecting or reloading the page.")
+        XCTAssertNil(controller.runtime?.turn)
+    }
+
+    func testLifecyclePauseResumeClearsCompletedMessageErrorAfterDurableReload() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "insight-pause-completion-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let storeURL = directory.appending(path: "Assistant.store")
+        let storeName = "insight-pause-completion-\(UUID().uuidString)"
+        let container = try AppSchema.makeContainer(name: storeName, url: storeURL)
+        let context = ModelContext(container)
+        let account = AccountProfile(appleUserIdentifier: "pause-completion-\(UUID().uuidString)", displayName: "恢复测试")
+        let farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: "恢复测试牧场")
+        context.insert(account)
+        context.insert(farm)
+        try context.save()
+        try AIPrivacyConsentStore.saveCurrentConsent(for: account.effectiveAccountID)
+        _ = try await MiMoCredentialVault.shared.save(
+            apiKey: "sk-1234567890-pause-completion", for: account.effectiveAccountID
+        )
+        let client = ControlledObservationMiMoResponder()
+        let controller = InsightConversationController(account: account, farm: farm, client: client)
+        InsightSessionCoordinator.shared.setForeground(true)
+        InsightSessionCoordinator.shared.activate(scope: controller.conversationScope)
+        defer {
+            controller.stopGenerating()
+            client.finishAll()
+            InsightAnalysisPreference.remove(for: account.effectiveAccountID)
+            InsightSessionCoordinator.shared.activate(scope: nil)
+            let conversationID = controller.currentConversationID
+            Task {
+                try? await MiMoCredentialVault.shared.remove(for: account.effectiveAccountID)
+                try? AIPrivacyConsentStore.withdraw(for: account.effectiveAccountID)
+                if let conversationID {
+                    try? await InsightRuntimeStore.shared.removeConversation(
+                        accountID: account.effectiveAccountID, farmID: farm.id, conversationID: conversationID
+                    )
+                }
+                // Leave this unique temporary store until test-host container
+                // reset; live SwiftData containers still hold SQLite connections.
+            }
+        }
+        await controller.connect(to: context)
+        controller.analysisEffort = .low
+        let accepted = await controller.send(text: "读取牧场概况")
+        XCTAssertTrue(accepted)
+        try await client.waitForRequestCount(1)
+        let conversationID = try XCTUnwrap(controller.currentConversationID)
+        let user = try XCTUnwrap(controller.visibleMessages.first { $0.role == .user })
+        let assistant = try XCTUnwrap(controller.visibleMessages.first { $0.role == .assistant })
+        let userID = user.id
+        let assistantID = assistant.id
+        let originalRequestID = try XCTUnwrap(controller.runtime?.turn?.requestID)
+        XCTAssertEqual(assistant.status, .streaming)
+        let reason = "系统后台时间已用完，回到前台验证后将继续原请求。"
+        controller.pauseForLifecycle(reason: reason)
+        XCTAssertFalse(controller.isGenerating)
+        XCTAssertEqual(assistant.status, .pending)
+        XCTAssertEqual(assistant.errorMessage, reason)
+        XCTAssertEqual(controller.runtime?.turn?.userMessageID, userID)
+        XCTAssertEqual(controller.runtime?.turn?.assistantMessageID, assistantID)
+        let pausedContext = ModelContext(container)
+        let pausedMessages = try pausedContext.fetch(FetchDescriptor<InsightMessageRecord>(
+            predicate: #Predicate { $0.conversationID == conversationID }
+        ))
+        XCTAssertEqual(pausedMessages.first { $0.id == assistantID }?.errorMessage, reason,
+                       "The lifecycle pause must be saved before the same response resumes.")
+
+        controller.resumePausedConversation()
+        XCTAssertTrue(controller.isGenerating)
+        try await client.waitForRequestCount(2)
+        XCTAssertNotEqual(controller.runtime?.turn?.requestID, originalRequestID)
+        XCTAssertEqual(controller.runtime?.turn?.userMessageID, userID)
+        XCTAssertEqual(controller.runtime?.turn?.assistantMessageID, assistantID)
+        XCTAssertEqual(controller.visibleMessages.map(\.id), [userID, assistantID])
+        let toolCall = InsightFunctionCall(callID: "resumed-overview", name: "get_farm_overview", argumentsJSON: "{}")
+        XCTAssertTrue(client.finishRequest(at: 1, events: [
+            .responseStarted(id: "resumed-tool"), .functionCall(toolCall),
+            .completed(responseID: "resumed-tool", usage: nil),
+        ]))
+        try await client.waitForRequestCount(3)
+        XCTAssertTrue(controller.runtimeRecords(for: assistantID).contains {
+            $0.callID == toolCall.callID && $0.state == .completed
+        })
+        let answer = "查询已完成。\n\n当前回复已经过复核。"
+        XCTAssertTrue(client.finishRequest(at: 2, events: [
+            .responseStarted(id: "resumed-answer"), .textDelta(answer),
+            .completed(responseID: "resumed-answer", usage: nil),
+        ]))
+        try await client.waitForRequestCount(4)
+        XCTAssertTrue(assistant.text.isEmpty, "A resumed candidate must not be published before semantic review.")
+        XCTAssertEqual(assistant.status, .streaming)
+        let review = InsightFunctionCall(
+            callID: "resumed-review", name: "review_grounded_farm_answer",
+            argumentsJSON: #"{"verdict":"accept","claim_scope":"general","evidence_sufficient":true,"issue":"","corrective_instruction":""}"#
+        )
+        XCTAssertTrue(client.finishRequest(at: 3, events: [
+            .responseStarted(id: "resumed-review"), .functionCall(review),
+            .completed(responseID: "resumed-review", usage: nil),
+        ]))
+        for _ in 0..<500 {
+            if !controller.isGenerating { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(controller.isGenerating, controller.errorMessage ?? "")
+        XCTAssertEqual(assistant.status, .completed)
+        XCTAssertEqual(assistant.text, answer)
+        XCTAssertNil(assistant.errorMessage, "A reviewed completion must clear the previous lifecycle pause error.")
+        XCTAssertEqual(controller.visibleMessages.map(\.id), [userID, assistantID])
+        let reloadedContainer = try AppSchema.makeContainer(name: storeName, url: storeURL)
+        let reloadedContext = ModelContext(reloadedContainer)
+        let reloadedMessages = try reloadedContext.fetch(FetchDescriptor<InsightMessageRecord>(
+            predicate: #Predicate { $0.conversationID == conversationID }
+        ))
+        XCTAssertEqual(reloadedMessages.filter { $0.role == .user }.map(\.id), [userID])
+        XCTAssertEqual(reloadedMessages.filter { $0.role == .assistant && $0.toolName == nil }.map(\.id), [assistantID])
+        let completed = try XCTUnwrap(reloadedMessages.first { $0.id == assistantID })
+        XCTAssertEqual(completed.status, .completed)
+        XCTAssertEqual(completed.text, answer)
+        XCTAssertNil(completed.errorMessage, "The cleared error must survive reloading the disk-backed store.")
+        let loadedRuntime = try await InsightRuntimeStore.shared.load(
+            accountID: account.effectiveAccountID, farmID: farm.id, conversationID: conversationID
+        )
+        let persistedRuntime = try XCTUnwrap(loadedRuntime)
+        XCTAssertNil(persistedRuntime.turn)
+        XCTAssertNil(persistedRuntime.pendingMessageID)
+        XCTAssertNil(persistedRuntime.pausedReason)
+    }
+
+    func testInterruptedConversationResumesOriginalMessagesAndPersistsToolReturn() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-tool-return-recovery-\(UUID().uuidString)",
+            isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let account = AccountProfile(
+            appleUserIdentifier: "tool-return-\(UUID().uuidString)", displayName: "恢复测试账号"
+        )
+        let farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: "恢复测试牧场")
+        let conversation = InsightConversationRecord(
+            accountID: account.effectiveAccountID, farmID: farm.id
+        )
+        let user = InsightMessageRecord(
+            conversationID: conversation.id, accountID: account.effectiveAccountID,
+            farmID: farm.id, role: .user, text: "读取牧场概况"
+        )
+        let assistant = InsightMessageRecord(
+            conversationID: conversation.id, accountID: account.effectiveAccountID,
+            farmID: farm.id, role: .assistant, text: "",
+            createdAt: user.createdAt.addingTimeInterval(0.001), status: .streaming
+        )
+        context.insert(account)
+        context.insert(farm)
+        context.insert(conversation)
+        context.insert(user)
+        context.insert(assistant)
+        try context.save()
+        try AIPrivacyConsentStore.saveCurrentConsent(for: account.effectiveAccountID)
+        _ = try await MiMoCredentialVault.shared.save(
+            apiKey: "sk-1234567890-recovery-regression", for: account.effectiveAccountID
+        )
+        let configuration = InsightRunConfiguration(effort: .low)
+        var runtime = InsightConversationRuntime(
+            accountID: account.effectiveAccountID, farmID: farm.id, conversationID: conversation.id
+        )
+        runtime.turn = InsightTurnCheckpoint(
+            requestID: UUID(), userMessageID: user.id, assistantMessageID: assistant.id,
+            text: user.text, mode: .conversation, configuration: configuration,
+            goalID: nil, isGoalVerification: false
+        )
+        let legacySeed = MiMoFunctionExchange(
+            call: InsightFunctionCall(
+                callID: "legacy-pens", name: "get_farm_entities",
+                argumentsJSON: #"{"category":"pens","query":"大棚一舍"}"#
+            ),
+            output: #"{"returned_count":1,"rows":[{"id":"pen-one","name":"大棚一舍"}]}"#
+        )
+        runtime.turn?.exchanges = [legacySeed]
+        runtime.records[assistant.id] = [InsightRuntimeRecord(
+            title: legacySeed.call.name, detail: "工具已返回结果",
+            state: .completed, kind: .tool, callID: legacySeed.call.callID
+        )]
+        runtime.pendingMessageID = assistant.id
+        try await InsightRuntimeStore.shared.save(runtime)
+        let toolCall = InsightFunctionCall(callID: "overview", name: "get_farm_overview", argumentsJSON: "{}")
+        let reasoning = MiMoReasoningRecord(id: "test-reasoning", text: "Synthetic provider context")
+        let reviewCall = InsightFunctionCall(
+            callID: "review", name: "review_grounded_farm_answer",
+            argumentsJSON: #"{"verdict":"accept","claim_scope":"general","evidence_sufficient":true,"issue":"","corrective_instruction":""}"#
+        )
+        let client = ScriptedMiMoResponder(scripts: [
+            [.responseStarted(id: "tool-round"), .reasoningRecorded(reasoning), .functionCall(toolCall),
+             .completed(responseID: "tool-round", usage: nil)],
+            [.responseStarted(id: "answer"), .textDelta("查询已完成。"), .completed(responseID: "answer", usage: nil)],
+            [.responseStarted(id: "review"), .functionCall(reviewCall), .completed(responseID: "review", usage: nil)],
+        ])
+        let controller = InsightConversationController(account: account, farm: farm, client: client)
+        InsightSessionCoordinator.shared.activate(scope: controller.conversationScope)
+        defer {
+            controller.stopGenerating()
+            InsightSessionCoordinator.shared.activate(scope: nil)
+            Task {
+                try? await MiMoCredentialVault.shared.remove(for: account.effectiveAccountID)
+                try? AIPrivacyConsentStore.withdraw(for: account.effectiveAccountID)
+                try? await InsightRuntimeStore.shared.removeConversation(
+                    accountID: account.effectiveAccountID, farmID: farm.id, conversationID: conversation.id
+                )
+            }
+        }
+        await controller.connect(to: context, preferredConversationID: conversation.id)
+        XCTAssertEqual(assistant.status, .interrupted)
+        XCTAssertNotNil(controller.pausedReason)
+        XCTAssertNil(controller.runtime?.processExchangesByMessageID, "This checkpoint models a build without compact process evidence.")
+        XCTAssertEqual(controller.processToolExchanges(for: assistant.id).first?.call, legacySeed.call)
+        controller.resumePausedConversation()
+        XCTAssertTrue(controller.isGenerating, "Recovery must reserve the request before its first await.")
+        let acceptedSecondRequest = await controller.send(text: "不应抢入恢复中的第二条请求")
+        XCTAssertFalse(acceptedSecondRequest)
+        for _ in 0..<500 {
+            if !controller.isGenerating { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(controller.isGenerating)
+        XCTAssertEqual(assistant.status, .completed, controller.errorMessage ?? "")
+        XCTAssertEqual(assistant.text, "查询已完成。")
+        XCTAssertEqual(controller.visibleMessages.map(\.id), [user.id, assistant.id])
+        XCTAssertEqual(client.capturedRequests().first?.functionExchanges, [legacySeed])
+        let answerRequest = try XCTUnwrap(client.capturedRequests().dropFirst().first)
+        let overviewExchange = try XCTUnwrap(answerRequest.functionExchanges.first { $0.call.callID == toolCall.callID })
+        XCTAssertEqual(overviewExchange.call, toolCall)
+        XCTAssertEqual(overviewExchange.reasoningRecords, [reasoning])
+        let persisted = try await InsightRuntimeStore.shared.load(
+            accountID: account.effectiveAccountID, farmID: farm.id, conversationID: conversation.id
+        )
+        XCTAssertNil(persisted?.turn)
+        let legacyPublic = try XCTUnwrap(controller.processToolExchanges(for: assistant.id).first { $0.call.callID == legacySeed.call.callID })
+        XCTAssertEqual(legacyPublic, InsightPublicProcess.compactExchange(call: legacySeed.call, output: legacySeed.output, succeeded: true))
+        XCTAssertEqual(persisted?.processExchangesByMessageID?[assistant.id]?.first { $0.call.callID == legacySeed.call.callID }, legacyPublic)
+        let legacyStep = try XCTUnwrap(InsightPublicProcess.steps(
+            records: controller.runtimeRecords(for: assistant.id),
+            exchanges: controller.processToolExchanges(for: assistant.id), isCompleted: true
+        ).first { $0.id == legacySeed.call.callID })
+        XCTAssertEqual(legacyStep.title, "核对圈舍")
+        XCTAssertTrue(legacyStep.detail.contains("大棚一舍"))
+        XCTAssertTrue(legacyStep.detail.contains("已读取 1 个圈舍"))
+        XCTAssertNotNil(controller.activeRuntimeSeconds(for: assistant.id))
+    }
+
+    func testNativeHarnessDoesNotPublishCandidateAfterCancellationDuringReview() async throws {
+        let client = ScriptedMiMoResponder(scripts: [[
+            .responseStarted(id: "candidate"), .textDelta("候选答案"),
+            .completed(responseID: "candidate", usage: nil),
+        ]])
+        let task = Task { @MainActor in
+            try await InsightAgentHarness(client: client).run(
+                model: MiMoCredential.model, instructions: "test",
+                messages: [MiMoInputMessage(role: .user, text: "test")], tools: [],
+                credential: try MiMoCredential(apiKey: "sk-1234567890-cancel-review"),
+                execute: { _ in .init(output: "", succeeded: false) },
+                reviewCandidate: { _, _, _ in
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    return .accept
+                },
+                resolveRejectedCandidate: { _, _, _, _ in
+                    XCTFail("A cancelled turn must not invoke the fallback.")
+                    return ""
+                }
+            )
+        }
+        do {
+            _ = try await task.value
+            XCTFail("A cancelled review must not publish a candidate.")
+        } catch is CancellationError {
+            // Expected: cancellation is a terminal control signal.
+        }
+    }
+
+    func testRecoveryKeepsAnotherControllersActiveConversationAndUserStatus() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-active-recovery-\(UUID().uuidString)", isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let account = AccountProfile(appleUserIdentifier: "active-recovery-\(UUID().uuidString)", displayName: "测试")
+        let farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: "测试牧场")
+        let conversation = InsightConversationRecord(accountID: account.effectiveAccountID, farmID: farm.id)
+        let user = InsightMessageRecord(
+            conversationID: conversation.id, accountID: account.effectiveAccountID,
+            farmID: farm.id, role: .user, text: "用户待发送消息", status: .pending
+        )
+        let assistant = InsightMessageRecord(
+            conversationID: conversation.id, accountID: account.effectiveAccountID,
+            farmID: farm.id, role: .assistant, text: "", status: .streaming
+        )
+        let failure = InsightMessageRecord(
+            conversationID: conversation.id, accountID: account.effectiveAccountID,
+            farmID: farm.id, role: .assistant, text: "", status: .failed
+        )
+        failure.errorMessage = "Synthetic provider failure"
+        context.insert(account)
+        context.insert(farm)
+        context.insert(conversation)
+        context.insert(user)
+        context.insert(assistant)
+        context.insert(failure)
+        try context.save()
+        let settingsController = InsightConversationController(account: account, farm: farm)
+        let requestID = UUID()
+        let coordinator = InsightSessionCoordinator.shared
+        coordinator.activate(scope: settingsController.conversationScope)
+        defer { coordinator.cancel(requestID: requestID); coordinator.activate(scope: nil) }
+        try await coordinator.acquire(
+            scope: settingsController.conversationScope, requestID: requestID, conversationID: conversation.id
+        )
+        settingsController.connectLocalState(to: context)
+        XCTAssertEqual(assistant.status, .streaming)
+        XCTAssertEqual(user.status, .pending)
+        coordinator.release(requestID: requestID)
+        settingsController.connectLocalState(to: context)
+        XCTAssertEqual(assistant.status, .interrupted)
+        XCTAssertEqual(user.status, .pending)
+        XCTAssertEqual(failure.status, .failed)
+        XCTAssertEqual(failure.errorMessage, "Synthetic provider failure")
+    }
+
+    func testResumePausedGoalStartsItsExistingCheckpointBeforeClearingPauseReason() async throws {
+        let container = try AppSchema.makeContainer(
+            name: "insight-goal-resume-\(UUID().uuidString)", isStoredInMemoryOnly: true
+        )
+        let context = ModelContext(container)
+        let account = AccountProfile(appleUserIdentifier: "goal-resume-\(UUID().uuidString)", displayName: "测试")
+        let farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: "测试牧场")
+        let conversation = InsightConversationRecord(accountID: account.effectiveAccountID, farmID: farm.id)
+        let assistant = InsightMessageRecord(
+            conversationID: conversation.id, accountID: account.effectiveAccountID,
+            farmID: farm.id, role: .assistant, text: "", status: .pending, toolName: "goal_step"
+        )
+        context.insert(account)
+        context.insert(farm)
+        context.insert(conversation)
+        context.insert(assistant)
+        try context.save()
+        try AIPrivacyConsentStore.saveCurrentConsent(for: account.effectiveAccountID)
+        var goal = InsightGoal(
+            title: "暂停目标", steps: ["读取牧场概况"], completionCriteria: ["取得当前牧场概况"],
+            planID: UUID(), planVersion: 1, rootMessageID: assistant.id
+        )
+        goal.status = .paused
+        goal.activeStepMessageID = assistant.id
+        var runtime = InsightConversationRuntime(
+            accountID: account.effectiveAccountID, farmID: farm.id, conversationID: conversation.id
+        )
+        runtime.goals[assistant.id] = goal
+        runtime.turn = InsightTurnCheckpoint(
+            requestID: UUID(), userMessageID: nil, assistantMessageID: assistant.id,
+            text: goal.steps[0], mode: .conversation, configuration: .init(effort: .low),
+            goalID: goal.id, isGoalVerification: false
+        )
+        runtime.pendingMessageID = assistant.id
+        runtime.pausedReason = "目标已暂停，可核对后继续。"
+        try await InsightRuntimeStore.shared.save(runtime)
+        let controller = InsightConversationController(account: account, farm: farm, client: ScriptedMiMoResponder(scripts: []))
+        defer {
+            controller.stopGenerating()
+            Task {
+                try? AIPrivacyConsentStore.withdraw(for: account.effectiveAccountID)
+                try? await InsightRuntimeStore.shared.removeConversation(
+                    accountID: account.effectiveAccountID, farmID: farm.id, conversationID: conversation.id
+                )
+            }
+        }
+        await controller.connect(to: context, preferredConversationID: conversation.id)
+        XCTAssertNotNil(controller.pausedReason)
+        controller.resumeGoal(goal)
+        XCTAssertTrue(controller.isGenerating, "The existing goal checkpoint must enter recovery before its pause reason is cleared.")
+        XCTAssertEqual(controller.runtime?.turn?.assistantMessageID, assistant.id)
+        controller.stopGenerating()
+    }
+
     func testBornLambSkillOverridesConflictingRawTableParameters() throws {
         var arguments = farmQueryArguments(subject: "sheep")
         arguments["query_kind"] = FarmDataQuerySkill.QueryKind.bornLambs.rawValue
@@ -4014,6 +4489,48 @@ final class InsightAssistantTests: XCTestCase {
             accountID: accountID
         )
         XCTAssertNil(removed)
+    }
+}
+
+private final class InsightObservationTestSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var changeCount = 0
+
+    func recordChange() { lock.withLock { changeCount += 1 } }
+    var didChange: Bool { lock.withLock { changeCount > 0 } }
+}
+
+/// Each real harness request waits for the test to release its response, so
+/// subscriptions can distinguish provisional text from accepted completion.
+private final class ControlledObservationMiMoResponder: MiMoResponding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuations: [AsyncThrowingStream<InsightModelEvent, Error>.Continuation] = []
+
+    func stream(request: MiMoConversationRequest, credential: MiMoCredential) -> AsyncThrowingStream<InsightModelEvent, Error> {
+        AsyncThrowingStream { continuation in
+            lock.withLock { continuations.append(continuation) }
+        }
+    }
+
+    func validate(credential: MiMoCredential) async throws {}
+
+    func waitForRequestCount(_ count: Int) async throws {
+        for _ in 0..<500 {
+            if lock.withLock({ continuations.count >= count }) { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw MiMoClientError.invalidResponse
+    }
+
+    func finishRequest(at index: Int, events: [InsightModelEvent]) -> Bool {
+        guard let continuation = lock.withLock({ continuations.indices.contains(index) ? continuations[index] : nil }) else { return false }
+        for event in events { continuation.yield(event) }
+        continuation.finish()
+        return true
+    }
+
+    func finishAll() {
+        for continuation in lock.withLock({ continuations }) { continuation.finish(throwing: CancellationError()) }
     }
 }
 

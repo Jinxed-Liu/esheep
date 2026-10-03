@@ -3,61 +3,123 @@ import SwiftUI
 struct InsightRuntimeDisclosure: View {
     let records: [InsightRuntimeRecord]
     let showReasoning: Bool
+    var toolExchanges: [MiMoFunctionExchange] = []
+    var activeSeconds: TimeInterval? = nil
+    var isCompleted = false
+    var isRunning = false
+    var isInterrupted = false
+    var isPaused = false
+    var runtimeSeconds: (() -> TimeInterval?)? = nil
     @State private var expanded = false
 
-    private var visibleRecords: [InsightRuntimeRecord] {
-        records.filter { showReasoning || $0.kind != .reasoning }
+    private var processSteps: [InsightPublicProcess.Step] {
+        InsightPublicProcess.steps(records: records, exchanges: toolExchanges, isCompleted: isCompleted)
+    }
+
+    private var expandedSteps: [InsightPublicProcess.Step] {
+        var steps = processSteps
+        if isRunning, var current = currentStep, !steps.contains(where: { $0.id == current.id }) {
+            current.detail = ""
+            steps.append(current)
+        }
+        return steps
     }
 
     var body: some View {
-        if !visibleRecords.isEmpty {
-            DisclosureGroup(isExpanded: $expanded) {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(visibleRecords) { record in
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack(spacing: 6) {
-                                Image(systemName: symbol(record))
-                                Text(record.title).font(.caption.weight(.semibold))
-                                Spacer(minLength: 0)
-                                Text(stateTitle(record.state)).font(.caption2)
+        if !records.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    expanded.toggle()
+                } label: {
+                    HStack(spacing: 8) {
+                        if isRunning {
+                            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                                Text(runningTitle(seconds: runtimeSeconds?() ?? activeSeconds))
                             }
-                            .foregroundStyle(record.state == .failed ? Color.red : Color.secondary)
-                            if !record.detail.isEmpty {
-                                Text(record.detail)
-                                    .font(.callout)
-                                    .textSelection(.enabled)
+                        } else {
+                            Text(completedTitle)
+                        }
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.caption2.weight(.semibold))
+                        Spacer(minLength: 0)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(minHeight: 32)
+                    .contentShape(.rect)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isRunning ? "正在思考，查看处理步骤" : "查看本次处理步骤")
+                .accessibilityValue(expanded ? "已展开" : "已收起")
+
+                if isRunning, !expanded, let step = currentStep {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(step.title).font(.callout)
+                        if !step.detail.isEmpty {
+                            Text(step.detail).font(.caption)
+                        }
+                    }
+                    .foregroundStyle(.secondary)
+                }
+
+                if expanded {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(expandedSteps) { step in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: symbol(step))
+                                    Text(step.title).font(.caption.weight(.semibold))
+                                    Spacer(minLength: 0)
+                                    Text(stateTitle(step.state)).font(.caption2)
+                                }
+                                .foregroundStyle(step.state == .failed ? Color.red : Color.secondary)
+                                // The public process contains actual task and tool
+                                // events. Provider reasoning text stays in its
+                                // protected local record, outside the transcript.
+                                if !step.detail.isEmpty {
+                                    Text(step.detail)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
                             }
                         }
                     }
                 }
-                .padding(.top, 8)
-            } label: {
-                Label(title, systemImage: "sparkle.magnifyingglass")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(minHeight: 44)
+
+                if !isRunning { Divider() }
             }
-            .padding(.horizontal, 12)
-            .background(.fill.tertiary, in: .rect(cornerRadius: 16))
             .accessibilityIdentifier("insight.runtime.disclosure")
         }
     }
 
-    private var title: String {
-        if visibleRecords.contains(where: { $0.state == .running && $0.kind == .reasoning }) {
-            return "思考中 · 查看实际过程"
-        }
-        return visibleRecords.contains(where: { $0.kind == .reasoning }) ? "模型思考与工具过程" : "工具过程"
+    private func runningTitle(seconds: TimeInterval?) -> String {
+        guard let seconds else { return "正在思考" }
+        return "正在思考 · \(max(0, Int(seconds))) 秒"
     }
 
-    private func symbol(_ record: InsightRuntimeRecord) -> String {
-        if record.state == .failed { return "exclamationmark.circle" }
-        if record.state == .cancelled { return "stop.circle" }
-        switch record.kind {
-        case .reasoning: return "sparkles"
-        case .tool: return record.state == .completed ? "checkmark.circle" : "wrench.and.screwdriver"
-        case .status: return "info.circle"
+    private var completedTitle: String {
+        if isCompleted {
+            if let activeSeconds { return "已运行 \(max(0, Int(activeSeconds))) 秒" }
+            return "已完成 \(processSteps.filter { $0.state == .completed }.count) 个步骤"
         }
+        if isPaused { return "分析已暂停" }
+        if isInterrupted { return "本次分析已中断" }
+        if processSteps.contains(where: { $0.state == .failed || $0.state == .cancelled || $0.state == .running }) {
+            return "处理已中断"
+        }
+        return "已完成 \(processSteps.filter { $0.state == .completed }.count) 个步骤"
+    }
+
+    private var currentStep: InsightPublicProcess.Step? {
+        InsightPublicProcess.currentStep(records: records, steps: processSteps)
+    }
+
+    private func symbol(_ step: InsightPublicProcess.Step) -> String {
+        if step.state == .failed { return "exclamationmark.circle" }
+        if step.state == .cancelled { return "stop.circle" }
+        return step.state == .completed ? "checkmark.circle" : (step.isTool ? "magnifyingglass" : "sparkles")
     }
 
     private func stateTitle(_ state: InsightRuntimeRecord.State) -> String {

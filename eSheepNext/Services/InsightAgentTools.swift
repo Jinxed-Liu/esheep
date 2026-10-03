@@ -314,6 +314,7 @@ final class InsightToolRegistry {
                         "maxItems": .number(50),
                         "items": Self.string("一个精确圈舍名称"),
                     ]),
+                    "batch_id": Self.string("生产批次 UUID；先用 get_farm_entities 的 production_batches 核对；不筛选时传空字符串。批次与多舍取交集，使用 canonical_timeline + at_cutoff + sheep + adjacent + difference_per_day，保持真实相邻称重与跨舍增重。"),
                     "ear_tag": Self.string("耳号关键词；不筛选时传空字符串"),
                     "breed": Self.string("品种关键词；不筛选时传空字符串"),
                     "sex": Self.enumString(
@@ -362,7 +363,7 @@ final class InsightToolRegistry {
                     ]),
                 ],
                 required: [
-                    "source", "sample_policy", "cohort", "pen_membership", "pen_name", "pen_names",
+                    "source", "sample_policy", "cohort", "pen_membership", "pen_name", "pen_names", "batch_id",
                     "ear_tag", "breed", "sex", "date_from", "date_to", "as_of",
                     "partition_by", "window", "transform", "analysis_scope", "group_by", "reduce",
                     "selection", "limit",
@@ -637,6 +638,32 @@ final class InsightToolRegistry {
             ])
         }
         return values
+    }
+
+    /// Conversation reads use an independent actor/context. Draft creation
+    /// keeps the existing main-actor transaction and confirmation boundary.
+    func executeForConversation(
+        _ call: InsightFunctionCall,
+        agent: InsightAgentContext,
+        context: ModelContext,
+        extendedDataAuthorized: Bool = false
+    ) async throws -> InsightToolExecution {
+        try Task.checkCancellation()
+        guard agent.farmContext.capabilities.allows(.readFarm) else {
+            throw InsightToolError.permissionDenied
+        }
+        if call.name == InsightFarmQueryEngine.toolName ||
+            call.name == InsightFarmCalculationEngine.toolName {
+            let output = try await InsightFarmReadWorker(container: context.container).execute(
+                call, farmID: agent.farmID
+            )
+            try Task.checkCancellation()
+            return .init(output: output, actionDraft: nil)
+        }
+        return try execute(
+            call, agent: agent, context: context,
+            extendedDataAuthorized: extendedDataAuthorized
+        )
     }
 
     func execute(

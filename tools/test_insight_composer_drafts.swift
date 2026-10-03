@@ -91,18 +91,34 @@ struct InsightComposerDraftRegression {
         try require(!draft.hasContent && draft.modeRawValue == "conversation" && draft.draftID != acceptedIdentity, "Successful unchanged first send did not clear/renew draft.")
         print("PASS: first-send revision protects newer edits and renews each draft identity")
 
-        draft.text = "saved before send"
-        try await store.save(scope: scope, conversationID: nil)
-        let durableRevision = draft.revision
-        let durableIdentity = draft.draftID
-        draft.text = "edited during send\nKeep this line"
-        try await store.consumeNewDraftAndSave(scope: scope, expectedRevision: durableRevision)
-        let preservedText = try await restoredText(root, scope)
-        try require(preservedText == draft.text && draft.draftID != durableIdentity, "Durable consumption lost the next draft's real edits.")
-        let finalRevision = draft.revision
-        try await store.consumeNewDraftAndSave(scope: scope, expectedRevision: finalRevision)
-        let durablyClearedText = try await restoredText(root, scope)
-        try require(durablyClearedText.isEmpty && !FileManager.default.fileExists(atPath: fileURL(root, scope).path), "Awaited consumption returned before the sent draft was removed.")
+        let durableScope = InsightSessionScope(accountID: scope.accountID, farmID: UUID())
+        let durableDraft = store.draft(scope: durableScope, conversationID: nil)
+        durableDraft.text = "saved before send"
+        try await store.save(scope: durableScope, conversationID: nil)
+        let durableRevision = durableDraft.revision
+        let durableIdentity = durableDraft.draftID
+        durableDraft.text = "edited during send\nKeep this line"
+        let sealsBeforeConsumption = await InsightPersonalCryptoActor.shared.sealCount
+        await InsightPersonalCryptoActor.shared.holdNextSeal()
+        var consumptionReturned = false
+        let consumption = Task { @MainActor in
+            try await store.consumeNewDraftAndSave(scope: durableScope, expectedRevision: durableRevision)
+            consumptionReturned = true
+        }
+        try await waitForSeal()
+        try require(!consumptionReturned, "Awaited consumption returned while its encrypted save was suspended.")
+        let beforeConsumptionFinished = try await restoredText(root, durableScope)
+        try require(beforeConsumptionFinished == "saved before send", "A duplicate consumption save bypassed the held encrypted write.")
+        await InsightPersonalCryptoActor.shared.releaseSeal()
+        try await consumption.value
+        let preservedText = try await restoredText(root, durableScope)
+        let sealsAfterConsumption = await InsightPersonalCryptoActor.shared.sealCount
+        try require(sealsAfterConsumption == sealsBeforeConsumption + 1, "Awaited consumption scheduled more than one encrypted save.")
+        try require(preservedText == durableDraft.text && durableDraft.draftID != durableIdentity, "Durable consumption lost the next draft's real edits.")
+        let finalRevision = durableDraft.revision
+        try await store.consumeNewDraftAndSave(scope: durableScope, expectedRevision: finalRevision)
+        let durablyClearedText = try await restoredText(root, durableScope)
+        try require(durablyClearedText.isEmpty && !FileManager.default.fileExists(atPath: fileURL(root, durableScope).path), "Awaited consumption returned before the sent draft was removed.")
         print("PASS: awaited consumption persists genuine later edits and removes an unchanged sent draft")
 
         draft.text = "old snapshot"

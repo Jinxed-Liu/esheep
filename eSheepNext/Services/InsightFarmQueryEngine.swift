@@ -136,6 +136,7 @@ struct InsightFarmQueryEngine {
         context: ModelContext,
         now: Date = .now
     ) throws -> String {
+        try Task.checkCancellation()
         let normalizedArguments = try FarmDataQuerySkill.normalize(arguments: arguments)
         let farmTimeZone = try farmTimeZone(farmID: farmID, context: context)
         let request = try parse(
@@ -212,6 +213,7 @@ struct InsightFarmQueryEngine {
             throw InsightToolError.invalidArguments("subject")
         }
 
+        try Task.checkCancellation()
         let totalCount = rows.count
         let limitedRows = Array(rows.prefix(request.limit))
         let rendersAggregate = request.groupBy != "none" || request.metric != "records"
@@ -301,6 +303,7 @@ struct InsightFarmQueryEngine {
         var unknownRemovalByMonth: [String: Int] = [:]
         var audit = FactAudit.empty
         for item in sheep {
+            try Task.checkCancellation()
             guard let birthAt = item.birthAt else { continue }
             let fact = FarmSheepStateResolver.current(
                 item,
@@ -617,6 +620,7 @@ struct InsightFarmQueryEngine {
             || request.metric == "records"
 
         for item in sheep {
+            try Task.checkCancellation()
             let itemTransfers = transfersBySheepID[item.id] ?? []
             let itemRemovals = removalsBySheepID[item.id] ?? []
             let fact = FarmSheepStateResolver.resolve(
