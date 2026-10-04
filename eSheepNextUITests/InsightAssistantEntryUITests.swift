@@ -240,7 +240,11 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let panelRemovedForPicker = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"), object: panel
         )
-        XCTAssertEqual(XCTWaiter.wait(for: [panelRemovedForPicker], timeout: 5), .completed)
+        let panelRemovalResult = XCTWaiter.wait(for: [panelRemovedForPicker], timeout: 5)
+        if panelRemovalResult != .completed {
+            attachInteractionFailure(of: app, named: "attachment-file-action-panel-not-removed")
+        }
+        XCTAssertEqual(panelRemovalResult, .completed)
         let cancel = app.buttons["取消"]
         // The system document picker loads its remote content after its modal
         // host appears. Wait for an actionable control, not just that host.
@@ -444,7 +448,11 @@ final class InsightAssistantEntryUITests: XCTestCase {
         // to complete UIKit's interactive transition rather than cancel it.
         let destination = app.coordinate(withNormalizedOffset: CGVector(dx: startingAtEdge ? 0.85 : 0.98, dy: 0.45))
         edge.press(forDuration: 0.05, thenDragTo: destination, withVelocity: .fast, thenHoldForDuration: 0)
-        XCTAssertTrue(app.buttons["聊天菜单"].waitForExistence(timeout: 5), "The native \(startingAtEdge ? "edge" : "content") return did not complete.")
+        let returnedToList = app.buttons["聊天菜单"].waitForExistence(timeout: 5)
+        if !returnedToList {
+            attachInteractionFailure(of: app, named: "\(startingAtEdge ? "edge" : "content")-swipe-list-not-ready")
+        }
+        XCTAssertTrue(returnedToList, "The native \(startingAtEdge ? "edge" : "content") return did not complete.")
         XCTAssertTrue(app.activityIndicators["处理中"].exists, "Returning to the list interrupted or completed the delayed response prematurely.")
         attachScreenshot(of: app, named: "\(startingAtEdge ? "edge" : "content")-swipe-list-reply-running")
 
@@ -1049,6 +1057,15 @@ final class InsightAssistantEntryUITests: XCTestCase {
         screenshot.name = name
         screenshot.lifetime = .keepAlways
         add(screenshot)
+    }
+
+    @MainActor
+    private func attachInteractionFailure(of app: XCUIApplication, named name: String) {
+        attachScreenshot(of: app, named: name)
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "\(name)-accessibility-hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
     }
 
     @MainActor
