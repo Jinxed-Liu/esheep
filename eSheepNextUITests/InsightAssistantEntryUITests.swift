@@ -231,9 +231,28 @@ final class InsightAssistantEntryUITests: XCTestCase {
 
         add.tap()
         XCTAssertTrue(panel.waitForExistence(timeout: 5))
-        app.buttons["insight.attachment.files"].tap()
+        let files = app.buttons["insight.attachment.files"]
+        let filesReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "enabled == true AND hittable == true"), object: files
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [filesReady], timeout: 5), .completed)
+        files.tap()
+        let panelRemovedForPicker = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: panel
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [panelRemovedForPicker], timeout: 5), .completed)
         let cancel = app.buttons["取消"]
-        XCTAssertTrue(cancel.waitForExistence(timeout: 10), "The file picker was not presented after the floating panel finished dismissing.")
+        // The system document picker loads its remote content after its modal
+        // host appears. Wait for an actionable control, not just that host.
+        let pickerReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND hittable == true"), object: cancel
+        )
+        let pickerResult = XCTWaiter.wait(for: [pickerReady], timeout: 30)
+        if pickerResult != .completed {
+            attachScreenshot(of: app, named: "attachment-file-picker-content-not-ready")
+        }
+        XCTAssertEqual(pickerResult, .completed,
+                       "The file picker was not presented after the floating panel finished dismissing.")
         XCTAssertFalse(panel.exists)
         attachScreenshot(of: app, named: "attachment-file-picker-after-floating-panel-dismissal")
         cancel.tap()
@@ -637,7 +656,9 @@ final class InsightAssistantEntryUITests: XCTestCase {
     @MainActor
     func testListComposerUsesReturnForNewlineAndSendPersistsConversation() {
         continueAfterFailure = false
-        let firstLine = "Composer \(UUID().uuidString.prefix(8))"
+        // Finish Latin/Pinyin composition with a digit before testing Return
+        // as a newline; a trailing marked letter can consume Return to commit.
+        let firstLine = "Composer \(UUID().uuidString.prefix(8))1"
         let message = firstLine + "\nSecond line"
         let response = "离线发送验收：已收到两行输入。"
         let app = XCUIApplication()
@@ -660,11 +681,33 @@ final class InsightAssistantEntryUITests: XCTestCase {
             NSPredicate(format: "label IN %@", ["Return", "return", "换行", "回车"])
         ).firstMatch
         XCTAssertTrue(returnKey.waitForExistence(timeout: 5), "The multiline editor has no native Return key.")
+        let readyForReturn = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            self.composerField(in: app).value as? String == firstLine && returnKey.isHittable
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [readyForReturn], timeout: 10), .completed,
+                       "The first line and native Return key did not become ready.")
         returnKey.tap()
-        XCTAssertEqual(composer.value as? String, firstLine + "\n", "Return must insert a newline into the draft.")
+        // Native keyboard input can precede the updated SwiftUI AX value on
+        // a busy simulator. Wait for the exact draft from a fresh query; tap
+        // Return only once so a lost newline remains a functional failure.
+        let newlineInserted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            self.composerField(in: app).value as? String == firstLine + "\n"
+        }, object: app)
+        let newlineResult = XCTWaiter.wait(for: [newlineInserted], timeout: 10)
+        if newlineResult != .completed {
+            attachScreenshot(of: app, named: "composer-native-return-newline-did-not-settle")
+        }
+        XCTAssertEqual(newlineResult, .completed, "Return must insert a newline into the draft.")
+        XCTAssertEqual(composerField(in: app).value as? String, firstLine + "\n",
+                       "Return must insert a newline into the draft.")
         XCTAssertFalse(app.staticTexts[response].exists, "Return unexpectedly submitted the draft.")
         composer.typeText("Second line")
-        XCTAssertEqual(composer.value as? String, message)
+        let messageEntered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            self.composerField(in: app).value as? String == message
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [messageEntered], timeout: 10), .completed,
+                       "The exact two-line draft did not settle after typing.")
+        XCTAssertEqual(composerField(in: app).value as? String, message)
 
         let send = app.buttons["insight.composer.send"]
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: send)
