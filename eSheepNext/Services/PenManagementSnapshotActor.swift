@@ -83,12 +83,31 @@ actor PenManagementSnapshotActor {
         guard let pen = try context.fetch(penDescriptor).first else { return nil }
 
         let activeStatus = SheepStatus.active.rawValue
-        let sheepPredicate = #Predicate<SheepRecord> {
-            $0.farmID == farmID &&
-                $0.currentPenID == penID &&
-                $0.deletedAt == nil &&
-                $0.statusRawValue == activeStatus &&
-                $0.isHistoricalArchive == false
+        let sheepPredicate = Predicate<SheepRecord> { sheep in
+            let farmMatches = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: sheep, keyPath: \SheepRecord.farmID),
+                rhs: PredicateExpressions.build_Arg(farmID)
+            )
+            let penMatches = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: sheep, keyPath: \SheepRecord.currentPenID),
+                rhs: PredicateExpressions.build_Arg(Optional<UUID>.some(penID))
+            )
+            let isNotDeleted = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: sheep, keyPath: \SheepRecord.deletedAt),
+                rhs: PredicateExpressions.NilLiteral<Date>()
+            )
+            let isActive = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: sheep, keyPath: \SheepRecord.statusRawValue),
+                rhs: PredicateExpressions.build_Arg(activeStatus)
+            )
+            let isNotHistoricalArchive = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: sheep, keyPath: \SheepRecord.isHistoricalArchive),
+                rhs: PredicateExpressions.build_Arg(false)
+            )
+            let scopeMatches = PredicateExpressions.build_Conjunction(lhs: farmMatches, rhs: penMatches)
+            let presentScopeMatches = PredicateExpressions.build_Conjunction(lhs: scopeMatches, rhs: isNotDeleted)
+            let activeScopeMatches = PredicateExpressions.build_Conjunction(lhs: presentScopeMatches, rhs: isActive)
+            return PredicateExpressions.build_Conjunction(lhs: activeScopeMatches, rhs: isNotHistoricalArchive)
         }
         let sheepDescriptor = FetchDescriptor<SheepRecord>(predicate: sheepPredicate)
         let sheepRecords: [SheepRecord] = try context.fetch(sheepDescriptor)

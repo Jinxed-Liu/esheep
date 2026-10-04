@@ -266,8 +266,26 @@ actor SheepDetailSnapshotActor {
             },
             sortBy: [SortDescriptor(\WeaningRecord.occurredAt, order: .reverse)]
         ))
-        let birthDetailsPredicate = #Predicate<LambingOffspringRecord> {
-            $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil && $0.deletedByLambingRevocation == false
+        let birthDetailsPredicate = Predicate<LambingOffspringRecord> { offspring in
+            let farmMatches = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: offspring, keyPath: \LambingOffspringRecord.farmID),
+                rhs: PredicateExpressions.build_Arg(farmID)
+            )
+            let sheepMatches = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: offspring, keyPath: \LambingOffspringRecord.sheepID),
+                rhs: PredicateExpressions.build_Arg(Optional<UUID>.some(sheepID))
+            )
+            let isNotDeleted = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: offspring, keyPath: \LambingOffspringRecord.deletedAt),
+                rhs: PredicateExpressions.NilLiteral<Date>()
+            )
+            let isNotRevoked = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: offspring, keyPath: \LambingOffspringRecord.deletedByLambingRevocation),
+                rhs: PredicateExpressions.build_Arg(false)
+            )
+            let scopeMatches = PredicateExpressions.build_Conjunction(lhs: farmMatches, rhs: sheepMatches)
+            let presentScopeMatches = PredicateExpressions.build_Conjunction(lhs: scopeMatches, rhs: isNotDeleted)
+            return PredicateExpressions.build_Conjunction(lhs: presentScopeMatches, rhs: isNotRevoked)
         }
         let birthDetailsDescriptor = FetchDescriptor<LambingOffspringRecord>(predicate: birthDetailsPredicate)
         let birthDetails: [LambingOffspringRecord] = try context.fetch(birthDetailsDescriptor)

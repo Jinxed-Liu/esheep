@@ -258,17 +258,49 @@ private struct CreateProductionBatchView: View {
             },
             sort: \SheepRecord.earTag
         )
-        _memberships = Query(
-            filter: #Predicate<BatchMembershipRecord> {
-                $0.farmID == farmID && $0.deletedAt == nil && $0.leftAt == nil
-            }
-        )
+        let membershipPredicate = Predicate<BatchMembershipRecord> { membership in
+            let farmMatches = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: membership, keyPath: \BatchMembershipRecord.farmID),
+                rhs: PredicateExpressions.build_Arg(farmID)
+            )
+            let notDeleted = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: membership, keyPath: \BatchMembershipRecord.deletedAt),
+                rhs: PredicateExpressions.NilLiteral<Date>()
+            )
+            let notLeft = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: membership, keyPath: \BatchMembershipRecord.leftAt),
+                rhs: PredicateExpressions.NilLiteral<Date>()
+            )
+            let currentFarmMembership = PredicateExpressions.build_Conjunction(lhs: farmMatches, rhs: notDeleted)
+            return PredicateExpressions.build_Conjunction(lhs: currentFarmMembership, rhs: notLeft)
+        }
+        _memberships = Query(filter: membershipPredicate)
     }
 
     var body: some View {
         Form {
-            ProductionBatchInformationSection(name: $name, purpose: $purpose, startedAt: $startedAt, note: $note)
-            ProductionBatchSheepSelectionSection(candidates: batchCandidates, selection: $selectedIDs)
+            Section("批次信息") {
+                TextField("批次名称", text: $name)
+                TextField("生产目的", text: $purpose)
+                DatePicker("开始时间", selection: $startedAt, in: ...Date.now)
+                TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
+            }
+            Section {
+                SheepEarTagMultiSearchField(
+                    candidates: batchCandidates,
+                    selection: $selectedIDs,
+                    prompt: "输入耳号搜索并加入批次",
+                    emptySelectionText: batchCandidates.isEmpty ? "没有可加入批次的在群羊只" : "尚未添加羊只"
+                )
+            } header: {
+                HStack {
+                    Text("搜索并添加羊只")
+                    Spacer()
+                    Text("已选 \(selectedIDs.count) 只")
+                }
+            } footer: {
+                Text("已在其他未结束批次中的羊只不会重复显示。最后一只成员被手工移出时，批次自动归档；羊只仍可继续留养。")
+            }
         }
         .navigationTitle("新建生产批次")
         .onAppear(perform: rebuildCandidates)
@@ -307,46 +339,6 @@ private struct CreateProductionBatchView: View {
             )
             dismiss()
         } catch { errorMessage = error.localizedDescription }
-    }
-}
-
-private struct ProductionBatchInformationSection: View {
-    @Binding var name: String
-    @Binding var purpose: String
-    @Binding var startedAt: Date
-    @Binding var note: String
-
-    var body: some View {
-        Section("批次信息") {
-            TextField("批次名称", text: $name)
-            TextField("生产目的", text: $purpose)
-            DatePicker("开始时间", selection: $startedAt, in: ...Date.now)
-            TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
-        }
-    }
-}
-
-private struct ProductionBatchSheepSelectionSection: View {
-    let candidates: [SheepEarTagSearchCandidate]
-    @Binding var selection: Set<UUID>
-
-    var body: some View {
-        Section {
-            SheepEarTagMultiSearchField(
-                candidates: candidates,
-                selection: $selection,
-                prompt: "输入耳号搜索并加入批次",
-                emptySelectionText: candidates.isEmpty ? "没有可加入批次的在群羊只" : "尚未添加羊只"
-            )
-        } header: {
-            HStack {
-                Text("搜索并添加羊只")
-                Spacer()
-                Text("已选 \(selection.count) 只")
-            }
-        } footer: {
-            Text("已在其他未结束批次中的羊只不会重复显示。最后一只成员被手工移出时，批次自动归档；羊只仍可继续留养。")
-        }
     }
 }
 

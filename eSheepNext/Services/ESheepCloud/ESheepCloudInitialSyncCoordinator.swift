@@ -1323,124 +1323,124 @@ private final class ESheepCloudInitialSyncLocalStore {
         farmID: UUID,
         context: ModelContext
     ) throws -> Bool {
-        let checks: [(String, Bool)] = [
-            ("FarmStorageProfile", try context.fetch(FetchDescriptor<FarmStorageProfile>())
-                .contains { $0.farmID == farmID }),
-            ("FarmRemoteBinding", try context.fetch(FetchDescriptor<FarmRemoteBinding>())
-                .contains { $0.farmID == farmID }),
-            ("FarmMembershipBinding", try context.fetch(FetchDescriptor<FarmMembershipBinding>())
-                .contains { $0.farmID == farmID }),
-            ("FarmRemoteRestoreRecord", try context.fetch(FetchDescriptor<FarmRemoteRestoreRecord>())
-                .contains { $0.farmID == farmID }),
-            ("FarmBaselineMigrationRecord", try context.fetch(FetchDescriptor<FarmBaselineMigrationRecord>())
-                .contains { $0.farmID == farmID }),
-            ("MigrationCommitRecord", try context.fetch(FetchDescriptor<MigrationCommitRecord>())
-                .contains { $0.farmID == farmID }),
-            ("ESheepCloudFarmState", try context.fetch(FetchDescriptor<ESheepCloudFarmState>())
-                .contains { $0.farmID == farmID }),
-            ("ESheepCloudStreamState", try context.fetch(FetchDescriptor<ESheepCloudStreamState>())
-                .contains { $0.farmID == farmID }),
-            ("ESheepCloudPendingIntent", try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
-                .contains { $0.farmID == farmID }),
-            ("ESheepCloudEventReceipt", try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>())
-                .contains { $0.farmID == farmID }),
-            ("ESheepCloudAttentionItem", try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>())
-                .contains { $0.farmID == farmID }),
-            ("ESheepCloudAssetState", try context.fetch(FetchDescriptor<ESheepCloudAssetState>())
-                .contains { $0.farmID == farmID }),
-            ("ESheepCloudMigrationState", try context.fetch(FetchDescriptor<ESheepCloudMigrationState>())
-                .contains { $0.farmID == farmID }),
-            ("PenRecord", try context.fetch(FetchDescriptor<PenRecord>())
-                .contains { $0.farmID == farmID }),
-            ("SheepRecord", try context.fetch(FetchDescriptor<SheepRecord>())
-                .contains { $0.farmID == farmID }),
-            ("SheepAvatarRecord", try context.fetch(FetchDescriptor<SheepAvatarRecord>())
-                .contains { $0.farmID == farmID }),
-            ("WeightRecord", try context.fetch(FetchDescriptor<WeightRecord>())
-                .contains { $0.farmID == farmID }),
-            ("WeaningRecord", try context.fetch(FetchDescriptor<WeaningRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TransferRecord", try context.fetch(FetchDescriptor<TransferRecord>())
-                .contains { $0.farmID == farmID }),
-            ("RemovalRecord", try context.fetch(FetchDescriptor<RemovalRecord>())
-                .contains { $0.farmID == farmID }),
-            ("ProductionBatchRecord", try context.fetch(FetchDescriptor<ProductionBatchRecord>())
-                .contains { $0.farmID == farmID }),
-            ("BatchMembershipRecord", try context.fetch(FetchDescriptor<BatchMembershipRecord>())
-                .contains { $0.farmID == farmID }),
-            ("FeedIngredientRecord", try context.fetch(FetchDescriptor<FeedIngredientRecord>())
-                .contains { $0.farmID == farmID }),
-            ("FeedIngredientBatchRecord", try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>())
-                .contains { $0.farmID == farmID }),
-            ("FeedRecipeRecord", try context.fetch(FetchDescriptor<FeedRecipeRecord>())
-                .contains { $0.farmID == farmID }),
-            ("FeedRecipeComponentRecord", try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>())
-                .contains { $0.farmID == farmID }),
-            ("FeedRecord", try context.fetch(FetchDescriptor<FeedRecord>())
-                .contains { $0.farmID == farmID }),
-            ("FeedRecordLine", try context.fetch(FetchDescriptor<FeedRecordLine>())
-                .contains { $0.farmID == farmID }),
-            ("FeedTroughObservationRecord", try context.fetch(FetchDescriptor<FeedTroughObservationRecord>())
-                .contains { $0.farmID == farmID }),
-            ("FeedStockTransactionRecord", try context.fetch(FetchDescriptor<FeedStockTransactionRecord>())
-                .contains { $0.farmID == farmID }),
-            ("FeedStockCountRecord", try context.fetch(FetchDescriptor<FeedStockCountRecord>())
-                .contains { $0.farmID == farmID }),
-            ("InventoryLotRecord", try context.fetch(FetchDescriptor<InventoryLotRecord>())
-                .contains { $0.farmID == farmID }),
-            ("InventoryTransactionRecord", try context.fetch(FetchDescriptor<InventoryTransactionRecord>())
-                .contains { $0.farmID == farmID }),
-            ("HealthRecord", try context.fetch(FetchDescriptor<HealthRecord>())
-                .contains { $0.farmID == farmID }),
-            ("ReproductionRecord", try context.fetch(FetchDescriptor<ReproductionRecord>())
-                .contains { $0.farmID == farmID }),
-            ("SemenRecord", try context.fetch(FetchDescriptor<SemenRecord>())
-                .contains { $0.farmID == farmID }),
-            ("NoteRecord", try context.fetch(FetchDescriptor<NoteRecord>())
-                .contains { $0.farmID == farmID }),
-            ("PhotoAssetRecord", try context.fetch(FetchDescriptor<PhotoAssetRecord>())
-                .contains { $0.farmID == farmID }),
-            ("LambingOffspringRecord", try context.fetch(FetchDescriptor<LambingOffspringRecord>())
-                .contains { $0.farmID == farmID }),
-            ("SemenDonorRecord", try context.fetch(FetchDescriptor<SemenDonorRecord>())
-                .contains { $0.farmID == farmID }),
-            ("PedigreeChangeRecord", try context.fetch(FetchDescriptor<PedigreeChangeRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TMRFormulaProfileRecord", try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TMRFeedingPlanRecord", try context.fetch(FetchDescriptor<TMRFeedingPlanRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TMRFeedingPlanPenRecord", try context.fetch(FetchDescriptor<TMRFeedingPlanPenRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TMRBatchRecord", try context.fetch(FetchDescriptor<TMRBatchRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TMRBatchIngredientRecord", try context.fetch(FetchDescriptor<TMRBatchIngredientRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TMRBatchLoadLineRecord", try context.fetch(FetchDescriptor<TMRBatchLoadLineRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TMRBatchMovementRecord", try context.fetch(FetchDescriptor<TMRBatchMovementRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TMRFeedingRunRecord", try context.fetch(FetchDescriptor<TMRFeedingRunRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TMRFeedingAllocationRecord", try context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TMRMealCompletionRecord", try context.fetch(FetchDescriptor<TMRMealCompletionRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TMRDeviationAcknowledgementRecord", try context.fetch(FetchDescriptor<TMRDeviationAcknowledgementRecord>())
-                .contains { $0.farmID == farmID }),
-            ("TMRMonitoringRuleRecord", try context.fetch(FetchDescriptor<TMRMonitoringRuleRecord>())
-                .contains { $0.farmID == farmID }),
-            ("CareBatchRecord", try context.fetch(FetchDescriptor<CareBatchRecord>())
-                .contains { $0.farmID == farmID }),
-            ("SemenTransactionRecord", try context.fetch(FetchDescriptor<SemenTransactionRecord>())
-                .contains { $0.farmID == farmID }),
-            ("FarmCareRuleRecord", try context.fetch(FetchDescriptor<FarmCareRuleRecord>())
-                .contains { $0.farmID == farmID }),
-            ("FarmAlertDeferralRecord", try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>())
-                .contains { $0.farmID == farmID }),
-            ("CareReminderRecord", try context.fetch(FetchDescriptor<CareReminderRecord>())
-                .contains { $0.farmID == farmID }),
-        ]
+        var checks: [(String, Bool)] = []
+        // Keep every fetch in order before deciding whether any farm data exists.
+        checks.append(("FarmStorageProfile", try context.fetch(FetchDescriptor<FarmStorageProfile>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FarmRemoteBinding", try context.fetch(FetchDescriptor<FarmRemoteBinding>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FarmMembershipBinding", try context.fetch(FetchDescriptor<FarmMembershipBinding>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FarmRemoteRestoreRecord", try context.fetch(FetchDescriptor<FarmRemoteRestoreRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FarmBaselineMigrationRecord", try context.fetch(FetchDescriptor<FarmBaselineMigrationRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("MigrationCommitRecord", try context.fetch(FetchDescriptor<MigrationCommitRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("ESheepCloudFarmState", try context.fetch(FetchDescriptor<ESheepCloudFarmState>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("ESheepCloudStreamState", try context.fetch(FetchDescriptor<ESheepCloudStreamState>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("ESheepCloudPendingIntent", try context.fetch(FetchDescriptor<ESheepCloudPendingIntent>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("ESheepCloudEventReceipt", try context.fetch(FetchDescriptor<ESheepCloudEventReceipt>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("ESheepCloudAttentionItem", try context.fetch(FetchDescriptor<ESheepCloudAttentionItem>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("ESheepCloudAssetState", try context.fetch(FetchDescriptor<ESheepCloudAssetState>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("ESheepCloudMigrationState", try context.fetch(FetchDescriptor<ESheepCloudMigrationState>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("PenRecord", try context.fetch(FetchDescriptor<PenRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("SheepRecord", try context.fetch(FetchDescriptor<SheepRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("SheepAvatarRecord", try context.fetch(FetchDescriptor<SheepAvatarRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("WeightRecord", try context.fetch(FetchDescriptor<WeightRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("WeaningRecord", try context.fetch(FetchDescriptor<WeaningRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TransferRecord", try context.fetch(FetchDescriptor<TransferRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("RemovalRecord", try context.fetch(FetchDescriptor<RemovalRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("ProductionBatchRecord", try context.fetch(FetchDescriptor<ProductionBatchRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("BatchMembershipRecord", try context.fetch(FetchDescriptor<BatchMembershipRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FeedIngredientRecord", try context.fetch(FetchDescriptor<FeedIngredientRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FeedIngredientBatchRecord", try context.fetch(FetchDescriptor<FeedIngredientBatchRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FeedRecipeRecord", try context.fetch(FetchDescriptor<FeedRecipeRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FeedRecipeComponentRecord", try context.fetch(FetchDescriptor<FeedRecipeComponentRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FeedRecord", try context.fetch(FetchDescriptor<FeedRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FeedRecordLine", try context.fetch(FetchDescriptor<FeedRecordLine>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FeedTroughObservationRecord", try context.fetch(FetchDescriptor<FeedTroughObservationRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FeedStockTransactionRecord", try context.fetch(FetchDescriptor<FeedStockTransactionRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FeedStockCountRecord", try context.fetch(FetchDescriptor<FeedStockCountRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("InventoryLotRecord", try context.fetch(FetchDescriptor<InventoryLotRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("InventoryTransactionRecord", try context.fetch(FetchDescriptor<InventoryTransactionRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("HealthRecord", try context.fetch(FetchDescriptor<HealthRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("ReproductionRecord", try context.fetch(FetchDescriptor<ReproductionRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("SemenRecord", try context.fetch(FetchDescriptor<SemenRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("NoteRecord", try context.fetch(FetchDescriptor<NoteRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("PhotoAssetRecord", try context.fetch(FetchDescriptor<PhotoAssetRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("LambingOffspringRecord", try context.fetch(FetchDescriptor<LambingOffspringRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("SemenDonorRecord", try context.fetch(FetchDescriptor<SemenDonorRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("PedigreeChangeRecord", try context.fetch(FetchDescriptor<PedigreeChangeRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TMRFormulaProfileRecord", try context.fetch(FetchDescriptor<TMRFormulaProfileRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TMRFeedingPlanRecord", try context.fetch(FetchDescriptor<TMRFeedingPlanRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TMRFeedingPlanPenRecord", try context.fetch(FetchDescriptor<TMRFeedingPlanPenRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TMRBatchRecord", try context.fetch(FetchDescriptor<TMRBatchRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TMRBatchIngredientRecord", try context.fetch(FetchDescriptor<TMRBatchIngredientRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TMRBatchLoadLineRecord", try context.fetch(FetchDescriptor<TMRBatchLoadLineRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TMRBatchMovementRecord", try context.fetch(FetchDescriptor<TMRBatchMovementRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TMRFeedingRunRecord", try context.fetch(FetchDescriptor<TMRFeedingRunRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TMRFeedingAllocationRecord", try context.fetch(FetchDescriptor<TMRFeedingAllocationRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TMRMealCompletionRecord", try context.fetch(FetchDescriptor<TMRMealCompletionRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TMRDeviationAcknowledgementRecord", try context.fetch(FetchDescriptor<TMRDeviationAcknowledgementRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("TMRMonitoringRuleRecord", try context.fetch(FetchDescriptor<TMRMonitoringRuleRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("CareBatchRecord", try context.fetch(FetchDescriptor<CareBatchRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("SemenTransactionRecord", try context.fetch(FetchDescriptor<SemenTransactionRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FarmCareRuleRecord", try context.fetch(FetchDescriptor<FarmCareRuleRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("FarmAlertDeferralRecord", try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>())
+            .contains { $0.farmID == farmID }))
+        checks.append(("CareReminderRecord", try context.fetch(FetchDescriptor<CareReminderRecord>())
+            .contains { $0.farmID == farmID }))
         return checks.contains(where: { $0.1 })
     }
 
