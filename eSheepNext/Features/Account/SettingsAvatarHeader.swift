@@ -306,6 +306,7 @@ private final class SettingsAvatarRendererUIView: UIView {
     private var renderLayout: SettingsAvatarRenderLayout?
     private var islandEligible = false
     private var renderDisplayScale: CGFloat = 1
+    private var compactContact: SettingsAvatarIslandGeometry.Contact?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -319,6 +320,7 @@ private final class SettingsAvatarRendererUIView: UIView {
         composite.layer.mask = compositeMask
 
         canvas.backgroundColor = .clear
+        canvas.clipsToBounds = false
         blackUnderlay.backgroundColor = .black
         canvas.addSubview(blackUnderlay)
         composite.addSubview(canvas)
@@ -389,6 +391,8 @@ private final class SettingsAvatarRendererUIView: UIView {
         renderLayout = layout
         islandEligible = supportsIsland && layout.animationsEnabled
         renderDisplayScale = max(1, displayScale)
+        compactContact = islandEligible
+            ? SettingsAvatarIslandGeometry.currentContact(displayScale: renderDisplayScale) : nil
         photo.image = image
         mirroredPhoto.image = image
         fallback.text = initials
@@ -403,9 +407,10 @@ private final class SettingsAvatarRendererUIView: UIView {
         let shapeStrength = boundedSettingsAvatarProgress((progress - 0.03) / 0.03)
         canvas.isHidden = progress <= 0.03
         blackUnderlay.alpha = progress
-        islandEffect.setProgress(progress)
+        islandEffect.setProgress(progress, topOverscan: compactContact?.paintOverscan ?? 0)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        compositeMask.contentsScale = renderDisplayScale
         compositeMask.path = SettingsAvatarMaskPath.make(
             photo: layout.photoFrame,
             extensionHeight: layout.extensionHeight,
@@ -415,7 +420,8 @@ private final class SettingsAvatarRendererUIView: UIView {
                 y: layout.windowOrigin.y + 47.5
             ),
             progress: progress,
-            strength: shapeStrength * (1 - layout.expansion)
+            strength: shapeStrength * (1 - layout.expansion),
+            compactContact: compactContact
         )
         CATransaction.commit()
 
@@ -457,7 +463,9 @@ private final class SettingsAvatarRendererUIView: UIView {
             x: layout.windowOrigin.x + (layout.width - 171) / 2,
             y: layout.windowOrigin.y + 47.5, width: 171, height: 171
         )
-        blackUnderlay.frame = canvas.bounds
+        blackUnderlay.frame = SettingsAvatarIslandGeometry.paintBounds(
+            in: canvas.bounds, topOverscan: compactContact?.paintOverscan ?? 0
+        )
         islandEffect.frame = canvas.frame
         shadow.frame = CGRect(
             x: layout.photoFrame.minX,
@@ -585,7 +593,7 @@ private final class SettingsAvatarRendererUIView: UIView {
 
 /// Original control points, guided by Telegram's mask phase timing and bounds.
 /// This is an approximation of UserAvatarMask, not a copy of its TGS vectors.
-private enum SettingsAvatarMaskPath {
+enum SettingsAvatarMaskPath {
     private struct Cubic {
         var end: CGPoint
         var first: CGPoint
@@ -640,7 +648,8 @@ private enum SettingsAvatarMaskPath {
 
     static func make(
         photo: CGRect, extensionHeight: CGFloat, cornerRadius: CGFloat,
-        maskOrigin: CGPoint, progress: CGFloat, strength: CGFloat
+        maskOrigin: CGPoint, progress: CGFloat, strength: CGFloat,
+        compactContact: SettingsAvatarIslandGeometry.Contact?
     ) -> CGPath {
         let regular = rounded(
             CGRect(x: photo.minX, y: photo.minY, width: photo.width, height: photo.height + extensionHeight),
@@ -664,7 +673,9 @@ private enum SettingsAvatarMaskPath {
         }
         path.closeSubpath()
         let connection = offset < 34 ? sample(tonguePhases, at: offset) : phase
-        appendConnection(connection, origin: maskOrigin, strength: strength, to: path)
+        appendConnection(
+            connection, origin: maskOrigin, strength: strength, compactContact: compactContact, to: path
+        )
         return path
     }
 
@@ -738,16 +749,23 @@ private enum SettingsAvatarMaskPath {
     }
 
     private static func appendConnection(
-        _ phase: Phase, origin: CGPoint, strength: CGFloat, to path: CGMutablePath
+        _ phase: Phase, origin: CGPoint, strength: CGFloat,
+        compactContact: SettingsAvatarIslandGeometry.Contact?, to path: CGMutablePath
     ) {
         let cx = origin.x + 85.5
-        let halfWidth: CGFloat = 48.4
-        let lip: CGFloat = 45.7
+        let halfWidth: CGFloat = compactContact?.halfWidth ?? 48.4
+        let lip: CGFloat = compactContact?.halfWidth ?? 45.7
+        let contactTop = compactContact?.top ?? 0
         func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
             CGPoint(x: cx + x, y: origin.y + y * strength)
         }
         let right = point(phase.neckX, phase.neckY)
-        let topHandle = min(phase.neckY * 1.08, max(0, phase.bodyX - 16) * 0.5)
+        let availableHeight = max(0, phase.neckY - contactTop)
+        let legacyTopHandle = min(phase.neckY * 1.08, max(0, phase.bodyX - 16) * 0.5)
+        // Keep compact shoulder controls below the overscanned root, so the
+        // curve cannot turn upward and form a cusp at the visible top edge.
+        let topHandle = compactContact == nil ? legacyTopHandle
+            : min(availableHeight * 0.75, max(0, phase.bodyX - 16) * 0.5)
         let neckToBody = max(0, phase.bodyY - phase.neckY)
         let shoulderInset = max(0, phase.neckX - phase.bodyX)
         let lowerHeight = max(0, phase.bottom - phase.bodyY)
@@ -757,13 +775,19 @@ private enum SettingsAvatarMaskPath {
         // the late shoulder widens beyond the body and becomes a shallow bowl.
         let neckInset = neckToBody > 0 ? shoulderInset * 0.34 * topHandle / (neckToBody * 0.3) : 0
         let sideInset = neckToBody > 0 ? shoulderInset * 0.4 * sideHandle / (neckToBody * 0.55) : 0
+        // A vertical tangent joins the compact strip to its shoulder smoothly.
+        // The legacy horizontal shelf and all lower body control points remain
+        // unchanged on earlier hardware.
+        let contactControlX = compactContact == nil ? lip - (lip - phase.neckX) * 0.2 : lip
+        let contactControlY = compactContact == nil ? contactTop
+            : contactTop + max(0, phase.neckY - topHandle - contactTop) * 0.5
         path.move(to: point(-halfWidth, -1.67))
         path.addLine(to: point(halfWidth, -1.67))
-        path.addLine(to: point(halfWidth, 0))
-        path.addLine(to: point(lip, 0))
+        path.addLine(to: point(halfWidth, contactTop))
+        path.addLine(to: point(lip, contactTop))
         path.addCurve(
             to: right,
-            control1: point(lip - (lip - phase.neckX) * 0.2, 0),
+            control1: point(contactControlX, contactControlY),
             control2: point(phase.neckX + neckInset, phase.neckY - topHandle)
         )
         path.addCurve(
@@ -787,11 +811,11 @@ private enum SettingsAvatarMaskPath {
             control2: point(-phase.neckX + shoulderInset * 0.34, phase.neckY + neckToBody * 0.3)
         )
         path.addCurve(
-            to: point(-lip, 0),
+            to: point(-lip, contactTop),
             control1: point(-phase.neckX - neckInset, phase.neckY - topHandle),
-            control2: point(-lip + (lip - phase.neckX) * 0.2, 0)
+            control2: point(-contactControlX, contactControlY)
         )
-        path.addLine(to: point(-halfWidth, 0))
+        path.addLine(to: point(-halfWidth, contactTop))
         path.closeSubpath()
     }
 
