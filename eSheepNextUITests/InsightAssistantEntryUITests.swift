@@ -866,25 +866,21 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let microphone = app.buttons["insight.audio.record"]
         XCTAssertTrue(microphone.isEnabled, "Recording must not require a model credential.")
         XCTAssertTrue(microphone.isHittable, "The microphone is covered or unreachable.")
-        let denialMonitor = addUIInterruptionMonitor(withDescription: "Deny the microphone permission") { alert in
-            guard alert.label.localizedCaseInsensitiveContains("microphone") || alert.label.contains("麦克风") else {
-                return false
-            }
-            let deny = alert.buttons.matching(
-                NSPredicate(format: "label IN %@", ["不允许", "Don’t Allow", "Don't Allow"])
-            ).firstMatch
-            guard deny.exists else { return false }
-            deny.tap()
-            return true
-        }
-        defer { removeUIInterruptionMonitor(denialMonitor) }
         microphone.tap()
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let systemPermission = springboard.alerts.firstMatch
         XCTAssertTrue(systemPermission.waitForExistence(timeout: 10), "Recording did not request microphone access.")
-        // App interaction invokes XCTest's interruption monitor and verifies
-        // dismissal, rather than assuming a direct SpringBoard tap succeeded.
-        app.tap()
+        let deny = systemPermission.buttons.matching(
+            NSPredicate(format: "label IN %@", ["不允许", "Don’t Allow", "Don't Allow"])
+        ).firstMatch
+        let denialReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND enabled == true AND hittable == true"), object: deny
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [denialReady], timeout: 10), .completed,
+                       "The system microphone denial button did not become actionable.")
+        // This prompt is part of the test. Act on its native button directly;
+        // an app tap cannot reliably resolve a SpringBoard interruption query.
+        deny.tap()
         let dismissed = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"), object: systemPermission
         )
