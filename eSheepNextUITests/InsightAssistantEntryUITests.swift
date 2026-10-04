@@ -237,27 +237,25 @@ final class InsightAssistantEntryUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter.wait(for: [filesReady], timeout: 5), .completed)
         files.tap()
-        let panelRemovedForPicker = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == false"), object: panel
-        )
-        let panelRemovalResult = XCTWaiter.wait(for: [panelRemovedForPicker], timeout: 5)
-        if panelRemovalResult != .completed {
-            attachInteractionFailure(of: app, named: "attachment-file-action-panel-not-removed")
-        }
-        XCTAssertEqual(panelRemovalResult, .completed)
         let cancel = app.buttons["取消"]
         // The system document picker loads its remote content after its modal
         // host appears. Wait for an actionable control, not just that host.
+        // Check panel removal afterward: querying its absence during remote
+        // loading can consume the entire accessibility snapshot deadline.
         let pickerReady = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == true AND hittable == true"), object: cancel
         )
         let pickerResult = XCTWaiter.wait(for: [pickerReady], timeout: 30)
         if pickerResult != .completed {
-            attachScreenshot(of: app, named: "attachment-file-picker-content-not-ready")
+            attachInteractionFailure(of: app, named: "attachment-file-picker-content-not-ready")
         }
         XCTAssertEqual(pickerResult, .completed,
                        "The file picker was not presented after the floating panel finished dismissing.")
-        XCTAssertFalse(panel.exists)
+        let panelIsGone = !panel.exists
+        if !panelIsGone {
+            attachInteractionFailure(of: app, named: "attachment-file-action-panel-not-removed")
+        }
+        XCTAssertTrue(panelIsGone, "The floating panel remained over the system file picker.")
         attachScreenshot(of: app, named: "attachment-file-picker-after-floating-panel-dismissal")
         cancel.tap()
         XCTAssertEqual(input.value as? String, editedDraft)
