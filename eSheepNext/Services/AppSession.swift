@@ -66,6 +66,7 @@ final class AppSession {
     var lastSyncDescription = "本地记录待同步"
     var accountAccessStatus: AccountAccessStatus = .checking
     var authenticationRevision = 0
+    private(set) var authenticationIdentityRevision = 0
     var authenticationNotice: String?
     private(set) var persistedLocalSessionAccountID: UUID?
     var pendingRecordEntry: PendingRecordEntry?
@@ -199,6 +200,7 @@ final class AppSession {
     }
 
     func authenticationDidSucceed(accountProfileID: UUID? = nil) {
+        let previousAccountProfileID = activeAccountProfileID
         if let accountProfileID {
             activeAccountProfileID = accountProfileID
             persistActiveAccountProfileID(accountProfileID)
@@ -208,6 +210,9 @@ final class AppSession {
         isReauthenticationPresented = false
         authenticationNotice = nil
         authenticationRevision += 1
+        if activeAccountProfileID != previousAccountProfileID {
+            authenticationIdentityRevision += 1
+        }
     }
 
     func authenticationDidSignOut(warning: String? = nil) {
@@ -221,6 +226,7 @@ final class AppSession {
         isReauthenticationPresented = false
         authenticationNotice = notice
         authenticationRevision += 1
+        authenticationIdentityRevision += 1
     }
 
     func authenticationCheckDidFinish(

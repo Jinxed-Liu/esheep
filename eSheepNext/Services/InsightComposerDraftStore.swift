@@ -5,11 +5,13 @@ import Observation
 @Observable
 final class InsightComposerDraft {
     private(set) var draftID: UUID = UUID()
-    var text = "" { didSet { revision += 1 } }
-    var images: [PendingInsightImage] = [] { didSet { revision += 1 } }
-    var audio: PendingInsightAudio? { didSet { revision += 1 } }
-    var documents: [PendingInsightDocument] = [] { didSet { revision += 1 } }
-    var modeRawValue = "conversation" { didSet { revision += 1 } }
+    // SwiftUI bindings can write the current value again while focus or
+    // enabled state changes. Only a real edit may protect a sent draft.
+    var text = "" { didSet { if text != oldValue { revision += 1 } } }
+    var images: [PendingInsightImage] = [] { didSet { if images != oldValue { revision += 1 } } }
+    var audio: PendingInsightAudio? { didSet { if audio != oldValue { revision += 1 } } }
+    var documents: [PendingInsightDocument] = [] { didSet { if documents != oldValue { revision += 1 } } }
+    var modeRawValue = "conversation" { didSet { if modeRawValue != oldValue { revision += 1 } } }
     private(set) var revision = 0
 
     var hasContent: Bool {
@@ -24,6 +26,8 @@ final class InsightComposerDraft {
         documents = []
         modeRawValue = "conversation"
         draftID = UUID()
+        // Clearing an already-empty page still invalidates a pending restore.
+        revision += 1
     }
 
     fileprivate func renewIdentity() { draftID = UUID() }
@@ -152,14 +156,29 @@ final class InsightComposerDraftStore {
     }
 
     func consumeNewDraft(scope: InsightSessionScope, expectedRevision: Int?) {
+        consumeNewDraftInMemory(scope: scope, expectedRevision: expectedRevision)
+        Task { try? await save(scope: scope, conversationID: nil) }
+    }
+
+    private func consumeNewDraftInMemory(scope: InsightSessionScope, expectedRevision: Int?) {
         let current = draft(scope: scope, conversationID: nil)
         if expectedRevision == nil || current.revision == expectedRevision {
-            clear(scope: scope, conversationID: nil)
+            current.clear()
+            failedRestoreKeys.remove(Self.key(scope: scope, conversationID: nil))
         } else {
             // Content edited while an archive was saving belongs to the next chat.
             current.renewIdentity()
-            Task { try? await save(scope: scope, conversationID: nil) }
         }
+    }
+
+    /// Complete the sent draft's disk removal, or persist genuine later edits,
+    /// before the caller replaces the list composer with the saved chat.
+    func consumeNewDraftAndSave(scope: InsightSessionScope, expectedRevision: Int?) async throws {
+        // Calling the asynchronous convenience method here would schedule a
+        // competing save, allowing this awaited operation to be superseded
+        // before that second save has actually written the next draft.
+        consumeNewDraftInMemory(scope: scope, expectedRevision: expectedRevision)
+        try await save(scope: scope, conversationID: nil)
     }
 
     func removeConversation(scope: InsightSessionScope, conversationID: UUID) {

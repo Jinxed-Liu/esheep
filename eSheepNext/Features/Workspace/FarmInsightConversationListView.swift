@@ -23,7 +23,8 @@ struct FarmInsightConversationListView: View, Equatable {
     @State private var didApplyInitialPrompt = false
     @State private var isAnalysisSettingsPresented = false
     @State private var isContextUsagePresented = false
-    @State private var focusBeforeSettings = false
+    @State private var analysisGaugeFrame = CGRect.zero
+    @State private var contextUsageFrame = CGRect.zero
     @State private var composerAudioRecorder = InsightAudioRecorder()
     @State private var draftSaveTask: Task<Void, Never>?
     @State private var draftSaveError: String?
@@ -130,7 +131,10 @@ struct FarmInsightConversationListView: View, Equatable {
                 if let draftSaveError {
                     Text(draftSaveError).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16)
                 }
-                if !showSearch { listComposer }
+                if !showSearch {
+                    availabilityBanner
+                    listComposer
+                }
             }
         }
         .navigationDestination(item: $destination) { route in
@@ -154,6 +158,12 @@ struct FarmInsightConversationListView: View, Equatable {
         }
         .onChange(of: draft.revision) { _, _ in saveDraft() }
         .onDisappear { saveDraft(immediately: true) }
+        .onChange(of: errorMessage) { _, error in
+            if error != nil {
+                isAnalysisSettingsPresented = false
+                isContextUsagePresented = false
+            }
+        }
         .alert("暂时无法完成", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("好", role: .cancel) {}
         } message: { Text(errorMessage ?? "") }
@@ -176,7 +186,10 @@ struct FarmInsightConversationListView: View, Equatable {
             text: $draft.text, isFocused: $composerFocused,
             audioRecorder: composerAudioRecorder, pendingAudio: nil, isPlayingAudio: false,
             isGenerating: controller.isGenerating, isSubmitting: isSubmitting,
-            isEnabled: isReady && !isSubmitting, isListEntry: true, hasAttachments: hasDraftAttachments,
+            isEnabled: isReady && !isSubmitting,
+            isAudioEnabled: controller.canUseAssistant && coordinator.allowsWork(scope: scope),
+            isListEntry: true, analysisEffort: controller.analysisEffort,
+            hasAttachments: hasDraftAttachments,
             attachmentsReady: draft.documents.allSatisfy(\.isReadyToSend),
             modeTitle: mode == .conversation ? nil : mode.title,
             isPlanSelected: mode == .plan, isGoalSelected: mode == .goal,
@@ -185,27 +198,30 @@ struct FarmInsightConversationListView: View, Equatable {
             onRemoveMode: { draft.modeRawValue = InsightSubmissionMode.conversation.rawValue },
             onSettings: {
                 controller.reloadAnalysisPreference()
-                focusBeforeSettings = composerFocused
+                isContextUsagePresented = false
                 isAnalysisSettingsPresented = true
             },
             onMicrophonePressChanged: { _ in }, onMicrophoneLongPress: {},
             onMicrophone: { openDraft(action: .voice) }, onToggleAudioPlayback: {}, onDiscardAudio: {},
             onSend: send, onStop: controller.stopGenerating,
-            attachments: { draftAttachmentSummary }, context: { contextUsageButton }
+            attachments: { draftAttachmentSummary }, context: { contextUsageButton },
+            onAnalysisGaugeFrameChange: { analysisGaugeFrame = $0 },
+            blocksAttachmentMenu: errorMessage != nil || isAnalysisSettingsPresented || isContextUsagePresented,
+            onContextUsageFrameChange: { contextUsageFrame = $0 }
         )
-        .popover(isPresented: $isAnalysisSettingsPresented) {
-            InsightAnalysisSettingsPopover(
+        .background(
+            InsightAnalysisSelectorPresentation(
+                isPresented: $isAnalysisSettingsPresented,
                 effortIndex: Binding(get: { controller.analysisEffort.sliderValue }, set: { controller.analysisEffort = .from(sliderValue: $0) }),
                 thinkingEnabled: Binding(get: { controller.thinkingEnabled }, set: { controller.thinkingEnabled = $0 }),
                 showReasoning: Binding(get: { controller.showReasoning }, set: { controller.showReasoning = $0 }),
-                modelName: controller.modelDisplayName
+                modelName: controller.modelDisplayName,
+                gaugeFrame: analysisGaugeFrame,
+                contextIsPresented: $isContextUsagePresented,
+                contextUsage: controller.contextWindowUsage,
+                contextFrame: contextUsageFrame
             )
-            .presentationCompactAdaptation(.popover)
-            .presentationBackground(.clear)
-        }
-        .onChange(of: isAnalysisSettingsPresented) { _, presented in
-            if !presented && focusBeforeSettings { composerFocused = true }
-        }
+        )
     }
 
     private var hasDraftAttachments: Bool { !draft.images.isEmpty || !draft.documents.isEmpty || draft.audio != nil }
@@ -228,14 +244,54 @@ struct FarmInsightConversationListView: View, Equatable {
     }
 
     private var contextUsageButton: some View {
-        Button { isContextUsagePresented.toggle() } label: {
-            InsightContextUsageRing(usage: draftController.contextWindowUsage).frame(width: 44, height: 44)
+        Button {
+            isAnalysisSettingsPresented = false
+            isContextUsagePresented.toggle()
+        } label: {
+            InsightContextUsageRing(usage: draftController.contextWindowUsage, diameter: 20)
+                .frame(width: 44, height: 44)
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("上下文窗口已使用约 \(draftController.contextWindowUsage.percentage)%")
-        .popover(isPresented: $isContextUsagePresented) {
-            InsightContextUsageDetail(usage: draftController.contextWindowUsage).presentationCompactAdaptation(.popover)
+        .accessibilityIdentifier("insight.context.usage")
+    }
+
+    @ViewBuilder
+    private var availabilityBanner: some View {
+        switch draftController.availability {
+        case .loading:
+            HStack(spacing: 7) {
+                ProgressView()
+                Text("正在检查 AI 助手配置")
+                Spacer(minLength: 8)
+                Button("AI 设置", action: openAssistantSettings)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("insight.availability.settings")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 24)
+        case .ready:
+            EmptyView()
+        case .missingCredential:
+            InsightAvailabilityNotice(
+                title: "配置 MiMo API Key",
+                detail: "请在 AI 助手设置中连接服务后发送。eSheep 不内置公共 Key。",
+                action: openAssistantSettings
+            )
+        case .unavailable(let message):
+            InsightAvailabilityNotice(
+                title: "AI 助手暂不可用",
+                detail: message,
+                action: openAssistantSettings
+            )
         }
+    }
+
+    private func openAssistantSettings() {
+        composerFocused = false
+        showSettings = true
     }
 
     private var isReady: Bool { if case .ready = draftController.availability { true } else { false } }
@@ -278,8 +334,15 @@ struct FarmInsightConversationListView: View, Equatable {
                 errorMessage = controller.errorMessage
                 return
             }
-            coordinator.completeDraft(scope: submittedScope, draftID: draftID, conversationID: id, controller: controller,
-                expectedDraftRevision: draftRevision)
+            draftSaveTask?.cancel()
+            do {
+                try await coordinator.completeDraft(scope: submittedScope, draftID: draftID, conversationID: id, controller: controller,
+                    expectedDraftRevision: draftRevision)
+            } catch {
+                // The message is already sent. Show the storage error on its
+                // conversation rather than leaving a retryable submitted draft.
+                controller.errorMessage = "消息已发送，但清理本机草稿失败：\(error.localizedDescription)"
+            }
             guard coordinator.requestQueue.activeScope == submittedSessionScope, scope == submittedScope else { return }
             composerFocused = false
             destination = .init(id: id, controller: controller, conversationID: id, draftID: nil, messageID: nil, initialAction: nil)

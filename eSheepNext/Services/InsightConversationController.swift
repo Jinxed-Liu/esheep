@@ -870,6 +870,7 @@ final class InsightConversationController {
         let usableMessages = messages.filter {
             $0.status != .failed &&
                 $0.status != .cancelled &&
+                $0.status != .interrupted &&
                 !isPersistedFarmQueryEvidence($0)
         }
         let lastCompressionIndex = usableMessages.lastIndex {
@@ -935,13 +936,25 @@ final class InsightConversationController {
             predicate: #Predicate {
                 $0.accountID == accountID
                     && $0.farmID == farmID
-                    && ($0.statusRawValue == "streaming" || $0.statusRawValue == "pending")
+                    && $0.roleRawValue == "assistant"
+                    && ($0.statusRawValue == "streaming" || $0.statusRawValue == "pending" || $0.statusRawValue == "failed")
             }
         ))) ?? []
-        guard !streaming.isEmpty else { return }
-        for message in streaming {
-            message.status = .failed
-            message.errorMessage = "上次处理因 App 中断而暂停，请核对检查点与操作回执后继续。"
+        let activeMessageID = isGenerating ? runtime?.pendingMessageID : nil
+        let interrupted = streaming.filter {
+            let activeState = InsightSessionCoordinator.shared.state(
+                scope: conversationScope, conversationID: $0.conversationID
+            )
+            return $0.id != activeMessageID && activeState != .queued && activeState != .running &&
+                ($0.status != .failed || [
+                "上次处理因 App 中断而暂停，请核对检查点与操作回执后继续。",
+                "上次内部处理因 App 中断而停止；没有执行任何牧场写入。",
+            ].contains($0.errorMessage ?? ""))
+        }
+        guard !interrupted.isEmpty else { return }
+        for message in interrupted {
+            message.status = .interrupted
+            message.errorMessage = "上次回复因 App 退出而中断，尚未完成。可以继续原请求；已有操作卡请先核对。"
             message.updatedAt = .now
         }
         try? context.save()
@@ -1594,6 +1607,38 @@ final class InsightConversationController {
         (runtime?.records[messageID] ?? []).filter { showReasoning || $0.kind != .reasoning }
     }
 
+    func processToolExchanges(for messageID: UUID) -> [MiMoFunctionExchange] {
+        var exchanges = runtime?.processExchangesByMessageID?[messageID] ?? []
+        if let turn = runtime?.turn, turn.assistantMessageID == messageID {
+            for exchange in turn.exchanges {
+                let publicExchange = InsightPublicProcess.compactExchange(
+                    call: exchange.call, output: exchange.output, succeeded: exchange.succeeded
+                )
+                if let index = exchanges.firstIndex(where: { $0.call.callID == exchange.call.callID }) { exchanges[index] = publicExchange }
+                else { exchanges.append(publicExchange) }
+            }
+        }
+        return exchanges
+    }
+
+    private func recordProcessToolCall(_ call: InsightFunctionCall, messageID: UUID, output: String = "", succeeded: Bool = false) {
+        let exchange = InsightPublicProcess.compactExchange(call: call, output: output, succeeded: succeeded)
+        var byMessage = runtime?.processExchangesByMessageID ?? [:]
+        var exchanges = byMessage[messageID] ?? []
+        if let index = exchanges.firstIndex(where: { $0.call.callID == call.callID }) { exchanges[index] = exchange }
+        else { exchanges.append(exchange) }
+        byMessage[messageID] = exchanges
+        runtime?.processExchangesByMessageID = byMessage
+    }
+
+    func activeRuntimeSeconds(for messageID: UUID) -> TimeInterval? {
+        let previous = runtime?.budgetSegmentsByMessageID[messageID] ?? []
+        let current = runtime?.pendingMessageID == messageID && isGenerating
+            ? activeBudget?.snapshot : runtime?.budgetByMessageID[messageID]
+        guard current != nil || !previous.isEmpty else { return nil }
+        return previous.reduce(0) { $0 + $1.activeSeconds } + (current?.activeSeconds ?? 0)
+    }
+
     func plan(for messageID: UUID) -> InsightPlan? { runtime?.plans[messageID] }
     func goal(for messageID: UUID) -> InsightGoal? { runtime?.goals[messageID] }
 
@@ -1604,7 +1649,7 @@ final class InsightConversationController {
     func canRestoreDraft(for assistantMessageID: UUID) -> Bool {
         guard !isGenerating,
               let message = messages.first(where: { $0.id == assistantMessageID }), message.role == .assistant,
-              message.status == .failed || message.status == .cancelled || message.status == .pending,
+              message.status == .failed || message.status == .cancelled || message.status == .pending || message.status == .interrupted,
               message.toolName != "goal_step", message.toolName != "goal_verification" else { return false }
         return messages.contains { $0.role == .user && $0.createdAt <= message.createdAt }
     }
@@ -1735,11 +1780,13 @@ final class InsightConversationController {
         // previously spent budget stays in the persisted message snapshots.
         goalBudgets[current.id] = InsightRunBudget(configuration: runConfiguration)
         goalBudgets[current.id]?.pauseActiveClock()
-        pausedReason = nil
-        runtime?.pausedReason = nil
         updateGoal(current.id) { $0.status = .queued; $0.lastError = nil }
         if runtime?.turn?.goalID == current.id { resumePausedConversation() }
-        else { scheduleNextGoalStep() }
+        else {
+            pausedReason = nil
+            runtime?.pausedReason = nil
+            scheduleNextGoalStep()
+        }
     }
 
     func stopGoal(_ goal: InsightGoal) {
@@ -1825,14 +1872,35 @@ final class InsightConversationController {
 
     func resumePausedConversation() {
         guard !isGenerating, var checkpoint = runtime?.turn,
-              pausedReason != nil, let modelContext else { return }
+              pausedReason != nil, let modelContext,
+              let conversationID = currentConversationID,
+              conversationID == runtime?.conversationID else { return }
         recoveryTask?.cancel()
+        // Reserve this response before loading its media or credential. A new
+        // send must not overtake an in-flight recovery and then be replaced by
+        // the old checkpoint when those awaits finish.
+        let recoveryID = UUID()
+        activeRequestID = recoveryID
+        isGenerating = true
         recoveryTask = Task { [weak self] in
             guard let self else { return }
+            var didStartTurn = false
+            defer {
+                if activeRequestID == recoveryID {
+                    isGenerating = false
+                    activeRequestID = nil
+                }
+                if !didStartTurn, activeRequestID == nil { recoveryTask = nil }
+            }
             do {
                 await refreshCredential()
+                try Task.checkCancellation()
                 guard case .ready = availability,
-                      let conversationID = currentConversationID else { throw InsightWorkflowError.scopeChanged }
+                      activeRequestID == recoveryID,
+                      currentConversationID == conversationID,
+                      runtime?.turn?.assistantMessageID == checkpoint.assistantMessageID else {
+                    throw InsightWorkflowError.scopeChanged
+                }
                 _ = try requireConversation(conversationID)
                 guard !checkpoint.requiresUnretainedAudio else {
                     errorMessage = "这条语音没有保留本机副本，请重新录音或改为文字；原消息与已生成操作卡仍保留。"
@@ -1859,6 +1927,11 @@ final class InsightConversationController {
                     }
                 }
                 try Task.checkCancellation()
+                guard activeRequestID == recoveryID,
+                      currentConversationID == conversationID,
+                      runtime?.turn?.assistantMessageID == checkpoint.assistantMessageID else {
+                    throw InsightWorkflowError.scopeChanged
+                }
                 if let spent = runtime?.budgetByMessageID[checkpoint.assistantMessageID] {
                     runtime?.budgetSegmentsByMessageID[checkpoint.assistantMessageID, default: []].append(spent)
                 }
@@ -1868,7 +1941,13 @@ final class InsightConversationController {
                 runtime?.pausedReason = nil
                 startTurn(checkpoint, images: images, audio: audio, documents: documents,
                           origin: audio == nil ? .text : .voiceAudio)
-            } catch { errorMessage = error.localizedDescription }
+                didStartTurn = true
+                recoveryTask = nil
+            } catch is CancellationError {
+                // Explicit stop owns its terminal state and error presentation.
+            } catch {
+                if activeRequestID == recoveryID { errorMessage = error.localizedDescription }
+            }
         }
     }
 
@@ -1961,7 +2040,10 @@ final class InsightConversationController {
             guard !isGenerating, currentConversationID == conversationID, runtime == nil else { return }
             runtime = restored
             if runtime?.turn != nil {
-                pausedReason = runtime?.pausedReason ?? "上次任务已暂停，核对后可继续。"
+                let responseInterrupted = messages.first(where: { $0.id == runtime?.turn?.assistantMessageID })?.status == .interrupted
+                pausedReason = runtime?.pausedReason ?? (responseInterrupted
+                    ? "上次回复因 App 退出而中断，可以继续原请求。"
+                    : "上次任务已暂停，核对后可继续。")
                 runtime?.pausedReason = pausedReason
             }
             if let entries = runtime?.goals {
@@ -2282,6 +2364,7 @@ final class InsightConversationController {
         }
 
         do {
+            try requireActiveTurn(checkpoint)
             guard let conversationID = runtime?.conversationID else { throw InsightWorkflowError.missingCheckpoint }
             let conversation = try requireConversation(conversationID)
             guard let assistantMessage = messages.first(where: { $0.id == checkpoint.assistantMessageID }),
@@ -2297,6 +2380,7 @@ final class InsightConversationController {
                 )
             }
             try await persistRuntime()
+            try requireActiveTurn(checkpoint)
             try await InsightSessionCoordinator.shared.acquire(
                 scope: conversationScope, requestID: requestID, conversationID: conversationID
             )
@@ -2446,11 +2530,14 @@ final class InsightConversationController {
                     try budget.beginToolRoundTrip()
                     try requireActiveTurn(checkpoint)
                     recordHarnessEvent(.toolStarted(callID: call.callID, name: call.name), messageID: assistantMessage.id, requestID: checkpoint.requestID)
-                    let result = try registry.execute(
+                    recordProcessToolCall(call, messageID: assistantMessage.id)
+                    let result = try await registry.executeForConversation(
                         call,
                         agent: agent,
                         context: modelContext
                     )
+                    try requireActiveTurn(checkpoint)
+                    recordProcessToolCall(call, messageID: assistantMessage.id, output: result.output, succeeded: true)
                     seededToolDidReturn = true
                     recordHarnessEvent(.toolFinished(callID: call.callID, name: call.name, succeeded: true), messageID: assistantMessage.id, requestID: checkpoint.requestID)
                     if let grounded = InsightFarmCalculationEngine.GroundedOutput(
@@ -2548,6 +2635,7 @@ final class InsightConversationController {
                             guard harnessTools.contains(where: { $0.name == call.name }) else {
                                 throw InsightToolError.permissionDenied
                             }
+                            recordProcessToolCall(call, messageID: assistantMessage.id)
                             let disclosure = try registry.extendedDataDisclosure(
                                 for: call,
                                 agent: agent,
@@ -2568,12 +2656,14 @@ final class InsightConversationController {
                             }
                             try Task.checkCancellation()
                             try requireActiveTurn(checkpoint)
-                            let result = try registry.execute(
+                            let result = try await registry.executeForConversation(
                                 call,
                                 agent: agent,
                                 context: modelContext,
                                 extendedDataAuthorized: disclosure == nil || authorized
                             )
+                            try requireActiveTurn(checkpoint)
+                            recordProcessToolCall(call, messageID: assistantMessage.id, output: result.output, succeeded: true)
                             for draft in result.actionDrafts {
                                 draft.messageID = assistantMessage.id
                                 modelContext.insert(draft)
@@ -2602,10 +2692,16 @@ final class InsightConversationController {
                             }
                             createdDraftCount += result.actionDrafts.count
                             try modelContext.save()
-                            runtime?.turn?.exchanges.append(MiMoFunctionExchange(
+                            // Build the argument before beginning the nested
+                            // runtime mutation. Reading runtime.reasoning while
+                            // Optional._modify borrows runtime for append traps
+                            // Swift's dynamic exclusivity check on device.
+                            let reasoningRecords = runtime?.reasoning[assistantMessage.id] ?? []
+                            let exchange = MiMoFunctionExchange(
                                 call: call, output: result.output,
-                                reasoningRecords: runtime?.reasoning[assistantMessage.id] ?? []
-                            ))
+                                reasoningRecords: reasoningRecords
+                            )
+                            runtime?.turn?.exchanges.append(exchange)
                             try await persistRuntime()
                             reloadCurrentConversation()
                             return InsightAgentHarness.ToolObservation(
@@ -2725,6 +2821,15 @@ final class InsightConversationController {
             try requireActiveTurn(checkpoint)
             runtime?.reasoning[assistantMessage.id] = harnessResult.reasoningRecords
             runtime?.turn?.exchanges = harnessResult.exchanges
+            // A checkpoint from an older build can already contain successful
+            // calls that are not executed again on resume. Preserve their
+            // public evidence before clearing the completed turn below.
+            for exchange in harnessResult.exchanges {
+                recordProcessToolCall(
+                    exchange.call, messageID: assistantMessage.id,
+                    output: exchange.output, succeeded: exchange.succeeded
+                )
+            }
 
             acceptedFarmQueryEvidence = groundedFarmQueries.compactMap {
                 farmQueryEvidenceByQueryID[$0.queryID]
@@ -2801,6 +2906,7 @@ final class InsightConversationController {
                 )
             }
             assistantMessage.status = .completed
+            assistantMessage.errorMessage = nil
             assistantMessage.updatedAt = .now
             conversation.updatedAt = .now
             conversation.revision += 1
@@ -2817,8 +2923,11 @@ final class InsightConversationController {
                     createdDraftCount: createdDraftCount, result: harnessResult, generatedFile: generatedFile
                 )
             }
-            try await persistRuntime()
+            // Publish the accepted, saved transcript before the encrypted
+            // process sidecar suspends. The visible answer must not depend on
+            // navigating away or waiting for that separate write to finish.
             refresh()
+            try await persistRuntime()
             pendingGeneratedFile = generatedFile
             schedulePersonalSync()
             if let audioStorageWarning {
@@ -2992,6 +3101,7 @@ final class InsightConversationController {
                     $0.id != excludedMessageID &&
                     $0.status != .failed &&
                     $0.status != .cancelled &&
+                    $0.status != .interrupted &&
                     !isPersistedFarmQueryEvidence($0)
             }
             .sorted { $0.createdAt < $1.createdAt }
@@ -3248,18 +3358,29 @@ final class InsightConversationController {
         """
     }
 
-    private static func estimatedRequestOverhead(
+    static func estimatedRequestOverhead(
         instructions: String,
         tools: [InsightToolDefinition]
     ) -> Int {
         let instructionTokens = InsightContextCompressor.estimatedTokens(for: instructions)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
         let toolTokens = tools.reduce(0) { partial, tool in
-            partial +
+            // Estimate the actual JSON schema. Dictionary debug descriptions
+            // have unstable ordering and also include Swift type names.
+            let parameterTokens: Int
+            if let data = try? encoder.encode(tool.parameters) {
+                parameterTokens = InsightContextCompressor.estimatedTokens(
+                    for: String(decoding: data, as: UTF8.self)
+                )
+            } else {
+                // An invalid schema must not make the request look smaller.
+                parameterTokens = InsightContextCompressor.compressionThresholdTokens
+            }
+            return partial +
                 InsightContextCompressor.estimatedTokens(for: tool.name) +
                 InsightContextCompressor.estimatedTokens(for: tool.description) +
-                InsightContextCompressor.estimatedTokens(
-                    for: String(describing: tool.parameters)
-                )
+                parameterTokens
         }
         // Reserve room for tool call/result envelopes and the requested answer.
         return instructionTokens + toolTokens + 8 * 1_024

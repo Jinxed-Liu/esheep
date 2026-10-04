@@ -6,10 +6,12 @@ actor InsightPersonalCryptoActor {
     static let shared = InsightPersonalCryptoActor()
     private var holdNext = false
     private var pending: CheckedContinuation<Void, Never>?
+    private(set) var sealCount = 0
     func holdNextSeal() { holdNext = true }
     var isWaiting: Bool { pending != nil }
     func releaseSeal() { pending?.resume(); pending = nil }
     func seal(_ data: Data, accountID: UUID, recordID: String) async throws -> Data {
+        sealCount += 1
         if holdNext {
             holdNext = false
             await withCheckedContinuation { pending = $0 }

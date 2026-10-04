@@ -14,6 +14,7 @@ enum InsightMessageStatus: String, Codable, Sendable {
     case completed
     case failed
     case cancelled
+    case interrupted
 }
 
 enum InsightActionRisk: String, Codable, Sendable {

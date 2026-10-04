@@ -20,8 +20,24 @@ private final class FixtureBook: @unchecked Sendable {
         fixtures.append(fixture)
     }
     func next(for request: URLRequest) -> Fixture? {
+        var capturedRequest = request
+        // Darwin URLSession may present an upload body as a stream when the
+        // request reaches URLProtocol. Capture it while loading the fixture;
+        // the later assertions must not assume httpBody survived transport.
+        if capturedRequest.httpBody == nil, let stream = capturedRequest.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var body = Data()
+            var buffer = [UInt8](repeating: 0, count: 4_096)
+            while true {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count > 0 else { break }
+                body.append(contentsOf: buffer.prefix(count))
+            }
+            capturedRequest.httpBody = body
+        }
         lock.lock(); defer { lock.unlock() }
-        requests.append(request)
+        requests.append(capturedRequest)
         return fixtures.isEmpty ? nil : fixtures.removeFirst()
     }
     var count: Int {
@@ -127,7 +143,10 @@ struct InsightCodexProtocolRegression {
         let requestID = UUID()
         try FixtureBook.shared.append(InsightCodexTurn(turnID: "turn-1", status: "running"))
         _ = try await client.startTurn(text: "question", effort: "medium", requestID: requestID)
-        let body = try JSONSerialization.jsonObject(with: FixtureBook.shared.last!.httpBody!) as! [String: Any]
+        guard let bodyData = FixtureBook.shared.last?.httpBody,
+              let body = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any] else {
+            throw Failure(description: "The mock transport did not capture a valid JSON turn body.")
+        }
         try require(body["requestID"] as? String == requestID.uuidString, "Stable request ID changed in transport.")
         try require(body["effort"] as? String == "medium", "Native supported effort was not forwarded.")
         try require(body["max_output_tokens"] == nil && body["temperature"] == nil,

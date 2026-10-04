@@ -296,18 +296,59 @@ enum InsightImageOptimizer {
     }
 }
 
+/// A bounded chronological window. Appending never rescales older samples,
+/// so every live column keeps the same amount of recording time.
+struct InsightAudioWaveformTimeline: Sendable {
+    static let sampleInterval: TimeInterval = 0.1
+    static let maximumLiveSamples = 256
+
+    private(set) var samples: [Float] = []
+    private(set) var sampleCount = 0
+    private(set) var lastSampleAt: Date?
+
+    mutating func append(level: Float, at date: Date) {
+        samples.append(level.isFinite ? min(1, max(0, level)) : 0)
+        sampleCount += 1
+        lastSampleAt = date
+        if samples.count > Self.maximumLiveSamples {
+            samples.removeFirst(samples.count - Self.maximumLiveSamples)
+        }
+    }
+
+    mutating func append(decibels: Float, at date: Date) {
+        append(level: Self.normalizedLevel(forDecibels: decibels), at: date)
+    }
+
+    static func normalizedLevel(forDecibels decibels: Float) -> Float {
+        guard decibels.isFinite else { return 0 }
+        // A display envelope for the actual microphone meter. Quiet input
+        // stays quiet, while ordinary speech can use the available height.
+        return min(1, max(0, (decibels + 50) / 45))
+    }
+
+    mutating func reset() {
+        samples.removeAll(keepingCapacity: true)
+        sampleCount = 0
+        lastSampleAt = nil
+    }
+}
+
 @MainActor
 @Observable
 final class InsightAudioRecorder {
+    static let waveformSampleInterval = InsightAudioWaveformTimeline.sampleInterval
     private(set) var isRecording = false
     private(set) var startedAt: Date?
     private(set) var duration: TimeInterval = 0
     private(set) var waveformSamples: [Float] = []
+    private(set) var waveformSampleCount = 0
+    private(set) var waveformUpdatedAt: Date?
     var errorMessage: String?
 
     private var recorder: AVAudioRecorder?
     private var temporaryURL: URL?
     private var meterTask: Task<Void, Never>?
+    @ObservationIgnored private var waveformTimeline = InsightAudioWaveformTimeline()
 
     func start() async {
         guard !isRecording else { return }
@@ -337,7 +378,7 @@ final class InsightAudioRecorder {
             temporaryURL = url
             startedAt = .now
             duration = 0
-            waveformSamples = []
+            resetWaveform()
             isRecording = true
             startMetering()
         } catch {
@@ -362,7 +403,7 @@ final class InsightAudioRecorder {
             self.startedAt = nil
             self.isRecording = false
             self.duration = 0
-            self.waveformSamples = []
+            self.resetWaveform()
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
         let data = try Data(contentsOf: temporaryURL, options: .mappedIfSafe)
@@ -390,7 +431,7 @@ final class InsightAudioRecorder {
         startedAt = nil
         isRecording = false
         duration = 0
-        waveformSamples = []
+        resetWaveform()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -399,7 +440,7 @@ final class InsightAudioRecorder {
         meterTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
-                guard let self, self.isRecording, let recorder = self.recorder else { return }
+                guard !Task.isCancelled, let self, self.isRecording, let recorder = self.recorder else { return }
                 recorder.updateMeters()
                 self.duration = recorder.currentTime
                 self.appendCurrentLevel(from: recorder)
@@ -408,13 +449,55 @@ final class InsightAudioRecorder {
     }
 
     private func appendCurrentLevel(from recorder: AVAudioRecorder) {
-        let decibels = recorder.averagePower(forChannel: 0)
-        let normalized = min(1, max(0.08, pow(10, decibels / 32)))
-        waveformSamples.append(normalized)
-        if waveformSamples.count > 52 {
-            waveformSamples.removeFirst(waveformSamples.count - 52)
-        }
+        waveformTimeline.append(decibels: recorder.averagePower(forChannel: 0), at: .now)
+        publishWaveform()
     }
+
+    private func publishWaveform() {
+        waveformSamples = waveformTimeline.samples
+        waveformSampleCount = waveformTimeline.sampleCount
+        waveformUpdatedAt = waveformTimeline.lastSampleAt
+    }
+
+    private func resetWaveform() {
+        waveformTimeline.reset()
+        publishWaveform()
+    }
+
+#if DEBUG
+    /// Isolated visual fixtures exercise the production waveform without
+    /// requesting the microphone, writing audio, or sending provider input.
+    func beginWaveformDesignPreview(at date: Date) {
+        guard ProcessInfo.processInfo.arguments.contains("--design-insight-voice-waveform"),
+              recorder == nil, temporaryURL == nil else { return }
+        meterTask?.cancel()
+        meterTask = nil
+        resetWaveform()
+        errorMessage = nil
+        startedAt = date
+        duration = 0
+        isRecording = true
+    }
+
+    func appendWaveformDesignPreview(level: Float, at date: Date) {
+        guard ProcessInfo.processInfo.arguments.contains("--design-insight-voice-waveform"),
+              isRecording, recorder == nil else { return }
+        waveformTimeline.append(level: level, at: date)
+        duration = max(0, date.timeIntervalSince(startedAt ?? date))
+        publishWaveform()
+    }
+
+    func endWaveformDesignPreview() {
+        guard ProcessInfo.processInfo.arguments.contains("--design-insight-voice-waveform"),
+              recorder == nil, temporaryURL == nil else { return }
+        meterTask?.cancel()
+        meterTask = nil
+        startedAt = nil
+        duration = 0
+        isRecording = false
+        resetWaveform()
+    }
+#endif
 }
 
 @MainActor

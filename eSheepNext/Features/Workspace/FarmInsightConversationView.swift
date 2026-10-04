@@ -55,8 +55,6 @@ struct FarmInsightConversationView: View {
     @State private var storedDocumentsByMessageID: [UUID: [InsightStoredDocumentPreview]] = [:]
     @State private var inspectedDocument: InsightStoredDocumentPreview?
     @State private var focusBeforePicker = false
-    @State private var focusBeforeSettings = false
-    @State private var focusBeforeContext = false
     @State private var didHandleInitialAction = false
     @State private var isChatVisible = false
     @State private var isConversationSearchPresented = false
@@ -65,6 +63,9 @@ struct FarmInsightConversationView: View {
     @State private var selectedDraft: InsightActionDraftRecord?
     @State private var isMicrophonePressed = false
     @State private var didActivateMicrophoneLongPress = false
+    @State private var pendingTranscriptLayoutScroll = false
+    @State private var analysisGaugeFrame = CGRect.zero
+    @State private var contextUsageFrame = CGRect.zero
     @FocusState private var isComposerFocused: Bool
     private let conversationBottomID = "insight-conversation-bottom"
 
@@ -135,37 +136,34 @@ struct FarmInsightConversationView: View {
 
     private var conversationLayout: some View {
         conversationScroll
-            .background(AppTheme.pageBackground.ignoresSafeArea())
+            .safeAreaBar(edge: .top, spacing: 0) {
+                conversationHeader
+            }
+            .safeAreaBar(edge: .bottom, spacing: 0) {
+                conversationBottomControls
+            }
+            .background(Color(uiColor: .systemBackground).ignoresSafeArea())
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) { assistantIdentity }
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 0) {
-                        Button(action: newChat) {
-                            Image(systemName: "square.and.pencil").frame(width: 44, height: 44)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isSubmitting || isRestoringDraft)
-                        .accessibilityLabel("新建聊天")
-                        assistantMenu.frame(width: 44, height: 44)
-                    }
+            .toolbar(.hidden, for: .navigationBar)
+            .background(InsightConversationInteractivePopSupport(isPresentationActive: isAnalysisSettingsPresented))
+    }
+
+    private var conversationBottomControls: some View {
+        VStack(spacing: 4) {
+            if let reason = controller.pausedReason, controller.activeGoalStatus == nil {
+                HStack(spacing: 8) {
+                    Text(reason).font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Button("继续") { controller.resumePausedConversation() }
+                        .font(.subheadline.weight(.semibold))
+                        .tint(.primary)
+                        .frame(minHeight: 44)
                 }
+                .padding(.horizontal, 20)
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 4) {
-                    if let reason = controller.pausedReason, controller.activeGoalStatus == nil {
-                        HStack(spacing: 8) {
-                            Text(reason).font(.caption).foregroundStyle(.secondary)
-                            Spacer(minLength: 0)
-                            Button("继续") { controller.resumePausedConversation() }
-                                .frame(minHeight: 44)
-                        }
-                        .padding(.horizontal, 20)
-                    }
-                    composer
-                }
-            }
+            composer
+        }
     }
 
     private var conversationLifecycle: some View {
@@ -463,84 +461,90 @@ struct FarmInsightConversationView: View {
     private var conversationScroll: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    conversationMetadata
+                LazyVStack(alignment: .leading, spacing: 20) {
+                    if displayMessages.isEmpty {
+                        conversationMetadata
+                    }
                     availabilityBanner
                     if !displayMessages.isEmpty {
                         ForEach(Array(displayMessages.enumerated()), id: \.element.id) { index, message in
-                            if shouldShowTimestamp(at: index, in: displayMessages) {
-                                InsightConversationTimestamp(date: message.createdAt)
-                            }
-                            InsightConversationMessageRow(
-                                message: message,
-                                farmName: farm.name,
-                                attachments: messageAttachments(for: message.id),
-                                storedAudio: storedAudioByMessageID[message.id],
-                                isPlayingAudio: audioPlayer.isPlaying
-                                    && audioPlaybackSource == .sentMessage(message.id),
-                                drafts: messageDrafts(for: message.id),
-                                endsRoleGroup: endsRoleGroup(at: index, in: displayMessages),
-                                canExecute: controller.canExecute,
-                                executionCount: controller.executionCount,
-                                draftPresentation: controller.presentation,
-                                onToggleAudio: { toggleStoredAudioPlayback(messageID: message.id) },
-                                onReview: review,
-                                onReject: reject
-                            )
-                            InsightRuntimeDisclosure(
-                                records: controller.runtimeRecords(for: message.id),
-                                showReasoning: controller.showReasoning
-                            )
-                            if let documents = storedDocumentsByMessageID[message.id], !documents.isEmpty {
-                                ForEach(documents) { document in
-                                    Button {
-                                        inspectedDocument = document
-                                    } label: {
-                                        Label(document.fileName, systemImage: "doc.text")
-                                            .font(.caption)
-                                            .frame(minHeight: 44)
+                            VStack(alignment: .leading, spacing: 12) {
+                                if shouldShowTimestamp(at: index, in: displayMessages) {
+                                    InsightConversationTimestamp(date: message.createdAt)
+                                }
+                                InsightConversationRuntimeRow(controller: controller, message: message)
+                                InsightConversationMessageRow(
+                                    message: message,
+                                    farmName: farm.name,
+                                    attachments: messageAttachments(for: message.id),
+                                    storedAudio: storedAudioByMessageID[message.id],
+                                    isPlayingAudio: audioPlayer.isPlaying
+                                        && audioPlaybackSource == .sentMessage(message.id),
+                                    drafts: messageDrafts(for: message.id),
+                                    endsRoleGroup: endsRoleGroup(at: index, in: displayMessages),
+                                    canExecute: controller.canExecute,
+                                    executionCount: controller.executionCount,
+                                    draftPresentation: controller.presentation,
+                                    onToggleAudio: { toggleStoredAudioPlayback(messageID: message.id) },
+                                    onReview: review,
+                                    onReject: reject
+                                )
+                                if let documents = storedDocumentsByMessageID[message.id], !documents.isEmpty {
+                                    ForEach(documents) { document in
+                                        Button {
+                                            inspectedDocument = document
+                                        } label: {
+                                            Label(document.fileName, systemImage: "doc.text")
+                                                .font(.caption)
+                                                .frame(minHeight: 44)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel("查看\(document.fileName)的已发送内容与引用")
                                     }
+                                }
+                                if let plan = controller.plan(for: message.id) {
+                                    InsightPlanCard(plan: plan, onEdit: { editPlan(plan) },
+                                        onContinue: { controller.continuePlan(plan) },
+                                        onDismiss: { controller.dismissPlan(plan) })
+                                }
+                                if let goal = controller.goal(for: message.id) {
+                                    InsightGoalCard(goal: goal,
+                                        awaitingFileName: controller.pendingExportFileName(for: goal.id),
+                                        onPause: { controller.pauseGoal(goal) },
+                                        onResume: { controller.resumeGoal(goal) },
+                                        onStop: { controller.stopGoal(goal) })
+                                }
+                                if message.role == .assistant,
+                                   message.status == .failed || message.status == .cancelled || message.status == .pending || message.status == .interrupted,
+                                   controller.canRestoreDraft(for: message.id) {
+                                    Button("恢复输入", systemImage: "arrow.uturn.backward") {
+                                        requestDraftRecovery(messageID: message.id)
+                                    }
+                                    .font(.caption)
                                     .buttonStyle(.plain)
-                                    .accessibilityLabel("查看\(document.fileName)的已发送内容与引用")
+                                    .foregroundStyle(.secondary)
+                                    .frame(minHeight: 44)
+                                    .disabled(isSubmitting || isRestoringDraft || controller.isGenerating)
+                                    .accessibilityLabel("恢复原始文字和附件到输入框")
                                 }
                             }
-                            if let plan = controller.plan(for: message.id) {
-                                InsightPlanCard(plan: plan, onEdit: { editPlan(plan) },
-                                    onContinue: { controller.continuePlan(plan) },
-                                    onDismiss: { controller.dismissPlan(plan) })
-                            }
-                            if let goal = controller.goal(for: message.id) {
-                                InsightGoalCard(goal: goal,
-                                    awaitingFileName: controller.pendingExportFileName(for: goal.id),
-                                    onPause: { controller.pauseGoal(goal) },
-                                    onResume: { controller.resumeGoal(goal) },
-                                    onStop: { controller.stopGoal(goal) })
-                            }
-                            if message.role == .assistant,
-                               message.status == .failed || message.status == .cancelled || message.status == .pending,
-                               controller.canRestoreDraft(for: message.id) {
-                                Button("恢复到输入框", systemImage: "arrow.uturn.backward") {
-                                    requestDraftRecovery(messageID: message.id)
-                                }
-                                .frame(minHeight: 44)
-                                .disabled(isSubmitting || isRestoringDraft || controller.isGenerating)
-                            }
+                            .id(message.id)
                         }
                     }
-                    if controller.isGenerating {
+                    if controller.isGenerating, !hasVisibleRunningProcess {
                         InsightAssistantTypingIndicator()
                     }
                     Color.clear
-                        .frame(height: 1)
+                        .frame(height: 18)
                         .id(conversationBottomID)
                 }
-                .padding(.horizontal, 14)
-                .padding(.top, 8)
-                .padding(.bottom, 18)
+                .padding(.horizontal, 16)
+                .padding(.top, 18)
             }
+            .accessibilityIdentifier("insight.conversation.transcript")
             .contentShape(.rect)
-            .scrollEdgeEffectHidden(false, for: .top)
-            .scrollEdgeEffectStyle(.soft, for: .top)
+            .scrollEdgeEffectHidden(false, for: .vertical)
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
             .simultaneousGesture(
                 TapGesture().onEnded {
                     isComposerFocused = false
@@ -548,10 +552,29 @@ struct FarmInsightConversationView: View {
             )
             .scrollDismissesKeyboard(.interactively)
             .onAppear {
+                pendingTranscriptLayoutScroll = true
                 scrollToRequestedMessageOrBottom(proxy, animated: false)
+            }
+            .onChange(of: responseLayoutRevision) { _, _ in
+                pendingTranscriptLayoutScroll = true
             }
             .onChange(of: scrollRevision) { _, _ in
                 scrollToRequestedMessageOrBottom(proxy, animated: true)
+            }
+            .onScrollGeometryChange(for: InsightTranscriptScrollGeometry.self) { geometry in
+                InsightTranscriptScrollGeometry(
+                    contentHeight: geometry.contentSize.height,
+                    viewportHeight: geometry.containerSize.height,
+                    reservedHeight: geometry.contentInsets.top + geometry.contentInsets.bottom
+                )
+            } action: { oldGeometry, newGeometry in
+                let viewportShrank = oldGeometry.viewportHeight > 0 &&
+                    newGeometry.viewportHeight < oldGeometry.viewportHeight
+                let nativeInsetsGrew = newGeometry.reservedHeight > oldGeometry.reservedHeight
+                guard viewportShrank || nativeInsetsGrew ||
+                    (pendingTranscriptLayoutScroll && oldGeometry.contentHeight != newGeometry.contentHeight) else { return }
+                pendingTranscriptLayoutScroll = false
+                scrollToRequestedMessageOrBottom(proxy, animated: false)
             }
             .onChange(of: searchResultTargetID) { _, messageID in
                 guard let messageID else { return }
@@ -567,15 +590,78 @@ struct FarmInsightConversationView: View {
         controller.conversations.first { $0.id == controller.currentConversationID }
     }
 
+    private var hasVisibleRunningProcess: Bool {
+        guard let message = displayMessages.last(where: {
+            $0.role == .assistant && $0.status == .streaming
+        }) else { return false }
+        return controller.runtimeRecords(for: message.id).contains {
+            controller.showReasoning || $0.kind != .reasoning
+        }
+    }
+
     private var conversationTitle: String { currentConversation?.title ?? "新聊天" }
+
+    private var conversationHeader: some View {
+        HStack(spacing: 10) {
+            Button {
+                isComposerFocused = false
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 22, weight: .medium))
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive(), in: .circle)
+            .accessibilityLabel("返回聊天列表")
+            .accessibilityIdentifier("BackButton")
+
+            // The title owns the actual space between the controls. A native
+            // leading ToolbarItem can propose a single-button width even when
+            // the middle of the navigation bar remains empty.
+            assistantIdentity
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 0) {
+                Button(action: newChat) {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 22))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .disabled(isSubmitting || isRestoringDraft)
+                .accessibilityLabel("新建聊天")
+                assistantMenu
+                    .font(.system(size: 22))
+            }
+            .padding(.horizontal, 8)
+            .frame(width: 104, height: 44)
+            .glassEffect(.regular.interactive(), in: .capsule)
+        }
+        .foregroundStyle(.primary)
+        .tint(.primary)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
+    }
 
     private var assistantIdentity: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(conversationTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
-            Text(farm.name).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            Text(conversationTitle)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(farm.name)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: 200, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("insight.conversation.identity")
     }
 
     private var assistantMenu: some View {
@@ -590,7 +676,7 @@ struct FarmInsightConversationView: View {
                 isConversationSearchPresented = true
             }
             Button("上下文用量", systemImage: "chart.pie") {
-                focusBeforeContext = isComposerFocused
+                isAnalysisSettingsPresented = false
                 isContextUsagePresented = true
             }
             Button("AI 设置", systemImage: "gearshape") { isAssistantSettingsPresented = true }
@@ -623,6 +709,9 @@ struct FarmInsightConversationView: View {
             isGenerating: controller.isGenerating,
             isSubmitting: isSubmitting || isRestoringDraft,
             isEnabled: isReady,
+            isAudioEnabled: isAudioEnabled,
+            placeholder: displayMessages.isEmpty ? "信息" : "跟进",
+            analysisEffort: controller.analysisEffort,
             hasAttachments: !pendingImages.isEmpty || !pendingDocuments.isEmpty || isProcessingPhotos || !processingDocumentNames.isEmpty,
             attachmentsReady: attachmentsReady,
             modeTitle: submissionMode == .conversation ? nil : submissionMode.title,
@@ -636,7 +725,7 @@ struct FarmInsightConversationView: View {
             onRemoveMode: { selectMode(.conversation) },
             onSettings: {
                 controller.reloadAnalysisPreference()
-                focusBeforeSettings = isComposerFocused
+                isContextUsagePresented = false
                 isAnalysisSettingsPresented = true
             },
             onMicrophonePressChanged: microphonePressChanged,
@@ -647,30 +736,46 @@ struct FarmInsightConversationView: View {
             onSend: send,
             onStop: controller.stopGenerating,
             attachments: { composerAttachments },
-            context: { contextUsageButton }
+            context: { contextUsageButton },
+            onAnalysisGaugeFrameChange: { analysisGaugeFrame = $0 },
+            blocksAttachmentMenu: controller.errorMessage != nil ||
+                controller.pendingExtendedDataDisclosure != nil || controller.pendingGeneratedFile != nil ||
+                isAnalysisSettingsPresented || isContextUsagePresented,
+            onContextUsageFrameChange: { contextUsageFrame = $0 }
         )
-        .popover(isPresented: $isAnalysisSettingsPresented) {
-            InsightAnalysisSettingsPopover(
+        .background(
+            InsightAnalysisSelectorPresentation(
+                isPresented: $isAnalysisSettingsPresented,
                 effortIndex: Binding(
                     get: { controller.analysisEffort.sliderValue },
                     set: { controller.analysisEffort = .from(sliderValue: $0) }
                 ),
                 thinkingEnabled: Binding(get: { controller.thinkingEnabled }, set: { controller.thinkingEnabled = $0 }),
                 showReasoning: Binding(get: { controller.showReasoning }, set: { controller.showReasoning = $0 }),
-                modelName: controller.modelDisplayName
+                modelName: controller.modelDisplayName,
+                gaugeFrame: analysisGaugeFrame,
+                contextIsPresented: $isContextUsagePresented,
+                contextUsage: controller.contextWindowUsage,
+                contextFrame: contextUsageFrame
             )
-            .presentationCompactAdaptation(.popover)
-            .presentationBackground(.clear)
+        )
+        .onChange(of: controller.errorMessage) { _, error in
+            if error != nil {
+                isAnalysisSettingsPresented = false
+                isContextUsagePresented = false
+            }
         }
-        .onChange(of: isAnalysisSettingsPresented) { _, presented in
-            if !presented && focusBeforeSettings { isComposerFocused = true }
+        .onChange(of: controller.pendingExtendedDataDisclosure != nil) { _, pending in
+            if pending {
+                isAnalysisSettingsPresented = false
+                isContextUsagePresented = false
+            }
         }
-        .popover(isPresented: $isContextUsagePresented) {
-            InsightContextUsageDetail(usage: controller.contextWindowUsage)
-                .presentationCompactAdaptation(.popover)
-        }
-        .onChange(of: isContextUsagePresented) { _, presented in
-            if !presented && focusBeforeContext { isComposerFocused = true }
+        .onChange(of: controller.pendingGeneratedFile?.id) { _, fileID in
+            if fileID != nil {
+                isAnalysisSettingsPresented = false
+                isContextUsagePresented = false
+            }
         }
         .onChange(of: isAssistantSettingsPresented) { _, presented in
             guard !presented else { return }
@@ -684,14 +789,16 @@ struct FarmInsightConversationView: View {
 
     private var contextUsageButton: some View {
         Button {
-            focusBeforeContext = isComposerFocused
+            isAnalysisSettingsPresented = false
             isContextUsagePresented.toggle()
         } label: {
-            InsightContextUsageRing(usage: controller.contextWindowUsage)
+            InsightContextUsageRing(usage: controller.contextWindowUsage, diameter: 20)
                 .frame(width: 44, height: 44)
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("上下文窗口已使用约 \(controller.contextWindowUsage.percentage)%")
+        .accessibilityIdentifier("insight.context.usage")
     }
 
     private var attachmentsReady: Bool {
@@ -937,17 +1044,22 @@ struct FarmInsightConversationView: View {
             case .missingCredential:
                 InsightAvailabilityNotice(
                     title: "配置 MiMo API Key",
-                    detail: "请前往账户头像中的“AI 助手”设置。eSheep 不内置公共 Key。",
-                    action: nil
+                    detail: "请在 AI 助手设置中连接服务后发送。eSheep 不内置公共 Key。",
+                    action: openAssistantSettings
                 )
             case .unavailable(let message):
                 InsightAvailabilityNotice(
                     title: "AI 助手暂不可用",
                     detail: message,
-                    action: nil
+                    action: openAssistantSettings
                 )
             }
         }
+    }
+
+    private func openAssistantSettings() {
+        isComposerFocused = false
+        isAssistantSettingsPresented = true
     }
 
     private var suggestions: [String] {
@@ -970,6 +1082,11 @@ struct FarmInsightConversationView: View {
         return false
     }
 
+    private var isAudioEnabled: Bool {
+        isControllerBoundToFarm && controller.canUseAssistant &&
+            InsightSessionCoordinator.shared.allowsWork(scope: boundScope)
+    }
+
     private var isControllerBoundToFarm: Bool {
         boundScope == controller.conversationScope && boundScope == InsightConversationScope(
             accountID: account.effectiveAccountID,
@@ -979,6 +1096,9 @@ struct FarmInsightConversationView: View {
 
     private func send() {
         guard !isSubmitting, !isRestoringDraft else { return }
+        if audioRecorder.isRecording {
+            guard finishSpeechRecording() else { return }
+        }
         guard attachmentsReady else {
             controller.errorMessage = "附件尚未准备好，请等待解析完成并选择要发送的内容。"
             return
@@ -1008,11 +1128,15 @@ struct FarmInsightConversationView: View {
             ) else { return }
             guard isControllerBoundToFarm, controller.conversationScope == submittedScope else { return }
             if wasNewConversation, let id = controller.currentConversationID {
-                InsightSessionCoordinator.shared.completeDraft(
-                    scope: submittedScope, draftID: submittedDraftID,
-                    conversationID: id, controller: controller,
-                    expectedDraftRevision: submittedRevision
-                )
+                do {
+                    try await InsightSessionCoordinator.shared.completeDraft(
+                        scope: submittedScope, draftID: submittedDraftID,
+                        conversationID: id, controller: controller,
+                        expectedDraftRevision: submittedRevision
+                    )
+                } catch {
+                    controller.errorMessage = "消息已发送，但清理本机草稿失败：\(error.localizedDescription)"
+                }
                 composerDraft = InsightSessionCoordinator.shared.draft(scope: submittedScope, conversationID: id)
             } else if submittedDraft.revision == submittedRevision {
                 submittedDraft.clear()
@@ -1039,23 +1163,32 @@ struct FarmInsightConversationView: View {
     }
 
     private func activateMicrophoneLongPress() {
-        guard !isSubmitting, !isRestoringDraft, isReady,
+        guard !isSubmitting, !isRestoringDraft, isAudioEnabled,
+              !didActivateMicrophoneLongPress,
               pendingAudio == nil,
               !controller.isGenerating else {
             return
         }
         didActivateMicrophoneLongPress = true
-        isComposerFocused = false
+        // Keep an already-open keyboard attached to the same composer editor.
+        isAnalysisSettingsPresented = false
+        isContextUsagePresented = false
         audioPlayer.stop()
         Task {
-            guard isChatVisible, scenePhase == .active else { return }
+            guard isChatVisible, scenePhase == .active, isAudioEnabled else {
+                didActivateMicrophoneLongPress = false
+                return
+            }
             await audioRecorder.start()
-            guard isChatVisible, scenePhase == .active else {
+            guard isChatVisible, scenePhase == .active, isAudioEnabled else {
                 audioRecorder.discard()
                 didActivateMicrophoneLongPress = false
                 return
             }
             guard audioRecorder.isRecording else {
+                // A retry can produce the same recorder error. Present it
+                // directly instead of depending on an error-value change.
+                if let error = audioRecorder.errorMessage { controller.errorMessage = error }
                 didActivateMicrophoneLongPress = false
                 return
             }
@@ -1075,18 +1208,24 @@ struct FarmInsightConversationView: View {
         }
     }
 
-    private func finishSpeechRecording() {
-        withAnimation(.snappy(duration: 0.3, extraBounce: 0.04)) {
+    @discardableResult
+    private func finishSpeechRecording() -> Bool {
+        guard audioRecorder.isRecording else { return false }
+        defer {
+            isMicrophonePressed = false
+            didActivateMicrophoneLongPress = false
+        }
+        return withAnimation(.snappy(duration: 0.3, extraBounce: 0.04)) {
             do {
-                pendingAudio = try audioRecorder.finish()
-                if pendingAudio != nil {
-                    inputOrigin = .voiceAudio
-                }
+                guard let audio = try audioRecorder.finish() else { return false }
+                pendingAudio = audio
+                inputOrigin = .voiceAudio
+                return true
             } catch {
                 controller.errorMessage = error.localizedDescription
+                return false
             }
         }
-        didActivateMicrophoneLongPress = false
     }
 
     private func toggleAudioPlayback() {
@@ -1110,6 +1249,12 @@ struct FarmInsightConversationView: View {
 
     private func discardPendingAudio() {
         audioPlayer.stop()
+        if audioRecorder.isRecording {
+            isMicrophonePressed = false
+            didActivateMicrophoneLongPress = false
+            audioRecorder.discard()
+            return
+        }
         withAnimation(.snappy(duration: 0.28, extraBounce: 0.03)) {
             pendingAudio = nil
             inputOrigin = .text
@@ -1229,7 +1374,7 @@ struct FarmInsightConversationView: View {
         in messages: [InsightMessageRecord]
     ) -> Bool {
         guard messages.indices.contains(index) else { return false }
-        guard index > messages.startIndex else { return true }
+        guard index > messages.startIndex else { return false }
         let message = messages[index]
         let previous = messages[index - 1]
         return !Calendar.current.isDate(message.createdAt, inSameDayAs: previous.createdAt) ||
@@ -1262,6 +1407,16 @@ struct FarmInsightConversationView: View {
         ].joined(separator: ":")
     }
 
+    private var responseLayoutRevision: String {
+        let last = displayMessages.last
+        return [
+            String(displayMessages.count),
+            last?.id.uuidString ?? "",
+            String(last?.text.count ?? 0),
+            last?.statusRawValue ?? "",
+        ].joined(separator: ":")
+    }
+
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
         if animated {
             withAnimation(.easeOut(duration: 0.22)) {
@@ -1275,10 +1430,213 @@ struct FarmInsightConversationView: View {
     private func scrollToRequestedMessageOrBottom(_ proxy: ScrollViewProxy, animated: Bool) {
         if let messageID = searchResultTargetID {
             guard displayMessages.contains(where: { $0.id == messageID }) else { return }
+            pendingTranscriptLayoutScroll = false
             proxy.scrollTo(messageID, anchor: .center)
             searchResultTargetID = nil
         } else {
             scrollToBottom(proxy, animated: animated)
+        }
+    }
+}
+
+private struct InsightTranscriptScrollGeometry: Equatable {
+    let contentHeight: CGFloat
+    let viewportHeight: CGFloat
+    let reservedHeight: CGFloat
+}
+
+/// The custom header hides the native navigation bar. Restore only this
+/// screen's native pop recognizers, keeping UIKit's interactive transition
+/// and SwiftUI's navigation path in charge of the actual return.
+private struct InsightConversationInteractivePopSupport: UIViewControllerRepresentable {
+    var isPresentationActive = false
+    func makeUIViewController(context: Context) -> AnchorController {
+        let controller = AnchorController()
+        controller.isPresentationActive = isPresentationActive
+        return controller
+    }
+
+    func updateUIViewController(_ controller: AnchorController, context: Context) {
+        controller.isPresentationActive = isPresentationActive
+    }
+
+    static func dismantleUIViewController(_ controller: AnchorController, coordinator: ()) {
+        controller.invalidate()
+    }
+
+    final class AnchorController: UIViewController, UIGestureRecognizerDelegate {
+        var isPresentationActive = false
+        private struct SavedRecognizer {
+            weak var recognizer: UIGestureRecognizer?
+            weak var delegate: (any UIGestureRecognizerDelegate)?
+            let wasEnabled: Bool
+        }
+        private var savedRecognizers: [SavedRecognizer] = []
+        private weak var contentRecognizer: UIGestureRecognizer?
+        private weak var owningNavigationController: UINavigationController?
+        private weak var owningScreen: UIViewController?
+        private var isVisible = false
+
+        override func loadView() {
+            let anchor = UIView()
+            anchor.backgroundColor = .clear
+            anchor.isUserInteractionEnabled = false
+            anchor.accessibilityElementsHidden = true
+            view = anchor
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            isVisible = true
+            installIfNeeded()
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            installIfNeeded()
+        }
+
+        override func viewDidDisappear(_ animated: Bool) {
+            super.viewDidDisappear(animated)
+            isVisible = false
+            restore()
+        }
+
+        func invalidate() {
+            isVisible = false
+            // Dismantling can occur during a pop. Keep the delegate alive until
+            // UIKit has finished or cancelled that interactive transition.
+            if let transition = owningNavigationController?.transitionCoordinator,
+               transition.isInteractive {
+                transition.animate(alongsideTransition: nil) { [self] _ in restore() }
+            } else {
+                restore()
+            }
+        }
+
+        private func installIfNeeded() {
+            guard isVisible, view.window != nil,
+                  let (navigation, screen) = navigationOwner,
+                  navigation.topViewController === screen,
+                  navigation.viewControllers.count > 1 else { return }
+            var recognizers = [navigation.interactivePopGestureRecognizer].compactMap { $0 }
+            let content: UIGestureRecognizer?
+            if #available(iOS 26, *) {
+                content = navigation.interactiveContentPopGestureRecognizer
+                if let content { recognizers.append(content) }
+            } else {
+                content = nil
+            }
+            guard !recognizers.isEmpty else { return }
+            if savedRecognizers.count == recognizers.count,
+               recognizers.allSatisfy({ candidate in
+                   candidate.delegate === self && savedRecognizers.contains { $0.recognizer === candidate }
+               }) {
+                recognizers.forEach { $0.isEnabled = true }
+                return
+            }
+            restore()
+            for recognizer in recognizers {
+                if let previousBridge = recognizer.delegate as? AnchorController,
+                   previousBridge !== self {
+                    previousBridge.restore()
+                }
+            }
+            owningNavigationController = navigation
+            owningScreen = screen
+            contentRecognizer = content
+            for recognizer in recognizers {
+                savedRecognizers.append(SavedRecognizer(
+                    recognizer: recognizer, delegate: recognizer.delegate, wasEnabled: recognizer.isEnabled
+                ))
+                recognizer.delegate = self
+                recognizer.isEnabled = true
+            }
+        }
+
+        private var navigationOwner: (UINavigationController, UIViewController)? {
+            var ancestor: UIViewController? = self
+            while let controller = ancestor {
+                if let navigation = controller.parent as? UINavigationController {
+                    return (navigation, controller)
+                }
+                ancestor = controller.parent
+            }
+            return nil
+        }
+
+        private func restore() {
+            // A newly visible destination may have installed its own policy.
+            // Restore only while this bridge still owns the recognizer.
+            for saved in savedRecognizers {
+                if let recognizer = saved.recognizer, recognizer.delegate === self {
+                    recognizer.delegate = saved.delegate
+                    recognizer.isEnabled = saved.wasEnabled
+                }
+            }
+            savedRecognizers.removeAll()
+            contentRecognizer = nil
+            owningNavigationController = nil
+            owningScreen = nil
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard isVisible, !isPresentationActive, savedRecognizers.contains(where: { $0.recognizer === gestureRecognizer }),
+                  let navigation = owningNavigationController,
+                  navigation.topViewController === owningScreen,
+                  navigation.viewControllers.count > 1,
+                  navigation.presentedViewController == nil,
+                  navigation.transitionCoordinator == nil else { return false }
+            if gestureRecognizer === contentRecognizer, let pan = gestureRecognizer as? UIPanGestureRecognizer {
+                let velocity = pan.velocity(in: pan.view)
+                let direction: CGFloat = navigation.view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? -1 : 1
+                guard velocity.x * direction > 0, abs(velocity.x) > abs(velocity.y) else { return false }
+            }
+            return true
+        }
+
+        private func previousDelegate(for recognizer: UIGestureRecognizer) -> (any UIGestureRecognizerDelegate)? {
+            savedRecognizers.first { $0.recognizer === recognizer }?.delegate
+        }
+
+        private func isContentInteraction(_ touchedView: UIView?) -> Bool {
+            var ancestor = touchedView
+            while let view = ancestor {
+                if view is UIControl || view is any UITextInput { return true }
+                if let scroll = view as? UIScrollView, scroll.isScrollEnabled,
+                   scroll.alwaysBounceHorizontal || scroll.contentSize.width > scroll.bounds.width + 1 {
+                    return true
+                }
+                ancestor = view.superview
+            }
+            return false
+        }
+
+        // Preserve the original recognizer's other coordination policies. The
+        // only replaced decision is shouldBegin for this hidden-bar screen.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            previousDelegate(for: gestureRecognizer)?.gestureRecognizer?(gestureRecognizer, shouldRecognizeSimultaneouslyWith: other) ?? false
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRequireFailureOf other: UIGestureRecognizer) -> Bool {
+            previousDelegate(for: gestureRecognizer)?.gestureRecognizer?(gestureRecognizer, shouldRequireFailureOf: other) ?? false
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            previousDelegate(for: gestureRecognizer)?.gestureRecognizer?(gestureRecognizer, shouldBeRequiredToFailBy: other) ?? false
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            if gestureRecognizer === contentRecognizer, isContentInteraction(touch.view) { return false }
+            return previousDelegate(for: gestureRecognizer)?.gestureRecognizer?(gestureRecognizer, shouldReceive: touch) ?? true
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {
+            previousDelegate(for: gestureRecognizer)?.gestureRecognizer?(gestureRecognizer, shouldReceive: press) ?? true
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive event: UIEvent) -> Bool {
+            previousDelegate(for: gestureRecognizer)?.gestureRecognizer?(gestureRecognizer, shouldReceive: event) ?? true
         }
     }
 }
@@ -1363,7 +1721,7 @@ private struct InsightGeneratedFileExportView: View {
     }
 }
 
-private struct InsightAvailabilityNotice: View {
+struct InsightAvailabilityNotice: View {
     let title: String
     let detail: String
     let action: (() -> Void)?
@@ -1379,10 +1737,12 @@ private struct InsightAvailabilityNotice: View {
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
             if let action {
-                Button("打开设置", action: action)
+                Button("AI 设置", action: action)
                     .font(.caption.weight(.semibold))
                     .buttonStyle(.plain)
                     .foregroundStyle(AppTheme.brand)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("insight.availability.settings")
             }
         }
         .frame(maxWidth: .infinity)
@@ -1399,8 +1759,10 @@ struct InsightContextUsageRing: View {
     var body: some View {
         ZStack {
             Circle()
+                .inset(by: ringWidth / 2)
                 .stroke(Color.secondary.opacity(0.18), lineWidth: ringWidth)
             Circle()
+                .inset(by: ringWidth / 2)
                 .trim(from: 0, to: max(0.008, usage.fraction))
                 .stroke(
                     tint,
@@ -1412,8 +1774,8 @@ struct InsightContextUsageRing: View {
                 .rotationEffect(.degrees(-90))
             Text("\(usage.percentage)")
                 .font(.system(
-                    size: diameter >= 48 ? 13 : 8,
-                    weight: .semibold,
+                    size: diameter >= 48 ? 13 : 7,
+                    weight: diameter >= 48 ? .semibold : .medium,
                     design: .rounded
                 ))
                 .monospacedDigit()
@@ -1425,7 +1787,7 @@ struct InsightContextUsageRing: View {
     }
 
     private var ringWidth: CGFloat {
-        diameter >= 48 ? 5 : 3
+        diameter >= 48 ? 5 : 2
     }
 
     private var tint: Color {
@@ -1436,38 +1798,6 @@ struct InsightContextUsageRing: View {
             return .orange
         }
         return AppTheme.brand
-    }
-}
-
-struct InsightContextUsageDetail: View {
-    let usage: InsightContextWindowUsage
-
-    var body: some View {
-        VStack(spacing: 14) {
-            HStack(spacing: 16) {
-                InsightContextUsageRing(usage: usage, diameter: 58)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("约 \(tokenText(usage.estimatedTokens)) / \(tokenText(usage.limitTokens))")
-                        .font(.title3.weight(.semibold))
-                        .monospacedDigit()
-                    Text("已使用 \(usage.percentage)%")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(18)
-        .frame(width: 260)
-        .accessibilityElement(children: .contain)
-    }
-
-    private func tokenText(_ tokens: Int) -> String {
-        guard tokens >= 1_024 else { return "\(tokens)" }
-        let value = Double(tokens) / 1_024
-        if value >= 100 || value.rounded() == value {
-            return "\(Int(value.rounded()))K"
-        }
-        return String(format: "%.1fK", value)
     }
 }
 
@@ -1591,6 +1921,7 @@ private struct InsightConversationSearchView: View {
 }
 
 private struct InsightMessageBubble: View {
+    @Environment(\.colorScheme) private var colorScheme
     let message: InsightMessageRecord
     let attachments: [InsightAttachmentRecord]
     let storedAudio: StoredInsightAudio?
@@ -1601,7 +1932,7 @@ private struct InsightMessageBubble: View {
     var body: some View {
         VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
             HStack(alignment: .bottom, spacing: 0) {
-                if isUser { Spacer(minLength: 52) }
+                if isUser { Spacer(minLength: 72) }
                 VStack(alignment: .leading, spacing: 8) {
                     if !attachments.isEmpty {
                         ScrollView(.horizontal) {
@@ -1629,21 +1960,30 @@ private struct InsightMessageBubble: View {
                         voiceMessage
                     }
                     if !message.text.isEmpty && message.text != "语音消息" {
-                        InsightMarkdownView(
-                            message.text,
-                            foregroundColor: isUser ? .white : .primary,
-                            tableBackgroundColor: isUser
-                                ? .white.opacity(0.12)
-                                : Color(uiColor: .systemBackground).opacity(0.68),
-                            tableAccentColor: isUser ? .white : AppTheme.brand,
-                            expandsHorizontally: !isUser
-                        )
+                        if isUser {
+                            Text(verbatim: message.text)
+                                .foregroundStyle(.primary)
+                                .textSelection(.enabled)
+                                .lineSpacing(4)
+                        } else {
+                            InsightMarkdownView(
+                                message.text,
+                                foregroundColor: .primary,
+                                tableBackgroundColor: Color(uiColor: .secondarySystemBackground),
+                                tableAccentColor: .primary,
+                                expandsHorizontally: true
+                            )
+                            .font(.body)
+                            .lineSpacing(4)
+                        }
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(bubbleColor, in: bubbleShape)
-                if !isUser { Spacer(minLength: 52) }
+                .padding(.horizontal, isUser ? 14 : 0)
+                .padding(.vertical, isUser ? 11 : 0)
+                .background(
+                    isUser ? Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05) : .clear,
+                    in: .rect(cornerRadius: 22)
+                )
             }
 
             if let statusText {
@@ -1660,6 +2000,12 @@ private struct InsightMessageBubble: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(isUser ? "你的消息" : "AI 助手回复")
+        .accessibilityValue(Text(
+            message.createdAt,
+            format: .dateTime.year().month().day().hour().minute()
+        ))
     }
 
     private var isUser: Bool {
@@ -1678,7 +2024,7 @@ private struct InsightMessageBubble: View {
                     Image(systemName: isPlayingAudio ? "pause.fill" : "play.fill")
                         .font(.caption.bold())
                         .frame(width: 28, height: 28)
-                        .background(.white.opacity(0.18), in: .circle)
+                        .background(Color.primary.opacity(0.08), in: .circle)
                 }
                 .buttonStyle(.plain)
                 .contentTransition(.symbolEffect(.replace))
@@ -1686,7 +2032,7 @@ private struct InsightMessageBubble: View {
 
                 InsightAudioWaveform(
                     samples: storedAudio.waveformSamples,
-                    color: .white,
+                    color: .primary,
                     inactiveOpacity: 0.38
                 )
                 .frame(minWidth: 104, maxWidth: 176)
@@ -1694,11 +2040,11 @@ private struct InsightMessageBubble: View {
                 Text(formatDuration(storedAudio.duration))
                     .font(.caption.monospacedDigit())
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(.primary)
         } else {
             Label("语音未在本机保留", systemImage: "waveform.slash")
                 .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.82))
+                .foregroundStyle(.secondary)
                 .accessibilityLabel("这条语音没有本机副本")
         }
     }
@@ -1708,20 +2054,6 @@ private struct InsightMessageBubble: View {
         return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
     }
 
-    private var bubbleColor: Color {
-        isUser ? Color(uiColor: .systemBlue) : Color(uiColor: .secondarySystemFill)
-    }
-
-    private var bubbleShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            topLeadingRadius: 19,
-            bottomLeadingRadius: !isUser && endsRoleGroup ? 5 : 19,
-            bottomTrailingRadius: isUser && endsRoleGroup ? 5 : 19,
-            topTrailingRadius: 19,
-            style: .continuous
-        )
-    }
-
     private var statusText: String? {
         switch message.status {
         case .pending:
@@ -1729,12 +2061,34 @@ private struct InsightMessageBubble: View {
         case .streaming:
             nil
         case .completed:
-            isUser ? "已发送" : nil
+            nil
         case .failed:
-            isUser ? "发送未完成" : "内部处理未完成"
+            isUser ? "发送未完成" : "回复未完成"
+        case .interrupted:
+            "回复已中断，可继续"
         case .cancelled:
             "已停止"
         }
+    }
+}
+
+private struct InsightConversationRuntimeRow: View {
+    let controller: InsightConversationController
+    let message: InsightMessageRecord
+
+    var body: some View {
+        InsightRuntimeDisclosure(
+            records: controller.runtimeRecords(for: message.id),
+            showReasoning: controller.showReasoning,
+            toolExchanges: controller.processToolExchanges(for: message.id),
+            activeSeconds: controller.activeRuntimeSeconds(for: message.id),
+            isCompleted: message.status == .completed,
+            isRunning: controller.isGenerating && message.status == .streaming,
+            isInterrupted: message.status == .failed || message.status == .cancelled || message.status == .interrupted,
+            isPaused: message.status == .pending && controller.pausedReason != nil &&
+                controller.runtime?.turn?.assistantMessageID == message.id,
+            runtimeSeconds: { controller.activeRuntimeSeconds(for: message.id) }
+        )
     }
 }
 
@@ -1756,21 +2110,15 @@ private struct InsightConversationMessageRow: View {
     var body: some View {
         if message.toolName == InsightContextCompressor.compressionToolName {
             InsightContextCompressionNotice()
-            .id(message.id)
         } else {
-            if message.role != .assistant || message.status != .streaming || !message.text.isEmpty || !attachments.isEmpty {
-                InsightMessageBubble(
-                    message: message,
-                    attachments: attachments,
-                    storedAudio: storedAudio,
-                    isPlayingAudio: isPlayingAudio,
-                    endsRoleGroup: endsRoleGroup,
-                    onToggleAudio: onToggleAudio
-                )
-                .id(message.id)
-            } else {
-                Color.clear.frame(height: 0).id(message.id)
-            }
+            InsightMessageBubble(
+                message: message,
+                attachments: attachments,
+                storedAudio: storedAudio,
+                isPlayingAudio: isPlayingAudio,
+                endsRoleGroup: endsRoleGroup,
+                onToggleAudio: onToggleAudio
+            )
             ForEach(drafts, id: \.id) { draft in
                 InsightActionDraftCard(
                     draft: draft,
@@ -1824,18 +2172,11 @@ private struct InsightConversationTimestamp: View {
 
 private struct InsightAssistantTypingIndicator: View {
     var body: some View {
-        HStack(spacing: 6) {
-            ProgressView()
-                .controlSize(.small)
-            Text("AI 助手正在处理…")
-                .font(.subheadline)
-        }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(Color(uiColor: .secondarySystemFill), in: .capsule)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityLabel("AI 助手正在处理")
+        Text("正在思考")
+            .font(.body)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("AI 助手正在思考")
     }
 }
 

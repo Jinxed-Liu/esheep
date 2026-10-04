@@ -167,6 +167,47 @@ struct InsightSessionQueueRegression {
             throw Failure(description: "Cancelled durable turn was resumed.")
         } catch is CancellationError {}
         print("PASS: explicit same-turn resume joins FIFO tail and cancelled turn never resumes")
-        print("Session queue regression passed: 7 behavioral checks; no iOS build performed.")
+
+        let graceQueue = InsightSessionRequestQueue(maximumConcurrentRequests: 1)
+        graceQueue.activate(scope: scope)
+        let graceRunning = UUID(), graceWaiting = UUID()
+        try await graceQueue.acquire(scope: scope, requestID: graceRunning)
+        let graceWaitingTask = Task { @MainActor in
+            try await graceQueue.acquire(scope: scope, requestID: graceWaiting)
+        }
+        try await eventually("Grace fixture did not queue.") { graceQueue.queuedRequestCount == 1 }
+        graceQueue.setForeground(false, preservingRunningRequests: true)
+        try await reject(.paused) { try await graceWaitingTask.value }
+        try require(!graceQueue.isForeground && graceQueue.allowsRunningWork &&
+                    graceQueue.activeRequestCount == 1 && graceQueue.entries[graceRunning]?.state == .running,
+                    "Brief backgrounding interrupted admitted work instead of preserving its lease.")
+        try await reject(.paused) { try await graceQueue.acquire(scope: scope, requestID: UUID()) }
+        graceQueue.setForeground(true)
+        graceQueue.expireBackgroundGrace()
+        try require(graceQueue.entries[graceRunning]?.state == .running,
+                    "Late expiration after foreground return paused the active response.")
+        print("PASS: background grace preserves running work, rejects new admission, and ignores late expiration")
+
+        graceQueue.setForeground(false, preservingRunningRequests: true)
+        graceQueue.expireBackgroundGrace()
+        graceQueue.expireBackgroundGrace()
+        try require(!graceQueue.allowsRunningWork && graceQueue.activeRequestCount == 0 &&
+                    graceQueue.entries[graceRunning]?.state == .paused,
+                    "Background expiration failed to pause work or was not idempotent.")
+        graceQueue.setForeground(true)
+        try require(graceQueue.activeRequestCount == 0,
+                    "Queue bypassed identity verification by resuming an expired lease.")
+        try await graceQueue.acquire(scope: scope, requestID: graceRunning)
+        print("PASS: expired grace preserves same-turn admission for verified recovery without automatic queue restart")
+
+        graceQueue.setForeground(false, preservingRunningRequests: true)
+        graceQueue.activate(scope: otherAccount)
+        try require(!graceQueue.hasBackgroundGrace && graceQueue.activeRequestCount == 0 &&
+                    graceQueue.entries[graceRunning]?.state == .paused,
+                    "Account change retained the old account's background lease.")
+        graceQueue.setForeground(true)
+        try await reject(.inactiveScope) { try await graceQueue.acquire(scope: scope, requestID: graceRunning) }
+        print("PASS: account changes revoke background grace and cannot resurrect old-scope work")
+        print("Session queue regression passed: 10 behavioral checks; no iOS build performed.")
     }
 }

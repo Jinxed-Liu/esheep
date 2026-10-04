@@ -39,6 +39,7 @@ final class InsightSessionRequestQueue {
     private(set) var entries: [UUID: Entry] = [:]
     private(set) var activeScope: InsightSessionScope?
     private(set) var isForeground = true
+    private(set) var hasBackgroundGrace = false
     let maximumConcurrentRequests: Int
     @ObservationIgnored private var continuations: [UUID: CheckedContinuation<Void, Error>] = [:]
     @ObservationIgnored private var waiting: [UUID] = []
@@ -50,6 +51,7 @@ final class InsightSessionRequestQueue {
 
     var activeRequestCount: Int { entries.values.count { $0.state == .running } }
     var queuedRequestCount: Int { waiting.count }
+    var allowsRunningWork: Bool { isForeground || hasBackgroundGrace }
 
     func acquire(scope: InsightSessionScope, requestID: UUID, conversationID: UUID? = nil) async throws {
         try Task.checkCancellation()
@@ -100,18 +102,33 @@ final class InsightSessionRequestQueue {
 
     func activate(scope: InsightSessionScope?) {
         guard activeScope != scope else { return }
+        hasBackgroundGrace = false
         activeScope = scope
         pauseRequests { $0.scope != scope }
         admitWaitingRequests()
     }
 
-    func setForeground(_ foreground: Bool) {
+    func setForeground(_ foreground: Bool, preservingRunningRequests: Bool = false) {
         isForeground = foreground
-        if !foreground { pauseRequests { _ in true } }
+        hasBackgroundGrace = !foreground && preservingRunningRequests
+        if !foreground {
+            pauseRequests { !preservingRunningRequests || $0.state == .queued }
+        } else {
+            admitWaitingRequests()
+        }
         // Foregrounding never silently restarts paused work.
     }
 
-    func pauseAll() { pauseRequests { _ in true } }
+    func expireBackgroundGrace() {
+        guard !isForeground, hasBackgroundGrace else { return }
+        hasBackgroundGrace = false
+        pauseRequests { _ in true }
+    }
+
+    func pauseAll() {
+        hasBackgroundGrace = false
+        pauseRequests { _ in true }
+    }
 
     func state(scope: InsightSessionScope, conversationID: UUID) -> InsightSessionRunState? {
         entries.values.filter { $0.scope == scope && $0.conversationID == conversationID }
