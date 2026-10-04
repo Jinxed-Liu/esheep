@@ -452,6 +452,14 @@ final class InsightAssistantEntryUITests: XCTestCase {
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
         conversation.tap()
         XCTAssertTrue(app.staticTexts[message].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["insight.composer.stop"].exists, "The original response stopped while reentering its conversation.")
+        XCTAssertFalse(app.staticTexts[response].exists, "The controlled offline reply completed before the test released it.")
+        let more = app.buttons["聊天更多选项"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        more.tap()
+        let completeReply = app.buttons["完成离线回复样本"]
+        XCTAssertTrue(completeReply.waitForExistence(timeout: 5), "The isolated reply fixture's completion control is missing.")
+        completeReply.tap()
         XCTAssertTrue(app.staticTexts[response].waitForExistence(timeout: 30), "The original response did not finish after edge return and reentry.")
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", message)).count, 1, "Reentry duplicated the original request.")
         XCTAssertFalse(app.buttons["insight.composer.stop"].exists)
