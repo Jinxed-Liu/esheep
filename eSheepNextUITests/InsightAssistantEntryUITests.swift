@@ -906,7 +906,9 @@ final class InsightAssistantEntryUITests: XCTestCase {
         // scroll gestures. The AX geometry proves that the screenshots contain
         // body text both above and behind the surface; blur quality still needs
         // independent review of the original attached PNGs.
-        for _ in 0..<8 {
+        // Eight gestures get nine measurements, including the settled result
+        // of the final gesture rather than failing before it is inspected.
+        for measurement in 0...8 {
             if keepingKeyboard {
                 let keyboard = app.keyboards.firstMatch
                 let keyboardReady = keyboard.exists && keyboard.frame.height > 100 &&
@@ -935,7 +937,15 @@ final class InsightAssistantEntryUITests: XCTestCase {
                 body.minY <= edge - 20 && body.maxY >= edge + 20 {
                 return true
             }
-            let delta = min(100, max(-100, (edge - 40) - body.minY))
+            guard measurement < 8 else { break }
+            var delta = min(100, max(-100, (edge - 40) - body.minY))
+            if abs(delta) > 0 && abs(delta) < 60 {
+                // A tiny adjustment can become a transcript tap and dismiss
+                // focus. Overshoot with a real pan, then let the next measured
+                // correction pan back 100pt to the same target. Clamping to a
+                // minimum distance alone would oscillate around that target.
+                delta += delta > 0 ? 100 : -100
+            }
             let startY = max(160, min(300, edge - 160))
             let start = transcript.coordinate(withNormalizedOffset: .zero)
                 .withOffset(CGVector(dx: transcript.frame.width * 0.90, dy: startY - transcript.frame.minY))
