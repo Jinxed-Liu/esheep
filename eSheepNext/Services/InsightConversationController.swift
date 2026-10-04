@@ -932,14 +932,15 @@ final class InsightConversationController {
     private func recoverInterruptedResponses(in context: ModelContext) {
         let accountID = conversationScope.accountID
         let farmID = conversationScope.farmID
-        let streaming = (try? context.fetch(FetchDescriptor<InsightMessageRecord>(
-            predicate: #Predicate {
-                $0.accountID == accountID
-                    && $0.farmID == farmID
-                    && $0.roleRawValue == "assistant"
-                    && ($0.statusRawValue == "streaming" || $0.statusRawValue == "pending" || $0.statusRawValue == "failed")
-            }
-        ))) ?? []
+        let recoverableStatuses: [String] = ["streaming", "pending", "failed"]
+        let predicate = #Predicate<InsightMessageRecord> {
+            $0.accountID == accountID
+                && $0.farmID == farmID
+                && $0.roleRawValue == "assistant"
+                && recoverableStatuses.contains($0.statusRawValue)
+        }
+        let descriptor = FetchDescriptor<InsightMessageRecord>(predicate: predicate)
+        let streaming: [InsightMessageRecord] = (try? context.fetch(descriptor)) ?? []
         let activeMessageID = isGenerating ? runtime?.pendingMessageID : nil
         let interrupted = streaming.filter {
             let activeState = InsightSessionCoordinator.shared.state(

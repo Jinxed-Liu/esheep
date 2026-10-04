@@ -28,7 +28,7 @@ concurrency:
 jobs:
   assistant-entry:
     runs-on: macos-26
-    timeout-minutes: 40
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
@@ -84,26 +84,36 @@ jobs:
             -project eSheepNext.xcodeproj \
             -scheme eSheepNextUI \
             -configuration Debug \
-            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
             -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-build.log"
+      - name: Preserve compiler diagnostics
+        uses: actions/upload-artifact@v6
+        with:
+          name: assistant-build-${{ github.sha }}
+          path: ${{ runner.temp }}/assistant-build.log
+          if-no-files-found: error
       - name: Wait for the simulator to finish booting
         timeout-minutes: 3
         run: xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
       - name: Run the real assistant entry UI regression
-        timeout-minutes: 15
+        # Cover all 11 UI flows, including first-launch simulator overhead.
+        # Each individual test retains its 240-second execution limit.
+        timeout-minutes: 25
         run: |
           set -euo pipefail
           python3 -u - <<'PYMONITOR' &
           import os, subprocess, time
           from pathlib import Path
           log = Path(os.environ['RUNNER_TEMP']) / 'assistant-entry.log'
+          # Healthy first entry must not compete with stack sampling.
+          # Collect one diagnostic only after XCTest reports a real idle stall.
           for _ in range(360):
-              if log.exists() and 'Tap "analysis-assistant-entry" Button' in log.read_text(errors='replace'):
-                  time.sleep(15)
+              if log.exists() and 'App event loop idle notification not received' in log.read_text(errors='replace'):
+                  print('Collecting runtime sample after XCTest reported an event-loop idle stall.', flush=True)
                   processes = subprocess.run(['pgrep', '-x', 'eSheepNext'], capture_output=True, text=True)
                   for pid in processes.stdout.split():
                       path = Path(os.environ['RUNNER_TEMP']) / f'assistant-runtime-{pid}.sample'
@@ -120,7 +130,7 @@ jobs:
             -project eSheepNext.xcodeproj \
             -scheme eSheepNextUI \
             -configuration Debug \
-            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
             -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
             -resultBundlePath "$RUNNER_TEMP/assistant-entry.xcresult" \
             -parallel-testing-enabled NO \
@@ -139,7 +149,7 @@ jobs:
             -project eSheepNext.xcodeproj \
             -scheme eSheepNext \
             -configuration Debug \
-            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
             -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
             -resultBundlePath "$RUNNER_TEMP/ios-rollback.xcresult" \
             -parallel-testing-enabled NO \
@@ -161,7 +171,7 @@ jobs:
             -project eSheepNext.xcodeproj \
             -scheme eSheepNext \
             -configuration Debug \
-            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
             -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
             -resultBundlePath "$RUNNER_TEMP/ios-unit.xcresult" \
             -parallel-testing-enabled NO \
@@ -190,7 +200,7 @@ jobs:
           fi
       - name: Preserve assistant UI screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: assistant-ui-screenshots-${{ github.sha }}
           if-no-files-found: ignore
@@ -227,7 +237,7 @@ jobs:
           PY
       - name: Preserve test evidence and crash reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: assistant-entry-${{ github.sha }}
           if-no-files-found: warn

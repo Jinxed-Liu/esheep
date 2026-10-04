@@ -91,15 +91,66 @@ actor ESheepCloudCenterSummaryReader {
         result.assetCount = try context.fetchCount(FetchDescriptor<ESheepCloudAssetState>(predicate: #Predicate {
             $0.farmID == farmID && $0.farmGeneration == generation
         }))
-        let pending = ["localOnly", "queued", "transferring", "failed"]
-        result.pendingAssetCount = try context.fetchCount(FetchDescriptor<ESheepCloudAssetState>(predicate: #Predicate {
-            $0.farmID == farmID && $0.farmGeneration == generation &&
-                (pending.contains($0.thumbnailStateRawValue) || pending.contains($0.avatarStateRawValue) || pending.contains($0.originalStateRawValue))
-        }))
-        result.failedAssetCount = try context.fetchCount(FetchDescriptor<ESheepCloudAssetState>(predicate: #Predicate {
-            $0.farmID == farmID && $0.farmGeneration == generation &&
-                ($0.thumbnailStateRawValue == "failed" || $0.avatarStateRawValue == "failed" || $0.originalStateRawValue == "failed")
-        }))
+        let pending: [String] = ["localOnly", "queued", "transferring", "failed"]
+        // Build the same predicate tree in steps to keep each type-checking expression small.
+        let pendingAssetPredicate = Predicate<ESheepCloudAssetState> { asset in
+            let farmMatches = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: asset, keyPath: \ESheepCloudAssetState.farmID),
+                rhs: PredicateExpressions.build_Arg(farmID)
+            )
+            let generationMatches = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: asset, keyPath: \ESheepCloudAssetState.farmGeneration),
+                rhs: PredicateExpressions.build_Arg(generation)
+            )
+            let scopeMatches = PredicateExpressions.build_Conjunction(lhs: farmMatches, rhs: generationMatches)
+            let pendingStates = PredicateExpressions.build_Arg(pending)
+            let thumbnailPending = PredicateExpressions.build_contains(
+                pendingStates,
+                PredicateExpressions.build_KeyPath(root: asset, keyPath: \ESheepCloudAssetState.thumbnailStateRawValue)
+            )
+            let avatarPending = PredicateExpressions.build_contains(
+                pendingStates,
+                PredicateExpressions.build_KeyPath(root: asset, keyPath: \ESheepCloudAssetState.avatarStateRawValue)
+            )
+            let originalPending = PredicateExpressions.build_contains(
+                pendingStates,
+                PredicateExpressions.build_KeyPath(root: asset, keyPath: \ESheepCloudAssetState.originalStateRawValue)
+            )
+            let previewPending = PredicateExpressions.build_Disjunction(lhs: thumbnailPending, rhs: avatarPending)
+            let renditionPending = PredicateExpressions.build_Disjunction(lhs: previewPending, rhs: originalPending)
+            return PredicateExpressions.build_Conjunction(lhs: scopeMatches, rhs: renditionPending)
+        }
+        let pendingAssets = FetchDescriptor<ESheepCloudAssetState>(predicate: pendingAssetPredicate)
+        result.pendingAssetCount = try context.fetchCount(pendingAssets)
+        let failedAssetPredicate = Predicate<ESheepCloudAssetState> { asset in
+            let farmMatches = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: asset, keyPath: \ESheepCloudAssetState.farmID),
+                rhs: PredicateExpressions.build_Arg(farmID)
+            )
+            let generationMatches = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: asset, keyPath: \ESheepCloudAssetState.farmGeneration),
+                rhs: PredicateExpressions.build_Arg(generation)
+            )
+            let scopeMatches = PredicateExpressions.build_Conjunction(lhs: farmMatches, rhs: generationMatches)
+            let failedState = PredicateExpressions.build_Arg("failed")
+            let thumbnailFailed = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: asset, keyPath: \ESheepCloudAssetState.thumbnailStateRawValue),
+                rhs: failedState
+            )
+            let avatarFailed = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: asset, keyPath: \ESheepCloudAssetState.avatarStateRawValue),
+                rhs: failedState
+            )
+            let originalFailed = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: asset, keyPath: \ESheepCloudAssetState.originalStateRawValue),
+                rhs: failedState
+            )
+            let previewFailed = PredicateExpressions.build_Disjunction(lhs: thumbnailFailed, rhs: avatarFailed)
+            let renditionFailed = PredicateExpressions.build_Disjunction(lhs: previewFailed, rhs: originalFailed)
+            return PredicateExpressions.build_Conjunction(lhs: scopeMatches, rhs: renditionFailed)
+        }
+        let failedAssets = FetchDescriptor<ESheepCloudAssetState>(predicate: failedAssetPredicate)
+        result.failedAssetCount = try context.fetchCount(failedAssets)
         return result
     }
 }

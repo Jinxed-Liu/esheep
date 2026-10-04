@@ -689,6 +689,14 @@ struct FarmInsightConversationView: View {
                 focusBeforePicker = isComposerFocused
                 isImportFilePresented = true
             }
+#if DEBUG
+            if isDesignAcceptanceReplyCompletionAvailable {
+                Button("完成离线回复样本") {
+                    Task { await DesignAcceptanceReplyGate.shared.release() }
+                }
+                .accessibilityIdentifier("design.insight.reply.complete")
+            }
+#endif
             Button("删除聊天", systemImage: "trash", role: .destructive) { isDeletePresented = true }
                 .disabled(currentConversation == nil)
         } label: {
@@ -698,6 +706,21 @@ struct FarmInsightConversationView: View {
         .disabled(isSubmitting || isRestoringDraft)
         .accessibilityLabel("聊天更多选项")
     }
+
+#if DEBUG
+    private var isDesignAcceptanceReplyCompletionAvailable: Bool {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard arguments.contains("--design-acceptance"),
+              arguments.contains("--design-insight-ready"),
+              arguments.contains("--design-insight-offline-send"),
+              arguments.contains("--design-insight-edge-swipe-response") else {
+            return false
+        }
+        return account.appleSubjectHash == AppleIdentityHash.value(for: "design-acceptance-local") &&
+            account.serverAccountID == nil && farm.ownerAccountID == account.id &&
+            farm.name == "设计验收 · 本机测试场" && isControllerBoundToFarm
+    }
+#endif
 
     private var composer: some View {
         InsightComposerView(

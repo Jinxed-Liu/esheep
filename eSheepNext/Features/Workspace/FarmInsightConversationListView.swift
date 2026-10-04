@@ -433,12 +433,13 @@ private struct InsightConversationListContent: View {
     let scope: InsightConversationScope
     let coordinator: InsightSessionCoordinator
     @Binding var currentDeviceOnly: Bool
+    @State private var selectedConversationIDs: Set<UUID> = []
     let onOpen: (InsightConversationRecord, UUID?) -> Void
     let onNewConversation: () -> Void
     let onDelete: (InsightConversationRecord) -> Void
 
     var body: some View {
-        List {
+        List(selection: $selectedConversationIDs) {
             Section {
                 HStack(spacing: 8) {
                     filterButton("全部", selected: !currentDeviceOnly) { currentDeviceOnly = false }
@@ -453,15 +454,20 @@ private struct InsightConversationListContent: View {
                     let match: InsightMessageRecord? = matches[conversation.id]
                     let state: InsightSessionRunState? = coordinator.state(scope: scope, conversationID: conversation.id)
                     let goalStatus: InsightGoalStatus? = coordinator.cachedController(scope: scope, conversationID: conversation.id)?.activeGoalStatus
-                    InsightConversationListButton(
+                    InsightConversationListRow(
                         title: conversation.title,
                         excerpt: normalizedSearch.isEmpty ? nil : match?.text,
                         state: state,
                         goalStatus: goalStatus,
-                        lastMessage: lastMessages[conversation.id],
-                        onOpen: { onOpen(conversation, match?.id) },
-                        onDelete: { onDelete(conversation) }
+                        lastMessage: lastMessages[conversation.id]
                     )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
+                    .listRowBackground(Color(uiColor: .systemBackground))
+                    .tag(conversation.id)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { openConversation(in: [conversation.id]) }
                 }
                 if conversations.isEmpty && !normalizedSearch.isEmpty {
                     ContentUnavailableView.search(text: normalizedSearch)
@@ -479,6 +485,27 @@ private struct InsightConversationListContent: View {
                 }
             }
         }
+        .contextMenu(forSelectionType: UUID.self) { identifiers in
+            if let conversation = conversation(in: identifiers) {
+                Button("删除聊天", systemImage: "trash", role: .destructive) {
+                    selectedConversationIDs.remove(conversation.id)
+                    onDelete(conversation)
+                }
+            }
+        } primaryAction: { identifiers in
+            openConversation(in: identifiers)
+        }
+    }
+
+    private func conversation(in identifiers: Set<UUID>) -> InsightConversationRecord? {
+        guard identifiers.count == 1, let identifier = identifiers.first else { return nil }
+        return conversations.first { $0.id == identifier && scope.contains($0) }
+    }
+
+    private func openConversation(in identifiers: Set<UUID>) {
+        guard let conversation = conversation(in: identifiers) else { return }
+        selectedConversationIDs.removeAll()
+        onOpen(conversation, matches[conversation.id]?.id)
     }
 
     private func filterButton(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -487,34 +514,6 @@ private struct InsightConversationListContent: View {
                 .padding(.horizontal, 15).frame(minHeight: 38)
                 .background(selected ? Color.primary.opacity(0.08) : Color.clear, in: .capsule)
         }.buttonStyle(.plain).foregroundStyle(.primary)
-    }
-}
-
-@MainActor
-private struct InsightConversationListButton: View {
-    let title: String
-    let excerpt: String?
-    let state: InsightSessionRunState?
-    let goalStatus: InsightGoalStatus?
-    let lastMessage: InsightMessageRecord?
-    let onOpen: () -> Void
-    let onDelete: () -> Void
-
-    var body: some View {
-        Button(action: onOpen) {
-            InsightConversationListRow(
-                title: title,
-                excerpt: excerpt,
-                state: state,
-                goalStatus: goalStatus,
-                lastMessage: lastMessage
-            )
-        }
-        .buttonStyle(.plain)
-        .listRowBackground(Color(uiColor: .systemBackground))
-        .contextMenu {
-            Button("删除聊天", systemImage: "trash", role: .destructive, action: onDelete)
-        }
     }
 }
 
