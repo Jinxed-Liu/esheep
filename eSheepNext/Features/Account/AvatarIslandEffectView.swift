@@ -29,10 +29,12 @@ final class AvatarIslandEffectUIView: UIView {
     private let blackCover = UIView()
     private var blurAnimator: UIViewPropertyAnimator?
     private var requestedProgress: CGFloat = 0
+    private var topOverscan: CGFloat = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         isOpaque = false
+        clipsToBounds = false
         backgroundColor = .clear
         isUserInteractionEnabled = false
         isAccessibilityElement = false
@@ -52,13 +54,15 @@ final class AvatarIslandEffectUIView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        blurView.frame = bounds
+        let paintBounds = SettingsAvatarIslandGeometry.paintBounds(in: bounds, topOverscan: topOverscan)
+        blurView.frame = paintBounds
         // This artwork is a fixed-size rim at the top of the effect canvas.
         // Stretching it to 171pt moves the clear center below the avatar neck.
-        radialShade.frame = CGRect(
-            x: (bounds.width - 100) / 2, y: 0, width: 100, height: 100
+        radialShade.frame = SettingsAvatarIslandGeometry.paintBounds(
+            in: CGRect(x: (bounds.width - 100) / 2, y: 0, width: 100, height: 100),
+            topOverscan: topOverscan
         )
-        blackCover.frame = bounds
+        blackCover.frame = paintBounds
     }
 
     override func didMoveToWindow() {
@@ -70,7 +74,13 @@ final class AvatarIslandEffectUIView: UIView {
         }
     }
 
-    func setProgress(_ progress: CGFloat) {
+    func setProgress(_ progress: CGFloat, topOverscan: CGFloat = 0) {
+        let overscan = topOverscan.isFinite ? max(0, topOverscan) : 0
+        if self.topOverscan != overscan {
+            self.topOverscan = overscan
+            radialShade.topOverscan = overscan
+            setNeedsLayout()
+        }
         requestedProgress = boundedAvatarIslandProgress(progress)
         renderProgress()
     }
@@ -132,7 +142,13 @@ final class AvatarIslandEffectUIView: UIView {
 /// A 100-point radial rim. Drawing occurs on size changes; scrolling changes
 /// only effect values, keeping the clear center at canvas y=88.
 @MainActor
-private final class AvatarIslandRadialShadeView: UIView {
+final class AvatarIslandRadialShadeView: UIView {
+    var topOverscan: CGFloat = 0 {
+        didSet {
+            if topOverscan != oldValue { setNeedsDisplay() }
+        }
+    }
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         isOpaque = false
@@ -154,7 +170,9 @@ private final class AvatarIslandRadialShadeView: UIView {
                 locations: [0, 0.87, 1]
               ) else { return }
         context.saveGState()
-        context.scaleBy(x: bounds.width / 100, y: bounds.height / 100)
+        // Extend paint above the artwork without moving its center or rim.
+        context.translateBy(x: 0, y: topOverscan)
+        context.scaleBy(x: bounds.width / 100, y: (bounds.height - topOverscan) / 100)
         context.drawRadialGradient(
             gradient,
             startCenter: CGPoint(x: 50, y: 88), startRadius: 0,
