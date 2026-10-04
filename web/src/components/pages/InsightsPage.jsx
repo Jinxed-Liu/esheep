@@ -285,11 +285,11 @@ function ScatterChart({ points, sheepRows = [] }) {
 }
 
 function WeightGainRows({ rows, timeZone }) {
-  return (
-    <section className="workspace-panel flat-panel analysis-secondary-panel">
-      <div className="panel-heading"><h2>个体增重与圈舍历史</h2><span>圈舍以分析结束日期为准 · 展开查看称重配对和转群日期</span></div>
-      <div className="weight-analysis-rows">
-        {rows.map((row) => (
+  const [showExcluded, setShowExcluded] = useState(false);
+  const pairedRows = [];
+  const excludedRows = [];
+  for (const row of rows) (Number.isFinite(row.gramsPerDay) ? pairedRows : excludedRows).push(row);
+  const renderRow = (row) => (
           <details className="weight-analysis-row" key={row.sheepID}>
             <summary>
               <span><strong>{row.earTag}</strong><small>期末圈舍：{row.analysisEndPenName}{row.penHistory.length ? ` · 期间转群 ${row.penHistory.length} 次` : ""}</small></span>
@@ -319,8 +319,15 @@ function WeightGainRows({ rows, timeZone }) {
               ))}</details> : null}
             </div>
           </details>
-        ))}
-      </div>
+  );
+  return (
+    <section className="workspace-panel flat-panel analysis-secondary-panel">
+      <div className="panel-heading"><h2>个体增重与圈舍历史</h2><span>可计算 {numberText(pairedRows.length, 0)} 只 · 展开查看称重配对和转群日期</span></div>
+      {pairedRows.length ? <div className="weight-analysis-rows">{pairedRows.map(renderRow)}</div> : <div className="empty-state">所选期间内没有形成有效称重配对。</div>}
+      {excludedRows.length ? <details className="weight-analysis-reference weight-analysis-excluded" onToggle={(event) => setShowExcluded(event.currentTarget.open)}>
+        <summary><span><strong>未纳入增重统计的羊只（{numberText(excludedRows.length, 0)} 只）</strong><small>展开查看缺配对原因、原称重和圈舍历史。</small></span><CaretDown size={18} aria-hidden="true" /></summary>
+        {showExcluded ? <div className="weight-analysis-rows">{excludedRows.map(renderRow)}</div> : null}
+      </details> : null}
     </section>
   );
 }
@@ -351,6 +358,7 @@ function WeightAnalysis({ source, now, timeZone }) {
         { label: "可计算增重羊只", value: data.latestAverageADGSampleCount, unit: "只", digits: 0, sample: `有效配对区间 n=${numberText(data.intervals.length, 0)}` },
         { label: "期间平均日增重", value: data.latestAverageADG == null ? null : data.latestAverageADG * 1000, unit: "克/天", sample: `逐羊等权 n=${numberText(data.latestAverageADGSampleCount, 0)}` },
       ]} />
+      {data.sheepSampleCount > data.latestAverageADGSampleCount ? <AnalysisNotice>结果只代表 {numberText(data.latestAverageADGSampleCount, 0)} 只可配对羊；另 {numberText(data.sheepSampleCount - data.latestAverageADGSampleCount, 0)} 只有称重但缺少有效配对，未纳入平均。</AnalysisNotice> : null}
       {!data.canonicalSampleCount ? <EmptyAnalysis icon={Scales} title="当前筛选没有称重样本" detail="请选择有普通称重、断奶重或有效出生重的期间；同一只羊至少有两次有效称重才能计算增重。" /> : (
         <>
           <WeightGainRows rows={data.rows} timeZone={timeZone} />

@@ -259,6 +259,9 @@
 .app-shell .insights-page .weight-analysis-reference > summary > svg { flex-shrink: 0; color: var(--analysis-muted); }
 .app-shell .insights-page .weight-analysis-reference[open] > summary { border-bottom: 1px solid var(--analysis-border); }
 .app-shell .insights-page .weight-analysis-reference[open] > summary > svg { transform: rotate(180deg); }
+.app-shell .insights-page .weight-analysis-excluded { border-top: 1px solid var(--analysis-border); }
+.app-shell .insights-page .weight-analysis-excluded > summary { background: var(--analysis-subtle); }
+.app-shell .insights-page .weight-analysis-excluded > summary strong { font-size: 1rem; }
 
 .app-shell .insights-page .insight-overview-strip :is(small, em),
 .app-shell .insights-page :is(.insight-destination-grid small, .insight-principle small) { color: var(--analysis-muted); font-size: .9375rem; line-height: 1.6; }
