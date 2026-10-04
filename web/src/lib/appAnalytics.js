@@ -362,10 +362,12 @@ function weightCandidates(snapshot, timeZone) {
 }
 
 /** App's SheepWeightSampleBuilder.dailyCanonical semantics. */
-export function dailyCanonicalWeightSamples(source, timeZone = "Asia/Shanghai") {
+export function dailyCanonicalWeightSamples(source, timeZone = "Asia/Shanghai", { cutoff = null } = {}) {
   const snapshot = sourceSnapshot(source);
   const grouped = new Map();
+  const cutoffDate = validDate(cutoff);
   for (const sample of weightCandidates(snapshot, timeZone)) {
+    if (cutoffDate && validDate(sample.at) > cutoffDate) continue;
     const day = farmDayKey(sample.at, timeZone);
     const key = `${normalizeID(sample.sheepID)}|${day}`;
     const current = grouped.get(key);
@@ -396,18 +398,38 @@ function membershipContains(membership, instant) {
   return Boolean(date && joinedAt && joinedAt <= date && (!leftAt || date <= leftAt));
 }
 
-export function weightFilterOptions(source, { now = new Date(), timeZone = "Asia/Shanghai" } = {}) {
+function weightPenAt(sheep, instant, transfersBySheep, exclusive = false) {
+  const date = validDate(instant);
+  if (!date) return sheep.initialPenID ?? null;
+  const transfers = transfersBySheep.get(normalizeID(sheep.id)) ?? [];
+  let latest = null;
+  for (const transfer of transfers) {
+    const occurredAt = validDate(transfer.at ?? transfer.occurredAt);
+    if (!occurredAt || (exclusive ? occurredAt >= date : occurredAt > date)) break;
+    latest = transfer;
+  }
+  return latest ? (latest.toPenID ?? null) : (sheep.initialPenID ?? null);
+}
+
+function weightAnalysisRange(snapshot, { startDate, endDate, cutoff, now, timeZone }) {
+  const clock = validDate(now) ?? new Date();
+  let firstDay = keyParts(startDate) ? startDate : farmDayKey(startDate, timeZone);
+  let lastDay = keyParts(endDate) ? endDate : farmDayKey(endDate, timeZone);
+  if (firstDay && lastDay && firstDay > lastDay) [firstDay, lastDay] = [lastDay, firstDay];
+  const end = lastDay
+    ? new Date(Math.min(zonedStartOfDay(addFarmDays(lastDay, 1), timeZone).getTime() - 1, clock.getTime()))
+    : (validDate(cutoff) ?? weightCutoff(snapshot, clock));
+  return { start: firstDay ? zonedStartOfDay(firstDay, timeZone) : null, startDay: firstDay, end };
+}
+
+export function weightFilterOptions(source, { endDate = null, now = new Date(), timeZone = "Asia/Shanghai" } = {}) {
   const snapshot = sourceSnapshot(source);
-  const cutoff = weightCutoff(snapshot, now);
-  const transfersBySheep = transferIndex(snapshot);
-  const removalsBySheep = removalIndex(snapshot);
-  const occupiedPenIDs = new Set(snapshot.sheep.filter((sheep) => (
-    sheepPresentAt(sheep, cutoff, transfersBySheep, removalsBySheep)
-  )).map((sheep) => normalizeID(penAt(sheep, cutoff, transfersBySheep))).filter(Boolean));
+  const { end: cutoff } = weightAnalysisRange(snapshot, { endDate, now, timeZone });
   return {
     cutoff: cutoff.toISOString(),
     cutoffDay: farmDayKey(cutoff, timeZone),
-    pens: snapshot.pens.filter((pen) => occupiedPenIDs.has(normalizeID(pen.id))),
+    // 保留历史圈舍选项；改变截止日不能把用户选中的原舍自动清掉。
+    pens: [...snapshot.pens].sort((left, right) => String(left.name).localeCompare(String(right.name), "zh-CN")),
     batches: snapshot.batches.filter((batch) => batch.source == null || batch.source === "manual"),
   };
 }
@@ -417,59 +439,103 @@ export function calculateWeightAnalytics(source, {
   penID = null,
   batchID = null,
   cutoff = null,
+  startDate = null,
+  endDate = null,
   now = new Date(),
   timeZone = "Asia/Shanghai",
 } = {}) {
   const snapshot = sourceSnapshot(source);
-  const snapshotDate = validDate(cutoff) ?? weightCutoff(snapshot, now);
-  const removed = new Set(snapshot.removals.filter((item) => {
-    const date = validDate(item.at ?? item.occurredAt);
-    return date && date <= snapshotDate;
-  }).map((item) => normalizeID(item.sheepID)));
+  const range = weightAnalysisRange(snapshot, { startDate, endDate, cutoff, now, timeZone });
+  const snapshotDate = range.end;
   const transfersBySheep = transferIndex(snapshot);
-  let eligible = snapshot.sheep;
-  let membershipsBySheep = null;
-  if (batchID) {
-    const memberships = snapshot.batchMemberships.filter((item) => (
-      normalizeID(item.batchID) === normalizeID(batchID) && validDate(item.joinedAt) <= snapshotDate
-    ));
-    membershipsBySheep = new Map();
-    for (const membership of memberships) {
-      const key = normalizeID(membership.sheepID);
-      const list = membershipsBySheep.get(key) ?? [];
-      list.push(membership);
-      membershipsBySheep.set(key, list);
-    }
-    eligible = eligible.filter((sheep) => membershipsBySheep.has(normalizeID(sheep.id)));
-  } else if (penID) {
-    eligible = eligible.filter((sheep) => normalizeID(penAt(sheep, snapshotDate, transfersBySheep)) === normalizeID(penID));
+  const removalsBySheep = removalIndex(snapshot);
+  const penNames = new Map(snapshot.pens.map((pen) => [normalizeID(pen.id), pen.name]));
+  const penName = (id) => id ? (penNames.get(normalizeID(id)) ?? "历史圈舍") : "未分舍";
+  const membershipsBySheep = new Map();
+  for (const membership of snapshot.batchMemberships) {
+    const key = normalizeID(membership.sheepID);
+    const list = membershipsBySheep.get(key) ?? [];
+    list.push(membership);
+    membershipsBySheep.set(key, list);
   }
-  eligible = eligible.filter((sheep) => {
-    const isRemoved = removed.has(normalizeID(sheep.id));
+  const eligible = snapshot.sheep.filter((sheep) => {
+    if (sheep.isHistoricalArchive) return false;
+    const enteredAt = validDate(sheep.enteredAt);
+    if (enteredAt && enteredAt > snapshotDate) return false;
+    const removedAt = effectiveRemovalAt(sheep, removalsBySheep);
+    if (range.start && removedAt && removedAt < range.start) return false;
+    if (penID && (normalizeID(weightPenAt(sheep, snapshotDate, transfersBySheep)) !== normalizeID(penID) || (removedAt && removedAt < snapshotDate))) return false;
+    if (batchID && !(membershipsBySheep.get(normalizeID(sheep.id)) ?? []).some((membership) => (
+      normalizeID(membership.batchID) === normalizeID(batchID) &&
+      (penID ? membershipContains(membership, snapshotDate) : (
+        validDate(membership.joinedAt) && validDate(membership.joinedAt) <= snapshotDate &&
+        (!range.start || !validDate(membership.leftAt) || validDate(membership.leftAt) >= range.start)
+      ))
+    ))) return false;
+    const isRemoved = Boolean(removedAt && removedAt <= snapshotDate);
+    const lifecycleKnown = removedAt != null || sheep.status === "active";
+    if (scope !== "all" && !lifecycleKnown) return false;
     if (scope === "inHerdOnly") return !isRemoved;
     if (scope === "removedOnly") return isRemoved;
     return true;
   });
-  const eligibleIDs = new Set(eligible.map((sheep) => normalizeID(sheep.id)));
-  const pointMap = new Map();
-  for (const sample of dailyCanonicalWeightSamples(snapshot, timeZone)) {
+  const sheepByID = new Map(eligible.map((sheep) => [normalizeID(sheep.id), sheep]));
+  const canonical = dailyCanonicalWeightSamples(snapshot, timeZone, { cutoff: snapshotDate }).filter((sample) => {
     const sheepKey = normalizeID(sample.sheepID);
     const at = validDate(sample.at);
-    if (!eligibleIDs.has(sheepKey) || !at || at > snapshotDate) continue;
-    if (membershipsBySheep && !membershipsBySheep.get(sheepKey)?.some((membership) => membershipContains(membership, at))) continue;
+    const sheep = sheepByID.get(sheepKey);
+    if (!sheep || !at || at > snapshotDate || (range.start && at < range.start)) return false;
+    const enteredAt = validDate(sheep.enteredAt);
+    const removedAt = effectiveRemovalAt(sheep, removalsBySheep);
+    return (!enteredAt || at >= enteredAt) && (!removedAt || at <= removedAt) &&
+      (!batchID || (membershipsBySheep.get(sheepKey) ?? []).some((membership) => normalizeID(membership.batchID) === normalizeID(batchID) && membershipContains(membership, at)));
+  });
+  const pointMap = new Map();
+  for (const sample of canonical) {
+    const sheepKey = normalizeID(sample.sheepID);
     const list = pointMap.get(sheepKey) ?? [];
-    list.push({ date: sample.day, at: zonedStartOfDay(sample.day, timeZone)?.toISOString() ?? sample.at, weight: sample.kilograms, source: sample.source });
+    list.push({ ...sample, date: sample.day, weight: sample.kilograms });
     pointMap.set(sheepKey, list);
   }
+  const transferHistory = (sheep, first, last, includeFirst = false) => {
+    const history = [];
+    let previousPenID = sheep.initialPenID ?? null;
+    for (const transfer of transfersBySheep.get(normalizeID(sheep.id)) ?? []) {
+      const at = validDate(transfer.at ?? transfer.occurredAt);
+      if (!at || at > last) break;
+      const fromPenID = transfer.fromPenID ?? previousPenID;
+      const toPenID = transfer.toPenID ?? null;
+      if (!first || at > first || (includeFirst && at.getTime() === first.getTime())) history.push({
+        id: transfer.id, occurredAt: at.toISOString(), recordedAt: transfer.recordedAt ?? null,
+        fromPenID, toPenID, fromPenName: penName(fromPenID), toPenName: penName(toPenID), note: transfer.note ?? "",
+      });
+      previousPenID = toPenID;
+    }
+    return history;
+  };
+  const intervalIsInBatch = (sheepID, first, last) => {
+    if (!batchID) return true;
+    const overlapping = (membershipsBySheep.get(sheepID) ?? []).filter((membership) => {
+      const joined = validDate(membership.joinedAt);
+      const left = validDate(membership.leftAt);
+      return joined && joined <= last && (!left || left >= first);
+    });
+    return overlapping.length === 1 && normalizeID(overlapping[0].batchID) === normalizeID(batchID) &&
+      membershipContains(overlapping[0], first) && membershipContains(overlapping[0], last);
+  };
   const weightsByDate = new Map();
   const adgByDate = new Map();
   const latestWeights = [];
   const latestADGs = [];
   const scatter = [];
+  const rows = [];
+  const intervals = [];
   for (const [sheepID, pointsValue] of pointMap) {
     const points = pointsValue.sort((left, right) => left.date.localeCompare(right.date));
     const latest = points.at(-1);
     if (!latest) continue;
+    const sheep = sheepByID.get(sheepID);
+    const sheepIntervals = [];
     latestWeights.push(latest.weight);
     for (const point of points) {
       const values = weightsByDate.get(point.date) ?? [];
@@ -480,27 +546,48 @@ export function calculateWeightAnalytics(source, {
       const previous = points[index - 1];
       const current = points[index];
       const days = (keySerial(current.date) ?? 0) - (keySerial(previous.date) ?? 0);
-      if (days <= 0) continue;
+      const firstAt = validDate(previous.at);
+      const lastAt = validDate(current.at);
+      if (days <= 0 || !intervalIsInBatch(sheepID, firstAt, lastAt)) continue;
       const adg = (current.weight - previous.weight) / days;
+      const transfers = transferHistory(sheep, firstAt, lastAt);
+      const startPenID = weightPenAt(sheep, firstAt, transfersBySheep);
+      const endPenID = weightPenAt(sheep, lastAt, transfersBySheep);
+      const interval = {
+        sheepID: sheep.id, startSample: previous, endSample: current, startDate: previous.at, endDate: current.at,
+        intervalDays: days, totalGainKilograms: current.weight - previous.weight, gramsPerDay: adg * 1_000,
+        startPenID, endPenID, startPenName: penName(startPenID), endPenName: penName(endPenID), transfers,
+        canBeAttributedToSinglePen: Boolean(startPenID && normalizeID(startPenID) === normalizeID(endPenID) && transfers.length === 0),
+      };
+      sheepIntervals.push(interval);
+      intervals.push(interval);
       const values = adgByDate.get(current.date) ?? [];
       values.push(adg);
       adgByDate.set(current.date, values);
       scatter.push({ sheepID, date: current.date, baselineWeight: previous.weight, adg });
     }
-    const first = points[0];
-    const days = (keySerial(latest.date) ?? 0) - (keySerial(first.date) ?? 0);
-    if (days > 0) latestADGs.push((latest.weight - first.weight) / days);
+    const days = sheepIntervals.reduce((total, interval) => total + interval.intervalDays, 0);
+    const gain = sheepIntervals.reduce((total, interval) => total + interval.totalGainKilograms, 0);
+    const adg = days > 0 ? gain / days : null;
+    if (adg != null) latestADGs.push(adg);
+    const endPenID = weightPenAt(sheep, snapshotDate, transfersBySheep);
+    const enteredAt = validDate(sheep.enteredAt);
+    const historyStart = range.start && enteredAt ? new Date(Math.max(range.start.getTime(), enteredAt.getTime())) : (range.start ?? enteredAt ?? validDate(points[0].at));
+    rows.push({
+      sheepID: sheep.id, earTag: sheep.earTag, analysisEndAt: snapshotDate.toISOString(),
+      analysisEndPenID: endPenID, analysisEndPenName: penName(endPenID),
+      historyStartAt: historyStart.toISOString(), historyStartPenName: penName(weightPenAt(sheep, historyStart, transfersBySheep)),
+      penHistory: transferHistory(sheep, historyStart, snapshotDate, true), intervals: sheepIntervals,
+      startSample: sheepIntervals[0]?.startSample ?? points[0], endSample: sheepIntervals.at(-1)?.endSample ?? latest,
+      intervalDays: days, intervalCount: sheepIntervals.length, totalGainKilograms: days > 0 ? gain : null, gramsPerDay: adg == null ? null : adg * 1_000,
+      exclusionReason: days > 0 ? null : (points.length < 2 ? "缺少第二次称重" : "称重区间不连续属于所选批次"),
+    });
   }
   const trend = (map) => [...map.entries()].map(([date, values]) => ({
     date,
     value: average(values),
     sampleCount: values.length,
   })).sort((left, right) => left.date.localeCompare(right.date));
-  const canonical = dailyCanonicalWeightSamples(snapshot, timeZone).filter((sample) => {
-    const at = validDate(sample.at);
-    return eligibleIDs.has(normalizeID(sample.sheepID)) && at && at <= snapshotDate &&
-      (!membershipsBySheep || membershipsBySheep.get(normalizeID(sample.sheepID))?.some((membership) => membershipContains(membership, at)));
-  });
   return {
     sheepIDs: eligible.map((sheep) => sheep.id).sort((left, right) => normalizeID(left).localeCompare(normalizeID(right))),
     canonicalSampleCount: canonical.length,
@@ -513,6 +600,12 @@ export function calculateWeightAnalytics(source, {
     adgTrend: trend(adgByDate),
     scatter,
     cutoff: snapshotDate.toISOString(),
+    startDate: range.startDay,
+    endDate: farmDayKey(snapshotDate, timeZone),
+    rows: rows.sort((left, right) => String(left.analysisEndPenName).localeCompare(String(right.analysisEndPenName), "zh-CN") || String(left.earTag).localeCompare(String(right.earTag), "zh-CN", { numeric: true })),
+    intervals,
+    crossPenIntervalCount: intervals.filter((interval) => interval.transfers.length > 0).length,
+    transferSheepCount: rows.filter((row) => row.penHistory.length > 0).length,
     boundary: recordBoundary(canonical),
     // Compatibility aliases used by the overview and older tests.
     latestAverageKg: average(latestWeights),

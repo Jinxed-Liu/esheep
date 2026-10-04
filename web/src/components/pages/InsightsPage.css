@@ -248,8 +248,17 @@
 .app-shell .insights-page .weight-analysis-row > summary > span { min-width: 0; overflow-wrap: anywhere; }
 .app-shell .insights-page .weight-analysis-row b { font-size: clamp(1.125rem, 1rem + .5vw, 1.375rem); }
 .app-shell .insights-page .weight-analysis-row b.weight-analysis-down { color: var(--analysis-warning-text); }
+.app-shell .insights-page .weight-analysis-row > summary > .weight-analysis-missing { max-width: 16rem; color: var(--analysis-warning-text); font-size: var(--analysis-caption-size); line-height: 1.65; text-align: end; }
 .app-shell .insights-page .weight-analysis-facts { gap: 12px; }
 .app-shell .insights-page .weight-analysis-facts dd { overflow-wrap: anywhere; }
+.app-shell .insights-page .weight-analysis-reference > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 64px; padding: 20px 24px; cursor: pointer; list-style: none; }
+.app-shell .insights-page .weight-analysis-reference > summary::-webkit-details-marker { display: none; }
+.app-shell .insights-page .weight-analysis-reference > summary > span { min-width: 0; display: grid; gap: 5px; }
+.app-shell .insights-page .weight-analysis-reference > summary strong { color: var(--analysis-text); font-size: 1.125rem; line-height: 1.5; }
+.app-shell .insights-page .weight-analysis-reference > summary small { color: var(--analysis-muted); font-size: var(--analysis-caption-size); line-height: 1.65; }
+.app-shell .insights-page .weight-analysis-reference > summary > svg { flex-shrink: 0; color: var(--analysis-muted); }
+.app-shell .insights-page .weight-analysis-reference[open] > summary { border-bottom: 1px solid var(--analysis-border); }
+.app-shell .insights-page .weight-analysis-reference[open] > summary > svg { transform: rotate(180deg); }
 
 .app-shell .insights-page .insight-overview-strip :is(small, em),
 .app-shell .insights-page :is(.insight-destination-grid small, .insight-principle small) { color: var(--analysis-muted); font-size: .9375rem; line-height: 1.6; }
@@ -279,6 +288,7 @@
   .app-shell .insights-page .analysis-month-cards { grid-template-columns: minmax(0, 1fr); }
   .app-shell .insights-page .analysis-month-cards > article { border-right: 0; }
   .app-shell .insights-page .weight-analysis-facts { grid-template-columns: minmax(0, 1fr); }
+  .app-shell .insights-page .weight-analysis-reference > summary { padding: 16px; }
 }
 
 @media (max-width: 480px) {
@@ -291,7 +301,9 @@
   .app-shell .insights-page .analysis-segmented button { flex: 1 1 auto; padding: 8px 12px; }
   .app-shell .insights-page .compact-analysis-list { grid-template-columns: minmax(0, 1fr); }
   .app-shell .insights-page .compact-analysis-list article { border-right: 0; }
-  .app-shell .insights-page .weight-analysis-row > summary { flex-wrap: wrap; }
-  .app-shell .insights-page .weight-analysis-row > summary > span { flex: 1 1 100%; }
+  .app-shell .insights-page .weight-analysis-row > summary { grid-template-columns: minmax(0, 1fr) 16px; }
+  .app-shell .insights-page .weight-analysis-row > summary > span:first-child { grid-column: 1; }
+  .app-shell .insights-page .weight-analysis-row > summary > :is(b, .weight-analysis-missing) { grid-column: 1; grid-row: 2; max-width: 100%; text-align: start; }
+  .app-shell .insights-page .weight-analysis-row > summary > svg { grid-column: 2; grid-row: 1; }
   .app-shell .insights-page .weight-analysis-history { grid-template-columns: minmax(0, 1fr); }
 }

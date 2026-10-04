@@ -7,6 +7,7 @@ import {
   calculateWeightAnalytics,
   dailyCanonicalWeightSamples,
   feedFilterOptions,
+  weightFilterOptions,
 } from "../src/lib/appAnalytics.js";
 
 const penA = "00000000-0000-0000-0000-0000000000a1";
@@ -59,7 +60,7 @@ function cornComposition(kilograms) {
 
 test("daily canonical weights use App priority, latest same-source sample, and farm calendar day", () => {
   const source = {
-    sheep: [sheep("a")],
+    sheep: [sheep("a", { enteredAt: "2026-01-01T00:00:00Z" })],
     weights: [
       { id: "w-early", sheepID: "a", kilograms: 10, at: "2026-01-01T16:30:00Z" },
       { id: "w-late", sheepID: "a", kilograms: 11, at: "2026-01-02T15:00:00Z" },
@@ -95,6 +96,181 @@ test("weight cutoff and production-batch membership match App event-time slicing
   assert.equal(result.canonicalSampleCount, 1);
   assert.equal(result.latestAverageWeight, 20);
   assert.equal(result.latestAverageADG, null);
+});
+
+function transferredWeightFixture() {
+  const penC = "pen-c";
+  return {
+    pens: [{ id: penA, name: "大棚九舍" }, { id: penB, name: "大棚十二舍" }, { id: penC, name: "育肥三舍" }],
+    sheep: [sheep("moved", { earTag: "MOVED", currentPenID: penA })],
+    weights: [
+      { id: "first", sheepID: "moved", kilograms: 30, at: "2026-09-01T08:00:00Z" },
+      { id: "last", sheepID: "moved", kilograms: 36, at: "2026-09-11T08:00:00Z" },
+    ],
+    transfers: [
+      { id: "one", sheepID: "moved", toPenID: penB, at: "2026-09-05T08:00:00Z", recordedAt: "2026-09-29T08:00:00Z" },
+      { id: "two", sheepID: "moved", fromPenID: penB, toPenID: penC, at: "2026-09-11T15:00:00Z", recordedAt: "2026-09-29T08:00:00Z" },
+      { id: "future", sheepID: "moved", fromPenID: penC, toPenID: penA, at: "2026-09-13T00:00:00Z", recordedAt: "2026-09-13T00:00:00Z" },
+    ],
+    batches: [{ id: "batch", name: "育肥批次", source: "manual" }],
+    batchMemberships: [{ id: "member", batchID: "batch", sheepID: "moved", joinedAt: "2026-08-01T00:00:00Z", leftAt: null }],
+  };
+}
+
+const weightRange = { startDate: "2026-09-01", endDate: "2026-09-12", now: new Date("2026-09-30T04:00:00Z"), timeZone: "UTC" };
+
+test("different sheep weighed on different days cannot create a gain result", () => {
+  const result = calculateWeightAnalytics({
+    sheep: [sheep("light"), sheep("heavy")],
+    weights: [
+      { id: "light-once", sheepID: "light", kilograms: 10, at: "2026-09-01T08:00:00Z" },
+      { id: "heavy-once", sheepID: "heavy", kilograms: 50, at: "2026-09-11T08:00:00Z" },
+    ],
+  }, weightRange);
+  assert.equal(result.sheepSampleCount, 2);
+  assert.equal(result.latestAverageADG, null);
+  assert.equal(result.latestAverageADGSampleCount, 0);
+  assert.equal(result.intervals.length, 0);
+  assert.ok(result.rows.every((row) => row.gramsPerDay === null && row.exclusionReason === "缺少第二次称重"));
+});
+
+test("sale during the analysis period preserves that sheep's measured growth", () => {
+  const source = {
+    sheep: [sheep("sold", { status: "sold", removedAt: "2026-09-11T12:00:00Z" })],
+    removals: [{ id: "sale", sheepID: "sold", at: "2026-09-11T12:00:00Z", reason: "sold" }],
+    weights: [
+      { id: "start", sheepID: "sold", kilograms: 30, at: "2026-09-01T08:00:00Z" },
+      { id: "end", sheepID: "sold", kilograms: 36, at: "2026-09-11T08:00:00Z" },
+      { id: "after-sale", sheepID: "sold", kilograms: 100, at: "2026-09-12T08:00:00Z" },
+    ],
+  };
+  const result = calculateWeightAnalytics(source, weightRange);
+  assert.deepEqual(result.sheepIDs, ["sold"]);
+  assert.equal(result.canonicalSampleCount, 2);
+  assert.equal(result.rows[0].gramsPerDay, 600);
+  assert.equal(result.latestAverageADG, 0.6);
+  assert.equal(calculateWeightAnalytics(source, { ...weightRange, scope: "removedOnly" }).latestAverageADG, 0.6);
+  assert.equal(calculateWeightAnalytics(source, { ...weightRange, scope: "inHerdOnly" }).sheepIDs.length, 0);
+  assert.equal(calculateWeightAnalytics(source, { ...weightRange, startDate: "2026-09-12" }).sheepIDs.length, 0);
+});
+
+test("same-day future weights cannot replace an already observed weight at the cutoff", () => {
+  const result = calculateWeightAnalytics({
+    sheep: [sheep("today")],
+    weights: [
+      { id: "before", sheepID: "today", kilograms: 20, at: "2026-09-01T08:00:00Z" },
+      { id: "observed", sheepID: "today", kilograms: 30, at: "2026-09-11T08:00:00Z" },
+      { id: "future", sheepID: "today", kilograms: 40, at: "2026-09-11T16:00:00Z" },
+    ],
+  }, { ...weightRange, endDate: "2026-09-11", now: new Date("2026-09-11T12:00:00Z") });
+  assert.equal(result.rows[0].endSample.id, "observed");
+  assert.equal(result.rows[0].gramsPerDay, 1000);
+});
+
+test("missing departure time does not imply an active sheep in a lifecycle subset", () => {
+  const source = {
+    sheep: [sheep("unknown", { status: "removed" })],
+    weights: [
+      { id: "first", sheepID: "unknown", kilograms: 20, at: "2026-09-01T08:00:00Z" },
+      { id: "last", sheepID: "unknown", kilograms: 22, at: "2026-09-11T08:00:00Z" },
+    ],
+  };
+  assert.equal(calculateWeightAnalytics(source, weightRange).latestAverageADG, 0.2);
+  assert.equal(calculateWeightAnalytics(source, { ...weightRange, scope: "inHerdOnly" }).sheepIDs.length, 0);
+  assert.equal(calculateWeightAnalytics(source, { ...weightRange, scope: "removedOnly" }).sheepIDs.length, 0);
+  source.sheep[0].removedAt = "2026-09-20T12:00:00Z";
+  assert.equal(calculateWeightAnalytics(source, { ...weightRange, scope: "inHerdOnly" }).latestAverageADG, 0.2);
+});
+
+test("weight gain uses the selected end-day pen and retains transfers after the last weighing", () => {
+  const source = transferredWeightFixture();
+  const result = calculateWeightAnalytics(source, { ...weightRange, penID: "pen-c" });
+  assert.deepEqual(result.sheepIDs, ["moved"]);
+  assert.equal(result.latestAverageADG, 0.6);
+  assert.equal(result.rows[0].analysisEndPenName, "育肥三舍");
+  assert.equal(result.rows[0].analysisEndAt, "2026-09-12T23:59:59.999Z");
+  assert.deepEqual(result.rows[0].penHistory.map((event) => [event.id, event.fromPenName, event.toPenName]), [
+    ["one", "大棚九舍", "大棚十二舍"], ["two", "大棚十二舍", "育肥三舍"],
+  ]);
+  assert.equal(result.intervals[0].gramsPerDay, 600);
+  assert.equal(result.intervals[0].transfers.length, 1);
+  assert.equal(result.intervals[0].canBeAttributedToSinglePen, false);
+  assert.equal(calculateWeightAnalytics(source, { ...weightRange, penID: penA }).sheepIDs.length, 0);
+});
+
+test("batch and end-day pen filters intersect without cutting cross-pen weights", () => {
+  const source = transferredWeightFixture();
+  source.sheep.push(sheep("outside", { initialPenID: "pen-c" }));
+  source.weights.push({ id: "outside", sheepID: "outside", kilograms: 40, at: "2026-09-11T08:00:00Z" });
+  const result = calculateWeightAnalytics(source, { ...weightRange, batchID: "batch", penID: "pen-c" });
+  assert.deepEqual(result.sheepIDs, ["moved"]);
+  assert.equal(result.canonicalSampleCount, 2);
+  assert.equal(result.latestAverageADG, 0.6);
+  const wrongPen = calculateWeightAnalytics(source, { ...weightRange, batchID: "batch", penID: penA });
+  assert.equal(wrongPen.sheepIDs.length, 0);
+});
+
+test("historical end-day changes restore the pen and obey the start boundary", () => {
+  const source = transferredWeightFixture();
+  const earlier = calculateWeightAnalytics(source, { ...weightRange, endDate: "2026-09-10", penID: penB });
+  assert.equal(earlier.rows[0].analysisEndPenName, "大棚十二舍");
+  assert.equal(earlier.latestAverageADG, null);
+  assert.deepEqual(earlier.rows[0].penHistory.map((event) => event.id), ["one"]);
+  const missingStart = calculateWeightAnalytics(source, { ...weightRange, startDate: "2026-09-02", penID: "pen-c" });
+  assert.equal(missingStart.canonicalSampleCount, 1);
+  assert.equal(missingStart.latestAverageADG, null);
+  const options = weightFilterOptions(source, { ...weightRange, endDate: "2026-09-10" });
+  assert.ok(options.pens.some((pen) => pen.id === penA), "历史圈舍不能因期末已空舍而从筛选项移除");
+});
+
+test("farm-local end day includes late transfers and excludes next-day midnight", () => {
+  const source = transferredWeightFixture();
+  source.weights[1].at = "2026-09-10T08:00:00Z";
+  source.transfers = [
+    { id: "late", sheepID: "moved", fromPenID: penA, toPenID: penB, at: "2026-09-10T15:59:59Z" },
+    { id: "next", sheepID: "moved", fromPenID: penB, toPenID: "pen-c", at: "2026-09-10T16:00:00Z" },
+  ];
+  const result = calculateWeightAnalytics(source, { ...weightRange, endDate: "2026-09-10", penID: penB, timeZone: "Asia/Shanghai" });
+  assert.equal(result.rows[0].analysisEndAt, "2026-09-10T15:59:59.999Z");
+  assert.equal(result.rows[0].analysisEndPenID, penB);
+  assert.deepEqual(result.rows[0].penHistory.map((event) => event.id), ["late"]);
+  assert.ok(Math.abs(result.latestAverageADG - 6 / 9) < 1e-10);
+});
+
+test("weight gain does not bridge batch departures, re-entry, or overlapping membership", () => {
+  for (const memberships of [
+    [{ id: "before", batchID: "batch", sheepID: "moved", joinedAt: "2026-08-01T00:00:00Z", leftAt: "2026-09-04T00:00:00Z" },
+     { id: "after", batchID: "batch", sheepID: "moved", joinedAt: "2026-09-06T00:00:00Z", leftAt: null }],
+    [{ id: "main", batchID: "batch", sheepID: "moved", joinedAt: "2026-08-01T00:00:00Z", leftAt: null },
+     { id: "overlap", batchID: "other", sheepID: "moved", joinedAt: "2026-09-05T00:00:00Z", leftAt: "2026-09-06T00:00:00Z" }],
+  ]) {
+    const source = { ...transferredWeightFixture(), batchMemberships: memberships };
+    const result = calculateWeightAnalytics(source, { ...weightRange, batchID: "batch", penID: "pen-c" });
+    assert.equal(result.canonicalSampleCount, 2);
+    assert.equal(result.latestAverageADG, null);
+    assert.equal(result.intervals.length, 0);
+  }
+});
+
+test("weight rows preserve unassigned pen history, negative and zero gain, and equal sheep weighting", () => {
+  const source = transferredWeightFixture();
+  source.transfers[1].toPenID = null;
+  source.weights[1].kilograms = 28;
+  source.sheep.push(sheep("stable"));
+  source.weights.push(
+    { id: "s1", sheepID: "stable", kilograms: 20, at: "2026-09-01T08:00:00Z" },
+    { id: "s2", sheepID: "stable", kilograms: 20, at: "2026-09-02T08:00:00Z" },
+    { id: "s3", sheepID: "stable", kilograms: 20, at: "2026-09-03T08:00:00Z" },
+  );
+  const result = calculateWeightAnalytics(source, weightRange);
+  const moved = result.rows.find((row) => row.sheepID === "moved");
+  assert.equal(moved.analysisEndPenID, null);
+  assert.equal(moved.analysisEndPenName, "未分舍");
+  assert.equal(moved.penHistory.at(-1).toPenName, "未分舍");
+  assert.equal(moved.gramsPerDay, -200);
+  assert.equal(result.rows.find((row) => row.sheepID === "stable").gramsPerDay, 0);
+  assert.equal(result.latestAverageADG, -0.1);
+  assert.equal(result.latestAverageADGSampleCount, 2);
 });
 
 test("weaning analytics use earliest ordinary post-birth weight and weighted sample averages", () => {
