@@ -511,6 +511,8 @@ private struct InsightConversationListButton: View {
             )
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(.rect)
         .listRowBackground(Color(uiColor: .systemBackground))
         .contextMenu {
             Button("删除聊天", systemImage: "trash", role: .destructive, action: onDelete)

@@ -90,6 +90,12 @@ jobs:
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-build.log"
+      - name: Preserve compiler diagnostics
+        uses: actions/upload-artifact@v6
+        with:
+          name: assistant-build-${{ github.sha }}
+          path: ${{ runner.temp }}/assistant-build.log
+          if-no-files-found: error
       - name: Wait for the simulator to finish booting
         timeout-minutes: 3
         run: xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b

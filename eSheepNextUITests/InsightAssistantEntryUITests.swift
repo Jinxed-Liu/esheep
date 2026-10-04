@@ -790,7 +790,11 @@ final class InsightAssistantEntryUITests: XCTestCase {
         XCTAssertTrue(removableHistory.exists)
         removableHistory.press(forDuration: 1)
         let delete = app.buttons["删除聊天"]
-        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        let deletionMenuAppeared = delete.waitForExistence(timeout: 5)
+        if !deletionMenuAppeared {
+            attachScreenshot(of: app, named: "configured-history-long-press-menu-missing")
+        }
+        XCTAssertTrue(deletionMenuAppeared, "A history-row long press must open its deletion menu without opening the conversation.")
         delete.tap()
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: removableHistory)
         XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed, "The list did not react to the deleted history record.")
