@@ -109,9 +109,11 @@ jobs:
           import os, subprocess, time
           from pathlib import Path
           log = Path(os.environ['RUNNER_TEMP']) / 'assistant-entry.log'
+          # Healthy first entry must not compete with stack sampling.
+          # Collect one diagnostic only after XCTest reports a real idle stall.
           for _ in range(360):
-              if log.exists() and 'Tap "analysis-assistant-entry" Button' in log.read_text(errors='replace'):
-                  time.sleep(15)
+              if log.exists() and 'App event loop idle notification not received' in log.read_text(errors='replace'):
+                  print('Collecting runtime sample after XCTest reported an event-loop idle stall.', flush=True)
                   processes = subprocess.run(['pgrep', '-x', 'eSheepNext'], capture_output=True, text=True)
                   for pid in processes.stdout.split():
                       path = Path(os.environ['RUNNER_TEMP']) / f'assistant-runtime-{pid}.sample'

@@ -1053,7 +1053,11 @@ final class InsightAssistantEntryUITests: XCTestCase {
 
     @MainActor
     private func assertConversationList(in app: XCUIApplication, screenshotName: String) {
-        XCTAssertTrue(app.buttons["聊天菜单"].waitForExistence(timeout: 15), "The assistant conversation list did not open.")
+        let listAppeared = app.buttons["聊天菜单"].waitForExistence(timeout: 15)
+        if !listAppeared {
+            attachScreenshot(of: app, named: "\(screenshotName)-list-not-ready")
+        }
+        XCTAssertTrue(listAppeared, "The assistant conversation list did not open.")
         XCTAssertTrue(app.buttons["全部"].exists, "The conversation list filter is missing.")
         XCTAssertTrue(app.buttons["新聊天"].exists, "The conversation list's new-chat action is missing.")
         let composer = app.descendants(matching: .any).matching(identifier: "insight.composer.text").firstMatch
