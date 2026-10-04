@@ -61,25 +61,15 @@ body:has(.farm-environment) { background: #e8f5fb; }
 .farm-weather-attribution .farm-weather-logo-dark { display: none; }
 .farm-weather-attribution.is-compact { align-self: stretch; margin: 5px 0; padding: 0 8px; border-left: 1px solid #7892a05c; border-radius: 0; }
 .farm-weather-attribution.is-compact img { max-width: 72px; max-height: 20px; }
-.app-shell[data-environment-phase="dawn"] .sky-overview,
-.app-shell[data-environment-phase="evening"] .sky-overview,
-.app-shell[data-environment-phase="twilight"] .sky-overview { background: linear-gradient(90deg, #eff8f9db, #edf7f8a3 65%, transparent); border-radius: 18px; }
-.app-shell[data-environment-phase="night"] .sky-overview { background: linear-gradient(90deg, #102b4ea8, #1b406389 64%, transparent); border-radius: 18px; }
 .app-shell[data-environment-phase="night"] .sky-intro h1,
 .app-shell[data-environment-phase="night"] .sky-date { color: #f5fafc; }
 .app-shell[data-environment-phase="dawn"] .sky-brand span,
 .app-shell[data-environment-phase="twilight"] .sky-brand span,
 .app-shell[data-environment-phase="night"] .sky-brand span { color: #e6f8f3; }
 .app-shell[data-environment-phase="night"] .sky-production-row::before { filter: brightness(.82) saturate(.73); }
-.app-shell[data-environment-weather="rain"] .sky-overview,
-.app-shell[data-environment-weather="sleet"] .sky-overview,
-.app-shell[data-environment-weather="thunder"] .sky-overview { background: linear-gradient(90deg, #e9f2f6d9, #e9f2f6a8 68%, transparent); border-radius: 18px; }
 .app-shell[data-environment-weather="rain"] .sky-brand span,
 .app-shell[data-environment-weather="sleet"] .sky-brand span,
 .app-shell[data-environment-weather="thunder"] .sky-brand span { color: #f0faf8; }
-.app-shell[data-environment-phase="night"][data-environment-weather="rain"] .sky-overview,
-.app-shell[data-environment-phase="night"][data-environment-weather="sleet"] .sky-overview,
-.app-shell[data-environment-phase="night"][data-environment-weather="thunder"] .sky-overview { background: linear-gradient(90deg, #102b4ec6, #1b4063a0 64%, transparent); }
 
 .farm-weather-backdrop { position: fixed; z-index: 1000; inset: 0; display: flex; justify-content: flex-end; background: #0b1c38a3; backdrop-filter: blur(5px); }
 .farm-weather-detail { display: flex; flex-direction: column; width: min(440px, 100%); min-height: 100%; max-height: 100dvh; background: #f6faff; color: #142b43; box-shadow: -14px 0 40px #081d333b; }
@@ -324,7 +314,6 @@ body:has(.farm-environment) { background: #e8f5fb; }
 .app-shell[data-content-theme="dark"] .farm-weather-attribution:not(:has(.farm-weather-logo-dark)) { background: #f7fbff; }
 .app-shell[data-content-theme="dark"] .farm-weather-attribution.is-compact { border-color: rgb(209 232 248 / .3); }
 
-.app-shell[data-content-theme="dark"] .sky-overview { background: linear-gradient(90deg, #0b203bbd, #18365590 65%, transparent); border-radius: 18px; }
 .app-shell[data-content-theme="dark"] .sky-intro h1,
 .app-shell[data-content-theme="dark"] .sky-date { color: #f4faff; }
 .app-shell[data-content-theme="dark"] .sky-panel-heading h2,
