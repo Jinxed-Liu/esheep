@@ -266,9 +266,11 @@ actor SheepDetailSnapshotActor {
             },
             sortBy: [SortDescriptor(\WeaningRecord.occurredAt, order: .reverse)]
         ))
-        let birthDetails = try context.fetch(FetchDescriptor<LambingOffspringRecord>(predicate: #Predicate {
+        let birthDetailsPredicate = #Predicate<LambingOffspringRecord> {
             $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil && $0.deletedByLambingRevocation == false
-        }))
+        }
+        let birthDetailsDescriptor = FetchDescriptor<LambingOffspringRecord>(predicate: birthDetailsPredicate)
+        let birthDetails: [LambingOffspringRecord] = try context.fetch(birthDetailsDescriptor)
         var birthDateByLambingID: [UUID: Date] = [:]
         for lambingID in Set(birthDetails.map(\.lambingRecordID)) {
             let targetID = lambingID

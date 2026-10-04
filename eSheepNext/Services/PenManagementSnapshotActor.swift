@@ -83,15 +83,19 @@ actor PenManagementSnapshotActor {
         guard let pen = try context.fetch(penDescriptor).first else { return nil }
 
         let activeStatus = SheepStatus.active.rawValue
-        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+        let sheepPredicate = #Predicate<SheepRecord> {
             $0.farmID == farmID &&
                 $0.currentPenID == penID &&
                 $0.deletedAt == nil &&
                 $0.statusRawValue == activeStatus &&
                 $0.isHistoricalArchive == false
-        }))
-        .map { PenSheepRowSnapshot(id: $0.id, earTag: $0.earTag, purpose: $0.purpose) }
-        .sorted {
+        }
+        let sheepDescriptor = FetchDescriptor<SheepRecord>(predicate: sheepPredicate)
+        let sheepRecords: [SheepRecord] = try context.fetch(sheepDescriptor)
+        let sheepRows: [PenSheepRowSnapshot] = sheepRecords.map {
+            PenSheepRowSnapshot(id: $0.id, earTag: $0.earTag, purpose: $0.purpose)
+        }
+        let sheep: [PenSheepRowSnapshot] = sheepRows.sorted {
             let comparison = $0.earTag.localizedStandardCompare($1.earTag)
             return comparison == .orderedSame
                 ? $0.id.uuidString < $1.id.uuidString

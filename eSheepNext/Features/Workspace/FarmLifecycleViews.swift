@@ -267,28 +267,8 @@ private struct CreateProductionBatchView: View {
 
     var body: some View {
         Form {
-            Section("批次信息") {
-                TextField("批次名称", text: $name)
-                TextField("生产目的", text: $purpose)
-                DatePicker("开始时间", selection: $startedAt, in: ...Date.now)
-                TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
-            }
-            Section {
-                SheepEarTagMultiSearchField(
-                    candidates: batchCandidates,
-                    selection: $selectedIDs,
-                    prompt: "输入耳号搜索并加入批次",
-                    emptySelectionText: batchCandidates.isEmpty ? "没有可加入批次的在群羊只" : "尚未添加羊只"
-                )
-            } header: {
-                HStack {
-                    Text("搜索并添加羊只")
-                    Spacer()
-                    Text("已选 \(selectedIDs.count) 只")
-                }
-            } footer: {
-                Text("已在其他未结束批次中的羊只不会重复显示。最后一只成员被手工移出时，批次自动归档；羊只仍可继续留养。")
-            }
+            ProductionBatchInformationSection(name: $name, purpose: $purpose, startedAt: $startedAt, note: $note)
+            ProductionBatchSheepSelectionSection(candidates: batchCandidates, selection: $selectedIDs)
         }
         .navigationTitle("新建生产批次")
         .onAppear(perform: rebuildCandidates)
@@ -327,6 +307,46 @@ private struct CreateProductionBatchView: View {
             )
             dismiss()
         } catch { errorMessage = error.localizedDescription }
+    }
+}
+
+private struct ProductionBatchInformationSection: View {
+    @Binding var name: String
+    @Binding var purpose: String
+    @Binding var startedAt: Date
+    @Binding var note: String
+
+    var body: some View {
+        Section("批次信息") {
+            TextField("批次名称", text: $name)
+            TextField("生产目的", text: $purpose)
+            DatePicker("开始时间", selection: $startedAt, in: ...Date.now)
+            TextField("备注", text: $note, axis: .vertical).lineLimit(2...4)
+        }
+    }
+}
+
+private struct ProductionBatchSheepSelectionSection: View {
+    let candidates: [SheepEarTagSearchCandidate]
+    @Binding var selection: Set<UUID>
+
+    var body: some View {
+        Section {
+            SheepEarTagMultiSearchField(
+                candidates: candidates,
+                selection: $selection,
+                prompt: "输入耳号搜索并加入批次",
+                emptySelectionText: candidates.isEmpty ? "没有可加入批次的在群羊只" : "尚未添加羊只"
+            )
+        } header: {
+            HStack {
+                Text("搜索并添加羊只")
+                Spacer()
+                Text("已选 \(selection.count) 只")
+            }
+        } footer: {
+            Text("已在其他未结束批次中的羊只不会重复显示。最后一只成员被手工移出时，批次自动归档；羊只仍可继续留养。")
+        }
     }
 }
 
