@@ -10,54 +10,83 @@ final class SettingsAvatarIslandGeometryTests: XCTestCase {
         }
         for identifier in ["iPhone15,2", "iPhone16,1", "iPhone17,2", "iPhone18,1", "iPhone20,2", "x86_64", ""] {
             XCTAssertFalse(SettingsAvatarIslandGeometry.usesCompactAttachment(deviceIdentifier: identifier))
-            XCTAssertNil(SettingsAvatarIslandGeometry.contact(for: identifier, displayScale: 3))
+            XCTAssertNil(SettingsAvatarIslandGeometry.contact(for: identifier, viewportWidth: 402, displayScale: 3))
         }
     }
 
-    func testContactCannotExposeSideFinsAtTheClippingEdge() throws {
-        for scale in [CGFloat(2), 3] {
-            let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(
-                for: "iPhone19,2", displayScale: scale
-            ))
-            for offset in stride(from: 0.0, through: 120.0, by: 0.5) {
-                let path = mask(offset: CGFloat(offset), contact: contact)
-                // Inspect the actual combined mask at the first visible pixels
-                // of its canvas, where the former 96.8pt strip formed fins.
-                for y in [CGFloat(0.5 / scale), 1 / scale] {
-                    for side in [CGFloat(-1), 1] {
-                        XCTAssertFalse(path.contains(CGPoint(x: 85.5 + side * 29, y: y)), "offset \(offset)")
+    func testFlaredContactStaysInsideTheSoftwareClip() throws {
+        for width in [CGFloat(393), 402, 430, 440] {
+            for scale in [CGFloat(2), 3] {
+                let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(
+                    for: "iPhone19,2", viewportWidth: width, displayScale: scale
+                ))
+                XCTAssertLessThan(contact.halfWidth, width / 10)
+                // The shoulder must spread outside the body's 33.4pt radius,
+                // rather than turn outward from the rejected narrow bucket lip.
+                let attached = mask(offset: 53.33, contact: contact)
+                for side in [CGFloat(-1), 1] {
+                    XCTAssertTrue(attached.contains(CGPoint(x: 85.5 + side * 34.5, y: 0.1)))
+                }
+                for offset in stride(from: 0.0, through: 120.0, by: 0.5) {
+                    let path = mask(offset: CGFloat(offset), contact: contact)
+                    for y in [CGFloat(-0.5 + 0.5 / scale), 0, 1 / scale] {
+                        for side in [CGFloat(-1), 1] {
+                            XCTAssertFalse(path.contains(CGPoint(x: 85.5 + side * width / 10, y: y)), "offset \(offset)")
+                        }
                     }
                 }
             }
         }
     }
 
-    func testCompactShoulderDoesNotTurnUpAtItsRoot() throws {
-        let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(for: "iPhone19,3", displayScale: 3))
-        for offset in stride(from: 0.0, through: 120.0, by: 0.5) {
-            var subpathCount = 0
-            var shoulderControls: [CGPoint]?
-            mask(offset: CGFloat(offset), contact: contact).applyWithBlock { element in
-                switch element.pointee.type {
-                case .moveToPoint:
-                    subpathCount += 1
-                case .addCurveToPoint where subpathCount == 2 && shoulderControls == nil:
-                    let points = element.pointee.points
-                    shoulderControls = [points[0], points[1], points[2]]
-                default:
-                    break
-                }
+    func testCompactShoulderRestoresHorizontalInwardFlare() throws {
+        let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(
+            for: "iPhone19,3", viewportWidth: 402, displayScale: 3
+        ))
+        for offset in [CGFloat(34), 42, 53.33, 73.33, 93.33, 100] {
+            let curves = connectionCurves(in: mask(offset: offset, contact: contact))
+            let shoulder = try XCTUnwrap(curves.first)
+            XCTAssertLessThan(shoulder.first.x, shoulder.start.x)
+            XCTAssertEqual(shoulder.first.y, shoulder.start.y, accuracy: 0.0001)
+            XCTAssertGreaterThanOrEqual(shoulder.second.y, shoulder.first.y)
+            XCTAssertGreaterThanOrEqual(shoulder.end.y, shoulder.second.y)
+            XCTAssertGreaterThanOrEqual(shoulder.first.x, shoulder.second.x)
+            XCTAssertGreaterThanOrEqual(shoulder.second.x, shoulder.end.x)
+            // Adjacent shoulders/body curves must share their direction at
+            // each join, even during the final shallow-bowl retreat.
+            for (a, b) in zip(curves, curves.dropFirst()) {
+                let incoming = CGPoint(x: a.end.x - a.second.x, y: a.end.y - a.second.y)
+                let outgoing = CGPoint(x: b.first.x - b.start.x, y: b.first.y - b.start.y)
+                let lengths = hypot(incoming.x, incoming.y) * hypot(outgoing.x, outgoing.y)
+                guard lengths > 0.0001 else { continue }
+                let cross = incoming.x * outgoing.y - incoming.y * outgoing.x
+                XCTAssertEqual(cross / lengths, 0, accuracy: 0.0001)
+                XCTAssertGreaterThan(incoming.x * outgoing.x + incoming.y * outgoing.y, 0)
             }
-            let shoulder = try XCTUnwrap(shoulderControls)
-            XCTAssertEqual(shoulder[0].x, 85.5 + contact.halfWidth, accuracy: 0.0001)
-            XCTAssertGreaterThan(shoulder[0].y, contact.top)
-            XCTAssertGreaterThanOrEqual(shoulder[1].y, shoulder[0].y)
-            XCTAssertGreaterThanOrEqual(shoulder[2].y, shoulder[1].y)
         }
     }
 
+    func testRetreatedConnectionLeavesNoSeparateTopStrip() throws {
+        let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(
+            for: "iPhone19,7", viewportWidth: 440, displayScale: 3
+        ))
+        let path = mask(offset: 120, contact: contact)
+        XCTAssertEqual(path.boundingBoxOfPath.height, 0, accuracy: 0.0001)
+        XCTAssertFalse(path.contains(CGPoint(x: 85.5, y: -0.25)))
+    }
+
+    func testLegacyShoulderKeepsItsOriginalControlPoints() throws {
+        let shoulder = try XCTUnwrap(connectionCurves(in: mask(offset: 53.33, contact: nil)).first)
+        XCTAssertEqual(shoulder.start.x, 85.5 + 45.7, accuracy: 0.0001)
+        XCTAssertEqual(shoulder.start.y, 0, accuracy: 0.0001)
+        XCTAssertEqual(shoulder.first.x, 85.5 + 42.34, accuracy: 0.0001)
+        XCTAssertEqual(shoulder.first.y, 0, accuracy: 0.0001)
+        XCTAssertEqual(shoulder.end.x, 85.5 + 28.9, accuracy: 0.0001)
+        XCTAssertEqual(shoulder.end.y, 10.4, accuracy: 0.0001)
+    }
+
     func testFullExpansionKeepsTheEntirePhotoAndNameExtension() throws {
-        let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(for: "iPhone19,7", displayScale: 3))
+        let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(for: "iPhone19,7", viewportWidth: 402, displayScale: 3))
         let photo = CGRect(x: 0, y: 0, width: 402, height: 402)
         let path = SettingsAvatarMaskPath.make(
             photo: photo, extensionHeight: 60, cornerRadius: 0,
@@ -72,7 +101,7 @@ final class SettingsAvatarIslandGeometryTests: XCTestCase {
     }
 
     func testBackingPaintCoversTheFirstExposedMaskPixels() throws {
-        let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(for: "iPhone19,2", displayScale: 3))
+        let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(for: "iPhone19,2", viewportWidth: 402, displayScale: 3))
         let origin = CGPoint(x: 115.5, y: 47.5)
         let canvas = CGRect(origin: origin, size: CGSize(width: 171, height: 171))
         let painted = SettingsAvatarIslandGeometry.paintBounds(in: canvas, topOverscan: contact.paintOverscan)
@@ -96,7 +125,7 @@ final class SettingsAvatarIslandGeometryTests: XCTestCase {
 
     @MainActor
     func testAllEffectLayersCoverTheOverscannedContact() throws {
-        let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(for: "iPhone19,3", displayScale: 3))
+        let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(for: "iPhone19,3", viewportWidth: 402, displayScale: 3))
         let effect = AvatarIslandEffectUIView(frame: CGRect(x: 0, y: 0, width: 171, height: 171))
         effect.setProgress(0.35, topOverscan: contact.paintOverscan)
         effect.layoutIfNeeded()
@@ -115,7 +144,7 @@ final class SettingsAvatarIslandGeometryTests: XCTestCase {
 
     @MainActor
     func testRadialPaintExtendsAboveCanvasWithoutMovingItsArtwork() throws {
-        let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(for: "iPhone19,7", displayScale: 3))
+        let contact = try XCTUnwrap(SettingsAvatarIslandGeometry.contact(for: "iPhone19,7", viewportWidth: 402, displayScale: 3))
         let baseline = radialImage(topOverscan: 0)
         let extended = radialImage(topOverscan: contact.paintOverscan)
         let firstPixel = CGPoint(x: 74, y: contact.paintOverscan - 1.0 / 3)
@@ -160,7 +189,38 @@ final class SettingsAvatarIslandGeometryTests: XCTestCase {
         }
     }
 
-    private func mask(offset: CGFloat, contact: SettingsAvatarIslandGeometry.Contact) -> CGPath {
+    private struct ConnectionCurve {
+        let start: CGPoint
+        let first: CGPoint
+        let second: CGPoint
+        let end: CGPoint
+    }
+
+    private func connectionCurves(in path: CGPath) -> [ConnectionCurve] {
+        var subpathCount = 0
+        var point = CGPoint.zero
+        var curves: [ConnectionCurve] = []
+        path.applyWithBlock { element in
+            let points = element.pointee.points
+            switch element.pointee.type {
+            case .moveToPoint:
+                subpathCount += 1
+                point = points[0]
+            case .addLineToPoint:
+                point = points[0]
+            case .addCurveToPoint:
+                if subpathCount == 2 {
+                    curves.append(ConnectionCurve(start: point, first: points[0], second: points[1], end: points[2]))
+                }
+                point = points[2]
+            default:
+                break
+            }
+        }
+        return curves
+    }
+
+    private func mask(offset: CGFloat, contact: SettingsAvatarIslandGeometry.Contact?) -> CGPath {
         SettingsAvatarMaskPath.make(
             photo: CGRect(x: 35.5, y: 28, width: 100, height: 100),
             extensionHeight: 0, cornerRadius: 50, maskOrigin: .zero,

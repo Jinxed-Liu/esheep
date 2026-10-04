@@ -392,7 +392,9 @@ private final class SettingsAvatarRendererUIView: UIView {
         islandEligible = supportsIsland && layout.animationsEnabled
         renderDisplayScale = max(1, displayScale)
         compactContact = islandEligible
-            ? SettingsAvatarIslandGeometry.currentContact(displayScale: renderDisplayScale) : nil
+            ? SettingsAvatarIslandGeometry.currentContact(
+                viewportWidth: layout.width, displayScale: renderDisplayScale
+            ) : nil
         photo.image = image
         mirroredPhoto.image = image
         fallback.text = initials
@@ -753,9 +755,18 @@ enum SettingsAvatarMaskPath {
         compactContact: SettingsAvatarIslandGeometry.Contact?, to path: CGMutablePath
     ) {
         let cx = origin.x + 85.5
-        let halfWidth: CGFloat = compactContact?.halfWidth ?? 48.4
-        let lip: CGFloat = compactContact?.halfWidth ?? 45.7
-        let contactTop = compactContact?.top ?? 0
+        // Preserve the broad, inward flare through attachment. Only the final
+        // shallow bowl retreats toward the neck rather than leaving thin wings.
+        let flare = phase.offset > 73.33 ? boundedSettingsAvatarProgress(phase.bottom / 20) : 1
+        let lip: CGFloat = compactContact.map {
+            phase.neckX + ($0.halfWidth - phase.neckX) * flare
+        } ?? 45.7
+        let halfWidth: CGFloat = compactContact == nil ? 48.4 : lip
+        let contactTop: CGFloat = compactContact.map {
+            // Let empty initial/final connections collapse to zero area. The
+            // overscanned paint must not turn them into a separate top strip.
+            $0.top * boundedSettingsAvatarProgress(phase.bottom / (2 * $0.pixel))
+        } ?? 0
         func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
             CGPoint(x: cx + x, y: origin.y + y * strength)
         }
@@ -775,19 +786,21 @@ enum SettingsAvatarMaskPath {
         // the late shoulder widens beyond the body and becomes a shallow bowl.
         let neckInset = neckToBody > 0 ? shoulderInset * 0.34 * topHandle / (neckToBody * 0.3) : 0
         let sideInset = neckToBody > 0 ? shoulderInset * 0.4 * sideHandle / (neckToBody * 0.55) : 0
-        // A vertical tangent joins the compact strip to its shoulder smoothly.
-        // The legacy horizontal shelf and all lower body control points remain
-        // unchanged on earlier hardware.
-        let contactControlX = compactContact == nil ? lip - (lip - phase.neckX) * 0.2 : lip
-        let contactControlY = compactContact == nil ? contactTop
-            : contactTop + max(0, phase.neckY - topHandle - contactTop) * 0.5
-        path.move(to: point(-halfWidth, -1.67))
-        path.addLine(to: point(halfWidth, -1.67))
-        path.addLine(to: point(halfWidth, contactTop))
-        path.addLine(to: point(lip, contactTop))
+        // The original horizontal inward tangent gives the neck its concave
+        // shoulder. Compact models omit the shelf and its vertical end caps.
+        let contactControlX = lip - (lip - phase.neckX) * 0.2
+        if compactContact == nil {
+            path.move(to: point(-halfWidth, -1.67))
+            path.addLine(to: point(halfWidth, -1.67))
+            path.addLine(to: point(halfWidth, contactTop))
+            path.addLine(to: point(lip, contactTop))
+        } else {
+            path.move(to: point(-lip, contactTop))
+            path.addLine(to: point(lip, contactTop))
+        }
         path.addCurve(
             to: right,
-            control1: point(contactControlX, contactControlY),
+            control1: point(contactControlX, contactTop),
             control2: point(phase.neckX + neckInset, phase.neckY - topHandle)
         )
         path.addCurve(
@@ -813,7 +826,7 @@ enum SettingsAvatarMaskPath {
         path.addCurve(
             to: point(-lip, contactTop),
             control1: point(-phase.neckX - neckInset, phase.neckY - topHandle),
-            control2: point(-contactControlX, contactControlY)
+            control2: point(-contactControlX, contactTop)
         )
         path.addLine(to: point(-halfWidth, contactTop))
         path.closeSubpath()
