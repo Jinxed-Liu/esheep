@@ -28,7 +28,7 @@ concurrency:
 jobs:
   assistant-entry:
     runs-on: macos-26
-    timeout-minutes: 40
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
@@ -94,7 +94,9 @@ jobs:
         timeout-minutes: 3
         run: xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
       - name: Run the real assistant entry UI regression
-        timeout-minutes: 15
+        # Cover all 11 UI flows, including first-launch simulator overhead.
+        # Each individual test retains its 240-second execution limit.
+        timeout-minutes: 25
         run: |
           set -euo pipefail
           python3 -u - <<'PYMONITOR' &
@@ -190,7 +192,7 @@ jobs:
           fi
       - name: Preserve assistant UI screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: assistant-ui-screenshots-${{ github.sha }}
           if-no-files-found: ignore
@@ -227,7 +229,7 @@ jobs:
           PY
       - name: Preserve test evidence and crash reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: assistant-entry-${{ github.sha }}
           if-no-files-found: warn

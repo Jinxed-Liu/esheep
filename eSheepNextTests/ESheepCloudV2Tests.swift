@@ -2754,10 +2754,12 @@ final class ESheepCloudV2Tests: XCTestCase {
             )
         }
         let unsigned = event(digest: "")
-        try ESheepCloudEventReducer.apply(
+        let outcome = try ESheepCloudEventReducer.apply(
             event(digest: ESheepCloudEventDigestV2.hex(for: unsigned)),
             context: fixture.context
         )
+        XCTAssertEqual(outcome.eventSequence, unsigned.eventSequence)
+        XCTAssertFalse(outcome.wasAlreadyApplied)
 
         let persisted = try ESheepCloudCanonicalCodec.decode(
             [ESheepCloudFieldVersionEntryV2].self,
