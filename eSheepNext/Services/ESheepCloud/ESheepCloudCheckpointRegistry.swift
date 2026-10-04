@@ -4,7 +4,9 @@ import SwiftData
 
 enum ESheepCloudCheckpointRegistry {
     static var adapters: [ESheepCloudCheckpointModelAdapter] {
-        [
+        // Type-check each model field list independently of the full registry.
+        var result: [ESheepCloudCheckpointModelAdapter] = []
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(SheepLabelRecord.self, disposition: .transfer, fields: [
                 .init("id", \SheepLabelRecord.id),
                 .init("farmID", \SheepLabelRecord.farmID),
@@ -16,6 +18,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("revision", \SheepLabelRecord.revision),
                 .init("updatedAt", \SheepLabelRecord.updatedAt),
             ], farmID: \SheepLabelRecord.farmID, recordID: \SheepLabelRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(SheepLabelAssignmentRecord.self, disposition: .transfer, fields: [
                 .init("id", \SheepLabelAssignmentRecord.id),
                 .init("farmID", \SheepLabelAssignmentRecord.farmID),
@@ -25,6 +29,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("revision", \SheepLabelAssignmentRecord.revision),
                 .init("updatedAt", \SheepLabelAssignmentRecord.updatedAt),
             ], farmID: \SheepLabelAssignmentRecord.farmID, recordID: \SheepLabelAssignmentRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(SheepLabelChangeRecord.self, disposition: .transfer, fields: [
                 .init("id", \SheepLabelChangeRecord.id),
                 .init("farmID", \SheepLabelChangeRecord.farmID),
@@ -35,6 +41,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("snapshotsJSON", \SheepLabelChangeRecord.snapshotsJSON),
                 .init("occurredAt", \SheepLabelChangeRecord.occurredAt),
             ], farmID: \SheepLabelChangeRecord.farmID, recordID: \SheepLabelChangeRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(ESheepCloudCheckpointState.self, disposition: .localOnly, fields: [
                 .init("id", \ESheepCloudCheckpointState.id),
                 .init("farmID", \ESheepCloudCheckpointState.farmID),
@@ -48,6 +56,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("stateRawValue", \ESheepCloudCheckpointState.stateRawValue),
                 .init("createdAt", \ESheepCloudCheckpointState.createdAt),
             ], farmID: \ESheepCloudCheckpointState.farmID, recordID: \ESheepCloudCheckpointState.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(AccountProfile.self, disposition: .localOnly, fields: [
                 .init("avatarImageData", \AccountProfile.avatarImageData),
                 .init("id", \AccountProfile.id),
@@ -64,6 +74,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \AccountProfile.createdAt),
                 .init("updatedAt", \AccountProfile.updatedAt),
             ], farmID: nil, recordID: \AccountProfile.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(BatchMembershipRecord.self, disposition: .transfer, fields: [
                 .init("id", \BatchMembershipRecord.id),
                 .init("farmID", \BatchMembershipRecord.farmID),
@@ -76,6 +88,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \BatchMembershipRecord.updatedAt),
                 .init("deletedAt", \BatchMembershipRecord.deletedAt),
             ], farmID: \BatchMembershipRecord.farmID, recordID: \BatchMembershipRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(BreedingProgramRecord.self, disposition: .transfer, fields: [
                 .init("id", \BreedingProgramRecord.id),
                 .init("farmID", \BreedingProgramRecord.farmID),
@@ -85,6 +99,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("revision", \BreedingProgramRecord.revision),
                 .init("deletedAt", \BreedingProgramRecord.deletedAt),
             ], farmID: \BreedingProgramRecord.farmID, recordID: \BreedingProgramRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(BreedingProgramStepRecord.self, disposition: .transfer, fields: [
                 .init("id", \BreedingProgramStepRecord.id),
                 .init("farmID", \BreedingProgramStepRecord.farmID),
@@ -97,6 +113,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("revision", \BreedingProgramStepRecord.revision),
                 .init("deletedAt", \BreedingProgramStepRecord.deletedAt),
             ], farmID: \BreedingProgramStepRecord.farmID, recordID: \BreedingProgramStepRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(CapabilityCertificateRecord.self, disposition: .localOnly, fields: [
                 .init("id", \CapabilityCertificateRecord.id),
                 .init("serverCertificateID", \CapabilityCertificateRecord.serverCertificateID),
@@ -110,6 +128,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("expiresAt", \CapabilityCertificateRecord.expiresAt),
                 .init("revokedAt", \CapabilityCertificateRecord.revokedAt),
             ], farmID: \CapabilityCertificateRecord.farmID, recordID: \CapabilityCertificateRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(CareBatchRecord.self, disposition: .transfer, fields: [
                 .init("id", \CareBatchRecord.id),
                 .init("farmID", \CareBatchRecord.farmID),
@@ -119,6 +139,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \CareBatchRecord.createdAt),
                 .init("deletedAt", \CareBatchRecord.deletedAt),
             ], farmID: \CareBatchRecord.farmID, recordID: \CareBatchRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(CareReminderRecord.self, disposition: .transfer, fields: [
                 .init("id", \CareReminderRecord.id),
                 .init("farmID", \CareReminderRecord.farmID),
@@ -135,6 +157,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("deletedAt", \CareReminderRecord.deletedAt),
                 .init("revision", \CareReminderRecord.revision),
             ], farmID: \CareReminderRecord.farmID, recordID: \CareReminderRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(CloudAssetTransfer.self, disposition: .localOnly, fields: [
                 .init("id", \CloudAssetTransfer.id),
                 .init("farmID", \CloudAssetTransfer.farmID),
@@ -153,6 +177,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("recoveryStatusRawValue", \CloudAssetTransfer.recoveryStatusRawValue),
                 .init("nextRetryAt", \CloudAssetTransfer.nextRetryAt),
             ], farmID: \CloudAssetTransfer.farmID, recordID: \CloudAssetTransfer.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(CloudFarmBinding.self, disposition: .localOnly, fields: [
                 .init("id", \CloudFarmBinding.id),
                 .init("farmID", \CloudFarmBinding.farmID),
@@ -169,6 +195,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("securityGeneration", \CloudFarmBinding.securityGeneration),
                 .init("lastMembershipSnapshotAt", \CloudFarmBinding.lastMembershipSnapshotAt),
             ], farmID: \CloudFarmBinding.farmID, recordID: \CloudFarmBinding.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(CloudOperationReceipt.self, disposition: .localOnly, fields: [
                 .init("id", \CloudOperationReceipt.id),
                 .init("farmID", \CloudOperationReceipt.farmID),
@@ -180,6 +208,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("zoneOwnerName", \CloudOperationReceipt.zoneOwnerName),
                 .init("confirmedAt", \CloudOperationReceipt.confirmedAt),
             ], farmID: \CloudOperationReceipt.farmID, recordID: \CloudOperationReceipt.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(CloudRebuildIssueRecord.self, disposition: .localOnly, fields: [
                 .init("id", \CloudRebuildIssueRecord.id),
                 .init("sessionID", \CloudRebuildIssueRecord.sessionID),
@@ -191,6 +221,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("rawPayload", \CloudRebuildIssueRecord.rawPayload),
                 .init("createdAt", \CloudRebuildIssueRecord.createdAt),
             ], farmID: \CloudRebuildIssueRecord.farmID, recordID: \CloudRebuildIssueRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(CloudRebuildSessionRecord.self, disposition: .localOnly, fields: [
                 .init("id", \CloudRebuildSessionRecord.id),
                 .init("farmID", \CloudRebuildSessionRecord.farmID),
@@ -215,6 +247,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \CloudRebuildSessionRecord.updatedAt),
                 .init("completedAt", \CloudRebuildSessionRecord.completedAt),
             ], farmID: \CloudRebuildSessionRecord.farmID, recordID: \CloudRebuildSessionRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(CloudSyncDiagnosticSnapshotRecord.self, disposition: .localOnly, fields: [
                 .init("id", \CloudSyncDiagnosticSnapshotRecord.id),
                 .init("farmID", \CloudSyncDiagnosticSnapshotRecord.farmID),
@@ -233,6 +267,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("assetDigest", \CloudSyncDiagnosticSnapshotRecord.assetDigest),
                 .init("capturedAt", \CloudSyncDiagnosticSnapshotRecord.capturedAt),
             ], farmID: \CloudSyncDiagnosticSnapshotRecord.farmID, recordID: \CloudSyncDiagnosticSnapshotRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(CloudZoneState.self, disposition: .localOnly, fields: [
                 .init("id", \CloudZoneState.id),
                 .init("databaseScopeRawValue", \CloudZoneState.databaseScopeRawValue),
@@ -242,6 +278,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("lastErrorCode", \CloudZoneState.lastErrorCode),
                 .init("updatedAt", \CloudZoneState.updatedAt),
             ], farmID: nil, recordID: \CloudZoneState.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(DailyPenCountRecord.self, disposition: .rebuild, fields: [
                 .init("id", \DailyPenCountRecord.id),
                 .init("farmID", \DailyPenCountRecord.farmID),
@@ -251,6 +289,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("count", \DailyPenCountRecord.count),
                 .init("rebuiltAt", \DailyPenCountRecord.rebuiltAt),
             ], farmID: \DailyPenCountRecord.farmID, recordID: \DailyPenCountRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(DeviceIdentityRecord.self, disposition: .localOnly, fields: [
                 .init("id", \DeviceIdentityRecord.id),
                 .init("accountID", \DeviceIdentityRecord.accountID),
@@ -260,6 +300,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \DeviceIdentityRecord.createdAt),
                 .init("lastRegisteredAt", \DeviceIdentityRecord.lastRegisteredAt),
             ], farmID: nil, recordID: \DeviceIdentityRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(DomainOperation.self, disposition: .transfer, fields: [
                 .init("id", \DomainOperation.id),
                 .init("farmID", \DomainOperation.farmID),
@@ -280,6 +322,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("operationSignature", \DomainOperation.operationSignature),
                 .init("sourceRequestID", \DomainOperation.sourceRequestID),
             ], farmID: \DomainOperation.farmID, recordID: \DomainOperation.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(ESheepCloudAssetState.self, disposition: .transfer, fields: [
                 .init("id", \ESheepCloudAssetState.id),
                 .init("farmID", \ESheepCloudAssetState.farmID),
@@ -323,6 +367,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \ESheepCloudAssetState.createdAt),
                 .init("updatedAt", \ESheepCloudAssetState.updatedAt),
             ], farmID: \ESheepCloudAssetState.farmID, recordID: \ESheepCloudAssetState.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(ESheepCloudAttentionItem.self, disposition: .localOnly, fields: [
                 .init("id", \ESheepCloudAttentionItem.id),
                 .init("farmID", \ESheepCloudAttentionItem.farmID),
@@ -368,6 +414,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("resolvedAt", \ESheepCloudAttentionItem.resolvedAt),
                 .init("updatedAt", \ESheepCloudAttentionItem.updatedAt),
             ], farmID: \ESheepCloudAttentionItem.farmID, recordID: \ESheepCloudAttentionItem.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(ESheepCloudEventReceipt.self, disposition: .localOnly, fields: [
                 .init("id", \ESheepCloudEventReceipt.id),
                 .init("farmID", \ESheepCloudEventReceipt.farmID),
@@ -378,6 +426,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("appliedProjectionDigest", \ESheepCloudEventReceipt.appliedProjectionDigest),
                 .init("appliedAt", \ESheepCloudEventReceipt.appliedAt),
             ], farmID: \ESheepCloudEventReceipt.farmID, recordID: \ESheepCloudEventReceipt.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(ESheepCloudFarmState.self, disposition: .localOnly, fields: [
                 .init("id", \ESheepCloudFarmState.id),
                 .init("farmID", \ESheepCloudFarmState.farmID),
@@ -396,6 +446,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \ESheepCloudFarmState.createdAt),
                 .init("updatedAt", \ESheepCloudFarmState.updatedAt),
             ], farmID: \ESheepCloudFarmState.farmID, recordID: \ESheepCloudFarmState.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(ESheepCloudInitialSyncSession.self, disposition: .localOnly, fields: [
                 .init("id", \ESheepCloudInitialSyncSession.id),
                 .init("farmID", \ESheepCloudInitialSyncSession.farmID),
@@ -421,6 +473,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("activationProjectionEventSequence", \ESheepCloudInitialSyncSession.activationProjectionEventSequence),
                 .init("lastProgressAt", \ESheepCloudInitialSyncSession.lastProgressAt),
             ], farmID: \ESheepCloudInitialSyncSession.farmID, recordID: \ESheepCloudInitialSyncSession.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(ESheepCloudMigrationState.self, disposition: .localOnly, fields: [
                 .init("id", \ESheepCloudMigrationState.id),
                 .init("farmID", \ESheepCloudMigrationState.farmID),
@@ -442,6 +496,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \ESheepCloudMigrationState.createdAt),
                 .init("updatedAt", \ESheepCloudMigrationState.updatedAt),
             ], farmID: \ESheepCloudMigrationState.farmID, recordID: \ESheepCloudMigrationState.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(ESheepCloudPendingIntent.self, disposition: .localOnly, fields: [
                 .init("id", \ESheepCloudPendingIntent.id),
                 .init("farmID", \ESheepCloudPendingIntent.farmID),
@@ -471,6 +527,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("serverResultData", \ESheepCloudPendingIntent.serverResultData),
                 .init("updatedAt", \ESheepCloudPendingIntent.updatedAt),
             ], farmID: \ESheepCloudPendingIntent.farmID, recordID: \ESheepCloudPendingIntent.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(ESheepCloudStreamState.self, disposition: .transfer, fields: [
                 .init("id", \ESheepCloudStreamState.id),
                 .init("farmID", \ESheepCloudStreamState.farmID),
@@ -485,6 +543,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \ESheepCloudStreamState.createdAt),
                 .init("updatedAt", \ESheepCloudStreamState.updatedAt),
             ], farmID: \ESheepCloudStreamState.farmID, recordID: \ESheepCloudStreamState.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmActivity.self, disposition: .transfer, fields: [
                 .init("id", \FarmActivity.id),
                 .init("farmID", \FarmActivity.farmID),
@@ -493,6 +553,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("occurredAt", \FarmActivity.occurredAt),
                 .init("createdAt", \FarmActivity.createdAt),
             ], farmID: \FarmActivity.farmID, recordID: \FarmActivity.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmAlertDeferralRecord.self, disposition: .transfer, fields: [
                 .init("id", \FarmAlertDeferralRecord.id),
                 .init("farmID", \FarmAlertDeferralRecord.farmID),
@@ -507,6 +569,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \FarmAlertDeferralRecord.updatedAt),
                 .init("revision", \FarmAlertDeferralRecord.revision),
             ], farmID: \FarmAlertDeferralRecord.farmID, recordID: \FarmAlertDeferralRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmBaselineMigrationRecord.self, disposition: .localOnly, fields: [
                 .init("id", \FarmBaselineMigrationRecord.id),
                 .init("farmID", \FarmBaselineMigrationRecord.farmID),
@@ -526,6 +590,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \FarmBaselineMigrationRecord.createdAt),
                 .init("updatedAt", \FarmBaselineMigrationRecord.updatedAt),
             ], farmID: \FarmBaselineMigrationRecord.farmID, recordID: \FarmBaselineMigrationRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmCareRuleRecord.self, disposition: .transfer, fields: [
                 .init("id", \FarmCareRuleRecord.id),
                 .init("farmID", \FarmCareRuleRecord.farmID),
@@ -540,6 +606,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \FarmCareRuleRecord.updatedAt),
                 .init("revision", \FarmCareRuleRecord.revision),
             ], farmID: \FarmCareRuleRecord.farmID, recordID: \FarmCareRuleRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmCheckpointRecord.self, disposition: .localOnly, fields: [
                 .init("id", \FarmCheckpointRecord.id),
                 .init("farmID", \FarmCheckpointRecord.farmID),
@@ -556,6 +624,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("verifiedAt", \FarmCheckpointRecord.verifiedAt),
                 .init("restoredAt", \FarmCheckpointRecord.restoredAt),
             ], farmID: \FarmCheckpointRecord.farmID, recordID: \FarmCheckpointRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmMembershipBinding.self, disposition: .localOnly, fields: [
                 .init("id", \FarmMembershipBinding.id),
                 .init("serverMembershipID", \FarmMembershipBinding.serverMembershipID),
@@ -568,6 +638,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \FarmMembershipBinding.createdAt),
                 .init("updatedAt", \FarmMembershipBinding.updatedAt),
             ], farmID: \FarmMembershipBinding.farmID, recordID: \FarmMembershipBinding.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmMembershipSnapshotRecord.self, disposition: .localOnly, fields: [
                 .init("id", \FarmMembershipSnapshotRecord.id),
                 .init("farmID", \FarmMembershipSnapshotRecord.farmID),
@@ -582,17 +654,23 @@ enum ESheepCloudCheckpointRegistry {
                 .init("cloudRecordName", \FarmMembershipSnapshotRecord.cloudRecordName),
                 .init("validatedAt", \FarmMembershipSnapshotRecord.validatedAt),
             ], farmID: \FarmMembershipSnapshotRecord.farmID, recordID: \FarmMembershipSnapshotRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmOperationSequenceCounter.self, disposition: .localOnly, fields: [
                 .init("id", \FarmOperationSequenceCounter.id),
                 .init("farmID", \FarmOperationSequenceCounter.farmID),
                 .init("nextSequence", \FarmOperationSequenceCounter.nextSequence),
             ], farmID: \FarmOperationSequenceCounter.farmID, recordID: \FarmOperationSequenceCounter.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmOperationSequenceRecord.self, disposition: .localOnly, fields: [
                 .init("id", \FarmOperationSequenceRecord.id),
                 .init("farmID", \FarmOperationSequenceRecord.farmID),
                 .init("operationID", \FarmOperationSequenceRecord.operationID),
                 .init("clientSequence", \FarmOperationSequenceRecord.clientSequence),
             ], farmID: \FarmOperationSequenceRecord.farmID, recordID: \FarmOperationSequenceRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmRecord.self, disposition: .transfer, fields: [
                 .init("id", \FarmRecord.id),
                 .init("ownerAccountID", \FarmRecord.ownerAccountID),
@@ -613,6 +691,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("horizontalAccuracyMeters", \FarmRecord.horizontalAccuracyMeters),
                 .init("locationUpdatedAt", \FarmRecord.locationUpdatedAt),
             ], farmID: nil, recordID: \FarmRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmRecoveryAssetRecord.self, disposition: .localOnly, fields: [
                 .init("id", \FarmRecoveryAssetRecord.id),
                 .init("farmID", \FarmRecoveryAssetRecord.farmID),
@@ -625,6 +705,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("verifiedAt", \FarmRecoveryAssetRecord.verifiedAt),
                 .init("eligibleForDeletionAt", \FarmRecoveryAssetRecord.eligibleForDeletionAt),
             ], farmID: \FarmRecoveryAssetRecord.farmID, recordID: \FarmRecoveryAssetRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmRemoteBinding.self, disposition: .localOnly, fields: [
                 .init("id", \FarmRemoteBinding.id),
                 .init("farmID", \FarmRemoteBinding.farmID),
@@ -640,6 +722,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \FarmRemoteBinding.createdAt),
                 .init("updatedAt", \FarmRemoteBinding.updatedAt),
             ], farmID: \FarmRemoteBinding.farmID, recordID: \FarmRemoteBinding.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmRemoteRestoreRecord.self, disposition: .localOnly, fields: [
                 .init("id", \FarmRemoteRestoreRecord.id),
                 .init("accountID", \FarmRemoteRestoreRecord.accountID),
@@ -666,6 +750,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \FarmRemoteRestoreRecord.updatedAt),
                 .init("completedAt", \FarmRemoteRestoreRecord.completedAt),
             ], farmID: \FarmRemoteRestoreRecord.farmID, recordID: \FarmRemoteRestoreRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmStorageProfile.self, disposition: .localOnly, fields: [
                 .init("id", \FarmStorageProfile.id),
                 .init("farmID", \FarmStorageProfile.farmID),
@@ -678,6 +764,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \FarmStorageProfile.createdAt),
                 .init("updatedAt", \FarmStorageProfile.updatedAt),
             ], farmID: \FarmStorageProfile.farmID, recordID: \FarmStorageProfile.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FeedIngredientBatchRecord.self, disposition: .transfer, fields: [
                 .init("id", \FeedIngredientBatchRecord.id),
                 .init("farmID", \FeedIngredientBatchRecord.farmID),
@@ -702,6 +790,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("revision", \FeedIngredientBatchRecord.revision),
                 .init("deletedAt", \FeedIngredientBatchRecord.deletedAt),
             ], farmID: \FeedIngredientBatchRecord.farmID, recordID: \FeedIngredientBatchRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FeedIngredientRecord.self, disposition: .transfer, fields: [
                 .init("id", \FeedIngredientRecord.id),
                 .init("farmID", \FeedIngredientRecord.farmID),
@@ -721,6 +811,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \FeedIngredientRecord.updatedAt),
                 .init("deletedAt", \FeedIngredientRecord.deletedAt),
             ], farmID: \FeedIngredientRecord.farmID, recordID: \FeedIngredientRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FeedRecipeComponentRecord.self, disposition: .transfer, fields: [
                 .init("id", \FeedRecipeComponentRecord.id),
                 .init("farmID", \FeedRecipeComponentRecord.farmID),
@@ -735,6 +827,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \FeedRecipeComponentRecord.updatedAt),
                 .init("deletedAt", \FeedRecipeComponentRecord.deletedAt),
             ], farmID: \FeedRecipeComponentRecord.farmID, recordID: \FeedRecipeComponentRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FeedRecipeRecord.self, disposition: .transfer, fields: [
                 .init("id", \FeedRecipeRecord.id),
                 .init("farmID", \FeedRecipeRecord.farmID),
@@ -750,6 +844,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \FeedRecipeRecord.updatedAt),
                 .init("deletedAt", \FeedRecipeRecord.deletedAt),
             ], farmID: \FeedRecipeRecord.farmID, recordID: \FeedRecipeRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FeedRecord.self, disposition: .transfer, fields: [
                 .init("id", \FeedRecord.id),
                 .init("farmID", \FeedRecord.farmID),
@@ -772,6 +868,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("revision", \FeedRecord.revision),
                 .init("deletedAt", \FeedRecord.deletedAt),
             ], farmID: \FeedRecord.farmID, recordID: \FeedRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FeedRecordLine.self, disposition: .transfer, fields: [
                 .init("id", \FeedRecordLine.id),
                 .init("farmID", \FeedRecordLine.farmID),
@@ -789,6 +887,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \FeedRecordLine.createdAt),
                 .init("deletedAt", \FeedRecordLine.deletedAt),
             ], farmID: \FeedRecordLine.farmID, recordID: \FeedRecordLine.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FeedStockCountRecord.self, disposition: .transfer, fields: [
                 .init("id", \FeedStockCountRecord.id),
                 .init("farmID", \FeedStockCountRecord.farmID),
@@ -803,6 +903,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \FeedStockCountRecord.createdAt),
                 .init("deletedAt", \FeedStockCountRecord.deletedAt),
             ], farmID: \FeedStockCountRecord.farmID, recordID: \FeedStockCountRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FeedStockTransactionRecord.self, disposition: .transfer, fields: [
                 .init("id", \FeedStockTransactionRecord.id),
                 .init("farmID", \FeedStockTransactionRecord.farmID),
@@ -816,6 +918,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \FeedStockTransactionRecord.createdAt),
                 .init("deletedAt", \FeedStockTransactionRecord.deletedAt),
             ], farmID: \FeedStockTransactionRecord.farmID, recordID: \FeedStockTransactionRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FeedTroughObservationRecord.self, disposition: .transfer, fields: [
                 .init("id", \FeedTroughObservationRecord.id),
                 .init("farmID", \FeedTroughObservationRecord.farmID),
@@ -832,6 +936,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("revision", \FeedTroughObservationRecord.revision),
                 .init("deletedAt", \FeedTroughObservationRecord.deletedAt),
             ], farmID: \FeedTroughObservationRecord.farmID, recordID: \FeedTroughObservationRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(HealthCatalogItemRecord.self, disposition: .transfer, fields: [
                 .init("id", \HealthCatalogItemRecord.id),
                 .init("farmID", \HealthCatalogItemRecord.farmID),
@@ -848,6 +954,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("isActive", \HealthCatalogItemRecord.isActive),
                 .init("createdAt", \HealthCatalogItemRecord.createdAt),
             ], farmID: \HealthCatalogItemRecord.farmID, recordID: \HealthCatalogItemRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(HealthRecord.self, disposition: .transfer, fields: [
                 .init("id", \HealthRecord.id),
                 .init("farmID", \HealthRecord.farmID),
@@ -867,6 +975,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \HealthRecord.createdAt),
                 .init("deletedAt", \HealthRecord.deletedAt),
             ], farmID: \HealthRecord.farmID, recordID: \HealthRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(HealthSubjectLink.self, disposition: .transfer, fields: [
                 .init("id", \HealthSubjectLink.id),
                 .init("farmID", \HealthSubjectLink.farmID),
@@ -874,6 +984,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("sheepID", \HealthSubjectLink.sheepID),
                 .init("createdAt", \HealthSubjectLink.createdAt),
             ], farmID: \HealthSubjectLink.farmID, recordID: \HealthSubjectLink.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(InsightActionDraftRecord.self, disposition: .localOnly, fields: [
                 .init("id", \InsightActionDraftRecord.id),
                 .init("conversationID", \InsightActionDraftRecord.conversationID),
@@ -896,6 +1008,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("executedOperationID", \InsightActionDraftRecord.executedOperationID),
                 .init("errorMessage", \InsightActionDraftRecord.errorMessage),
             ], farmID: \InsightActionDraftRecord.farmID, recordID: \InsightActionDraftRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(InsightAttachmentRecord.self, disposition: .localOnly, fields: [
                 .init("id", \InsightAttachmentRecord.id),
                 .init("conversationID", \InsightAttachmentRecord.conversationID),
@@ -911,6 +1025,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \InsightAttachmentRecord.createdAt),
                 .init("deletedAt", \InsightAttachmentRecord.deletedAt),
             ], farmID: \InsightAttachmentRecord.farmID, recordID: \InsightAttachmentRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(InsightConversationRecord.self, disposition: .localOnly, fields: [
                 .init("id", \InsightConversationRecord.id),
                 .init("accountID", \InsightConversationRecord.accountID),
@@ -921,6 +1037,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("deletedAt", \InsightConversationRecord.deletedAt),
                 .init("revision", \InsightConversationRecord.revision),
             ], farmID: \InsightConversationRecord.farmID, recordID: \InsightConversationRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(InsightExecutionReceiptRecord.self, disposition: .localOnly, fields: [
                 .init("sourceRequestID", \InsightExecutionReceiptRecord.sourceRequestID),
                 .init("accountID", \InsightExecutionReceiptRecord.accountID),
@@ -930,6 +1048,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("entityID", \InsightExecutionReceiptRecord.entityID),
                 .init("createdAt", \InsightExecutionReceiptRecord.createdAt),
             ], farmID: \InsightExecutionReceiptRecord.farmID, recordID: \InsightExecutionReceiptRecord.sourceRequestID),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(InsightMessageRecord.self, disposition: .localOnly, fields: [
                 .init("id", \InsightMessageRecord.id),
                 .init("conversationID", \InsightMessageRecord.conversationID),
@@ -946,6 +1066,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("providerResponseID", \InsightMessageRecord.providerResponseID),
                 .init("toolName", \InsightMessageRecord.toolName),
             ], farmID: \InsightMessageRecord.farmID, recordID: \InsightMessageRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(InsightSyncStateRecord.self, disposition: .localOnly, fields: [
                 .init("accountID", \InsightSyncStateRecord.accountID),
                 .init("cursor", \InsightSyncStateRecord.cursor),
@@ -953,6 +1075,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("lastPushedAt", \InsightSyncStateRecord.lastPushedAt),
                 .init("lastErrorMessage", \InsightSyncStateRecord.lastErrorMessage),
             ], farmID: nil, recordID: \InsightSyncStateRecord.accountID),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(InventoryLotRecord.self, disposition: .transfer, fields: [
                 .init("id", \InventoryLotRecord.id),
                 .init("farmID", \InventoryLotRecord.farmID),
@@ -970,6 +1094,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("isActive", \InventoryLotRecord.isActive),
                 .init("deletedAt", \InventoryLotRecord.deletedAt),
             ], farmID: \InventoryLotRecord.farmID, recordID: \InventoryLotRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(InventoryTransactionRecord.self, disposition: .transfer, fields: [
                 .init("id", \InventoryTransactionRecord.id),
                 .init("farmID", \InventoryTransactionRecord.farmID),
@@ -982,6 +1108,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \InventoryTransactionRecord.createdAt),
                 .init("deletedAt", \InventoryTransactionRecord.deletedAt),
             ], farmID: \InventoryTransactionRecord.farmID, recordID: \InventoryTransactionRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(LambingOffspringRecord.self, disposition: .transfer, fields: [
                 .init("id", \LambingOffspringRecord.id),
                 .init("farmID", \LambingOffspringRecord.farmID),
@@ -1001,6 +1129,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \LambingOffspringRecord.updatedAt),
                 .init("deletedAt", \LambingOffspringRecord.deletedAt),
             ], farmID: \LambingOffspringRecord.farmID, recordID: \LambingOffspringRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(MigrationAuditRecord.self, disposition: .localOnly, fields: [
                 .init("id", \MigrationAuditRecord.id),
                 .init("sessionID", \MigrationAuditRecord.sessionID),
@@ -1012,6 +1142,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("exclusionReason", \MigrationAuditRecord.exclusionReason),
                 .init("createdAt", \MigrationAuditRecord.createdAt),
             ], farmID: nil, recordID: \MigrationAuditRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(MigrationCommitRecord.self, disposition: .localOnly, fields: [
                 .init("id", \MigrationCommitRecord.id),
                 .init("sessionID", \MigrationCommitRecord.sessionID),
@@ -1031,6 +1163,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("cloudUpgradedAt", \MigrationCommitRecord.cloudUpgradedAt),
                 .init("cloudSyncedAt", \MigrationCommitRecord.cloudSyncedAt),
             ], farmID: \MigrationCommitRecord.farmID, recordID: \MigrationCommitRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(NoteRecord.self, disposition: .transfer, fields: [
                 .init("id", \NoteRecord.id),
                 .init("farmID", \NoteRecord.farmID),
@@ -1042,6 +1176,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("deletedAt", \NoteRecord.deletedAt),
                 .init("revision", \NoteRecord.revision),
             ], farmID: \NoteRecord.farmID, recordID: \NoteRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(OutboxItem.self, disposition: .localOnly, fields: [
                 .init("id", \OutboxItem.id),
                 .init("farmID", \OutboxItem.farmID),
@@ -1064,6 +1200,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("authorityGeneration", \OutboxItem.authorityGeneration),
                 .init("remoteReceiptData", \OutboxItem.remoteReceiptData),
             ], farmID: \OutboxItem.farmID, recordID: \OutboxItem.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(PedigreeChangeRecord.self, disposition: .transfer, fields: [
                 .init("id", \PedigreeChangeRecord.id),
                 .init("farmID", \PedigreeChangeRecord.farmID),
@@ -1083,6 +1221,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("sheepRevision", \PedigreeChangeRecord.sheepRevision),
                 .init("occurredAt", \PedigreeChangeRecord.occurredAt),
             ], farmID: \PedigreeChangeRecord.farmID, recordID: \PedigreeChangeRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(PenRecord.self, disposition: .transfer, fields: [
                 .init("id", \PenRecord.id),
                 .init("farmID", \PenRecord.farmID),
@@ -1094,6 +1234,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \PenRecord.updatedAt),
                 .init("deletedAt", \PenRecord.deletedAt),
             ], farmID: \PenRecord.farmID, recordID: \PenRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(PhotoAssetRecord.self, disposition: .transfer, fields: [
                 .init("id", \PhotoAssetRecord.id),
                 .init("farmID", \PhotoAssetRecord.farmID),
@@ -1116,6 +1258,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \PhotoAssetRecord.createdAt),
                 .init("deletedAt", \PhotoAssetRecord.deletedAt),
             ], farmID: \PhotoAssetRecord.farmID, recordID: \PhotoAssetRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(ProductionBatchRecord.self, disposition: .transfer, fields: [
                 .init("id", \ProductionBatchRecord.id),
                 .init("farmID", \ProductionBatchRecord.farmID),
@@ -1130,6 +1274,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \ProductionBatchRecord.updatedAt),
                 .init("deletedAt", \ProductionBatchRecord.deletedAt),
             ], farmID: \ProductionBatchRecord.farmID, recordID: \ProductionBatchRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(RemovalRecord.self, disposition: .transfer, fields: [
                 .init("id", \RemovalRecord.id),
                 .init("farmID", \RemovalRecord.farmID),
@@ -1145,6 +1291,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("revision", \RemovalRecord.revision),
                 .init("deletedAt", \RemovalRecord.deletedAt),
             ], farmID: \RemovalRecord.farmID, recordID: \RemovalRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(ReproductionRecord.self, disposition: .transfer, fields: [
                 .init("id", \ReproductionRecord.id),
                 .init("farmID", \ReproductionRecord.farmID),
@@ -1172,12 +1320,16 @@ enum ESheepCloudCheckpointRegistry {
                 .init("revision", \ReproductionRecord.revision),
                 .init("deletedAt", \ReproductionRecord.deletedAt),
             ], farmID: \ReproductionRecord.farmID, recordID: \ReproductionRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(RevokedCapabilityCertificateRecord.self, disposition: .localOnly, fields: [
                 .init("id", \RevokedCapabilityCertificateRecord.id),
                 .init("serverCertificateID", \RevokedCapabilityCertificateRecord.serverCertificateID),
                 .init("farmID", \RevokedCapabilityCertificateRecord.farmID),
                 .init("revokedAt", \RevokedCapabilityCertificateRecord.revokedAt),
             ], farmID: \RevokedCapabilityCertificateRecord.farmID, recordID: \RevokedCapabilityCertificateRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(SecurityIncidentRecord.self, disposition: .localOnly, fields: [
                 .init("id", \SecurityIncidentRecord.id),
                 .init("farmID", \SecurityIncidentRecord.farmID),
@@ -1190,6 +1342,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("detectedAt", \SecurityIncidentRecord.detectedAt),
                 .init("reviewedAt", \SecurityIncidentRecord.reviewedAt),
             ], farmID: nil, recordID: \SecurityIncidentRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(SemenDonorRecord.self, disposition: .transfer, fields: [
                 .init("id", \SemenDonorRecord.id),
                 .init("farmID", \SemenDonorRecord.farmID),
@@ -1204,6 +1358,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \SemenDonorRecord.updatedAt),
                 .init("deletedAt", \SemenDonorRecord.deletedAt),
             ], farmID: \SemenDonorRecord.farmID, recordID: \SemenDonorRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(SemenRecord.self, disposition: .transfer, fields: [
                 .init("id", \SemenRecord.id),
                 .init("farmID", \SemenRecord.farmID),
@@ -1219,6 +1375,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \SemenRecord.updatedAt),
                 .init("deletedAt", \SemenRecord.deletedAt),
             ], farmID: \SemenRecord.farmID, recordID: \SemenRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(SemenTransactionRecord.self, disposition: .transfer, fields: [
                 .init("id", \SemenTransactionRecord.id),
                 .init("farmID", \SemenTransactionRecord.farmID),
@@ -1231,6 +1389,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \SemenTransactionRecord.createdAt),
                 .init("deletedAt", \SemenTransactionRecord.deletedAt),
             ], farmID: \SemenTransactionRecord.farmID, recordID: \SemenTransactionRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(SheepAvatarRecord.self, disposition: .transfer, fields: [
                 .init("id", \SheepAvatarRecord.id),
                 .init("farmID", \SheepAvatarRecord.farmID),
@@ -1238,6 +1398,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("photoAssetID", \SheepAvatarRecord.photoAssetID),
                 .init("updatedAt", \SheepAvatarRecord.updatedAt),
             ], farmID: \SheepAvatarRecord.farmID, recordID: \SheepAvatarRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(SheepRecord.self, disposition: .transfer, fields: [
                 .init("id", \SheepRecord.id),
                 .init("farmID", \SheepRecord.farmID),
@@ -1271,6 +1433,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \SheepRecord.updatedAt),
                 .init("deletedAt", \SheepRecord.deletedAt),
             ], farmID: \SheepRecord.farmID, recordID: \SheepRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(SyncConflictRecord.self, disposition: .localOnly, fields: [
                 .init("id", \SyncConflictRecord.id),
                 .init("farmID", \SyncConflictRecord.farmID),
@@ -1295,6 +1459,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("remotePayloadDigest", \SyncConflictRecord.remotePayloadDigest),
                 .init("resolutionFailureReason", \SyncConflictRecord.resolutionFailureReason),
             ], farmID: \SyncConflictRecord.farmID, recordID: \SyncConflictRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TMRBatchIngredientRecord.self, disposition: .transfer, fields: [
                 .init("id", \TMRBatchIngredientRecord.id),
                 .init("farmID", \TMRBatchIngredientRecord.farmID),
@@ -1311,6 +1477,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \TMRBatchIngredientRecord.createdAt),
                 .init("deletedAt", \TMRBatchIngredientRecord.deletedAt),
             ], farmID: \TMRBatchIngredientRecord.farmID, recordID: \TMRBatchIngredientRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TMRBatchLoadLineRecord.self, disposition: .transfer, fields: [
                 .init("id", \TMRBatchLoadLineRecord.id),
                 .init("farmID", \TMRBatchLoadLineRecord.farmID),
@@ -1324,6 +1492,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \TMRBatchLoadLineRecord.createdAt),
                 .init("deletedAt", \TMRBatchLoadLineRecord.deletedAt),
             ], farmID: \TMRBatchLoadLineRecord.farmID, recordID: \TMRBatchLoadLineRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TMRBatchMovementRecord.self, disposition: .transfer, fields: [
                 .init("id", \TMRBatchMovementRecord.id),
                 .init("farmID", \TMRBatchMovementRecord.farmID),
@@ -1337,6 +1507,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \TMRBatchMovementRecord.createdAt),
                 .init("deletedAt", \TMRBatchMovementRecord.deletedAt),
             ], farmID: \TMRBatchMovementRecord.farmID, recordID: \TMRBatchMovementRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TMRBatchRecord.self, disposition: .transfer, fields: [
                 .init("id", \TMRBatchRecord.id),
                 .init("farmID", \TMRBatchRecord.farmID),
@@ -1361,6 +1533,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("closedAt", \TMRBatchRecord.closedAt),
                 .init("deletedAt", \TMRBatchRecord.deletedAt),
             ], farmID: \TMRBatchRecord.farmID, recordID: \TMRBatchRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TMRDeviationAcknowledgementRecord.self, disposition: .transfer, fields: [
                 .init("id", \TMRDeviationAcknowledgementRecord.id),
                 .init("farmID", \TMRDeviationAcknowledgementRecord.farmID),
@@ -1377,6 +1551,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \TMRDeviationAcknowledgementRecord.createdAt),
                 .init("deletedAt", \TMRDeviationAcknowledgementRecord.deletedAt),
             ], farmID: \TMRDeviationAcknowledgementRecord.farmID, recordID: \TMRDeviationAcknowledgementRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TMRFeedingAllocationRecord.self, disposition: .transfer, fields: [
                 .init("id", \TMRFeedingAllocationRecord.id),
                 .init("farmID", \TMRFeedingAllocationRecord.farmID),
@@ -1393,6 +1569,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \TMRFeedingAllocationRecord.createdAt),
                 .init("deletedAt", \TMRFeedingAllocationRecord.deletedAt),
             ], farmID: \TMRFeedingAllocationRecord.farmID, recordID: \TMRFeedingAllocationRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TMRFeedingPlanPenRecord.self, disposition: .transfer, fields: [
                 .init("id", \TMRFeedingPlanPenRecord.id),
                 .init("farmID", \TMRFeedingPlanPenRecord.farmID),
@@ -1406,6 +1584,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \TMRFeedingPlanPenRecord.updatedAt),
                 .init("deletedAt", \TMRFeedingPlanPenRecord.deletedAt),
             ], farmID: \TMRFeedingPlanPenRecord.farmID, recordID: \TMRFeedingPlanPenRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TMRFeedingPlanRecord.self, disposition: .transfer, fields: [
                 .init("id", \TMRFeedingPlanRecord.id),
                 .init("farmID", \TMRFeedingPlanRecord.farmID),
@@ -1437,6 +1617,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \TMRFeedingPlanRecord.updatedAt),
                 .init("deletedAt", \TMRFeedingPlanRecord.deletedAt),
             ], farmID: \TMRFeedingPlanRecord.farmID, recordID: \TMRFeedingPlanRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TMRFeedingRunRecord.self, disposition: .transfer, fields: [
                 .init("id", \TMRFeedingRunRecord.id),
                 .init("farmID", \TMRFeedingRunRecord.farmID),
@@ -1455,6 +1637,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \TMRFeedingRunRecord.updatedAt),
                 .init("deletedAt", \TMRFeedingRunRecord.deletedAt),
             ], farmID: \TMRFeedingRunRecord.farmID, recordID: \TMRFeedingRunRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TMRFormulaProfileRecord.self, disposition: .transfer, fields: [
                 .init("id", \TMRFormulaProfileRecord.id),
                 .init("farmID", \TMRFormulaProfileRecord.farmID),
@@ -1471,6 +1655,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \TMRFormulaProfileRecord.updatedAt),
                 .init("deletedAt", \TMRFormulaProfileRecord.deletedAt),
             ], farmID: \TMRFormulaProfileRecord.farmID, recordID: \TMRFormulaProfileRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TMRMealCompletionRecord.self, disposition: .transfer, fields: [
                 .init("id", \TMRMealCompletionRecord.id),
                 .init("farmID", \TMRMealCompletionRecord.farmID),
@@ -1485,6 +1671,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("createdAt", \TMRMealCompletionRecord.createdAt),
                 .init("deletedAt", \TMRMealCompletionRecord.deletedAt),
             ], farmID: \TMRMealCompletionRecord.farmID, recordID: \TMRMealCompletionRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TMRMonitoringRuleRecord.self, disposition: .transfer, fields: [
                 .init("id", \TMRMonitoringRuleRecord.id),
                 .init("farmID", \TMRMonitoringRuleRecord.farmID),
@@ -1499,6 +1687,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \TMRMonitoringRuleRecord.updatedAt),
                 .init("deletedAt", \TMRMonitoringRuleRecord.deletedAt),
             ], farmID: \TMRMonitoringRuleRecord.farmID, recordID: \TMRMonitoringRuleRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TombstoneRecord.self, disposition: .transfer, fields: [
                 .init("id", \TombstoneRecord.id),
                 .init("farmID", \TombstoneRecord.farmID),
@@ -1512,6 +1702,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("restoredByOperationID", \TombstoneRecord.restoredByOperationID),
                 .init("restoredAt", \TombstoneRecord.restoredAt),
             ], farmID: \TombstoneRecord.farmID, recordID: \TombstoneRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(TransferRecord.self, disposition: .transfer, fields: [
                 .init("id", \TransferRecord.id),
                 .init("farmID", \TransferRecord.farmID),
@@ -1524,6 +1716,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("revision", \TransferRecord.revision),
                 .init("deletedAt", \TransferRecord.deletedAt),
             ], farmID: \TransferRecord.farmID, recordID: \TransferRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(WeaningRecord.self, disposition: .transfer, fields: [
                 .init("id", \WeaningRecord.id),
                 .init("farmID", \WeaningRecord.farmID),
@@ -1542,6 +1736,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("revision", \WeaningRecord.revision),
                 .init("deletedAt", \WeaningRecord.deletedAt),
             ], farmID: \WeaningRecord.farmID, recordID: \WeaningRecord.id),
+        ])
+        result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(WeightRecord.self, disposition: .transfer, fields: [
                 .init("id", \WeightRecord.id),
                 .init("farmID", \WeightRecord.farmID),
@@ -1553,7 +1749,8 @@ enum ESheepCloudCheckpointRegistry {
                 .init("revision", \WeightRecord.revision),
                 .init("deletedAt", \WeightRecord.deletedAt),
             ], farmID: \WeightRecord.farmID, recordID: \WeightRecord.id),
-        ]
+        ])
+        return result
     }
 
     static func validateCoverage() throws {

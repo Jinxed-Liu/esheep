@@ -141,10 +141,15 @@ private struct FarmWidgetProfileEditor: View {
         (profile.period != .custom || profile.startDate <= profile.endDate)
     }
     private var preview: FarmWidgetCard {
-        let stored = snapshot.farms.first { $0.farmID == farm.id }?.cards
-        var card = stored?.first { $0.profileID == profile.id && $0.profileRevision == profile.revision }
-            ?? stored?.first { $0.kind == profile.kind && $0.profileID == nil }
-            ?? .waiting(kind: profile.kind, message: "保存后由牧场数据生成快照")
+        let stored: [FarmWidgetCard]? = snapshot.farms.first { $0.farmID == farm.id }?.cards
+        var card: FarmWidgetCard
+        if let matchedProfile = stored?.first(where: { $0.profileID == profile.id && $0.profileRevision == profile.revision }) {
+            card = matchedProfile
+        } else if let matchedKind = stored?.first(where: { $0.kind == profile.kind && $0.profileID == nil }) {
+            card = matchedKind
+        } else {
+            card = .waiting(kind: profile.kind, message: "保存后由牧场数据生成快照")
+        }
         if profile.kind.needsScope && FarmWidgetProfileStore.load().first(where: { $0.id == profile.id }) != profile {
             card = .waiting(kind: profile.kind, message: "保存后生成所选对象与日期范围的数据")
         }

@@ -262,6 +262,10 @@ private final class DesignAcceptanceFixture {
                   expectedInput.contains("\n") else {
                 throw MiMoClientError.invalidRequest
             }
+            let waitsForExplicitCompletion = arguments.contains("--design-insight-edge-swipe-response")
+            if waitsForExplicitCompletion {
+                await DesignAcceptanceReplyGate.shared.reset()
+            }
             let client: any MiMoResponding
             if arguments.contains("--design-insight-long-response") {
                 client = DesignAcceptanceLongMiMoResponder(expectedInput: expectedInput)
@@ -269,8 +273,8 @@ private final class DesignAcceptanceFixture {
                 client = DesignAcceptanceMiMoResponder(
                     expectedInput: expectedInput,
                     showsProgress: arguments.contains("--design-insight-slow-response") ||
-                        arguments.contains("--design-insight-edge-swipe-response"),
-                    progressDelaySeconds: arguments.contains("--design-insight-edge-swipe-response") ? 12 : 6
+                        waitsForExplicitCompletion,
+                    waitsForExplicitCompletion: waitsForExplicitCompletion
                 )
             }
             try InsightSessionCoordinator.shared.configureDesignAcceptanceClient(
@@ -309,12 +313,35 @@ private final class DesignAcceptanceFixture {
     }
 }
 
+/// Holds only the explicit offline navigation sample across XCTest's idle wait.
+/// The real stream still responds to cancellation while completion is pending.
+actor DesignAcceptanceReplyGate {
+    static let shared = DesignAcceptanceReplyGate()
+    private var isReleased = false
+
+    func reset() {
+        isReleased = false
+    }
+
+    func release() {
+        isReleased = true
+    }
+
+    func waitForRelease() async throws {
+        while !isReleased {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try Task.checkCancellation()
+    }
+}
+
 /// The real conversation controller and persistence run unchanged. Only the
 /// external model boundary is replaced, and unexpected input fails the test.
 private struct DesignAcceptanceMiMoResponder: MiMoResponding {
     let expectedInput: String
     var showsProgress = false
-    var progressDelaySeconds = 6
+    var waitsForExplicitCompletion = false
     private static let responseText = "离线发送验收：已收到两行输入。"
     private static let reviewToolName = "review_grounded_farm_answer"
 
@@ -361,12 +388,16 @@ private struct DesignAcceptanceMiMoResponder: MiMoResponding {
                 return
             }
             if showsProgress {
-                // Optional isolated visual capture: the real harness receives
-                // stream events and can be stopped during this short wait.
+                // The navigation sample waits for an explicit model-boundary
+                // release; other visual samples retain their short delay.
                 let task = Task {
                     do {
                         continuation.yield(.responseStarted(id: "design-offline-send"))
-                        try await Task.sleep(for: .seconds(progressDelaySeconds))
+                        if waitsForExplicitCompletion {
+                            try await DesignAcceptanceReplyGate.shared.waitForRelease()
+                        } else {
+                            try await Task.sleep(for: .seconds(6))
+                        }
                         try Task.checkCancellation()
                         continuation.yield(.textDelta(Self.responseText))
                         continuation.yield(.completed(responseID: "design-offline-send", usage: nil))

@@ -258,11 +258,23 @@ private struct CreateProductionBatchView: View {
             },
             sort: \SheepRecord.earTag
         )
-        _memberships = Query(
-            filter: #Predicate<BatchMembershipRecord> {
-                $0.farmID == farmID && $0.deletedAt == nil && $0.leftAt == nil
-            }
-        )
+        let membershipPredicate = Predicate<BatchMembershipRecord> { membership in
+            let farmMatches = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: membership, keyPath: \BatchMembershipRecord.farmID),
+                rhs: PredicateExpressions.build_Arg(farmID)
+            )
+            let notDeleted = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: membership, keyPath: \BatchMembershipRecord.deletedAt),
+                rhs: PredicateExpressions.NilLiteral<Date>()
+            )
+            let notLeft = PredicateExpressions.build_Equal(
+                lhs: PredicateExpressions.build_KeyPath(root: membership, keyPath: \BatchMembershipRecord.leftAt),
+                rhs: PredicateExpressions.NilLiteral<Date>()
+            )
+            let currentFarmMembership = PredicateExpressions.build_Conjunction(lhs: farmMatches, rhs: notDeleted)
+            return PredicateExpressions.build_Conjunction(lhs: currentFarmMembership, rhs: notLeft)
+        }
+        _memberships = Query(filter: membershipPredicate)
     }
 
     var body: some View {

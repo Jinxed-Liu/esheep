@@ -21,10 +21,14 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let focused = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             let keyboard = app.keyboards.firstMatch
             return keyboard.exists && keyboard.frame.height > 100 &&
-                abs(surface.frame.width - (app.frame.width - 24)) < 1 &&
+                self.composerHasSideMargins(12, in: app) &&
                 surface.frame.maxY <= keyboard.frame.minY + 2
         }, object: app)
-        XCTAssertEqual(XCTWaiter.wait(for: [focused], timeout: 10), .completed)
+        let focusedResult = XCTWaiter.wait(for: [focused], timeout: 10)
+        if focusedResult != .completed {
+            attachScreenshot(of: app, named: "voice-fixture-focused-composer-geometry-failure")
+        }
+        XCTAssertEqual(focusedResult, .completed)
 
         app.buttons["design.audio.fixture.begin"].tap()
         let bar = app.descendants(matching: .any).matching(identifier: "insight.audio.bar").firstMatch
@@ -158,17 +162,17 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let input = composerField(in: app)
         let surface = app.descendants(matching: .any).matching(identifier: "insight.composer.surface").firstMatch
         XCTAssertTrue(surface.waitForExistence(timeout: 5))
-        let compactWidth = app.frame.width - 76
         let compact = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            abs(surface.frame.width - compactWidth) < 1
+            self.composerHasSideMargins(38, in: app)
         }, object: surface)
-        XCTAssertEqual(XCTWaiter.wait(for: [compact], timeout: 5), .completed,
-                       "An empty unfocused composer must retain 38pt side margins.")
+        let compactResult = XCTWaiter.wait(for: [compact], timeout: 5)
         attachScreenshot(of: app, named: "attachment-empty-unfocused-compact-reference-width")
+        XCTAssertEqual(compactResult, .completed,
+                       "An empty unfocused composer must retain 38pt side margins.")
         input.tap()
         let focused = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             let keyboard = app.keyboards.firstMatch
-            return abs(surface.frame.width - (app.frame.width - 24)) < 1 &&
+            return self.composerHasSideMargins(12, in: app) &&
                 keyboard.exists && keyboard.frame.height > 100 && surface.frame.maxY <= keyboard.frame.minY + 2
         }, object: surface)
         XCTAssertEqual(XCTWaiter.wait(for: [focused], timeout: 10), .completed,
@@ -227,10 +231,31 @@ final class InsightAssistantEntryUITests: XCTestCase {
 
         add.tap()
         XCTAssertTrue(panel.waitForExistence(timeout: 5))
-        app.buttons["insight.attachment.files"].tap()
+        let files = app.buttons["insight.attachment.files"]
+        let filesReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "enabled == true AND hittable == true"), object: files
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [filesReady], timeout: 5), .completed)
+        files.tap()
         let cancel = app.buttons["取消"]
-        XCTAssertTrue(cancel.waitForExistence(timeout: 10), "The file picker was not presented after the floating panel finished dismissing.")
-        XCTAssertFalse(panel.exists)
+        // The system document picker loads its remote content after its modal
+        // host appears. Wait for an actionable control, not just that host.
+        // Check panel removal afterward: querying its absence during remote
+        // loading can consume the entire accessibility snapshot deadline.
+        let pickerReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND hittable == true"), object: cancel
+        )
+        let pickerResult = XCTWaiter.wait(for: [pickerReady], timeout: 30)
+        if pickerResult != .completed {
+            attachInteractionFailure(of: app, named: "attachment-file-picker-content-not-ready")
+        }
+        XCTAssertEqual(pickerResult, .completed,
+                       "The file picker was not presented after the floating panel finished dismissing.")
+        let panelIsGone = !panel.exists
+        if !panelIsGone {
+            attachInteractionFailure(of: app, named: "attachment-file-action-panel-not-removed")
+        }
+        XCTAssertTrue(panelIsGone, "The floating panel remained over the system file picker.")
         attachScreenshot(of: app, named: "attachment-file-picker-after-floating-panel-dismissal")
         cancel.tap()
         XCTAssertEqual(input.value as? String, editedDraft)
@@ -421,7 +446,11 @@ final class InsightAssistantEntryUITests: XCTestCase {
         // to complete UIKit's interactive transition rather than cancel it.
         let destination = app.coordinate(withNormalizedOffset: CGVector(dx: startingAtEdge ? 0.85 : 0.98, dy: 0.45))
         edge.press(forDuration: 0.05, thenDragTo: destination, withVelocity: .fast, thenHoldForDuration: 0)
-        XCTAssertTrue(app.buttons["聊天菜单"].waitForExistence(timeout: 5), "The native \(startingAtEdge ? "edge" : "content") return did not complete.")
+        let returnedToList = app.buttons["聊天菜单"].waitForExistence(timeout: 5)
+        if !returnedToList {
+            attachInteractionFailure(of: app, named: "\(startingAtEdge ? "edge" : "content")-swipe-list-not-ready")
+        }
+        XCTAssertTrue(returnedToList, "The native \(startingAtEdge ? "edge" : "content") return did not complete.")
         XCTAssertTrue(app.activityIndicators["处理中"].exists, "Returning to the list interrupted or completed the delayed response prematurely.")
         attachScreenshot(of: app, named: "\(startingAtEdge ? "edge" : "content")-swipe-list-reply-running")
 
@@ -429,6 +458,14 @@ final class InsightAssistantEntryUITests: XCTestCase {
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
         conversation.tap()
         XCTAssertTrue(app.staticTexts[message].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["insight.composer.stop"].exists, "The original response stopped while reentering its conversation.")
+        XCTAssertFalse(app.staticTexts[response].exists, "The controlled offline reply completed before the test released it.")
+        let more = app.buttons["聊天更多选项"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        more.tap()
+        let completeReply = app.buttons["完成离线回复样本"]
+        XCTAssertTrue(completeReply.waitForExistence(timeout: 5), "The isolated reply fixture's completion control is missing.")
+        completeReply.tap()
         XCTAssertTrue(app.staticTexts[response].waitForExistence(timeout: 30), "The original response did not finish after edge return and reentry.")
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", message)).count, 1, "Reentry duplicated the original request.")
         XCTAssertFalse(app.buttons["insight.composer.stop"].exists)
@@ -554,9 +591,13 @@ final class InsightAssistantEntryUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [completed], timeout: 10), .completed)
         let surface = app.descendants(matching: .any).matching(identifier: "insight.composer.surface").firstMatch
         let compact = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            !app.keyboards.firstMatch.exists && abs(surface.frame.width - (app.frame.width - 76)) < 1
+            !app.keyboards.firstMatch.exists && self.composerHasSideMargins(38, in: app)
         }, object: app)
-        XCTAssertEqual(XCTWaiter.wait(for: [compact], timeout: 10), .completed,
+        let compactResult = XCTWaiter.wait(for: [compact], timeout: 10)
+        if compactResult != .completed {
+            attachScreenshot(of: app, named: "dense-reply-unfocused-composer-geometry-failure")
+        }
+        XCTAssertEqual(compactResult, .completed,
                        "The completed response must leave an empty unfocused composer with 38pt side margins.")
         let paragraph = app.staticTexts.matching(NSPredicate(
             format: "label BEGINSWITH %@", "这次隔离样本覆盖真实控制器"
@@ -573,7 +614,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let focused = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             let keyboard = app.keyboards.firstMatch
             return keyboard.exists && keyboard.frame.height > 100 &&
-                abs(surface.frame.width - (app.frame.width - 24)) < 1 &&
+                self.composerHasSideMargins(12, in: app) &&
                 surface.frame.maxY <= keyboard.frame.minY + 2
         }, object: app)
         XCTAssertEqual(XCTWaiter.wait(for: [focused], timeout: 10), .completed,
@@ -629,7 +670,9 @@ final class InsightAssistantEntryUITests: XCTestCase {
     @MainActor
     func testListComposerUsesReturnForNewlineAndSendPersistsConversation() {
         continueAfterFailure = false
-        let firstLine = "Composer \(UUID().uuidString.prefix(8))"
+        // Finish Latin/Pinyin composition with a digit before testing Return
+        // as a newline; a trailing marked letter can consume Return to commit.
+        let firstLine = "Composer \(UUID().uuidString.prefix(8))1"
         let message = firstLine + "\nSecond line"
         let response = "离线发送验收：已收到两行输入。"
         let app = XCUIApplication()
@@ -652,11 +695,33 @@ final class InsightAssistantEntryUITests: XCTestCase {
             NSPredicate(format: "label IN %@", ["Return", "return", "换行", "回车"])
         ).firstMatch
         XCTAssertTrue(returnKey.waitForExistence(timeout: 5), "The multiline editor has no native Return key.")
+        let readyForReturn = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            self.composerField(in: app).value as? String == firstLine && returnKey.isHittable
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [readyForReturn], timeout: 10), .completed,
+                       "The first line and native Return key did not become ready.")
         returnKey.tap()
-        XCTAssertEqual(composer.value as? String, firstLine + "\n", "Return must insert a newline into the draft.")
+        // Native keyboard input can precede the updated SwiftUI AX value on
+        // a busy simulator. Wait for the exact draft from a fresh query; tap
+        // Return only once so a lost newline remains a functional failure.
+        let newlineInserted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            self.composerField(in: app).value as? String == firstLine + "\n"
+        }, object: app)
+        let newlineResult = XCTWaiter.wait(for: [newlineInserted], timeout: 10)
+        if newlineResult != .completed {
+            attachScreenshot(of: app, named: "composer-native-return-newline-did-not-settle")
+        }
+        XCTAssertEqual(newlineResult, .completed, "Return must insert a newline into the draft.")
+        XCTAssertEqual(composerField(in: app).value as? String, firstLine + "\n",
+                       "Return must insert a newline into the draft.")
         XCTAssertFalse(app.staticTexts[response].exists, "Return unexpectedly submitted the draft.")
         composer.typeText("Second line")
-        XCTAssertEqual(composer.value as? String, message)
+        let messageEntered = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            self.composerField(in: app).value as? String == message
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [messageEntered], timeout: 10), .completed,
+                       "The exact two-line draft did not settle after typing.")
+        XCTAssertEqual(composerField(in: app).value as? String, message)
 
         let send = app.buttons["insight.composer.send"]
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: send)
@@ -739,7 +804,11 @@ final class InsightAssistantEntryUITests: XCTestCase {
         XCTAssertTrue(removableHistory.exists)
         removableHistory.press(forDuration: 1)
         let delete = app.buttons["删除聊天"]
-        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        let deletionMenuAppeared = delete.waitForExistence(timeout: 5)
+        if !deletionMenuAppeared {
+            attachScreenshot(of: app, named: "configured-history-long-press-menu-missing")
+        }
+        XCTAssertTrue(deletionMenuAppeared, "A history-row long press must open its deletion menu without opening the conversation.")
         delete.tap()
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: removableHistory)
         XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed, "The list did not react to the deleted history record.")
@@ -811,25 +880,21 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let microphone = app.buttons["insight.audio.record"]
         XCTAssertTrue(microphone.isEnabled, "Recording must not require a model credential.")
         XCTAssertTrue(microphone.isHittable, "The microphone is covered or unreachable.")
-        let denialMonitor = addUIInterruptionMonitor(withDescription: "Deny the microphone permission") { alert in
-            guard alert.label.localizedCaseInsensitiveContains("microphone") || alert.label.contains("麦克风") else {
-                return false
-            }
-            let deny = alert.buttons.matching(
-                NSPredicate(format: "label IN %@", ["不允许", "Don’t Allow", "Don't Allow"])
-            ).firstMatch
-            guard deny.exists else { return false }
-            deny.tap()
-            return true
-        }
-        defer { removeUIInterruptionMonitor(denialMonitor) }
         microphone.tap()
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let systemPermission = springboard.alerts.firstMatch
         XCTAssertTrue(systemPermission.waitForExistence(timeout: 10), "Recording did not request microphone access.")
-        // App interaction invokes XCTest's interruption monitor and verifies
-        // dismissal, rather than assuming a direct SpringBoard tap succeeded.
-        app.tap()
+        let deny = systemPermission.buttons.matching(
+            NSPredicate(format: "label IN %@", ["不允许", "Don’t Allow", "Don't Allow"])
+        ).firstMatch
+        let denialReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND enabled == true AND hittable == true"), object: deny
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [denialReady], timeout: 10), .completed,
+                       "The system microphone denial button did not become actionable.")
+        // This prompt is part of the test. Act on its native button directly;
+        // an app tap cannot reliably resolve a SpringBoard interruption query.
+        deny.tap()
         let dismissed = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"), object: systemPermission
         )
@@ -867,6 +932,30 @@ final class InsightAssistantEntryUITests: XCTestCase {
     }
 
     @MainActor
+    private func composerHasSideMargins(_ margin: CGFloat, in app: XCUIApplication) -> Bool {
+        // SwiftUI children:.contain can expose the union of its controls,
+        // excluding the surface's 2pt inner padding on each side. Measure the
+        // named controls against the main window instead of treating that AX
+        // union as the visible capsule's layout frame. Refresh every query as
+        // focus and layout settle, while retaining exact margins and targets.
+        let window = app.windows.firstMatch
+        let leading = app.buttons["insight.attachment.menu"]
+        let trailing = app.buttons["insight.composer.send"]
+        guard window.exists, leading.exists, trailing.exists else { return false }
+        let windowFrame = window.frame
+        let leadingFrame = leading.frame
+        let trailingFrame = trailing.frame
+        let innerPadding: CGFloat = 2
+        return !windowFrame.isEmpty &&
+            abs(leadingFrame.minX - (windowFrame.minX + margin + innerPadding)) < 1 &&
+            abs(trailingFrame.maxX - (windowFrame.maxX - margin - innerPadding)) < 1 &&
+            abs(leadingFrame.width - 44) < 1 && abs(leadingFrame.height - 44) < 1 &&
+            abs(trailingFrame.width - 44) < 1 && abs(trailingFrame.height - 44) < 1 &&
+            abs(leadingFrame.midY - trailingFrame.midY) < 1 &&
+            leadingFrame.maxX <= trailingFrame.minX
+    }
+
+    @MainActor
     private func positionReplyParagraphBehindComposer(_ paragraph: XCUIElement, surface: XCUIElement,
                                                      transcript: XCUIElement, in app: XCUIApplication,
                                                      keepingKeyboard: Bool) -> Bool {
@@ -874,11 +963,13 @@ final class InsightAssistantEntryUITests: XCTestCase {
         // scroll gestures. The AX geometry proves that the screenshots contain
         // body text both above and behind the surface; blur quality still needs
         // independent review of the original attached PNGs.
-        for _ in 0..<8 {
+        // Eight gestures get nine measurements, including the settled result
+        // of the final gesture rather than failing before it is inspected.
+        for measurement in 0...8 {
             if keepingKeyboard {
                 let keyboard = app.keyboards.firstMatch
                 let keyboardReady = keyboard.exists && keyboard.frame.height > 100 &&
-                    abs(surface.frame.width - (app.frame.width - 24)) < 1 &&
+                    composerHasSideMargins(12, in: app) &&
                     surface.frame.maxY <= keyboard.frame.minY + 2
                 if !keyboardReady {
                     // Interactive transcript scrolling can normally dismiss
@@ -888,7 +979,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
                     let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                         let keyboard = app.keyboards.firstMatch
                         return keyboard.exists && keyboard.frame.height > 100 &&
-                            abs(surface.frame.width - (app.frame.width - 24)) < 1 &&
+                            self.composerHasSideMargins(12, in: app) &&
                             surface.frame.maxY <= keyboard.frame.minY + 2
                     }, object: app)
                     if XCTWaiter.wait(for: [restored], timeout: 5) != .completed {
@@ -903,7 +994,15 @@ final class InsightAssistantEntryUITests: XCTestCase {
                 body.minY <= edge - 20 && body.maxY >= edge + 20 {
                 return true
             }
-            let delta = min(100, max(-100, (edge - 40) - body.minY))
+            guard measurement < 8 else { break }
+            var delta = min(100, max(-100, (edge - 40) - body.minY))
+            if abs(delta) > 0 && abs(delta) < 60 {
+                // A tiny adjustment can become a transcript tap and dismiss
+                // focus. Overshoot with a real pan, then let the next measured
+                // correction pan back 100pt to the same target. Clamping to a
+                // minimum distance alone would oscillate around that target.
+                delta += delta > 0 ? 100 : -100
+            }
             let startY = max(160, min(300, edge - 160))
             let start = transcript.coordinate(withNormalizedOffset: .zero)
                 .withOffset(CGVector(dx: transcript.frame.width * 0.90, dy: startY - transcript.frame.minY))
@@ -959,8 +1058,21 @@ final class InsightAssistantEntryUITests: XCTestCase {
     }
 
     @MainActor
+    private func attachInteractionFailure(of app: XCUIApplication, named name: String) {
+        attachScreenshot(of: app, named: name)
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "\(name)-accessibility-hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+    }
+
+    @MainActor
     private func assertConversationList(in app: XCUIApplication, screenshotName: String) {
-        XCTAssertTrue(app.buttons["聊天菜单"].waitForExistence(timeout: 15), "The assistant conversation list did not open.")
+        let listAppeared = app.buttons["聊天菜单"].waitForExistence(timeout: 15)
+        if !listAppeared {
+            attachScreenshot(of: app, named: "\(screenshotName)-list-not-ready")
+        }
+        XCTAssertTrue(listAppeared, "The assistant conversation list did not open.")
         XCTAssertTrue(app.buttons["全部"].exists, "The conversation list filter is missing.")
         XCTAssertTrue(app.buttons["新聊天"].exists, "The conversation list's new-chat action is missing.")
         let composer = app.descendants(matching: .any).matching(identifier: "insight.composer.text").firstMatch
