@@ -190,7 +190,7 @@ jobs:
           fi
       - name: Preserve assistant UI screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: assistant-ui-screenshots-${{ github.sha }}
           if-no-files-found: ignore
@@ -227,7 +227,7 @@ jobs:
           PY
       - name: Preserve test evidence and crash reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: assistant-entry-${{ github.sha }}
           if-no-files-found: warn

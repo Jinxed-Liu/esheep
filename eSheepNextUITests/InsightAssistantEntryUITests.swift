@@ -21,10 +21,14 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let focused = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             let keyboard = app.keyboards.firstMatch
             return keyboard.exists && keyboard.frame.height > 100 &&
-                abs(surface.frame.width - (app.frame.width - 24)) < 1 &&
+                self.composerHasSideMargins(12, in: app) &&
                 surface.frame.maxY <= keyboard.frame.minY + 2
         }, object: app)
-        XCTAssertEqual(XCTWaiter.wait(for: [focused], timeout: 10), .completed)
+        let focusedResult = XCTWaiter.wait(for: [focused], timeout: 10)
+        if focusedResult != .completed {
+            attachScreenshot(of: app, named: "voice-fixture-focused-composer-geometry-failure")
+        }
+        XCTAssertEqual(focusedResult, .completed)
 
         app.buttons["design.audio.fixture.begin"].tap()
         let bar = app.descendants(matching: .any).matching(identifier: "insight.audio.bar").firstMatch
@@ -158,17 +162,17 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let input = composerField(in: app)
         let surface = app.descendants(matching: .any).matching(identifier: "insight.composer.surface").firstMatch
         XCTAssertTrue(surface.waitForExistence(timeout: 5))
-        let compactWidth = app.frame.width - 76
         let compact = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            abs(surface.frame.width - compactWidth) < 1
+            self.composerHasSideMargins(38, in: app)
         }, object: surface)
-        XCTAssertEqual(XCTWaiter.wait(for: [compact], timeout: 5), .completed,
-                       "An empty unfocused composer must retain 38pt side margins.")
+        let compactResult = XCTWaiter.wait(for: [compact], timeout: 5)
         attachScreenshot(of: app, named: "attachment-empty-unfocused-compact-reference-width")
+        XCTAssertEqual(compactResult, .completed,
+                       "An empty unfocused composer must retain 38pt side margins.")
         input.tap()
         let focused = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             let keyboard = app.keyboards.firstMatch
-            return abs(surface.frame.width - (app.frame.width - 24)) < 1 &&
+            return self.composerHasSideMargins(12, in: app) &&
                 keyboard.exists && keyboard.frame.height > 100 && surface.frame.maxY <= keyboard.frame.minY + 2
         }, object: surface)
         XCTAssertEqual(XCTWaiter.wait(for: [focused], timeout: 10), .completed,
@@ -554,9 +558,13 @@ final class InsightAssistantEntryUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [completed], timeout: 10), .completed)
         let surface = app.descendants(matching: .any).matching(identifier: "insight.composer.surface").firstMatch
         let compact = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            !app.keyboards.firstMatch.exists && abs(surface.frame.width - (app.frame.width - 76)) < 1
+            !app.keyboards.firstMatch.exists && self.composerHasSideMargins(38, in: app)
         }, object: app)
-        XCTAssertEqual(XCTWaiter.wait(for: [compact], timeout: 10), .completed,
+        let compactResult = XCTWaiter.wait(for: [compact], timeout: 10)
+        if compactResult != .completed {
+            attachScreenshot(of: app, named: "dense-reply-unfocused-composer-geometry-failure")
+        }
+        XCTAssertEqual(compactResult, .completed,
                        "The completed response must leave an empty unfocused composer with 38pt side margins.")
         let paragraph = app.staticTexts.matching(NSPredicate(
             format: "label BEGINSWITH %@", "这次隔离样本覆盖真实控制器"
@@ -573,7 +581,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let focused = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             let keyboard = app.keyboards.firstMatch
             return keyboard.exists && keyboard.frame.height > 100 &&
-                abs(surface.frame.width - (app.frame.width - 24)) < 1 &&
+                self.composerHasSideMargins(12, in: app) &&
                 surface.frame.maxY <= keyboard.frame.minY + 2
         }, object: app)
         XCTAssertEqual(XCTWaiter.wait(for: [focused], timeout: 10), .completed,
@@ -867,6 +875,30 @@ final class InsightAssistantEntryUITests: XCTestCase {
     }
 
     @MainActor
+    private func composerHasSideMargins(_ margin: CGFloat, in app: XCUIApplication) -> Bool {
+        // SwiftUI children:.contain can expose the union of its controls,
+        // excluding the surface's 2pt inner padding on each side. Measure the
+        // named controls against the main window instead of treating that AX
+        // union as the visible capsule's layout frame. Refresh every query as
+        // focus and layout settle, while retaining exact margins and targets.
+        let window = app.windows.firstMatch
+        let leading = app.buttons["insight.attachment.menu"]
+        let trailing = app.buttons["insight.composer.send"]
+        guard window.exists, leading.exists, trailing.exists else { return false }
+        let windowFrame = window.frame
+        let leadingFrame = leading.frame
+        let trailingFrame = trailing.frame
+        let innerPadding: CGFloat = 2
+        return !windowFrame.isEmpty &&
+            abs(leadingFrame.minX - (windowFrame.minX + margin + innerPadding)) < 1 &&
+            abs(trailingFrame.maxX - (windowFrame.maxX - margin - innerPadding)) < 1 &&
+            abs(leadingFrame.width - 44) < 1 && abs(leadingFrame.height - 44) < 1 &&
+            abs(trailingFrame.width - 44) < 1 && abs(trailingFrame.height - 44) < 1 &&
+            abs(leadingFrame.midY - trailingFrame.midY) < 1 &&
+            leadingFrame.maxX <= trailingFrame.minX
+    }
+
+    @MainActor
     private func positionReplyParagraphBehindComposer(_ paragraph: XCUIElement, surface: XCUIElement,
                                                      transcript: XCUIElement, in app: XCUIApplication,
                                                      keepingKeyboard: Bool) -> Bool {
@@ -878,7 +910,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
             if keepingKeyboard {
                 let keyboard = app.keyboards.firstMatch
                 let keyboardReady = keyboard.exists && keyboard.frame.height > 100 &&
-                    abs(surface.frame.width - (app.frame.width - 24)) < 1 &&
+                    composerHasSideMargins(12, in: app) &&
                     surface.frame.maxY <= keyboard.frame.minY + 2
                 if !keyboardReady {
                     // Interactive transcript scrolling can normally dismiss
@@ -888,7 +920,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
                     let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
                         let keyboard = app.keyboards.firstMatch
                         return keyboard.exists && keyboard.frame.height > 100 &&
-                            abs(surface.frame.width - (app.frame.width - 24)) < 1 &&
+                            self.composerHasSideMargins(12, in: app) &&
                             surface.frame.maxY <= keyboard.frame.minY + 2
                     }, object: app)
                     if XCTWaiter.wait(for: [restored], timeout: 5) != .completed {
