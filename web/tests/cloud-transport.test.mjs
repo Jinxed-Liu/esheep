@@ -11,6 +11,53 @@ const request = (path, init = {}) => new Request(`${site}/api/cloud${path}`, {
   ...init, headers: { "x-esheep-cloud-host": "fixture.supabase.co", ...init.headers },
 });
 
+test("Safari-compatible uploads preserve JSON, multipart boundaries, binary bytes, and Request bodies", async () => {
+  const NativeRequest = globalThis.Request;
+  // Safari constructs stream-backed Requests but rejects streaming uploads.
+  // Reject that body at the final URL rewrite to reproduce its restriction.
+  globalThis.Request = class extends NativeRequest {
+    constructor(input, init) {
+      if (new URL(typeof input === "string" || input instanceof URL ? input : input.url).origin === site && init?.body instanceof ReadableStream) {
+        throw new TypeError("ReadableStream uploading is not supported");
+      }
+      super(input, init);
+    }
+  };
+  try {
+    const transport = createCloudFetch({ supabaseURL: upstream, siteOrigin: site, fetchImpl: async (proxied) => {
+      assert.equal(new URL(proxied.url).origin, site);
+      assert.equal(proxied.headers.get("authorization"), "Bearer fixture-access");
+      return Response.json({ type: proxied.headers.get("content-type"), body: await proxied.text() });
+    } });
+    const headers = { authorization: "Bearer fixture-access" };
+    const json = JSON.stringify({ farm_id: "fixture", note: "牧场🌿" });
+    const jsonResponse = await transport(`${upstream}/rest/v1/rpc/farm_read`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: json });
+    assert.deepEqual(await jsonResponse.json(), { type: "application/json", body: json });
+    const input = new NativeRequest(`${upstream}/auth/v1/token`, { method: "POST", headers, body: "fixture=42" });
+    assert.equal((await (await transport(input)).json()).body, "fixture=42");
+    const form = new FormData(); form.append("note", "牧场"); form.append("file", new Blob(["fixture bytes"]), "fixture.txt");
+    const multipart = await (await transport(`${upstream}/storage/v1/object/fixture`, { method: "POST", headers, body: form })).json();
+    const decoded = await new Response(multipart.body, { headers: { "content-type": multipart.type } }).formData();
+    assert.equal(decoded.get("note"), "牧场");
+    assert.equal(decoded.get("file").name, "fixture.txt");
+    assert.equal(await decoded.get("file").text(), "fixture bytes");
+    const binary = new Uint8Array([0, 31, 139, 255]);
+    const binaryTransport = createCloudFetch({ supabaseURL: upstream, siteOrigin: site, fetchImpl: async (proxied) => {
+      assert.deepEqual(new Uint8Array(await proxied.arrayBuffer()), binary);
+      return new Response(null, { status: 204 });
+    } });
+    assert.equal((await binaryTransport(`${upstream}/storage/v1/object/fixture`, { method: "PUT", body: new Blob([binary]) })).status, 204);
+    const client = createClient(upstream, "sb_publishable_fixture", { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }, global: { fetch: createCloudFetch({ supabaseURL: upstream, siteOrigin: site, fetchImpl: async (proxied) => {
+      const body = await proxied.json();
+      assert.equal(body.email, "fixture@example.test");
+      return Response.json({ code: "invalid_credentials", msg: "Invalid login credentials" }, { status: 400 });
+    } }) } });
+    assert.equal((await client.auth.signInWithPassword({ email: "fixture@example.test", password: "fixture-password" })).error.status, 400);
+  } finally {
+    globalThis.Request = NativeRequest;
+  }
+});
+
 test("SDK sign-in, restore, refresh, and farm reads retain canonical sessions through same-origin HTTP", async () => {
   const calls = [], stored = new Map();
   const user = { id: "10000000-0000-4000-8000-000000000001", email: "fixture@example.test", aud: "authenticated", app_metadata: {}, user_metadata: {}, created_at: "2026-01-01T00:00:00Z" };

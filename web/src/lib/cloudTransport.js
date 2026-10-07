@@ -13,10 +13,17 @@ export function createCloudFetch({ supabaseURL, siteOrigin, fetchImpl = globalTh
     const target = new URL(`${CLOUD_PROXY_PREFIX}${address.pathname}${address.search}`, site);
     const headers = new Headers(request.headers);
     headers.set("x-esheep-cloud-host", upstream.host);
-    const proxied = new Request(target, new Request(request, {
-      headers, credentials: "omit", cache: "no-store",
-    }));
     try {
+      // Passing a Request as RequestInit exposes its body as a ReadableStream.
+      // Safari rejects those uploads. A Blob preserves the encoded bytes and
+      // multipart boundary while supporting URL and Request inputs alike.
+      const body = request.body === null ? undefined : await request.blob();
+      const proxied = new Request(target, {
+        method: request.method, headers, body, signal: request.signal,
+        credentials: "omit", cache: "no-store", redirect: request.redirect,
+        mode: request.mode, referrer: request.referrer,
+        referrerPolicy: request.referrerPolicy, integrity: request.integrity,
+      });
       return await fetchImpl(proxied);
     } catch (error) {
       if (request.signal.aborted || error?.name === "AbortError") throw error;
