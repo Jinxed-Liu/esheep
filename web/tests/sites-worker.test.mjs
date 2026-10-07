@@ -107,5 +107,14 @@ test("returns an explicit unavailable response when the harness is not bound", a
 test("emits the files required by Sites packaging", async () => {
   await access(new URL("../dist/client/index.html", import.meta.url));
   await access(new URL("../dist/server/index.js", import.meta.url));
+  await access(new URL("../dist/server/cloud-proxy.js", import.meta.url));
   await access(new URL("../dist/.openai/hosting.json", import.meta.url));
+});
+
+test("cloud authentication never falls back to the app shell", async () => {
+  const response = await worker.fetch(new Request("https://example.test/api/cloud/auth/v1/token?grant_type=password", {
+    method: "POST", headers: { accept: "text/html" },
+  }), { ASSETS: { fetch: () => { throw new Error("must not serve assets"); } } });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, "CLOUD_PROXY_NOT_CONFIGURED");
 });

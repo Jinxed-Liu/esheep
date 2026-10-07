@@ -1,0 +1,312 @@
+/* Keep analysis copy and its surface in the same theme, including nested details. */
+.app-shell .insights-page {
+  --analysis-copy-size: clamp(.9375rem, .875rem + .25vw, 1rem);
+  --analysis-caption-size: clamp(.875rem, .8125rem + .25vw, .9375rem);
+  --analysis-surface: rgb(250 253 255 / .96);
+  --analysis-subtle: #edf4f9;
+  --analysis-field: #fff;
+  --analysis-text: #152d45;
+  --analysis-muted: #49617a;
+  --analysis-border: #cbdbe7;
+  --analysis-accent: #075dcc;
+  --analysis-selected: #dfecff;
+  --analysis-warning-surface: #fff2df;
+  --analysis-warning-text: #805018;
+  --analysis-success: #277346;
+  --text: var(--analysis-text);
+  --muted: var(--analysis-muted);
+  --line: var(--analysis-border);
+  --brand: var(--analysis-accent);
+  color: var(--analysis-text);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--analysis-copy-size);
+}
+
+.app-shell .insights-page .feature-page-top h1 { font-size: clamp(1.75rem, 1.25rem + 2.5vw, 2.5rem); line-height: 1.2; }
+.app-shell .insights-page :is(.feature-page-top p, .analysis-inline-notice, .analysis-note p, .empty-state, .page-empty > span) { font-size: var(--analysis-copy-size); line-height: 1.65; }
+.app-shell .insights-page :is(.panel-heading h2, .analysis-note h2) { font-size: clamp(1.125rem, 1rem + .5vw, 1.375rem); line-height: 1.4; }
+.app-shell .insights-page .analysis-metric-strip strong { font-size: clamp(1.875rem, 1.25rem + 2.5vw, 2.75rem); line-height: 1.15; }
+.app-shell .insights-page .analysis-svg-chart text { font-size: 13px; }
+.app-shell .insights-page .projection-notice { margin-bottom: 18px; font-size: var(--analysis-caption-size); line-height: 1.65; }
+.app-shell .insights-page :is(.analysis-boundary-card dt, .analysis-boundary-card dd) { font-size: var(--analysis-caption-size); line-height: 1.65; }
+
+.app-shell[data-content-theme="dark"] .insights-page {
+  --analysis-surface: rgb(18 39 60 / .97);
+  --analysis-subtle: #1b354d;
+  --analysis-field: #132b42;
+  --analysis-text: #eff7ff;
+  --analysis-muted: #bdd0e1;
+  --analysis-border: #49647e;
+  --analysis-accent: #8bc2ff;
+  --analysis-selected: #254969;
+  --analysis-warning-surface: #3d3020;
+  --analysis-warning-text: #ffd396;
+  --analysis-success: #a2dfb8;
+}
+
+.app-shell .insights-page :is(.analysis-filter-shell, .analysis-note, .analysis-metric-strip, .workspace-panel, .insight-overview-strip, .insight-principle) {
+  background-color: var(--analysis-surface);
+  border-color: var(--analysis-border);
+  color: var(--analysis-text);
+}
+
+.app-shell .insights-page .analysis-filter-shell {
+  /* The pen menu must escape the filter card without being clipped. */
+  overflow: visible;
+}
+
+.app-shell .insights-page .analysis-filter-bar {
+  gap: 14px;
+  padding: 18px;
+}
+
+.app-shell .insights-page .analysis-filter-field {
+  flex: 0 1 14rem;
+  min-width: min(100%, 11rem);
+}
+
+.app-shell .insights-page :is(.analysis-filter-field > span, .analysis-scope-caption, .analysis-metric-strip small, .analysis-metric-strip span, .analysis-metric-strip em, .analysis-boundary-card dt, .panel-heading > span, .panel-heading > div > span) {
+  color: var(--analysis-muted);
+  font-size: var(--analysis-caption-size, .9375rem);
+  line-height: 1.65;
+}
+
+.app-shell .insights-page :is(.analysis-filter-field input, .analysis-filter-field select, .pen-multiselect > summary) {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  height: 2.875rem;
+  border-color: var(--analysis-border);
+  background: var(--analysis-field);
+  color: var(--analysis-text);
+  font-size: 1rem;
+  accent-color: var(--analysis-accent);
+}
+
+.app-shell .insights-page :is(.analysis-filter-field select option, .pen-multiselect[open] > div) {
+  background: var(--analysis-field);
+  color: var(--analysis-text);
+}
+
+.app-shell .insights-page .analysis-filter-field select:disabled {
+  background: var(--analysis-subtle);
+  color: var(--analysis-muted);
+  opacity: .75;
+}
+
+.app-shell .insights-page .analysis-scope-caption {
+  background: var(--analysis-subtle);
+  border-color: var(--analysis-border);
+  padding: 13px 18px;
+  border-radius: 0 0 var(--radius) var(--radius);
+  overflow-wrap: anywhere;
+}
+
+.app-shell .insights-page .analysis-metric-strip {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+}
+
+.app-shell .insights-page .analysis-metric-strip article {
+  min-width: 0;
+  border: 0;
+  border-inline-end: 1px solid var(--analysis-border);
+  gap: 9px;
+}
+
+.app-shell .insights-page .analysis-metric-strip article:last-child { border-inline-end: 0; }
+.app-shell .insights-page .analysis-metric-strip strong { overflow-wrap: anywhere; }
+.app-shell .insights-page .analysis-metric-strip em { display: inline-block; }
+
+.app-shell .insights-page .analysis-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(20rem, 25%);
+  align-items: start;
+}
+
+.app-shell .insights-page .analysis-layout > * { min-width: 0; }
+
+.app-shell .insights-page .panel-heading {
+  min-height: 78px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  padding: 18px 20px;
+}
+
+.app-shell .insights-page .panel-heading h2 {
+  flex: 1 1 14rem;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: break-word;
+}
+
+.app-shell .insights-page .panel-heading > span {
+  flex: 1 1 18rem;
+  min-width: 0;
+  white-space: normal;
+  text-align: end;
+}
+
+.app-shell .insights-page .panel-heading > div { flex: 1 1 16rem; min-width: 0; }
+.app-shell .insights-page .panel-heading > div > h2 { flex: none; }
+.app-shell .insights-page .panel-heading > div > span { white-space: normal; }
+.app-shell .insights-page .panel-heading .analysis-filter-field { flex: 0 1 10rem; }
+
+.app-shell .insights-page .compact-result-panel .panel-heading {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.app-shell .insights-page .compact-result-panel .panel-heading :is(h2, span) { flex: none; text-align: start; }
+.app-shell .insights-page .compact-result-panel .compact-analysis-list { max-height: 28rem; }
+.app-shell .insights-page .analysis-note { padding: 22px; }
+.app-shell .insights-page .analysis-note p { color: var(--analysis-muted); }
+.app-shell .insights-page .analysis-boundary-card dl > div { flex-wrap: wrap; padding: 10px 0; gap: 4px 12px; }
+.app-shell .insights-page .analysis-boundary-card dd { margin-left: auto; overflow-wrap: anywhere; }
+
+.app-shell .insights-page .analysis-segmented {
+  width: fit-content;
+  max-width: 100%;
+  flex-wrap: wrap;
+  background: var(--analysis-subtle);
+  border-color: var(--analysis-border);
+  gap: 4px;
+}
+
+.app-shell .insights-page .analysis-segmented button {
+  min-height: 44px;
+  padding: 8px 18px;
+  color: var(--analysis-muted);
+  font-size: 1rem;
+}
+
+.app-shell .insights-page .analysis-segmented button.active { background: var(--analysis-selected); color: var(--analysis-accent); }
+.app-shell .insights-page :is(button, summary, select, input):focus-visible { outline: 2px solid var(--analysis-accent); outline-offset: 3px; }
+.app-shell .insights-page .text-button { color: var(--analysis-accent); }
+.app-shell .insights-page :is(.analysis-inline-notice, .analysis-callout) { background: var(--analysis-subtle); color: var(--analysis-text); }
+.app-shell .insights-page :is(.analysis-inline-notice.warning, .analysis-today-card) { background: var(--analysis-warning-surface); color: var(--analysis-warning-text); }
+.app-shell .insights-page :is(.analysis-today-card small, .analysis-today-card p, .detail-warning, .warning-text) { color: var(--analysis-warning-text); }
+.app-shell .insights-page .analysis-inline-notice.warning > svg { color: var(--analysis-warning-text); }
+
+.app-shell .insights-page .analysis-svg-chart text { fill: var(--analysis-muted); }
+.app-shell .insights-page .analysis-svg-chart { height: 280px; min-height: 280px; padding: 0; }
+.app-shell .insights-page .chart-grid-line { stroke: var(--analysis-border); stroke-opacity: .65; }
+.app-shell .insights-page .chart-target-band { fill: var(--analysis-success); fill-opacity: .14; }
+.app-shell .insights-page .chart-zero-line { stroke: var(--analysis-muted); stroke-width: 1.5; stroke-opacity: .85; }
+.app-shell .insights-page .analysis-chart-frame { min-width: 0; padding: 14px 18px 0; }
+.app-shell .insights-page .analysis-chart-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 18px; margin-bottom: 10px; color: var(--analysis-muted); font-size: var(--analysis-caption-size); line-height: 1.6; }
+.app-shell .insights-page .chart-target-label { color: var(--analysis-success); }
+.app-shell .insights-page .chart-hit-target:hover { fill: var(--analysis-accent); fill-opacity: .2; }
+.app-shell .insights-page .analysis-chart-data { margin-top: 12px; border-top: 1px solid var(--analysis-border); }
+.app-shell .insights-page .analysis-chart-data > summary { min-height: 44px; padding: 12px 0; color: var(--analysis-accent); font-size: var(--analysis-caption-size); line-height: 1.6; cursor: pointer; }
+.app-shell .insights-page .analysis-chart-table-scroll { max-height: 25rem; margin: 0 0 18px; overflow: auto; border: 1px solid var(--analysis-border); border-radius: 8px; }
+.app-shell .insights-page .analysis-chart-data table { width: 100%; border-collapse: collapse; font-size: var(--analysis-caption-size); line-height: 1.6; }
+.app-shell .insights-page .analysis-chart-data caption { padding: 12px; color: var(--analysis-muted); text-align: start; background: var(--analysis-subtle); }
+.app-shell .insights-page .analysis-chart-data :is(th, td) { padding: 10px 12px; color: var(--analysis-text); text-align: start; border-bottom: 1px solid var(--analysis-border); white-space: nowrap; }
+.app-shell .insights-page .analysis-chart-data tbody th { background: var(--analysis-surface); }
+.app-shell .insights-page .analysis-chart-data thead th { position: sticky; top: 0; z-index: 1; background: var(--analysis-subtle); }
+
+.app-shell .insights-page :is(.compact-analysis-list time, .compact-analysis-list span, .analysis-month-cards header small, .sex-metric-lines p, .rank-list small, .feed-pen-summary-grid i, .feed-detail-grid dt, .feed-ingredient-list span, .muted-copy) {
+  color: var(--analysis-muted);
+  font-size: var(--analysis-caption-size, .9375rem);
+  line-height: 1.65;
+}
+
+.app-shell .insights-page :is(.compact-analysis-list strong, .analysis-month-cards header strong, .analysis-month-cards header b, .rank-list em, .feed-analysis-pen-card > summary strong, .feed-pen-summary-grid b, .feed-detail-grid dd, .feed-ingredient-list p, .feed-pen-detail h3) {
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.app-shell .insights-page :is(.compact-analysis-list article, .analysis-month-cards > article) { min-width: 0; overflow-wrap: anywhere; }
+.app-shell .insights-page .analysis-month-cards header { flex-wrap: wrap; }
+.app-shell .insights-page .analysis-month-cards header b { color: var(--analysis-accent); }
+.app-shell .insights-page .sex-metric-lines i { width: 24px; height: 24px; font-size: .875rem; }
+.app-shell .insights-page .rank-list article > b { background: var(--analysis-subtle); color: var(--analysis-muted); }
+.app-shell .insights-page .rank-list article > em { color: var(--analysis-accent); font-style: normal; }
+
+.app-shell .insights-page .pen-multiselect { min-width: 0; width: min(100%, 16rem); }
+.app-shell .insights-page .pen-multiselect[open] > div { top: calc(100% + 8px); width: max(100%, 17rem); max-width: calc(100vw - 64px); border-color: var(--analysis-border); }
+.app-shell .insights-page .pen-multiselect label { color: var(--analysis-text); font-size: 1rem; min-height: 44px; }
+.app-shell .insights-page .pen-multiselect input { accent-color: var(--analysis-accent); }
+.app-shell .insights-page .pen-multiselect label:hover { background: var(--analysis-subtle); }
+.app-shell .insights-page .feed-analysis-pen-card > summary { grid-template-columns: minmax(9rem, .8fr) minmax(0, 2fr) 20px; }
+.app-shell .insights-page .feed-analysis-pen-card > summary > span:first-child small { color: var(--analysis-success); font-size: var(--analysis-caption-size); line-height: 1.6; }
+.app-shell .insights-page .feed-analysis-pen-card > summary > span:first-child small.warning-text { color: var(--analysis-warning-text); }
+.app-shell .insights-page .feed-analysis-pen-card > summary:hover { background: var(--analysis-subtle); }
+.app-shell .insights-page .feed-pen-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.app-shell .insights-page .feed-pen-summary-grid b { overflow-wrap: anywhere; }
+.app-shell .insights-page .feed-pen-detail { background: var(--analysis-subtle); }
+.app-shell .insights-page .feed-pen-detail > section { background: var(--analysis-surface); border-color: var(--analysis-border); }
+.app-shell .insights-page .feed-detail-grid dd { overflow-wrap: anywhere; }
+.app-shell .insights-page .feed-ingredient-list p { flex-wrap: wrap; }
+.app-shell .insights-page .feed-pen-detail .compact-analysis-list { grid-template-columns: 1fr; }
+.app-shell .insights-page .detail-warning { font-size: var(--analysis-caption-size); }
+.app-shell .insights-page .analysis-today-card :is(small, p) { font-size: var(--analysis-caption-size); line-height: 1.65; }
+
+.app-shell .insights-page .weight-analysis-row > summary { gap: 10px; }
+.app-shell .insights-page .weight-analysis-row > summary > span { min-width: 0; overflow-wrap: anywhere; }
+.app-shell .insights-page .weight-analysis-row b { font-size: clamp(1.125rem, 1rem + .5vw, 1.375rem); }
+.app-shell .insights-page .weight-analysis-row b.weight-analysis-down { color: var(--analysis-warning-text); }
+.app-shell .insights-page .weight-analysis-row > summary > .weight-analysis-missing { max-width: 16rem; color: var(--analysis-warning-text); font-size: var(--analysis-caption-size); line-height: 1.65; text-align: end; }
+.app-shell .insights-page .weight-analysis-facts { gap: 12px; }
+.app-shell .insights-page .weight-analysis-facts dd { overflow-wrap: anywhere; }
+.app-shell .insights-page .weight-analysis-reference > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 64px; padding: 20px 24px; cursor: pointer; list-style: none; }
+.app-shell .insights-page .weight-analysis-reference > summary::-webkit-details-marker { display: none; }
+.app-shell .insights-page .weight-analysis-reference > summary > span { min-width: 0; display: grid; gap: 5px; }
+.app-shell .insights-page .weight-analysis-reference > summary strong { color: var(--analysis-text); font-size: 1.125rem; line-height: 1.5; }
+.app-shell .insights-page .weight-analysis-reference > summary small { color: var(--analysis-muted); font-size: var(--analysis-caption-size); line-height: 1.65; }
+.app-shell .insights-page .weight-analysis-reference > summary > svg { flex-shrink: 0; color: var(--analysis-muted); }
+.app-shell .insights-page .weight-analysis-reference[open] > summary { border-bottom: 1px solid var(--analysis-border); }
+.app-shell .insights-page .weight-analysis-reference[open] > summary > svg { transform: rotate(180deg); }
+.app-shell .insights-page .weight-analysis-excluded { border-top: 1px solid var(--analysis-border); }
+.app-shell .insights-page .weight-analysis-excluded > summary { background: var(--analysis-subtle); }
+.app-shell .insights-page .weight-analysis-excluded > summary strong { font-size: 1rem; }
+
+.app-shell .insights-page .insight-overview-strip :is(small, em),
+.app-shell .insights-page :is(.insight-destination-grid small, .insight-principle small) { color: var(--analysis-muted); font-size: .9375rem; line-height: 1.6; }
+.app-shell .insights-page .insight-destination-grid > button { background-color: var(--analysis-surface); border-color: var(--analysis-border); }
+.app-shell .insights-page .insight-destination-grid > button:hover { background-color: var(--analysis-subtle); }
+.app-shell .insights-page .analysis-rank-list article { flex-wrap: wrap; }
+.app-shell .insights-page .analysis-rank-list article > span { min-width: 0; overflow-wrap: anywhere; }
+.app-shell .insights-page > .analysis-boundary-card { margin-top: 20px; }
+
+@media (max-width: 1100px) {
+  .app-shell .insights-page .analysis-layout { grid-template-columns: minmax(0, 1fr); }
+  .app-shell .insights-page .feed-pen-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .app-shell .insights-page .analysis-today-card { grid-template-columns: 28px minmax(0, 1fr); }
+  .app-shell .insights-page .analysis-today-card p { grid-column: 2; text-align: start; }
+}
+
+@media (max-width: 700px) {
+  .app-shell .insights-page .panel-heading { flex-direction: column; align-items: stretch; padding: 16px; }
+  .app-shell .insights-page .analysis-chart-frame { padding: 14px 12px 0; }
+  .app-shell .insights-page .panel-heading > :is(h2, span, div) { flex: none; text-align: start; }
+  .app-shell .insights-page .panel-heading .analysis-filter-field { flex: none; width: 100%; }
+  .app-shell .insights-page .feed-pen-detail { grid-template-columns: minmax(0, 1fr); padding: 0 12px 12px; }
+  .app-shell .insights-page .feed-analysis-pen-card > summary { grid-template-columns: minmax(0, 1fr) 20px; gap: 12px; padding: 16px; }
+  .app-shell .insights-page .feed-analysis-pen-card > summary > span:first-child { grid-column: 1; }
+  .app-shell .insights-page .feed-pen-summary-grid { grid-column: 1 / -1; grid-row: 2; }
+  .app-shell .insights-page .feed-analysis-pen-card > summary > svg { grid-column: 2; grid-row: 1; }
+  .app-shell .insights-page .analysis-month-cards { grid-template-columns: minmax(0, 1fr); }
+  .app-shell .insights-page .analysis-month-cards > article { border-right: 0; }
+  .app-shell .insights-page .weight-analysis-facts { grid-template-columns: minmax(0, 1fr); }
+  .app-shell .insights-page .weight-analysis-reference > summary { padding: 16px; }
+}
+
+@media (max-width: 480px) {
+  .app-shell .insights-page .analysis-filter-bar { flex-direction: column; align-items: stretch; padding: 16px; }
+  .app-shell .insights-page .analysis-filter-field { flex: none; width: 100%; min-width: 0; }
+  .app-shell .insights-page .analysis-metric-strip { grid-template-columns: minmax(0, 1fr); }
+  .app-shell .insights-page .analysis-metric-strip article { border: 0; border-bottom: 1px solid var(--analysis-border); padding: 16px; }
+  .app-shell .insights-page .analysis-metric-strip article:last-child { border-bottom: 0; }
+  .app-shell .insights-page .analysis-segmented { width: 100%; }
+  .app-shell .insights-page .analysis-segmented button { flex: 1 1 auto; padding: 8px 12px; }
+  .app-shell .insights-page .compact-analysis-list { grid-template-columns: minmax(0, 1fr); }
+  .app-shell .insights-page .compact-analysis-list article { border-right: 0; }
+  .app-shell .insights-page .weight-analysis-row > summary { grid-template-columns: minmax(0, 1fr) 16px; }
+  .app-shell .insights-page .weight-analysis-row > summary > span:first-child { grid-column: 1; }
+  .app-shell .insights-page .weight-analysis-row > summary > :is(b, .weight-analysis-missing) { grid-column: 1; grid-row: 2; max-width: 100%; text-align: start; }
+  .app-shell .insights-page .weight-analysis-row > summary > svg { grid-column: 2; grid-row: 1; }
+  .app-shell .insights-page .weight-analysis-history { grid-template-columns: minmax(0, 1fr); }
+}

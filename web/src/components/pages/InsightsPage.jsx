@@ -15,7 +15,6 @@ import {
   calculateLambAnalytics,
   calculateReproductionAnalytics,
   calculateWeightAnalytics,
-  calculateWeightTrendline,
   defaultFeedRange,
   defaultReproductionFilter,
   feedFilterOptions,
@@ -26,17 +25,13 @@ import {
 } from "../../lib/appAnalytics.js";
 import { PageTop, ProjectionNotice } from "./FeaturePageShared.jsx";
 import FarmAssistant from "../FarmAssistant.jsx";
+import "./InsightsPage.css";
 
 const reportCards = [
-  { id: "weight", title: "增重分析", detail: "期末圈舍、同羊日增重与完整转群历史", icon: Scales },
+  { id: "weight", title: "增重分析", detail: "期间同羊配对增重、期末圈舍与转群记录", icon: Scales },
   { id: "lamb", title: "羔羊分析", detail: "完整产羔、死淘分母、断奶质量与缺失样本", icon: Baby },
   { id: "reproduction", title: "繁殖表现", detail: "固定截止日母羊群、胎间距、产后天数与品种", icon: Tag },
   { id: "intake", title: "采食营养分析", detail: "真实羊天、剩料边界、营养覆盖与生长支持", icon: BowlFood },
-];
-
-const regressionKinds = [
-  ["none", "无"], ["linear", "线性"], ["logarithmic", "对数"], ["exponential", "指数"],
-  ["quadratic", "二次"], ["cubic", "三次"], ["quartic", "四次"], ["quintic", "五次"], ["sextic", "六次"],
 ];
 
 const stageLabels = {
@@ -121,7 +116,7 @@ function DateField({ label, value, onChange, min, max }) {
 function Segmented({ value, onChange, items, label }) {
   return (
     <div className="analysis-segmented" role="group" aria-label={label}>
-      {items.map(([id, text]) => <button type="button" key={id} className={value === id ? "active" : ""} onClick={() => onChange(id)}>{text}</button>)}
+      {items.map(([id, text]) => <button type="button" key={id} className={value === id ? "active" : ""} aria-pressed={value === id} onClick={() => onChange(id)}>{text}</button>)}
     </div>
   );
 }
@@ -173,79 +168,132 @@ function chartDateLabel(value, width) {
   return date[3] ? `${Number(date[2])}/${Number(date[3])}` : `${date[1]}/${Number(date[2])}`;
 }
 
-function LineChart({ series, color = "#1677ff", targetRange = null, emptyText }) {
-  const { ref, width } = useChartWidth();
-  const points = (series ?? []).filter((item) => Number.isFinite(item.value ?? item.average));
-  if (!points.length) return <div className="empty-state">{emptyText}</div>;
-  const values = points.map((item) => item.value ?? item.average);
-  if (targetRange) values.push(targetRange[0], targetRange[1]);
-  let minimum = Math.min(...values);
-  let maximum = Math.max(...values);
-  if (minimum === maximum) { minimum -= 1; maximum += 1; }
-  const padding = Math.max((maximum - minimum) * 0.08, 0.001);
-  minimum -= padding;
-  maximum += padding;
-  const height = 250;
-  const left = 58;
-  const right = 20;
-  const top = 18;
-  const bottom = 36;
-  const x = (index) => left + (width - left - right) * (points.length === 1 ? 0.5 : index / (points.length - 1));
-  const y = (value) => top + (height - top - bottom) * (maximum - value) / (maximum - minimum);
-  const path = points.map((point, index) => `${index ? "L" : "M"}${x(index).toFixed(1)},${y(point.value ?? point.average).toFixed(1)}`).join(" ");
-  const firstLabel = points[0].date ?? points[0].month;
-  const lastLabel = points.at(-1).date ?? points.at(-1).month;
+function chartScale(values, { nonNegative = false, displayDigits = 1 } = {}) {
+  let minimum = Infinity;
+  let maximum = -Infinity;
+  for (const value of values) { minimum = Math.min(minimum, value); maximum = Math.max(maximum, value); }
+  const largestValue = Math.max(Math.abs(minimum), Math.abs(maximum));
+  const displayResolution = 10 ** -displayDigits;
+  // Keep floating-point noise below the readable domain; retain useful precision for genuinely small values.
+  const resolution = largestValue > 0 && largestValue < displayResolution ? 10 ** (Math.floor(Math.log10(largestValue)) - 1) : displayResolution;
+  const observedSpan = maximum - minimum;
+  const span = Math.max(observedSpan, resolution * 4);
+  const padding = (span - observedSpan) / 2 + span * 0.08;
+  const lower = nonNegative && minimum >= 0 ? Math.max(0, minimum - padding) : minimum - padding;
+  const upper = maximum + padding;
+  const roughStep = (upper - lower) / 4;
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+  const fraction = roughStep / magnitude;
+  const niceFraction = [1, 2, 2.5, 5, 10].find((item) => item >= fraction) ?? 10;
+  const step = niceFraction * magnitude;
+  const digits = Math.max(0, -Math.floor(Math.log10(step)) + (niceFraction === 2.5 ? 1 : 0));
+  const min = Math.floor(lower / step) * step;
+  const max = Math.ceil(upper / step) * step;
+  const ticks = Array.from({ length: Math.round((max - min) / step) + 1 }, (_, index) => {
+    const value = min + index * step;
+    return Math.abs(value) < step / 100 ? 0 : value;
+  });
+  return { min, max, ticks, digits, valueDigits: Math.max(displayDigits, -Math.floor(Math.log10(resolution))) };
+}
+
+function chartDay(value) {
+  const match = /^(\d{4})-(\d{2})(?:-(\d{2}))?$/.exec(String(value ?? ""));
+  return match ? Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3] ?? 1)) : NaN;
+}
+
+function ChartDataDetails({ title, columns, renderRows }) {
+  const [open, setOpen] = useState(false);
   return (
-    <svg ref={ref} className="analysis-svg-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="分析趋势图">
-      {targetRange ? <rect className="chart-target-band" x={left} y={y(targetRange[1])} width={width - left - right} height={Math.max(1, y(targetRange[0]) - y(targetRange[1]))} /> : null}
-      {[0, 1, 2, 3].map((index) => {
-        const value = minimum + (maximum - minimum) * index / 3;
-        return <g key={index}><line className="chart-grid-line" x1={left} x2={width - right} y1={y(value)} y2={y(value)} /><text x={left - 9} y={y(value) + 4} textAnchor="end">{numberText(value, 1)}</text></g>;
-      })}
-      <path className="chart-area" d={`${path} L${x(points.length - 1)},${height - bottom} L${x(0)},${height - bottom} Z`} style={{ fill: color }} />
-      <path className="chart-main-line" d={path} style={{ stroke: color }} />
-      {points.map((point, index) => <circle key={`${point.date ?? point.month}-${index}`} cx={x(index)} cy={y(point.value ?? point.average)} r="3.4" style={{ fill: color }}><title>{point.date ?? point.month}：{numberText(point.value ?? point.average, 2)}（n={point.sampleCount ?? point.count ?? "—"}）</title></circle>)}
-      <text className="chart-axis-label" x={left} y={height - 8}>{chartDateLabel(firstLabel, width)}</text>
-      <text className="chart-axis-label" x={width - right} y={height - 8} textAnchor="end">{chartDateLabel(lastLabel, width)}</text>
-    </svg>
+    <details className="analysis-chart-data" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>查看完整图表数据</summary>
+      {open ? <div className="analysis-chart-table-scroll"><table><caption>{title}</caption><thead><tr>{columns.map((column) => <th scope="col" key={column}>{column}</th>)}</tr></thead><tbody>{renderRows()}</tbody></table></div> : null}
+    </details>
   );
 }
 
-function ScatterChart({ points, trend }) {
+function LineChart({ series, title, valueLabel, unit, valueMultiplier = 1, digits = 1, nonNegative = false, color = "#1677ff", targetRange = null, emptyText }) {
   const { ref, width } = useChartWidth();
+  const points = (series ?? []).filter((item) => Number.isFinite(item.value ?? item.average));
+  if (!points.length) return <div className="empty-state">{emptyText}</div>;
+  const valueOf = (point) => (point.value ?? point.average) * valueMultiplier;
+  const values = points.map(valueOf);
+  if (targetRange) values.push(targetRange[0], targetRange[1]);
+  const scale = chartScale(values, { nonNegative, displayDigits: digits });
+  const height = 280;
+  const left = Math.max(54, ...scale.ticks.map((value) => numberText(value, scale.digits).length * 7 + 16));
+  const right = 20;
+  const top = 18;
+  const bottom = 36;
+  const plotWidth = Math.max(1, width - left - right);
+  const dates = points.map((point) => chartDay(point.date ?? point.month));
+  const calendarAxis = dates.every(Number.isFinite) && dates.at(-1) > dates[0];
+  const position = (index) => points.length === 1 ? 0.5 : calendarAxis ? (dates[index] - dates[0]) / (dates.at(-1) - dates[0]) : index / (points.length - 1);
+  const x = (index) => left + plotWidth * position(index);
+  const y = (value) => top + (height - top - bottom) * (scale.max - value) / (scale.max - scale.min);
+  const path = points.map((point, index) => `${index ? "L" : "M"}${x(index).toFixed(1)},${y(valueOf(point)).toFixed(1)}`).join(" ");
+  const firstLabel = points[0].date ?? points[0].month;
+  const lastLabel = points.at(-1).date ?? points.at(-1).month;
+  const tickCount = Math.min(points.length, width < 620 ? 2 : width < 1000 ? 3 : 5);
+  const dateTicks = Array.from({ length: tickCount }, (_, index) => {
+    const fraction = tickCount === 1 ? 0.5 : index / (tickCount - 1);
+    const label = calendarAxis ? new Date(dates[0] + (dates.at(-1) - dates[0]) * fraction).toISOString().slice(0, firstLabel?.length === 7 ? 7 : 10) : points[Math.round((points.length - 1) * fraction)].date ?? points[Math.round((points.length - 1) * fraction)].month;
+    return { fraction, label };
+  });
+  const markerStride = Math.max(1, Math.ceil(points.length / Math.max(1, plotWidth / 14)));
+  return (
+    <div className="analysis-chart-frame">
+      <div className="analysis-chart-meta"><span>{valueLabel}（{unit}）</span><span>{firstLabel === lastLabel ? firstLabel : `${firstLabel} 至 ${lastLabel}`} · {numberText(points.length, 0)} 个日期</span>{targetRange ? <span className="chart-target-label">合格范围 {targetRange[0]}–{targetRange[1]} {unit}</span> : null}</div>
+      <svg ref={ref} className="analysis-svg-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${title}，纵轴${valueLabel}，单位${unit}；${firstLabel}至${lastLabel}，共${points.length}个日期。完整数值可在图表下方展开查看。`}>
+        <title>{title}</title>
+        {targetRange ? <rect className="chart-target-band" x={left} y={y(targetRange[1])} width={plotWidth} height={Math.max(1, y(targetRange[0]) - y(targetRange[1]))} /> : null}
+        {scale.ticks.map((value) => <g key={value}><line className={value === 0 ? "chart-grid-line chart-zero-line" : "chart-grid-line"} x1={left} x2={left + plotWidth} y1={y(value)} y2={y(value)} /><text x={left - 9} y={y(value) + 4} textAnchor="end">{numberText(value, scale.digits)}</text></g>)}
+        <path className="chart-area" d={`${path} L${x(points.length - 1)},${scale.min < 0 && scale.max > 0 ? y(0) : height - bottom} L${x(0)},${scale.min < 0 && scale.max > 0 ? y(0) : height - bottom} Z`} style={{ fill: color }} />
+        <path className="chart-main-line" d={path} style={{ stroke: color }} />
+        {points.map((point, index) => <g key={`${point.date ?? point.month}-${index}`}><circle className="chart-hit-target" cx={x(index)} cy={y(valueOf(point))} r="8" fill="transparent"><title>{point.date ?? point.month}：{numberText(valueOf(point), scale.valueDigits)} {unit}（有效样本 n={point.sampleCount ?? point.count ?? "—"}）</title></circle>{index % markerStride === 0 || index === points.length - 1 ? <circle cx={x(index)} cy={y(valueOf(point))} r={markerStride > 1 ? "2.5" : "3.4"} style={{ fill: color }} pointerEvents="none" /> : null}</g>)}
+        {dateTicks.map(({ fraction, label }, index) => <text key={index} className="chart-axis-label" x={left + plotWidth * fraction} y={height - 8} textAnchor={tickCount === 1 ? "middle" : index === 0 ? "start" : index === tickCount - 1 ? "end" : "middle"}>{chartDateLabel(label, width)}</text>)}
+      </svg>
+      <ChartDataDetails title={`${title} · 全部 ${numberText(points.length, 0)} 个日期`} columns={["日期", `${valueLabel}（${unit}）`, "有效样本数"]} renderRows={() => points.map((point, index) => <tr key={`${point.date ?? point.month}-${index}`}><th scope="row">{point.date ?? point.month}</th><td>{numberText(valueOf(point), scale.valueDigits)}</td><td>{numberText(point.sampleCount ?? point.count, 0)}</td></tr>)} />
+    </div>
+  );
+}
+
+function ScatterChart({ points, sheepRows = [] }) {
+  const { ref, width } = useChartWidth();
+  const sheepLabels = useMemo(() => new Map(sheepRows.map((row) => [row.sheepID, row.earTag])), [sheepRows]);
   const scatter = (points ?? []).filter((item) => Number.isFinite(item.baselineWeight) && Number.isFinite(item.adg));
   if (!scatter.length) return <div className="empty-state">没有两次以上且日期有效的相邻称重配对。</div>;
-  const trendPoints = (trend ?? []).filter((item) => Number.isFinite(item.x) && Number.isFinite(item.y));
-  const xs = [...scatter.map((item) => item.baselineWeight), ...trendPoints.map((item) => item.x)];
-  const ys = [...scatter.map((item) => item.adg), ...trendPoints.map((item) => item.y)];
-  let minX = Math.min(...xs); let maxX = Math.max(...xs); let minY = Math.min(...ys); let maxY = Math.max(...ys);
-  if (minX === maxX) { minX -= 1; maxX += 1; }
-  if (minY === maxY) { minY -= 0.01; maxY += 0.01; }
-  const height = 250; const left = 58; const right = 20; const top = 18; const bottom = 40;
-  const x = (value) => left + (width - left - right) * (value - minX) / (maxX - minX);
-  const y = (value) => top + (height - top - bottom) * (maxY - value) / (maxY - minY);
-  const trendPath = trendPoints.map((point, index) => `${index ? "L" : "M"}${x(point.x).toFixed(1)},${y(point.y).toFixed(1)}`).join(" ");
+  const xs = scatter.map((item) => item.baselineWeight);
+  const ys = scatter.map((item) => item.adg * 1000);
+  const xScale = chartScale(xs, { nonNegative: true, displayDigits: 2 });
+  const yScale = chartScale(ys);
+  const height = 280; const left = Math.max(54, ...yScale.ticks.map((value) => numberText(value, yScale.digits).length * 7 + 16)); const right = 20; const top = 18; const bottom = 36;
+  const plotWidth = Math.max(1, width - left - right);
+  const x = (value) => left + plotWidth * (value - xScale.min) / (xScale.max - xScale.min);
+  const y = (value) => top + (height - top - bottom) * (yScale.max - value) / (yScale.max - yScale.min);
   return (
-    <svg ref={ref} className="analysis-svg-chart scatter-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="前次体重与区间日增重散点图">
-      {[0, 1, 2, 3].map((index) => <line key={index} className="chart-grid-line" x1={left} x2={width - right} y1={top + (height - top - bottom) * index / 3} y2={top + (height - top - bottom) * index / 3} />)}
-      {scatter.map((point, index) => <circle key={`${point.sheepID}-${point.date}-${index}`} cx={x(point.baselineWeight)} cy={y(point.adg)} r="4" className="scatter-dot"><title>前次体重 {numberText(point.baselineWeight, 1)} kg · ADG {numberText(point.adg, 3)} kg/天</title></circle>)}
-      {trendPath ? <path className="chart-regression-line" d={trendPath} /> : null}
-      <text className="chart-axis-label" x={left} y={height - 9}>{width >= 480 ? "前次体重 " : ""}{numberText(minX, 1)} kg</text>
-      <text className="chart-axis-label" x={width - right} y={height - 9} textAnchor="end">{numberText(maxX, 1)} kg</text>
-    </svg>
+    <div className="analysis-chart-frame">
+      <div className="analysis-chart-meta"><span>纵轴：区间日增重（克/天）</span><span>横轴：前次体重（千克） · {numberText(scatter.length, 0)} 个同羊相邻称重区间</span></div>
+      <svg ref={ref} className="analysis-svg-chart scatter-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`同羊相邻称重区间散点参考。每个点为同一只羊的一段相邻称重。横轴前次体重，单位千克；纵轴区间日增重，单位克/天。共${scatter.length}个区间。完整数值可在图表下方展开查看。`}>
+        <title>同羊相邻称重区间散点参考</title>
+        {yScale.ticks.map((value) => <g key={value}><line className={value === 0 ? "chart-grid-line chart-zero-line" : "chart-grid-line"} x1={left} x2={left + plotWidth} y1={y(value)} y2={y(value)} /><text x={left - 9} y={y(value) + 4} textAnchor="end">{numberText(value, yScale.digits)}</text></g>)}
+        {scatter.map((point, index) => <circle key={`${point.sheepID}-${point.date}-${index}`} cx={x(point.baselineWeight)} cy={y(point.adg * 1000)} r={scatter.length > 300 ? "2.5" : "3.5"} className="scatter-dot"><title>{sheepLabels.get(point.sheepID) ?? "未标识羊只"} · {point.date} · 前次体重 {numberText(point.baselineWeight, xScale.valueDigits)} 千克 · 区间日增重 {numberText(point.adg * 1000, yScale.valueDigits)} 克/天</title></circle>)}
+        {xScale.ticks.filter((_, index) => width >= 620 || index % 2 === 0 || index === xScale.ticks.length - 1).map((value) => <text key={value} className="chart-axis-label" x={x(value)} y={height - 8} textAnchor={value === xScale.min ? "start" : value === xScale.max ? "end" : "middle"}>{numberText(value, xScale.digits)}</text>)}
+      </svg>
+      <ChartDataDetails title={`同羊相邻称重区间 · 全部 ${numberText(scatter.length, 0)} 个区间`} columns={["耳号", "后次称重日期", "前次体重（千克）", "区间日增重（克/天）"]} renderRows={() => scatter.map((point, index) => <tr key={`${point.sheepID}-${point.date}-${index}`}><th scope="row">{sheepLabels.get(point.sheepID) ?? "未标识羊只"}</th><td>{point.date}</td><td>{numberText(point.baselineWeight, xScale.valueDigits)}</td><td>{numberText(point.adg * 1000, yScale.valueDigits)}</td></tr>)} />
+    </div>
   );
 }
 
 function WeightGainRows({ rows, timeZone }) {
-  return (
-    <section className="workspace-panel flat-panel analysis-secondary-panel">
-      <div className="panel-heading"><h2>个体增重与圈舍历史</h2><span>圈舍以分析结束日期为准 · 展开查看称重配对和转群日期</span></div>
-      <div className="weight-analysis-rows">
-        {rows.map((row) => (
+  const [showExcluded, setShowExcluded] = useState(false);
+  const pairedRows = [];
+  const excludedRows = [];
+  for (const row of rows) (Number.isFinite(row.gramsPerDay) ? pairedRows : excludedRows).push(row);
+  const renderRow = (row) => (
           <details className="weight-analysis-row" key={row.sheepID}>
             <summary>
               <span><strong>{row.earTag}</strong><small>期末圈舍：{row.analysisEndPenName}{row.penHistory.length ? ` · 期间转群 ${row.penHistory.length} 次` : ""}</small></span>
-              <b className={row.gramsPerDay < 0 ? "weight-analysis-down" : ""}>{numberText(row.gramsPerDay)}<em>克/天</em></b>
+              {Number.isFinite(row.gramsPerDay) ? <b className={row.gramsPerDay < 0 ? "weight-analysis-down" : ""}>{numberText(row.gramsPerDay)}<em>克/天</em></b> : <span className="weight-analysis-missing">{row.exclusionReason ?? "没有有效称重配对"}</span>}
               <CaretDown size={16} aria-hidden="true" />
             </summary>
             <div className="weight-analysis-detail">
@@ -271,8 +319,15 @@ function WeightGainRows({ rows, timeZone }) {
               ))}</details> : null}
             </div>
           </details>
-        ))}
-      </div>
+  );
+  return (
+    <section className="workspace-panel flat-panel analysis-secondary-panel">
+      <div className="panel-heading"><h2>个体增重与圈舍历史</h2><span>可计算 {numberText(pairedRows.length, 0)} 只 · 展开查看称重配对和转群日期</span></div>
+      {pairedRows.length ? <div className="weight-analysis-rows">{pairedRows.map(renderRow)}</div> : <div className="empty-state">所选期间内没有形成有效称重配对。</div>}
+      {excludedRows.length ? <details className="weight-analysis-reference weight-analysis-excluded" onToggle={(event) => setShowExcluded(event.currentTarget.open)}>
+        <summary><span><strong>未纳入增重统计的羊只（{numberText(excludedRows.length, 0)} 只）</strong><small>展开查看缺配对原因、原称重和圈舍历史。</small></span><CaretDown size={18} aria-hidden="true" /></summary>
+        {showExcluded ? <div className="weight-analysis-rows">{excludedRows.map(renderRow)}</div> : null}
+      </details> : null}
     </section>
   );
 }
@@ -285,11 +340,10 @@ function WeightAnalysis({ source, now, timeZone }) {
   const [scope, setScope] = useState("all");
   const [penID, setPenID] = useState("");
   const [batchID, setBatchID] = useState("");
-  const [regression, setRegression] = useState("linear");
+  const [showIntervalReference, setShowIntervalReference] = useState(false);
   useEffect(() => { if (penID && !options.pens.some((pen) => String(pen.id) === penID)) setPenID(""); }, [options.pens, penID]);
   useEffect(() => { if (batchID && !options.batches.some((batch) => String(batch.id) === batchID)) setBatchID(""); }, [options.batches, batchID]);
   const data = useMemo(() => calculateWeightAnalytics(source, { scope, penID: penID || null, batchID: batchID || null, startDate, endDate, now, timeZone }), [source, scope, penID, batchID, startDate, endDate, now, timeZone]);
-  const trendline = useMemo(() => calculateWeightTrendline(data.scatter, regression), [data.scatter, regression]);
   return (
     <>
       <AnalysisFilterBar caption={`分析 ${startDate} 至 ${data.endDate}；圈舍按结束日归属，同羊转群前后连续计算日增重。批次与圈舍取交集，跨批次中断不拼接称重。`}>
@@ -300,19 +354,19 @@ function WeightAnalysis({ source, now, timeZone }) {
         <SelectField label="生产批次" value={batchID} onChange={(event) => setBatchID(event.target.value)}><option value="">不按批次</option>{options.batches.map((batch) => <option value={batch.id} key={batch.id}>{batch.name}</option>)}</SelectField>
       </AnalysisFilterBar>
       <AnalysisMetrics items={[
-        { label: "分析对象", value: data.sheepIDs.length, unit: "只", digits: 0, sample: `有体重样本 ${numberText(data.sheepSampleCount, 0)} 只` },
-        { label: "最新均重", value: data.latestAverageWeight, unit: "千克", sample: `每只羊最新值 n=${numberText(data.latestAverageWeightSampleCount, 0)}` },
-        { label: "平均日增重", value: data.latestAverageADG == null ? null : data.latestAverageADG * 1000, unit: "克/天", sample: `逐羊等权 n=${numberText(data.latestAverageADGSampleCount, 0)} · 转群 ${data.transferSheepCount} 只` },
+        { label: "分析对象", value: data.sheepIDs.length, unit: "只", digits: 0, sample: `期间有称重 n=${numberText(data.sheepSampleCount, 0)}` },
+        { label: "可计算增重羊只", value: data.latestAverageADGSampleCount, unit: "只", digits: 0, sample: `有效配对区间 n=${numberText(data.intervals.length, 0)}` },
+        { label: "期间平均日增重", value: data.latestAverageADG == null ? null : data.latestAverageADG * 1000, unit: "克/天", sample: `逐羊等权 n=${numberText(data.latestAverageADGSampleCount, 0)}` },
       ]} />
-      {!data.canonicalSampleCount ? <EmptyAnalysis icon={Scales} title="当前筛选没有可计算体重" detail="需要普通称重、断奶重或有效出生重；网页不会补入虚构曲线。" /> : (
+      {data.sheepSampleCount > data.latestAverageADGSampleCount ? <AnalysisNotice>结果只代表 {numberText(data.latestAverageADGSampleCount, 0)} 只可配对羊；另 {numberText(data.sheepSampleCount - data.latestAverageADGSampleCount, 0)} 只有称重但缺少有效配对，未纳入平均。</AnalysisNotice> : null}
+      {!data.canonicalSampleCount ? <EmptyAnalysis icon={Scales} title="当前筛选没有称重样本" detail="请选择有普通称重、断奶重或有效出生重的期间；同一只羊至少有两次有效称重才能计算增重。" /> : (
         <>
           <WeightGainRows rows={data.rows} timeZone={timeZone} />
-          <div className="analysis-layout">
-            <section className="workspace-panel flat-panel"><div className="panel-heading"><h2>记录日参测均重</h2><span>各日参测羊可能不同；增重以同羊配对为准</span></div><LineChart series={data.weightTrend} emptyText="当前筛选没有体重趋势。" /></section>
-            <BoundaryCard boundary={data.boundary} timeZone={timeZone}>同一羊只同一天按 App 优先级只保留一条：普通称重、断奶重、产羔出生重、断奶记录出生重。圈舍按分析结束日还原，转群历史保留发生日期和前后圈舍。</BoundaryCard>
-          </div>
-          <section className="workspace-panel flat-panel analysis-secondary-panel"><div className="panel-heading"><h2>区间 ADG 趋势</h2><span>相邻两次有效体重的平均日增重</span></div><LineChart series={data.adgTrend} color="#f08c2e" emptyText="没有两次以上且日期有效的相邻称重配对。" /></section>
-          <section className="workspace-panel flat-panel analysis-secondary-panel"><div className="panel-heading"><div><h2>体重与 ADG</h2><span>前次体重与区间日增重的关系</span></div><SelectField label="趋势线" value={regression} onChange={(event) => setRegression(event.target.value)}>{regressionKinds.map(([id, text]) => <option value={id} key={id}>{text}</option>)}</SelectField></div><ScatterChart points={data.scatter} trend={trendline} /></section>
+          <BoundaryCard title="增重统计口径" boundary={data.boundary} timeZone={timeZone}>日增重只计算所选期间内同一只羊的有效相邻称重；每羊先汇总增重与观察天数，再逐羊等权平均。同羊同一天按 App 优先级只保留一条：普通称重、断奶重、产羔出生重、断奶记录出生重。圈舍按分析结束日还原，转群前后连续配对，保留发生日期和前后圈舍；跨批次中断不拼接。</BoundaryCard>
+          <details className="workspace-panel flat-panel analysis-secondary-panel weight-analysis-reference" onToggle={(event) => setShowIntervalReference(event.currentTarget.open)}>
+            <summary><span><strong>相邻称重区间参考（辅助）</strong><small>每个点是同一只羊的一段相邻称重；起止日期与观察天数见个体明细。</small></span><CaretDown size={18} aria-hidden="true" /></summary>
+            {showIntervalReference ? <ScatterChart points={data.scatter} sheepRows={data.rows} /> : null}
+          </details>
         </>
       )}
     </>
@@ -385,11 +439,11 @@ function ReproductionAnalysis({ source, now, timeZone }) {
       <Segmented label="繁殖分析维度" value={section} onChange={setSection} items={[["interval", "胎间距"], ["postpartum", "产后天数"], ["breed", "品种分析"]]} />
       {section === "interval" ? (
         <div className="analysis-layout">
-          <section className="workspace-panel flat-panel"><div className="panel-heading"><h2>胎间距趋势</h2><span>固定截止日母羊群；绿色为 150–240 天</span></div><LineChart series={data.intervalPoints} targetRange={[150, 240]} emptyText="当前切片没有母羊具备两次有效产羔日期。" /></section>
+          <section className="workspace-panel flat-panel"><div className="panel-heading"><h2>胎间距趋势</h2><span>固定截止日母羊群；绿色为 150–240 天</span></div><LineChart series={data.intervalPoints} title="胎间距趋势" valueLabel="平均胎间距" unit="天" nonNegative targetRange={[150, 240]} emptyText="当前切片没有母羊具备两次有效产羔日期。" /></section>
           <section className="workspace-panel flat-panel compact-result-panel"><div className="panel-heading"><h2>胎间距合格率</h2><span>每月取最接近 15 日的群体截面</span></div>{data.qualifiedRates.length ? <div className="compact-analysis-list">{data.qualifiedRates.slice().reverse().map((item) => <article key={item.month}><time>{monthText(item.month)}</time><strong>{numberText(item.qualified, 1)}% 合格</strong><span>不合格 {numberText(item.unqualified, 1)}% · n={item.sampleCount}</span></article>)}</div> : <div className="empty-state">当前切片的胎间距数据不足。</div>}</section>
         </div>
       ) : null}
-      {section === "postpartum" ? <section className="workspace-panel flat-panel analysis-secondary-panel"><div className="panel-heading"><h2>产后天数趋势</h2><span>每个采样日距各母羊最近一次产羔的自然日数</span></div><LineChart series={data.postpartumPoints} color="#f08c2e" emptyText="当前切片没有具备产羔日期的母羊。" /></section> : null}
+      {section === "postpartum" ? <section className="workspace-panel flat-panel analysis-secondary-panel"><div className="panel-heading"><h2>产后天数趋势</h2><span>每个采样日距各母羊最近一次产羔的自然日数</span></div><LineChart series={data.postpartumPoints} title="产后天数趋势" valueLabel="平均产后天数" unit="天" nonNegative color="#f08c2e" emptyText="当前切片没有具备产羔日期的母羊。" /></section> : null}
       {section === "breed" ? <section className="workspace-panel flat-panel analysis-secondary-panel"><div className="panel-heading"><h2>品种分析</h2><span>当前日期、羊舍与品种切片</span></div>{data.breedRows.length ? <div className="rank-list analysis-rank-list">{data.breedRows.map((row, index) => <article key={row.breed}><b>{index + 1}</b><span><strong>{row.breed}</strong><small>{row.sheepCount} 只 · {row.lambingCount} 胎</small></span><em>胎均 {numberText(row.averageLambs, 2)}</em></article>)}</div> : <div className="empty-state">当前切片的品种样本不足。</div>}</section> : null}
       <section className="workspace-panel flat-panel analysis-secondary-panel"><div className="panel-heading"><h2>月度产羔</h2><span>所选区间内完整产羔</span></div>{data.monthly.length ? <div className="compact-analysis-list">{data.monthly.slice().reverse().map((item) => <article key={item.month}><time>{monthText(item.month)}</time><strong>{item.lambings} 胎 · {item.total} 羔</strong><span>公/母 {item.male}/{item.female}</span></article>)}</div> : <div className="empty-state">当前筛选范围没有完整繁殖记录。</div>}</section>
       <BoundaryCard boundary={data.boundary} timeZone={timeZone}>母羊群固定在结束日：必须为母羊、结束日前已入场、结束日仍在群，并按该日历史圈舍和当前品种筛选。胎间距只取 0–999 天的有效相邻产羔。</BoundaryCard>
@@ -488,7 +542,7 @@ export default function InsightsPage({ workspace, mode = "insights", onNavigate 
   if (mode === "assistant") return <FarmAssistant workspace={workspace} onBack={() => onNavigate("insights")} />;
   if (currentView) {
     return (
-      <main className="page feature-page analysis-page">
+      <main className="page feature-page insights-page analysis-page">
         <PageTop title={currentView.title} description={currentView.detail} />
         <button className="text-button back-link standalone-back" type="button" onClick={() => setView("overview")}>返回洞察总览</button>
         {isCloud ? <ProjectionNotice>结果直接使用云端 App 实体，采用与 iOS 相同的事件时间、自然日、固定群体、完整样本和营养覆盖规则。</ProjectionNotice> : <ProjectionNotice>当前没有已授权的云端牧场，不生成牧场结论。</ProjectionNotice>}
@@ -506,7 +560,7 @@ export default function InsightsPage({ workspace, mode = "insights", onNavigate 
     { label: "近 7 天有效采食圈舍", value: data.feed?.overview?.effectivePenCount ?? 0, unit: "个", icon: BowlFood },
   ];
   return (
-    <main className="page feature-page">
+    <main className="page feature-page insights-page">
       <PageTop title="洞察" description="与 App 共用统计边界：同一事件语义、时间范围、群体切片、有效样本和比例分母。" />
       {isCloud ? <ProjectionNotice>体重、产羔、断奶、繁殖、转群、离场、批次、投喂、原料营养与盘槽记录均已进入分析投影；缺失值保留为“—”。</ProjectionNotice> : null}
       <section className="insight-overview-strip insight-overview-four">{overviewStats.map(({ label, value, unit, icon: Icon }) => <article key={label}><Icon size={25} /><span><small>{label}</small><strong>{numberText(value, 0)}<em>{unit}</em></strong></span></article>)}</section>

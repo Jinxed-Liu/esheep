@@ -7,6 +7,7 @@ import { loadEnv } from "vite";
 import { createAssistantAPI } from "./api.mjs";
 import { handleNodeRequest } from "./node-adapter.mjs";
 import { createWeatherAPI } from "./weather-api.mjs";
+import { proxyCloudRequest } from "../worker/cloud-proxy.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const clientRoot = path.join(root, "dist", "client");
@@ -35,6 +36,10 @@ async function existingFile(urlPath) {
 
 const server = http.createServer(async (request, response) => {
   try {
+    if ((request.url ?? "").startsWith("/api/cloud/")) {
+      await handleNodeRequest(request, response, (cloudRequest) => proxyCloudRequest(cloudRequest, environment));
+      return;
+    }
     if ((request.url ?? "").startsWith("/api/assistant/") || (request.url ?? "").startsWith("/api/weather/")) {
       await handleNodeRequest(request, response, (request.url ?? "").startsWith("/api/weather/") ? weatherAPI : assistantAPI);
       return;

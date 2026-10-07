@@ -1,8 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PaperPlaneTilt } from "@phosphor-icons/react/PaperPlaneTilt";
+import { ArrowUp } from "@phosphor-icons/react/ArrowUp";
+import { ArrowLeft } from "@phosphor-icons/react/ArrowLeft";
+import { ChatCircleDots } from "@phosphor-icons/react/ChatCircleDots";
+import { Gear } from "@phosphor-icons/react/Gear";
+import { MagnifyingGlass } from "@phosphor-icons/react/MagnifyingGlass";
+import { Paperclip } from "@phosphor-icons/react/Paperclip";
+import { PencilSimpleLine } from "@phosphor-icons/react/PencilSimpleLine";
+import { Plus } from "@phosphor-icons/react/Plus";
+import { SidebarSimple } from "@phosphor-icons/react/SidebarSimple";
+import { Sparkle } from "@phosphor-icons/react/Sparkle";
+import { X } from "@phosphor-icons/react/X";
+import { assistantHistoryKey, conversationGroup, conversationTitle, historyMessages, readAssistantHistory, writeAssistantHistory } from "../lib/assistantHistory.js";
+import "./FarmAssistant.css";
 import { buildAssistantSnapshot } from "../lib/assistantSnapshot.js";
 import {
-  deleteAssistantSession,
   getAssistantStatus,
   streamAssistantTurn,
 } from "../lib/assistantClient.js";
@@ -13,7 +24,6 @@ import {
   saveMiMoCredential,
 } from "../lib/assistantCredential.js";
 import { getAssistantAccessToken } from "../lib/supabase.js";
-import { PageTop, ProjectionNotice } from "./pages/FeaturePageShared.jsx";
 
 const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 5 * 1_048_576;
@@ -75,17 +85,43 @@ function formattedMessage(text) {
   });
 }
 
-export default function FarmAssistant({ workspace, onBack }) {
+export default function FarmAssistant(props) {
+  // Remount across account/farm boundaries so a late stream cannot enter another farm's history.
+  return <FarmAssistantWorkspace key={`${storageKey(props.workspace)}:${props.workspace.mode}`} {...props} />;
+}
+
+function FarmAssistantWorkspace({ workspace, onBack }) {
   const isCloud = workspace.mode === "cloud";
   const credentialAccountID = isCloud ? String(workspace.profile?.accountID ?? "").trim() : "";
   const sessionStorageKey = useMemo(() => storageKey(workspace), [workspace.profile?.accountID, workspace.farm?.id]);
-  const initialSession = useMemo(() => readStoredSession(sessionStorageKey), [sessionStorageKey]);
+  const historyKey = assistantHistoryKey(workspace.profile?.accountID, workspace.farm?.id);
+  const [initialHistory] = useState(() => readAssistantHistory(historyKey));
+  const [conversations, setConversations] = useState(initialHistory.conversations);
+  const [activeID, setActiveID] = useState(() => initialHistory.activeID ?? crypto.randomUUID());
+  const initialConversation = initialHistory.conversations.find((item) => item.id === initialHistory.activeID);
+  const initialSession = initialConversation?.sessionID ?? readStoredSession(sessionStorageKey);
+  const [historyError, setHistoryError] = useState(initialHistory.error);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyCollapsed, setHistoryCollapsed] = useState(() => {
+    try { return localStorage.getItem(`${historyKey}:collapsed`) === "true"; } catch { return false; }
+  });
+  const [isNarrow, setIsNarrow] = useState(() => window.matchMedia("(max-width: 760px)").matches);
+  const [historySearch, setHistorySearch] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameText, setRenameText] = useState("");
+  const settingsRef = useRef(null);
+  const historySearchRef = useRef(null);
+  const historyToggleRef = useRef(null);
+  const threadRef = useRef(null);
+  const followScrollRef = useRef(true);
+  const historyWasOpenRef = useRef(false);
   const [sessionID, setSessionID] = useState(initialSession);
   const [status, setStatus] = useState(null);
   const [statusError, setStatusError] = useState("");
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialConversation?.draft ?? "");
   const [attachments, setAttachments] = useState([]);
-  const [messages, setMessages] = useState([{ id: "intro", role: "assistant", text: introMessage(workspace, Boolean(initialSession)) }]);
+  const [messages, setMessages] = useState(initialConversation?.messages ?? []);
   const [activity, setActivity] = useState("正在检查 Codex harness");
   const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
@@ -97,7 +133,6 @@ export default function FarmAssistant({ workspace, onBack }) {
   const credentialRef = useRef(null);
   const abortRef = useRef(null);
   const fileInputRef = useRef(null);
-  const threadEndRef = useRef(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -147,18 +182,50 @@ export default function FarmAssistant({ workspace, onBack }) {
   }, [credentialAccountID, isCloud]);
 
   useEffect(() => {
-    abortRef.current?.abort();
-    const stored = readStoredSession(sessionStorageKey);
-    setSessionID(stored);
-    setMessages([{ id: "intro", role: "assistant", text: introMessage(workspace, Boolean(stored)) }]);
-    setAttachments([]);
-    setText("");
-    setError("");
-  }, [sessionStorageKey, workspace.mode]);
+    if (initialHistory.error) return; // Preserve unreadable records for recovery.
+    if (!messages.length && !sessionID && !text.trim()) return;
+    setConversations((current) => {
+      const existing = current.find((item) => item.id === activeID);
+      const next = {
+        id: activeID, title: !existing || (existing.title === "新对话" && !existing.messages.some((message) => message.role === "user")) ? conversationTitle(messages) : existing.title, sessionID, messages,
+        draft: text, updatedAt: existing?.messages === messages ? existing.updatedAt : Date.now(),
+      };
+      return [next, ...current.filter((item) => item.id !== activeID)];
+    });
+  }, [activeID, messages, sessionID, text, initialHistory.error]);
 
   useEffect(() => {
-    threadEndRef.current?.scrollIntoView({ behavior: running ? "smooth" : "auto", block: "end" });
-  }, [messages, activity, running]);
+    if (initialHistory.error) return;
+    // Persist immediately on committed updates, including before navigation/unmount.
+    setHistoryError(writeAssistantHistory(historyKey, conversations, activeID));
+  }, [activeID, conversations, historyKey, initialHistory.error]);
+
+  useEffect(() => {
+    if (followScrollRef.current && threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
+  }, [messages, activity, running, activeID]);
+
+  useEffect(() => {
+    const dialog = settingsRef.current;
+    if (settingsOpen && !dialog.open) dialog.showModal();
+    else if (!settingsOpen && dialog.open) dialog.close();
+  }, [settingsOpen]);
+
+  useEffect(() => {
+    if (historyOpen) historySearchRef.current?.focus();
+    else if (historyWasOpenRef.current) historyToggleRef.current?.focus();
+    historyWasOpenRef.current = historyOpen;
+  }, [historyOpen]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 760px)");
+    const change = () => { setIsNarrow(media.matches); setHistoryOpen(false); };
+    media.addEventListener("change", change);
+    return () => media.removeEventListener("change", change);
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem(`${historyKey}:collapsed`, String(historyCollapsed)); } catch { /* Current page remains usable. */ }
+  }, [historyKey, historyCollapsed]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -176,6 +243,7 @@ export default function FarmAssistant({ workspace, onBack }) {
       setCredential({ phase: "ready", keyType: stored.keyType, persistence: stored.persistence });
       setCredentialInput("");
       setEditingCredential(false);
+      setSettingsOpen(false);
       setActivity("个人 MiMo Key 已就绪");
     } catch (saveError) {
       setCredentialError(saveError.message);
@@ -236,6 +304,7 @@ export default function FarmAssistant({ workspace, onBack }) {
     const selectedAttachments = attachments;
     const mimoAPIKey = credentialRef.current?.accountID === credentialAccountID ? credentialRef.current.apiKey : null;
     if ((!prompt && !selectedAttachments.length) || running || !isCloud || status?.configured !== true || !credentialReady || !mimoAPIKey) return;
+    followScrollRef.current = true;
     const stamp = Date.now();
     const pendingID = `${stamp}-pending`;
     const userID = `${stamp}-user`;
@@ -328,24 +397,47 @@ export default function FarmAssistant({ workspace, onBack }) {
     }
   }, [attachments, credentialAccountID, credentialReady, isCloud, running, sessionID, sessionStorageKey, status?.configured, text, workspace]);
 
-  const clearSession = useCallback(async () => {
+  const closeHistory = () => {
+    setHistoryOpen(false);
+  };
+
+  const selectConversation = (conversation) => {
     if (running) return;
+    setActiveID(conversation.id);
+    setSessionID(conversation.sessionID);
+    storeSession(sessionStorageKey, conversation.sessionID);
+    setMessages(conversation.messages);
+    setText(conversation.draft ?? "");
+    setAttachments([]);
     setError("");
-    try {
-      if (sessionID && isCloud) {
-        const accessToken = await getAssistantAccessToken();
-        await deleteAssistantSession({ accessToken, farmID: workspace.farm.id, sessionID });
-      }
-      storeSession(sessionStorageKey, null);
-      setSessionID(null);
-      setMessages([{ id: `intro-${Date.now()}`, role: "assistant", text: introMessage(workspace, false) }]);
-      setActivity(status?.configured
-        ? (credentialReady ? "新 Codex harness 会话已就绪" : "等待输入个人 MiMo Key")
-        : "等待服务端 Supabase 配置");
-    } catch (requestError) {
-      setError(requestError.message);
-    }
-  }, [credentialReady, isCloud, running, sessionID, sessionStorageKey, status?.configured, workspace]);
+    setRenaming(false);
+    followScrollRef.current = true;
+    setActivity("已打开聊天记录");
+    if (historyOpen) closeHistory();
+  };
+
+  const newConversation = () => {
+    if (running) return;
+    setActiveID(crypto.randomUUID());
+    storeSession(sessionStorageKey, null);
+    setSessionID(null);
+    setMessages([]);
+    setText("");
+    setAttachments([]);
+    setError("");
+    setRenaming(false);
+    followScrollRef.current = true;
+    setActivity(credentialReady ? "新对话已就绪" : "等待输入个人 MiMo Key");
+    if (historyOpen) closeHistory();
+  };
+
+  const activeConversation = conversations.find((item) => item.id === activeID);
+  const filteredConversations = conversations.filter((item) => {
+    const search = historySearch.trim().toLocaleLowerCase();
+    return !search || `${item.title} ${item.messages.map((message) => message.text).join(" ")}`.toLocaleLowerCase().includes(search);
+  }).sort((a, b) => b.updatedAt - a.updatedAt);
+  const hasMessages = messages.length > 0;
+  const openSettings = () => setSettingsOpen(true);
 
   const canSend = isCloud && status?.configured === true && credentialReady && !running && Boolean(text.trim() || attachments.length);
   const configurationMessage = status?.configured === false
@@ -353,15 +445,67 @@ export default function FarmAssistant({ workspace, onBack }) {
     : statusError;
 
   return (
-    <main className="page feature-page assistant-page">
-      <PageTop title="Codex 牧场助手" description="由 Codex harness 执行；文字和图片统一使用 mimo-v2.6-pro。" />
-      <div className="assistant-page-actions">
-        <button className="text-button back-link" type="button" onClick={onBack}>返回洞察</button>
-        <button className="text-button" type="button" onClick={clearSession} disabled={running}>新会话</button>
-      </div>
-      {isCloud
-        ? <ProjectionNotice>助手只读当前 Supabase 牧场快照。每个用户使用自己的 MiMo Key；所选图片只随本次提问进入 Codex harness，AI 结论不会自动写入牧场或替代人工判断。</ProjectionNotice>
-        : <ProjectionNotice>当前没有已授权的云端牧场，助手已禁用。</ProjectionNotice>}
+    <main className={`page feature-page assistant-page${historyOpen ? " history-open" : ""}${historyCollapsed ? " history-collapsed" : ""}`}>
+      <section className="assistant-layout" aria-label="牧场助手聊天工作区">
+        <button className="assistant-history-backdrop" type="button" aria-label="关闭聊天记录" onClick={closeHistory} tabIndex={historyOpen ? 0 : -1} />
+        <aside className="assistant-history" id="assistant-history" role={isNarrow && historyOpen ? "dialog" : "complementary"} aria-modal={isNarrow && historyOpen ? true : undefined} aria-label="聊天记录" onKeyDown={(event) => {
+          if (event.key === "Escape") closeHistory();
+          if (event.key === "Tab" && historyOpen) {
+            const controls = [...event.currentTarget.querySelectorAll('button:not(:disabled), input')];
+            const first = controls[0], last = controls.at(-1);
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+          }
+        }}>
+          <div className="assistant-history-back"><button type="button" onClick={onBack}><ArrowLeft size={18} />返回洞察</button><button className="assistant-history-close" type="button" aria-label="关闭聊天记录" onClick={closeHistory}><X size={18} /></button></div>
+          <h2>聊天记录</h2>
+          <button className="assistant-new-chat" type="button" onClick={newConversation} disabled={running}><Plus size={20} />新对话</button>
+          <label className="assistant-history-search"><MagnifyingGlass size={18} /><input ref={historySearchRef} value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="搜索聊天记录…" aria-label="搜索聊天记录" /></label>
+          <nav className="assistant-conversation-list" aria-label="历史对话">
+            {["今天", "最近"].map((group) => {
+              const items = filteredConversations.filter((item) => conversationGroup(item.updatedAt) === group);
+              return items.length ? <section key={group}><h3>{group}</h3>{items.map((item) => <button type="button" className={item.id === activeID ? "selected" : ""} aria-current={item.id === activeID ? "true" : undefined} key={item.id} onClick={() => selectConversation(item)} disabled={running} title={item.title}><ChatCircleDots size={19} /><span>{item.title}</span><time>{new Date(item.updatedAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}</time></button>)}</section> : null;
+            })}
+            {!filteredConversations.length ? <p className="assistant-history-empty">{historySearch ? "没有找到相关对话" : "开始一次对话，它会出现在这里。"}</p> : null}
+          </nav>
+          <div className="assistant-history-footer"><button type="button" onClick={openSettings}><Gear size={21} />设置与密钥<span>›</span></button><small>记录保存在此浏览器</small></div>
+        </aside>
+        <section className="assistant-workspace" inert={isNarrow && historyOpen ? true : undefined}>
+          <header className="assistant-toolbar">
+            <button ref={historyToggleRef} className="assistant-tool-button" type="button" aria-label="切换聊天记录" aria-controls="assistant-history" aria-expanded={isNarrow ? historyOpen : !historyCollapsed} onClick={() => { if (isNarrow) setHistoryOpen(!historyOpen); else setHistoryCollapsed(!historyCollapsed); }}><SidebarSimple size={22} /></button>
+            <div className="assistant-toolbar-title"><Sparkle size={25} weight="fill" /><h1>牧场助手</h1><span>{status?.model || "mimo-v2.6-pro"}</span></div>
+            <span className={`assistant-connection${status?.configured && credentialReady ? " ready" : ""}`} title={configurationMessage || activity}><i />{running ? "回答中" : statusError ? "连接失败" : credentialReady && status?.configured ? "就绪" : "待配置"}</span>
+            <button className="assistant-tool-button assistant-mobile-new" type="button" aria-label="新对话" onClick={newConversation} disabled={running}><Plus size={22} /></button>
+            <button className="assistant-tool-button assistant-settings-button" type="button" onClick={openSettings} aria-label="助手设置"><Gear size={22} /><span>设置</span></button>
+          </header>
+          {activeConversation && hasMessages ? <div className="assistant-conversation-title">{renaming ? <form onSubmit={(event) => { event.preventDefault(); if (renameText.trim()) setConversations((current) => current.map((item) => item.id === activeID ? { ...item, title: renameText.trim().slice(0, 80) } : item)); setRenaming(false); }}><input autoFocus aria-label="对话名称" value={renameText} onChange={(event) => setRenameText(event.target.value)} maxLength={80} /><button type="submit">保存</button><button type="button" onClick={() => setRenaming(false)}>取消</button></form> : <><span>{activeConversation.title}</span><button type="button" aria-label="重命名对话" onClick={() => { setRenameText(activeConversation.title); setRenaming(true); }} disabled={running}><PencilSimpleLine size={15} /></button></>}</div> : null}
+          <div ref={threadRef} className={`assistant-thread${hasMessages ? "" : " is-empty"}`} role="log" aria-label="聊天消息" aria-live="polite" aria-relevant="additions text" onScroll={(event) => { const node = event.currentTarget; followScrollRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80; }}>
+            {hasMessages ? <div className="assistant-message-list">{messages.map((message) => (
+              <article className={`${message.role}${message.error ? " message-error" : ""}`} key={message.id}>
+                {message.role === "assistant" ? <span className="assistant-message-avatar"><Sparkle size={21} weight="fill" /></span> : null}
+                <div className="assistant-message-body">
+                  {message.attachments?.length ? <div className="assistant-message-images">{message.attachments.map((attachment, index) => attachment.dataURL ? <img key={attachment.id ?? index} src={attachment.dataURL} alt={attachment.name} /> : <span className="assistant-image-reference" key={index}><Paperclip size={16} />{attachment.name} · 图片未保留</span>)}</div> : null}
+                  {message.pending ? <span className="assistant-thinking" aria-label="正在回答"><i /><i /><i /></span> : <p>{formattedMessage(message.text)}</p>}
+                </div>
+              </article>
+            ))}</div> : <div className="assistant-welcome"><span className="assistant-welcome-mark"><Sparkle size={35} weight="fill" /></span><h2>今天想了解牧场的什么？</h2><p>查询记录、核对数据，一起看懂牧场的变化。</p>{sessionID ? <small>已连接此前的会话，早期消息未保存在此浏览器。</small> : null}<div className="assistant-suggestions">{suggestions.map((suggestion, index) => <button type="button" key={suggestion} onClick={() => { setText(suggestion); if (!credentialReady) openSettings(); }} disabled={!isCloud || running}><span>{["体重与增重", "产羔与繁殖", "采食与营养"][index]}</span><small>{suggestion}</small><ArrowUp size={16} /></button>)}</div></div>}
+          </div>
+          <div className="assistant-composer-dock">
+            {!isCloud ? <p className="assistant-inline-error">{introMessage(workspace)}</p> : null}
+            {isCloud && !credentialReady && credential.phase !== "loading" ? <button className="assistant-key-prompt" type="button" onClick={openSettings}><Gear size={17} />设置我的 MiMo Key，开始对话<span>→</span></button> : null}
+            {error || configurationMessage || historyError ? <p className="assistant-inline-error" role="alert">{error || configurationMessage || historyError}</p> : null}
+            <form className="assistant-composer" onSubmit={(event) => { event.preventDefault(); send(); }}>
+              {attachments.length ? <div className="assistant-attachment-tray">{attachments.map((attachment) => <figure key={attachment.id}><img src={attachment.dataURL} alt={attachment.name} /><figcaption>{attachment.name}</figcaption><button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => removeImage(attachment.id)}><X size={14} /></button></figure>)}</div> : null}
+              <input ref={fileInputRef} className="assistant-file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => addImages(event.target.files)} disabled={!isCloud || !credentialReady || running || attachments.length >= MAX_IMAGES} />
+              <textarea key={activeID} aria-label="提问内容" value={text} onChange={(event) => { setText(event.target.value); event.target.style.height = "auto"; event.target.style.height = `${Math.min(event.target.scrollHeight, 160)}px`; }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(); } }} placeholder="询问牧场数据，或添加图片…" disabled={!isCloud || running} rows="1" />
+              <div className="assistant-composer-actions"><button className="assistant-attach-button" type="button" onClick={() => fileInputRef.current?.click()} disabled={!isCloud || !credentialReady || running || attachments.length >= MAX_IMAGES}><Paperclip size={20} />图片</button><span>{running ? activity : "Enter 发送 · Shift + Enter 换行"}</span>{running ? <button className="assistant-stop-button" type="button" onClick={() => abortRef.current?.abort()} aria-label="停止回答"><span /></button> : <button className="assistant-send-button" type="submit" aria-label="发送" disabled={!canSend}><ArrowUp size={23} weight="bold" /></button>}</div>
+            </form>
+            <p className="assistant-readonly-note">只读牧场数据 · AI 建议请结合实际判断</p>
+          </div>
+        </section>
+      </section>
+      <dialog className="assistant-settings" ref={settingsRef} onCancel={() => setSettingsOpen(false)} onClose={() => setSettingsOpen(false)} onClick={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false); }}>
+        <div className="assistant-settings-content"><header><div><h2>助手设置</h2><p>文字和图片均使用 mimo-v2.6-pro</p></div><button type="button" className="assistant-tool-button" aria-label="关闭设置" onClick={() => setSettingsOpen(false)}><X size={22} /></button></header>
       {isCloud ? (
         <section className={`assistant-credential-card${credentialReady ? " saved" : ""}`} aria-label="个人 MiMo API Key">
           <div className="assistant-credential-copy">
@@ -400,75 +544,10 @@ export default function FarmAssistant({ workspace, onBack }) {
           {credentialError ? <p className="assistant-credential-error" role="alert">{credentialError}</p> : null}
         </section>
       ) : null}
-      <section className="assistant-workspace">
-        <header className="assistant-runtime-bar">
-          <span className={`assistant-runtime-dot ${status?.configured ? "ready" : "waiting"}`} />
-          <div>
-            <strong>{activity}</strong>
-            <small>{status?.configured
-              ? `${status.model} · 文字与图片 · 只读线程`
-              : configurationMessage || "正在读取服务状态"}</small>
-          </div>
-          {sessionID ? <code title="服务端会话已恢复">线程已连接</code> : <code>新线程</code>}
-        </header>
-        <div className="assistant-thread" aria-live="polite">
-          {messages.map((message) => (
-            <article className={`${message.role}${message.error ? " message-error" : ""}`} key={message.id}>
-              {message.role === "assistant"
-                ? <img src="/assets/mimo-assistant.png" alt="" />
-                : <span className="user-message-mark">我</span>}
-              <div className="assistant-message-body">
-                {message.attachments?.length ? <div className="assistant-message-images">{message.attachments.map((attachment) => <img key={attachment.id} src={attachment.dataURL} alt={attachment.name} />)}</div> : null}
-                {message.pending ? <span className="assistant-thinking"><i /><i /><i /></span> : <p>{formattedMessage(message.text)}</p>}
-              </div>
-            </article>
-          ))}
-          <div ref={threadEndRef} />
+
+          <div className="assistant-settings-about"><h3>关于对话与数据</h3><p>助手只读当前已授权的云端牧场快照，数字使用与 App 一致的查询口径。AI 结论不会自动写入牧场。</p><p>聊天文字保存在当前浏览器，按账号与牧场区分，不跨设备同步。图片仅随本次提问发送，重新打开记录时只显示文件名。</p><p>服务端会话可能休眠或过期，届时会保留聊天文字，并自动新建上下文重试本次提问。</p></div>
         </div>
-        <div className="assistant-suggestions">
-          {suggestions.map((suggestion) => <button type="button" key={suggestion} onClick={() => send(suggestion)} disabled={!isCloud || status?.configured !== true || !credentialReady || running}>{suggestion}</button>)}
-        </div>
-        {attachments.length ? (
-          <div className="assistant-attachment-tray">
-            {attachments.map((attachment) => (
-              <figure key={attachment.id}>
-                <img src={attachment.dataURL} alt={attachment.name} />
-                <figcaption>{attachment.name}</figcaption>
-                <button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => removeImage(attachment.id)}>×</button>
-              </figure>
-            ))}
-          </div>
-        ) : null}
-        {error || configurationMessage ? <p className="assistant-inline-error" role="alert">{error || configurationMessage}</p> : null}
-        <form className="assistant-composer" onSubmit={(event) => { event.preventDefault(); send(); }}>
-          <input
-            ref={fileInputRef}
-            className="assistant-file-input"
-            type="file"
-            accept="image/jpeg,image/png,image/webp"
-            multiple
-            onChange={(event) => addImages(event.target.files)}
-            disabled={!isCloud || !credentialReady || running || attachments.length >= MAX_IMAGES}
-          />
-          <button className="assistant-attach-button" type="button" onClick={() => fileInputRef.current?.click()} disabled={!isCloud || !credentialReady || running || attachments.length >= MAX_IMAGES}>+ 图片</button>
-          <textarea
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                send();
-              }
-            }}
-            placeholder={isCloud ? (credentialReady ? "询问当前牧场数据，或添加图片…" : "先保存你自己的 MiMo API Key") : "登录云端牧场后可用"}
-            disabled={!isCloud || status?.configured !== true || !credentialReady || running}
-            rows="1"
-          />
-          {running
-            ? <button className="assistant-stop-button" type="button" onClick={() => abortRef.current?.abort()} aria-label="停止回答">停止</button>
-            : <button className="assistant-send-button" type="submit" aria-label="发送" disabled={!canSend}><PaperPlaneTilt size={21} weight="fill" /></button>}
-        </form>
-      </section>
+      </dialog>
     </main>
   );
 }

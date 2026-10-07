@@ -74,6 +74,8 @@ npm run test:sites
 
 ## Cloudflare 发布
 
+网页 Supabase HTTP 请求通过同域 `/api/cloud/*` 转发，包括密码登录、会话刷新、REST/RPC、Edge Functions 和签名资料下载。SDK 保留原始 Supabase URL，因此现有会话存储键、OAuth 回调与资料来源校验不变；Apple 授权页面仍按 Supabase/Apple 原有跳转流程打开。Worker 的 `SUPABASE_URL` 必须与前端 `VITE_SUPABASE_URL` 指向同一个项目，配置不一致会明确报错。转发只使用客户端原有公开 key 和用户 bearer token，云端权限与审计仍由现有接口执行；不使用 service-role key，不缓存响应，不重试业务写入。`npm run dev`、`npm run dev:frontend` 和 `npm run preview` 提供相同转发路径。
+
 `wrangler.jsonc` 使用 Workers Static Assets 托管 `dist/client`，并让 `/api/assistant/*` 先进入 Worker，再转发到独立的 Codex harness。发布配置分为两层：
 
 - `npm run cloudflare:check`：重新构建并执行 production dry-run，不修改线上资源。
