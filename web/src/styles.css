@@ -2135,71 +2135,8 @@ p {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.analysis-page {
-  --analysis-copy-size: clamp(0.9375rem, 0.875rem + 0.25vw, 1rem);
-  --analysis-caption-size: clamp(0.875rem, 0.8125rem + 0.25vw, 0.9375rem);
-  font-size: var(--analysis-copy-size);
-}
-
-.analysis-page .feature-page-top h1 {
-  font-size: clamp(1.75rem, 1.25rem + 2.5vw, 2.5rem);
-  line-height: 1.2;
-}
-
-.analysis-page .feature-page-top p,
-.analysis-page .analysis-inline-notice,
-.analysis-page .analysis-note p,
-.analysis-page .empty-state,
-.analysis-page .page-empty > span {
-  font-size: var(--analysis-copy-size);
-  line-height: 1.6;
-}
-
-.analysis-page .panel-heading h2,
-.analysis-page .analysis-note h2 {
-  font-size: clamp(1.125rem, 1rem + 0.5vw, 1.375rem);
-  line-height: 1.4;
-}
-
-.analysis-page .panel-heading > span,
-.analysis-page .panel-heading > div > span,
-.analysis-page .analysis-filter-field > span,
-.analysis-page .analysis-scope-caption,
-.analysis-page .analysis-metric-strip small,
-.analysis-page .analysis-metric-strip span,
-.analysis-page .analysis-metric-strip em,
-.analysis-page .analysis-boundary-card dt,
-.analysis-page .analysis-boundary-card dd {
-  font-size: var(--analysis-caption-size);
-  line-height: 1.6;
-}
-
-.analysis-page .analysis-filter-field input,
-.analysis-page .analysis-filter-field select {
-  height: 2.75rem;
-  min-height: 44px;
-  font-size: 1rem;
-}
-
-.analysis-page .analysis-metric-strip strong {
-  font-size: clamp(1.875rem, 1.25rem + 2.5vw, 2.75rem);
-  line-height: 1.15;
-}
-
-.analysis-page .analysis-svg-chart {
-  height: 250px;
-  min-height: 250px;
-  padding: 0;
-}
-
-.analysis-page .analysis-svg-chart text {
-  font-size: 0.8125rem;
-}
-
 .analysis-page .projection-notice {
   margin-bottom: 18px;
-  font-size: var(--analysis-caption-size);
-  line-height: 1.6;
 }
 
 .analysis-metric-strip {
@@ -2678,22 +2615,6 @@ p {
 .weight-analysis-pairs p {
   font-size: var(--analysis-copy-size);
   line-height: 1.7;
-}
-
-@media (max-width: 600px) {
-  .analysis-page .panel-heading {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 6px;
-  }
-
-  .analysis-page .panel-heading h2 {
-    min-width: 0;
-  }
-
-  .analysis-page .panel-heading > span {
-    white-space: normal;
-  }
 }
 
 .analysis-month-cards {

@@ -362,10 +362,12 @@ function weightCandidates(snapshot, timeZone) {
 }
 
 /** App's SheepWeightSampleBuilder.dailyCanonical semantics. */
-export function dailyCanonicalWeightSamples(source, timeZone = "Asia/Shanghai") {
+export function dailyCanonicalWeightSamples(source, timeZone = "Asia/Shanghai", { cutoff = null } = {}) {
   const snapshot = sourceSnapshot(source);
   const grouped = new Map();
+  const cutoffDate = validDate(cutoff);
   for (const sample of weightCandidates(snapshot, timeZone)) {
+    if (cutoffDate && validDate(sample.at) > cutoffDate) continue;
     const day = farmDayKey(sample.at, timeZone);
     const key = `${normalizeID(sample.sheepID)}|${day}`;
     const current = grouped.get(key);
@@ -458,12 +460,14 @@ export function calculateWeightAnalytics(source, {
       ))
     ))) return false;
     const isRemoved = Boolean(removedAt && removedAt <= snapshotDate);
+    const lifecycleKnown = removedAt != null || sheep.status === "active";
+    if (scope !== "all" && !lifecycleKnown) return false;
     if (scope === "inHerdOnly") return !isRemoved;
     if (scope === "removedOnly") return isRemoved;
     return true;
   });
   const sheepByID = new Map(eligible.map((sheep) => [normalizeID(sheep.id), sheep]));
-  const canonical = dailyCanonicalWeightSamples(snapshot, timeZone).filter((sample) => {
+  const canonical = dailyCanonicalWeightSamples(snapshot, timeZone, { cutoff: snapshotDate }).filter((sample) => {
     const sheepKey = normalizeID(sample.sheepID);
     const at = validDate(sample.at);
     const sheep = sheepByID.get(sheepKey);
