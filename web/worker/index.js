@@ -1,6 +1,9 @@
+import { proxyCloudRequest } from "./cloud-proxy.js";
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/api/cloud/")) return proxyCloudRequest(request, env);
     if (url.pathname.startsWith("/api/assistant/") || url.pathname.startsWith("/api/weather/")) {
       try {
         if (env.CODEX_HARNESS?.fetch) return env.CODEX_HARNESS.fetch(request);

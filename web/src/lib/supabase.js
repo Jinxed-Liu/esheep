@@ -3,6 +3,7 @@ import { managementProjection } from "./managementProjection.js";
 import { createClient } from "@supabase/supabase-js";
 import { decodeCompactCheckpoint } from "./lzfse";
 import { isSupabaseConfigured, supabaseBrowserConfiguration } from "./supabaseConfig.js";
+import { createCloudFetch } from "./cloudTransport.js";
 import {
   countByNormalizedIdentifier,
   mergeProjectionPayload,
@@ -26,6 +27,9 @@ import { listAccessibleFarms, redeemAccessibleFarmInvite } from "./farmAccess.js
 import { loadCloudV2Projection, clearCloudV2Cache } from "./cloudV2Checkpoint.js";
 
 const { url, publishableKey } = supabaseBrowserConfiguration;
+const cloudFetch = isSupabaseConfigured
+  ? createCloudFetch({ supabaseURL: url, siteOrigin: window.location.origin })
+  : null;
 
 const browserClientKey = "__esheepnextSupabaseClient";
 
@@ -37,6 +41,7 @@ export const supabase = isSupabaseConfigured
         persistSession: true,
       },
       global: {
+        fetch: cloudFetch,
         headers: { "x-client-info": "esheepplus-web/0.1" },
       },
     }))
@@ -863,7 +868,7 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections, on
   const farms = accessRows.map(toFarm);
   const farm = farms.find((item) => normalizedIdentifier(item.id) === normalizedIdentifier(preferredFarmID)) ?? farms[0];
   const v2 = farm.provider === "esheep_cloud"
-    ? await loadCloudV2Projection(supabase, farm, { accountID: user.id, storageOrigin: new URL(url).origin, signal, onProgress })
+    ? await loadCloudV2Projection(supabase, farm, { accountID: user.id, storageOrigin: new URL(url).origin, signal, onProgress, fetchImpl: cloudFetch })
     : null;
   if (v2) farm.revision = v2.revision;
   // A verified V2 projection contains every Web model, regardless of which

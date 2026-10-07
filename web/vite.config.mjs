@@ -1,5 +1,7 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import { handleNodeRequest } from "./server/node-adapter.mjs";
+import { proxyCloudRequest } from "./worker/cloud-proxy.js";
 
 export default defineConfig({
   build: {
@@ -75,5 +77,21 @@ export default defineConfig({
       clientFiles: ["./src/main.jsx"],
     },
   },
-  plugins: [react()],
+  plugins: [react(), {
+    name: "cloud-transport-dev-proxy",
+    configureServer(server) {
+      const environment = { ...loadEnv(server.config.mode, server.config.root, ""), ...process.env };
+      server.middlewares.use(async (request, response, next) => {
+        if (!(request.url ?? "").startsWith("/api/cloud/")) return next();
+        try {
+          await handleNodeRequest(request, response, (cloudRequest) => proxyCloudRequest(cloudRequest, environment));
+        } catch {
+          response.statusCode = 502;
+          response.setHeader("content-type", "application/json; charset=utf-8");
+          response.setHeader("cache-control", "no-store");
+          response.end(JSON.stringify({ message: "暂时无法连接云端服务，请稍后重试。" }));
+        }
+      });
+    },
+  }],
 });

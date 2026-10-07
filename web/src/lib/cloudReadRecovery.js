@@ -1,3 +1,5 @@
+import { cloudConnectionErrorMessage } from "./cloudTransport.js";
+
 export function isTransientJWTClockError(error) {
   return error?.code === "PGRST303" && /JWT issued at future/i.test(String(error?.message ?? ""));
 }
@@ -39,5 +41,5 @@ export function cloudAccessErrorMessage(error) {
   if (isTransientJWTClockError(error)) {
     return "云端身份校验暂时异常，已自动重试。请稍后再次读取牧场。";
   }
-  return error?.message || "牧场资料读取失败，请重试。";
+  return cloudConnectionErrorMessage(error) || "牧场资料读取失败，请重试。";
 }

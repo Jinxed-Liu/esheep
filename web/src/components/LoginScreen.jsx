@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { cloudConnectionErrorMessage } from "../lib/cloudTransport.js";
 import { AppleLogo } from "@phosphor-icons/react/AppleLogo";
 import { CloudCheck } from "@phosphor-icons/react/CloudCheck";
 import { SignIn } from "@phosphor-icons/react/SignIn";
@@ -35,7 +36,7 @@ export function LoginScreen({ authState, isConfigured, onSignIn, onSignUp, onApp
       setPasswordConfirmation("");
     } catch (error) {
       setMessageTone("warning");
-      setMessage(error.message || (mode === "register" ? "注册失败，请检查账号信息。" : "登录失败，请检查账号信息。"));
+      setMessage(cloudConnectionErrorMessage(error) || (mode === "register" ? "注册失败，请检查账号信息。" : "登录失败，请检查账号信息。"));
     } finally {
       setBusy(false);
     }
@@ -47,7 +48,7 @@ export function LoginScreen({ authState, isConfigured, onSignIn, onSignUp, onApp
     try {
       await onAppleSignIn();
     } catch (error) {
-      setMessage(error.message || "Apple 登录失败，请稍后重试。");
+      setMessage(cloudConnectionErrorMessage(error) || "Apple 登录失败，请稍后重试。");
       setAppleBusy(false);
     }
   }
