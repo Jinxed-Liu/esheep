@@ -42,16 +42,21 @@ export function interpretResults(commands, response) {
 
 // Serialize each browser account's submissions across tabs. An uncertain result
 // always retries the same signed bytes: new IDs would create duplicate facts.
-export async function submitDraft(client, accountID, farm, draft, buildSpecifications) {
+export async function submitDraft(client, accountID, farm, draft, buildSpecifications, { assertCurrent = () => {} } = {}) {
+  assertCurrent();
   if (!navigator.locks) throw new Error("浏览器不支持多窗口安全提交，请更新浏览器。");
   return navigator.locks.request(`esheep-write:${accountID}`, async () => {
+    assertCurrent();
     draft = (await listDrafts(accountID, farm.id)).find((item) => item.id === draft.id);
+    assertCurrent();
     if (!draft) throw new Error("未找到原始草稿。");
     if (draft.status === "accepted") return draft;
     if (draft.status === "discarded") throw new Error("这份草稿已放弃。");
     const { data: auth, error: authError } = await client.auth.getUser();
+    assertCurrent();
     if (authError || !auth?.user) throw new Error("登录已过期，草稿已保留，请重新登录。");
     const { data: status, error: statusError } = await client.rpc("esheep_cloud_fetch_status_v2", { p_farm_id: farm.id });
+    assertCurrent();
     if (statusError) throw statusError;
     if (status.farm_generation !== draft.generation || draft.farmID !== farm.id.toLowerCase()) throw new Error("牧场版本已变更，请核对原草稿后重新录入。");
     if (!status.v2_ready || status.write_frozen) throw new Error("牧场暂不可写入，草稿已保留。");
@@ -59,33 +64,46 @@ export async function submitDraft(client, accountID, farm, draft, buildSpecifica
     if (draft.signed) {
       const previous = await client.rpc("esheep_cloud_query_command_status_v2", { p_farm_id: farm.id,
         p_command_ids: draft.commands.map((command) => command.commandID) });
-      if (previous.error) throw previous.error;
-      if (previous.data?.results?.length === draft.commands.length) {
+      if (!previous.error && previous.data?.results?.length === draft.commands.length) {
         const results = previous.data.results.map((row) => ({ ...row.result, command_id: row.command_id }));
+        // A response to an already-sent request still belongs in its original
+        // account store, even if another tab changed the active login meanwhile.
         return patchDraft(accountID, draft.id, { ...interpretResults(draft.commands, { results }), error: null });
       }
+      assertCurrent();
+      if (previous.error) throw previous.error;
     }
     let prepared = draft;
     if (!draft.signed) {
       const specifications = await buildSpecifications();
+      assertCurrent();
       if (!specifications.length || specifications.length > 25) throw new Error("单次业务操作最多包含 25 个关联命令，请拆分批次。");
       const identity = await browserIdentity(accountID);
+      assertCurrent();
       const { error } = await client.rpc("register_device", { p_device_id: identity.id,
         p_public_key_jwk: identity.publicKeyJWK, p_display_name: "eSheep+ 网页", p_tmr_data_protocol_version: 1 });
+      assertCurrent();
       if (error) throw error;
       const first = await reserveSequences(accountID, specifications.length, status.device_sequence_floor ?? 0);
+      assertCurrent();
       const bundleID = specifications.length > 1 ? crypto.randomUUID() : null;
       const commands = specifications.map((spec, index) => commandEnvelope(spec, { accountID, farm,
         deviceID: identity.id, sequence: first + index, bundleID, sourceRequestID: index===0?draft.id:crypto.randomUUID() }));
       const signed = await Promise.all(commands.map((command) => signCommand(command, identity)));
+      assertCurrent();
       prepared = await patchDraft(accountID, draft.id, { commands, signed, status: "pending", error: null });
+      assertCurrent();
     }
+    assertCurrent();
+    await patchDraft(accountID, draft.id, { status: "pending", error: null });
+    assertCurrent();
     try {
-      await patchDraft(accountID, draft.id, { status: "pending", error: null });
       const { data, error } = await client.functions.invoke("esheep-cloud-v2-writes", {
         body: { action: "submit_commands", farm_id: farm.id, farm_generation: draft.generation, commands: prepared.signed },
       });
       if (error) throw error;
+      // Do not turn a known server receipt into an uncertain result merely
+      // because its UI consumer has moved to another account.
       return await patchDraft(accountID, draft.id, { ...interpretResults(prepared.commands, data), error: null });
     } catch (error) {
       await patchDraft(accountID, draft.id, { status: "unknown", error: error.message || "结果待核对" });
