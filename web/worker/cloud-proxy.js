@@ -11,6 +11,63 @@ function failure(status, code, message) {
   });
 }
 
+// A fetch resolves when headers arrive. Keep cancellation and an idle deadline
+// attached until the streamed body ends, without buffering private downloads.
+function forwardBody(body, controller, cleanup, resetDeadline) {
+  const reader = body.getReader();
+  let finished = false, streamController;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    controller.signal.removeEventListener("abort", abort);
+    cleanup();
+  };
+  const cancelSource = async (reason) => {
+    try { await reader.cancel(reason); } catch { /* Already aborted upstream. */ }
+    finally { reader.releaseLock(); }
+  };
+  const abort = () => {
+    if (finished) return;
+    finish();
+    streamController.error(controller.signal.reason);
+    void cancelSource(controller.signal.reason);
+  };
+  return new ReadableStream({
+    start(output) {
+      streamController = output;
+      if (controller.signal.aborted) abort();
+      else {
+        resetDeadline();
+        controller.signal.addEventListener("abort", abort, { once: true });
+      }
+    },
+    async pull(output) {
+      try {
+        const { done, value } = await reader.read();
+        if (finished) return;
+        if (done) {
+          finish();
+          reader.releaseLock();
+          output.close();
+        } else {
+          resetDeadline();
+          output.enqueue(value);
+        }
+      } catch (error) {
+        if (finished) return;
+        finish();
+        reader.releaseLock();
+        output.error(error);
+      }
+    },
+    cancel(reason) {
+      finish();
+      controller.abort(reason);
+      return cancelSource(reason);
+    },
+  });
+}
+
 export async function proxyCloudRequest(request, environment, { fetchImpl = globalThis.fetch, timeoutMs = 20000 } = {}) {
   const address = new URL(request.url);
   if (!address.pathname.startsWith(`${prefix}/`)) return null;
@@ -48,7 +105,17 @@ export async function proxyCloudRequest(request, environment, { fetchImpl = glob
   const onAbort = () => controller.abort(request.signal.reason);
   if (request.signal.aborted) onAbort();
   else request.signal.addEventListener("abort", onAbort, { once: true });
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timer;
+  const resetDeadline = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+  };
+  resetDeadline();
+  const cleanup = () => {
+    clearTimeout(timer);
+    request.signal.removeEventListener("abort", onAbort);
+  };
+  let streaming = false;
   try {
     const body = ["GET", "HEAD"].includes(request.method) ? undefined : request.body;
     const upstreamRequest = new Request(target, {
@@ -65,18 +132,22 @@ export async function proxyCloudRequest(request, environment, { fetchImpl = glob
     }
     const responseHeaders = new Headers(response.headers);
     responseHeaders.set("cache-control", "no-store");
+    // CDN-specific policies can override Cache-Control on a downstream edge.
+    for (const name of ["cdn-cache-control", "cloudflare-cdn-cache-control", "surrogate-control"]) responseHeaders.delete(name);
     responseHeaders.set("x-esheep-cloud-transport", "same-origin");
     responseHeaders.delete("set-cookie");
     for (const name of [...responseHeaders.keys()]) {
       if (name.startsWith("access-control-")) responseHeaders.delete(name);
     }
-    return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders });
+    const forwarded = response.body ? forwardBody(response.body, controller, cleanup, resetDeadline) : null;
+    const result = new Response(forwarded, { status: response.status, statusText: response.statusText, headers: responseHeaders });
+    streaming = Boolean(forwarded);
+    return result;
   } catch {
     return controller.signal.aborted
       ? failure(504, "CLOUD_PROXY_TIMEOUT", "云端连接超时，请稍后重试。")
       : failure(502, "CLOUD_PROXY_FAILED", "暂时无法连接云端服务，请稍后重试。");
   } finally {
-    clearTimeout(timer);
-    request.signal.removeEventListener("abort", onAbort);
+    if (!streaming) cleanup();
   }
 }
