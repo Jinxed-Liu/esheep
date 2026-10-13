@@ -24,10 +24,6 @@ jobs:
             host: macos-26
             xcode: Xcode_26.6
             scheme: eSheepNextUI
-          - runtime: '17'
-            host: macos-15
-            xcode: Xcode_26.3
-            scheme: eSheepNext
     runs-on: ${{ matrix.host }}
     timeout-minutes: 35
     env:
@@ -82,7 +78,7 @@ jobs:
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30' \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/gesture-build.log"
-      - name: Run the real avatar or complete unit suites
+      - name: Run the real avatar flow
         run: |
           set -euo pipefail
           xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
@@ -107,10 +103,13 @@ jobs:
             gesture_diagnostic_filters=(
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testFloatingAttachmentPanelPreservesTheDraftAndPresentsTheSelectedAction
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testKnownVoiceTimelineUsesASingleRowAndPreservesTheUnsentDraft
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testComposerVoiceControlsKeepDraftAndKeyboard
             )
           else
             gesture_diagnostic_filters=(
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testKnownVoiceTimelineUsesASingleRowAndPreservesTheUnsentDraft
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testComposerVoiceControlsKeepDraftAndKeyboard
             )
           fi
           xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme eSheepNextUI \

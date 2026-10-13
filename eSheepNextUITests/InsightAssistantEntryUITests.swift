@@ -154,6 +154,71 @@ final class InsightAssistantEntryUITests: XCTestCase {
     }
 
     @MainActor
+    func testComposerVoiceControlsKeepDraftAndKeyboard() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        // The real Composer controls drive the existing local time samples.
+        // This makes no microphone recording and never sends provider input.
+        app.launchArguments = [
+            "--design-acceptance", "--design-insight-voice-waveform",
+            "--design-fixture-id", UUID().uuidString,
+            "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+        ]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["design.audio.fixture.notice"].waitForExistence(timeout: 30))
+        let input = composerField(in: app)
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        let originalDraft = input.value as? String
+        XCTAssertEqual(originalDraft, "录音前的原始草稿")
+        input.tap()
+        assertVoiceKeyboardInPlace(in: app, stage: "voice-composer-controls-initial-focus")
+
+        // Use only production Composer buttons after the initial focus. Body
+        // fixture buttons would add a separate focus interaction to this test.
+        let record = app.buttons["insight.audio.record"]
+        XCTAssertTrue(record.waitForExistence(timeout: 5))
+        XCTAssertTrue(record.isEnabled)
+        XCTAssertTrue(record.isHittable)
+        record.tap()
+        let bar = app.descendants(matching: .any).matching(identifier: "insight.audio.bar").firstMatch
+        XCTAssertTrue(bar.waitForExistence(timeout: 5))
+        XCTAssertEqual(bar.label, "正在录音")
+        XCTAssertEqual(bar.value as? String, "0:06")
+        XCTAssertEqual(app.staticTexts["design.audio.fixture.state"].label, "样本数 60，发送次数 0")
+        assertVoiceKeyboardInPlace(in: app, stage: "voice-composer-controls-recording")
+
+        let stop = app.buttons["insight.audio.stop"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        XCTAssertTrue(stop.isHittable)
+        stop.tap()
+        XCTAssertTrue(app.buttons["insight.audio.playback"].waitForExistence(timeout: 5))
+        XCTAssertFalse(stop.exists)
+        XCTAssertEqual(bar.label, "待发送语音")
+        XCTAssertEqual(bar.value as? String, "0:06")
+        XCTAssertEqual(app.staticTexts["design.audio.fixture.state"].label, "样本数 60，发送次数 0")
+        assertVoiceKeyboardInPlace(in: app, stage: "voice-composer-controls-pending")
+
+        let cancel = app.buttons["insight.audio.cancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        XCTAssertTrue(cancel.isHittable)
+        cancel.tap()
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let editor = self.composerField(in: app)
+            let currentBar = app.descendants(matching: .any).matching(identifier: "insight.audio.bar").firstMatch
+            return editor.exists && editor.value as? String == originalDraft && !currentBar.exists &&
+                app.staticTexts["design.audio.fixture.state"].label == "样本数 0，发送次数 0"
+        }, object: app)
+        let restoredResult = XCTWaiter.wait(for: [restored], timeout: 10)
+        if restoredResult != .completed {
+            attachVoiceFocusEvidence(of: app, named: "voice-composer-controls-cancel-draft-failure")
+        }
+        XCTAssertEqual(restoredResult, .completed, "The Composer cancel control must restore the original unsent draft.")
+        assertVoiceKeyboardInPlace(in: app, stage: "voice-composer-controls-cancelled")
+        XCTAssertEqual(composerField(in: app).value as? String, originalDraft)
+        XCTAssertEqual(app.staticTexts["design.audio.fixture.state"].label, "样本数 0，发送次数 0")
+    }
+
+    @MainActor
     func testFloatingAttachmentPanelPreservesTheDraftAndPresentsTheSelectedAction() {
         continueAfterFailure = false
         let fixtureID = UUID().uuidString
@@ -1028,6 +1093,21 @@ final class InsightAssistantEntryUITests: XCTestCase {
         }
         attachScreenshot(of: app, named: "dense-reply-scroll-position-not-established-\(keepingKeyboard ? "focused" : "unfocused")")
         return false
+    }
+
+    @MainActor
+    private func assertVoiceKeyboardInPlace(in app: XCUIApplication, stage: String) {
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let keyboard = app.keyboards.firstMatch
+            let surface = app.descendants(matching: .any).matching(identifier: "insight.composer.surface").firstMatch
+            return keyboard.exists && keyboard.frame.height > 100 && surface.exists &&
+                surface.frame.height > 0 && surface.frame.minY >= 0 &&
+                surface.frame.maxY <= keyboard.frame.minY + 2
+        }, object: app)
+        let result = XCTWaiter.wait(for: [visible], timeout: 10)
+        attachVoiceFocusEvidence(of: app, named: stage)
+        XCTAssertEqual(result, .completed,
+                       "The real voice controls must keep the keyboard visible and the Composer above it without refocusing the editor.")
     }
 
     @MainActor
