@@ -472,11 +472,11 @@ class UITestPlanPolicyTests(unittest.TestCase):
             }])
             self.assertEqual(len(plan["configurations"]), 1)
             self.assertEqual(plan["configurations"][0]["options"], {})
-            self.assertEqual(set(plan["defaultOptions"]), {"runtimeIssueDetection"})
             plans[name] = plan
-        self.assertIs(plans["ModernUI"]["defaultOptions"]["runtimeIssueDetection"]["enabled"], True)
+        self.assertEqual(plans["ModernUI"]["defaultOptions"], {})
+        self.assertEqual(set(plans["Legacy17"]["defaultOptions"]), {"runtimeIssueDetection"})
         self.assertIs(plans["Legacy17"]["defaultOptions"]["runtimeIssueDetection"]["enabled"], False)
-        plans["Legacy17"]["defaultOptions"]["runtimeIssueDetection"]["enabled"] = True
+        plans["Legacy17"]["defaultOptions"].clear()
         self.assertEqual(plans["Legacy17"], plans["ModernUI"])
 
     def test_ui_scheme_defaults_to_modern_and_has_one_test_target_source(self):
