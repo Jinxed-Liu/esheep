@@ -62,6 +62,7 @@ test("SDK sign-in, restore, refresh, and farm reads retain canonical sessions th
   const calls = [], stored = new Map();
   const user = { id: "10000000-0000-4000-8000-000000000001", email: "fixture@example.test", aud: "authenticated", app_metadata: {}, user_metadata: {}, created_at: "2026-01-01T00:00:00Z" };
   const session = { access_token: "fixture-access", refresh_token: "fixture-refresh", expires_in: 3600, token_type: "bearer", user };
+  const refreshed = { ...session, access_token: "fixture-access-rotated", refresh_token: "fixture-refresh-rotated" };
   const transport = createCloudFetch({ supabaseURL: upstream, siteOrigin: site, fetchImpl: async (proxied) => {
     assert.equal(new URL(proxied.url).origin, site);
     assert.equal(proxied.credentials, "omit");
@@ -70,7 +71,7 @@ test("SDK sign-in, restore, refresh, and farm reads retain canonical sessions th
       calls.push({ path: url.pathname + url.search, token: outbound.headers.get("authorization"), body: outbound.method === "POST" ? await outbound.json() : null });
       assert.equal(url.origin, upstream);
       assert.equal(outbound.headers.get("apikey"), "sb_publishable_fixture");
-      return Response.json(url.pathname === "/auth/v1/token" ? session : url.pathname === "/auth/v1/user" ? user : [{ farm_id: "fixture" }]);
+      return Response.json(url.pathname === "/auth/v1/token" ? (url.searchParams.get("grant_type") === "refresh_token" ? refreshed : session) : url.pathname === "/auth/v1/user" ? user : [{ farm_id: "fixture" }]);
     } });
   } });
   const options = { global: { fetch: transport }, auth: { autoRefreshToken: false, detectSessionInUrl: false, storage: {
@@ -83,13 +84,16 @@ test("SDK sign-in, restore, refresh, and farm reads retain canonical sessions th
   assert.equal((await restored.auth.getSession()).data.session.user.id, user.id);
   assert.equal((await restored.auth.getUser()).data.user.id, user.id);
   assert.equal((await restored.auth.refreshSession()).error, null);
+  const persisted = JSON.parse(stored.get("sb-fixture-auth-token"));
+  assert.equal(persisted.access_token, refreshed.access_token);
+  assert.equal(persisted.refresh_token, refreshed.refresh_token);
   assert.deepEqual((await restored.from("farm_registry").select("farm_id")).data, [{ farm_id: "fixture" }]);
   assert.equal((await restored.functions.invoke("esheep-cloud-checkpoints", { body: { farm_id: "fixture" } })).error, null);
   assert.deepEqual(calls.map((call) => call.path), ["/auth/v1/token?grant_type=password", "/auth/v1/user", "/auth/v1/token?grant_type=refresh_token", "/rest/v1/farm_registry?select=farm_id", "/functions/v1/esheep-cloud-checkpoints"]);
   assert.equal(calls[0].body.password, "fixture-password");
   assert.equal(calls[2].body.refresh_token, "fixture-refresh");
-  assert.equal(calls[3].token, "Bearer fixture-access");
-  assert.equal(calls[4].token, "Bearer fixture-access");
+  assert.equal(calls[3].token, "Bearer fixture-access-rotated");
+  assert.equal(calls[4].token, "Bearer fixture-access-rotated");
   assert.deepEqual(calls[4].body, { farm_id: "fixture" });
 });
 
@@ -158,7 +162,152 @@ test("transport explains network failures and preserves cancellation", async () 
   const transport = createCloudFetch({ supabaseURL: upstream, siteOrigin: site, fetchImpl: async () => { throw new TypeError("Load failed"); } });
   await assert.rejects(transport(`${upstream}/auth/v1/token`), { code: "CLOUD_NETWORK_FAILED" });
   const controller = new AbortController(); controller.abort();
-  await assert.rejects(transport(`${upstream}/auth/v1/user`, { signal: controller.signal }), { message: "Load failed" });
+  await assert.rejects(transport(`${upstream}/auth/v1/user`, { signal: controller.signal }), { name: "AbortError" });
   assert.equal(cloudConnectionErrorMessage(new TypeError("Load failed")), "无法连接云端服务，请检查网络后重试。");
   assert.equal(cloudConnectionErrorMessage({ message: "Invalid login credentials" }), "Invalid login credentials");
+});
+
+test("cancellation interrupts upload buffering before fetch and cancels the source", async () => {
+  const controller = new AbortController();
+  let cancelled = false, fetches = 0;
+  let beginRead;
+  const reading = new Promise((resolve) => { beginRead = resolve; });
+  const body = new ReadableStream({ pull() { beginRead(); }, cancel() { cancelled = true; } });
+  const transport = createCloudFetch({ supabaseURL: upstream, siteOrigin: site, fetchImpl: async () => {
+    fetches += 1;
+    return new Response(null, { status: 204 });
+  } });
+  const pending = transport(`${upstream}/storage/v1/object/fixture`, {
+    method: "POST", body, duplex: "half", signal: controller.signal,
+  });
+  await reading;
+  const rejected = assert.rejects(pending, { name: "AbortError" });
+  controller.abort();
+  let timer;
+  try {
+    await Promise.race([rejected, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("upload remained pending after abort")), 500);
+    })]);
+  } finally { clearTimeout(timer); }
+  assert.equal(cancelled, true);
+  assert.equal(fetches, 0);
+});
+
+test("SDK retries a transient refresh failure, rotates credentials, and recovers without signing out", async () => {
+  const stored = new Map(), tokens = [];
+  let refreshes = 0;
+  const user = { id: "10000000-0000-4000-8000-000000000002", aud: "authenticated", email: "recovery@example.test", app_metadata: {}, user_metadata: {}, created_at: "2026-01-01T00:00:00Z" };
+  const session = { access_token: "access-before", refresh_token: "refresh-before", expires_in: 3600, token_type: "bearer", user };
+  const rotated = { ...session, access_token: "access-after", refresh_token: "refresh-after" };
+  const client = createClient(upstream, "sb_publishable_fixture", {
+    auth: { autoRefreshToken: false, detectSessionInUrl: false, storage: {
+      getItem: (key) => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: (key) => stored.delete(key),
+    } },
+    global: { fetch: createCloudFetch({ supabaseURL: upstream, siteOrigin: site, fetchImpl: (proxied) => proxyCloudRequest(proxied, env, {
+      fetchImpl: async (outbound) => {
+        const url = new URL(outbound.url);
+        if (url.searchParams.get("grant_type") === "password") return Response.json(session);
+        if (url.searchParams.get("grant_type") === "refresh_token") {
+          refreshes += 1;
+          assert.equal((await outbound.json()).refresh_token, "refresh-before");
+          if (refreshes === 1) {
+            assert.equal(JSON.parse(stored.get("sb-fixture-auth-token")).user.id, user.id);
+            return Response.json({ message: "temporary upstream outage" }, { status: 503 });
+          }
+          return Response.json(rotated);
+        }
+        tokens.push(outbound.headers.get("authorization"));
+        return Response.json([{ farm_id: "recovery-fixture" }]);
+      },
+    }) }) },
+  });
+  assert.equal((await client.auth.signInWithPassword({ email: user.email, password: "fixture-password" })).error, null);
+  const [first, second] = await Promise.all([client.auth.refreshSession(), client.auth.refreshSession()]);
+  assert.equal(first.error, null);
+  assert.equal(second.error, null);
+  assert.equal(refreshes, 2, "concurrent callers share one refresh plus its retry");
+  assert.equal((await client.auth.getSession()).data.session.access_token, "access-after");
+  assert.equal(JSON.parse(stored.get("sb-fixture-auth-token")).refresh_token, "refresh-after");
+  assert.equal((await client.from("farm_registry").select("farm_id")).error, null);
+  assert.deepEqual(tokens, ["Bearer access-after"]);
+});
+
+test("proxy isolates concurrent account tokens and responses without adding credentials", async () => {
+  const responses = await Promise.all(["account-a", "account-b"].map(async (account) => {
+    const response = await proxyCloudRequest(request("/rest/v1/farm_registry", { headers: { authorization: `Bearer ${account}`, apikey: "public-fixture" } }), env, {
+      fetchImpl: async (outbound) => {
+        const token = outbound.headers.get("authorization");
+        assert.equal(outbound.headers.get("apikey"), "public-fixture");
+        return Response.json({ account: token }, { headers: { "cache-control": "public, max-age=3600" } });
+      },
+    });
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    return response.json();
+  }));
+  assert.deepEqual(responses, [{ account: "Bearer account-a" }, { account: "Bearer account-b" }]);
+});
+
+test("SDK Blob upload preserves binary multipart bytes, cache control, and upsert headers", async () => {
+  const bytes = new Uint8Array([0, 31, 139, 255, 128]);
+  let uploads = 0;
+  const client = createClient(upstream, "sb_publishable_fixture", {
+    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+    global: { fetch: createCloudFetch({ supabaseURL: upstream, siteOrigin: site, fetchImpl: (proxied) => proxyCloudRequest(proxied, env, {
+      fetchImpl: async (outbound) => {
+        uploads += 1;
+        assert.equal(outbound.url, `${upstream}/storage/v1/object/avatars/fixture/avatar.jpg`);
+        assert.equal(outbound.method, "POST");
+        assert.equal(outbound.headers.get("x-upsert"), "true");
+        assert.match(outbound.headers.get("content-type"), /^multipart\/form-data; boundary=/);
+        const form = await outbound.formData();
+        assert.equal(form.get("cacheControl"), "3600");
+        assert.deepEqual(new Uint8Array(await form.get("").arrayBuffer()), bytes);
+        assert.equal(form.get("").type, "image/jpeg");
+        return Response.json({ Key: "avatars/fixture/avatar.jpg", Id: "fixture-object" });
+      },
+    }) }) },
+  });
+  const { data, error } = await client.storage.from("avatars").upload("fixture/avatar.jpg", new Blob([bytes], { type: "image/jpeg" }), { upsert: true });
+  assert.equal(error, null);
+  assert.equal(data.path, "fixture/avatar.jpg");
+  assert.equal(uploads, 1);
+});
+
+test("SDK restores an expired stored session with a rotated token and clears a revoked session", async (t) => {
+  for (const revoked of [false, true]) {
+    // The SDK reports the expected revoked-token fixture to console.error.
+    if (revoked) t.mock.method(console, "error", () => {});
+    const user = { id: "10000000-0000-4000-8000-000000000003", aud: "authenticated", app_metadata: {}, user_metadata: {}, created_at: "2026-01-01T00:00:00Z" };
+    const stored = new Map([["sb-fixture-auth-token", JSON.stringify({
+      access_token: "expired-access", refresh_token: "restore-refresh", token_type: "bearer", user,
+      expires_at: Math.floor(Date.now() / 1000) - 60,
+    })]]);
+    let refreshes = 0;
+    const client = createClient(upstream, "sb_publishable_fixture", {
+      auth: { autoRefreshToken: false, detectSessionInUrl: false, storage: {
+        getItem: (key) => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: (key) => stored.delete(key),
+      } },
+      global: { fetch: createCloudFetch({ supabaseURL: upstream, siteOrigin: site, fetchImpl: (proxied) => proxyCloudRequest(proxied, env, {
+        fetchImpl: async (outbound) => {
+          refreshes += 1;
+          assert.equal(outbound.url, `${upstream}/auth/v1/token?grant_type=refresh_token`);
+          assert.equal((await outbound.json()).refresh_token, "restore-refresh");
+          return revoked
+            ? Response.json({ code: "refresh_token_not_found", message: "Invalid Refresh Token: Refresh Token Not Found" }, { status: 400, headers: { "x-supabase-api-version": "2024-01-01" } })
+            : Response.json({ access_token: "restored-access", refresh_token: "restored-refresh", token_type: "bearer", expires_in: 3600, user });
+        },
+      }) }) },
+    });
+    const { data, error } = await client.auth.getSession();
+    assert.equal(refreshes, 1);
+    if (revoked) {
+      assert.equal(data.session, null);
+      assert.equal(error.code, "refresh_token_not_found");
+      assert.equal(stored.has("sb-fixture-auth-token"), false);
+    } else {
+      assert.equal(error, null);
+      assert.equal(data.session.access_token, "restored-access");
+      assert.equal(JSON.parse(stored.get("sb-fixture-auth-token")).refresh_token, "restored-refresh");
+    }
+  }
 });

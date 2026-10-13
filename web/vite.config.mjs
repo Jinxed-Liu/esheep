@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import { handleNodeRequest } from "./server/node-adapter.mjs";
 import { proxyCloudRequest } from "./worker/cloud-proxy.js";
+import { nodeCloudFetch } from "./server/cloud-fetch.mjs";
 
 export default defineConfig({
   build: {
@@ -84,7 +85,7 @@ export default defineConfig({
       server.middlewares.use(async (request, response, next) => {
         if (!(request.url ?? "").startsWith("/api/cloud/")) return next();
         try {
-          await handleNodeRequest(request, response, (cloudRequest) => proxyCloudRequest(cloudRequest, environment));
+          await handleNodeRequest(request, response, (cloudRequest) => proxyCloudRequest(cloudRequest, environment, { fetchImpl: nodeCloudFetch }));
         } catch {
           response.statusCode = 502;
           response.setHeader("content-type", "application/json; charset=utf-8");
