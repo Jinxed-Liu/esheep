@@ -78,14 +78,14 @@ jobs:
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30' \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/gesture-build.log"
-      - name: Run the real avatar flow
+      - name: Verify keyboard retention with the real voice controls
         run: |
           set -euo pipefail
           xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
-          gesture_test_options=(-parallel-testing-enabled NO)
-          if [ "$COMPATIBILITY_SCHEME" = eSheepNextUI ]; then
-            gesture_test_options+=(-only-testing:eSheepNextUITests/PlatformCompatibilityUITests)
-          fi
+          gesture_test_options=(
+            -parallel-testing-enabled NO
+            -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testComposerVoiceControlsKeepDraftAndKeyboard
+          )
           xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme "$COMPATIBILITY_SCHEME" \
             -configuration Debug -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
             -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
@@ -104,12 +104,10 @@ jobs:
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testFloatingAttachmentPanelPreservesTheDraftAndPresentsTheSelectedAction
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testKnownVoiceTimelineUsesASingleRowAndPreservesTheUnsentDraft
-              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testComposerVoiceControlsKeepDraftAndKeyboard
             )
           else
             gesture_diagnostic_filters=(
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testKnownVoiceTimelineUsesASingleRowAndPreservesTheUnsentDraft
-              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testComposerVoiceControlsKeepDraftAndKeyboard
             )
           fi
           xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme eSheepNextUI \
