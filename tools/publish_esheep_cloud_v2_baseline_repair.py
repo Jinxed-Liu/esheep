@@ -11,7 +11,7 @@ import json
 import pathlib
 import subprocess
 
-from repair_esheep_cloud_v2_history import read, save, digest, sql_literal, insert_rows
+from repair_esheep_cloud_v2_history import read, save, digest, insert_rows, staged_command_batches
 from build_esheep_cloud_v2_baseline_repair import ROOT, OUT, FARM, OWNER, DEVICE
 
 BASE = ["docker", "exec", "-i", "supabase_db_eSheepNext", "psql", "-X", "-qAt",
@@ -89,12 +89,8 @@ UNION ALL SELECT 'snapshots',md5(string_agg(to_jsonb(s)::text,'' ORDER BY snapsh
 {insert_rows('public.devices',[device])}
 {insert_rows('esheep_cloud.history_repair_approvals',approvals)}
 """
-    body = f"""DO $$ DECLARE c jsonb; r jsonb; BEGIN
-FOR c IN SELECT value FROM jsonb_array_elements({sql_literal(json.dumps(signed))}::jsonb) LOOP
-r:=esheep_cloud.process_command_v2('{FARM}',3,'{OWNER}',c);
-IF r->>'type'<>'accepted' THEN RAISE EXCEPTION 'forward repair rejected: %',r; END IF;
-END LOOP; END $$;
-"""
+    body = staged_command_batches(signed, FARM, 3, OWNER,
+                                  rejection_message="forward repair rejected")
     suffix = f"""DO $$ DECLARE report jsonb; BEGIN
 IF NOT EXISTS(SELECT 1 FROM esheep_cloud.farm_state WHERE farm_id='{FARM}' AND farm_generation=3 AND event_head=38164
  AND latest_snapshot_id='{baseline['latest_snapshot_id']}' AND v2_ready AND NOT write_frozen)

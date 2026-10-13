@@ -13,7 +13,7 @@ import pathlib
 import shlex
 import subprocess
 from build_esheep_cloud_v2_extended_repair import ROOT,OUT,FARM,OWNER,DEVICE
-from repair_esheep_cloud_v2_history import read,save,digest,sql_literal,insert_rows
+from repair_esheep_cloud_v2_history import read,save,digest,insert_rows,staged_command_batches
 from publish_esheep_cloud_v2_baseline_repair import sql,BASE
 
 TARGET=OUT/'publication-v5'
@@ -58,14 +58,9 @@ UNION ALL SELECT 'snapshots',md5(string_agg(md5(to_jsonb(s)::text),'' ORDER BY s
 UNION ALL SELECT 'snapshot_chunks',md5(string_agg(md5(to_jsonb(c)::text),'' ORDER BY c.snapshot_id,c.chunk_index))
  FROM esheep_cloud.snapshot_chunks c JOIN esheep_cloud.snapshots s USING(snapshot_id) WHERE s.farm_id='{FARM}'
 """
-    # Keep one atomic transaction, but release each decoded input batch at the
-    # DO boundary. Hash each immutable row BEFORE aggregation, so snapshot
-    # bytes and command bodies never accumulate into a farm-sized text value.
-    batches='\n'.join(f"""DO $$ DECLARE c jsonb; r jsonb; BEGIN
-FOR c IN SELECT value FROM jsonb_array_elements({sql_literal(json.dumps(signed[start:start+250]))}::jsonb) LOOP
- r:=esheep_cloud.process_command_v2('{FARM}',3,'{OWNER}',c);
- IF r->>'type'<>'accepted' THEN RAISE EXCEPTION 'repair rejected: %',r; END IF;
-END LOOP; END $$;""" for start in range(0,len(signed),250))
+    # Keep the atomic transaction and bounded decoding, while leaving signed
+    # JSON out of the procedural SQL text retained by performance monitoring.
+    batches=staged_command_batches(signed,FARM,3,OWNER)
     statement=f"""BEGIN;
 SET LOCAL statement_timeout='10min'; SET LOCAL lock_timeout='10s';
 SET LOCAL work_mem='1MB';
