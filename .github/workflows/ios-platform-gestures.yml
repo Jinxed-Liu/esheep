@@ -150,9 +150,6 @@ jobs:
           if [ "$COMPATIBILITY_RUNTIME" = 17 ] && [ "$COMPATIBILITY_SCHEME" = eSheepNextUI ]; then
             gesture_test_plan_options+=(-testPlan Legacy17)
           fi
-          gesture_diagnostic_filters+=(
-            -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testBriefBackgroundSwitchPreservesTheRunningReply
-          )
           if [ "$COMPATIBILITY_RUNTIME" = 26 ]; then
             gesture_diagnostic_filters=(
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning
@@ -164,6 +161,9 @@ jobs:
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testKnownVoiceTimelineUsesASingleRowAndPreservesTheUnsentDraft
             )
           fi
+          gesture_diagnostic_filters+=(
+            -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testBriefBackgroundSwitchPreservesTheRunningReply
+          )
           xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme eSheepNextUI \
             -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
             -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
