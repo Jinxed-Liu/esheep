@@ -36,7 +36,23 @@ struct FarmCareBackupPayload: Codable, Sendable, Equatable {
     var sheepLabels: [ESheepCloudCheckpointRecord]? = nil
 
     var entityCount: Int {
-        catalogs.count + inventoryLots.count + inventoryTransactions.count + health.count + healthSubjects.count + (donors?.count ?? 0) + semen.count + semenTransactions.count + reproduction.count + offspring.count + batches.count + rules.count + reminders.count + (alertDeferrals?.count ?? 0) + (pedigreeAudits?.count ?? 0) + (sheepLabels?.count ?? 0)
+        var total = catalogs.count
+        total += inventoryLots.count
+        total += inventoryTransactions.count
+        total += health.count
+        total += healthSubjects.count
+        total += donors?.count ?? 0
+        total += semen.count
+        total += semenTransactions.count
+        total += reproduction.count
+        total += offspring.count
+        total += batches.count
+        total += rules.count
+        total += reminders.count
+        total += alertDeferrals?.count ?? 0
+        total += pedigreeAudits?.count ?? 0
+        total += sheepLabels?.count ?? 0
+        return total
     }
 
     static func capture(farmID: UUID, context: ModelContext) throws -> Self {
