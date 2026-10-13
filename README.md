@@ -82,6 +82,8 @@ ALLOW_LOCAL_DB_RESET=1 ./tools/verify_local.sh db
 
 `verify_ios_compatibility.py` 在 Mac 上分别运行 iOS 17 与当前 SDK 支持的最新稳定 iOS 26 或更高版本的 XCTest 和 UI 回归，并保存各自的日志、结果包和截图附件。需要稳定版 Xcode 26 或更高版本，以及两个版本的可用 iPhone 模拟器；缺少任一运行时会明确失败，不会用新版结果代替 iOS 17 验收。`--list` 可先检查选择结果，`--dry-run` 可预览构建命令。头像回归覆盖两次下拉、全屏查看、关闭后布局恢复和导航往返；新版系统继续使用原生界面和动画。
 
+为避免开发过程中反复运行失败任务产生 GitHub 邮件，`codex/ios17-compatibility` 和 `codex/ios17-compatibility-validation` 分支关闭推送自动检查；兼容性候选集中使用手动检查验证。`ios-platform-gestures.yml` 仅支持手动启动，覆盖真实语音按钮的键盘保留、波形与草稿恢复，以及新版返回手势和附件面板。主分支和其他开发分支继续使用原有自动门禁。
+
 UI 套件要求零跳过。全量 XCTest 套件仅允许以下三个既有私有输入验收测试跳过；2026-10-04 的 main 基线实际发现 789 项，其中 786 项通过、0 项失败，跳过的正是这三项：
 
 - `eSheepNextTests/ESheepCloudIntegratedTests/testRealCloudSourceBuildsCheckpointAndImportsWithoutHistoricalReceipts`：缺少封存的 SELECT-only 云源。
