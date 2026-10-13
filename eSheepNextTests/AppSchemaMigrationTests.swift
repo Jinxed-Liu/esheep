@@ -614,7 +614,9 @@ final class AppSchemaMigrationTests: XCTestCase {
         let accountID = UUID()
         let farmID = UUID()
 
-        do {
+        // A Swift scope alone does not drain Core Data's autoreleased objects.
+        // Close the source fixture before opening the same URL for migration.
+        try autoreleasepool {
             let schema = Schema(versionedSchema: AppSchemaV4.self)
             let configuration = ModelConfiguration(
                 "V4",
@@ -649,6 +651,16 @@ final class AppSchemaMigrationTests: XCTestCase {
         let reopened = try AppSchema.makeContainer(name: "V4", url: storeURL)
         let context = ModelContext(reopened)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<FarmRecord>()), 1)
+        let migratedFarm = try XCTUnwrap(try context.fetch(FetchDescriptor<FarmRecord>()).first)
+        XCTAssertEqual(migratedFarm.id, farmID)
+        XCTAssertEqual(migratedFarm.ownerAccountID, accountID)
+        let migratedAccount = try XCTUnwrap(try context.fetch(FetchDescriptor<AccountProfile>()).first)
+        XCTAssertEqual(migratedAccount.id, accountID)
+        let sequenceCounter = try XCTUnwrap(
+            try context.fetch(FetchDescriptor<FarmOperationSequenceCounter>()).first
+        )
+        XCTAssertEqual(sequenceCounter.farmID, farmID)
+        XCTAssertEqual(sequenceCounter.nextSequence, 1)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<OutboxItem>()), 0)
         XCTAssertEqual(
