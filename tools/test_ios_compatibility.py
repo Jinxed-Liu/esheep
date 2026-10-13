@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 import verify_ios_compatibility as compatibility
@@ -441,6 +442,57 @@ class FixtureSkipValidationTests(unittest.TestCase):
                     parse_skipped_test_identifiers(f"Test Case '{identifier}' skipped (0.01 seconds).")
 
 
+class UITestPlanPolicyTests(unittest.TestCase):
+    def test_only_ios17_ui_uses_the_legacy_plan_for_build_and_test(self):
+        for version in ("17.0", "17.5", "18.0", "26.5"):
+            for scheme in compatibility.SCHEMES:
+                with self.subTest(version=version, scheme=scheme):
+                    destination = compatibility.Destination(LEGACY_RUNTIME, version, "iPhone", LEGACY_UDID)
+                    _, build, test = compatibility.suite_commands(destination, scheme, Path("/tmp/plan-policy"))
+                    for command in (build, test):
+                        if version.startswith("17.") and scheme == "eSheepNextUI":
+                            self.assertEqual(command[command.index("-testPlan") + 1], "Legacy17")
+                            self.assertEqual(command.count("-testPlan"), 1)
+                        else:
+                            self.assertNotIn("-testPlan", command)
+
+    def test_plans_run_the_same_complete_target_and_change_only_the_collector(self):
+        plans = {}
+        for name in ("ModernUI", "Legacy17"):
+            plan = json.loads((compatibility.ROOT / "TestPlans" / f"{name}.xctestplan").read_text())
+            self.assertEqual(plan["version"], 1)
+            self.assertEqual(plan["testTargets"], [{
+                "parallelizable": False,
+                "skipped": False,
+                "target": {
+                    "containerPath": "container:eSheepNext.xcodeproj",
+                    "identifier": "E5A500032FCA000100A00001",
+                    "name": "eSheepNextUITests",
+                },
+            }])
+            self.assertEqual(len(plan["configurations"]), 1)
+            self.assertEqual(plan["configurations"][0]["options"], {})
+            self.assertEqual(set(plan["defaultOptions"]), {"runtimeIssueDetection"})
+            plans[name] = plan
+        self.assertIs(plans["ModernUI"]["defaultOptions"]["runtimeIssueDetection"]["enabled"], True)
+        self.assertIs(plans["Legacy17"]["defaultOptions"]["runtimeIssueDetection"]["enabled"], False)
+        plans["Legacy17"]["defaultOptions"]["runtimeIssueDetection"]["enabled"] = True
+        self.assertEqual(plans["Legacy17"], plans["ModernUI"])
+
+    def test_ui_scheme_defaults_to_modern_and_has_one_test_target_source(self):
+        path = compatibility.ROOT / "eSheepNext.xcodeproj/xcshareddata/xcschemes/eSheepNextUI.xcscheme"
+        action = ET.parse(path).getroot().find("TestAction")
+        self.assertIsNotNone(action)
+        self.assertEqual(action.get("shouldUseLaunchSchemeArgsEnv"), "NO")
+        self.assertIsNone(action.find("Testables"))
+        self.assertNotIn("shouldAutocreateTestPlan", action.attrib)
+        references = action.findall("TestPlans/TestPlanReference")
+        self.assertEqual([reference.attrib for reference in references], [
+            {"reference": "container:TestPlans/ModernUI.xctestplan", "default": "YES"},
+            {"reference": "container:TestPlans/Legacy17.xctestplan", "default": "NO"},
+        ])
+
+
 class SuiteSkipPolicyTests(unittest.TestCase):
     def run_mock_suite(self, root, scheme, *, summary, log=BASELINE_SKIP_LOG, test_exit=0):
         destination = compatibility.Destination(LEGACY_RUNTIME, "17.7", "iPhone 14", LEGACY_UDID)
@@ -653,6 +705,10 @@ class OfflineCLITests(unittest.TestCase):
             self.assertIn(action, ("build-for-testing", "test-without-building"))
             scheme = command[command.index("-scheme") + 1]
             destination = command[command.index("-destination") + 1]
+            if destination == f"platform=iOS Simulator,id={LEGACY_UDID}" and scheme == "eSheepNextUI":
+                self.assertEqual(command[command.index("-testPlan") + 1], "Legacy17")
+            else:
+                self.assertNotIn("-testPlan", command)
             derived_data = command[command.index("-derivedDataPath") + 1]
             suites.setdefault((destination, scheme), []).append((action, derived_data))
             if action == "test-without-building":

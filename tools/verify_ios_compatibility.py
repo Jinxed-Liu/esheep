@@ -205,6 +205,10 @@ def suite_commands(destination, scheme, output_dir):
               "-configuration", "Debug", "-destination", destination.destination,
               "-derivedDataPath", str(suite_dir / "DerivedData"),
               "-parallel-testing-enabled", "NO", "-maximum-parallel-testing-workers", "1"]
+    # Xcode 26's runtime-fault collector crashes on iOS 17 UIKit input analytics.
+    # The older UI plan changes only that collector; the default keeps it enabled.
+    if scheme == "eSheepNextUI" and version_tuple(destination.version)[0] == 17:
+        common += ["-testPlan", "Legacy17"]
     # Match package builds to the simulator's active architecture. Building both
     # architectures can leave the inactive app slice without its package modules.
     settings = ["ONLY_ACTIVE_ARCH=YES", "SWIFT_ENABLE_BATCH_MODE=NO",

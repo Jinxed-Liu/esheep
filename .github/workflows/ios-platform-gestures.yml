@@ -25,7 +25,7 @@ jobs:
             xcode: Xcode_26.6
             scheme: eSheepNextUI
     runs-on: ${{ matrix.host }}
-    timeout-minutes: 35
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/${{ matrix.xcode }}.app/Contents/Developer
       COMPATIBILITY_RUNTIME: ${{ matrix.runtime }}
@@ -71,27 +71,74 @@ jobs:
         id: build
         run: |
           set -euo pipefail
-          xcodebuild build-for-testing -project eSheepNext.xcodeproj -scheme "$COMPATIBILITY_SCHEME" \
-            -configuration Debug -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
-            -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
-            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30' \
-            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
-            2>&1 | tee "$RUNNER_TEMP/gesture-build.log"
-      - name: Verify keyboard retention with the real voice controls
+          xcodebuild -showTestPlans -project eSheepNext.xcodeproj -scheme eSheepNextUI
+          for compatibility_build_scheme in eSheepNext eSheepNextUI; do
+            gesture_test_plan_options=(-configuration Debug)
+            if [ "$compatibility_build_scheme" = eSheepNextUI ] && [ "$COMPATIBILITY_RUNTIME" = 17 ]; then
+              gesture_test_plan_options+=(-testPlan Legacy17)
+            fi
+            xcodebuild build-for-testing -project eSheepNext.xcodeproj -scheme "$compatibility_build_scheme" \
+              -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
+              -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
+              "${gesture_test_plan_options[@]}" \
+              ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+              'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30' \
+              CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+              2>&1 | tee -a "$RUNNER_TEMP/gesture-build.log"
+          done
+          python3 - <<'PY'
+          import json, os, plistlib
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          def policies(value):
+              found = {}
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      if 'RuntimeDiagnosticsPolicy' in key or 'RuntimeIssuesDetectionPolicy' in key:
+                          found[key] = child
+                      found.update(policies(child))
+              elif isinstance(value, list):
+                  for child in value: found.update(policies(child))
+              return found
+          report = {}
+          for path in (root / 'gesture-derived-data/Build/Products').glob('*.xctestrun'):
+              with path.open('rb') as source: report[path.name] = policies(plistlib.load(source))
+          encoded = json.dumps(report, indent=2, default=str)
+          (root / 'runtime-diagnostics-policy.json').write_text(encoded)
+          print(encoded)
+          PY
+      - name: Run the complete unit and performance suites
         run: |
           set -euo pipefail
+          xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
+          xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme eSheepNext \
+            -configuration Debug -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
+            -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/full-unit.xcresult" -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 240 \
+            -maximum-test-execution-time-allowance 240 \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/full-unit.log"
+      - name: Verify keyboard retention with the real voice controls
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          gesture_test_plan_options=(-configuration Debug)
+          if [ "$COMPATIBILITY_RUNTIME" = 17 ] && [ "$COMPATIBILITY_SCHEME" = eSheepNextUI ]; then
+            gesture_test_plan_options+=(-testPlan Legacy17)
+          fi
           xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
           gesture_test_options=(
             -parallel-testing-enabled NO
             -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testComposerVoiceControlsKeepDraftAndKeyboard
           )
           xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme "$COMPATIBILITY_SCHEME" \
-            -configuration Debug -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
             -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
             -resultBundlePath "$RUNNER_TEMP/gestures.xcresult" \
             -test-timeouts-enabled YES -default-test-execution-time-allowance 240 \
             -maximum-test-execution-time-allowance 240 \
+            "${gesture_test_plan_options[@]}" \
             "${gesture_test_options[@]}" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/gestures.log"
@@ -99,6 +146,13 @@ jobs:
         if: ${{ always() && matrix.scheme == 'eSheepNextUI' && steps.build.outcome == 'success' }}
         run: |
           set -euo pipefail
+          gesture_test_plan_options=(-configuration Debug)
+          if [ "$COMPATIBILITY_RUNTIME" = 17 ] && [ "$COMPATIBILITY_SCHEME" = eSheepNextUI ]; then
+            gesture_test_plan_options+=(-testPlan Legacy17)
+          fi
+          gesture_diagnostic_filters+=(
+            -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testBriefBackgroundSwitchPreservesTheRunningReply
+          )
           if [ "$COMPATIBILITY_RUNTIME" = 26 ]; then
             gesture_diagnostic_filters=(
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning
@@ -111,18 +165,19 @@ jobs:
             )
           fi
           xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme eSheepNextUI \
-            -configuration Debug -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
             -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
             -resultBundlePath "$RUNNER_TEMP/native-interactions.xcresult" -parallel-testing-enabled NO \
             -test-timeouts-enabled YES -default-test-execution-time-allowance 240 \
             -maximum-test-execution-time-allowance 240 \
+            "${gesture_test_plan_options[@]}" \
             "${gesture_diagnostic_filters[@]}" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/native-interactions.log"
       - name: Export screenshots
         if: always()
         run: |
-          for gesture_result_name in gestures native-interactions; do
+          for gesture_result_name in full-unit gestures native-interactions; do
             if [ -d "$RUNNER_TEMP/$gesture_result_name.xcresult" ]; then
               xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/$gesture_result_name.xcresult" > "$RUNNER_TEMP/$gesture_result_name-summary.json"
               xcrun xcresulttool export attachments --path "$RUNNER_TEMP/$gesture_result_name.xcresult" --output-path "$RUNNER_TEMP/gesture-screenshots/$gesture_result_name"
@@ -134,19 +189,22 @@ jobs:
           sys.path.insert(0, 'tools')
           import verify_ios_compatibility as gate
           directory = Path(os.environ['RUNNER_TEMP'])
-          for result in ('gestures', 'native-interactions'):
+          for result in ('full-unit', 'gestures', 'native-interactions'):
               path = directory / (result + '-summary.json')
               if not path.exists(): continue
               summary = json.loads(path.read_text())
               log = directory / (result + '.log')
               skipped = gate.parse_skipped_test_identifiers(log.read_text(errors='replace'))
-              gate.validate_summary(summary, allow_fixture_skips=os.environ['COMPATIBILITY_SCHEME'] == 'eSheepNext',
+              gate.validate_summary(summary, allow_fixture_skips=result == 'full-unit',
                                     skipped_test_identifiers=skipped)
               (directory / (result + '-skipped-tests.json')).write_text(json.dumps([
                   {'identifier': name, 'baselineReason': gate.KNOWN_FULL_UNIT_FIXTURE_SKIPS[name]}
                   for name in sorted(skipped)
               ], indent=2))
           PY
+      - name: Separate recordings from screenshots
+        if: always()
+        run: |
           python3 - <<'PY'
           import os, shutil
           from pathlib import Path
@@ -166,9 +224,11 @@ jobs:
           path: |
             ${{ runner.temp }}/gesture-build.log
             ${{ runner.temp }}/gestures.log
+            ${{ runner.temp }}/full-unit.log
             ${{ runner.temp }}/native-interactions.log
             ${{ runner.temp }}/*-summary.json
             ${{ runner.temp }}/*-skipped-tests.json
+            ${{ runner.temp }}/runtime-diagnostics-policy.json
             ${{ runner.temp }}/gesture-screenshots
       - name: Preserve the actual interaction recordings
         if: always()

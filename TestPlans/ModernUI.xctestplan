@@ -1,0 +1,26 @@
+{
+  "configurations": [
+    {
+      "id": "EB6AA250-5BCF-443C-941F-CD67FA163B8E",
+      "name": "Default",
+      "options": {}
+    }
+  ],
+  "defaultOptions": {
+    "runtimeIssueDetection": {
+      "enabled": true
+    }
+  },
+  "testTargets": [
+    {
+      "parallelizable": false,
+      "skipped": false,
+      "target": {
+        "containerPath": "container:eSheepNext.xcodeproj",
+        "identifier": "E5A500032FCA000100A00001",
+        "name": "eSheepNextUITests"
+      }
+    }
+  ],
+  "version": 1
+}
