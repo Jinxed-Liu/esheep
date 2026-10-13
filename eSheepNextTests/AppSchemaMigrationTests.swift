@@ -648,7 +648,15 @@ final class AppSchemaMigrationTests: XCTestCase {
             try context.save()
         }
 
-        let reopened = try AppSchema.makeContainer(name: "V4", url: storeURL)
+        let metadataBeforeReopen = v4MigrationStoreMetadata(at: storeURL, phase: "before-reopen")
+        let reopened: ModelContainer
+        do {
+            reopened = try AppSchema.makeContainer(name: "V4", url: storeURL)
+        } catch {
+            let metadataAfterFailure = v4MigrationStoreMetadata(at: storeURL, phase: "after-failure")
+            v4MigrationExpectedModelHashes(before: metadataBeforeReopen, after: metadataAfterFailure)
+            throw error
+        }
         let context = ModelContext(reopened)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<FarmRecord>()), 1)
         let migratedFarm = try XCTUnwrap(try context.fetch(FetchDescriptor<FarmRecord>()).first)
@@ -667,6 +675,93 @@ final class AppSchemaMigrationTests: XCTestCase {
             try context.fetchCount(FetchDescriptor<FarmBaselineMigrationRecord>()),
             0
         )
+    }
+
+    // Read the fixture's actual persisted model fingerprint; never set metadata.
+    // A diagnostic read failure must not replace the original migration result.
+    private func v4MigrationStoreMetadata(at url: URL, phase: String) -> [String: Any]? {
+        do {
+            let metadata = try autoreleasepool {
+                try NSPersistentStoreCoordinator.metadataForPersistentStore(type: .sqlite, at: url)
+            }
+            let hashes = metadata[NSStoreModelVersionHashesKey] as? [String: Data]
+            v4MigrationPrintHashEvidence([
+                "phase": phase,
+                "store": url.lastPathComponent,
+                "checksum": metadata["NSStoreModelVersionChecksumKey"] as? String ?? "<missing>",
+                "versionIdentifiers": String(describing: metadata[NSStoreModelVersionIdentifiersKey] ?? "<missing>"),
+                "storeUUID": metadata[NSStoreUUIDKey] as? String ?? "<missing>",
+                "hasEntityHashes": hashes != nil,
+                "entityHashes": (hashes ?? [:]).mapValues { $0.base64EncodedString() },
+            ])
+            return metadata
+        } catch {
+            let diagnosticError = error as NSError
+            v4MigrationPrintHashEvidence([
+                "phase": phase,
+                "metadataReadError": "\(diagnosticError.domain)/\(diagnosticError.code)",
+            ])
+            return nil
+        }
+    }
+
+    // Generate reference fingerprints only after reopening has already failed,
+    // so successful migration keeps the production container path unchanged.
+    private func v4MigrationExpectedModelHashes(before: [String: Any]?, after: [String: Any]?) {
+        let beforeHashes = before?[NSStoreModelVersionHashesKey] as? [String: Data]
+        let afterHashes = after?[NSStoreModelVersionHashesKey] as? [String: Data]
+        for versionedSchema in AppSchemaMigrationPlan.schemas {
+            var evidence: [String: Any] = [
+                "phase": "after-failure-reference-model",
+                "generator": "CoreData PersistentModel-array factory",
+                "comparisonConfiguration": "default",
+                "version": "\(versionedSchema.versionIdentifier)",
+            ]
+            // The PersistentModel array overload is available on iOS 17.
+            // The Schema overload is iOS 26-only and must not be used here.
+            guard let model = NSManagedObjectModel.makeManagedObjectModel(for: versionedSchema.models) else {
+                evidence["modelGenerationFailed"] = true
+                v4MigrationPrintHashEvidence(evidence)
+                continue
+            }
+            let checksum = model.versionChecksum
+            evidence["checksum"] = checksum
+            evidence["matchesBeforeChecksum"] = (before?["NSStoreModelVersionChecksumKey"] as? String) == checksum
+            evidence["matchesAfterChecksum"] = (after?["NSStoreModelVersionChecksumKey"] as? String) == checksum
+            if let before, beforeHashes != nil {
+                evidence["compatibleBefore"] = model.isConfiguration(withName: nil, compatibleWithStoreMetadata: before)
+            }
+            if let after, afterHashes != nil {
+                evidence["compatibleAfter"] = model.isConfiguration(withName: nil, compatibleWithStoreMetadata: after)
+            }
+            if versionedSchema.versionIdentifier == AppSchemaV4.versionIdentifier ||
+                versionedSchema.versionIdentifier == AppSchemaV5.versionIdentifier {
+                let expectedHashes = model.entityVersionHashesByName
+                evidence["entityHashes"] = expectedHashes.mapValues { $0.base64EncodedString() }
+                if let beforeHashes {
+                    let names = Set(beforeHashes.keys).union(expectedHashes.keys)
+                    evidence["differingEntitiesBefore"] = names.filter {
+                        beforeHashes[$0] != expectedHashes[$0]
+                    }.sorted()
+                }
+                if let afterHashes {
+                    let names = Set(afterHashes.keys).union(expectedHashes.keys)
+                    evidence["differingEntitiesAfter"] = names.filter {
+                        afterHashes[$0] != expectedHashes[$0]
+                    }.sorted()
+                }
+            }
+            v4MigrationPrintHashEvidence(evidence)
+        }
+    }
+
+    private func v4MigrationPrintHashEvidence(_ evidence: [String: Any]) {
+        do {
+            let data = try JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys])
+            print("V4_MODEL_HASH_EVIDENCE " + String(decoding: data, as: UTF8.self))
+        } catch {
+            print("V4_MODEL_HASH_EVIDENCE diagnostic serialization failed")
+        }
     }
 
     func testOpeningPersistentStoreDoesNotCreateBusinessOperationsOrOutbox() throws {

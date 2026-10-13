@@ -2370,17 +2370,7 @@ final class FarmDomainTests: XCTestCase {
     }
 
     private func makeContainer() throws -> ModelContainer {
-        let schema = Schema([
-            AccountProfile.self, FarmRecord.self, FarmActivity.self, PenRecord.self, SheepRecord.self,
-            WeightRecord.self, WeaningRecord.self, BreedingProgramRecord.self, BreedingProgramStepRecord.self, TransferRecord.self, RemovalRecord.self, ProductionBatchRecord.self,
-            BatchMembershipRecord.self, DailyPenCountRecord.self, FeedIngredientRecord.self, FeedRecipeRecord.self,
-            FeedRecipeComponentRecord.self, FeedRecord.self, FeedRecordLine.self, InventoryLotRecord.self,
-            InventoryTransactionRecord.self, HealthRecord.self, ReproductionRecord.self, SemenRecord.self,
-            NoteRecord.self, DomainOperation.self, OutboxItem.self,
-            TombstoneRecord.self, MigrationCommitRecord.self, MigrationAuditRecord.self, PhotoAssetRecord.self, HealthSubjectLink.self, LambingOffspringRecord.self, FeedIngredientBatchRecord.self, HealthCatalogItemRecord.self,
-            FarmStorageProfile.self, FarmRemoteBinding.self, FarmMembershipBinding.self,
-            FarmOperationSequenceCounter.self, FarmOperationSequenceRecord.self,
-        ])
+        let schema = Schema(AppSchema.modelTypes)
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         return try ModelContainer(for: schema, configurations: configuration)
     }

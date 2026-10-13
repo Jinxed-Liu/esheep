@@ -57,7 +57,15 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
     private var editorOpacity: Double {
         guard showsAudioBar else { return 1 }
         if #available(iOS 18, *) { return 0 }
-        return 0.001
+        return 1
+    }
+    private var editorAllowsHitTesting: Bool {
+        if #available(iOS 18, *) { return !showsAudioBar }
+        return true
+    }
+    private var editorPlaceholder: String {
+        if #available(iOS 18, *) { return placeholder }
+        return showsAudioBar ? "" : placeholder
     }
     private var expanded: Bool {
         isFocused.wrappedValue || hasContent || audioRecorder.isRecording || modeTitle != nil
@@ -85,9 +93,9 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
                     textInput.padding(.horizontal, expanded ? 12 : 0)
                         .frame(height: showsAudioBar ? 24 : nil)
                         .opacity(editorOpacity)
-                        .allowsHitTesting(!showsAudioBar)
+                        .allowsHitTesting(editorAllowsHitTesting)
                         .accessibilityHidden(showsAudioBar)
-                    if showsAudioBar { audioBar }
+                    if showsAudioBar { presentedAudioBar }
                 }
                 if !expanded && !showsAudioBar {
                     microphoneButton
@@ -148,8 +156,21 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
         }
     }
 
+    @ViewBuilder
     private var textInput: some View {
-        TextField(placeholder, text: $text, axis: .vertical)
+        if #available(iOS 18, *) {
+            nativeTextInput
+        } else {
+            // The legacy text view stays eligible as the existing responder.
+            // Hide its glyphs and caret while the audio controls cover it.
+            nativeTextInput
+                .foregroundStyle(showsAudioBar ? Color.clear : Color.primary)
+                .tint(showsAudioBar ? Color.clear : AppTheme.brand)
+        }
+    }
+
+    private var nativeTextInput: some View {
+        TextField(editorPlaceholder, text: $text, axis: .vertical)
             .font(.system(size: inputFontSize))
             .lineSpacing(3)
             .lineLimit(1...6)
@@ -161,6 +182,20 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
             .submitLabel(.return)
             .frame(minHeight: 24)
             .accessibilityIdentifier("insight.composer.text")
+    }
+
+    @ViewBuilder
+    private var presentedAudioBar: some View {
+        if #available(iOS 18, *) {
+            audioBar
+        } else {
+            audioBar.background {
+                // Consume taps in the spaces between controls so the covered
+                // legacy editor cannot be edited through the recording bar.
+                Color.clear.contentShape(.rect).onTapGesture {}
+                    .accessibilityHidden(true)
+            }
+        }
     }
 
     private var toolRow: some View {
