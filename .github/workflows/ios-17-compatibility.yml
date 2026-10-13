@@ -1,0 +1,109 @@
+name: iOS 17 compatibility
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'eSheepNext/**'
+      - 'eSheepNextTests/**'
+      - 'eSheepNextUITests/**'
+      - 'eSheepNext.xcodeproj/**'
+      - 'Packages/ESMotion/**'
+      - 'tools/verify_ios_compatibility.py'
+      - '.github/workflows/ios-17-compatibility.yml'
+  push:
+    branches: [main, 'codex/**']
+    paths:
+      - 'eSheepNext/**'
+      - 'eSheepNextTests/**'
+      - 'eSheepNextUITests/**'
+      - 'eSheepNext.xcodeproj/**'
+      - 'Packages/ESMotion/**'
+      - 'tools/verify_ios_compatibility.py'
+      - '.github/workflows/ios-17-compatibility.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-17-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  legacy-runtime:
+    # Keep the latest-system regression on its existing macOS 26 / Xcode 26.6
+    # host. This separate older host can install the iOS 17 simulator runtime.
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install the stable iOS 17.5 runtime
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcodebuild -downloadPlatform iOS -buildVersion 17.5
+      - name: Create an iOS 17 iPhone on the disposable runner
+        run: |
+          set -euo pipefail
+          xcrun simctl list --json > "$RUNNER_TEMP/simulators.json"
+          python3 - <<'PY'
+          import json, os, subprocess
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'simulators.json')) as file:
+              inventory = json.load(file)
+          candidates = [runtime for runtime in inventory['runtimes']
+                        if runtime.get('isAvailable') and runtime.get('version') == '17.5'
+                        and '.SimRuntime.iOS-' in runtime.get('identifier', '')]
+          if len(candidates) != 1:
+              raise SystemExit('The installed iOS 17.5 runtime is unavailable on this host.')
+          runtime = candidates[0]['identifier']
+          subprocess.run(['xcrun', 'simctl', 'create', 'eSheep iOS 17 CI',
+                          'com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro', runtime], check=True)
+          PY
+      - name: Run the complete UI and XCTest suites on iOS 17
+        run: |
+          set -euo pipefail
+          python3 -u - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'tools')
+          import verify_ios_compatibility as gate
+          toolchain = gate.validate_xcode(gate.capture(['xcodebuild', '-version']), [os.environ['DEVELOPER_DIR']])
+          inventory = json.loads(gate.capture(['xcrun', 'simctl', 'list', '--json']))
+          sdk = gate.capture(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version']).strip()
+          destination = gate.select_destinations(inventory, inventory, sdk)[0]
+          output = Path(os.environ['RUNNER_TEMP']) / 'ios-17-compatibility'
+          output.mkdir()
+          (output / 'selection.json').write_text(json.dumps({
+              'toolchain': toolchain, 'sdkVersion': sdk, 'destination': gate.asdict(destination),
+          }, indent=2))
+          reports = []
+          for scheme in gate.SCHEMES:
+              report = {'scheme': scheme, 'runtime': destination.version}
+              try:
+                  report['summary'] = gate.run_suite(destination, scheme, output)
+                  report['passed'] = True
+              except (gate.GateError, OSError, ValueError) as error:
+                  report.update(passed=False, error=str(error))
+                  print(str(error), file=sys.stderr, flush=True)
+              reports.append(report)
+              (output / 'results.json').write_text(json.dumps(reports, indent=2))
+          raise SystemExit(0 if all(report['passed'] for report in reports) else 1)
+          PY
+      - name: Preserve iOS 17 runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ios-17-compatibility-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/simulators.json
+            ${{ runner.temp }}/ios-17-compatibility/**/build.log
+            ${{ runner.temp }}/ios-17-compatibility/**/test.log
+            ${{ runner.temp }}/ios-17-compatibility/**/Tests.xcresult
+            ${{ runner.temp }}/ios-17-compatibility/**/summary.json
+            ${{ runner.temp }}/ios-17-compatibility/*.json

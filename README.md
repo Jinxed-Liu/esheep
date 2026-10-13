@@ -71,9 +71,13 @@
 ```bash
 ./tools/verify_local.sh static
 ./tools/verify_local.sh ios
+python3 tools/verify_ios_compatibility.py --list
+python3 tools/verify_ios_compatibility.py
 ./tools/verify_local.sh web backend
 ALLOW_LOCAL_DB_RESET=1 ./tools/verify_local.sh db
 ./tools/verify_local.sh all
 ```
 
 不传参数时默认执行 `all`。`db` 只使用本地 Supabase 容器，并在非 CI 环境要求显式确认后才允许 reset；任何入口都不会上传、发布、迁移生产数据或清理 `outputs/`。`ios` 继续拒绝把 Beta Xcode 当作正式发布门禁，只有显式设置 `ALLOW_BETA_XCODE=1` 时才可用于诊断。身份兼容路径和遗留 Worker 的实际调用边界见 [`docs/legacy-identity-compatibility-matrix.md`](docs/legacy-identity-compatibility-matrix.md)。
+
+`verify_ios_compatibility.py` 在 Mac 上分别运行 iOS 17 与当前 SDK 支持的最新稳定 iOS 26 或更高版本的 XCTest 和 UI 回归，并保存各自的日志、结果包和截图附件。需要稳定版 Xcode 26 或更高版本，以及两个版本的可用 iPhone 模拟器；缺少任一运行时会明确失败，不会用新版结果代替 iOS 17 验收。`--list` 可先检查选择结果，`--dry-run` 可预览构建命令。头像回归覆盖两次下拉、全屏查看、关闭后布局恢复和导航往返；新版系统继续使用原生界面和动画。
