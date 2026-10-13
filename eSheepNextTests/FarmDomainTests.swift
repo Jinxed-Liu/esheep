@@ -2379,6 +2379,7 @@ final class FarmDomainTests: XCTestCase {
             NoteRecord.self, DomainOperation.self, OutboxItem.self,
             TombstoneRecord.self, MigrationCommitRecord.self, MigrationAuditRecord.self, PhotoAssetRecord.self, HealthSubjectLink.self, LambingOffspringRecord.self, FeedIngredientBatchRecord.self, HealthCatalogItemRecord.self,
             FarmStorageProfile.self, FarmRemoteBinding.self, FarmMembershipBinding.self,
+            FarmOperationSequenceCounter.self, FarmOperationSequenceRecord.self,
         ])
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         return try ModelContainer(for: schema, configurations: configuration)
