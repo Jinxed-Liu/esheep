@@ -3,9 +3,6 @@ import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
-#if DEBUG
-import OSLog
-#endif
 
 private enum InsightAudioPlaybackSource: Equatable {
     case pending
@@ -1579,49 +1576,6 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
         private weak var owningScreen: UIViewController?
         private var isVisible = false
 
-        #if DEBUG
-        private static let diagnosticLogger = Logger(subsystem: "com.sheepfarm.compatibility", category: "native-pop")
-        private let diagnosticID = UUID()
-        #endif
-
-        private func diagnose(_ event: @autoclosure () -> String) {
-            #if DEBUG
-            guard ProcessInfo.processInfo.arguments.contains("--design-acceptance") else { return }
-            Self.diagnosticLogger.debug("pop[\(self.diagnosticID.uuidString, privacy: .public)] \(event(), privacy: .public)")
-            #endif
-        }
-
-        private func diagnosticClass(_ object: AnyObject?) -> String {
-            object.map { String(describing: type(of: $0)) } ?? "nil"
-        }
-
-        private func diagnosticRole(_ recognizer: UIGestureRecognizer) -> String {
-            recognizer === contentRecognizer ? "content" : "edge"
-        }
-
-        private func diagnosticTouchAncestry(_ touchedView: UIView?) -> String {
-            var classes: [String] = []
-            var ancestor = touchedView
-            while let view = ancestor, classes.count < 16 {
-                var flags = ""
-                if view is UIControl { flags += ":control" }
-                if view is any UITextInput { flags += ":text-input" }
-                if let scroll = view as? UIScrollView {
-                    let horizontal = scroll.isScrollEnabled &&
-                        (scroll.alwaysBounceHorizontal || scroll.contentSize.width > scroll.bounds.width + 1)
-                    flags += ":scroll-horizontal=\(horizontal)"
-                }
-                classes.append(diagnosticClass(view) + flags)
-                ancestor = view.superview
-            }
-            return classes.joined(separator: ">")
-        }
-
-        private func diagnosticBeginGuards(_ recognizer: UIGestureRecognizer) -> String {
-            let navigation = owningNavigationController
-            return "visible=\(isVisible) presentation=\(isPresentationActive) saved=\(savedRecognizers.contains { $0.recognizer === recognizer }) navigation=\(navigation != nil) top=\(navigation?.topViewController === owningScreen) stacked=\((navigation?.viewControllers.count ?? 0) > 1) modal=\(navigation?.presentedViewController != nil) transition=\(navigation?.transitionCoordinator != nil)"
-        }
-
         override func loadView() {
             let anchor = UIView()
             anchor.backgroundColor = .clear
@@ -1633,23 +1587,7 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
         override func viewDidAppear(_ animated: Bool) {
             super.viewDidAppear(animated)
             isVisible = true
-            diagnose("view.appear animated=\(animated)")
             installIfNeeded()
-        }
-
-        override func viewWillDisappear(_ animated: Bool) {
-            super.viewWillDisappear(animated)
-            diagnose("view.will-disappear animated=\(animated) transition=\(owningNavigationController?.transitionCoordinator != nil || transitionCoordinator != nil)")
-            #if DEBUG
-            guard ProcessInfo.processInfo.arguments.contains("--design-acceptance"),
-                  let transition = owningNavigationController?.transitionCoordinator ?? transitionCoordinator else { return }
-            let logger = Self.diagnosticLogger
-            let traceID = diagnosticID.uuidString
-            diagnose("transition.begin interactive=\(transition.isInteractive) animated=\(transition.isAnimated)")
-            transition.animate(alongsideTransition: nil) { context in
-                logger.debug("pop[\(traceID, privacy: .public)] transition.complete cancelled=\(context.isCancelled, privacy: .public) interactive=\(context.isInteractive, privacy: .public)")
-            }
-            #endif
         }
 
         override func viewDidLayoutSubviews() {
@@ -1660,21 +1598,16 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
         override func viewDidDisappear(_ animated: Bool) {
             super.viewDidDisappear(animated)
             isVisible = false
-            diagnose("view.disappear animated=\(animated)")
             restore()
         }
 
         func invalidate() {
             isVisible = false
-            diagnose("invalidate transition=\(owningNavigationController?.transitionCoordinator != nil)")
             // Dismantling can occur during a pop. Keep the delegate alive until
             // UIKit has finished or cancelled that interactive transition.
             if let transition = owningNavigationController?.transitionCoordinator,
                transition.isInteractive {
-                transition.animate(alongsideTransition: nil) { [self] context in
-                    diagnose("invalidate.transition.complete cancelled=\(context.isCancelled)")
-                    restore()
-                }
+                transition.animate(alongsideTransition: nil) { [self] _ in restore() }
             } else {
                 restore()
             }
@@ -1684,10 +1617,7 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
             guard isVisible, view.window != nil,
                   let (navigation, screen) = navigationOwner,
                   navigation.topViewController === screen,
-                  navigation.viewControllers.count > 1 else {
-                diagnose("install.skip visible=\(isVisible) window=\(view.window != nil) owner=\(navigationOwner != nil)")
-                return
-            }
+                  navigation.viewControllers.count > 1 else { return }
             var recognizers = [navigation.interactivePopGestureRecognizer].compactMap { $0 }
             let content: UIGestureRecognizer?
             if #available(iOS 26, *) {
@@ -1696,14 +1626,12 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
             } else {
                 content = nil
             }
-            diagnose("install.inspect edge=\(diagnosticClass(navigation.interactivePopGestureRecognizer)) edgeEnabled=\(navigation.interactivePopGestureRecognizer?.isEnabled ?? false) edgeDelegate=\(diagnosticClass(navigation.interactivePopGestureRecognizer?.delegate)) content=\(diagnosticClass(content)) contentEnabled=\(content?.isEnabled ?? false) contentDelegate=\(diagnosticClass(content?.delegate))")
             guard !recognizers.isEmpty else { return }
             if savedRecognizers.count == recognizers.count,
                recognizers.allSatisfy({ candidate in
                    candidate.delegate === self && savedRecognizers.contains { $0.recognizer === candidate }
                }) {
                 recognizers.forEach { $0.isEnabled = true }
-                diagnose("install.reused edgeEnabled=\(navigation.interactivePopGestureRecognizer?.isEnabled ?? false) contentEnabled=\(content?.isEnabled ?? false)")
                 return
             }
             restore()
@@ -1722,7 +1650,6 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
                 ))
                 recognizer.delegate = self
                 recognizer.isEnabled = true
-                diagnose("install.applied role=\(diagnosticRole(recognizer)) enabled=\(recognizer.isEnabled) delegate=\(diagnosticClass(recognizer.delegate)) previous=\(diagnosticClass(previousDelegate(for: recognizer)))")
             }
         }
 
@@ -1738,7 +1665,6 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
         }
 
         private func restore() {
-            diagnose("restore saved=\(savedRecognizers.count)")
             // A newly visible destination may have installed its own policy.
             // Restore only while this bridge still owns the recognizer.
             for saved in savedRecognizers {
@@ -1759,20 +1685,12 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
                   navigation.topViewController === owningScreen,
                   navigation.viewControllers.count > 1,
                   navigation.presentedViewController == nil,
-                  navigation.transitionCoordinator == nil else {
-                diagnose("begin.reject role=\(diagnosticRole(gestureRecognizer)) \(diagnosticBeginGuards(gestureRecognizer))")
-                return false
-            }
+                  navigation.transitionCoordinator == nil else { return false }
             if gestureRecognizer === contentRecognizer, let pan = gestureRecognizer as? UIPanGestureRecognizer {
                 let velocity = pan.velocity(in: pan.view)
                 let direction: CGFloat = navigation.view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? -1 : 1
-                guard velocity.x * direction > 0, abs(velocity.x) > abs(velocity.y) else {
-                    diagnose("begin.reject-velocity role=content x=\(velocity.x) y=\(velocity.y) direction=\(direction)")
-                    return false
-                }
-                diagnose("begin.velocity role=content x=\(velocity.x) y=\(velocity.y) direction=\(direction)")
+                guard velocity.x * direction > 0, abs(velocity.x) > abs(velocity.y) else { return false }
             }
-            diagnose("begin.allow role=\(diagnosticRole(gestureRecognizer)) \(diagnosticBeginGuards(gestureRecognizer))")
             return true
         }
 
@@ -1808,13 +1726,8 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-            if gestureRecognizer === contentRecognizer, isContentInteraction(touch.view) {
-                diagnose("receive.reject-control role=content ancestry=\(diagnosticTouchAncestry(touch.view)) previous=not-consulted")
-                return false
-            }
-            let previous = previousDelegate(for: gestureRecognizer)?.gestureRecognizer?(gestureRecognizer, shouldReceive: touch)
-            diagnose("receive.result role=\(diagnosticRole(gestureRecognizer)) ancestry=\(diagnosticTouchAncestry(touch.view)) previous=\(previous.map { String($0) } ?? "nil") result=\(previous ?? true)")
-            return previous ?? true
+            if gestureRecognizer === contentRecognizer, isContentInteraction(touch.view) { return false }
+            return previousDelegate(for: gestureRecognizer)?.gestureRecognizer?(gestureRecognizer, shouldReceive: touch) ?? true
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {

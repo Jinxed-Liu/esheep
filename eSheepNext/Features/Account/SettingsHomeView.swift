@@ -471,7 +471,40 @@ private final class SettingsAvatarScrollController {
 @MainActor
 @Observable
 private final class SettingsAvatarModernScrollState {
-    var position = ScrollPosition(edge: .top)
+    // ObjC class enumeration can realize this class even on iOS 17. Keep the
+    // stored layout free of newer SwiftUI types; availability guards callers.
+    @ObservationIgnored private var positionStorage: Any
+
+    init() {
+        positionStorage = ScrollPosition(edge: .top)
+    }
+
+    var position: ScrollPosition {
+        get {
+            access(keyPath: \.position)
+            return positionStorage as! ScrollPosition
+        }
+        set {
+            let previous = positionStorage as! ScrollPosition
+            guard shouldNotifyObservers(previous, newValue) else {
+                positionStorage = newValue
+                return
+            }
+            withMutation(keyPath: \.position) {
+                positionStorage = newValue
+            }
+        }
+        _modify {
+            access(keyPath: \.position)
+            _$observationRegistrar.willSet(self, keyPath: \.position)
+            var value = positionStorage as! ScrollPosition
+            defer {
+                positionStorage = value
+                _$observationRegistrar.didSet(self, keyPath: \.position)
+            }
+            yield &value
+        }
+    }
 }
 
 @MainActor
