@@ -621,3 +621,23 @@ final class ESheepCloudMigrationState {
         set { phaseRawValue = newValue.rawValue; updatedAt = .now }
     }
 }
+
+
+/// Device-local cache of authenticated control-plane identity. Never transfer
+/// this watermark in a business checkpoint or change historical model shapes.
+@Model
+final class ESheepCloudFarmIdentityState {
+    var id: UUID
+    var farmID: UUID
+    var farmGeneration: Int
+    var name: String
+    var revision: Int64
+
+    init(farmID: UUID, farmGeneration: Int, name: String, revision: Int64) {
+        self.id = UUID()
+        self.farmID = farmID
+        self.farmGeneration = farmGeneration
+        self.name = name
+        self.revision = revision
+    }
+}

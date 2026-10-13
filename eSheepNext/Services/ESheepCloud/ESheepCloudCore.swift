@@ -458,10 +458,11 @@ actor ESheepCloudLocalStore {
             guard !page.hasMore, page.cloudHead >= state.lastAppliedEventSequence else {
                 throw ESheepCloudProjectionError.streamDigestMismatch
             }
-            if page.cloudHead > state.cloudEventHead {
-                state.cloudEventHead = page.cloudHead
-                try context.save()
+            if let identity = page.farmIdentity {
+                try ESheepCloudFarmIdentityProjection.apply(identity, state: state, context: context)
             }
+            state.cloudEventHead = max(state.cloudEventHead, page.cloudHead)
+            if context.hasChanges { try context.save() }
             return 0
         }
         var earliestHistoryChange: Date?
@@ -485,6 +486,9 @@ actor ESheepCloudLocalStore {
             }
             replayContext.registerInsertedModels(in: context)
             domainApplyService.rebuildPendingReplayIndex(in: context)
+            if let identity = page.farmIdentity {
+                try ESheepCloudFarmIdentityProjection.apply(identity, state: state, context: context)
+            }
             state.cloudEventHead = max(state.cloudEventHead, page.cloudHead)
             try finalizeAcceptedIntents(farmID: farmID, context: context)
             if let earliestHistoryChange {

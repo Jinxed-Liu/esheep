@@ -3,11 +3,31 @@ import Supabase
 
 /// Provider SDK types terminate here; collaboration UI and domain code see
 /// only eSheep+ Cloud membership contracts.
-actor ESheepCloudMembershipInfrastructureGateway: ESheepCloudMembershipGateway {
+actor ESheepCloudMembershipInfrastructureGateway: ESheepCloudMembershipGateway, ESheepCloudFarmIdentityGateway {
     private let client: SupabaseClient
 
     init(client: SupabaseClient) {
         self.client = client
+    }
+
+    func farmIdentity(farmID: UUID, generation: Int) async throws -> ESheepCloudFarmIdentityV2 {
+        let identity: ESheepCloudFarmIdentityV2 = try await client.rpc(
+            "esheep_cloud_farm_identity_v2",
+            params: IdentityParameters(p_farm_id: farmID, p_farm_generation: generation)
+        ).execute().value
+        try identity.validate(farmID: farmID, generation: generation)
+        return identity
+    }
+
+    func renameFarm(farmID: UUID, generation: Int, name: String, expectedRevision: Int64,
+                    requestID: UUID) async throws -> ESheepCloudFarmIdentityV2 {
+        let identity: ESheepCloudFarmIdentityV2 = try await client.rpc(
+            "esheep_cloud_rename_farm_v2", params: RenameFarmParameters(
+                p_farm_id: farmID, p_farm_generation: generation, p_name: name,
+                p_expected_revision: expectedRevision, p_request_id: requestID)
+        ).execute().value
+        try identity.validate(farmID: farmID, generation: generation)
+        return identity
     }
 
     func accessibleFarms() async throws -> [ESheepCloudFarmAccessV2] {
@@ -91,6 +111,7 @@ private struct FarmAccessWire: Decodable, Sendable {
     let memberAccountID: UUID
     let role: String
     let initialSyncReady: Bool
+    let farmIdentity: ESheepCloudFarmIdentityV2?
 
     enum CodingKeys: String, CodingKey {
         case farmID = "farm_id"
@@ -98,6 +119,7 @@ private struct FarmAccessWire: Decodable, Sendable {
         case memberAccountID = "member_account_id"
         case role
         case initialSyncReady = "initial_sync_ready"
+        case farmIdentity = "farm_identity"
     }
 
     func domainValue() throws -> ESheepCloudFarmAccessV2 {
@@ -105,12 +127,14 @@ private struct FarmAccessWire: Decodable, Sendable {
               let role = FarmRole(rawValue: role) else {
             throw ESheepCloudMembershipError.malformedResponse
         }
+        try farmIdentity?.validate(farmID: farmID, generation: farmGeneration)
         return .init(
             farmID: farmID,
             farmGeneration: farmGeneration,
             memberAccountID: memberAccountID,
             role: role,
-            initialSyncReady: initialSyncReady
+            initialSyncReady: initialSyncReady,
+            farmIdentity: farmIdentity
         )
     }
 }
@@ -197,4 +221,18 @@ private struct RevocationWire: Decodable, Sendable {
         case memberID = "member_id"
         case status
     }
+}
+
+
+private struct IdentityParameters: Encodable, Sendable {
+    let p_farm_id: UUID
+    let p_farm_generation: Int
+}
+
+private struct RenameFarmParameters: Encodable, Sendable {
+    let p_farm_id: UUID
+    let p_farm_generation: Int
+    let p_name: String
+    let p_expected_revision: Int64
+    let p_request_id: UUID
 }

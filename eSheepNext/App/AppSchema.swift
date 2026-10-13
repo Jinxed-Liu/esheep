@@ -541,6 +541,11 @@ enum AppSchemaV14: VersionedSchema {
 
 enum AppSchemaV15: VersionedSchema {
     static let versionIdentifier = Schema.Version(15, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.v15ModelTypes }
+}
+
+enum AppSchemaV16: VersionedSchema {
+    static let versionIdentifier = Schema.Version(16, 0, 0)
     static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
 }
 
@@ -563,6 +568,7 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             AppSchemaV13.self,
             AppSchemaV14.self,
             AppSchemaV15.self,
+            AppSchemaV16.self,
         ]
     }
 
@@ -703,12 +709,13 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: AppSchemaV12.self, toVersion: AppSchemaV13.self),
             .lightweight(fromVersion: AppSchemaV13.self, toVersion: AppSchemaV14.self),
             .lightweight(fromVersion: AppSchemaV14.self, toVersion: AppSchemaV15.self),
+            .lightweight(fromVersion: AppSchemaV15.self, toVersion: AppSchemaV16.self),
         ]
     }
 }
 
 enum AppSchema {
-    static let currentVersion = "15.0.0"
+    static let currentVersion = "16.0.0"
 
     static func defaultStoreURL(name: String = "eSheepNext") -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -1034,8 +1041,12 @@ enum AppSchema {
 
     fileprivate static var v14ModelTypes: [any PersistentModel.Type] { v13ModelTypes + [ESheepCloudCheckpointState.self] }
 
-    static var modelTypes: [any PersistentModel.Type] {
+    fileprivate static var v15ModelTypes: [any PersistentModel.Type] {
         v14ModelTypes + [SheepLabelRecord.self, SheepLabelAssignmentRecord.self, SheepLabelChangeRecord.self]
+    }
+
+    static var modelTypes: [any PersistentModel.Type] {
+        v15ModelTypes + [ESheepCloudFarmIdentityState.self]
     }
 
     fileprivate static var preV4ModelTypes: [any PersistentModel.Type] {
@@ -1079,7 +1090,7 @@ enum AppSchema {
     }
 
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV15.self)
+        Schema(versionedSchema: AppSchemaV16.self)
     }
 
     static func makeConfiguration(

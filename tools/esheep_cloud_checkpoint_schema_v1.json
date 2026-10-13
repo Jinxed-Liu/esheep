@@ -1841,5 +1841,15 @@
       "snapshotsJSON": "String",
       "occurredAt": "Date"
     }
+  },
+  "ESheepCloudFarmIdentityState": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "farmGeneration": "Int",
+      "name": "String",
+      "revision": "Int64"
+    }
   }
 }

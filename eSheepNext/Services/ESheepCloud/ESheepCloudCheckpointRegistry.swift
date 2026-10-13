@@ -428,6 +428,13 @@ enum ESheepCloudCheckpointRegistry {
             ], farmID: \ESheepCloudEventReceipt.farmID, recordID: \ESheepCloudEventReceipt.id),
         ])
         result.append(contentsOf: [
+            ESheepCloudCheckpointModelAdapter(ESheepCloudFarmIdentityState.self, disposition: .localOnly, fields: [
+                .init("id", \ESheepCloudFarmIdentityState.id),
+                .init("farmID", \ESheepCloudFarmIdentityState.farmID),
+                .init("farmGeneration", \ESheepCloudFarmIdentityState.farmGeneration),
+                .init("name", \ESheepCloudFarmIdentityState.name),
+                .init("revision", \ESheepCloudFarmIdentityState.revision),
+            ], farmID: \ESheepCloudFarmIdentityState.farmID, recordID: \ESheepCloudFarmIdentityState.id),
             ESheepCloudCheckpointModelAdapter(ESheepCloudFarmState.self, disposition: .localOnly, fields: [
                 .init("id", \ESheepCloudFarmState.id),
                 .init("farmID", \ESheepCloudFarmState.farmID),

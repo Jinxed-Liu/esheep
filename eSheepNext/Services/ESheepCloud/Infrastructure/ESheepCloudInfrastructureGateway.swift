@@ -150,11 +150,13 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
               (wire.hasMore == ((events.last?.eventSequence ?? max(0, eventSequence)) < wire.cloudHead)) else {
             throw ESheepCloudInfrastructureError.malformedResponse
         }
+        try wire.farmIdentity?.validate(farmID: farmID, generation: farmGeneration)
         for event in events { try event.validateDigest() }
         return ESheepCloudEventPageV2(
             events: events,
             cloudHead: wire.cloudHead,
-            hasMore: wire.hasMore
+            hasMore: wire.hasMore,
+            farmIdentity: wire.farmIdentity
         )
     }
 
@@ -875,8 +877,10 @@ private struct EventPageWire: Decodable, Sendable {
     let events: [EventWire]
     let cloudHead: Int64
     let hasMore: Bool
+    let farmIdentity: ESheepCloudFarmIdentityV2?
 
     enum CodingKeys: String, CodingKey {
+        case farmIdentity = "farm_identity"
         case events
         case cloudHead = "cloud_head"
         case hasMore = "has_more"

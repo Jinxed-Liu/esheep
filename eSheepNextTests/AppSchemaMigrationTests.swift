@@ -6,6 +6,31 @@ import XCTest
 
 @MainActor
 final class AppSchemaMigrationTests: XCTestCase {
+    func testV15ToV16PreservesFarmAndHistoryAndKeepsNameWatermarkLocal() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "V16Identity-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "farm.store")
+        let farmID = UUID(), noteID = UUID()
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV15.self)
+            XCTAssertFalse(schema.entities.contains { $0.name == "ESheepCloudFarmIdentityState" })
+            let config = ModelConfiguration("identity", schema: schema, url: url, cloudKitDatabase: .none)
+            let old = try ModelContainer(for: schema, configurations: [config])
+            let context = ModelContext(old)
+            context.insert(FarmRecord(id: farmID, ownerAccountID: UUID(), name: "星露谷牧场"))
+            context.insert(NoteRecord(id: noteID, farmID: farmID, text: "保留全部原始历史", occurredAt: .now))
+            try context.save()
+        }
+        let migrated = try AppSchema.makeContainer(name: "identity", url: url)
+        let context = ModelContext(migrated)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<FarmRecord>()).first?.id, farmID)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<FarmRecord>()).first?.name, "星露谷牧场")
+        XCTAssertEqual(try context.fetch(FetchDescriptor<NoteRecord>()).first?.id, noteID)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<NoteRecord>()).first?.text, "保留全部原始历史")
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<ESheepCloudFarmIdentityState>()), 0)
+    }
+
     func testHistoricalSchemasDoNotAbsorbTMRModels() {
         let historicalSchemas: [any VersionedSchema.Type] = [
             AppSchemaV1.self,
@@ -37,10 +62,10 @@ final class AppSchemaMigrationTests: XCTestCase {
 
     func testVersionedSchemaContainsEveryCurrentModel() {
         let historicalV12 = Schema(versionedSchema: AppSchemaV12.self)
-        let versioned = Schema(versionedSchema: AppSchemaV15.self)
+        let versioned = Schema(versionedSchema: AppSchemaV16.self)
         let current = AppSchema.makeSchema()
 
-        XCTAssertEqual(AppSchema.currentVersion, "15.0.0")
+        XCTAssertEqual(AppSchema.currentVersion, "16.0.0")
         XCTAssertEqual(versioned.entities.map(\.name).sorted(), current.entities.map(\.name).sorted())
         XCTAssertTrue(
             Set(versioned.entities.map(\.name)).isSuperset(
@@ -91,9 +116,10 @@ final class AppSchemaMigrationTests: XCTestCase {
                 Schema.Version(13, 0, 0),
                 Schema.Version(14, 0, 0),
                 Schema.Version(15, 0, 0),
+                Schema.Version(16, 0, 0),
             ]
         )
-        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 15)
+        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 16)
     }
 
     func testV13ToV14PreservesOriginalPendingCommandAndIdentity() throws {

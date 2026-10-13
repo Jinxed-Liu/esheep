@@ -211,9 +211,26 @@ export async function loadCloudV2Projection(client, farm, { accountID, storageOr
   const finalStatus = await rpc(client, "esheep_cloud_fetch_status_v2", { p_farm_id: farm.id }, signal);
   requireValue(finalStatus.farm_generation === farm.generation && finalStatus.cloud_head >= targetHead && finalStatus.v2_ready === true,
     "牧场云同步版本已变化，请刷新重试。");
+  applyFarmIdentity(projection, finalStatus.farm_identity, farm);
   signal?.throwIfAborted();
   await persistentCache.prune?.(`${storageOrigin}:${accountID}:${farm.id.toLowerCase()}:${farm.generation}:`, persistentScope);
   return { ...finishV2Projection(projection), manifest, revision: targetHead };
+}
+
+// Live identity is authenticated control-plane data. Apply it only after
+// checkpoint/event verification; cached immutable rows remain unchanged.
+export function applyFarmIdentity(projection, identity, farm) {
+  if (identity == null) return;
+  requireValue(sameID(identity.farmID, farm.id) && identity.farmGeneration === farm.generation &&
+    Number.isSafeInteger(identity.revision) && identity.revision >= 0 &&
+    typeof identity.name === "string" && identity.name.trim().length > 0 &&
+    [...identity.name].length <= 80 && !/[\u0000-\u001f\u007f-\u009f]/u.test(identity.name));
+  const row = projection.models.get("FarmRecord")?.get(farm.id.toLowerCase());
+  requireValue(row && sameID(row.id, identity.farmID));
+  if (identity.revision < (projection.farmNameRevision ?? -1)) return;
+  requireValue(identity.revision !== projection.farmNameRevision || row.name === identity.name);
+  row.name = identity.name;
+  projection.farmNameRevision = identity.revision;
 }
 
 export async function clearCloudV2Cache() {

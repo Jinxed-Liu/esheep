@@ -44140,6 +44140,159 @@
           }
         }
       }
+    },
+    "云端名称" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud farm name"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "云端名称"
+          }
+        }
+      }
+    },
+    "仅牧场所有者可以改名，名称最多 80 个字符。改名会同步给牧场成员，现有羊只和历史记录全部保留。" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Only the farm owner can rename the farm, using up to 80 characters. Members receive the new name while all sheep and historical records are preserved."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅牧场所有者可以改名，名称最多 80 个字符。改名会同步给牧场成员，现有羊只和历史记录全部保留。"
+          }
+        }
+      }
+    },
+    "保存名称" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save name"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存名称"
+          }
+        }
+      }
+    },
+    "无法保存牧场名称" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to save farm name"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存牧场名称"
+          }
+        }
+      }
+    },
+    "暂时无法确认保存结果，请恢复网络后重试；同一请求不会重复改名。" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The save result could not be confirmed. Retry when connected; the same request will not rename the farm twice."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时无法确认保存结果，请恢复网络后重试；同一请求不会重复改名。"
+          }
+        }
+      }
+    },
+    "暂时无法读取云端牧场名称，请联网后重新打开。" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The cloud farm name is currently unavailable. Reopen this page when connected."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时无法读取云端牧场名称，请联网后重新打开。"
+          }
+        }
+      }
+    },
+    "牧场名称已保存到云端" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Farm name saved to the cloud"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "牧场名称已保存到云端"
+          }
+        }
+      }
+    },
+    "牧场名称已被其他设备修改，请核对最新云端名称后重新保存。" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Another device changed the farm name. Check the latest cloud name before saving again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "牧场名称已被其他设备修改，请核对最新云端名称后重新保存。"
+          }
+        }
+      }
+    },
+    "牧场名称已被其他设备更新，已显示最新云端名称。" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Another device updated the farm name. The latest cloud name is now shown."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "牧场名称已被其他设备更新，已显示最新云端名称。"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
