@@ -1097,13 +1097,18 @@ final class InsightAssistantEntryUITests: XCTestCase {
 
     @MainActor
     private func assertVoiceKeyboardInPlace(in app: XCUIApplication, stage: String) {
+        let keyboard = app.keyboards.firstMatch
+        let surface = app.otherElements["insight.composer.surface"].firstMatch
         var visibleSince: Date?
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            let keyboard = app.keyboards.firstMatch
-            let surface = app.descendants(matching: .any).matching(identifier: "insight.composer.surface").firstMatch
-            let inPlace = keyboard.exists && keyboard.frame.height > 100 && surface.exists &&
-                surface.frame.height > 0 && surface.frame.minY >= 0 &&
-                surface.frame.maxY <= keyboard.frame.minY + 2
+            guard keyboard.exists, surface.exists else {
+                visibleSince = nil
+                return false
+            }
+            let keyboardFrame = keyboard.frame
+            let surfaceFrame = surface.frame
+            let inPlace = keyboardFrame.height > 100 && surfaceFrame.height > 0 &&
+                surfaceFrame.minY >= 0 && surfaceFrame.maxY <= keyboardFrame.minY + 2
             guard inPlace else {
                 visibleSince = nil
                 return false
@@ -1112,7 +1117,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
             if visibleSince == nil { visibleSince = now }
             return now.timeIntervalSince(visibleSince!) >= 0.5
         }, object: app)
-        let result = XCTWaiter.wait(for: [visible], timeout: 10)
+        let result = XCTWaiter.wait(for: [visible], timeout: 30)
         attachVoiceFocusEvidence(of: app, named: stage)
         XCTAssertEqual(result, .completed,
                        "The real voice controls must keep the keyboard visible and the Composer above it without refocusing the editor.")

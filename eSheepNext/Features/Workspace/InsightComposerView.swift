@@ -54,6 +54,11 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
     private var hasText: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var hasContent: Bool { hasText || hasAttachments || pendingAudio != nil }
     private var showsAudioBar: Bool { audioRecorder.isRecording || pendingAudio != nil }
+    private var editorOpacity: Double {
+        guard showsAudioBar else { return 1 }
+        if #available(iOS 18, *) { return 0 }
+        return 0.001
+    }
     private var expanded: Bool {
         isFocused.wrappedValue || hasContent || audioRecorder.isRecording || modeTitle != nil
     }
@@ -79,7 +84,7 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
                     // recording. Its text and attachments remain in the draft.
                     textInput.padding(.horizontal, expanded ? 12 : 0)
                         .frame(height: showsAudioBar ? 24 : nil)
-                        .modifier(InsightComposerEditorVisibility(isHidden: showsAudioBar))
+                        .opacity(editorOpacity)
                         .allowsHitTesting(!showsAudioBar)
                         .accessibilityHidden(showsAudioBar)
                     if showsAudioBar { audioBar }
@@ -486,21 +491,6 @@ private struct InsightComposerMicrophoneSupport: Shape {
                     radius: 22.0 / 3, startAngle: .degrees(162), endAngle: .degrees(18),
                     clockwise: true)
         return path
-    }
-}
-
-private struct InsightComposerEditorVisibility: ViewModifier {
-    let isHidden: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(iOS 18, *) {
-            content.opacity(isHidden ? 0 : 1)
-        } else {
-            // Keep the editor's opacity unchanged on iOS 17. An always-present
-            // mask hides its pixels without replacing the editor or requesting focus.
-            content.mask(Rectangle().opacity(isHidden ? 0 : 1))
-        }
     }
 }
 
