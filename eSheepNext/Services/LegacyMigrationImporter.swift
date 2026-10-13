@@ -53,7 +53,8 @@ enum LegacySourceDecoder {
         }
         guard root["herd"] == nil else { return LegacySourceDocument(root: root) }
         var normalized = root
-        normalized["herd"] = ["sheep": root["sheep"] ?? [], "removals": root["removals"] ?? [], "transfers": root["transfers"] ?? [], "events": root["events"] ?? [], "weanRecords": root["weanRecords"] ?? [], "abortionRecords": root["abortionRecords"] ?? [], "weighRecords": root["weighRecords"] ?? [], "customPens": root["customPens"] ?? [], "pens": root["pens"] ?? [], "productionBatches": root["productionBatches"] ?? [], "batchMemberships": root["batchMemberships"] ?? []]
+        let normalizedHerd: [String: Any] = ["sheep": root["sheep"] ?? [], "removals": root["removals"] ?? [], "transfers": root["transfers"] ?? [], "events": root["events"] ?? [], "weanRecords": root["weanRecords"] ?? [], "abortionRecords": root["abortionRecords"] ?? [], "weighRecords": root["weighRecords"] ?? [], "customPens": root["customPens"] ?? [], "pens": root["pens"] ?? [], "productionBatches": root["productionBatches"] ?? [], "batchMemberships": root["batchMemberships"] ?? []]
+        normalized["herd"] = normalizedHerd
         normalized["reproduction"] = ["lambing": root["lambing"] ?? [], "breedPrograms": root["breedPrograms"] ?? [], "semenRecords": root["semenRecords"] ?? []]
         normalized["feeding"] = ["feedRecords": root["feedRecords"] ?? [], "feedLibrary": root["feedLibrary"] ?? [], "feedRecipes": root["feedRecipes"] ?? []]
         normalized["health"] = ["vaccineCatalog": root["vaccineCatalog"] ?? [], "medicineCatalog": root["medicineCatalog"] ?? [], "diseaseCatalog": root["diseaseCatalog"] ?? [], "inventoryLots": root["inventoryLots"] ?? [], "inventoryTransactions": root["inventoryTransactions"] ?? [], "vaccineRecords": root["vaccineRecords"] ?? [], "treatmentRecords": root["treatmentRecords"] ?? []]
@@ -200,14 +201,13 @@ enum LegacyMigrationImporter {
         let herd = section("herd", root); let feeding = section("feeding", root); let reproduction = section("reproduction", root); let health = section("health", root); let media = section("media", root)
         let farm = FarmRecord(id: stable("farm"), ownerAccountID: stable("owner"), name: string(section("farmSettings", root)["farmName"]).isEmpty ? "迁移演练牧场" : string(section("farmSettings", root)["farmName"])); context.insert(farm); var mapping = LegacyMappingTable(); var bySource: [String: SheepRecord] = [:]
         let legacyTransfers = records(herd["transfers"])
-        let rawPenNames =
-            ((herd["customPens"] as? [String]) ?? [])
-                + records(herd["pens"]).map { string($0["name"]) }
-                + session.sheep.map(\.pen)
-                + records(feeding["feedRecords"]).map { string($0["pen"]) }
-                + legacyTransfers.flatMap { [string($0["from"]), string($0["to"])] }
-                + records(reproduction["lambing"]).map { string($0["pen"]) }
-                + records(health["vaccineRecords"]).map { string($0["pen"]) }
+        var rawPenNames: [String] = (herd["customPens"] as? [String]) ?? []
+        rawPenNames.append(contentsOf: records(herd["pens"]).map { string($0["name"]) })
+        rawPenNames.append(contentsOf: session.sheep.map(\.pen))
+        rawPenNames.append(contentsOf: records(feeding["feedRecords"]).map { string($0["pen"]) })
+        rawPenNames.append(contentsOf: legacyTransfers.flatMap { [string($0["from"]), string($0["to"])] })
+        rawPenNames.append(contentsOf: records(reproduction["lambing"]).map { string($0["pen"]) })
+        rawPenNames.append(contentsOf: records(health["vaccineRecords"]).map { string($0["pen"]) })
         let penNames = Set(rawPenNames.map(legacyPenName)).filter { !$0.isEmpty }
         for name in penNames.sorted() { let key = "pen:\(name)"; let pen = PenRecord(id: stable(key), farmID: farm.id, name: name); context.insert(pen); mapping.pens[name] = pen.id; audit(context, session, key, "pen", ["name": name], [pen.id]) }
         for candidate in session.sheep {
