@@ -5,6 +5,7 @@ import SwiftUI
 
 /// Explicit development launch only; separate persistent store and no remote runtime.
 struct DevelopmentDesignAcceptanceView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var fixture: DesignAcceptanceFixture?
     @State private var failure: String?
     @State private var preferences = AppPreferences()
@@ -40,6 +41,14 @@ struct DevelopmentDesignAcceptanceView: View {
                 fixture = prepared
             } catch is CancellationError { }
             catch { failure = error.localizedDescription }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .inactive { InsightSessionCoordinator.shared.prepareForBackgroundTransition() }
+            if phase == .background { InsightSessionCoordinator.shared.setForeground(false) }
+            else if phase == .active { InsightSessionCoordinator.shared.setForeground(true) }
+        }
+        .onAppear {
+            InsightSessionCoordinator.shared.setForeground(scenePhase != .background)
         }
     }
 
