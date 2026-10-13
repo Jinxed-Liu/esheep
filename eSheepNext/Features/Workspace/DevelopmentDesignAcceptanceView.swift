@@ -200,7 +200,7 @@ private final class DesignAcceptanceFixture {
         var directory = insightReady
             ? workspaceDirectory.appending(path: offlineSend ? "InsightOfflineSend" : "InsightReady", directoryHint: .isDirectory)
             : workspaceDirectory
-        if insightReady, let index = args.firstIndex(of: "--design-fixture-id") {
+        if let index = args.firstIndex(of: "--design-fixture-id") {
             guard args.indices.contains(index + 1), let fixtureID = UUID(uuidString: args[index + 1]) else {
                 throw MiMoClientError.invalidRequest
             }
@@ -232,6 +232,15 @@ private final class DesignAcceptanceFixture {
         }
         if let index = args.firstIndex(of: "--design-role"), args.indices.contains(index + 1), let role = FarmRole(rawValue: args[index + 1]) {
             farm.roleRawValue = role.rawValue
+            try context.save()
+        }
+        if args.contains("--design-account-settings"), args.contains("--design-account-avatar-image") {
+            // An explicit local settings fixture can exercise the production
+            // avatar gestures without picking photos or connecting an account.
+            guard let data = UIImage(named: "MiMoAssistantAvatar")?.jpegData(compressionQuality: 0.9) else {
+                throw ProfileAvatarError.invalidImage
+            }
+            account.avatarImageData = data
             try context.save()
         }
         session = AppSession(activeAccountProfileID: account.id, persistedLocalSessionAccountID: nil, persistActiveAccountProfileID: { _ in }, clearActiveAccountProfileID: {})

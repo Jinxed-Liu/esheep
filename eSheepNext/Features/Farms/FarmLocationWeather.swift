@@ -628,11 +628,20 @@ struct FarmLocationSettingsView: View {
                 request.naturalLanguageQuery = query
                 let response = try await MKLocalSearch(request: request).start()
                 searchResults = response.mapItems.map { item in
-                    FarmMapSearchResult(
+                    let coordinate: CLLocationCoordinate2D
+                    let address: String
+                    if #available(iOS 26, *) {
+                        coordinate = item.location.coordinate
+                        address = item.address?.fullAddress ?? ""
+                    } else {
+                        coordinate = item.placemark.coordinate
+                        address = item.placemark.title ?? ""
+                    }
+                    return FarmMapSearchResult(
                         name: item.name ?? "未命名地点",
-                        address: item.address?.fullAddress ?? "",
-                        latitude: item.location.coordinate.latitude,
-                        longitude: item.location.coordinate.longitude
+                        address: address,
+                        latitude: coordinate.latitude,
+                        longitude: coordinate.longitude
                     )
                 }
             } catch {
