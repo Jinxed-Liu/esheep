@@ -496,7 +496,7 @@ private struct InsightComposerSurface: ViewModifier {
         if opaque {
             content.background(Color(uiColor: .secondarySystemBackground), in: .rect(cornerRadius: cornerRadius))
         } else {
-            content.glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+            content.compatibilityGlass(in: .rect(cornerRadius: cornerRadius))
         }
     }
 }

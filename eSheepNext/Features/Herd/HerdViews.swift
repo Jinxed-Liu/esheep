@@ -845,7 +845,7 @@ struct SheepDetailView: View {
                 NavigationLink {
                     SheepRecordHistoryScreen(account: account, farm: farm, sheepID: subject.id)
                 } label: {
-                    Label("修正、撤销与恢复", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                    Label("修正、撤销与恢复", systemImage: CompatibilitySymbol.name("clock.arrow.trianglehead.counterclockwise.rotate.90", fallback: "clock.arrow.circlepath"))
                 }
             }
         }

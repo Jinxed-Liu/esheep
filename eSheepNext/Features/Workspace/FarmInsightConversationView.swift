@@ -136,10 +136,10 @@ struct FarmInsightConversationView: View {
 
     private var conversationLayout: some View {
         conversationScroll
-            .safeAreaBar(edge: .top, spacing: 0) {
+            .compatibilitySafeAreaBar(edge: .top, spacing: 0) {
                 conversationHeader
             }
-            .safeAreaBar(edge: .bottom, spacing: 0) {
+            .compatibilitySafeAreaBar(edge: .bottom, spacing: 0) {
                 conversationBottomControls
             }
             .background(Color(uiColor: .systemBackground).ignoresSafeArea())
@@ -540,11 +540,12 @@ struct FarmInsightConversationView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 18)
+                .modifier(InsightTranscriptContentGeometry())
             }
             .accessibilityIdentifier("insight.conversation.transcript")
             .contentShape(.rect)
-            .scrollEdgeEffectHidden(false, for: .vertical)
-            .scrollEdgeEffectStyle(.soft, for: .vertical)
+            .compatibilityScrollEdgeHidden(false, for: .vertical)
+            .compatibilityScrollEdgeStyleSoft(for: .vertical)
             .simultaneousGesture(
                 TapGesture().onEnded {
                     isComposerFocused = false
@@ -561,13 +562,7 @@ struct FarmInsightConversationView: View {
             .onChange(of: scrollRevision) { _, _ in
                 scrollToRequestedMessageOrBottom(proxy, animated: true)
             }
-            .onScrollGeometryChange(for: InsightTranscriptScrollGeometry.self) { geometry in
-                InsightTranscriptScrollGeometry(
-                    contentHeight: geometry.contentSize.height,
-                    viewportHeight: geometry.containerSize.height,
-                    reservedHeight: geometry.contentInsets.top + geometry.contentInsets.bottom
-                )
-            } action: { oldGeometry, newGeometry in
+            .modifier(InsightTranscriptScrollGeometryObserver { oldGeometry, newGeometry in
                 let viewportShrank = oldGeometry.viewportHeight > 0 &&
                     newGeometry.viewportHeight < oldGeometry.viewportHeight
                 let nativeInsetsGrew = newGeometry.reservedHeight > oldGeometry.reservedHeight
@@ -575,7 +570,7 @@ struct FarmInsightConversationView: View {
                     (pendingTranscriptLayoutScroll && oldGeometry.contentHeight != newGeometry.contentHeight) else { return }
                 pendingTranscriptLayoutScroll = false
                 scrollToRequestedMessageOrBottom(proxy, animated: false)
-            }
+            })
             .onChange(of: searchResultTargetID) { _, messageID in
                 guard let messageID else { return }
                 withAnimation(.easeInOut(duration: 0.25)) {
@@ -612,7 +607,7 @@ struct FarmInsightConversationView: View {
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
-            .glassEffect(.regular.interactive(), in: .circle)
+            .compatibilityGlass(in: .circle, interactive: true)
             .accessibilityLabel("返回聊天列表")
             .accessibilityIdentifier("BackButton")
 
@@ -636,7 +631,7 @@ struct FarmInsightConversationView: View {
             }
             .padding(.horizontal, 8)
             .frame(width: 104, height: 44)
-            .glassEffect(.regular.interactive(), in: .capsule)
+            .compatibilityGlass(in: .capsule, interactive: true)
         }
         .foregroundStyle(.primary)
         .tint(.primary)
@@ -1462,10 +1457,91 @@ struct FarmInsightConversationView: View {
     }
 }
 
-private struct InsightTranscriptScrollGeometry: Equatable {
+private struct InsightTranscriptScrollGeometry: Equatable, Sendable {
     let contentHeight: CGFloat
     let viewportHeight: CGFloat
     let reservedHeight: CGFloat
+
+    static let empty = Self(contentHeight: 0, viewportHeight: 0, reservedHeight: 0)
+}
+
+private struct InsightTranscriptContentHeightPreference: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct InsightTranscriptContentGeometry: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content
+        } else {
+            content.background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: InsightTranscriptContentHeightPreference.self,
+                        value: geometry.size.height
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct InsightTranscriptViewportGeometry: Equatable, Sendable {
+    let height: CGFloat
+    let reservedHeight: CGFloat
+}
+
+private struct InsightTranscriptScrollGeometryObserver: ViewModifier {
+    let action: (InsightTranscriptScrollGeometry, InsightTranscriptScrollGeometry) -> Void
+    @State private var legacyGeometry = InsightTranscriptScrollGeometry.empty
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content.onScrollGeometryChange(for: InsightTranscriptScrollGeometry.self) { geometry in
+                InsightTranscriptScrollGeometry(
+                    contentHeight: geometry.contentSize.height,
+                    viewportHeight: geometry.containerSize.height,
+                    reservedHeight: geometry.contentInsets.top + geometry.contentInsets.bottom
+                )
+            } action: { oldGeometry, newGeometry in
+                action(oldGeometry, newGeometry)
+            }
+        } else {
+            content
+                .onPreferenceChange(InsightTranscriptContentHeightPreference.self) { height in
+                    updateLegacyGeometry(.init(
+                        contentHeight: height,
+                        viewportHeight: legacyGeometry.viewportHeight,
+                        reservedHeight: legacyGeometry.reservedHeight
+                    ))
+                }
+                .onGeometryChange(for: InsightTranscriptViewportGeometry.self) { geometry in
+                    InsightTranscriptViewportGeometry(
+                        height: geometry.size.height,
+                        reservedHeight: geometry.safeAreaInsets.top + geometry.safeAreaInsets.bottom
+                    )
+                } action: { viewport in
+                    updateLegacyGeometry(.init(
+                        contentHeight: legacyGeometry.contentHeight,
+                        viewportHeight: viewport.height,
+                        reservedHeight: viewport.reservedHeight
+                    ))
+                }
+        }
+    }
+
+    private func updateLegacyGeometry(_ newGeometry: InsightTranscriptScrollGeometry) {
+        let oldGeometry = legacyGeometry
+        guard oldGeometry != newGeometry else { return }
+        legacyGeometry = newGeometry
+        action(oldGeometry, newGeometry)
+    }
 }
 
 /// The custom header hides the native navigation bar. Restore only this

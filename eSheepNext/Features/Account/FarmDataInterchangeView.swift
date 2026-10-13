@@ -299,7 +299,7 @@ struct FarmDataInterchangeView: View {
                             SettingsRowLabel(
                                 title: "数据异常处理",
                                 subtitle: "\(unresolvedConflictCount) 条记录需要选择保留版本",
-                                systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90"
+                                systemImage: CompatibilitySymbol.name("exclamationmark.arrow.trianglehead.2.clockwise.rotate.90", fallback: "exclamationmark.arrow.triangle.2.circlepath")
                             )
                         }
                     }

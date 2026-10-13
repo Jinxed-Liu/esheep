@@ -136,7 +136,7 @@ struct FarmHomeView: View {
                     in: metricTransition,
                     spec: metricTransitionSpec
                 )
-                .toolbarVisibility(.hidden, for: .tabBar)
+                .compatibilityToolbarVisibility(.hidden, for: .tabBar)
         }
         .navigationDestination(isPresented: $isOperationalAlertCenterPresented) {
             FarmOperationalAlertCenterView(account: account, farm: farm)

@@ -1,15 +1,5 @@
 {
-  "originHash" : "bea84665ef41f706fa198dc2e752bb17a9649dcd85681c9fc21fea0859b1a7af",
   "pins" : [
-    {
-      "identity" : "esmotion",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Jinxed-Liu/ESMotion.git",
-      "state" : {
-        "revision" : "c236df09ee8004471ce2c2427f1a56027a49ff23",
-        "version" : "0.1.1"
-      }
-    },
     {
       "identity" : "lottie-spm",
       "kind" : "remoteSourceControl",
@@ -83,5 +73,5 @@
       }
     }
   ],
-  "version" : 3
+  "version" : 2
 }

@@ -7,6 +7,7 @@ on:
       - 'eSheepNext/**'
       - 'eSheepNextTests/**'
       - 'eSheepNextUITests/**'
+      - 'Packages/ESMotion/**'
       - 'eSheepNext.xcodeproj/**'
       - '.github/workflows/ios-runtime.yml'
   push:
@@ -15,6 +16,7 @@ on:
       - 'eSheepNext/**'
       - 'eSheepNextTests/**'
       - 'eSheepNextUITests/**'
+      - 'Packages/ESMotion/**'
       - 'eSheepNext.xcodeproj/**'
       - '.github/workflows/ios-runtime.yml'
 
@@ -91,6 +93,7 @@ jobs:
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-build.log"
       - name: Preserve compiler diagnostics
+        if: always()
         uses: actions/upload-artifact@v6
         with:
           name: assistant-build-${{ github.sha }}

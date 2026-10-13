@@ -101,7 +101,7 @@ struct AccountAvatarEditor: View {
                     .font(.headline)
                     .frame(maxWidth: .infinity, minHeight: 42)
                 }
-                .buttonStyle(.glassProminent)
+                .compatibilityGlassButton(prominent: true)
                 .buttonBorderShape(.capsule)
                 .disabled(loadingPhoto)
                 .accessibilityIdentifier("account-avatar-select")

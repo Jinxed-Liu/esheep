@@ -46,7 +46,7 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
         case .birth: "calendar.badge.plus"
         case .sheep: "tag"
         case .batch: "square.stack.3d.up"
-        case .purpose: "arrow.trianglehead.2.clockwise.rotate.90"
+        case .purpose: CompatibilitySymbol.name("arrow.trianglehead.2.clockwise.rotate.90", fallback: "arrow.triangle.2.circlepath")
         case .weight: "scalemass"
         case .weaning: "leaf.circle.fill"
         case .transfer: "arrow.left.arrow.right"

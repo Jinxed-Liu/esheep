@@ -164,7 +164,7 @@ struct FarmCloudStorageSettingsView: View {
                 Section("启用说明") {
                     Label("开始前自动生成完整本地备份", systemImage: "externaldrive.badge.checkmark")
                     Label("业务记录、历史、删除记录和照片会先完整校验", systemImage: "checkmark.shield")
-                    Label("校验完成后才会切换到 eSheep 云", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                    Label("校验完成后才会切换到 eSheep 云", systemImage: CompatibilitySymbol.name("arrow.trianglehead.2.clockwise.rotate.90", fallback: "arrow.triangle.2.circlepath"))
                     Label("当前版本免费使用", systemImage: "checkmark.seal")
                 }
             } else if profile?.mode == .supabase {

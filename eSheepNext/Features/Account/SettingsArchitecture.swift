@@ -122,7 +122,7 @@ struct AccountAvatarSettingsView: View {
         AccountAvatarEditor(account: account)
         .navigationTitle("个人头像")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarVisibility(.hidden, for: .tabBar)
+        .compatibilityToolbarVisibility(.hidden, for: .tabBar)
     }
 }
 

@@ -149,7 +149,7 @@ private extension AccountAccessStatus {
 
     var systemImage: String {
         switch self {
-        case .checking: "arrow.trianglehead.2.clockwise.rotate.90"
+        case .checking: CompatibilitySymbol.name("arrow.trianglehead.2.clockwise.rotate.90", fallback: "arrow.triangle.2.circlepath")
         case .verified: "checkmark.shield.fill"
         case .transferred: "arrow.triangle.2.circlepath.circle.fill"
         case .availableWithWarning: "exclamationmark.shield.fill"

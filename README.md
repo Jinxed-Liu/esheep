@@ -1,6 +1,6 @@
 # eSheepNext
 
-新一代 eSheep+ 的独立 iPhone/iPad 工程。最低系统版本为 iOS/iPadOS 26.1，采用 Swift 6、SwiftUI、SwiftData、Apple 原生 Liquid Glass 与蓝色品牌基线。旧版 `/Users/asiha/Desktop/eSheepPlus` 未被修改。
+新一代 eSheep+ 的独立 iPhone/iPad 工程。最低系统版本为 iOS/iPadOS 17.0，采用 Swift 6、SwiftUI、SwiftData 与蓝色品牌基线；iOS 26 及以上保留 Apple 原生 Liquid Glass，旧系统使用兼容界面。ESMotion 使用仓库内 `Packages/ESMotion` 的 iOS 17 兼容版本。旧版 `/Users/asiha/Desktop/eSheepPlus` 未被修改。
 
 > **3.1 当前架构说明：** 当前权威文档是
 > [`docs/eSheepNext-3.1-storage-implementation.md`](docs/eSheepNext-3.1-storage-implementation.md)。

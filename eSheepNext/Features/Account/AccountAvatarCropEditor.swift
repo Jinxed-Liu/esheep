@@ -78,7 +78,7 @@ struct AccountAvatarCropEditor: View {
                     .font(.headline)
                     .frame(maxWidth: .infinity, minHeight: 42)
                 }
-                .buttonStyle(.glassProminent)
+                .compatibilityGlassButton(prominent: true)
                 .buttonBorderShape(.capsule)
                 .disabled(isSaving)
                 .accessibilityIdentifier("account-avatar-confirm")

@@ -20,54 +20,8 @@ struct FarmWorkspaceView: View {
     }
 
     var body: some View {
-        @Bindable var session = session
-
         if let activeFarm {
-            TabView(selection: $session.selectedTab) {
-                Tab("首页", systemImage: "house", value: .home) {
-                    NavigationStack {
-                        FarmHomeView(
-                            account: account,
-                            farm: activeFarm,
-                            isWeatherDetailPresented: $isWeatherDetailPresented,
-                            isMetricDetailPresented: $isMetricDetailPresented,
-                            sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
-                        )
-                            .navigationBarTitleDisplayMode(.inline)
-                            .toolbar {
-                                FarmNavigationToolbar(
-                                    account: account,
-                                    farms: farms,
-                                    activeFarm: activeFarm,
-                                    sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
-                                )
-                            }
-                    }
-                    .toolbarVisibility(
-                        isWeatherDetailPresented ? .hidden : .visible,
-                        for: .navigationBar
-                    )
-                    .toolbarVisibility(
-                        isWeatherDetailPresented || isMetricDetailPresented ? .hidden : .visible,
-                        for: .tabBar
-                    )
-                }
-                Tab("工作台", systemImage: "square.grid.2x2", value: .workbench) {
-                    FarmWorkbenchView(account: account, farm: activeFarm, farms: farms, sharedFarmAdmissionStatus: sharedFarmAdmissionStatus)
-                }
-                Tab("分析", systemImage: "sparkles", value: .analysis) {
-                    NavigationStack {
-                        FarmInsightsView(account: account, farm: activeFarm, assistantFarmID: $assistantFarmID)
-                            .navigationBarTitleDisplayMode(.inline)
-                            .toolbar { FarmNavigationToolbar(account: account, farms: farms, activeFarm: activeFarm, sharedFarmAdmissionStatus: sharedFarmAdmissionStatus) }
-                    }
-                    .toolbarVisibility(assistantFarmID == activeFarm.id ? .hidden : .visible, for: .tabBar)
-                }
-                Tab(value: .search, role: .search) {
-                    searchNavigationStack(for: activeFarm, query: $searchQuery)
-                }
-            }
-            .tabViewSearchActivation(.searchTabSelection)
+            workspaceTabs(for: activeFarm)
             .id(activeFarm.id)
             .safeAreaInset(edge: .top, spacing: 0) {
                 AccountAccessWorkspaceBanner(
@@ -97,6 +51,78 @@ struct FarmWorkspaceView: View {
         }
     }
 
+    @ViewBuilder
+    private func workspaceTabs(for farm: FarmRecord) -> some View {
+        @Bindable var session = session
+
+        if #available(iOS 18, *) {
+            TabView(selection: $session.selectedTab) {
+                Tab("首页", systemImage: "house", value: .home) {
+                    homeNavigationStack(for: farm)
+                }
+                Tab("工作台", systemImage: "square.grid.2x2", value: .workbench) {
+                    workbench(for: farm)
+                }
+                Tab("分析", systemImage: "sparkles", value: .analysis) {
+                    analysisNavigationStack(for: farm)
+                }
+                Tab(value: .search, role: .search) {
+                    searchNavigationStack(for: farm, query: $searchQuery)
+                }
+            }
+            .modifier(FarmWorkspaceSearchActivation())
+        } else {
+            TabView(selection: $session.selectedTab) {
+                homeNavigationStack(for: farm)
+                    .tabItem { Label("首页", systemImage: "house") }
+                    .tag(AppTab.home)
+                workbench(for: farm)
+                    .tabItem { Label("工作台", systemImage: "square.grid.2x2") }
+                    .tag(AppTab.workbench)
+                analysisNavigationStack(for: farm)
+                    .tabItem { Label("分析", systemImage: "sparkles") }
+                    .tag(AppTab.analysis)
+                searchNavigationStack(for: farm, query: $searchQuery)
+                    .tabItem { Label("搜索", systemImage: "magnifyingglass") }
+                    .tag(AppTab.search)
+            }
+        }
+    }
+
+    private func homeNavigationStack(for farm: FarmRecord) -> some View {
+        NavigationStack {
+            FarmHomeView(
+                account: account,
+                farm: farm,
+                isWeatherDetailPresented: $isWeatherDetailPresented,
+                isMetricDetailPresented: $isMetricDetailPresented,
+                sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
+            )
+            .navigationBarTitleDisplayMode(.inline)
+            .modifier(FarmNavigationToolbarModifier(
+                account: account,
+                farms: farms,
+                activeFarm: farm,
+                sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
+            ))
+        }
+        .compatibilityToolbarVisibility(isWeatherDetailPresented ? .hidden : .visible, for: .navigationBar)
+        .compatibilityToolbarVisibility(isWeatherDetailPresented || isMetricDetailPresented ? .hidden : .visible, for: .tabBar)
+    }
+
+    private func workbench(for farm: FarmRecord) -> some View {
+        FarmWorkbenchView(account: account, farm: farm, farms: farms, sharedFarmAdmissionStatus: sharedFarmAdmissionStatus)
+    }
+
+    private func analysisNavigationStack(for farm: FarmRecord) -> some View {
+        NavigationStack {
+            FarmInsightsView(account: account, farm: farm, assistantFarmID: $assistantFarmID)
+                .navigationBarTitleDisplayMode(.inline)
+                .modifier(FarmNavigationToolbarModifier(account: account, farms: farms, activeFarm: farm, sharedFarmAdmissionStatus: sharedFarmAdmissionStatus))
+        }
+        .compatibilityToolbarVisibility(assistantFarmID == farm.id ? .hidden : .visible, for: .tabBar)
+    }
+
     private func searchNavigationStack(for farm: FarmRecord, query: Binding<String>) -> some View {
         NavigationStack {
             FarmSearchView(account: account, farm: farm, query: query)
@@ -104,13 +130,40 @@ struct FarmWorkspaceView: View {
     }
 }
 
-struct FarmNavigationToolbar: ToolbarContent {
+private struct FarmWorkspaceSearchActivation: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content.tabViewSearchActivation(.searchTabSelection)
+        } else {
+            content
+        }
+    }
+}
+
+struct FarmNavigationToolbarModifier: ViewModifier {
     let account: AccountProfile
     let farms: [FarmRecord]
     let activeFarm: FarmRecord
     let sharedFarmAdmissionStatus: SharedFarmAdmissionStatus?
 
-    var body: some ToolbarContent {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content.toolbar {
+                farmSwitcherItem
+                accountToolbarItem
+                    .sharedBackgroundVisibility(.hidden)
+            }
+        } else {
+            content.toolbar {
+                farmSwitcherItem
+                accountToolbarItem
+            }
+        }
+    }
+
+    private var farmSwitcherItem: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             FarmSwitcher(
                 farms: farms,
@@ -118,6 +171,9 @@ struct FarmNavigationToolbar: ToolbarContent {
                 sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
             )
         }
+    }
+
+    private var accountToolbarItem: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             NavigationLink {
                 FarmSettingsView(account: account, farm: activeFarm)
@@ -127,7 +183,6 @@ struct FarmNavigationToolbar: ToolbarContent {
             .buttonStyle(.plain)
             .accessibilityLabel("账户与牧场设置")
         }
-        .sharedBackgroundVisibility(.hidden)
     }
 }
 
@@ -137,7 +192,7 @@ private struct FarmToolbarAccountAvatar: View {
     var body: some View {
         AccountAvatarView(account: account, size: 38)
             .frame(width: 44, height: 44)
-            .glassEffect(.regular.interactive(), in: .circle)
+            .compatibilityGlass(in: .circle, interactive: true)
             .contentShape(.circle)
     }
 }

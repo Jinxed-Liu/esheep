@@ -360,13 +360,15 @@ struct LocalStorageOptimizationService {
             value: -max(7, historyRetentionDays),
             to: .now
         )
-        if let cutoff {
+        var prunedPersistentHistoryBefore: Date?
+        if #available(iOS 18, *), let cutoff {
             let descriptor = HistoryDescriptor<DefaultHistoryTransaction>(
                 predicate: #Predicate { transaction in
                     transaction.timestamp < cutoff
                 }
             )
             try context.deleteHistory(descriptor)
+            prunedPersistentHistoryBefore = cutoff
         }
 
         return LocalStorageOptimizationResult(
@@ -375,7 +377,7 @@ struct LocalStorageOptimizationService {
             compressedMigrationBackupCount: compressedBackups,
             removedRebuildDirectoryCount: removedRebuilds,
             removedBaselineDirectoryCount: removedBaselines,
-            prunedPersistentHistoryBefore: cutoff
+            prunedPersistentHistoryBefore: prunedPersistentHistoryBefore
         )
     }
 

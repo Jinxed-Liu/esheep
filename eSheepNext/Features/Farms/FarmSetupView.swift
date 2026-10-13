@@ -18,12 +18,12 @@ struct FarmSetupView: View {
                 Button("新建牧场") {
                     session.isCreateFarmPresented = true
                 }
-                .buttonStyle(.glassProminent)
+                .compatibilityGlassButton(prominent: true)
 
                 Button("加入牧场") {
                     session.isJoinFarmPresented = true
                 }
-                .buttonStyle(.glass)
+                .compatibilityGlassButton()
 
                 AccountSignOutButton()
             }

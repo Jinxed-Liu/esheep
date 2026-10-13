@@ -7,6 +7,20 @@ struct CloudCollaborationStartupPreparation: Sendable {
     let errorMessages: [String]
 }
 
+/// The token is immutable and NotificationCenter allows removal on any thread.
+/// This keeps observer cleanup independent of newer isolated-deinit runtimes.
+private final class CloudRuntimeNotificationObserver: @unchecked Sendable {
+    private let token: NSObjectProtocol
+
+    init(token: NSObjectProtocol) {
+        self.token = token
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(token)
+    }
+}
+
 enum ESheepCloudRuntimeError: LocalizedError {
     case unavailable
     case accountMismatch
@@ -108,16 +122,16 @@ final class CloudCollaborationStore {
     private var eSheepCloudCoresByFarmID: [UUID: ESheepCloudCore] = [:]
     private var eSheepCloudCoreAccountIDsByFarmID: [UUID: UUID] = [:]
     private var eSheepCloudViewStatesByFarmID: [UUID: ESheepCloudViewState] = [:]
-    private var eSheepCloudInitialSyncTasks: [
+    @ObservationIgnored private var eSheepCloudInitialSyncTasks: [
         UUID: Task<ESheepCloudInitialSyncReport, any Error>
     ] = [:]
     private var eSheepCloudInitialSyncTaskAccountIDsByFarmID: [UUID: UUID] = [:]
-    private var syncWakeObserver: NSObjectProtocol?
+    @ObservationIgnored private var syncWakeObserver: CloudRuntimeNotificationObserver?
     private var pendingSyncWakeFarmIDs = Set<UUID>()
-    private var syncWakeDebounceTask: Task<Void, Never>?
+    @ObservationIgnored private var syncWakeDebounceTask: Task<Void, Never>?
     private var isSyncWakeDrainRunning = false
-    private var supabaseCursorPollTask: Task<Void, Never>?
-    private var supabaseRealtimeTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var supabaseCursorPollTask: Task<Void, Never>?
+    @ObservationIgnored private var supabaseRealtimeTasks: [UUID: Task<Void, Never>] = [:]
     private var supabaseAccessibleFarmDiscoveryAccountIDs = Set<UUID>()
     private var eSheepCloudFarmDiscoveryAccountIDs = Set<UUID>()
     /// A local initial-sync row is not enough to render or resume a receive.
@@ -127,7 +141,7 @@ final class CloudCollaborationStore {
     /// revoked account cannot keep seeing a stale verifier while a refresh is
     /// in flight.
     private var eSheepCloudInitialSyncAccessValidatedAccountIDs = Set<UUID>()
-    private var photoDataLoadTasks: [UUID: Task<Data, any Error>] = [:]
+    @ObservationIgnored private var photoDataLoadTasks: [UUID: Task<Data, any Error>] = [:]
 
     nonisolated static func prepareStartup(
         container: ModelContainer
@@ -216,10 +230,7 @@ final class CloudCollaborationStore {
         }
     }
 
-    isolated deinit {
-        if let syncWakeObserver {
-            NotificationCenter.default.removeObserver(syncWakeObserver)
-        }
+    deinit {
         syncWakeDebounceTask?.cancel()
         supabaseCursorPollTask?.cancel()
         supabaseRealtimeTasks.values.forEach { $0.cancel() }
@@ -585,7 +596,7 @@ final class CloudCollaborationStore {
     }
 
     private func installRuntimeObservers() {
-        syncWakeObserver = NotificationCenter.default.addObserver(
+        let observer = NotificationCenter.default.addObserver(
             forName: CloudRuntimeNotification.syncWake,
             object: nil,
             queue: .main
@@ -597,6 +608,7 @@ final class CloudCollaborationStore {
                 self?.scheduleSyncWake(farmID: farmID)
             }
         }
+        syncWakeObserver = CloudRuntimeNotificationObserver(token: observer)
     }
 
     private func scheduleSyncWake(farmID: UUID) {

@@ -205,7 +205,7 @@ struct ESheepCloudCenterView: View {
         if statusTitle == "已安全保存" { return "checkmark.circle.fill" }
         if statusTitle == "需要重新登录" { return "person.crop.circle.badge.exclamationmark" }
         if statusTitle.hasPrefix("离线") { return "wifi.slash" }
-        return "arrow.trianglehead.2.clockwise.rotate.90"
+        return CompatibilitySymbol.name("arrow.trianglehead.2.clockwise.rotate.90", fallback: "arrow.triangle.2.circlepath")
     }
 
     private var statusColor: Color {

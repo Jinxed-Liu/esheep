@@ -1,5 +1,7 @@
+import Observation
 import SwiftData
 import SwiftUI
+import UIKit
 import UserNotifications
 
 struct SettingsHomeView: View {
@@ -16,7 +18,7 @@ struct SettingsHomeView: View {
 
     @State private var avatarMotion = AccountAvatarMotionCoordinator()
     @State private var isEditingAvatar = false
-    @State private var avatarScrollPosition = ScrollPosition(edge: .top)
+    @State private var avatarScrollController = SettingsAvatarScrollController()
 
     private var unresolvedConflictCount: Int {
         conflicts.count {
@@ -240,26 +242,29 @@ struct SettingsHomeView: View {
                 .padding(.top, 20 + 16 * avatarMotion.expansion)
             }
             .padding(.bottom, 28)
-        }
-        .scrollIndicators(.hidden)
-        .scrollEdgeEffectHidden(true, for: .top)
-        .ignoresSafeArea(.container, edges: .top)
-        .scrollPosition($avatarScrollPosition)
-        .background(AppTheme.pageBackground)
-        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-            geometry.contentOffset.y + geometry.contentInsets.top
-        } action: { _, offsetY in
-            avatarMotion.updateScroll(offsetY: offsetY, hasImage: account.avatarImageData != nil)
-        }
-        .onScrollPhaseChange { oldPhase, newPhase in
-            let isDragging = newPhase == .tracking || newPhase == .interacting
-            let wasDragging = oldPhase == .tracking || oldPhase == .interacting
-            if isDragging {
-                avatarMotion.beginDragging()
-            } else if wasDragging {
-                avatarMotion.endDragging()
+            .background {
+                if #available(iOS 18, *) {
+                    EmptyView()
+                } else {
+                    SettingsAvatarLegacyScrollObserver(
+                        motion: avatarMotion,
+                        hasImage: account.avatarImageData != nil,
+                        resetRevision: avatarScrollController.legacyResetRevision
+                    )
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
             }
         }
+        .scrollIndicators(.hidden)
+        .compatibilityScrollEdgeHidden(true, for: .top)
+        .ignoresSafeArea(.container, edges: .top)
+        .background(AppTheme.pageBackground)
+        .modifier(SettingsAvatarScrollTrackingModifier(
+            motion: avatarMotion,
+            hasImage: account.avatarImageData != nil,
+            controller: avatarScrollController
+        ))
         .overlay {
             SettingsAvatarOverlay(
                 account: account,
@@ -293,7 +298,7 @@ struct SettingsHomeView: View {
                     var transaction = Transaction()
                     transaction.disablesAnimations = true
                     withTransaction(transaction) {
-                        avatarScrollPosition.scrollTo(edge: .top)
+                        avatarScrollController.resetToTop()
                         avatarMotion.viewerDidPresent()
                     }
                 },
@@ -315,28 +320,10 @@ struct SettingsHomeView: View {
             avatarMotion.resetIfNotPresenting()
         }
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                // The overlay renders the same name all the way into its
-                // locked position. Reserve only a semantic navigation title.
-                Color.clear
-                    .frame(width: 1, height: 1)
-                    .accessibilityElement()
-                    .accessibilityLabel(account.displayName)
-                    .accessibilityAddTraits(.isHeader)
-                    .accessibilityHidden(avatarMotion.titleProgress < 0.8)
-            }
-            .sharedBackgroundVisibility(.hidden)
-
-            ToolbarItem(placement: .confirmationAction) {
-                NavigationLink {
-                    AccountDisplayNameEditor(account: account)
-                } label: {
-                    Text("编辑")
-                }
-            }
-        }
+        .compatibilityToolbarBackgroundVisibility(.hidden, for: .navigationBar)
+        .modifier(SettingsAvatarToolbarModifier(
+            account: account, titleProgress: avatarMotion.titleProgress
+        ))
         .task {
             await notifications.refreshAuthorizationStatus()
         }
@@ -372,7 +359,7 @@ struct SettingsHomeView: View {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            avatarScrollPosition.scrollTo(edge: .top)
+            avatarScrollController.resetToTop()
             avatarMotion.requestDismissal(editAvatar: editAvatar)
         }
     }
@@ -394,6 +381,301 @@ struct SettingsHomeView: View {
         case .ephemeral: "当前会话已开启"
         @unknown default: "查看通知设置"
         }
+    }
+}
+
+private struct SettingsAvatarToolbarModifier: ViewModifier {
+    let account: AccountProfile
+    let titleProgress: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content.toolbar {
+                ToolbarItem(placement: .principal) {
+                    navigationTitlePlaceholder
+                }
+                .sharedBackgroundVisibility(.hidden)
+
+                ToolbarItem(placement: .confirmationAction) {
+                    editAccountLink
+                }
+            }
+        } else {
+            content.toolbar {
+                ToolbarItem(placement: .principal) {
+                    navigationTitlePlaceholder
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    editAccountLink
+                }
+            }
+        }
+    }
+
+    private var navigationTitlePlaceholder: some View {
+        // The overlay renders the name into its locked position; this supplies
+        // the semantic navigation title without drawing it a second time.
+        Color.clear
+            .frame(width: 1, height: 1)
+            .accessibilityElement()
+            .accessibilityLabel(account.displayName)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityHidden(titleProgress < 0.8)
+    }
+
+    private var editAccountLink: some View {
+        NavigationLink {
+            AccountDisplayNameEditor(account: account)
+        } label: {
+            Text("编辑")
+        }
+    }
+}
+
+/// Keeps new-system scroll commands in the caller's original transaction while
+/// avoiding an iOS 18-only stored type in the iOS 17 view.
+@MainActor
+@Observable
+private final class SettingsAvatarScrollController {
+    private(set) var legacyResetRevision = 0
+    @ObservationIgnored private let modernStateStorage: Any?
+
+    init() {
+        if #available(iOS 18, *) {
+            modernStateStorage = SettingsAvatarModernScrollState()
+        } else {
+            modernStateStorage = nil
+        }
+    }
+
+    @available(iOS 18, *)
+    var modernState: SettingsAvatarModernScrollState {
+        guard let state = modernStateStorage as? SettingsAvatarModernScrollState else {
+            preconditionFailure("Modern scroll state requires iOS 18")
+        }
+        return state
+    }
+
+    func resetToTop() {
+        if #available(iOS 18, *) {
+            modernState.position.scrollTo(edge: .top)
+        } else {
+            legacyResetRevision += 1
+        }
+    }
+}
+
+@available(iOS 18, *)
+@MainActor
+@Observable
+private final class SettingsAvatarModernScrollState {
+    var position = ScrollPosition(edge: .top)
+}
+
+@MainActor
+private struct SettingsAvatarScrollTrackingModifier: ViewModifier {
+    let motion: AccountAvatarMotionCoordinator
+    let hasImage: Bool
+    let controller: SettingsAvatarScrollController
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content.modifier(SettingsAvatarModernScrollTrackingModifier(
+                motion: motion, hasImage: hasImage, state: controller.modernState
+            ))
+        } else {
+            content
+        }
+    }
+}
+
+@available(iOS 18, *)
+@MainActor
+private struct SettingsAvatarModernScrollTrackingModifier: ViewModifier {
+    let motion: AccountAvatarMotionCoordinator
+    let hasImage: Bool
+    @Bindable var state: SettingsAvatarModernScrollState
+
+    func body(content: Content) -> some View {
+        content
+            .scrollPosition($state.position)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top
+            } action: { _, offsetY in
+                motion.updateScroll(offsetY: offsetY, hasImage: hasImage)
+            }
+            .onScrollPhaseChange { oldPhase, newPhase in
+                let isDragging = newPhase == .tracking || newPhase == .interacting
+                let wasDragging = oldPhase == .tracking || oldPhase == .interacting
+                if isDragging {
+                    motion.beginDragging()
+                } else if wasDragging {
+                    motion.endDragging()
+                }
+            }
+    }
+}
+
+/// Observes the existing scroll view on iOS 17, leaving its delegate and
+/// gesture recognition intact so pulling the avatar behaves like native scroll.
+@MainActor
+private struct SettingsAvatarLegacyScrollObserver: UIViewRepresentable {
+    let motion: AccountAvatarMotionCoordinator
+    let hasImage: Bool
+    let resetRevision: Int
+
+    func makeUIView(context: Context) -> SettingsAvatarLegacyScrollObserverUIView {
+        let view = SettingsAvatarLegacyScrollObserverUIView(frame: .zero)
+        view.configure(motion: motion, hasImage: hasImage, resetRevision: resetRevision)
+        return view
+    }
+
+    func updateUIView(_ uiView: SettingsAvatarLegacyScrollObserverUIView, context: Context) {
+        uiView.configure(motion: motion, hasImage: hasImage, resetRevision: resetRevision)
+    }
+
+    static func dismantleUIView(_ uiView: SettingsAvatarLegacyScrollObserverUIView, coordinator: ()) {
+        uiView.invalidate()
+    }
+}
+
+@MainActor
+private final class SettingsAvatarLegacyScrollObserverUIView: UIView {
+    private weak var scrollView: UIScrollView?
+    private var motion: AccountAvatarMotionCoordinator?
+    private var hasImage = false
+    private var lastResetRevision: Int?
+    private var needsReset = false
+    private var isDragging = false
+    private var lastReportedOffsetY: CGFloat?
+    private var lastReportedHasImage: Bool?
+    private var offsetObservation: NSKeyValueObservation?
+    private var pendingUpdate: Task<Void, Never>?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        backgroundColor = .clear
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(motion: AccountAvatarMotionCoordinator, hasImage: Bool, resetRevision: Int) {
+        if self.motion !== motion {
+            lastReportedOffsetY = nil
+            lastReportedHasImage = nil
+        }
+        self.motion = motion
+        self.hasImage = hasImage
+        if let lastResetRevision, lastResetRevision != resetRevision {
+            needsReset = true
+        }
+        lastResetRevision = resetRevision
+        refreshAttachment()
+        scheduleUpdate()
+    }
+
+    override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        refreshAttachment()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            detach()
+        } else {
+            refreshAttachment()
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        refreshAttachment()
+        scheduleUpdate()
+    }
+
+    private func refreshAttachment() {
+        guard window != nil else { return }
+        var ancestor = superview
+        while let view = ancestor {
+            if let candidate = view as? UIScrollView {
+                guard scrollView !== candidate else { return }
+                detach()
+                scrollView = candidate
+                offsetObservation = candidate.observe(\.contentOffset, options: [.initial, .new]) { [weak self] _, _ in
+                    MainActor.assumeIsolated {
+                        self?.scheduleUpdate()
+                    }
+                }
+                candidate.panGestureRecognizer.addTarget(self, action: #selector(panChanged(_:)))
+                scheduleUpdate()
+                return
+            }
+            ancestor = view.superview
+        }
+    }
+
+    @objc private func panChanged(_ recognizer: UIPanGestureRecognizer) {
+        let dragging = recognizer.state == .began || recognizer.state == .changed
+        if dragging && !isDragging {
+            motion?.beginDragging()
+        } else if !dragging && isDragging {
+            // Deliver the final pull offset while this drag is still eligible.
+            reportOffset()
+            motion?.endDragging()
+        }
+        isDragging = dragging
+    }
+
+    private func scheduleUpdate() {
+        guard scrollView != nil else { return }
+        pendingUpdate?.cancel()
+        pendingUpdate = Task { @MainActor [weak self] in
+            guard !Task.isCancelled, let self, let scrollView = self.scrollView else { return }
+            self.pendingUpdate = nil
+            if self.needsReset {
+                self.needsReset = false
+                scrollView.setContentOffset(
+                    CGPoint(x: scrollView.contentOffset.x, y: -scrollView.adjustedContentInset.top),
+                    animated: false
+                )
+            }
+            self.reportOffset()
+        }
+    }
+
+    private func reportOffset() {
+        guard let scrollView else { return }
+        let offsetY = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
+        guard lastReportedOffsetY != offsetY || lastReportedHasImage != hasImage else { return }
+        lastReportedOffsetY = offsetY
+        lastReportedHasImage = hasImage
+        motion?.updateScroll(offsetY: offsetY, hasImage: hasImage)
+    }
+
+    private func detach() {
+        pendingUpdate?.cancel()
+        pendingUpdate = nil
+        offsetObservation?.invalidate()
+        offsetObservation = nil
+        scrollView?.panGestureRecognizer.removeTarget(self, action: #selector(panChanged(_:)))
+        scrollView = nil
+        lastReportedOffsetY = nil
+        lastReportedHasImage = nil
+        if isDragging { motion?.endDragging() }
+        isDragging = false
+    }
+
+    func invalidate() {
+        detach()
+        motion = nil
     }
 }
 

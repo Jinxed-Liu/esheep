@@ -68,7 +68,7 @@ struct WelcomeView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                GlassEffectContainer(spacing: 18) {
+                CompatibilityGlassContainer(spacing: 18) {
                     Image("AppLogo")
                         .resizable()
                         .scaledToFit()
@@ -104,7 +104,7 @@ struct WelcomeView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(14)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                    .compatibilityGlass(in: .rect(cornerRadius: 16))
                 }
 
                 VStack(spacing: 12) {

@@ -53,7 +53,7 @@ struct FarmWeatherDetailView: View {
             .ignoresSafeArea()
 
             ScrollView {
-                GlassEffectContainer(spacing: 12) {
+                CompatibilityGlassContainer(spacing: 12) {
                     LazyVStack(spacing: 18) {
                         topBar
                         currentSummary
@@ -531,7 +531,7 @@ struct FarmWeatherDetailView: View {
                 Button("重新载入") {
                     Task { await loadDetail() }
                 }
-                .buttonStyle(.glassProminent)
+                .compatibilityGlassButton(prominent: true)
             }
             .frame(maxWidth: .infinity)
         }
@@ -649,7 +649,7 @@ private struct WeatherGlassSection<Content: View, HeaderAccessory: View>: View {
             .black.opacity(0.08),
             in: RoundedRectangle(cornerRadius: 22, style: .continuous)
         )
-        .glassEffect(.clear, in: .rect(cornerRadius: 22))
+        .compatibilityGlass(in: .rect(cornerRadius: 22), clear: true)
     }
 }
 

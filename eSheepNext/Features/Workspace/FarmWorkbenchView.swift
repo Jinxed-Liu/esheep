@@ -50,7 +50,7 @@ struct FarmWorkbenchView: View {
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { FarmNavigationToolbar(account: account, farms: farms, activeFarm: farm, sharedFarmAdmissionStatus: sharedFarmAdmissionStatus) }
+            .modifier(FarmNavigationToolbarModifier(account: account, farms: farms, activeFarm: farm, sharedFarmAdmissionStatus: sharedFarmAdmissionStatus))
             .sheet(item: $presentedEntry) { entry in
                 NavigationStack { ProductionEntryDestination(entry: entry, account: account, farm: farm) }
             }
