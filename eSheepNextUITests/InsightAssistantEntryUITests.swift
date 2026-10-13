@@ -1035,7 +1035,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
         attachScreenshot(of: app, named: name)
         let keyboard = app.keyboards.firstMatch
         let exists = keyboard.exists
-        let frame = exists ? NSStringFromCGRect(keyboard.frame) : "unavailable"
+        let frame = exists ? NSCoder.string(for: keyboard.frame) : "unavailable"
         let hierarchy = XCTAttachment(string:
             "iOS=\(UIDevice.current.systemVersion)\nkeyboard.exists=\(exists)\nkeyboard.frame=\(frame)\n\n\(app.debugDescription)"
         )
