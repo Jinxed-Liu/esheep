@@ -92,17 +92,17 @@ jobs:
         run: |
           set -euo pipefail
           xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
-          gesture_test_filters=()
+          gesture_test_options=(-parallel-testing-enabled NO)
           if [ "$COMPATIBILITY_SCHEME" = eSheepNextUI ]; then
-            gesture_test_filters=(-only-testing:eSheepNextUITests/PlatformCompatibilityUITests)
+            gesture_test_options+=(-only-testing:eSheepNextUITests/PlatformCompatibilityUITests)
           fi
           xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme "$COMPATIBILITY_SCHEME" \
             -configuration Debug -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
             -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
-            -resultBundlePath "$RUNNER_TEMP/gestures.xcresult" -parallel-testing-enabled NO \
+            -resultBundlePath "$RUNNER_TEMP/gestures.xcresult" \
             -test-timeouts-enabled YES -default-test-execution-time-allowance 240 \
             -maximum-test-execution-time-allowance 240 \
-            "${gesture_test_filters[@]}" \
+            "${gesture_test_options[@]}" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/gestures.log"
       - name: Run the available native composer interactions
