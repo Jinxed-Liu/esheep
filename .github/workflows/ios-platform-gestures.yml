@@ -72,7 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           xcodebuild -showTestPlans -project eSheepNext.xcodeproj -scheme eSheepNextUI
-          for compatibility_build_scheme in eSheepNext eSheepNextUI; do
+          for compatibility_build_scheme in eSheepNextUI eSheepNext; do
             gesture_test_plan_options=(-configuration Debug)
             if [ "$compatibility_build_scheme" = eSheepNextUI ] && [ "$COMPATIBILITY_RUNTIME" = 17 ]; then
               gesture_test_plan_options+=(-testPlan Legacy17)

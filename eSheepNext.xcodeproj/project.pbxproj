@@ -69,6 +69,8 @@
 		E5A100312FC6000100A00001 /* eSheepNextWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = eSheepNextWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E5A400012FC9000100A00001 /* eSheepNextPerformanceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eSheepNextPerformanceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E5A500012FCA000100A00001 /* eSheepNextUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eSheepNextUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E5A600012FCB000100A00001 /* ModernUI.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = ModernUI.xctestplan; sourceTree = "<group>"; };
+		E5A600022FCB000100A00001 /* Legacy17.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = Legacy17.xctestplan; sourceTree = "<group>"; };
 		E5B922000000000000000001 /* FarmWidgetSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eSheepNext/Models/FarmWidgetSnapshot.swift; sourceTree = SOURCE_ROOT; };
 		E5B922000000000000000002 /* FarmWidgetCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eSheepNext/Models/FarmWidgetCatalog.swift; sourceTree = SOURCE_ROOT; };
 		E5B922000000000000000003 /* FarmWidgetCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eSheepNext/Features/Shared/FarmWidgetCardView.swift; sourceTree = SOURCE_ROOT; };
@@ -176,9 +178,19 @@
 				E5A1000D2FC6000100A00001 /* eSheepNextTests */,
 				E5A400022FC9000100A00001 /* eSheepNextPerformanceTests */,
 				E5A500022FCA000100A00001 /* eSheepNextUITests */,
+				E5A600032FCB000100A00001 /* TestPlans */,
 				E5A100342FC6000100A00001 /* eSheepNextWidget */,
 				E5A100072FC6000100A00001 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		E5A600032FCB000100A00001 /* TestPlans */ = {
+			isa = PBXGroup;
+			children = (
+				E5A600012FCB000100A00001 /* ModernUI.xctestplan */,
+				E5A600022FCB000100A00001 /* Legacy17.xctestplan */,
+			);
+			path = TestPlans;
 			sourceTree = "<group>";
 		};
 		E5A100072FC6000100A00001 /* Products */ = {
