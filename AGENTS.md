@@ -7,3 +7,4 @@ Use the files relevant to the task. For Web work, follow `web/AGENTS.md`; for fa
 - Inspect the current diff before editing shared files. Preserve unrelated worktree changes. For data, release, or broad refactors, keep a recoverable backup. Report what was verified and what still needs external acceptance.
 - Support iOS 17 while preserving the existing native interface and animations on newer iOS versions. Gate each newer API by its availability and use fallback implementations only on systems that need them.
   Keep newer SDK types out of concrete class storage that older systems can enumerate through Objective-C. Availability on a class does not protect its stored type metadata; use an erased backing store or an availability-gated struct.
+- Batch compatibility validation into one reviewable candidate. Keep push-triggered CI off the iOS 17 compatibility branches and focused checks manual; repeated failing runs generate unwanted GitHub email notifications.

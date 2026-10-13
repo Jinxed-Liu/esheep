@@ -11,7 +11,7 @@ on:
       - 'eSheepNext.xcodeproj/**'
       - '.github/workflows/ios-runtime.yml'
   push:
-    branches: [main, 'codex/**']
+    branches: [main, 'codex/**', '!codex/ios17-compatibility', '!codex/ios17-compatibility-validation']
     paths:
       - 'eSheepNext/**'
       - 'eSheepNextTests/**'

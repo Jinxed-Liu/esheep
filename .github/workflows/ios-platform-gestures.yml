@@ -2,12 +2,6 @@ name: iOS compatibility focused checks
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ios17-avatar-debug]
-    paths:
-      - '.github/workflows/ios-platform-gestures.yml'
-      - 'eSheepNextUITests/**'
-      - 'eSheepNext/**'
 
 permissions:
   contents: read

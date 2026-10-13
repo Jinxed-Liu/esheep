@@ -12,7 +12,7 @@ on:
       - 'tools/verify_ios_compatibility.py'
       - '.github/workflows/ios-17-compatibility.yml'
   push:
-    branches: [main, 'codex/**']
+    branches: [main, 'codex/**', '!codex/ios17-compatibility', '!codex/ios17-compatibility-validation']
     paths:
       - 'eSheepNext/**'
       - 'eSheepNextTests/**'
