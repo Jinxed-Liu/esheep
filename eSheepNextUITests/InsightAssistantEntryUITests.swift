@@ -30,6 +30,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
         }
         XCTAssertEqual(focusedResult, .completed)
 
+        attachVoiceFocusEvidence(of: app, named: "voice-time-sample-fixture-before-begin")
         app.buttons["design.audio.fixture.begin"].tap()
         let bar = app.descendants(matching: .any).matching(identifier: "insight.audio.bar").firstMatch
         let waveform = app.descendants(matching: .any).matching(identifier: "insight.audio.waveform").firstMatch
@@ -40,7 +41,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let sixSeconds = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "0:06"), object: bar)
         XCTAssertEqual(XCTWaiter.wait(for: [sixSeconds], timeout: 5), .completed)
         XCTAssertEqual(app.staticTexts["design.audio.fixture.state"].label, "样本数 60，发送次数 0")
-        attachScreenshot(of: app, named: "voice-time-sample-fixture-recording-six-seconds-not-microphone-audio")
+        attachVoiceFocusEvidence(of: app, named: "voice-time-sample-fixture-recording-six-seconds-not-microphone-audio")
         attachVoiceGeometry(in: app, named: "voice-time-sample-fixture-six-seconds-ax-geometry")
         XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "insight.audio.bar").count, 1)
         // A SwiftUI children:.contain AX element can tightly enclose its
@@ -99,7 +100,17 @@ final class InsightAssistantEntryUITests: XCTestCase {
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         XCTAssertEqual(input.value as? String, originalDraft)
         XCTAssertEqual(app.staticTexts["design.audio.fixture.state"].label, "样本数 0，发送次数 0")
-        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        attachVoiceFocusEvidence(of: app, named: "voice-time-sample-fixture-after-cancel-before-keyboard-wait")
+        let restoredKeyboard = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let keyboard = app.keyboards.firstMatch
+            return keyboard.exists && keyboard.frame.height > 100
+        }, object: app)
+        let restoredKeyboardResult = XCTWaiter.wait(for: [restoredKeyboard], timeout: 10)
+        if restoredKeyboardResult != .completed {
+            attachVoiceFocusEvidence(of: app, named: "voice-time-sample-fixture-cancel-keyboard-restore-failure")
+        }
+        XCTAssertEqual(restoredKeyboardResult, .completed,
+                       "Removing pending audio must restore the actual visible keyboard without tapping the editor again.")
         attachScreenshot(of: app, named: "voice-time-sample-fixture-remove-pending-restores-original-draft")
 
         app.buttons["design.audio.fixture.begin"].tap()
@@ -1017,6 +1028,20 @@ final class InsightAssistantEntryUITests: XCTestCase {
         }
         attachScreenshot(of: app, named: "dense-reply-scroll-position-not-established-\(keepingKeyboard ? "focused" : "unfocused")")
         return false
+    }
+
+    @MainActor
+    private func attachVoiceFocusEvidence(of app: XCUIApplication, named name: String) {
+        attachScreenshot(of: app, named: name)
+        let keyboard = app.keyboards.firstMatch
+        let exists = keyboard.exists
+        let frame = exists ? NSStringFromCGRect(keyboard.frame) : "unavailable"
+        let hierarchy = XCTAttachment(string:
+            "iOS=\(UIDevice.current.systemVersion)\nkeyboard.exists=\(exists)\nkeyboard.frame=\(frame)\n\n\(app.debugDescription)"
+        )
+        hierarchy.name = "\(name)-accessibility-hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
     }
 
     @MainActor

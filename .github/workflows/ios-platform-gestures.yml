@@ -94,18 +94,27 @@ jobs:
             -only-testing:eSheepNextUITests/PlatformCompatibilityUITests \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/gestures.log"
-      - name: Diagnose the existing native interactions on the newer system
-        if: ${{ always() && matrix.runtime == '26' && steps.build.outcome == 'success' }}
+      - name: Diagnose the available native composer interactions
+        if: ${{ always() && steps.build.outcome == 'success' }}
         run: |
           set -euo pipefail
+          if [ "$COMPATIBILITY_RUNTIME" = 26 ]; then
+            gesture_diagnostic_filters=(
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testFloatingAttachmentPanelPreservesTheDraftAndPresentsTheSelectedAction
+            )
+          else
+            gesture_diagnostic_filters=(
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testKnownVoiceTimelineUsesASingleRowAndPreservesTheUnsentDraft
+            )
+          fi
           xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme eSheepNextUI \
             -configuration Debug -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
             -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
             -resultBundlePath "$RUNNER_TEMP/native-interactions.xcresult" -parallel-testing-enabled NO \
             -test-timeouts-enabled YES -default-test-execution-time-allowance 240 \
             -maximum-test-execution-time-allowance 240 \
-            -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning \
-            -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testFloatingAttachmentPanelPreservesTheDraftAndPresentsTheSelectedAction \
+            "${gesture_diagnostic_filters[@]}" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/native-interactions.log"
       - name: Export screenshots and diagnostic logs
