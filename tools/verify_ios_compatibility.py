@@ -168,7 +168,9 @@ def suite_commands(destination, scheme, output_dir):
     # Match package builds to the simulator's active architecture. Building both
     # architectures can leave the inactive app slice without its package modules.
     settings = ["ONLY_ACTIVE_ARCH=YES", "SWIFT_ENABLE_BATCH_MODE=NO",
-                "COMPILER_INDEX_STORE_ENABLE=NO", "CODE_SIGNING_ALLOWED=YES", "CODE_SIGN_IDENTITY=-"]
+                "COMPILER_INDEX_STORE_ENABLE=NO", "CODE_SIGNING_ALLOWED=YES", "CODE_SIGN_IDENTITY=-",
+                "OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 "
+                "-Xfrontend -warn-long-expression-type-checking=500"]
     build = ["xcodebuild", "build-for-testing", *common, *settings]
     test = ["xcodebuild", "test-without-building", *common,
             "-resultBundlePath", str(suite_dir / "Tests.xcresult")]
