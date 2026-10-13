@@ -46,7 +46,15 @@ jobs:
         run: |
           set -euo pipefail
           xcodebuild -version
-          xcodebuild -downloadPlatform iOS -buildVersion 17.5
+          # Start CoreSimulator before Xcode asks it to install an older runtime.
+          xcrun simctl list --json > "$RUNNER_TEMP/simulators-before-install.json"
+          for runtime_download_attempt in 1 2 3; do
+            if xcodebuild -downloadPlatform iOS -buildVersion 17.5; then
+              break
+            fi
+            if [ "$runtime_download_attempt" = 3 ]; then exit 1; fi
+            xcrun simctl list devices available
+          done
       - name: Create an iOS 17 iPhone on the disposable runner
         run: |
           set -euo pipefail
@@ -101,7 +109,7 @@ jobs:
           name: ios-17-compatibility-${{ github.sha }}
           if-no-files-found: warn
           path: |
-            ${{ runner.temp }}/simulators.json
+            ${{ runner.temp }}/simulators*.json
             ${{ runner.temp }}/ios-17-compatibility/**/build.log
             ${{ runner.temp }}/ios-17-compatibility/**/test.log
             ${{ runner.temp }}/ios-17-compatibility/**/Tests.xcresult
