@@ -801,8 +801,13 @@ function writeBatches(commands) {
     const file = path.join(BATCH_DIR, `batch-${String(index / batchSize + 1).padStart(3, '0')}.sql`);
     const sql = `begin;
 select set_config('request.jwt.claim.role','service_role',true);
+create temp table esheep_migration_command_input
+  (ordinal bigint primary key, command jsonb not null) on commit drop;
+insert into pg_temp.esheep_migration_command_input (ordinal,command)
+  select ordinal,value from jsonb_array_elements(${sqlString(json)}::jsonb)
+  with ordinality as input(value,ordinal);
 do $$ declare item jsonb; result jsonb; rejected integer := 0; begin
-  for item in select value from jsonb_array_elements(${sqlString(json)}::jsonb)
+  for item in select command from pg_temp.esheep_migration_command_input order by ordinal
   loop
     result := esheep_cloud.process_command_v2(${sqlString(FARM_ID)}::uuid,${GENERATION},${sqlString(OWNER_USER_ID)}::uuid,item);
     if result->>'type' not in ('accepted','duplicate') then rejected := rejected + 1; raise exception using message = 'real_migration_command_rejected:' || result::text; end if;

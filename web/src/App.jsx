@@ -1,5 +1,5 @@
 import { PageMotion } from "./components/PageMotion.jsx";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { CheckCircle } from "@phosphor-icons/react/CheckCircle";
 import { SpinnerGap } from "@phosphor-icons/react/SpinnerGap";
 import { WarningCircle } from "@phosphor-icons/react/WarningCircle";
@@ -16,6 +16,7 @@ import { buildBusinessCommands } from "./lib/businessCommands.js";
 import { isSupabaseConfigured } from "./lib/supabaseConfig.js";
 import { useEnvironmentPreferences, useFarmEnvironment } from "./lib/useFarmEnvironment.js";
 import { cloudAccessErrorMessage, loadWithTransientJWTClockRetry } from "./lib/cloudReadRecovery.js";
+import { createCloudAuthLifecycle } from "./lib/cloudAuthLifecycle.js";
 import {
   WorkspaceDataSource,
   workspaceHasSections,
@@ -27,7 +28,10 @@ import { reportCloudReadProgress, subscribeCloudReadProgress } from "./lib/cloud
 let supabaseModulePromise;
 
 function loadSupabaseModule() {
-  supabaseModulePromise ??= import("./lib/supabase.js");
+  supabaseModulePromise ??= import("./lib/supabase.js").catch((error) => {
+    supabaseModulePromise = undefined;
+    throw error;
+  });
   return supabaseModulePromise;
 }
 
@@ -99,6 +103,7 @@ export function App() {
   const [writeProgress,setWriteProgress]=useState("");
   const [toast, setToast] = useState(null);
   const [weatherDetailOpen, setWeatherDetailOpen] = useState(false);
+  const authLifecycle = useRef(null);
   const environmentPreferences = useEnvironmentPreferences();
   const environment = useFarmEnvironment(workspace?.farm, workspace?.profile?.userID, authState.access === "member");
 
@@ -126,62 +131,53 @@ export function App() {
   useEffect(() => {
     let active = true;
     let stopWatching = () => {};
-    workspaceDataSource.invalidate();
-
-    async function restoreCloudSession() {
-      if (!isSupabaseConfigured) {
-        if (active) {
-          setWorkspace(null);
-          setAuthState({ loading: false, error: "当前网页尚未配置 Supabase 登录环境。", access: "signed-out", user: null });
-        }
-        return;
-      }
-      let verifiedUser = null;
-      try {
+    let watching = false;
+    const lifecycle = createCloudAuthLifecycle({
+      verifyUser: async () => {
         const cloud = await loadSupabaseModule();
-        verifiedUser = await cloud.getVerifiedUser();
-        if (!verifiedUser) {
-          if (active) {
-            setWorkspace(null);
-            setAuthState({ loading: false, error: "", access: "signed-out", user: null });
-          }
-          return;
+        if (active && !watching) {
+          stopWatching = cloud.watchAuth(lifecycle.observe);
+          watching = true;
         }
-        const cloudWorkspace = await workspaceDataSource.loadOverview();
-        if (active) {
-          setWorkspace(cloudWorkspace);
-          setAuthState({ loading: false, error: "", access: "member", user: verifiedUser });
-        }
-      } catch (error) {
-        if (active && error?.name !== "AbortError") {
-          setWorkspace(null);
-          if (isNoFarmAccessError(error)) {
-            setAuthState({ loading: false, error: "", access: "invite-only", user: verifiedUser });
-          } else {
-            setAuthState({ loading: false, error: verifiedUser ? cloudAccessErrorMessage(error) : explainSessionRestoreError(error),
-              access: verifiedUser ? "unavailable" : "signed-out", user: verifiedUser });
-          }
-        }
-      }
-    }
-
-    void restoreCloudSession();
+        return cloud.getVerifiedUser();
+      },
+      loadWorkspace: (farmID) => workspaceDataSource.loadOverview(farmID, { bypassCache: true }),
+      invalidate: () => workspaceDataSource.invalidate(),
+      clearPrivateState: () => {
+        setWorkspace(null);
+        setDrafts([]);
+        setRecordDialog({ open: false, type: "new" });
+        setToast(null);
+        setWriteBusy(false);
+        setWriteProgress("");
+        setRouteLoading(false);
+        setActivePage("home");
+        setRouteContext({});
+        setRouteRequest({ page: "home", context: {} });
+        setAuthState({ loading: true, error: "", access: "checking", user: null });
+      },
+      onSignedOut: () => setAuthState({ loading: false, error: "", access: "signed-out", user: null }),
+      onWorkspace: (cloudWorkspace, user) => {
+        setWorkspace(cloudWorkspace);
+        setAuthState({ loading: false, error: "", access: "member", user });
+      },
+      onError: (error, user) => {
+        setWorkspace(null);
+        setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : user ? cloudAccessErrorMessage(error) : explainSessionRestoreError(error),
+          access: isNoFarmAccessError(error) ? "invite-only" : user ? "unavailable" : "signed-out", user });
+      },
+    });
+    authLifecycle.current = lifecycle;
+    lifecycle.beginChecking();
     if (isSupabaseConfigured) {
-      void loadSupabaseModule().then((cloud) => {
-        if (!active) return;
-        stopWatching = cloud.watchAuth(({ event }) => {
-          if (event === "SIGNED_OUT" && active) {
-            workspaceDataSource.invalidate();
-            setWorkspace(null);
-            setAuthState({ loading: false, error: "", access: "signed-out", user: null });
-          }
-        });
-      });
+      void lifecycle.restore().catch(() => {});
+    } else {
+      setAuthState({ loading: false, error: "当前网页尚未配置 Supabase 登录环境。", access: "signed-out", user: null });
     }
 
     return () => {
       active = false;
-      workspaceDataSource.invalidate();
+      lifecycle.dispose();
       stopWatching();
     };
   }, []);
@@ -240,21 +236,23 @@ export function App() {
     }
 
     let active = true;
+    const lifecycle = authLifecycle.current;
+    const token = lifecycle.token();
     setRouteLoading(true);
     void workspaceDataSource.loadForPage(
       page,
       workspace.farm.id,
       { currentWorkspace: workspace },
     ).then((cloudWorkspace) => {
-      if (!active) return;
+      if (!active || !lifecycle.current(token)) return;
       setWorkspace(cloudWorkspace);
       commitRoute();
     }).catch((error) => {
-      if (!active || error?.name === "AbortError") return;
+      if (!active || !lifecycle.current(token) || error?.name === "AbortError") return;
       const message = error.message || "页面数据装载失败。";
       showToast(message, "danger");
     }).finally(() => {
-      if (active) setRouteLoading(false);
+      if (active && lifecycle.current(token)) setRouteLoading(false);
     });
 
     return () => {
@@ -278,15 +276,18 @@ export function App() {
       if (farm) setWorkspace((current) => ({ ...current, farm }));
       return;
     }
+    const lifecycle = authLifecycle.current;
+    const token = lifecycle.token();
     setAuthState({ loading: true, error: "" });
     try {
       const cloudWorkspace = await workspaceDataSource.loadOverview(farmID, {
         bypassCache: true,
       });
+      lifecycle.assertCurrent(token);
       setWorkspace(cloudWorkspace);
       showToast(`已切换到 ${cloudWorkspace.farm.name}`);
     } catch (error) {
-      if (error?.name === "AbortError") return;
+      if (!lifecycle.current(token) || error?.name === "AbortError") return;
       setAuthState({ loading: false, error: error.message || "牧场切换失败。" });
       showToast(error.message || "牧场切换失败。", "danger");
       return;
@@ -295,52 +296,37 @@ export function App() {
   }
 
   async function handleSignIn(email, password) {
-    workspaceDataSource.invalidate();
-    setAuthState((current) => ({ ...current, loading: true, error: "" }));
+    const lifecycle = authLifecycle.current;
+    const token = lifecycle.beginChecking();
     try {
       const cloud = await loadSupabaseModule();
-      const user = await cloud.signInWithPassword(email, password);
-      try {
-        const cloudWorkspace = await workspaceDataSource.loadOverview();
-        setWorkspace(cloudWorkspace);
-        setAuthState({ loading: false, error: "", access: "member", user });
-        showToast(`已连接 ${cloudWorkspace.farm.name}`);
-      } catch (error) {
-        if (error?.name === "AbortError") throw error;
-        setWorkspace(null);
-        setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : cloudAccessErrorMessage(error),
-          access: isNoFarmAccessError(error) ? "invite-only" : "unavailable", user });
-      }
+      lifecycle.assertCurrent(token);
+      await cloud.signInWithPassword(email, password);
     } catch (error) {
-      if (error?.name === "AbortError") return;
+      if (!lifecycle.current(token) || error?.name === "AbortError") return;
       const message = error.message || "登录失败。";
       setAuthState({ loading: false, error: message, access: "signed-out", user: null });
       throw error;
     }
+    // SIGNED_IN already starts the identity-bound restore; share that read.
+    await lifecycle.restore().catch(() => {});
   }
 
   async function handleSignUp({ displayName, email, password }) {
-    workspaceDataSource.invalidate();
-    setAuthState((current) => ({ ...current, loading: true, error: "" }));
+    const lifecycle = authLifecycle.current;
+    const token = lifecycle.beginChecking();
     try {
       const cloud = await loadSupabaseModule();
+      lifecycle.assertCurrent(token);
       const result = await cloud.signUpWithPassword({ displayName, email, password });
       if (result.verificationRequired) {
-        setAuthState({ loading: false, error: "", access: "signed-out", user: null });
+        if (lifecycle.current(token)) setAuthState({ loading: false, error: "", access: "signed-out", user: null });
         return result;
       }
-      try {
-        const cloudWorkspace = await workspaceDataSource.loadOverview();
-        setWorkspace(cloudWorkspace);
-        setAuthState({ loading: false, error: "", access: "member", user: result.user });
-      } catch (error) {
-        if (error?.name === "AbortError") throw error;
-        setWorkspace(null);
-        setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : cloudAccessErrorMessage(error),
-          access: isNoFarmAccessError(error) ? "invite-only" : "unavailable", user: result.user });
-      }
+      await lifecycle.restore().catch(() => {});
       return result;
     } catch (error) {
+      if (!lifecycle.current(token) || error?.name === "AbortError") return;
       const message = error.message || "注册失败。";
       setAuthState({ loading: false, error: message, access: "signed-out", user: null });
       throw error;
@@ -348,18 +334,20 @@ export function App() {
   }
 
   async function handleRedeemInvite(code) {
+    const lifecycle = authLifecycle.current;
+    const token = lifecycle.token();
     workspaceDataSource.invalidate();
     setAuthState((current) => ({ ...current, loading: true, error: "" }));
     let redeemed = false;
     try {
       const cloud = await loadSupabaseModule();
+      lifecycle.assertCurrent(token);
       const redemption = await cloud.redeemFarmInvite(code);
+      lifecycle.assertCurrent(token);
       redeemed = true;
-      const cloudWorkspace = await workspaceDataSource.loadOverview(redemption.farm_id, { bypassCache: true });
-      setWorkspace(cloudWorkspace);
-      setAuthState((current) => ({ ...current, loading: false, error: "", access: "member" }));
-      showToast(`已加入 ${cloudWorkspace.farm.name}`);
+      await lifecycle.refresh({ farmID: redemption.farm_id });
     } catch (error) {
+      if (!lifecycle.current(token) || error?.name === "AbortError") return;
       setAuthState((current) => ({ ...current, loading: false, access: redeemed ? "unavailable" : current.access,
         error: error.message || "加入牧场失败。" }));
       throw error;
@@ -367,35 +355,23 @@ export function App() {
   }
 
   async function handleRetryCloudAccess() {
-    workspaceDataSource.invalidate();
-    setAuthState((current) => ({ ...current, loading: true, error: "" }));
-    let user = null;
-    try {
-      const cloud = await loadSupabaseModule();
-      user = await cloud.getVerifiedUser();
-      if (!user) {
-        setAuthState({ loading: false, error: "登录已过期，请重新登录。", access: "signed-out", user: null });
-        return;
-      }
-      const cloudWorkspace = await workspaceDataSource.loadOverview(undefined, { bypassCache: true });
-      setWorkspace(cloudWorkspace);
-      setAuthState({ loading: false, error: "", access: "member", user });
-    } catch (error) {
-      if (error?.name === "AbortError") return;
-      setAuthState({ loading: false, error: isNoFarmAccessError(error) ? "" : cloudAccessErrorMessage(error),
-        access: isNoFarmAccessError(error) ? "invite-only" : user ? "unavailable" : "signed-out", user });
-    }
+    await authLifecycle.current.refresh().catch(() => {});
   }
 
   async function handleAppleSignIn() {
+    const lifecycle = authLifecycle.current;
+    const token = lifecycle.token();
     setAuthState((current) => ({ ...current, loading: true, error: "" }));
     try {
       const cloud = await loadSupabaseModule();
+      lifecycle.assertCurrent(token);
       await cloud.signInWithApple();
+      lifecycle.assertCurrent(token);
       // Supabase redirects the browser to Apple. This fallback is useful for
       // environments that return from signInWithOAuth without navigating.
       setAuthState((current) => ({ ...current, loading: false, error: "" }));
     } catch (error) {
+      if (!lifecycle.current(token) || error?.name === "AbortError") return;
       const message = explainAppleAuthError(error);
       setAuthState((current) => ({ ...current, loading: false, error: message }));
       throw new Error(message);
@@ -403,22 +379,25 @@ export function App() {
   }
 
   async function handleSignOut() {
-    workspaceDataSource.invalidate();
-    setAuthState((current) => ({ ...current, loading: true, error: "" }));
+    const lifecycle = authLifecycle.current;
+    const token = lifecycle.beginChecking();
     try {
       const cloud = await loadSupabaseModule();
+      lifecycle.assertCurrent(token);
       await cloud.signOut();
-      setWorkspace(null);
+      if (lifecycle.current(token)) lifecycle.observe({ event: "SIGNED_OUT", session: null });
     } catch (error) {
+      if (!lifecycle.current(token) || error?.name === "AbortError") return;
       setAuthState((current) => ({ ...current, loading: false, error: error.message || "退出失败。" }));
       showToast(error.message || "退出失败。", "danger");
       return;
     }
-    setAuthState({ loading: false, error: "", access: "signed-out", user: null });
   }
 
   async function reloadCloud() {
     if (workspace.mode !== "cloud") return;
+    const lifecycle = authLifecycle.current;
+    const token = lifecycle.token();
     workspaceDataSource.invalidate({ farmID: workspace.farm.id });
     setAuthState({ loading: true, error: "" });
     try {
@@ -430,11 +409,12 @@ export function App() {
           bypassCache: true,
         },
       );
+      lifecycle.assertCurrent(token);
       setWorkspace(cloudWorkspace);
       setAuthState({ loading: false, error: "" });
       showToast("云端投影已刷新。");
     } catch (error) {
-      if (error?.name === "AbortError") return;
+      if (!lifecycle.current(token) || error?.name === "AbortError") return;
       setAuthState({ loading: false, error: error.message || "云端刷新失败。" });
       showToast(error.message || "云端刷新失败。", "danger");
     }
@@ -443,62 +423,87 @@ export function App() {
   async function openRecord(type, options={}) {
     setRecordDialog({open:true,type,...options});
   }
-  async function refreshDrafts() { setDrafts(await listDrafts(workspace.profile.accountID,workspace.farm.id)); }
+  async function refreshDrafts() {
+    const lifecycle=authLifecycle.current,token=lifecycle.token();
+    if(!lifecycle.owns(workspace.profile.userID))return;
+    const rows=await listDrafts(workspace.profile.accountID,workspace.farm.id);
+    if(lifecycle.current(token)&&lifecycle.owns(workspace.profile.userID))setDrafts(rows);
+  }
   async function persistRecord(record,draftID,submit=false) {
+    const lifecycle=authLifecycle.current,token=lifecycle.token();
     const draft=await saveDraft(workspace.profile.accountID,workspace.farm,record,draftID);
+    lifecycle.assertCurrent(token);
     await refreshDrafts();
+    lifecycle.assertCurrent(token);
     if(submit) {
-      try {await sendSavedDraft(draft);} catch(error) {showToast(error.message,"danger");}
+      try {await sendSavedDraft(draft);} catch(error) {if(lifecycle.current(token))showToast(error.message,"danger");}
+      lifecycle.assertCurrent(token);
       navigate("entry");
     } else showToast("草稿已保存在此浏览器，重新打开仍可继续。");
     return draft;
   }
   async function sendLabelActions(actions) {
+    const lifecycle=authLifecycle.current,token=lifecycle.token();
     const results=[];
     const cloud=await loadSupabaseModule();
+    lifecycle.assertCurrent(token);
     for(const action of actions) {
       try {
+        lifecycle.assertCurrent(token);
         const fresh=await cloud.loadCloudWorkspace(workspace.farm.id);
+        lifecycle.assertCurrent(token);
         const record={sheet:"羊只标签",values:{},labelAction:action.action,labelDraft:action.draft};
         const id=action.draft.changeID??action.draft.id;
         const existing=(await listDrafts(workspace.profile.accountID,workspace.farm.id)).find(d=>d.id===id);
         const draft=existing??await saveDraft(workspace.profile.accountID,workspace.farm,record,id);
-        const result=await submitDraft(cloud.supabase,workspace.profile.accountID,fresh.farm,draft,()=>buildBusinessCommands(record,fresh));
+        lifecycle.assertCurrent(token);
+        const result=await submitDraft(cloud.supabase,workspace.profile.accountID,fresh.farm,draft,()=>buildBusinessCommands(record,fresh),{assertCurrent:()=>lifecycle.assertCurrent(token)});
+        lifecycle.assertCurrent(token);
         const accepted=result.status==="accepted";
         results.push({action,accepted,error:accepted?null:JSON.stringify(result.receipts??result.error??"云端拒绝，请核对回执")});
-      } catch(e) { results.push({action,accepted:false,error:e.message}); }
+      } catch(e) { if(!lifecycle.current(token))throw e;results.push({action,accepted:false,error:e.message}); }
     }
     workspaceDataSource.invalidate({farmID:workspace.farm.id});
-    try{setWorkspace(await cloud.loadCloudWorkspace(workspace.farm.id));}catch(e){showToast(`标签提交已处理，读取刷新失败：${e.message}`,"warning");}
+    try{const fresh=await cloud.loadCloudWorkspace(workspace.farm.id);lifecycle.assertCurrent(token);setWorkspace(fresh);}catch(e){if(lifecycle.current(token))showToast(`标签提交已处理，读取刷新失败：${e.message}`,"warning");}
+    lifecycle.assertCurrent(token);
     await refreshDrafts();
     return results;
   }
   async function sendSavedDraft(draft) { return sendDraftGroup([draft]); }
   async function sendDraftGroup(group) {
+    const lifecycle=authLifecycle.current,token=lifecycle.token();
     setWriteBusy(true);let accepted=0;
     try {
       const cloud=await loadSupabaseModule();
+      lifecycle.assertCurrent(token);
       const ordered=[...group].sort((a,b)=>a.createdAt-b.createdAt||(a.record.rowNumber??0)-(b.record.rowNumber??0));
       for(const draft of ordered) {
+        lifecycle.assertCurrent(token);
         setWriteProgress(`正在提交 ${accepted+1} / ${ordered.length} 条`);
         const fresh=await cloud.loadCloudWorkspace(workspace.farm.id);
-        const result=await submitDraft(cloud.supabase,workspace.profile.accountID,fresh.farm,draft,()=>buildBusinessCommands({...draft.record,id:draft.id},fresh));
+        lifecycle.assertCurrent(token);
+        const result=await submitDraft(cloud.supabase,workspace.profile.accountID,fresh.farm,draft,()=>buildBusinessCommands({...draft.record,id:draft.id},fresh),{assertCurrent:()=>lifecycle.assertCurrent(token)});
+        lifecycle.assertCurrent(token);
         if(result.status!=="accepted")throw new Error(`${draft.record.sheet}：${result.status==="conflict"?"云端发现冲突":"云端拒绝保存"}，请打开原始回执核对。`);
         accepted++;await refreshDrafts();
       }
       workspaceDataSource.invalidate({farmID:workspace.farm.id});
-      try {const fresh=await cloud.loadCloudWorkspace(workspace.farm.id);setWorkspace(fresh);showToast(`云端已接受 ${accepted} 条记录，资料与原始回执已更新。`);}
-      catch(e){showToast(`云端已接受 ${accepted} 条记录；读取刷新未完成：${e.message}`,"warning");}
+      try {const fresh=await cloud.loadCloudWorkspace(workspace.farm.id);lifecycle.assertCurrent(token);setWorkspace(fresh);showToast(`云端已接受 ${accepted} 条记录，资料与原始回执已更新。`);}
+      catch(e){if(lifecycle.current(token))showToast(`云端已接受 ${accepted} 条记录；读取刷新未完成：${e.message}`,"warning");}
     } catch(e) {throw new Error(`${accepted?`已接受 ${accepted} 条，其余停止提交。`:""}${e.message}`);}
-    finally {await refreshDrafts();setWriteBusy(false);setWriteProgress("");}
+    finally {if(lifecycle.current(token)){await refreshDrafts();if(lifecycle.current(token)){setWriteBusy(false);setWriteProgress("");}}}
   }
   async function importRecords(records) {
+    const lifecycle=authLifecycle.current,token=lifecycle.token();
     const existing=await listDrafts(workspace.profile.accountID,workspace.farm.id);
+    lifecycle.assertCurrent(token);
     const freshRecords=[];
     for(const record of records){const previous=existing.find(d=>d.record.importKey===record.importKey&&d.record.sheet===record.sheet&&d.status!=="discarded");if(previous&&JSON.stringify(previous.record.values)!==JSON.stringify(record.values))throw new Error(`导入键 ${record.importKey} 已有不同内容，请核对原草稿，不能覆盖。`);if(!previous)freshRecords.push(record);}
     if(freshRecords.length){const {preflightImport}=await import("./lib/importPreflight.js");await preflightImport(freshRecords,workspace);}
+    lifecycle.assertCurrent(token);
     let added=0;
     for(const record of records) {
+      lifecycle.assertCurrent(token);
       const previous=existing.find(d=>d.record.importKey===record.importKey&&d.record.sheet===record.sheet&&d.status!=="discarded");
       if(previous) {
         if(JSON.stringify(previous.record.values)!==JSON.stringify(record.values)) throw new Error(`导入键 ${record.importKey} 已有不同内容，请核对原草稿，不能覆盖。`);
@@ -506,9 +511,14 @@ export function App() {
       }
       const saved=await saveDraft(workspace.profile.accountID,workspace.farm,record);existing.push(saved);added++;
     }
-    await refreshDrafts();showToast(`已保存 ${added} 行导入草稿，请按顺序核对并提交。`);
+    lifecycle.assertCurrent(token);
+    await refreshDrafts();lifecycle.assertCurrent(token);showToast(`已保存 ${added} 行导入草稿，请按顺序核对并提交。`);
   }
-  async function deleteDraft(draft) { await discardDraft(workspace.profile.accountID,draft.id);await refreshDrafts(); }
+  async function deleteDraft(draft) {
+    const lifecycle=authLifecycle.current,token=lifecycle.token();
+    await discardDraft(workspace.profile.accountID,draft.id);
+    lifecycle.assertCurrent(token);await refreshDrafts();
+  }
 
   if (!workspace) {
     if (!authState.loading) {

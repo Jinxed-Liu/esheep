@@ -6,6 +6,7 @@ import { createAssistantAPI } from "./api.mjs";
 import { handleNodeRequest } from "./node-adapter.mjs";
 import { createWeatherAPI } from "./weather-api.mjs";
 import { proxyCloudRequest } from "../worker/cloud-proxy.js";
+import { nodeCloudFetch } from "./cloud-fetch.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const environment = { ...loadEnv("development", root, ""), ...process.env };
@@ -22,7 +23,7 @@ const host = environment.HOST ?? "0.0.0.0";
 const server = http.createServer(async (request, response) => {
   try {
     if ((request.url ?? "").startsWith("/api/cloud/")) {
-      await handleNodeRequest(request, response, (cloudRequest) => proxyCloudRequest(cloudRequest, environment));
+      await handleNodeRequest(request, response, (cloudRequest) => proxyCloudRequest(cloudRequest, environment, { fetchImpl: nodeCloudFetch }));
       return;
     }
     if ((request.url ?? "").startsWith("/api/assistant/") || (request.url ?? "").startsWith("/api/weather/")) {
