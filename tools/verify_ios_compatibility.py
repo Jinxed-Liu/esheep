@@ -20,6 +20,20 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMES = ("eSheepNextUI", "eSheepNext")
+# These three opt-in acceptance tests already skip on the main-branch baseline
+# when their private inputs are absent. This is an identifier allowlist, never
+# an allowance for an arbitrary number of skipped tests.
+KNOWN_FULL_UNIT_FIXTURE_SKIPS = {
+    "eSheepNextTests/ESheepCloudIntegratedTests/"
+    "testRealCloudSourceBuildsCheckpointAndImportsWithoutHistoricalReceipts":
+        "Requires a sealed SELECT-only cloud source",
+    "eSheepNextTests/ESheepCloudV2Tests/"
+    "testRealFarmForwardHistoryRepairMatchesEverySheepInIncrementalAndFreshReplay":
+        "Private owner-approved baseline fixture not installed",
+    "eSheepNextTests/ESheepCloudV2Tests/"
+    "testRealFarmRepairSnapshotVerifiesAndActivatesFromEmptyStore":
+        "Set ESHEEP_V2_REPLAY_FIXTURE to a private full-scale repair fixture",
+}
 
 
 class GateError(RuntimeError):
@@ -130,7 +144,21 @@ def select_destinations(runtimes, devices, sdk_version, legacy_udid=None, modern
     return selected
 
 
-def validate_summary(summary):
+def parse_skipped_test_identifiers(log_text):
+    """Read completed XCTest skip results, not the separate skip-reason lines."""
+    identifiers = set()
+    for match in re.finditer(r"Test Case '([^'\r\n]*)' skipped(?:\s|$)", log_text):
+        identifier = re.fullmatch(
+            r"-\[([A-Za-z_][A-Za-z_0-9]*)\.([A-Za-z_][A-Za-z_0-9]*) "
+            r"([A-Za-z_][A-Za-z_0-9]*)\]", match[1]
+        )
+        if not identifier:
+            raise GateError(f"Cannot identify skipped XCTest in test.log: {match[1]!r}")
+        identifiers.add("/".join(identifier.groups()))
+    return frozenset(identifiers)
+
+
+def validate_summary(summary, *, allow_fixture_skips=False, skipped_test_identifiers=None):
     if not isinstance(summary, dict):
         raise GateError("XCTest summary must be a JSON object.")
     counts = {}
@@ -139,12 +167,24 @@ def validate_summary(summary):
         if type(value) is not int or value < 0:
             raise GateError(f"XCTest summary has missing or invalid {key}: {value!r}")
         counts[key] = value
-    if (counts["totalTestCount"] <= 0 or counts["failedTests"] != 0
-            or counts["skippedTests"] != 0 or counts["passedTests"] != counts["totalTestCount"]
+    if (counts["totalTestCount"] <= 0 or counts["passedTests"] <= 0 or counts["failedTests"] != 0
+            or counts["passedTests"] + counts["skippedTests"] != counts["totalTestCount"]
             or summary.get("result", "Passed") != "Passed" or summary.get("testFailures")):
         raise GateError(f"XCTest gate failed: discovered={counts['totalTestCount']}, "
                         f"passed={counts['passedTests']}, failed={counts['failedTests']}, skipped={counts['skippedTests']}"
                         + f", result={summary.get('result', 'unknown')}")
+    if counts["skippedTests"] and skipped_test_identifiers is None:
+        raise GateError("XCTest skips require the completed test identifiers from test.log.")
+    skipped = frozenset(skipped_test_identifiers or ())
+    if any(not isinstance(identifier, str) for identifier in skipped):
+        raise GateError("Skipped XCTest identifiers must be complete target/class/method strings.")
+    if counts["skippedTests"] != len(skipped):
+        raise GateError(f"XCTest skipped count does not match test.log: "
+                        f"summary={counts['skippedTests']}, distinct identifiers={len(skipped)}")
+    allowed = KNOWN_FULL_UNIT_FIXTURE_SKIPS if allow_fixture_skips is True else ()
+    unknown = skipped.difference(allowed)
+    if unknown:
+        raise GateError("XCTest gate rejected skipped tests: " + ", ".join(sorted(unknown)))
     return summary
 
 
@@ -210,7 +250,16 @@ def run_suite(destination, scheme, output_dir):
     if isinstance(summary, dict):
         print(f"{destination.label} {scheme}: discovered={summary.get('totalTestCount', 'unknown')}, "
               f"failed={summary.get('failedTests', 'unknown')}, skipped={summary.get('skippedTests', 'unknown')}")
-    validate_summary(summary)
+    skipped = parse_skipped_test_identifiers((suite_dir / "test.log").read_text(errors="replace"))
+    validate_summary(summary, allow_fixture_skips=scheme == "eSheepNext",
+                     skipped_test_identifiers=skipped)
+    skip_records = [{"identifier": identifier,
+                     "baselineReason": KNOWN_FULL_UNIT_FIXTURE_SKIPS[identifier]}
+                    for identifier in sorted(skipped)]
+    (suite_dir / "skipped-tests.json").write_text(json.dumps(skip_records, indent=2) + "\n")
+    for record in skip_records:
+        print(f"{destination.label} {scheme}: existing fixture skip "
+              f"{record['identifier']} ({record['baselineReason']})")
     if test_exit:
         raise GateError(f"{destination.label} {scheme}: xcodebuild exited {test_exit} despite the test summary.")
     return summary

@@ -410,7 +410,13 @@ final class InsightAssistantEntryUITests: XCTestCase {
 
     @MainActor
     func testContentSwipeReturnsToListAndKeepsTheReplyRunning() {
-        assertNativeSwipeKeepsTheReplyRunning(startingAtEdge: false)
+        if #available(iOS 26, *) {
+            assertNativeSwipeKeepsTheReplyRunning(startingAtEdge: false)
+        } else {
+            // UIKit's public interactiveContentPopGestureRecognizer starts at
+            // iOS 26; older systems use the app's native edge-pop fallback.
+            assertNativeSwipeKeepsTheReplyRunning(startingAtEdge: true)
+        }
     }
 
     @MainActor

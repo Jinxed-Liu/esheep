@@ -81,3 +81,11 @@ ALLOW_LOCAL_DB_RESET=1 ./tools/verify_local.sh db
 不传参数时默认执行 `all`。`db` 只使用本地 Supabase 容器，并在非 CI 环境要求显式确认后才允许 reset；任何入口都不会上传、发布、迁移生产数据或清理 `outputs/`。`ios` 继续拒绝把 Beta Xcode 当作正式发布门禁，只有显式设置 `ALLOW_BETA_XCODE=1` 时才可用于诊断。身份兼容路径和遗留 Worker 的实际调用边界见 [`docs/legacy-identity-compatibility-matrix.md`](docs/legacy-identity-compatibility-matrix.md)。
 
 `verify_ios_compatibility.py` 在 Mac 上分别运行 iOS 17 与当前 SDK 支持的最新稳定 iOS 26 或更高版本的 XCTest 和 UI 回归，并保存各自的日志、结果包和截图附件。需要稳定版 Xcode 26 或更高版本，以及两个版本的可用 iPhone 模拟器；缺少任一运行时会明确失败，不会用新版结果代替 iOS 17 验收。`--list` 可先检查选择结果，`--dry-run` 可预览构建命令。头像回归覆盖两次下拉、全屏查看、关闭后布局恢复和导航往返；新版系统继续使用原生界面和动画。
+
+UI 套件要求零跳过。全量 XCTest 套件仅允许以下三个既有私有输入验收测试跳过；2026-10-04 的 main 基线实际发现 789 项，其中 786 项通过、0 项失败，跳过的正是这三项：
+
+- `eSheepNextTests/ESheepCloudIntegratedTests/testRealCloudSourceBuildsCheckpointAndImportsWithoutHistoricalReceipts`：缺少封存的 SELECT-only 云源。
+- `eSheepNextTests/ESheepCloudV2Tests/testRealFarmForwardHistoryRepairMatchesEverySheepInIncrementalAndFreshReplay`：未安装牧场所有者批准的私有基线 fixture。
+- `eSheepNextTests/ESheepCloudV2Tests/testRealFarmRepairSnapshotVerifiesAndActivatesFromEmptyStore`：缺少私有全量修复 fixture（`ESHEEP_V2_REPLAY_FIXTURE`）。
+
+门禁按 `test.log` 中实际完成的跳过测试完整标识去重，并与结果包的跳过数逐项核对；未知测试、缺少日志标识、数量不符、任何失败或零项实际通过都会失败。三个测试允许全部执行，也允许只跳过其中一部分。原始 `summary.json` 保留不变，`skipped-tests.json` 另存核实的标识和既有基线原因；不会用固定的“允许跳过三项”掩盖其他跳过。

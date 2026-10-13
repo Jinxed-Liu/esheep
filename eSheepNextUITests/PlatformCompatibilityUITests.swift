@@ -30,18 +30,35 @@ final class PlatformCompatibilityUITests: XCTestCase {
         let initialFrame = avatar.frame
         attachScreenshot(of: app, named: "avatar-settings-collapsed")
 
-        pullDown(in: scrollView)
+        pullDown(in: scrollView, below: avatar)
+        var previousExpandedFrame: CGRect?
+        var settledAt: Date?
         waitForState("The first pull did not expand the avatar.", in: app) {
-            avatar.exists && avatar.frame.width > initialFrame.width * 2 &&
-                avatar.frame.height > initialFrame.height * 2 && avatar.isHittable
+            guard avatar.exists, avatar.isHittable else { return false }
+            let frame = avatar.frame
+            guard frame.width > initialFrame.width * 2,
+                  frame.height > initialFrame.height * 2 else { return false }
+            defer { previousExpandedFrame = frame }
+            guard let previous = previousExpandedFrame,
+                  abs(frame.minX - previous.minX) <= 1,
+                  abs(frame.minY - previous.minY) <= 1,
+                  abs(frame.width - previous.width) <= 1,
+                  abs(frame.height - previous.height) <= 1 else {
+                settledAt = nil
+                return false
+            }
+            let since = settledAt ?? .now
+            settledAt = since
+            return Date.now.timeIntervalSince(since) >= 0.5
         }
         let close = app.buttons["account-avatar-viewer-close"]
         XCTAssertFalse(close.exists, "A single pull must expand the avatar before a second pull opens the viewer.")
         attachScreenshot(of: app, named: "avatar-settings-expanded-after-first-pull")
+        attachAccessibilityHierarchy(of: app, named: "avatar-settings-expanded-accessibility-hierarchy")
 
         // A new drag must capture the expanded state. Reusing the first drag
         // would miss regressions in native scroll phase or bridge pan tracking.
-        pullDown(in: scrollView)
+        pullDown(in: scrollView, below: avatar)
         waitForReady(close, in: app)
         let image = app.images["account-avatar-viewer-image"]
         XCTAssertTrue(image.waitForExistence(timeout: 10), "The full-screen avatar image is missing.")
@@ -83,9 +100,17 @@ final class PlatformCompatibilityUITests: XCTestCase {
     }
 
     @MainActor
-    private func pullDown(in scrollView: XCUIElement) {
-        let start = scrollView.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
-        let end = scrollView.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+    private func pullDown(in scrollView: XCUIElement, below avatar: XCUIElement) {
+        // Start below the current photo button. Reusing a viewport percentage
+        // lands inside that button after expansion and mixes tap/scroll input.
+        let viewport = scrollView.frame
+        let startY = max(avatar.frame.maxY + 24, viewport.minY + viewport.height * 0.25)
+        let distance = min(viewport.height * 0.35, viewport.maxY - startY - 24)
+        XCTAssertGreaterThanOrEqual(distance, 100, "The avatar leaves insufficient room for a native pull gesture.")
+        let start = scrollView.coordinate(withNormalizedOffset: .zero).withOffset(
+            CGVector(dx: viewport.width / 2, dy: startY - viewport.minY)
+        )
+        let end = start.withOffset(CGVector(dx: 0, dy: distance))
         start.press(forDuration: 0.1, thenDragTo: end)
     }
 
@@ -121,8 +146,13 @@ final class PlatformCompatibilityUITests: XCTestCase {
     @MainActor
     private func attachFailureEvidence(of app: XCUIApplication) {
         attachScreenshot(of: app, named: "avatar-compatibility-failure")
+        attachAccessibilityHierarchy(of: app, named: "avatar-compatibility-failure-accessibility-hierarchy")
+    }
+
+    @MainActor
+    private func attachAccessibilityHierarchy(of app: XCUIApplication, named name: String) {
         let hierarchy = XCTAttachment(string: app.debugDescription)
-        hierarchy.name = "avatar-compatibility-failure-accessibility-hierarchy"
+        hierarchy.name = name
         hierarchy.lifetime = .keepAlways
         add(hierarchy)
     }

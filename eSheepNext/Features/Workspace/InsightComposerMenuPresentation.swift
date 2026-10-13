@@ -1,6 +1,9 @@
 import Observation
 import SwiftUI
 import UIKit
+#if DEBUG
+import OSLog
+#endif
 
 /// A temporary, non-key panel in the composer's own scene. It has no popover
 /// arrow or global backdrop; the editor and system keyboard keep their window.
@@ -77,23 +80,89 @@ struct InsightComposerMenuPresentation<Content: View>: UIViewRepresentable {
         private var openingDisplayLink: CADisplayLink?
         private var openingFrames = 0
 
+        #if DEBUG
+        private static var diagnosticLogger: Logger {
+            Logger(subsystem: "com.sheepfarm.compatibility", category: "attachment-panel")
+        }
+        private let diagnosticID = UUID()
+        private var diagnosticWindowID: UUID?
+        #endif
+
+        private func diagnose(_ event: @autoclosure () -> String) {
+            #if DEBUG
+            guard ProcessInfo.processInfo.arguments.contains("--design-acceptance") else { return }
+            Self.diagnosticLogger.debug("panel[\(self.diagnosticID.uuidString, privacy: .public)] \(event(), privacy: .public)")
+            #endif
+        }
+
+        private func diagnosticState() -> String {
+            let currentScene = scene ?? anchor?.window?.windowScene
+            let sceneState = currentScene.map { String(describing: $0.activationState) } ?? "nil"
+            var state = "scene=\(sceneState) intent=\(configuration.isPresented) blocked=\(configuration.isBlocked) cancelling=\(isCancellingOpen) reconciling=\(isReconciling) closing=\(isClosing) window=\(window != nil) anchorVisible=\(anchor?.isVisible ?? false) revision=\(transitionRevision)"
+            #if DEBUG
+            state += " windowID=\(diagnosticWindowID?.uuidString ?? "nil")"
+            #endif
+            return state
+        }
+
+        /// Capture only the logger and trace UUID, so a callback remains visible
+        /// in diagnostics even if its coordinator has already been released.
+        #if DEBUG
+        private func diagnosticCallbackRecorder() -> ((String) -> Void)? {
+            guard ProcessInfo.processInfo.arguments.contains("--design-acceptance") else { return nil }
+            let logger = Self.diagnosticLogger
+            let traceID = diagnosticID.uuidString
+            return { event in
+                logger.debug("panel[\(traceID, privacy: .public)] \(event, privacy: .public)")
+            }
+        }
+        #endif
+
         init(configuration: InsightComposerMenuPresentation) { self.configuration = configuration }
 
         func reconcile() {
-            guard !isCancellingOpen, !isReconciling else { return }
+            diagnose("reconcile.enter \(diagnosticState())")
+            guard !isCancellingOpen, !isReconciling else {
+                diagnose("reconcile.skip-reentrant \(diagnosticState())")
+                return
+            }
             isReconciling = true
-            defer { isReconciling = false }
-            guard !configuration.isBlocked else { removeWindow(allowsAction: false); return }
-            guard configuration.isPresented else { closeWindow(); return }
-            guard let anchor, anchor.isVisible, let owner = anchor.window,
-                  !anchor.bounds.isEmpty, let scene = owner.windowScene else { return }
-            guard scene.activationState == .foregroundActive else {
+            defer {
+                isReconciling = false
+                diagnose("reconcile.exit \(diagnosticState())")
+            }
+            guard !configuration.isBlocked else {
+                diagnose("reconcile.cancel-blocked \(diagnosticState())")
                 removeWindow(allowsAction: false)
                 return
             }
-            guard !ownerHasModal(owner) else { removeWindow(allowsAction: false); return }
+            guard configuration.isPresented else {
+                diagnose("reconcile.close-intent \(diagnosticState())")
+                closeWindow()
+                return
+            }
+            guard let anchor, anchor.isVisible, let owner = anchor.window,
+                  !anchor.bounds.isEmpty, let scene = owner.windowScene else {
+                diagnose("reconcile.skip-anchor \(diagnosticState())")
+                return
+            }
+            guard scene.activationState == .foregroundActive else {
+                diagnose("reconcile.cancel-inactive \(diagnosticState())")
+                removeWindow(allowsAction: false)
+                return
+            }
+            guard !ownerHasModal(owner) else {
+                diagnose("reconcile.cancel-modal \(diagnosticState())")
+                removeWindow(allowsAction: false)
+                return
+            }
             if let window {
-                guard ownerWindow === owner else { removeWindow(allowsAction: false); return }
+                guard ownerWindow === owner else {
+                    diagnose("reconcile.cancel-owner-change \(diagnosticState())")
+                    removeWindow(allowsAction: false)
+                    return
+                }
+                diagnose("reconcile.existing \(diagnosticState())")
                 window.frame = owner.frame
                 window.overrideUserInterfaceStyle = owner.traitCollection.userInterfaceStyle
                 updateAnchor(in: owner)
@@ -107,6 +176,10 @@ struct InsightComposerMenuPresentation<Content: View>: UIViewRepresentable {
             ownerWasKey = owner.isKeyWindow
             ownerAccessibilityHidden = owner.accessibilityElementsHidden
             self.scene = scene
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--design-acceptance") { diagnosticWindowID = UUID() }
+            #endif
+            diagnose("window.open.begin \(diagnosticState())")
             updateAnchor(in: owner)
             let window = UIWindow(windowScene: scene)
             window.frame = owner.frame
@@ -132,6 +205,7 @@ struct InsightComposerMenuPresentation<Content: View>: UIViewRepresentable {
                 name: UIResponder.keyboardDidChangeFrameNotification, object: nil)
             // Showing a non-key window preserves the original editor.
             window.isHidden = false
+            diagnose("window.open.shown ownerKey=\(owner.isKeyWindow) overlayKey=\(window.isKeyWindow) \(diagnosticState())")
             host.view.layoutIfNeeded()
             openingFrames = 0
             let link = CADisplayLink(target: self, selector: #selector(revealAfterSourceFrame(_:)))
@@ -184,6 +258,7 @@ struct InsightComposerMenuPresentation<Content: View>: UIViewRepresentable {
         }
 
         private func expand() {
+            diagnose("window.expand \(diagnosticState())")
             cancelOpening()
             transitionRevision += 1
             isClosing = false
@@ -191,6 +266,7 @@ struct InsightComposerMenuPresentation<Content: View>: UIViewRepresentable {
         }
 
         private func closeWindow() {
+            diagnose("window.close.begin \(diagnosticState())")
             cancelOpening()
             guard window != nil, !isClosing else { return }
             isClosing = true
@@ -199,12 +275,15 @@ struct InsightComposerMenuPresentation<Content: View>: UIViewRepresentable {
             withAnimation(animation, completionCriteria: .removed) {
                 layout.isExpanded = false
             } completion: { [weak self] in
-                guard let self, revision == self.transitionRevision, !self.configuration.isPresented else { return }
+                guard let self else { return }
+                self.diagnose("window.close.completion expectedRevision=\(revision) \(self.diagnosticState())")
+                guard revision == self.transitionRevision, !self.configuration.isPresented else { return }
                 self.removeWindow(allowsAction: true)
             }
         }
 
         fileprivate func removeWindow(allowsAction: Bool) {
+            diagnose("window.remove.begin allowsAction=\(allowsAction) \(diagnosticState())")
             cancelOpening()
             guard let window else {
                 // A modal may win the race before the first panel window is
@@ -213,9 +292,18 @@ struct InsightComposerMenuPresentation<Content: View>: UIViewRepresentable {
                 guard configuration.isPresented, !isCancellingOpen else { return }
                 isCancellingOpen = true
                 let completion = configuration.onDismissed
+                #if DEBUG
+                let diagnosticCallback = diagnosticCallbackRecorder()
+                #endif
                 DispatchQueue.main.async { [weak self] in
+                    #if DEBUG
+                    diagnosticCallback?("dismiss.callback.before emptyWindow=true allowsAction=false \(self?.diagnosticState() ?? "coordinator=released")")
+                    #endif
                     self?.isCancellingOpen = false
                     completion(false)
+                    #if DEBUG
+                    diagnosticCallback?("dismiss.callback.after emptyWindow=true allowsAction=false \(self?.diagnosticState() ?? "coordinator=released")")
+                    #endif
                 }
                 return
             }
@@ -240,14 +328,24 @@ struct InsightComposerMenuPresentation<Content: View>: UIViewRepresentable {
             self.editor = nil
             isClosing = false
             layout.isExpanded = false
+            diagnose("window.remove.detached canRestore=\(canRestore) \(diagnosticState())")
             if canRestore, let owner {
                 if ownerWasKey || wasOverlayKey { owner.makeKey() }
                 if let editor, editor.window === owner, editor.canBecomeFirstResponder { editor.becomeFirstResponder() }
             }
             let completion = configuration.onDismissed
+            #if DEBUG
+            let diagnosticCallback = diagnosticCallbackRecorder()
             // The window is already detached; only now may the owning view
             // present the original camera, Photos or document picker.
+            DispatchQueue.main.async { [weak self] in
+                diagnosticCallback?("dismiss.callback.before emptyWindow=false allowsAction=\(canRestore) \(self?.diagnosticState() ?? "coordinator=released")")
+                completion(canRestore)
+                diagnosticCallback?("dismiss.callback.after emptyWindow=false allowsAction=\(canRestore) \(self?.diagnosticState() ?? "coordinator=released")")
+            }
+            #else
             DispatchQueue.main.async { completion(canRestore) }
+            #endif
             UIAccessibility.post(notification: .screenChanged, argument: nil)
         }
 
@@ -268,7 +366,10 @@ struct InsightComposerMenuPresentation<Content: View>: UIViewRepresentable {
             return nil
         }
 
-        @objc private func sceneWillDeactivate() { removeWindow(allowsAction: false) }
+        @objc private func sceneWillDeactivate() {
+            diagnose("scene.will-deactivate \(diagnosticState())")
+            removeWindow(allowsAction: false)
+        }
 
         @objc private func revealAfterSourceFrame(_ link: CADisplayLink) {
             openingFrames += 1

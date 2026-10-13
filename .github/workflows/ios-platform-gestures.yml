@@ -1,0 +1,153 @@
+name: iOS compatibility gesture diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ios17-avatar-debug]
+    paths:
+      - '.github/workflows/ios-platform-gestures.yml'
+      - 'eSheepNextUITests/**'
+      - 'eSheepNext/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-gestures-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gestures:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: '17'
+            host: macos-15
+            xcode: Xcode_26.3
+          - runtime: '26'
+            host: macos-26
+            xcode: Xcode_26.6
+    runs-on: ${{ matrix.host }}
+    timeout-minutes: 35
+    env:
+      DEVELOPER_DIR: /Applications/${{ matrix.xcode }}.app/Contents/Developer
+      COMPATIBILITY_RUNTIME: ${{ matrix.runtime }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Prepare the stable simulator
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun simctl list --json > "$RUNNER_TEMP/simulators.json"
+          if [ "$COMPATIBILITY_RUNTIME" = 17 ]; then
+            for runtime_download_attempt in 1 2 3; do
+              if xcodebuild -downloadPlatform iOS -buildVersion 17.5; then
+                break
+              fi
+              if [ "$runtime_download_attempt" = 3 ]; then exit 1; fi
+              xcrun simctl list devices available
+            done
+          fi
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+          sys.path.insert(0, 'tools')
+          import verify_ios_compatibility as gate
+          inventory = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', '--json'], text=True))
+          sdk = gate.version_tuple(subprocess.check_output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], text=True).strip())
+          major = int(os.environ['COMPATIBILITY_RUNTIME'])
+          runtimes = [r for r in inventory['runtimes'] if r.get('isAvailable') and gate.stable_runtime(r)
+                      and r.get('identifier', '').find('.SimRuntime.iOS-') >= 0
+                      and gate.version_tuple(r['version'])[0] == major and gate.version_tuple(r['version']) <= sdk]
+          if not runtimes: raise SystemExit('The requested stable runtime is unavailable.')
+          runtime = max(runtimes, key=lambda r: gate.version_tuple(r['version']))
+          model = 'iPhone-15-Pro' if major == 17 else 'iPhone-17-Pro'
+          udid = subprocess.check_output(['xcrun', 'simctl', 'create', 'eSheep compatibility gestures',
+                  'com.apple.CoreSimulator.SimDeviceType.' + model, runtime['identifier']], text=True).strip()
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('IOS_SIMULATOR_ID=' + udid + '\n')
+          print('Testing', model, 'iOS', runtime['version'], udid)
+          PY
+      - name: Build the actual UI test target
+        id: build
+        run: |
+          set -euo pipefail
+          xcodebuild build-for-testing -project eSheepNext.xcodeproj -scheme eSheepNextUI \
+            -configuration Debug -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
+            -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30' \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/gesture-build.log"
+      - name: Run the real avatar gestures
+        run: |
+          set -euo pipefail
+          xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
+          xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme eSheepNextUI \
+            -configuration Debug -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
+            -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/gestures.xcresult" -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 240 \
+            -maximum-test-execution-time-allowance 240 \
+            -only-testing:eSheepNextUITests/PlatformCompatibilityUITests \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/gestures.log"
+      - name: Diagnose the existing native interactions on the newer system
+        if: ${{ always() && matrix.runtime == '26' && steps.build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme eSheepNextUI \
+            -configuration Debug -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
+            -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/native-interactions.xcresult" -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 240 \
+            -maximum-test-execution-time-allowance 240 \
+            -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning \
+            -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testFloatingAttachmentPanelPreservesTheDraftAndPresentsTheSelectedAction \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/native-interactions.log"
+      - name: Export screenshots and diagnostic logs
+        if: always()
+        run: |
+          for gesture_result_name in gestures native-interactions; do
+            if [ -d "$RUNNER_TEMP/$gesture_result_name.xcresult" ]; then
+              xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/$gesture_result_name.xcresult" > "$RUNNER_TEMP/$gesture_result_name-summary.json"
+              xcrun xcresulttool export attachments --path "$RUNNER_TEMP/$gesture_result_name.xcresult" --output-path "$RUNNER_TEMP/gesture-screenshots/$gesture_result_name"
+            fi
+          done
+          if [ -n "${IOS_SIMULATOR_ID:-}" ]; then
+            xcrun simctl spawn "$IOS_SIMULATOR_ID" log show --style compact --debug --info --last 20m \
+              --predicate 'subsystem == "com.sheepfarm.compatibility"' > "$RUNNER_TEMP/gesture-diagnostics.log"
+          fi
+          python3 - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          for path in (root / 'gesture-screenshots').rglob('*'):
+              if path.is_file() and path.suffix.lower() not in {'', '.png', '.jpg', '.jpeg', '.json', '.txt'}:
+                  destination = root / 'gesture-recordings' / path.relative_to(root / 'gesture-screenshots')
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.move(path, destination)
+          PY
+      - name: Preserve focused validation evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: compatibility-gestures-iOS-${{ matrix.runtime }}-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/gesture-build.log
+            ${{ runner.temp }}/gestures.log
+            ${{ runner.temp }}/native-interactions.log
+            ${{ runner.temp }}/*-summary.json
+            ${{ runner.temp }}/gesture-diagnostics.log
+            ${{ runner.temp }}/gesture-screenshots
+      - name: Preserve the actual interaction recordings
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: compatibility-gesture-recordings-iOS-${{ matrix.runtime }}-${{ github.sha }}
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/gesture-recordings

@@ -3,6 +3,7 @@
 import copy
 from contextlib import redirect_stderr, redirect_stdout
 import io
+from itertools import combinations
 import json
 import os
 from pathlib import Path
@@ -14,13 +15,36 @@ import unittest
 from unittest.mock import patch
 
 import verify_ios_compatibility as compatibility
-from verify_ios_compatibility import GateError, select_destinations, validate_summary, validate_xcode
+from verify_ios_compatibility import (GateError, parse_skipped_test_identifiers,
+                                      select_destinations, validate_summary, validate_xcode)
 
 
 LEGACY_RUNTIME = "com.apple.CoreSimulator.SimRuntime.iOS-17-7"
 MODERN_RUNTIME = "com.apple.CoreSimulator.SimRuntime.iOS-26-1"
 LEGACY_UDID = "00000000-0000-0000-0000-000000000017"
 MODERN_UDID = "00000000-0000-0000-0000-000000000026"
+
+# Completed skip results and reason lines copied from the 2026-10-04 main
+# baseline (run 37191100882). No private fixture contents are included.
+BASELINE_SKIP_LOG = """\
+2026-10-04T09:35:05.4142660Z /Users/runner/work/esheep/esheep/eSheepNextTests/ESheepCloudIntegratedTests.swift:365: -[eSheepNextTests.ESheepCloudIntegratedTests testRealCloudSourceBuildsCheckpointAndImportsWithoutHistoricalReceipts] : Test skipped - Requires a sealed SELECT-only cloud source
+2026-10-04T09:35:05.4146040Z Test Case '-[eSheepNextTests.ESheepCloudIntegratedTests testRealCloudSourceBuildsCheckpointAndImportsWithoutHistoricalReceipts]' skipped (0.011 seconds).
+2026-10-04T09:35:08.2582130Z /Users/runner/work/esheep/esheep/eSheepNextTests/ESheepCloudV2Tests.swift:85: -[eSheepNextTests.ESheepCloudV2Tests testRealFarmForwardHistoryRepairMatchesEverySheepInIncrementalAndFreshReplay] : Test skipped - Private owner-approved baseline fixture not installed
+2026-10-04T09:35:08.2596160Z Test Case '-[eSheepNextTests.ESheepCloudV2Tests testRealFarmForwardHistoryRepairMatchesEverySheepInIncrementalAndFreshReplay]' skipped (0.002 seconds).
+2026-10-04T09:35:08.2599320Z /Users/runner/work/esheep/esheep/eSheepNextTests/ESheepCloudV2Tests.swift:320: -[eSheepNextTests.ESheepCloudV2Tests testRealFarmRepairSnapshotVerifiesAndActivatesFromEmptyStore] : Test skipped - Set ESHEEP_V2_REPLAY_FIXTURE to a private full-scale repair fixture
+2026-10-04T09:35:08.2600760Z Test Case '-[eSheepNextTests.ESheepCloudV2Tests testRealFarmRepairSnapshotVerifiesAndActivatesFromEmptyStore]' skipped (0.001 seconds).
+"""
+
+
+def skipped_result(identifier):
+    target, test_class, method = identifier.split("/")
+    return f"Test Case '-[{target}.{test_class} {method}]' skipped (0.001 seconds).\n"
+
+
+def fixture_summary(identifiers=(), *, passed=4):
+    skipped = len(set(identifiers))
+    return {"totalTestCount": passed + skipped, "passedTests": passed,
+            "failedTests": 0, "skippedTests": skipped, "result": "Passed"}
 
 
 def runtime(version, *, identifier=None, name=None, build="23B74", available=True):
@@ -304,6 +328,176 @@ class TestSummaryValidationTests(unittest.TestCase):
                 self.summary["result"] = result
                 with self.assertRaises(GateError):
                     validate_summary(self.summary)
+
+
+class FixtureSkipValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.known = tuple(compatibility.KNOWN_FULL_UNIT_FIXTURE_SKIPS)
+
+    def validate_unit(self, summary, identifiers=None):
+        return validate_summary(summary, allow_fixture_skips=True,
+                                skipped_test_identifiers=identifiers)
+
+    def test_real_baseline_result_lines_are_parsed_without_double_counting_reasons(self):
+        identifiers = parse_skipped_test_identifiers(BASELINE_SKIP_LOG)
+        self.assertEqual(identifiers, frozenset(self.known))
+        self.validate_unit(fixture_summary(identifiers, passed=786), identifiers)
+
+    def test_each_allowed_subset_including_no_skips_is_accepted(self):
+        for size in range(len(self.known) + 1):
+            for identifiers in combinations(self.known, size):
+                with self.subTest(identifiers=identifiers):
+                    summary = fixture_summary(identifiers)
+                    original = copy.deepcopy(summary)
+                    self.assertIs(self.validate_unit(summary, identifiers), summary)
+                    self.assertEqual(summary, original)
+
+    def test_default_validation_still_rejects_known_skips(self):
+        for identifiers in (None, self.known):
+            with self.subTest(identifiers=identifiers):
+                with self.assertRaises(GateError):
+                    validate_summary(fixture_summary(self.known),
+                                     skipped_test_identifiers=identifiers)
+
+    def test_unknown_test_target_class_and_method_suffix_cannot_use_allowlist(self):
+        identifier = self.known[0]
+        unknown = (
+            "eSheepNextTests/OtherTests/testSkipped",
+            identifier.replace("eSheepNextTests/", "eSheepNextUITests/", 1),
+            identifier.replace("/ESheepCloudIntegratedTests/", "/OtherTests/", 1),
+            identifier + "Extra",
+        )
+        for test in unknown:
+            with self.subTest(identifier=test):
+                with self.assertRaisesRegex(GateError, "rejected skipped tests"):
+                    self.validate_unit(fixture_summary([test]), [test])
+
+    def test_skip_count_requires_completed_log_identifiers(self):
+        for identifiers in (None, (), parse_skipped_test_identifiers("Test Case '-[truncated")):
+            with self.subTest(identifiers=identifiers):
+                with self.assertRaises(GateError):
+                    self.validate_unit(fixture_summary(self.known), identifiers)
+
+    def test_three_skips_cannot_hide_an_unknown_test_among_known_fixtures(self):
+        identifiers = [*self.known[:2], "eSheepNextTests/UnexpectedTests/testSkipped"]
+        with self.assertRaisesRegex(GateError, "UnexpectedTests/testSkipped"):
+            self.validate_unit(fixture_summary(identifiers), identifiers)
+
+    def test_skip_reason_alone_is_not_a_completed_skip_result(self):
+        reasons = "\n".join(line for line in BASELINE_SKIP_LOG.splitlines()
+                            if "Test skipped -" in line)
+        self.assertEqual(parse_skipped_test_identifiers(reasons), frozenset())
+        with self.assertRaises(GateError):
+            self.validate_unit(fixture_summary(self.known), parse_skipped_test_identifiers(reasons))
+
+    def test_duplicate_result_lines_count_as_one_distinct_test(self):
+        identifier = self.known[0]
+        identifiers = parse_skipped_test_identifiers(skipped_result(identifier) * 2)
+        self.assertEqual(identifiers, frozenset([identifier]))
+        self.validate_unit(fixture_summary([identifier]), identifiers)
+        summary = fixture_summary([identifier])
+        summary.update(totalTestCount=6, skippedTests=2)
+        with self.assertRaisesRegex(GateError, "does not match test.log"):
+            self.validate_unit(summary, identifiers)
+
+    def test_log_and_summary_skip_counts_must_match_in_both_directions(self):
+        cases = (
+            (fixture_summary(self.known), self.known[:2]),
+            (fixture_summary(self.known[:1]), self.known),
+            (fixture_summary(), self.known[:1]),
+        )
+        for summary, identifiers in cases:
+            with self.subTest(summary=summary, identifiers=identifiers):
+                with self.assertRaisesRegex(GateError, "does not match test.log"):
+                    self.validate_unit(summary, identifiers)
+
+    def test_passed_plus_skipped_must_equal_total(self):
+        for difference in (-1, 1):
+            with self.subTest(difference=difference):
+                summary = fixture_summary(self.known)
+                summary["totalTestCount"] += difference
+                with self.assertRaises(GateError):
+                    self.validate_unit(summary, self.known)
+
+    def test_all_skipped_and_zero_execution_cannot_pass(self):
+        for identifiers in ((), self.known):
+            with self.subTest(identifiers=identifiers):
+                with self.assertRaises(GateError):
+                    self.validate_unit(fixture_summary(identifiers, passed=0), identifiers)
+
+    def test_known_skips_cannot_hide_failures_or_unsuccessful_result(self):
+        for change in ({"failedTests": 1}, {"result": "Failed"},
+                       {"testFailures": [{"message": "An assertion failed"}]}):
+            with self.subTest(change=change):
+                summary = fixture_summary(self.known)
+                summary.update(change)
+                with self.assertRaises(GateError):
+                    self.validate_unit(summary, self.known)
+
+    def test_completed_skip_without_complete_identifier_is_rejected(self):
+        for identifier in ("", "Unknown", "-[Class testCase]"):
+            with self.subTest(identifier=identifier):
+                with self.assertRaisesRegex(GateError, "Cannot identify skipped XCTest"):
+                    parse_skipped_test_identifiers(f"Test Case '{identifier}' skipped (0.01 seconds).")
+
+
+class SuiteSkipPolicyTests(unittest.TestCase):
+    def run_mock_suite(self, root, scheme, *, summary, log=BASELINE_SKIP_LOG, test_exit=0):
+        destination = compatibility.Destination(LEGACY_RUNTIME, "17.7", "iPhone 14", LEGACY_UDID)
+        suite_dir, _, _ = compatibility.suite_commands(destination, scheme, root)
+        summary_text = json.dumps(summary, indent=1) + "\n"
+
+        def run_logged(command, log_path):
+            if command[1] == "build-for-testing":
+                log_path.write_text("Build succeeded\n")
+                return 0
+            log_path.write_text(log)
+            (suite_dir / "Tests.xcresult").mkdir()
+            return test_exit
+
+        with patch.object(compatibility, "run_logged", side_effect=run_logged), \
+                patch.object(compatibility, "capture", return_value=summary_text), \
+                redirect_stdout(io.StringIO()):
+            result = compatibility.run_suite(destination, scheme, root)
+        return suite_dir, summary_text, result
+
+    def test_full_unit_reads_completed_log_results_and_preserves_raw_summary(self):
+        summary = fixture_summary(compatibility.KNOWN_FULL_UNIT_FIXTURE_SKIPS, passed=786)
+        with tempfile.TemporaryDirectory(prefix="esheep-unit-skips-") as directory:
+            suite_dir, summary_text, result = self.run_mock_suite(Path(directory), "eSheepNext",
+                                                                 summary=summary)
+            self.assertEqual(result, summary)
+            self.assertEqual((suite_dir / "summary.json").read_text(), summary_text)
+            records = json.loads((suite_dir / "skipped-tests.json").read_text())
+            self.assertEqual({record["identifier"] for record in records},
+                             set(compatibility.KNOWN_FULL_UNIT_FIXTURE_SKIPS))
+            self.assertTrue(all(record["baselineReason"] for record in records))
+
+    def test_ui_rejects_even_known_fixture_skips(self):
+        with tempfile.TemporaryDirectory(prefix="esheep-ui-skips-") as directory:
+            with self.assertRaisesRegex(GateError, "rejected skipped tests"):
+                self.run_mock_suite(Path(directory), "eSheepNextUI",
+                                    summary=fixture_summary(compatibility.KNOWN_FULL_UNIT_FIXTURE_SKIPS))
+
+    def test_ui_without_skips_still_passes(self):
+        with tempfile.TemporaryDirectory(prefix="esheep-ui-no-skips-") as directory:
+            summary = fixture_summary()
+            suite_dir, _, result = self.run_mock_suite(Path(directory), "eSheepNextUI",
+                                                       summary=summary, log="Test Suite passed\n")
+            self.assertEqual(result, summary)
+            self.assertEqual(json.loads((suite_dir / "skipped-tests.json").read_text()), [])
+
+    def test_unit_rejects_missing_log_results_despite_allowed_summary_count(self):
+        with tempfile.TemporaryDirectory(prefix="esheep-missing-skips-") as directory:
+            with self.assertRaisesRegex(GateError, "does not match test.log"):
+                self.run_mock_suite(Path(directory), "eSheepNext", log="Test Suite passed\n",
+                                    summary=fixture_summary(compatibility.KNOWN_FULL_UNIT_FIXTURE_SKIPS))
+
+    def test_nonzero_xcode_exit_cannot_pass_a_valid_fixture_summary(self):
+        with tempfile.TemporaryDirectory(prefix="esheep-xcode-exit-") as directory:
+            with self.assertRaisesRegex(GateError, "xcodebuild exited 1"):
+                self.run_mock_suite(Path(directory), "eSheepNext", test_exit=1,
+                                    summary=fixture_summary(compatibility.KNOWN_FULL_UNIT_FIXTURE_SKIPS))
 
 
 class XcodeValidationTests(unittest.TestCase):

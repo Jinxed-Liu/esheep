@@ -106,4 +106,5 @@ jobs:
             ${{ runner.temp }}/ios-17-compatibility/**/test.log
             ${{ runner.temp }}/ios-17-compatibility/**/Tests.xcresult
             ${{ runner.temp }}/ios-17-compatibility/**/summary.json
+            ${{ runner.temp }}/ios-17-compatibility/**/skipped-tests.json
             ${{ runner.temp }}/ios-17-compatibility/*.json
