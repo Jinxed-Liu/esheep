@@ -18,13 +18,22 @@ extension WeightGainAnalysisResult {
         func record(_ values: [String], sheepID: UUID, event: WeightGainTransferEvidence? = nil,
                     interval: WeightGainAnalysisInterval? = nil) -> String {
             let row = rowsByID[sheepID]
-            return line(values + [
-                row?.analysisEndPenID?.uuidString ?? "", row.map { $0.analysisEndPenName ?? "未分舍" } ?? "",
-                row?.analysisEndDate.ISO8601Format() ?? "", row?.penHistoryStartPenName ?? "",
-                event?.occurredAt.ISO8601Format() ?? "", event?.fromPenName ?? "", event?.toPenName ?? "",
-                history(interval?.crossedTransfers ?? row?.penHistory ?? []),
-                interval.map { $0.canBeAttributedToSinglePen ? "是" : "否（跨舍或未知）" } ?? ""
-            ])
+            let endPenID = row?.analysisEndPenID?.uuidString ?? ""
+            let endPenName = row.map { $0.analysisEndPenName ?? "未分舍" } ?? ""
+            let endDate = row?.analysisEndDate.ISO8601Format() ?? ""
+            let startPenName = row?.penHistoryStartPenName ?? ""
+            let transferDate = event?.occurredAt.ISO8601Format() ?? ""
+            let fromPenName = event?.fromPenName ?? ""
+            let toPenName = event?.toPenName ?? ""
+            let penHistory = history(interval?.crossedTransfers ?? row?.penHistory ?? [])
+            let singlePenAttribution = interval.map {
+                $0.canBeAttributedToSinglePen ? "是" : "否（跨舍或未知）"
+            } ?? ""
+            let evidence: [String] = [
+                endPenID, endPenName, endDate, startPenName,
+                transferDate, fromPenName, toPenName, penHistory, singlePenAttribution
+            ]
+            return line(values + evidence)
         }
         var lines = [
             line(["范围", scopeName, "模式", filter.mode.title, "分析方式", population.rawValue]),

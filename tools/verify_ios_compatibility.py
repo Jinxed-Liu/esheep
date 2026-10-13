@@ -165,7 +165,10 @@ def suite_commands(destination, scheme, output_dir):
               "-configuration", "Debug", "-destination", destination.destination,
               "-derivedDataPath", str(suite_dir / "DerivedData"),
               "-parallel-testing-enabled", "NO", "-maximum-parallel-testing-workers", "1"]
-    settings = ["COMPILER_INDEX_STORE_ENABLE=NO", "CODE_SIGNING_ALLOWED=YES", "CODE_SIGN_IDENTITY=-"]
+    # Match package builds to the simulator's active architecture. Building both
+    # architectures can leave the inactive app slice without its package modules.
+    settings = ["ONLY_ACTIVE_ARCH=YES", "SWIFT_ENABLE_BATCH_MODE=NO",
+                "COMPILER_INDEX_STORE_ENABLE=NO", "CODE_SIGNING_ALLOWED=YES", "CODE_SIGN_IDENTITY=-"]
     build = ["xcodebuild", "build-for-testing", *common, *settings]
     test = ["xcodebuild", "test-without-building", *common,
             "-resultBundlePath", str(suite_dir / "Tests.xcresult")]
