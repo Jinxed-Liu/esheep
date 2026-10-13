@@ -100,6 +100,38 @@ def sql_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def staged_command_batches(commands, farm_id, generation, owner_id, *, batch_size=250,
+                           rejection_message="repair rejected"):
+    """Keep signed input out of utility-query text retained by pg_stat_statements.
+
+    The caller owns the transaction. Each bounded input batch lives only in a
+    transaction-local temporary table and still uses the audited command path.
+    Ordinary INSERT normalizes its JSON literal; DO does not normalize literals
+    inside its procedural body. Never embed the payload in DO or CREATE AS.
+    """
+    farm_id, owner_id = str(uuid.UUID(farm_id)), str(uuid.UUID(owner_id))
+    if type(generation) is not int or generation < 1:
+        raise ValueError("A positive farm generation is required")
+    if type(batch_size) is not int or not 1 <= batch_size <= 250:
+        raise ValueError("Command batches must contain between 1 and 250 commands")
+    batches = []
+    for start in range(0, len(commands), batch_size):
+        payload = sql_literal(json.dumps(commands[start:start + batch_size]))
+        batches.append(f"""CREATE TEMP TABLE esheep_repair_command_input
+ (ordinal bigint PRIMARY KEY, command jsonb NOT NULL) ON COMMIT DROP;
+INSERT INTO pg_temp.esheep_repair_command_input (ordinal,command)
+ SELECT ordinal,value FROM jsonb_array_elements({payload}::jsonb)
+ WITH ORDINALITY AS input(value,ordinal);
+DO $$ DECLARE c jsonb; r jsonb; BEGIN
+FOR c IN SELECT command FROM pg_temp.esheep_repair_command_input ORDER BY ordinal LOOP
+ r:=esheep_cloud.process_command_v2('{farm_id}',{generation},'{owner_id}',c);
+ IF r->>'type'<>'accepted' THEN RAISE EXCEPTION {sql_literal(rejection_message + ': %')},r; END IF;
+END LOOP; END $$;
+DROP TABLE pg_temp.esheep_repair_command_input;
+""")
+    return "\n".join(batches)
+
+
 def local_sql(sql):
     result = subprocess.run(
         ["docker", "exec", "-i", "supabase_db_eSheepNext", "psql", "-X", "-qAt", "-U", "supabase_admin", "-d", LOCAL_DB, "-v", "ON_ERROR_STOP=1"],
