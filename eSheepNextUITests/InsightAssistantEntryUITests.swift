@@ -1097,12 +1097,20 @@ final class InsightAssistantEntryUITests: XCTestCase {
 
     @MainActor
     private func assertVoiceKeyboardInPlace(in app: XCUIApplication, stage: String) {
+        var visibleSince: Date?
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             let keyboard = app.keyboards.firstMatch
             let surface = app.descendants(matching: .any).matching(identifier: "insight.composer.surface").firstMatch
-            return keyboard.exists && keyboard.frame.height > 100 && surface.exists &&
+            let inPlace = keyboard.exists && keyboard.frame.height > 100 && surface.exists &&
                 surface.frame.height > 0 && surface.frame.minY >= 0 &&
                 surface.frame.maxY <= keyboard.frame.minY + 2
+            guard inPlace else {
+                visibleSince = nil
+                return false
+            }
+            let now = Date()
+            if visibleSince == nil { visibleSince = now }
+            return now.timeIntervalSince(visibleSince!) >= 0.5
         }, object: app)
         let result = XCTWaiter.wait(for: [visible], timeout: 10)
         attachVoiceFocusEvidence(of: app, named: stage)
