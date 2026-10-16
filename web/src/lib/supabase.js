@@ -16,8 +16,9 @@ import {
 } from "./workspaceDataSource.js";
 import {
   buildEventSheepIndex,
-  buildFarmInsightData,
+  createFarmInsightReader,
   projectFarmOperationEvent,
+  projectFarmOperationIdentity,
   projectionToReproductionRecord,
   projectionToWeaningRecord,
   projectionToWeightRecord,
@@ -25,6 +26,7 @@ import {
 import { decodeFeedNutrients, farmDayKey } from "./appAnalytics.js";
 import { listAccessibleFarms, redeemAccessibleFarmInvite } from "./farmAccess.js";
 import { loadCloudV2Projection, clearCloudV2Cache } from "./cloudV2Checkpoint.js";
+import { createVerifiedUserHandoff } from "./verifiedUserHandoff.js";
 
 const { url, publishableKey } = supabaseBrowserConfiguration;
 const cloudFetch = isSupabaseConfigured
@@ -411,7 +413,9 @@ function entityToPen(row) {
   return {
     id: row.entity_id,
     name: firstPayloadValue(payload, "strings", "name") ?? `圈舍 ${row.entity_id.slice(0, 6)}`,
+    note: firstPayloadValue(payload, "strings", "note") ?? "",
     purpose: firstPayloadValue(payload, "strings", "note") || "未填写用途",
+    isActive: String(activeFlag) !== "0",
     headCount: null,
     status: String(activeFlag) === "0" ? "停用" : "正常",
     updatedAt: row.modified_at,
@@ -745,7 +749,7 @@ function latestRemovals(rows) {
   return result;
 }
 
-export async function getVerifiedUser() {
+const verifiedUserHandoff = createVerifiedUserHandoff(async () => {
   if (!supabase) return null;
   const { data, error } = await supabase.auth.getUser();
   if (error) {
@@ -753,6 +757,10 @@ export async function getVerifiedUser() {
     throw error;
   }
   return data.user ?? null;
+});
+
+export async function getVerifiedUser() {
+  return verifiedUserHandoff.verify();
 }
 
 export async function getAssistantAccessToken() {
@@ -770,6 +778,7 @@ export async function getAssistantAccessToken() {
 export function watchAuth(callback) {
   if (!supabase) return () => {};
   const { data } = supabase.auth.onAuthStateChange((event, session) => {
+    verifiedUserHandoff.observeIdentity(event === "SIGNED_OUT" ? null : session?.user?.id);
     callback({ event, session });
   });
   return () => data.subscription.unsubscribe();
@@ -828,12 +837,13 @@ export async function signInWithApple() {
 
 export async function signOut() {
   if (!supabase) return;
+  verifiedUserHandoff.invalidate();
   await clearCloudV2Cache();
   const { error } = await supabase.auth.signOut({ scope: "local" });
   if (error) throw error;
 }
 
-export async function loadCloudWorkspace(preferredFarmID, { signal, sections, onProgress } = {}) {
+export async function loadCloudWorkspace(preferredFarmID, { signal, sections, onProgress, verifiedUser } = {}) {
   if (!supabase) throw new Error("Supabase 尚未配置。");
   signal?.throwIfAborted();
 
@@ -842,7 +852,7 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections, on
     workspaceEntityTypesForSections(loadedSections),
   );
 
-  const user = await getVerifiedUser();
+  const user = await verifiedUserHandoff.consume(verifiedUser);
   if (!user) throw new Error("请先登录 Supabase 账号。");
 
   const accessQuery = listAccessibleFarms(supabase, { signal });
@@ -1053,9 +1063,11 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections, on
   const actorDirectory = await fetchActorDirectory(operationRows, user, profile, signal);
   signal?.throwIfAborted();
   const decodedOperationRows = operationRows.map((row) => ({ ...row, payload_json: payloadForRow(row) }));
-  const sheepIDByEntityID = buildEventSheepIndex(decodedOperationRows);
+  const sheepIDByEntityID = v2 ? null : buildEventSheepIndex(decodedOperationRows);
   const operationEvents = decodedOperationRows
-    .map((row) => projectFarmOperationEvent({
+    // V2 business history comes from native records. Only operation identity
+    // and attribution are needed; do not also format every legacy event.
+    .map((row) => v2 ? projectFarmOperationIdentity(row, row.payload_json, actorNameForOperation(row, actorDirectory)) : projectFarmOperationEvent({
       row,
       payload: row.payload_json,
       actorName: actorNameForOperation(row, actorDirectory),
@@ -1066,9 +1078,11 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections, on
       membershipByID,
     }))
     .sort((left, right) => new Date(right.at).getTime() - new Date(left.at).getTime() || right.revision - left.revision);
-  const events = v2 ? await nativeEventSnapshots(v2.models,{timeZone:farmTimeZone,purposeEvents:operationEvents.filter(e=>e.type==="purpose")}) : operationEvents;
+  const [events, management] = v2 ? await Promise.all([
+    nativeEventSnapshots(v2.models,{timeZone:farmTimeZone,purposeEvents:operationEvents.filter(e=>e.type==="purpose")}),
+    managementProjection(v2.models,{...farm,timeZoneIdentifier:farmTimeZone}),
+  ]) : [operationEvents, {}];
   if(v2){const byID=new Map(operationEvents.map(e=>[e.id,e]));for(const event of events){const source=byID.get(event.id);if(source?.actor)event.actor=source.actor;}}
-  const management = v2 ? await managementProjection(v2.models,{...farm,timeZoneIdentifier:farmTimeZone}) : {};
   const analyticsSource = {
     sheep: allSheep.map((item) => ({
       id: item.id,
@@ -1096,7 +1110,7 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections, on
     troughObservations,
     dailyPenCounts: [],
   };
-  const insightData = buildFarmInsightData({ source: analyticsSource, timeZone: farmTimeZone });
+  const readInsights = createFarmInsightReader({ source: analyticsSource, timeZone: farmTimeZone });
 
   return {
     mode: "cloud",
@@ -1151,7 +1165,7 @@ export async function loadCloudWorkspace(preferredFarmID, { signal, sections, on
     models:v2?.models,
     ...management,
     analyticsSource,
-    insightData,
+    get insightData() { return readInsights(); },
     lastSyncedAt: new Date().toISOString(),
   };
 }

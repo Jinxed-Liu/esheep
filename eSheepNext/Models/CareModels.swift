@@ -218,6 +218,8 @@ struct FarmOperationalAlertRuleDraft: Codable, Sendable, Equatable {
     let warningLeadDays: Int?
     let digestEnabled: Bool
     let digestMinuteOfDay: Int
+    let reproductionSettings: ReproductionManagementSettings?
+    let updatesReproductionOnly: Bool?
 
     init(
         id: UUID,
@@ -226,7 +228,9 @@ struct FarmOperationalAlertRuleDraft: Codable, Sendable, Equatable {
         weaningAgeDays: Int,
         warningLeadDays: Int? = nil,
         digestEnabled: Bool,
-        digestMinuteOfDay: Int
+        digestMinuteOfDay: Int,
+        reproductionSettings: ReproductionManagementSettings? = nil,
+        updatesReproductionOnly: Bool? = nil
     ) {
         self.id = id
         self.pregnancyCheckDays = pregnancyCheckDays
@@ -235,6 +239,8 @@ struct FarmOperationalAlertRuleDraft: Codable, Sendable, Equatable {
         self.warningLeadDays = warningLeadDays
         self.digestEnabled = digestEnabled
         self.digestMinuteOfDay = digestMinuteOfDay
+        self.reproductionSettings = reproductionSettings
+        self.updatesReproductionOnly = updatesReproductionOnly
     }
 
     var effectiveWarningLeadDays: Int { warningLeadDays ?? 0 }
@@ -339,7 +345,8 @@ enum CareCommand: Codable, Sendable, Equatable {
         case .revokeLambing: "撤销产羔记录"
         case .restoreLambing: "恢复产羔记录"
         case .updateRules: "更新健康繁殖提醒规则"
-        case .updateOperationalAlertRules: "更新待办与异常规则"
+        case .updateOperationalAlertRules(let draft):
+            draft.updatesReproductionOnly == true ? "更新繁殖分析设置与青年母羊参配确认" : "更新待办与异常规则"
         case .deferOperationalAlert: "暂缓牧场异常提醒"
         case .setReminderStatus: "更新健康繁殖提醒"
         }
@@ -415,6 +422,7 @@ final class FarmCareRuleRecord {
     var operationalAlertsConfiguredAt: Date?
     var alertDigestEnabled: Bool = false
     var alertDigestMinuteOfDay: Int = 480
+    var reproductionSettingsJSON: String?
     var createdAt: Date
     var updatedAt: Date
     var revision: Int
@@ -428,7 +436,8 @@ final class FarmCareRuleRecord {
         warningLeadDays: Int = 0,
         operationalAlertsConfiguredAt: Date? = nil,
         alertDigestEnabled: Bool = false,
-        alertDigestMinuteOfDay: Int = 480
+        alertDigestMinuteOfDay: Int = 480,
+        reproductionSettingsJSON: String? = nil
     ) {
         self.id = id
         self.farmID = farmID
@@ -439,6 +448,7 @@ final class FarmCareRuleRecord {
         self.operationalAlertsConfiguredAt = operationalAlertsConfiguredAt
         self.alertDigestEnabled = alertDigestEnabled
         self.alertDigestMinuteOfDay = alertDigestMinuteOfDay
+        self.reproductionSettingsJSON = reproductionSettingsJSON
         self.createdAt = .now
         self.updatedAt = .now
         self.revision = 1

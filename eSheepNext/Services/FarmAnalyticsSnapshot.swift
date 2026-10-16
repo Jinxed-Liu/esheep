@@ -54,6 +54,15 @@ struct FarmAnalyticsSnapshot: Sendable {
             parity != nil && birthDeadCount != nil && offspring.count == total
         }
     }
+    struct ReproductionFact: Sendable, Hashable {
+        let id: UUID
+        let eweID: UUID
+        let kind: ReproductionRecordKind
+        let occurredAt: Date
+        var result: String = ""
+        var relatedBreedingRecordID: UUID?
+        var revision: Int = 1
+    }
     struct ParityEvidence: Sendable, Hashable {
         let id: UUID
         let eweID: UUID
@@ -140,6 +149,10 @@ struct FarmAnalyticsSnapshot: Sendable {
     var factsReadAt: Date = .now
     var parityEvidence: [ParityEvidence] = []
     var purposeFacts: [SheepPurposeTimelineFact] = []
+    var reproductionFacts: [ReproductionFact] = []
+    var reproductionSettings: ReproductionManagementSettings?
+    var reproductionSettingsIssue: String?
+    var reproductionCareRule: ReproductionCareRuleSnapshot?
 
     static func make(
         farmID: UUID,
@@ -155,7 +168,9 @@ struct FarmAnalyticsSnapshot: Sendable {
         feeds: [FeedRecord],
         feedLines: [FeedRecordLine],
         timeZoneIdentifier: String = "Asia/Shanghai",
-        factsReadAt: Date = .now
+        factsReadAt: Date = .now,
+        reproductionSettings: ReproductionManagementSettings? = nil,
+        reproductionCareRule: ReproductionCareRuleSnapshot? = nil
     ) -> Self {
         let farmSheep = sheep.filter { $0.farmID == farmID && $0.deletedAt == nil }.map {
             Sheep(id: $0.id, earTag: $0.earTag, breed: $0.breed, purpose: $0.purpose, sex: $0.sex, status: $0.status, initialPenID: $0.initialPenID, currentPenID: $0.currentPenID, birthAt: $0.birthAt, enteredAt: $0.enteredAt, removedAt: $0.removedAt, isHistoricalArchive: $0.isHistoricalArchive)
@@ -199,7 +214,13 @@ struct FarmAnalyticsSnapshot: Sendable {
             }.map {
                 ParityEvidence(id: $0.id, eweID: $0.eweID, occurredAt: $0.occurredAt,
                                parity: $0.parity!, updatedAt: $0.updatedAt, createdAt: $0.createdAt)
-            }
+            },
+            reproductionFacts: reproduction.filter { $0.farmID == farmID && $0.deletedAt == nil }.map {
+                ReproductionFact(id: $0.id, eweID: $0.eweID, kind: $0.kind, occurredAt: $0.occurredAt,
+                    result: $0.result, relatedBreedingRecordID: $0.relatedBreedingRecordID, revision: $0.revision)
+            },
+            reproductionSettings: reproductionSettings,
+            reproductionCareRule: reproductionCareRule
         )
     }
 }
@@ -218,6 +239,7 @@ struct FarmDeepAnalyticsPayload: Sendable {
     let activePenCount: Int
     let currentMonthFeedCount: Int
     let latestActivityDate: Date?
+    var reproductionSyncStatus: String?
 }
 
 /// Reads every table used by the deep-analysis cards on a private actor and
@@ -280,6 +302,16 @@ actor FarmDeepAnalyticsSnapshotActor {
         }))
         try Task.checkCancellation()
 
+        let careRule = try context.fetch(FetchDescriptor<FarmCareRuleRecord>(predicate: #Predicate { $0.farmID == farmID })).first
+        let reproductionSettings: ReproductionManagementSettings?
+        let reproductionSettingsIssue: String?
+        do {
+            reproductionSettings = try ReproductionManagementSettings.decode(careRule?.reproductionSettingsJSON)
+            reproductionSettingsIssue = nil
+        } catch {
+            reproductionSettings = nil
+            reproductionSettingsIssue = ReproductionSettingsError.unreadable.localizedDescription
+        }
         var snapshot = FarmAnalyticsSnapshot.make(
             farmID: farmID,
             sheep: sheep,
@@ -294,8 +326,13 @@ actor FarmDeepAnalyticsSnapshotActor {
             feeds: feeds,
             feedLines: feedLines,
             timeZoneIdentifier: farmTimeZoneIdentifier,
-            factsReadAt: now
+            factsReadAt: now,
+            reproductionSettings: reproductionSettings,
+            reproductionCareRule: careRule.map { ReproductionCareRuleSnapshot(id: $0.id, revision: $0.revision,
+                pregnancyCheckDays: $0.pregnancyCheckDays, warningLeadDays: $0.warningLeadDays,
+                operationalRulesConfigured: $0.operationalAlertsConfiguredAt != nil) }
         )
+        snapshot.reproductionSettingsIssue = reproductionSettingsIssue
         snapshot.purposeFacts = SheepPurposeTimeline.facts(from: try context.fetch(
             FetchDescriptor<DomainOperation>(predicate: #Predicate {
                 $0.farmID == farmID && $0.kindRawValue == "care"
@@ -324,6 +361,26 @@ actor FarmDeepAnalyticsSnapshotActor {
             .map { FarmAnalyticsBatchSnapshot(id: $0.id, name: $0.name) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
 
+        let storage = try context.fetch(FetchDescriptor<FarmStorageProfile>(predicate: #Predicate { $0.farmID == farmID })).first
+        let cloud = try context.fetch(FetchDescriptor<ESheepCloudFarmState>(predicate: #Predicate { $0.farmID == farmID })).first
+        let settled = ESheepCloudIntentLifecycle.accepted.rawValue
+        let superseded = ESheepCloudIntentLifecycle.supersededLocally.rawValue
+        let pendingCount = try context.fetchCount(FetchDescriptor<ESheepCloudPendingIntent>(predicate: #Predicate {
+            $0.farmID == farmID && $0.lifecycleRawValue != settled && $0.lifecycleRawValue != superseded
+        }))
+        let syncStatus: String
+        if storage?.mode == .localOnly { syncStatus = "本地牧场" }
+        else if let cloud {
+            if cloud.integrityState == .failed || cloud.activityState == .integrityHold {
+                syncStatus = "云端资料核对异常，请查看同步中心"
+            } else if pendingCount > 0 {
+                syncStatus = "有\(pendingCount)条云端操作待处理；当前结果为本机已加载资料"
+            } else if cloud.lastAppliedEventSequence < cloud.cloudEventHead {
+                syncStatus = "云端资料仍在接收，已接收至\(cloud.lastAppliedEventSequence)／\(cloud.cloudEventHead)"
+            } else {
+                syncStatus = "已接收至本机已知的云端进度 \(cloud.lastAppliedEventSequence)；不代表云端实时查询"
+            }
+        } else { syncStatus = "云端同步状态暂不可用" }
         try Task.checkCancellation()
         return FarmDeepAnalyticsPayload(
             snapshot: snapshot,
@@ -333,7 +390,8 @@ actor FarmDeepAnalyticsSnapshotActor {
             activeSheepCount: activeSheep.count,
             activePenCount: pens.count { activePenIDs.contains($0.id) },
             currentMonthFeedCount: feeds.count { currentMonth?.contains($0.occurredAt) == true },
-            latestActivityDate: latestActivityDate
+            latestActivityDate: latestActivityDate,
+            reproductionSyncStatus: syncStatus
         )
     }
 }

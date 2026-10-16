@@ -11,6 +11,13 @@ struct EditPenView: View {
     @State private var name: String
     @State private var note: String
     @State private var errorMessage: String?
+    @State private var currentSheepCount = 0
+    @State private var hasProtectedReferences: Bool?
+    @State private var isConfirmingDeactivation = false
+    @State private var isConfirmingDeletion = false
+    @State private var deletionReason = ""
+
+    private var canManageLifecycle: Bool { PenManagementPolicy.canManageLifecycle(role: farm.role) }
 
     init(account: AccountProfile, farm: FarmRecord, pen: PenRecord) {
         self.account = account
@@ -22,23 +29,80 @@ struct EditPenView: View {
 
     var body: some View {
         Form {
-            Section("圈舍资料") {
-                TextField("圈舍名称", text: $name)
+            Section("羊舍资料") {
+                TextField("羊舍名称", text: $name)
                 TextField("说明", text: $note, axis: .vertical).lineLimit(2...5)
+                Text("修改先由本机接收，云端牧场的确认结果可在首页保存状态中查看。")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section("状态") {
                 LabeledContent("当前状态", value: pen.isActive ? "启用" : "已停用")
-                Button(pen.isActive ? LocalizedStringKey("停用圈舍") : LocalizedStringKey("重新启用圈舍"), role: pen.isActive ? .destructive : nil) {
-                    setActive(!pen.isActive)
+                LabeledContent("当前羊只") { Text("\(currentSheepCount) 只") }
+                if canManageLifecycle {
+                    Button(pen.isActive ? LocalizedStringKey("停用羊舍") : LocalizedStringKey("重新启用羊舍"), role: pen.isActive ? .destructive : nil) {
+                        if pen.isActive { isConfirmingDeactivation = true }
+                        else { setActive(true) }
+                    }
+                    .disabled(hasProtectedReferences == nil || (pen.isActive && currentSheepCount > 0))
+                    if currentSheepCount > 0 {
+                        Text("请先转出全部在场羊只，再停用羊舍。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("停用、重新启用和删除由牧场主或管理员操作。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            if canManageLifecycle {
+                Section {
+                    TextField("删除原因", text: $deletionReason, axis: .vertical)
+                    Button("安全删除羊舍", role: .destructive) { isConfirmingDeletion = true }
+                        .disabled(hasProtectedReferences != false || deletionReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("delete-unused-pen")
+                } header: {
+                    Text("安全删除")
+                } footer: {
+                    Text(hasProtectedReferences == true
+                         ? "此羊舍有关联业务或历史记录，不能删除；清空后可以停用，全部历史仍会保留。"
+                         : "仅可删除误建且从未关联业务的羊舍。删除保留审计记录，不会删除羊只或生产历史。")
                 }
             }
         }
-        .navigationTitle("编辑圈舍")
+        .navigationTitle("编辑羊舍")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存", action: save).disabled(PenManagementPolicy.normalizedName(name).isEmpty)
+            }
+        }
+        .task(id: pen.revision) { loadLifecycleState() }
+        .confirmationDialog("停用羊舍？", isPresented: $isConfirmingDeactivation, titleVisibility: .visible) {
+            Button("停用", role: .destructive) { setActive(false) }
+        } message: {
+            Text("停用后不能再转入羊只，历史记录仍保留，也可以重新启用。")
+        }
+        .confirmationDialog("删除这个未使用的羊舍？", isPresented: $isConfirmingDeletion, titleVisibility: .visible) {
+            Button("确认删除", role: .destructive) {
+                execute(.tombstoneEntity(entityType: .pen, entityID: pen.id, reason: deletionReason), dismissOnSuccess: true)
+            }
+        } message: {
+            Text("提交前会再次检查所有关联记录，并保留删除原因和操作审计。")
         }
         .recordErrorAlert($errorMessage)
+    }
+
+    private func loadLifecycleState() {
+        do {
+            let farmID = farm.id
+            let penID = pen.id
+            currentSheepCount = try modelContext.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.currentPenID == penID && $0.deletedAt == nil
+            })).filter(\.isCurrentlyPresent).count
+            hasProtectedReferences = try PenManagementPolicy.hasReferences(penID: penID, farmID: farmID, context: modelContext)
+        } catch {
+            hasProtectedReferences = nil
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func save() {

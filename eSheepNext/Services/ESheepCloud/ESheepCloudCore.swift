@@ -217,6 +217,15 @@ actor ESheepCloudLocalStore {
         guard let item = try context.fetch(attentionQuery).first else {
             throw ESheepCloudCoreError.attentionMissing
         }
+        if item.streamType == "pen", item.fieldKey == "isActive",
+           choice == .useThisDevice || choice == .resubmit {
+            let farm = try context.fetch(FetchDescriptor<FarmRecord>(predicate: #Predicate {
+                $0.id == farmID
+            })).first
+            guard let farm, PenManagementPolicy.canManageLifecycle(role: farm.role) else {
+                throw FarmPermissionError.denied(.manageCatalogs)
+            }
+        }
         if item.state == .resolving {
             guard item.resolutionRawValue == choice.rawValue,
                   item.resolverAccountID == accountID,

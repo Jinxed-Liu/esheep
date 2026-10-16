@@ -23,6 +23,9 @@ enum FarmOperationalAlertKind: String, Codable, CaseIterable, Sendable, Hashable
     case weaningOverdue
     case pregnancyCheckDueSoon
     case pregnancyCheckOverdue
+    case reproductionReminder
+    case reproductionWarning
+    case reproductionReview
     case invalidPen
     case tmrNotFed
     case tmrLow
@@ -34,6 +37,9 @@ enum FarmOperationalAlertKind: String, Codable, CaseIterable, Sendable, Hashable
         case .weaningOverdue: "超龄未断奶"
         case .pregnancyCheckDueSoon: "孕检即将到期"
         case .pregnancyCheckOverdue: "逾期未孕检"
+        case .reproductionReminder: "繁殖提醒"
+        case .reproductionWarning: "繁殖警告"
+        case .reproductionReview: "繁殖资料待核实"
         case .invalidPen: "圈舍异常"
         case .tmrNotFed: "TMR 未投喂"
         case .tmrLow: "TMR 投喂偏低"
@@ -44,7 +50,7 @@ enum FarmOperationalAlertKind: String, Codable, CaseIterable, Sendable, Hashable
     var symbol: String {
         switch self {
         case .weaningDueSoon, .weaningOverdue: "leaf.circle.fill"
-        case .pregnancyCheckDueSoon, .pregnancyCheckOverdue: "heart.text.square"
+        case .pregnancyCheckDueSoon, .pregnancyCheckOverdue, .reproductionReminder, .reproductionWarning, .reproductionReview: "heart.text.square"
         case .invalidPen: "building.2.crop.circle"
         case .tmrNotFed: "fork.knife.circle"
         case .tmrLow: "arrow.down.circle"
@@ -53,11 +59,15 @@ enum FarmOperationalAlertKind: String, Codable, CaseIterable, Sendable, Hashable
     }
 
     var isDueSoon: Bool {
-        self == .weaningDueSoon || self == .pregnancyCheckDueSoon
+        self == .weaningDueSoon || self == .pregnancyCheckDueSoon || self == .reproductionReminder
     }
 
     var isTMR: Bool {
         self == .tmrNotFed || self == .tmrLow || self == .tmrHigh
+    }
+
+    var isReproductionManagement: Bool {
+        self == .reproductionReminder || self == .reproductionWarning || self == .reproductionReview
     }
 
     /// TMR operational alerts describe a pen's feeding result; all other
@@ -166,8 +176,9 @@ struct FarmOperationalAlertSnapshot: Sendable, Hashable {
     let overdueReminders: [FarmScheduledReminderSnapshot]
     let missingBirthDateCount: Int
     var tmrMonitoringConfigured: Bool = false
+    var reproductionConfigured: Bool = false
 
-    var isConfigured: Bool { rule?.isConfigured == true || tmrMonitoringConfigured }
+    var isConfigured: Bool { rule?.isConfigured == true || tmrMonitoringConfigured || reproductionConfigured }
     var totalPendingCount: Int { operationalAlerts.count + overdueReminders.count }
 }
 
@@ -441,7 +452,7 @@ enum FarmOperationalAlertEngine {
         )
     }
 
-    private static func makeAlert(
+    static func makeAlert(
         farmID: UUID,
         kind: FarmOperationalAlertKind,
         subjectID: UUID,
@@ -581,9 +592,10 @@ actor FarmOperationalAlertSnapshotActor {
                 digestMinuteOfDay: $0.alertDigestMinuteOfDay
             )
         }
-        let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+        let sheepRecords = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
-        })).map {
+        }))
+        let sheep = sheepRecords.map {
             FarmOperationalAlertEngine.Sheep(
                 id: $0.id,
                 earTag: $0.earTag,
@@ -598,9 +610,10 @@ actor FarmOperationalAlertSnapshotActor {
                 revision: $0.revision
             )
         }
-        let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+        let pensRecords = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
             $0.farmID == farmID
-        })).map {
+        }))
+        let pens = pensRecords.map {
             FarmOperationalAlertEngine.Pen(
                 id: $0.id,
                 isActive: $0.isActive,
@@ -618,9 +631,10 @@ actor FarmOperationalAlertSnapshotActor {
                 isDeleted: $0.deletedAt != nil
             )
         }
-        let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
+        let reproductionRecords = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
             $0.farmID == farmID
-        })).map {
+        }))
+        let reproduction = reproductionRecords.map {
             FarmOperationalAlertEngine.Reproduction(
                 id: $0.id,
                 eweID: $0.eweID,
@@ -684,7 +698,19 @@ actor FarmOperationalAlertSnapshotActor {
             now: now,
             context: context
         )
-        let combinedAlerts = (base.operationalAlerts + TMRMonitoringAlertAdapter.alerts(from: tmrSnapshot))
+        let reproductionSettings = try ReproductionManagementSettings.decode(ruleRecord?.reproductionSettingsJSON)
+        let managementSnapshot = FarmAnalyticsSnapshot.make(farmID: farmID, sheep: sheepRecords, pens: pensRecords,
+            weights: [], weanings: [], reproduction: reproductionRecords, offspring: [], removals: [], transfers: [],
+            memberships: [], feeds: [], feedLines: [], timeZoneIdentifier: farm.timeZoneIdentifier, factsReadAt: now,
+            reproductionSettings: reproductionSettings,
+            reproductionCareRule: ruleRecord.map { ReproductionCareRuleSnapshot(id: $0.id, revision: $0.revision,
+                pregnancyCheckDays: $0.pregnancyCheckDays, warningLeadDays: $0.warningLeadDays,
+                operationalRulesConfigured: $0.operationalAlertsConfiguredAt != nil) })
+        let management = try ReproductionManagementEngine.calculate(snapshot: managementSnapshot)
+        let legacyAlerts = base.operationalAlerts.filter {
+            reproductionSettings?.scopeConfigured != true || ($0.kind != .pregnancyCheckDueSoon && $0.kind != .pregnancyCheckOverdue)
+        }
+        let combinedAlerts = (legacyAlerts + management.operationalAlerts(deferrals: deferrals) + TMRMonitoringAlertAdapter.alerts(from: tmrSnapshot))
             .sorted {
                 if $0.dueAt != $1.dueAt { return $0.dueAt < $1.dueAt }
                 if $0.kind.rawValue != $1.kind.rawValue { return $0.kind.rawValue < $1.kind.rawValue }
@@ -698,7 +724,8 @@ actor FarmOperationalAlertSnapshotActor {
             operationalAlerts: combinedAlerts,
             overdueReminders: base.overdueReminders,
             missingBirthDateCount: base.missingBirthDateCount,
-            tmrMonitoringConfigured: tmrSnapshot.monitoringConfigured
+            tmrMonitoringConfigured: tmrSnapshot.monitoringConfigured,
+            reproductionConfigured: reproductionSettings?.scopeConfigured == true
         )
     }
 }

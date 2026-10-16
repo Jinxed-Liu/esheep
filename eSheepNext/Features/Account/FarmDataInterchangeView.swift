@@ -490,6 +490,8 @@ private struct FarmDataTaskView: View {
 
     @State private var isImporting = false
     @State private var preview: FarmImportPreview?
+    @State private var newPenNames: [String] = []
+    @State private var approvedNewPens = false
     @State private var isImportingExcelTemplate = false
     @State private var excelPreview: FarmExcelPreview?
     @State private var isExportingExcelTemplate = false
@@ -574,8 +576,12 @@ private struct FarmDataTaskView: View {
                             Label("第 \(issue.rowNumber) 行 · \(issue.message)", systemImage: issue.severity == .error ? "xmark.octagon" : "exclamationmark.triangle")
                                 .foregroundStyle(issue.severity == .error ? .red : .secondary)
                         }
+                        if !newPenNames.isEmpty {
+                            Text("待新建羊舍：\(newPenNames.joined(separator: "、"))")
+                            Toggle("确认新建以上羊舍", isOn: $approvedNewPens)
+                        }
                         Button("确认导入 \(preview.acceptedRows.count) 条") { commit(preview) }
-                            .disabled(isWorking || preview.acceptedRows.isEmpty)
+                            .disabled(isWorking || preview.acceptedRows.isEmpty || (!newPenNames.isEmpty && !approvedNewPens))
                     }
                 }
             }
@@ -709,8 +715,12 @@ private struct FarmDataTaskView: View {
             Task { @MainActor in
                 defer { isWorking = false }
                 do {
-                    preview = try await worker.previewLegacyFile(at: url, farmID: farm.id)
+                    let loaded = try await worker.previewLegacyFile(at: url, farmID: farm.id)
+                    newPenNames = try FarmImportCommitService.newPenNames(loaded, farmID: farm.id, context: modelContext)
+                    approvedNewPens = false
+                    preview = loaded
                 } catch {
+                    preview = nil
                     message = .importFailed(error.localizedDescription)
                 }
             }
@@ -758,7 +768,8 @@ private struct FarmDataTaskView: View {
 
     private func commit(_ preview: FarmImportPreview) {
         do {
-            let result = try FarmImportCommitService.commit(preview, account: account, farm: farm, context: modelContext)
+            let result = try FarmImportCommitService.commit(preview, account: account, farm: farm, context: modelContext,
+                                                          approvedNewPenNames: approvedNewPens ? Set(newPenNames) : [])
             self.preview = nil
             message = .imported(imported: result.importedCount, skipped: result.skippedCount)
         } catch { message = .writeFailed(error.localizedDescription) }

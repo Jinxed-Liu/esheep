@@ -252,8 +252,8 @@ enum FarmExcelImportService {
             else if !tag.isEmpty && !newTags.insert(tag).inserted { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "耳号", message: "与本文件其他新建羊只重复。", severity: .error)) }
         }
         let knownTags = currentTags.union(newTags)
-        let existingPens = Set(try context.fetch(FetchDescriptor<PenRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }.map { $0.name.normalizedLookup })
-        let newPens = Set(rows.filter { $0.sheet == "圈舍" }.map { $0["圈舍名称"].normalizedLookup })
+        let existingPens = Set(try context.fetch(FetchDescriptor<PenRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }.map { PenManagementPolicy.nameKey($0.name) })
+        let newPens = Set(rows.filter { $0.sheet == "圈舍" }.map { PenManagementPolicy.nameKey($0["圈舍名称"]) })
         let knownPens = existingPens.union(newPens)
         let existingIngredients = Set(try context.fetch(FetchDescriptor<FeedIngredientRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }.map { $0.name.normalizedLookup })
         let knownIngredients = existingIngredients.union(rows.filter { $0.sheet == "饲料原料" }.map { $0["原料名称"].normalizedLookup })
@@ -279,7 +279,7 @@ enum FarmExcelImportService {
         for (sheet, field, existingValues) in uniqueMasterFields {
             var seen = Set<String>()
             for row in rows where row.sheet == sheet {
-                let value = row[field].normalizedLookup
+                let value = sheet == "圈舍" ? PenManagementPolicy.nameKey(row[field]) : row[field].normalizedLookup
                 if existingValues.contains(value) { issues.append(.init(sheet: sheet, row: row.rowNumber, field: field, message: "当前牧场已存在同名记录。", severity: .error)) }
                 else if !value.isEmpty && !seen.insert(value).inserted { issues.append(.init(sheet: sheet, row: row.rowNumber, field: field, message: "与本文件同工作表的其他行重复。", severity: .error)) }
             }
@@ -305,7 +305,7 @@ enum FarmExcelImportService {
                     for tag in splitList(row[field]) where !knownTags.contains(EarTag.normalized(tag)) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: field, message: "当前牧场及本文件的新建羊只中找不到耳号 \(tag)。", severity: .error)) }
                 }
             }
-            for field in ["圈舍", "转入圈舍"] where !row[field].isEmpty && !knownPens.contains(row[field].normalizedLookup) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: field, message: "当前牧场及本文件中找不到该圈舍。", severity: .error)) }
+            for field in ["圈舍", "转入圈舍"] where !row[field].isEmpty && !knownPens.contains(PenManagementPolicy.nameKey(row[field])) { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: field, message: "当前牧场及本文件中找不到该圈舍。", severity: .error)) }
             if row.sheet == "备注", row["耳号"].isEmpty && row["圈舍"].isEmpty { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "对象", message: "耳号或圈舍至少填写一个。", severity: .error)) }
             if row.sheet == "健康记录", row["羊只耳号列表"].isEmpty && row["圈舍"].isEmpty { issues.append(.init(sheet: row.sheet, row: row.rowNumber, field: "对象", message: "羊只耳号列表或圈舍至少填写一个。", severity: .error)) }
             if row.sheet == "配方组成" {
@@ -423,7 +423,11 @@ enum FarmExcelImportService {
 
     private static func command(for row: FarmExcelRow, farmID: UUID, context: ModelContext) throws -> FarmCommand {
         func sheep(_ tag: String) throws -> SheepRecord { guard let value = try context.fetch(FetchDescriptor<SheepRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && EarTag.normalized($0.earTag) == EarTag.normalized(tag) }) else { throw FarmCommandError.sheepNotFound }; return value }
-        func pen(_ name: String) throws -> PenRecord { guard let value = try context.fetch(FetchDescriptor<PenRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.name.normalizedLookup == name.normalizedLookup }) else { throw FarmCommandError.penNotFound }; return value }
+        func pen(_ name: String) throws -> PenRecord {
+            let pens = try context.fetch(FetchDescriptor<PenRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+            guard let value = try PenManagementPolicy.resolve(name, in: pens) else { throw FarmCommandError.penNotFound }
+            return value
+        }
         func ingredient(_ name: String) throws -> FeedIngredientRecord { guard let value = try context.fetch(FetchDescriptor<FeedIngredientRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.name.normalizedLookup == name.normalizedLookup }) else { throw FarmCommandError.ingredientNotFound }; return value }
         func recipe(_ name: String) throws -> FeedRecipeRecord { guard let value = try context.fetch(FetchDescriptor<FeedRecipeRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.name.normalizedLookup == name.normalizedLookup }) else { throw FarmCommandError.missingRequiredValue("配方") }; return value }
         func semen(_ code: String) throws -> SemenRecord { guard let value = try context.fetch(FetchDescriptor<SemenRecord>()).first(where: { $0.farmID == farmID && $0.deletedAt == nil && $0.code.normalizedLookup == code.normalizedLookup }) else { throw FarmCommandError.missingRequiredValue("冻精") }; return value }
@@ -535,12 +539,8 @@ enum FarmExcelImportService {
         }) else {
             throw FarmCommandError.sheepNotFound
         }
-        guard let pen = try context.fetch(FetchDescriptor<PenRecord>()).first(where: {
-            $0.farmID == farmID &&
-                $0.deletedAt == nil &&
-                $0.isActive &&
-                $0.name.normalizedLookup == row["转入圈舍"].normalizedLookup
-        }) else {
+        let pens = try context.fetch(FetchDescriptor<PenRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        guard let pen = try PenManagementPolicy.resolve(row["转入圈舍"], in: pens) else {
             throw FarmCommandError.penNotFound
         }
         guard let occurredAt = parseDate(row["发生日期"]) else {

@@ -1,0 +1,34 @@
+.pen-management-page .pen-scopes { align-items: center; gap: 14px; }
+.pen-management-page .pen-scopes .segmented { flex-wrap: wrap; }
+.pen-management-page .pen-help, .pen-action-dialog .pen-help { color: var(--muted); font-size: 13px; line-height: 1.7; }
+.pen-management-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.pen-management-actions + .pen-help { margin-top: 14px; }
+.pen-management-page .pen-danger, .pen-action-dialog .pen-danger { color: #b42335; border-color: #d69098; }
+.pen-management-page button:disabled, .pen-action-dialog button:disabled { opacity: .5; cursor: not-allowed; }
+.pen-management-page .panel-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.pen-management-page .entity-detail-pane h2, .pen-management-page .entity-detail-pane dd { overflow-wrap: anywhere; }
+.pen-feedback { padding: 14px 18px; border-radius: 14px; background: #e5f5ed; color: #165d3c; margin-bottom: 18px; line-height: 1.6; }
+.pen-feedback.warning { background: #fff3db; color: #7b4d04; }
+.pen-action-dialog { padding: 0; margin: auto; border: 1px solid var(--line); color: var(--ink, #0c1835); width: min(580px, calc(100vw - 32px)); max-height: calc(100dvh - 48px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+.pen-action-dialog::backdrop { background: #0a15296b; backdrop-filter: blur(5px); }
+.pen-action-dialog form > p { line-height: 1.75; margin: 0 0 18px; }
+.pen-action-dialog .record-field { display: grid; gap: 9px; }
+.pen-action-dialog .record-field small { font-size: 13px; }
+.pen-action-dialog textarea { resize: vertical; }
+@media (max-width: 800px) {
+  .pen-management-page .entity-content.with-detail { grid-template-columns: minmax(0, 1fr); }
+  .pen-management-page .entity-detail-pane { order: -1; border-bottom: 1px solid var(--line); scroll-margin-top: 16px; }
+  .pen-management-page .data-table { min-width: 0; width: 100%; }
+  .pen-management-page .data-table :is(th, td):nth-child(2),
+  .pen-management-page .data-table :is(th, td):nth-child(5) { display: none; }
+  .pen-management-page .data-table :is(th, td) { padding: 14px 10px; }
+  .pen-management-page .data-table :is(th, td):first-child { white-space: normal; overflow-wrap: anywhere; max-width: 150px; }
+}
+@media (max-width: 600px) {
+  .pen-management-page .pen-scopes { align-items: stretch; }
+  .pen-management-page .pen-scopes .segmented { width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pen-management-page .pen-scopes .segmented button { min-height: 42px; }
+  .pen-management-actions > button { flex: 1 1 120px; min-height: 44px; }
+  .pen-action-dialog form > footer { gap: 12px; }
+  .pen-action-dialog form > footer button { min-height: 44px; }
+}

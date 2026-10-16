@@ -42,9 +42,10 @@ export function interpretResults(commands, response) {
 
 // Serialize each browser account's submissions across tabs. An uncertain result
 // always retries the same signed bytes: new IDs would create duplicate facts.
-export async function submitDraft(client, accountID, farm, draft, buildSpecifications, { assertCurrent = () => {} } = {}) {
+export async function submitDraft(client, accountID, farm, draft, buildSpecifications, { assertCurrent = () => {}, onProgress = () => {}, expectedUserID } = {}) {
   assertCurrent();
   if (!navigator.locks) throw new Error("浏览器不支持多窗口安全提交，请更新浏览器。");
+  onProgress("正在等待前一笔提交完成…");
   return navigator.locks.request(`esheep-write:${accountID}`, async () => {
     assertCurrent();
     draft = (await listDrafts(accountID, farm.id)).find((item) => item.id === draft.id);
@@ -52,16 +53,24 @@ export async function submitDraft(client, accountID, farm, draft, buildSpecifica
     if (!draft) throw new Error("未找到原始草稿。");
     if (draft.status === "accepted") return draft;
     if (draft.status === "discarded") throw new Error("这份草稿已放弃。");
-    const { data: auth, error: authError } = await client.auth.getUser();
+    onProgress("正在核对账号与牧场版本…");
+    const [{ data: auth, error: authError }, { data: status, error: statusError }] = await Promise.all([
+      client.auth.getUser(),
+      client.rpc("esheep_cloud_fetch_status_v2", { p_farm_id: farm.id }),
+    ]);
     assertCurrent();
     if (authError || !auth?.user) throw new Error("登录已过期，草稿已保留，请重新登录。");
-    const { data: status, error: statusError } = await client.rpc("esheep_cloud_fetch_status_v2", { p_farm_id: farm.id });
-    assertCurrent();
+    if (expectedUserID && auth.user.id !== expectedUserID) throw new Error("登录账号已切换，请重新打开当前牧场。");
     if (statusError) throw statusError;
     if (status.farm_generation !== draft.generation || draft.farmID !== farm.id.toLowerCase()) throw new Error("牧场版本已变更，请核对原草稿后重新录入。");
     if (!status.v2_ready || status.write_frozen) throw new Error("牧场暂不可写入，草稿已保留。");
-    if (!draft.signed && Number.isSafeInteger(farm.revision) && status.cloud_head !== farm.revision) throw new Error("牧场已有新的云端记录，请先刷新资料再提交；草稿已保留。");
+    if (!draft.signed && Number.isSafeInteger(farm.revision) && status.cloud_head !== farm.revision) {
+      const error = new Error("牧场已有新的云端记录，请先刷新资料再提交；草稿已保留。");
+      error.code = "CLOUD_WORKSPACE_STALE";
+      throw error;
+    }
     if (draft.signed) {
+      onProgress("正在核对原始提交回执…");
       const previous = await client.rpc("esheep_cloud_query_command_status_v2", { p_farm_id: farm.id,
         p_command_ids: draft.commands.map((command) => command.commandID) });
       if (!previous.error && previous.data?.results?.length === draft.commands.length) {
@@ -75,6 +84,7 @@ export async function submitDraft(client, accountID, farm, draft, buildSpecifica
     }
     let prepared = draft;
     if (!draft.signed) {
+      onProgress("正在校验业务并准备签名…");
       const specifications = await buildSpecifications();
       assertCurrent();
       if (!specifications.length || specifications.length > 25) throw new Error("单次业务操作最多包含 25 个关联命令，请拆分批次。");
@@ -98,6 +108,7 @@ export async function submitDraft(client, accountID, farm, draft, buildSpecifica
     await patchDraft(accountID, draft.id, { status: "pending", error: null });
     assertCurrent();
     try {
+      onProgress("正在提交云端，等待回执…");
       const { data, error } = await client.functions.invoke("esheep-cloud-v2-writes", {
         body: { action: "submit_commands", farm_id: farm.id, farm_generation: draft.generation, commands: prepared.signed },
       });

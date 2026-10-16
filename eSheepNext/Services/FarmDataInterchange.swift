@@ -311,34 +311,63 @@ enum SecureImportFileLoader {
 
 @MainActor
 enum FarmImportCommitService {
+    static func newPenNames(_ preview: FarmImportPreview, farmID: UUID, context: ModelContext) throws -> [String] {
+        let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        var result: [String] = []
+        var seen = Set<String>()
+        var knownTags = Set(try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+            $0.farmID == farmID
+        })).map { EarTag.normalized($0.earTag) })
+        for row in preview.acceptedRows {
+            guard knownTags.insert(EarTag.normalized(row.earTag)).inserted else { continue }
+            guard let name = row.penName, !PenManagementPolicy.nameKey(name).isEmpty else { continue }
+            if try PenManagementPolicy.resolve(name, in: pens) == nil,
+               seen.insert(PenManagementPolicy.nameKey(name)).inserted {
+                result.append(PenManagementPolicy.normalizedName(name))
+            }
+        }
+        return result.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
     static func commit(
         _ preview: FarmImportPreview,
         account: AccountProfile,
         farm: FarmRecord,
         context: ModelContext,
+        approvedNewPenNames: Set<String> = [],
         commandService: FarmCommandService = FarmCommandService()
     ) throws -> FarmImportCommitResult {
         let farmContext = FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role)
-        var pens = try context.fetch(FetchDescriptor<PenRecord>()).filter { $0.farmID == farm.id && $0.deletedAt == nil }
+        let newNames = try newPenNames(preview, farmID: farm.id, context: context)
+        let approvedKeys = Set(approvedNewPenNames.map(PenManagementPolicy.nameKey))
+        guard newNames.allSatisfy({ approvedKeys.contains(PenManagementPolicy.nameKey($0)) }) else {
+            throw PenManagementError.unconfirmedNewNames
+        }
         let existing = try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farm.id }.map { EarTag.normalized($0.earTag) }
         var knownTags = Set(existing)
-        var imported = 0, skipped = preview.rows.count - preview.acceptedRows.count
+        var rows: [FarmImportRow] = []
+        var skipped = preview.rows.count - preview.acceptedRows.count
         for row in preview.acceptedRows {
             guard knownTags.insert(EarTag.normalized(row.earTag)).inserted else { skipped += 1; continue }
-            var penID: UUID?
-            if let requestedPen = row.penName {
-                if let pen = pens.first(where: { $0.name.localizedCaseInsensitiveCompare(requestedPen) == .orderedSame }) {
-                    penID = pen.id
-                } else {
-                    try commandService.execute(.createPen(name: requestedPen, note: "由导入文件创建"), in: farmContext, context: context)
-                    pens = try context.fetch(FetchDescriptor<PenRecord>()).filter { $0.farmID == farm.id && $0.deletedAt == nil }
-                    penID = pens.first(where: { $0.name.localizedCaseInsensitiveCompare(requestedPen) == .orderedSame })?.id
-                }
-            }
-            try commandService.execute(.addSheep(earTag: row.earTag, breed: row.breed, sex: row.sex, penID: penID, occurredAt: row.enteredAt, birthAt: row.birthAt, currentParity: row.sex == .ewe ? 0 : nil, note: row.note), in: farmContext, context: context)
-            imported += 1
+            rows.append(row)
         }
-        return FarmImportCommitResult(importedCount: imported, skippedCount: skipped)
+        var penIndex = 0
+        var rowIndex = 0
+        try commandService.executeBatch(in: farmContext, context: context) {
+            if penIndex < newNames.count {
+                defer { penIndex += 1 }
+                return .createPen(name: newNames[penIndex], note: "由已确认的导入清单创建")
+            }
+            guard rowIndex < rows.count else { return nil }
+            let row = rows[rowIndex]
+            rowIndex += 1
+            let pens = try context.fetch(FetchDescriptor<PenRecord>()).filter { $0.farmID == farm.id && $0.deletedAt == nil }
+            let penID = try row.penName.flatMap { try PenManagementPolicy.resolve($0, in: pens)?.id }
+            return .addSheep(earTag: row.earTag, breed: row.breed, sex: row.sex, penID: penID, occurredAt: row.enteredAt, birthAt: row.birthAt, currentParity: row.sex == .ewe ? 0 : nil, note: row.note)
+        }
+        return FarmImportCommitResult(importedCount: rows.count, skippedCount: skipped)
     }
 }
 

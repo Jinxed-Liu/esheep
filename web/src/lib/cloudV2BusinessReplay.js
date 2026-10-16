@@ -12,6 +12,24 @@ const supported = new Set(["sheep.add", "productionBatch.create", "batchMembersh
   "care.semen.setDonor", "care.reproduction.recordBatch", "care.lambing.record", "care.sheepPedigree.update", "care.sheep.setBreedingRam",
   "care.careRules.update", "care.operationalAlertRules.update", "care.operationalAlert.defer", "care.careReminder.setStatus", "care.inventoryLot.setActive"]);
 
+// Match native JSONEncoder.sortedKeys and UUID encoding for the shared
+// reproduction document. Legacy rule updates leave this field untouched.
+function reproductionSettingsJSON(value) {
+  const settings = {
+    minimumAgeMonths: value.minimumAgeMonths,
+    penUsages: Object.fromEntries(Object.entries(value.penUsages).map(([id, usage]) => [id.toLowerCase(), usage])),
+    scopeConfigured: value.scopeConfigured,
+    selectedPenIDs: value.selectedPenIDs.map((id) => id.toUpperCase()).sort(),
+    youthBreedingConfirmedSheepIDs: value.youthBreedingConfirmedSheepIDs.map((id) => id.toUpperCase()).sort(),
+  };
+  for (const field of ["postpartumReminderDays", "postpartumWarningDays", "maidenReminderMonths", "maidenWarningMonths"]) {
+    if (value[field] != null) settings[field] = value[field];
+  }
+  const sorted = (entry) => Array.isArray(entry) ? entry.map(sorted)
+    : entry && typeof entry === "object" ? Object.fromEntries(Object.keys(entry).sort().map((key) => [key, sorted(entry[key])])) : entry;
+  return JSON.stringify(sorted(settings));
+}
+
 export async function applyExtendedV2Event(projection, event, body) {
   const kind = body.command_kind;
   if(kind==="care.sheepLabels.patchProfile" && event.event_kind==="fields_patched") {
@@ -196,8 +214,23 @@ export async function applyExtendedV2Event(projection, event, body) {
     }
     case "care.sheep.setBreedingRam": Object.assign(get("SheepRecord", args.sheepID), { isBreedingRam: args.isBreedingRam, revision: args.expectedRevision + 1, updatedAt: at }); break;
     case "care.careRules.update": put("FarmCareRuleRecord", { ...args, updatedAt: at }); break;
-    case "care.operationalAlertRules.update": put("FarmCareRuleRecord", { ...args, operationalAlertsConfiguredAt: projection.models.get("FarmCareRuleRecord").get(args.id)?.operationalAlertsConfiguredAt ?? at,
-      alertDigestEnabled: args.digestEnabled, alertDigestMinuteOfDay: args.digestMinuteOfDay, updatedAt: at }); break;
+    case "care.operationalAlertRules.update": {
+      const existing = projection.models.get("FarmCareRuleRecord").get(args.id);
+      const patch = { id: args.id, updatedAt: at, revision: (existing?.revision ?? 0) + 1 };
+      if (args.updatesReproductionOnly !== true || !existing) {
+        Object.assign(patch, { pregnancyCheckDays: args.pregnancyCheckDays, gestationDays: args.gestationDays,
+          warningLeadDays: args.warningLeadDays ?? 0, alertDigestEnabled: args.digestEnabled,
+          alertDigestMinuteOfDay: args.digestMinuteOfDay });
+      }
+      if (args.updatesReproductionOnly !== true) {
+        Object.assign(patch, { weaningAgeDays: args.weaningAgeDays,
+          operationalAlertsConfiguredAt: existing?.operationalAlertsConfiguredAt ?? at });
+      }
+      if (args.reproductionSettings != null) patch.reproductionSettingsJSON = reproductionSettingsJSON(args.reproductionSettings);
+      else if (args.updatesReproductionOnly === true) throw new Error("繁殖设置内容缺失。");
+      put("FarmCareRuleRecord", patch);
+      break;
+    }
     case "care.operationalAlert.defer": put("FarmAlertDeferralRecord", args); break;
     case "care.careReminder.setStatus": Object.assign(get("CareReminderRecord", args.reminderID), { statusRawValue: args.status, completedAt: args.status === "completed" ? at : null }); break;
     default: throw new Error(`未实现的业务读取：${name}`);

@@ -467,8 +467,15 @@ struct FarmBaselineSnapshotService {
                     weaningAgeDays: weaningAgeDays,
                     warningLeadDays: value.warningLeadDays,
                     digestEnabled: value.alertDigestEnabled,
-                    digestMinuteOfDay: value.alertDigestMinuteOfDay
+                    digestMinuteOfDay: value.alertDigestMinuteOfDay,
+                    reproductionSettings: try ReproductionManagementSettings.decode(value.reproductionSettingsJSON)
                 ))
+            } else if let settings = try ReproductionManagementSettings.decode(value.reproductionSettingsJSON) {
+                command = .updateOperationalAlertRules(.init(id: value.id,
+                    pregnancyCheckDays: value.pregnancyCheckDays, gestationDays: value.gestationDays,
+                    weaningAgeDays: value.weaningAgeDays ?? 60, warningLeadDays: value.warningLeadDays,
+                    digestEnabled: value.alertDigestEnabled, digestMinuteOfDay: value.alertDigestMinuteOfDay,
+                    reproductionSettings: settings, updatesReproductionOnly: true))
             } else {
                 command = .updateRules(
                     id: value.id,

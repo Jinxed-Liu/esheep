@@ -63,8 +63,9 @@ enum ESheepCloudCommandFactoryV2 {
             )
 
         case .createPen(let name, let note):
-            return draft(.pen(.create(name: name, note: note)), stream: primaryStream)
+            return draft(.pen(.create(name: PenManagementPolicy.normalizedName(name), note: note)), stream: primaryStream)
         case .updatePen(let penID, let name, let note):
+            let name = PenManagementPolicy.normalizedName(name)
             return draft(
                 .pen(.update(penID: penID, name: name, note: note)),
                 stream: .init(type: "pen", id: penID),
@@ -527,7 +528,9 @@ enum ESheepCloudCommandFactoryV2 {
         case .setBreedingRam: ["isBreedingRam"]
         case .setSheepPurpose: ["purpose"]
         case .updateRules: ["pregnancyCheckDays", "gestationDays"]
-        case .updateOperationalAlertRules: ["rules"]
+        case .updateOperationalAlertRules(let draft):
+            draft.updatesReproductionOnly == true ? ["reproductionSettings"]
+                : draft.reproductionSettings == nil ? ["rules"] : ["rules", "reproductionSettings"]
         case .setReminderStatus: ["status"]
         case .recordHealth, .correctHealth, .receiveInventory, .adjustInventory,
              .adjustSemen, .restorePedigreeAudit, .recordReproductionBatch,

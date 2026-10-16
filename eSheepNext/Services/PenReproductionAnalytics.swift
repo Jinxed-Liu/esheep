@@ -7,7 +7,7 @@ enum PenEweConcern: Int, CaseIterable, Identifiable, Sendable {
         switch self {
         case .postpartum: "距上次产羔超过250天"
         case .zeroParity: "零胎且本舍累计超过200天"
-        case .firstSingle: "当前首胎且产单羔"
+        case .firstSingle: "当前头胎且产单羔"
         case .threeSingles: "最近连续三胎单羔"
         }
     }
@@ -156,7 +156,7 @@ enum PenReproductionAnalyticsEngine {
                    first.parity == nil || first.parity == 0 || first.parity == 1, first.total > 0 {
                     if first.total == 1 { concerns.insert(.firstSingle) }
                 } else {
-                    issues.append("首胎产羔记录缺失或与当前胎次冲突")
+                    issues.append("头胎产羔记录缺失或与当前胎次冲突")
                     unresolved = true
                 }
             }

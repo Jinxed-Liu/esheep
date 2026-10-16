@@ -2,6 +2,7 @@ import { decimalRound } from "./decimal.js";
 import { farmDateText } from "./eventExport.js";
 import { sha256 } from "./cloudV2Writes.js";
 import { decodeCheckpointData } from "./checkpointData.js";
+import { concurrentRead } from "./concurrentRead.js";
 
 export async function stableUUID(namespace, name) {
   const hex = await sha256(new TextEncoder().encode(`${namespace.toLowerCase()}\n${name}`));
@@ -25,6 +26,11 @@ export async function nativeEventSnapshots(models, { timeZone = "Asia/Shanghai",
   const tag = (id, fallback = "未知羊只") => sheep.get(id)?.earTag ?? fallback;
   const pen = (id, fallback = "未分圈") => pens.get(id)?.name ?? fallback;
   const day = (value) => value == null ? "" : farmDateText(value, timeZone, false);
+  const visibleSheep = rows("SheepRecord").filter((r) => !r.isHistoricalArchive);
+  // Birth IDs are independent immutable hashes. Bounded concurrency avoids a
+  // round trip through WebCrypto for every sheep in sequence on a fresh page.
+  const birthIDs = new Map(await concurrentRead(visibleSheep.filter((row) => row.birthAt != null),
+    async (row) => [row.id, await stableUUID(row.id, "farm-event-birth")]));
   const events = [];
   function add(record, entityType, scope, category, title, subject, detail, pairs, overrides = {}) {
     const related = [record.sheepID, record.eweID, record.sireID].filter(Boolean);
@@ -33,11 +39,11 @@ export async function nativeEventSnapshots(models, { timeZone = "Asia/Shanghai",
       recordedAt: new Date(record.recordedAt ?? record.createdAt).toISOString(), fields: fieldList(pairs),
       relatedSheepIDs: related, status: "synced", actor: "未记录", revision:record.revision, ...overrides });
   }
-  for (const row of rows("SheepRecord").filter((r) => !r.isHistoricalArchive)) {
+  for (const row of visibleSheep) {
     const sex = sexNames[row.sexRawValue] ?? "未知";
     add({ ...row, occurredAt: row.enteredAt }, "sheep", "sheep", "herd", "新建羊只", row.earTag,
       `${sex} · ${row.breed} · ${pen(row.initialPenID)}`, [["耳号", row.earTag], ["性别", sex], ["品种", row.breed], ["入场圈舍", pen(row.initialPenID)]], { relatedSheepIDs: [row.id] });
-    if (row.birthAt != null) add({ ...row, id: await stableUUID(row.id, "farm-event-birth"), occurredAt: row.birthAt, note: "" },
+    if (row.birthAt != null) add({ ...row, id: birthIDs.get(row.id), occurredAt: row.birthAt, note: "" },
       "sheep", "birth", "herd", "出生", row.earTag, `${sex} · ${row.breed}`,
       [["耳号", row.earTag], ["性别", sex], ["品种", row.breed], ["出生日期", day(row.birthAt)], ["初始圈舍", pen(row.initialPenID)],
         ["母本", tag(row.damID, "未关联")], ["父本来源", tag(row.sireID, row.semenDonorNameSnapshot ?? "未关联")], ["羊只档案ID", row.id]],

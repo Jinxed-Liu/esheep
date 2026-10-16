@@ -138,7 +138,7 @@ private struct PenReproductionOverviewRow: View {
                 .font(.subheadline)
             VStack(alignment: .leading, spacing: 4) {
                 Text("产后超时 \(summary.rows[.postpartum]?.count ?? 0) 只 · 零胎久留 \(summary.rows[.zeroParity]?.count ?? 0) 只")
-                Text("首胎单羔 \(summary.rows[.firstSingle]?.count ?? 0) 只 · 连续三胎单羔 \(summary.rows[.threeSingles]?.count ?? 0) 只")
+                Text("头胎单羔 \(summary.rows[.firstSingle]?.count ?? 0) 只 · 连续三胎单羔 \(summary.rows[.threeSingles]?.count ?? 0) 只")
             }
             .font(.footnote).monospacedDigit().foregroundStyle(.secondary)
             if !summary.pending.isEmpty {
@@ -303,7 +303,7 @@ private struct PenReproductionRulesView: View {
     var body: some View {
         DisclosureGroup("统计口径与评级规则") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("① 距最近产羔严格大于250天；② 明确零胎、无产羔记录且本舍历史累计严格大于200天；③ 当前仅1胎且首胎总产羔数为1；④ 最近连续三胎各产1只，无缺胎。单羔按出生总数判断，包含死胎。")
+                Text("① 距最近产羔严格大于250天；② 明确零胎、无产羔记录且本舍历史累计严格大于200天；③ 当前仅1胎且头胎总产羔数为1；④ 最近连续三胎各产1只，无缺胎。单羔按出生总数判断，包含死胎。")
                 Text("哺乳及断奶羔羊阶段不计时，从后续有效转群记录起算；转出再转回累计各段日期差，不以出生或建档日期代替。无产羔且无胎次记录按零胎；已有胎次以记录为准。")
                 Text("关注比例＝四项命中母羊去重数÷本舍分析繁殖母羊数。优＜10%；良10%至＜20%；中20%至＜30%；差≥30%。评级使用未四舍五入的比例。")
                 Text("上述为初版农场管理规则。缺失证据仍可能改变去重关注数时暂不评级；已确认命中的母羊仍保留名单。评价仅提供复核方向，不自动建议淘汰。")

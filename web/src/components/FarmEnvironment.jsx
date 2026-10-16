@@ -8,6 +8,7 @@ import { Sun } from "@phosphor-icons/react/Sun";
 import { Wind } from "@phosphor-icons/react/Wind";
 import { X } from "@phosphor-icons/react/X";
 import { calculateSolarEvents } from "../lib/farmSolar.js";
+import { useBrowserTheme } from "../lib/useBrowserTheme.js";
 
 export const phaseLabels = {
   dawn: "黎明", earlyMorning: "清晨", morning: "上午", noon: "正午",
@@ -112,9 +113,10 @@ function Precipitation({ kind, intensity, mode, paused }) {
   return <canvas ref={canvasRef} className="farm-environment-precipitation" aria-hidden="true" />;
 }
 
-export function FarmEnvironmentBackground({ environment, mode, paused, surface = "home" }) {
+export function FarmEnvironmentBackground({ environment, mode, paused, surface = "home", contentTheme = "light" }) {
   const scene = environment.scene;
   const condition = environment.weather?.condition ?? "unknown";
+  useBrowserTheme({ phase: scene.phase, condition, mode, surface, contentTheme });
   const windCloudOpacity = condition === "wind" && Number.isFinite(environment.weather?.cloudCover)
     ? Math.min(.72, Math.max(0, environment.weather.cloudCover * .72)) : null;
   const nightBlend = scene.phase === "night" ? 1 : ["twilight", "dawn"].includes(scene.phase)

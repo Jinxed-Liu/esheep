@@ -206,15 +206,19 @@ enum FarmCareCommandHandler {
         case .updateRules(let id, let checkDays, let gestationDays):
             return try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).contains { $0.id == id && $0.farmID == farmID && $0.pregnancyCheckDays == checkDays && $0.gestationDays == gestationDays }
         case .updateOperationalAlertRules(let draft):
+            let settingsJSON = try draft.reproductionSettings?.encodedJSON()
             return try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).contains {
-                $0.id == draft.id && $0.farmID == farmID &&
-                $0.pregnancyCheckDays == draft.pregnancyCheckDays &&
-                $0.gestationDays == draft.gestationDays &&
-                $0.weaningAgeDays == draft.weaningAgeDays &&
-                $0.warningLeadDays == draft.effectiveWarningLeadDays &&
-                $0.alertDigestEnabled == draft.digestEnabled &&
-                $0.alertDigestMinuteOfDay == draft.digestMinuteOfDay &&
-                $0.operationalAlertsConfiguredAt != nil
+                guard $0.id == draft.id && $0.farmID == farmID else { return false }
+                let settingsMatch = settingsJSON == nil || $0.reproductionSettingsJSON == settingsJSON
+                if draft.updatesReproductionOnly == true { return settingsMatch && settingsJSON != nil }
+                return settingsMatch &&
+                    $0.pregnancyCheckDays == draft.pregnancyCheckDays &&
+                    $0.gestationDays == draft.gestationDays &&
+                    $0.weaningAgeDays == draft.weaningAgeDays &&
+                    $0.warningLeadDays == draft.effectiveWarningLeadDays &&
+                    $0.alertDigestEnabled == draft.digestEnabled &&
+                    $0.alertDigestMinuteOfDay == draft.digestMinuteOfDay &&
+                    $0.operationalAlertsConfiguredAt != nil
             }
         case .deferOperationalAlert(let draft):
             return try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).contains {
@@ -354,12 +358,29 @@ enum FarmCareCommandHandler {
             guard (1...365).contains(checkDays), (100...220).contains(gestationDays) else { throw FarmCommandError.invalidNumber("提醒间隔") }
 
         case .updateOperationalAlertRules(let draft):
-            guard (1...365).contains(draft.pregnancyCheckDays),
-                  (100...220).contains(draft.gestationDays),
-                  (1...365).contains(draft.weaningAgeDays),
-                  (0...30).contains(draft.effectiveWarningLeadDays),
-                  (0...1_439).contains(draft.digestMinuteOfDay) else {
-                throw FarmCommandError.invalidNumber("待办与异常规则")
+            if let settings = draft.reproductionSettings {
+                _ = try settings.validated()
+                let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate { $0.farmID == farmID }))
+                let knownPenIDs = Set(pens.map(\.id))
+                guard Set(settings.selectedPenIDs).isSubset(of: knownPenIDs),
+                      Set(settings.penUsages.keys.compactMap(UUID.init(uuidString:))).isSubset(of: knownPenIDs) else {
+                    throw FarmCommandError.penNotFound
+                }
+                let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate { $0.farmID == farmID }))
+                guard Set(settings.youthBreedingConfirmedSheepIDs).isSubset(of: Set(sheep.filter { $0.sex == .ewe }.map(\.id))) else {
+                    throw FarmCommandError.sheepNotFound
+                }
+            }
+            if draft.updatesReproductionOnly == true {
+                guard draft.reproductionSettings != nil else { throw FarmCommandError.missingRequiredValue("繁殖管理设置") }
+            } else {
+                guard (1...365).contains(draft.pregnancyCheckDays),
+                      (100...220).contains(draft.gestationDays),
+                      (1...365).contains(draft.weaningAgeDays),
+                      (0...30).contains(draft.effectiveWarningLeadDays),
+                      (0...1_439).contains(draft.digestMinuteOfDay) else {
+                    throw FarmCommandError.invalidNumber("待办与异常规则")
+                }
             }
 
         case .deferOperationalAlert(let draft):
@@ -693,15 +714,19 @@ enum FarmCareCommandHandler {
 
         case .updateOperationalAlertRules(let draft):
             let rules = try context.fetch(FetchDescriptor<FarmCareRuleRecord>())
+            let settingsJSON = try draft.reproductionSettings?.encodedJSON()
             if let record = rules.first(where: { $0.farmID == farmID }) {
                 let base = record.revision
-                record.pregnancyCheckDays = draft.pregnancyCheckDays
-                record.gestationDays = draft.gestationDays
-                record.weaningAgeDays = draft.weaningAgeDays
-                record.warningLeadDays = draft.effectiveWarningLeadDays
-                record.operationalAlertsConfiguredAt = record.operationalAlertsConfiguredAt ?? modifiedAt
-                record.alertDigestEnabled = draft.digestEnabled
-                record.alertDigestMinuteOfDay = draft.digestMinuteOfDay
+                if draft.updatesReproductionOnly != true {
+                    record.pregnancyCheckDays = draft.pregnancyCheckDays
+                    record.gestationDays = draft.gestationDays
+                    record.weaningAgeDays = draft.weaningAgeDays
+                    record.warningLeadDays = draft.effectiveWarningLeadDays
+                    record.operationalAlertsConfiguredAt = record.operationalAlertsConfiguredAt ?? modifiedAt
+                    record.alertDigestEnabled = draft.digestEnabled
+                    record.alertDigestMinuteOfDay = draft.digestMinuteOfDay
+                }
+                if let settingsJSON { record.reproductionSettingsJSON = settingsJSON }
                 record.updatedAt = modifiedAt
                 record.revision += 1
                 return .init(entityType: .careRule, entityID: record.id, baseRevision: base, resultingRevision: record.revision)
@@ -711,11 +736,12 @@ enum FarmCareCommandHandler {
                 farmID: farmID,
                 pregnancyCheckDays: draft.pregnancyCheckDays,
                 gestationDays: draft.gestationDays,
-                weaningAgeDays: draft.weaningAgeDays,
+                weaningAgeDays: draft.updatesReproductionOnly == true ? nil : draft.weaningAgeDays,
                 warningLeadDays: draft.effectiveWarningLeadDays,
-                operationalAlertsConfiguredAt: modifiedAt,
+                operationalAlertsConfiguredAt: draft.updatesReproductionOnly == true ? nil : modifiedAt,
                 alertDigestEnabled: draft.digestEnabled,
-                alertDigestMinuteOfDay: draft.digestMinuteOfDay
+                alertDigestMinuteOfDay: draft.digestMinuteOfDay,
+                reproductionSettingsJSON: settingsJSON
             ))
             return .init(entityType: .careRule, entityID: draft.id, baseRevision: 0, resultingRevision: 1)
 

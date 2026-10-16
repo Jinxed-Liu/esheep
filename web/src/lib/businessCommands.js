@@ -5,6 +5,7 @@ import templateContract from "../../public/downloads/eSheepPlus_全功能录入�
 import { validateBusinessSpecifications,penAtTime,presentAtTime } from "./businessValidation.js";
 import { stableUUID, liveRows } from "./nativeEventSnapshots.js";
 import { farmDateText } from "./eventExport.js";
+import { penCommandSpec, resolvePen, validatePenName } from "./penManagement.js";
 
 export const listValues = (value) => String(value ?? "").split(/[;；,，、\n]/).map((v) => v.trim()).filter(Boolean);
 const earKey = value=>String(value??"").normalize("NFC").trim().toUpperCase();
@@ -47,6 +48,7 @@ export function parseBusinessDate(value, timeZone = "Asia/Shanghai", optional = 
 
 export async function buildBusinessCommands(record, workspace, { identity = record.importKey ?? record.id ?? crypto.randomUUID() } = {}) {
   if(record.labelAction)return [await labelSpec(record.labelAction,record.labelDraft,workspace)];
+  if(record.penAction)return [await penCommandSpec(record.penAction,record.penDraft,workspace)];
   const { sheet } = record;
   const v=Object.fromEntries(Object.entries(record.values??{}).map(([key,value])=>[key,String(value??"").trim()]));
   for(const key of [...templateContract.schemas,...additionalRecordSchemas].find(s=>s.name===sheet)?.required??[])if(key!=="导入键")requireValue(v[key],`${key}不能为空。`);
@@ -67,7 +69,7 @@ export async function buildBusinessCommands(record, workspace, { identity = reco
     return found[0];
   };
   const sheep = (tag, optional = false) => find("SheepRecord", "earTag", tag, "耳号", optional);
-  const pen = (name, optional = false) => find("PenRecord", "name", name, "圈舍", optional);
+  const pen = (name, optional = false) => resolvePen(name, rows("PenRecord"), optional);
   const ingredient = (name) => find("FeedIngredientRecord", "name", name, "原料");
   const recipe = (name, optional = false) => find("FeedRecipeRecord", "name", name, "配方", optional);
   const semen = (name, optional = false) => find("SemenRecord", "code", name, "冻精", optional);
@@ -94,7 +96,7 @@ export async function buildBusinessCommands(record, workspace, { identity = reco
   if(commands)return commands;
   switch (sheet) {
     case "圈舍":
-      requireValue(!rows("PenRecord").some((r) => normalized(r.name) === normalized(v["圈舍名称"])), "圈舍名称已存在。");
+      validatePenName(v["圈舍名称"], rows("PenRecord"));
       commands = [spec("pen.create", "create", { name: v["圈舍名称"], note }, "pen")]; break;
     case "新建羊只": {
       requireValue(!rows("SheepRecord").some((r) => normalized(r.earTag) === normalized(v["耳号"])), "耳号已存在，请在原档案中修改。");

@@ -82,9 +82,7 @@ enum AppSchemaV1: VersionedSchema {
         }
     }
 
-    static var models: [any PersistentModel.Type] {
-        AppSchema.preV3BusinessModelTypesWithoutDomainOperation + [DomainOperation.self, OutboxItem.self]
-    }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV3BusinessModelTypesWithoutDomainOperation + [DomainOperation.self, OutboxItem.self]) }
 }
 
 enum AppSchemaV2: VersionedSchema {
@@ -127,34 +125,32 @@ enum AppSchemaV2: VersionedSchema {
         }
     }
 
-    static var models: [any PersistentModel.Type] {
-        AppSchema.preV3BusinessModelTypes + [OutboxItem.self] + AppSchema.insightModelTypes
-    }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV3BusinessModelTypes + [OutboxItem.self] + AppSchema.insightModelTypes) }
 }
 
 enum AppSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV4ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV4ModelTypes) }
 }
 
 enum AppSchemaV4: VersionedSchema {
     static let versionIdentifier = Schema.Version(4, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV5ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV5ModelTypes) }
 }
 
 enum AppSchemaV5: VersionedSchema {
     static let versionIdentifier = Schema.Version(5, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV6ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV6ModelTypes) }
 }
 
 enum AppSchemaV6: VersionedSchema {
     static let versionIdentifier = Schema.Version(6, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV7ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV7ModelTypes) }
 }
 
 enum AppSchemaV7: VersionedSchema {
     static let versionIdentifier = Schema.Version(7, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV8ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV8ModelTypes) }
 
     // Freeze the feed domain exactly as it existed before the rebuild.  These
     // are schema-only types; runtime code continues to use the V8 models
@@ -309,7 +305,7 @@ enum AppSchemaV7: VersionedSchema {
 
 enum AppSchemaV8: VersionedSchema {
     static let versionIdentifier = Schema.Version(8, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV9ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV9ModelTypes) }
 
     /// Freeze the V8 care-rule shape before V9 adds operational-alert fields.
     /// Existing V8 stores must be recognized without treating the live V9
@@ -345,7 +341,7 @@ enum AppSchemaV8: VersionedSchema {
 /// devices. V9.1 adds only the configurable early-warning lead time.
 enum AppSchemaV9_0: VersionedSchema {
     static let versionIdentifier = Schema.Version(9, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV9_1ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV9_1ModelTypes) }
 
     @Model
     final class FarmCareRuleRecord {
@@ -388,7 +384,7 @@ enum AppSchemaV9_0: VersionedSchema {
 
 enum AppSchemaV9: VersionedSchema {
     static let versionIdentifier = Schema.Version(9, 1, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV10ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV10ModelTypes) }
 
     /// Freeze the V9 feed shape. V10 persists explicit excluded sheep UUIDs;
     /// keeping this schema-only type prevents an installed V9 store from
@@ -458,12 +454,12 @@ enum AppSchemaV9: VersionedSchema {
 
 enum AppSchemaV10: VersionedSchema {
     static let versionIdentifier = Schema.Version(10, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV11ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV11ModelTypes) }
 }
 
 enum AppSchemaV11: VersionedSchema {
     static let versionIdentifier = Schema.Version(11, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV12ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV12ModelTypes) }
 }
 
 enum AppSchemaV12: VersionedSchema {
@@ -524,28 +520,74 @@ enum AppSchemaV12: VersionedSchema {
         }
     }
 
-    static var models: [any PersistentModel.Type] {
-        AppSchema.v12ModelTypes
-    }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.v12ModelTypes) }
 }
 
 enum AppSchemaV13: VersionedSchema {
     static let versionIdentifier = Schema.Version(13, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.v13ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.v13ModelTypes) }
 }
 
 enum AppSchemaV14: VersionedSchema {
     static let versionIdentifier = Schema.Version(14, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.v14ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.v14ModelTypes) }
 }
 
 enum AppSchemaV15: VersionedSchema {
     static let versionIdentifier = Schema.Version(15, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.v15ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.v15ModelTypes) }
 }
 
 enum AppSchemaV16: VersionedSchema {
     static let versionIdentifier = Schema.Version(16, 0, 0)
+
+    // Freeze the exact V16 care-rule shape before V17 adds shared reproduction settings.
+    @Model
+    final class FarmCareRuleRecord {
+        var id: UUID
+        var farmID: UUID
+        var pregnancyCheckDays: Int
+        var gestationDays: Int
+        var weaningAgeDays: Int?
+        var warningLeadDays: Int = 0
+        var operationalAlertsConfiguredAt: Date?
+        var alertDigestEnabled: Bool = false
+        var alertDigestMinuteOfDay: Int = 480
+        var createdAt: Date
+        var updatedAt: Date
+        var revision: Int
+
+        init(
+            id: UUID = UUID(),
+            farmID: UUID,
+            pregnancyCheckDays: Int = 45,
+            gestationDays: Int = 150,
+            weaningAgeDays: Int? = nil,
+            warningLeadDays: Int = 0,
+            operationalAlertsConfiguredAt: Date? = nil,
+            alertDigestEnabled: Bool = false,
+            alertDigestMinuteOfDay: Int = 480
+        ) {
+            self.id = id
+            self.farmID = farmID
+            self.pregnancyCheckDays = pregnancyCheckDays
+            self.gestationDays = gestationDays
+            self.weaningAgeDays = weaningAgeDays
+            self.warningLeadDays = warningLeadDays
+            self.operationalAlertsConfiguredAt = operationalAlertsConfiguredAt
+            self.alertDigestEnabled = alertDigestEnabled
+            self.alertDigestMinuteOfDay = alertDigestMinuteOfDay
+            self.createdAt = .now
+            self.updatedAt = .now
+            self.revision = 1
+        }
+    }
+
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.modelTypes) }
+}
+
+enum AppSchemaV17: VersionedSchema {
+    static let versionIdentifier = Schema.Version(17, 0, 0)
     static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
 }
 
@@ -569,6 +611,7 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             AppSchemaV14.self,
             AppSchemaV15.self,
             AppSchemaV16.self,
+            AppSchemaV17.self,
         ]
     }
 
@@ -710,12 +753,17 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: AppSchemaV13.self, toVersion: AppSchemaV14.self),
             .lightweight(fromVersion: AppSchemaV14.self, toVersion: AppSchemaV15.self),
             .lightweight(fromVersion: AppSchemaV15.self, toVersion: AppSchemaV16.self),
+            .lightweight(fromVersion: AppSchemaV16.self, toVersion: AppSchemaV17.self),
         ]
     }
 }
 
 enum AppSchema {
-    static let currentVersion = "16.0.0"
+    fileprivate static func freezeCareRules(_ models: [any PersistentModel.Type]) -> [any PersistentModel.Type] {
+        models.map { ObjectIdentifier($0) == ObjectIdentifier(FarmCareRuleRecord.self) ? AppSchemaV16.FarmCareRuleRecord.self : $0 }
+    }
+
+    static let currentVersion = "17.0.0"
 
     static func defaultStoreURL(name: String = "eSheepNext") -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -1090,7 +1138,7 @@ enum AppSchema {
     }
 
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV16.self)
+        Schema(versionedSchema: AppSchemaV17.self)
     }
 
     static func makeConfiguration(

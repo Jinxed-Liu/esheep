@@ -240,3 +240,212 @@ test("event validation rejects missing sequence numbers and foreign authority", 
   await assert.rejects(validateV2Event({ event_sequence: 12 }, { id: farmID, generation: 3 }, 11));
   await assert.rejects(validateV2Event({ farm_id: id(99), event_sequence: 11 }, { id: farmID, generation: 3 }, 11));
 });
+
+async function incrementalFixture() {
+  await clearCloudV2Cache();
+  const { records, manifest: base } = source();
+  const raw = Buffer.from(JSON.stringify(records)), bytes = gzipSync(raw), checkpointID = id(90);
+  const descriptor = { index: 0, objectKey: `${farmID}/${checkpointID}/00000.json.gz`,
+    compressedBytes: bytes.length, uncompressedBytes: raw.length, compressedSHA256: await sha256(bytes),
+    contentSHA256: await sha256(raw), recordCount: records.length, modelNames: Object.keys(base.modelCounts) };
+  const manifest = { ...base, formatVersion: 1, minimumClientCapability: 1, checkpointID,
+    boundaryEventDigest: "a".repeat(64), receiptChainDigest: "b".repeat(64), businessDigest: "c".repeat(64), chunks: [descriptor] };
+  const state = { head: 10, generation: 3, tickets: 0, checks: 0, reads: [], events: [], denyFinal: false, beforeFinal: null };
+  const storageOrigin = "https://storage.example";
+  const client = {
+    rpc: async (name, args) => {
+      if (name === "esheep_cloud_fetch_status_v2") {
+        state.checks++;
+        if (state.checks % 2 === 0) {
+          await state.beforeFinal?.();
+          if (state.denyFinal) return { error: new Error("membership revoked") };
+        }
+        return { data: { farm_id: farmID, farm_generation: state.generation, v2_ready: true, cloud_head: state.head } };
+      }
+      state.reads.push(args.p_after_event_sequence);
+      return { data: { cloud_head: state.head, events: state.events.filter(e => e.event_sequence > args.p_after_event_sequence) } };
+    },
+    functions: { invoke: async () => { state.tickets++; return { data: { manifest, downloads: [{ index: 0,
+      url: `${storageOrigin}/storage/v1/object/sign/esheep-cloud-checkpoints/${descriptor.objectKey}` }] } }; } },
+  };
+  const options = { accountID: id(91), storageOrigin, fetchImpl: async () => new Response(bytes),
+    persistentCache: { read: async () => null, write: async () => {} } };
+  const read = (overrides = {}) => loadCloudV2Projection(client, { id: farmID, generation: 3 }, { ...options, ...overrides });
+  async function addEvent(sequence, active) {
+    const e = { protocol_version: 2, schema_version: 1, farm_id: farmID, farm_generation: 3,
+      event_sequence: sequence, event_id: id(sequence + 200), command_id: id(sequence + 100),
+      event_kind: "fields_patched", stream_type: "pen", stream_id: penB, affected_fields: ["isActive"],
+      actor_account_id: id(7), source_device_id: id(8), source_device_sequence: sequence,
+      occurred_at_millis: at + sequence * 1000, received_at_millis: at + sequence * 1000,
+      before_digest: "a".repeat(64), after_digest: "b".repeat(64), source_command_digest: "c".repeat(64),
+      event_body_canonical: JSON.stringify({ changes: [{ field: "isActive", field_version: sequence - 10,
+        value_digest: "d".repeat(64), value: { type: "boolean", value: active } }] }) };
+    e.event_body_digest = await sha256(e.event_body_canonical);
+    e.event_digest = await sha256(["esheep-cloud-event-v2", farmID, 3, sequence, e.event_id, e.command_id,
+      e.stream_type, e.stream_id, "isActive", e.event_body_digest, e.before_digest, e.after_digest,
+      e.actor_account_id, e.source_device_id, sequence, e.occurred_at_millis, e.received_at_millis,
+      e.source_command_digest].join("\n"));
+    state.events.push(e); state.head = sequence;
+  }
+  return { state, read, addEvent, client, options, manifest, bytes };
+}
+
+test("reopening verifies the cloud manifest and cached bytes without requesting signed download links", async () => {
+  const fixture = await incrementalFixture();
+  const { state, read, addEvent, client, options, manifest, bytes } = fixture;
+  const originalRPC = client.rpc;
+  let manifests = 0;
+  client.rpc = async (name, args) => {
+    if (name !== "esheep_cloud_checkpoint_manifest_v1") return originalRPC(name, args);
+    manifests++;
+    assert.deepEqual(args, { p_farm_id: farmID, p_farm_generation: 3, p_checkpoint_id: null });
+    return { data: { manifest } };
+  };
+  options.persistentCache = {
+    hasScope: async prefix => { assert.equal(prefix, `https://storage.example:${id(91)}:${farmID}:3:`); return true; },
+    read: async () => bytes,
+  };
+  options.fetchImpl = async () => { throw new Error("cached bytes must not be downloaded again"); };
+  await addEvent(11, false);
+  const result = await read();
+  assert.equal(result.models.PenRecord.find(p => p.id === penB).isActive, false);
+  assert.deepEqual(state.reads, [10]);
+  assert.equal(state.checks, 2);
+  assert.equal(manifests, 1);
+  assert.equal(state.tickets, 0);
+});
+
+test("a corrupt saved chunk requests the exact checkpoint ticket and validates replacement bytes", async () => {
+  const { read, client, options, manifest, bytes } = await incrementalFixture();
+  const originalRPC = client.rpc, originalInvoke = client.functions.invoke;
+  client.rpc = (name, args) => name === "esheep_cloud_checkpoint_manifest_v1"
+    ? Promise.resolve({ data: { manifest } }) : originalRPC(name, args);
+  let tickets = 0, downloads = 0, repaired = null;
+  client.functions.invoke = async (name, args) => {
+    tickets++; assert.equal(args.body.checkpoint_id, manifest.checkpointID);
+    return originalInvoke(name, args);
+  };
+  options.persistentCache = { hasScope: async () => true, read: async () => Uint8Array.of(1, 2, 3),
+    write: async (_scope, _descriptor, value) => { repaired = value; } };
+  options.fetchImpl = async () => { downloads++; return new Response(bytes); };
+  assert.equal((await read()).rowsByType.get("sheep").length, 1);
+  assert.equal(tickets, 1); assert.equal(downloads, 1);
+  assert.deepEqual(Buffer.from(repaired), bytes);
+});
+
+test("saved files cannot bypass manifest authorization, integrity or final membership checks", async () => {
+  for (const failure of ["permission", "manifest", "final"]) {
+    const { read, client, options, manifest, bytes, state } = await incrementalFixture();
+    const originalRPC = client.rpc;
+    client.rpc = async (name, args) => {
+      if (name !== "esheep_cloud_checkpoint_manifest_v1") return originalRPC(name, args);
+      if (failure === "permission") return { error: new Error("checkpoint_read_denied") };
+      return { data: { manifest: failure === "manifest" ? { ...manifest, farmID: id(999) } : manifest } };
+    };
+    options.persistentCache = { hasScope: async () => true, read: async () => bytes };
+    state.denyFinal = failure === "final";
+    await assert.rejects(read(), error => /denied|revoked/.test(error.message) || error.code === "CLOUD_V2_INTEGRITY");
+    assert.equal(state.tickets, 0);
+  }
+});
+
+test("missing cached files cannot mix a different ticket manifest into the current receive", async () => {
+  const { read, client, options, manifest } = await incrementalFixture();
+  const originalRPC = client.rpc, originalInvoke = client.functions.invoke;
+  client.rpc = (name, args) => name === "esheep_cloud_checkpoint_manifest_v1"
+    ? Promise.resolve({ data: { manifest } }) : originalRPC(name, args);
+  options.persistentCache = { hasScope: async () => true, read: async () => null };
+  client.functions.invoke = async (...args) => {
+    const result = await originalInvoke(...args);
+    return { data: { ...result.data, manifest: { ...manifest, checkpointID: id(999) } } };
+  };
+  options.fetchImpl = async () => { throw new Error("must reject before downloading"); };
+  await assert.rejects(read(), error => error.code === "CLOUD_V2_INTEGRITY");
+});
+
+test("first receive overlaps authorized status and ticket requests without a metadata detour", { timeout: 1000 }, async () => {
+  const { read, client, state } = await incrementalFixture();
+  const originalRPC = client.rpc, originalInvoke = client.functions.invoke;
+  let releaseStatus, first = true;
+  client.rpc = (name, args) => {
+    assert.notEqual(name, "esheep_cloud_checkpoint_manifest_v1");
+    if (first && name === "esheep_cloud_fetch_status_v2") {
+      first = false;
+      return new Promise(resolve => { releaseStatus = () => resolve(originalRPC(name, args)); });
+    }
+    return originalRPC(name, args);
+  };
+  client.functions.invoke = async (...args) => { releaseStatus(); return originalInvoke(...args); };
+  assert.equal((await read()).rowsByType.get("sheep").length, 1);
+  assert.equal(state.tickets, 1); assert.equal(state.checks, 2);
+});
+
+test("warm refresh reads only new events, retains authority checks and does not share mutable UI models", async () => {
+  const { state, read, addEvent } = await incrementalFixture();
+  const first = await read();
+  first.models.PenRecord.find(p => p.id === penB).name = "UI-only mutation";
+  await addEvent(11, false);
+  const updated = await read();
+  assert.equal(updated.revision, 11);
+  assert.equal(updated.models.PenRecord.find(p => p.id === penB).isActive, false);
+  assert.equal(updated.models.PenRecord.find(p => p.id === penB).name, "二舍");
+  await addEvent(12, true);
+  assert.equal((await read()).models.PenRecord.find(p => p.id === penB).isActive, true);
+  await read();
+  assert.equal(state.tickets, 1, "warm reads must not request the full checkpoint again");
+  assert.deepEqual(state.reads, [10, 11], "already verified event history must not be replayed");
+  assert.equal(state.checks, 8, "every read must recheck authority before and after replay");
+});
+
+test("event-tail fetch overlaps checkpoint receive but is applied only after verification", {timeout:1000}, async () => {
+  const {read,client,options,bytes,addEvent,state} = await incrementalFixture();
+  await addEvent(11,false);
+  let unlock;
+  const tailStarted = new Promise(resolve=>{unlock=resolve;});
+  options.fetchImpl = async()=>{await tailStarted;return new Response(bytes);};
+  const originalRPC = client.rpc;
+  client.rpc = (name,args)=>{
+    if(name==='esheep_cloud_pull_events_v2') unlock();
+    return originalRPC(name,args);
+  };
+  const result = await read();
+  assert.equal(result.models.PenRecord.find(p=>p.id===penB).isActive,false);
+  assert.deepEqual(state.reads,[10]);
+  assert.equal(state.checks,2);
+});
+
+test("failed checkpoint verification cannot publish prefetched events or leak rejected promises", async () => {
+  const {read,client,options,addEvent} = await incrementalFixture();
+  await addEvent(11,false);
+  const originalRPC = client.rpc;
+  client.rpc = (name,args)=>name==='esheep_cloud_pull_events_v2'
+    ? Promise.resolve({error:new Error('tail denied')}) : originalRPC(name,args);
+  options.fetchImpl = async()=>new Response(Uint8Array.of(1,2,3));
+  await assert.rejects(read(),error=>error.code==='CLOUD_V2_INTEGRITY');
+});
+
+test("incremental reuse rejects corrupted events and a permission change without publishing partial state", async () => {
+  const { state, read, addEvent } = await incrementalFixture();
+  await read(); await addEvent(11, false);
+  state.events[0].event_body_canonical += " ";
+  await assert.rejects(read(), error => error.code === "CLOUD_V2_INTEGRITY");
+  state.events[0].event_body_canonical = state.events[0].event_body_canonical.trimEnd();
+  state.checks = 0; state.denyFinal = true;
+  await assert.rejects(read(), /membership revoked/);
+  state.denyFinal = false; state.checks = 0;
+  const result = await read();
+  assert.equal(result.models.PenRecord.find(p => p.id === penB).isActive, false);
+  assert.equal(state.tickets, 3, "failed validation cannot commit a reusable projection");
+});
+
+test("incremental projection reuse is scoped to account and cannot be repopulated after sign-out", async () => {
+  const { state, read } = await incrementalFixture();
+  await read(); await read({ accountID: id(92) });
+  assert.equal(state.tickets, 2);
+  state.beforeFinal = async () => { state.beforeFinal = null; await clearCloudV2Cache(); };
+  await read();
+  await read();
+  assert.equal(state.tickets, 3, "an in-flight read must not undo clearCloudV2Cache");
+  state.generation = 4;
+  await assert.rejects(read(), /版本已变化/);
+});

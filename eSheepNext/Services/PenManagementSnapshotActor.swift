@@ -7,6 +7,11 @@ struct PenManagementRowSnapshot: Identifiable, Sendable, Hashable {
     let note: String
     let isActive: Bool
     let currentSheepCount: Int
+
+    var statusText: String {
+        let occupancy = currentSheepCount == 0 ? "空舍" : "当前羊只 \(currentSheepCount) 只"
+        return "\(isActive ? "启用" : "已停用") · \(occupancy)"
+    }
 }
 
 struct PenSheepRowSnapshot: Identifiable, Sendable, Hashable {

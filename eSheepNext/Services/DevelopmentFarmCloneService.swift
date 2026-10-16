@@ -894,7 +894,8 @@ enum DevelopmentFarmCloneService {
                     warningLeadDays: value.warningLeadDays,
                     operationalAlertsConfiguredAt: value.operationalAlertsConfiguredAt,
                     alertDigestEnabled: value.alertDigestEnabled,
-                    alertDigestMinuteOfDay: value.alertDigestMinuteOfDay
+                    alertDigestMinuteOfDay: value.alertDigestMinuteOfDay,
+                    reproductionSettingsJSON: try ReproductionManagementSettings.decode(value.reproductionSettingsJSON)?.remappingIDs(map.id).encodedJSON()
                 )
                 record.createdAt = value.createdAt
                 record.updatedAt = value.updatedAt

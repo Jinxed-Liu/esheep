@@ -8,8 +8,9 @@ import { Scales } from "@phosphor-icons/react/Scales";
 import { Tag } from "@phosphor-icons/react/Tag";
 import { X } from "@phosphor-icons/react/X";
 import { formatDateTime, PageTop, ProjectionNotice, Segmented } from "./FeaturePageShared.jsx";
+import PenManagementPage from "./PenManagementPage.jsx";
 
-export default function FlockPage({ workspace, initialView = "sheep", selectedID, onCreateRecord, onLabelSubmit }) {
+export default function FlockPage({ workspace, initialView = "sheep", selectedID, initialPenScope, resumePenDraft, onCreateRecord, onLabelSubmit, onPenSubmit, onNavigate }) {
   const timeZone = workspace.farm?.timeZoneIdentifier || "Asia/Shanghai";
   const baseline = workspace.projectionCoverage?.baseline;
   const [view, setView] = useState(initialView);
@@ -53,6 +54,8 @@ export default function FlockPage({ workspace, initialView = "sheep", selectedID
     setSelection(null);
     setFilter("");
   }
+
+  if (view === "pens") return <PenManagementPage workspace={workspace} selectedID={selectedID} initialScope={initialPenScope} resumeDraft={resumePenDraft} onSubmit={onPenSubmit} onShowSheep={() => changeView("sheep")} onNavigate={onNavigate} onCreateRecord={onCreateRecord} />;
 
   return (
     <main className="page feature-page">

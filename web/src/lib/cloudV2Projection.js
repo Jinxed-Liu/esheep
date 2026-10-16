@@ -29,7 +29,7 @@ export const webCheckpointModels = new Set([
   "BreedingProgramRecord", "BreedingProgramStepRecord", "PedigreeChangeRecord", "SheepAvatarRecord",
   "FeedStockCountRecord", "TMRBatchIngredientRecord", "TMRBatchLoadLineRecord", "TMRBatchMovementRecord",
   "TMRDeviationAcknowledgementRecord", "TMRFeedingAllocationRecord", "TMRFeedingRunRecord",
-  "TMRMealCompletionRecord", "TMRMonitoringRuleRecord", "ESheepCloudStreamState",
+  "TMRMealCompletionRecord", "TMRMonitoringRuleRecord", "ESheepCloudStreamState", "DailyPenCountRecord",
 ]);
 
 function invalid(detail = "") {
@@ -280,9 +280,9 @@ export function applyV2Event(projection, event, body) {
       const model = entityModels[entityType];
       if (!model) throw unsupported(`record.revoke:${entityType}`);
       target = get(projection, model, entityID);
-      // Sheep/pen deletion has cascades; it must not masquerade as a scalar
-      // tombstone in this read adapter.
-      if (["sheep", "pen", "farm"].includes(entityType)) throw unsupported(`record.revoke:${entityType}`);
+      // Safe pen deletion is a tombstone guarded by the audited cloud pipeline;
+      // it retains all history. Sheep/farm cascades still need their own adapter.
+      if (["sheep", "farm"].includes(entityType)) throw unsupported(`record.revoke:${entityType}`);
       target.deletedAt = event.received_at_millis;
       // Native tombstones use the original operation ID for restoration;
       // checkpoint tombstones keep their own IDs and are also indexed below.
@@ -295,7 +295,7 @@ export function applyV2Event(projection, event, body) {
       const tombstone = get(projection, "TombstoneRecord", args.tombstoneID, true);
       entityType = tombstone.entityType; entityID = tombstone.entityID;
       const model = entityModels[entityType];
-      if (!model || ["sheep", "pen", "farm"].includes(entityType)) throw unsupported(`record.restore:${entityType}`);
+      if (!model || ["sheep", "farm"].includes(entityType)) throw unsupported(`record.restore:${entityType}`);
       target = get(projection, model, entityID, true);
       target.deletedAt = null;
       tombstone.restoredAt = event.received_at_millis;
@@ -304,7 +304,7 @@ export function applyV2Event(projection, event, body) {
     if (entityType === "weaning") projection.changedSheep.add(target.sheepID);
     addOperation(projection, event, entityType, entityID, {
       kind: kind === "record.revoke" ? "tombstone" : "restore",
-      identifiers: { entityID, sheepID: target.sheepID }, strings: { entityType },
+      identifiers: { entityID, sheepID: target.sheepID }, strings: { entityType, ...(entityType === "pen" ? { name: target.name } : {}) },
     });
     return;
   }

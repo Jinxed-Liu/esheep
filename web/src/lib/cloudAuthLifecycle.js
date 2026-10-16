@@ -47,7 +47,7 @@ export function createCloudAuthLifecycle({
           onSignedOut();
           return null;
         }
-        const workspace = await loadWorkspace(options.farmID);
+        const workspace = await loadWorkspace(options.farmID, { verifiedUser: user });
         assertCurrent(token);
         if (workspace?.profile?.userID !== user.id) throw contextChangedError();
         onWorkspace(workspace, user);

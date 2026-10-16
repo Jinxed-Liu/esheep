@@ -609,10 +609,12 @@ enum ESheepCloudCheckpointRegistry {
                 .init("operationalAlertsConfiguredAt", \FarmCareRuleRecord.operationalAlertsConfiguredAt),
                 .init("alertDigestEnabled", \FarmCareRuleRecord.alertDigestEnabled),
                 .init("alertDigestMinuteOfDay", \FarmCareRuleRecord.alertDigestMinuteOfDay),
+                .init("reproductionSettingsJSON", \FarmCareRuleRecord.reproductionSettingsJSON),
                 .init("createdAt", \FarmCareRuleRecord.createdAt),
                 .init("updatedAt", \FarmCareRuleRecord.updatedAt),
                 .init("revision", \FarmCareRuleRecord.revision),
-            ], farmID: \FarmCareRuleRecord.farmID, recordID: \FarmCareRuleRecord.id),
+            ], farmID: \FarmCareRuleRecord.farmID, recordID: \FarmCareRuleRecord.id,
+                additiveNullableFields: ["reproductionSettingsJSON"]),
         ])
         result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmCheckpointRecord.self, disposition: .localOnly, fields: [

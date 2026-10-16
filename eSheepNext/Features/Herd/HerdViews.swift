@@ -1711,23 +1711,20 @@ struct PenManagementView: View {
     let account: AccountProfile
     let farm: FarmRecord
     @State private var isAddingPen = false
-    @State private var displayScope = PenDisplayScope.occupied
+    @State private var displayScope: PenDisplayScope
     @State private var rows: [PenManagementRowSnapshot] = []
     @State private var loadRevision = 0
     @State private var isLoading = true
     @State private var hasLoaded = false
     @State private var loadError: String?
 
-    private var displayedPens: [PenManagementRowSnapshot] {
-        switch displayScope {
-        case .occupied:
-            rows.filter { $0.currentSheepCount > 0 }
-        case .clearedArchive:
-            rows.filter { $0.currentSheepCount == 0 }
-        case .all:
-            rows
-        }
+    init(account: AccountProfile, farm: FarmRecord, initialScope: PenDisplayScope = .all) {
+        self.account = account
+        self.farm = farm
+        _displayScope = State(initialValue: initialScope)
     }
+
+    private var displayedPens: [PenManagementRowSnapshot] { rows.filter(displayScope.includes) }
 
     var body: some View {
         List {
@@ -1747,9 +1744,7 @@ struct PenManagementView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(pen.name).font(.headline)
-                            Text(pen.currentSheepCount == 0
-                                ? LocalizedStringKey("已清圈 · 已归档")
-                                : LocalizedStringKey("当前羊只 \(pen.currentSheepCount) 只"))
+                            Text(pen.statusText)
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
@@ -1767,14 +1762,14 @@ struct PenManagementView: View {
                     )
                 } else {
                     ContentUnavailableView(
-                        displayScope.emptyTitle,
+                        "暂无符合条件的羊舍",
                         systemImage: "building.2",
-                        description: Text(LocalizedStringKey(displayScope.emptyDescription))
+                        description: Text("可切换显示范围，或点击“新建羊舍”。空舍可继续使用，停用不会删除历史。")
                     )
                 }
             }
         }
-        .navigationTitle("圈舍")
+        .navigationTitle("羊舍管理")
         .task(id: PenManagementLoadRequest(
             farmID: farm.id,
             revision: loadRevision,
@@ -1800,10 +1795,21 @@ struct PenManagementView: View {
                 } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
                 .accessibilityLabel("圈舍显示范围")
             }
-            ToolbarItem(placement: .topBarTrailing) { Button { isAddingPen = true } label: { Image(systemName: "plus") } }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("新建羊舍", systemImage: "plus") { isAddingPen = true }
+                    .labelStyle(.titleAndIcon)
+                    .accessibilityIdentifier("add-pen")
+                    .disabled(!CapabilitySet(role: farm.role).allows(.recordProduction))
+            }
         }
         .sheet(isPresented: $isAddingPen, onDismiss: { loadRevision &+= 1 }) {
-            NavigationStack { AddPenView(account: account, farm: farm) }
+            NavigationStack {
+                AddPenView(account: account, farm: farm, onCreated: { displayScope = .all })
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: FarmOperationalAlertRuntimeNotification.refreshRequested)) { notification in
+            guard FarmOperationalAlertRuntimeNotification.farmID(from: notification) == farm.id else { return }
+            loadRevision &+= 1
         }
         .farmExcelImport(account: account, farm: farm, sheets: ["圈舍"])
     }
@@ -1838,39 +1844,8 @@ private struct PenManagementLoadRequest: Hashable, Sendable {
     let syncCompletedAt: Date?
 }
 
-private enum PenDisplayScope: String, CaseIterable, Identifiable {
-    case occupied
-    case clearedArchive
-    case all
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .occupied: "有羊圈舍"
-        case .clearedArchive: "已清圈归档"
-        case .all: "全部圈舍"
-        }
-    }
-
-    var emptyTitle: String {
-        switch self {
-        case .occupied: "当前没有圈舍存有在场羊"
-        case .clearedArchive: "没有已清圈的归档圈舍"
-        case .all: "还没有圈舍"
-        }
-    }
-
-    var emptyDescription: String {
-        switch self {
-        case .occupied: "空圈舍会自动进入已清圈归档。"
-        case .clearedArchive: "最后一只在场羊离开后，圈舍会自动归档到这里。"
-        case .all: "圈舍是羊只、投喂和历史分析的核心单位。"
-        }
-    }
-}
-
 struct PenDetailEntryView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(CloudCollaborationStore.self) private var collaboration
 
@@ -1922,7 +1897,12 @@ struct PenDetailEntryView: View {
             await reloadDetail()
         }
         .sheet(item: $editingPen, onDismiss: {
-            loadRevision &+= 1
+            let id = penID
+            let farmID = farm.id
+            if let pen = try? modelContext.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+                $0.id == id && $0.farmID == farmID
+            })).first, pen.deletedAt != nil { dismiss() }
+            else { loadRevision &+= 1 }
         }) { editingPen in
             NavigationStack {
                 EditPenView(account: account, farm: farm, pen: editingPen)
@@ -2019,6 +1999,9 @@ private struct PenDetailView: View {
 
     var body: some View {
         List {
+            Section("羊舍状态") {
+                Text(snapshot.pen.statusText)
+            }
             if !snapshot.pen.note.isEmpty {
                 Section("说明") { Text(snapshot.pen.note) }
             }
@@ -2142,6 +2125,7 @@ struct AddPenView: View {
     @Environment(\.modelContext) private var modelContext
     let account: AccountProfile
     let farm: FarmRecord
+    var onCreated: () -> Void = {}
     private let commandService = FarmCommandService()
     @State private var name = ""
     @State private var note = ""
@@ -2149,13 +2133,20 @@ struct AddPenView: View {
 
     var body: some View {
         Form {
-            TextField("圈舍名称", text: $name)
+            TextField("羊舍名称", text: $name)
             TextField("说明", text: $note, axis: .vertical).lineLimit(2...4)
+            Text("新建羊舍默认为启用空舍。同一牧场的羊舍名称不能重复，已停用羊舍也保留名称。")
+                .font(.footnote).foregroundStyle(.secondary)
+            Text("保存后由本机接收。云端牧场的确认结果可在首页保存状态中查看，无需重复新建。")
+                .font(.footnote).foregroundStyle(.secondary)
         }
-        .navigationTitle("新建圈舍")
+        .navigationTitle("新建羊舍")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存") { save() }
+                    .disabled(PenManagementPolicy.normalizedName(name).isEmpty)
+            }
         }
         .alert("无法保存", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) { Button("知道了", role: .cancel) {} } message: { Text(LocalizedStringKey(errorMessage ?? "")) }
         .farmExcelImport(account: account, farm: farm, sheets: ["圈舍"])
@@ -2164,6 +2155,7 @@ struct AddPenView: View {
     private func save() {
         do {
             try commandService.execute(.createPen(name: name, note: note), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            onCreated()
             dismiss()
         } catch { errorMessage = error.localizedDescription }
     }

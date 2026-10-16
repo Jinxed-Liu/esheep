@@ -46,7 +46,9 @@ struct DevelopmentDesignAcceptanceView: View {
     @ViewBuilder
     private func acceptanceContent(_ fixture: DesignAcceptanceFixture) -> some View {
         let arguments = ProcessInfo.processInfo.arguments
-        if arguments.contains("--design-insight-voice-waveform") {
+        if arguments.contains("--design-reproduction") {
+            DevelopmentReproductionAcceptanceView(account: fixture.account, farm: fixture.farm)
+        } else if arguments.contains("--design-insight-voice-waveform") {
             DesignAcceptanceVoiceWaveformView()
         } else if arguments.contains("--design-account-crop"), let image = UIImage(named: "MiMoAssistantAvatar") {
             AccountAvatarCropEditor(account: fixture.account, draft: AccountAvatarDraft(image: image))
@@ -195,12 +197,14 @@ private final class DesignAcceptanceFixture {
     init() throws {
         let args = ProcessInfo.processInfo.arguments
         let insightReady = args.contains("--design-insight-ready")
+        let reproductionReady = args.contains("--design-reproduction")
         let offlineSend = insightReady && args.contains("--design-insight-offline-send")
         let workspaceDirectory = URL.applicationSupportDirectory.appending(path: "DesignAcceptance", directoryHint: .isDirectory)
         var directory = insightReady
             ? workspaceDirectory.appending(path: offlineSend ? "InsightOfflineSend" : "InsightReady", directoryHint: .isDirectory)
             : workspaceDirectory
-        if insightReady, let index = args.firstIndex(of: "--design-fixture-id") {
+        if reproductionReady { directory = workspaceDirectory.appending(path: "Reproduction", directoryHint: .isDirectory) }
+        if insightReady || reproductionReady, let index = args.firstIndex(of: "--design-fixture-id") {
             guard args.indices.contains(index + 1), let fixtureID = UUID(uuidString: args[index + 1]) else {
                 throw MiMoClientError.invalidRequest
             }
@@ -209,7 +213,8 @@ private final class DesignAcceptanceFixture {
             directory = directory.appending(path: fixtureID.uuidString, directoryHint: .isDirectory)
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let storeName = offlineSend ? "DesignInsightOfflineSendAcceptance" : (insightReady ? "DesignInsightReadyAcceptance" : "DesignAcceptance")
+        let storeName = reproductionReady ? "DesignReproductionAcceptance"
+            : offlineSend ? "DesignInsightOfflineSendAcceptance" : (insightReady ? "DesignInsightReadyAcceptance" : "DesignAcceptance")
         container = try AppSchema.makeContainer(name: storeName,
             url: directory.appending(path: "acceptance.store"))
         let context = container.mainContext
@@ -227,8 +232,11 @@ private final class DesignAcceptanceFixture {
             context.insert(pen)
             try context.save()
             for index in 1...12 {
-                try FarmCommandService().execute(.addSheep(earTag: String(format: "QA-%03d", index), breed: "湖羊", sex: .ewe, penID: pen.id, occurredAt: Date.now.addingTimeInterval(-200 * 86400), birthAt: Date.now.addingTimeInterval(-400 * 86400), currentParity: 0, note: "隔离验收数据"), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: .administrator), context: context)
+                try FarmCommandService().execute(.addSheep(earTag: String(format: "QA-%03d", index), breed: "湖羊", sex: .ewe, penID: pen.id, occurredAt: Date.now.addingTimeInterval(-(reproductionReady ? 350 : 200) * 86400), birthAt: Date.now.addingTimeInterval(-400 * 86400), currentParity: 0, note: "隔离验收数据"), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: .administrator), context: context)
             }
+        }
+        if reproductionReady {
+            try DevelopmentReproductionAcceptance.seed(account: account, farm: farm, context: context)
         }
         if let index = args.firstIndex(of: "--design-role"), args.indices.contains(index + 1), let role = FarmRole(rawValue: args[index + 1]) {
             farm.roleRawValue = role.rawValue

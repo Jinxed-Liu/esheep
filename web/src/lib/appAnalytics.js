@@ -683,19 +683,28 @@ function completeLambing(record) {
     Array.isArray(record.offspring) && record.offspring.length === finiteInteger(record.lambCount);
 }
 
-function earliestWeaningGainBaseline(record, snapshot, sheepByID, timeZone) {
+function indexWeaningWeights(weights) {
+  const bySheep = new Map();
+  for (const sample of weights) {
+    const at = validDate(sample.at ?? sample.occurredAt);
+    if (!at || !(finiteNumber(sample.kilograms) > 0)) continue;
+    const key = normalizeID(sample.sheepID);
+    const samples = bySheep.get(key) ?? [];
+    samples.push({ sample, at });
+    bySheep.set(key, samples);
+  }
+  for (const samples of bySheep.values()) {
+    samples.sort((left, right) => left.at - right.at || normalizeID(left.sample.id).localeCompare(normalizeID(right.sample.id)));
+  }
+  return bySheep;
+}
+
+function earliestWeaningGainBaseline(record, weightsBySheep, sheepByID, timeZone) {
   const weaningAt = validDate(record.at ?? record.occurredAt);
   const birthAt = validDate(record.birthAt ?? sheepByID.get(normalizeID(record.sheepID))?.birthAt);
   if (!weaningAt) return null;
-  const candidates = snapshot.weights.filter((sample) => {
-    const at = validDate(sample.at ?? sample.occurredAt);
-    const kg = finiteNumber(sample.kilograms);
-    return normalizeID(sample.sheepID) === normalizeID(record.sheepID) && at && kg > 0 && at < weaningAt && (!birthAt || at >= birthAt);
-  }).sort((left, right) => {
-    const difference = (validDate(left.at ?? left.occurredAt)?.getTime() ?? 0) - (validDate(right.at ?? right.occurredAt)?.getTime() ?? 0);
-    return difference || normalizeID(left.id).localeCompare(normalizeID(right.id));
-  });
-  const baseline = candidates[0];
+  const baseline = weightsBySheep.get(normalizeID(record.sheepID))
+    ?.find(({ at }) => at < weaningAt && (!birthAt || at >= birthAt))?.sample;
   const weaningWeight = finiteNumber(record.weanWeight);
   const baselineWeight = finiteNumber(baseline?.kilograms);
   if (!baseline || !(weaningWeight > 0) || !(weaningWeight > baselineWeight)) return null;
@@ -780,6 +789,7 @@ export function calculateLambAnalytics(source, {
   timeZone = "Asia/Shanghai",
 } = {}) {
   const snapshot = sourceSnapshot(source);
+  const weightsBySheep = indexWeaningWeights(snapshot.weights);
   const sheepByID = new Map(snapshot.sheep.map((sheep) => [normalizeID(sheep.id), sheep]));
   const yearLambings = snapshot.reproduction.filter((record) => record.kind === "lambing" && (!selectedYear || yearKey(record.at ?? record.occurredAt, timeZone) === selectedYear));
   const complete = yearLambings.filter(completeLambing);
@@ -819,7 +829,7 @@ export function calculateLambAnalytics(source, {
       const weaning = latestWeaningBySheep.get(normalizeID(child.sheepID));
       if (!weaning) continue;
       const fallbackBirth = weaning.birthAt ?? sheepByID.get(normalizeID(child.sheepID))?.birthAt ?? lambing.at ?? lambing.occurredAt;
-      const gain = earliestWeaningGainBaseline({ ...weaning, birthAt: fallbackBirth }, snapshot, sheepByID, timeZone);
+      const gain = earliestWeaningGainBaseline({ ...weaning, birthAt: fallbackBirth }, weightsBySheep, sheepByID, timeZone);
       if (!gain) continue;
       if (sex === "ram") {
         stats.maleADGCount += 1;
@@ -895,7 +905,7 @@ export function calculateLambAnalytics(source, {
       if (sex === "ram") { stats.maleAgeCount += 1; stats.maleAgeDays += ageDays; }
       if (sex === "ewe") { stats.femaleAgeCount += 1; stats.femaleAgeDays += ageDays; }
     }
-    const gain = earliestWeaningGainBaseline({ ...record, birthAt }, snapshot, sheepByID, timeZone);
+    const gain = earliestWeaningGainBaseline({ ...record, birthAt }, weightsBySheep, sheepByID, timeZone);
     if (validWeight && gain) {
       stats.adgCount += 1;
       stats.adgSum += gain.gramsPerDay;

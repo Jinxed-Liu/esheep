@@ -295,8 +295,7 @@ struct FarmHomeView: View {
             HerdManagementView(account: account, farm: farm)
                 .navigationTitle("在场羊只")
         case .pens:
-            PenManagementView(account: account, farm: farm)
-                .navigationTitle("有羊圈舍")
+            PenManagementView(account: account, farm: farm, initialScope: .occupied)
         case .feeding:
             TodayFeedDetailView(farm: farm)
         }

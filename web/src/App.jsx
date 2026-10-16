@@ -11,8 +11,7 @@ import { InviteOnlyAccessScreen } from "./components/InviteOnlyAccessScreen.jsx"
 import { CloudAccessErrorScreen } from "./components/CloudAccessErrorScreen.jsx";
 import { LoginScreen } from "./components/LoginScreen.jsx";
 import { listDrafts, saveDraft, discardDraft } from "./lib/draftStore.js";
-import { submitDraft } from "./lib/cloudV2Writes.js";
-import { buildBusinessCommands } from "./lib/businessCommands.js";
+import { submitWorkspaceDraft } from "./lib/workspaceSubmission.js";
 import { isSupabaseConfigured } from "./lib/supabaseConfig.js";
 import { useEnvironmentPreferences, useFarmEnvironment } from "./lib/useFarmEnvironment.js";
 import { cloudAccessErrorMessage, loadWithTransientJWTClockRetry } from "./lib/cloudReadRecovery.js";
@@ -24,15 +23,13 @@ import {
 } from "./lib/workspaceDataSource.js";
 
 import { reportCloudReadProgress, subscribeCloudReadProgress } from "./lib/cloudReadProgress.js";
-
-let supabaseModulePromise;
+import * as supabaseModule from "./lib/supabase.js";
 
 function loadSupabaseModule() {
-  supabaseModulePromise ??= import("./lib/supabase.js").catch((error) => {
-    supabaseModulePromise = undefined;
-    throw error;
-  });
-  return supabaseModulePromise;
+  // Cloud access is required on every entry. Static imports let the browser
+  // preload its dependencies alongside the app instead of discovering them
+  // only after React has mounted the authentication screen.
+  return Promise.resolve(supabaseModule);
 }
 
 const workspaceDataSource = new WorkspaceDataSource({
@@ -141,7 +138,7 @@ export function App() {
         }
         return cloud.getVerifiedUser();
       },
-      loadWorkspace: (farmID) => workspaceDataSource.loadOverview(farmID, { bypassCache: true }),
+      loadWorkspace: (farmID, options) => workspaceDataSource.loadOverview(farmID, { ...options, bypassCache: true }),
       invalidate: () => workspaceDataSource.invalidate(),
       clearPrivateState: () => {
         setWorkspace(null);
@@ -447,17 +444,17 @@ export function App() {
     const results=[];
     const cloud=await loadSupabaseModule();
     lifecycle.assertCurrent(token);
-    for(const action of actions) {
+    for(const [index, action] of actions.entries()) {
       try {
         lifecycle.assertCurrent(token);
-        const fresh=await cloud.loadCloudWorkspace(workspace.farm.id);
+        const fresh=index === 0 ? workspace : await cloud.loadCloudWorkspace(workspace.farm.id);
         lifecycle.assertCurrent(token);
         const record={sheet:"羊只标签",values:{},labelAction:action.action,labelDraft:action.draft};
         const id=action.draft.changeID??action.draft.id;
         const existing=(await listDrafts(workspace.profile.accountID,workspace.farm.id)).find(d=>d.id===id);
         const draft=existing??await saveDraft(workspace.profile.accountID,workspace.farm,record,id);
         lifecycle.assertCurrent(token);
-        const result=await submitDraft(cloud.supabase,workspace.profile.accountID,fresh.farm,draft,()=>buildBusinessCommands(record,fresh),{assertCurrent:()=>lifecycle.assertCurrent(token)});
+        const {result}=await submitWorkspaceDraft({cloud,workspace:fresh,draft,assertCurrent:()=>lifecycle.assertCurrent(token)});
         lifecycle.assertCurrent(token);
         const accepted=result.status==="accepted";
         results.push({action,accepted,error:accepted?null:JSON.stringify(result.receipts??result.error??"云端拒绝，请核对回执")});
@@ -470,6 +467,14 @@ export function App() {
     return results;
   }
   async function sendSavedDraft(draft) { return sendDraftGroup([draft]); }
+  async function sendPenAction(record, draftID, onProgress) {
+    const lifecycle = authLifecycle.current, token = lifecycle.token();
+    const [{ submitPenManagement }, cloud] = await Promise.all([import("./lib/penSubmission.js"), loadSupabaseModule()]);
+    lifecycle.assertCurrent(token);
+    return submitPenManagement({ cloud, workspace, record, draftID, onProgress,
+      assertCurrent: () => lifecycle.assertCurrent(token), onDrafts: setDrafts,
+      onWorkspace: updated => { workspaceDataSource.invalidate({ farmID: workspace.farm.id }); setWorkspace(updated); } });
+  }
   async function sendDraftGroup(group) {
     const lifecycle=authLifecycle.current,token=lifecycle.token();
     setWriteBusy(true);let accepted=0;
@@ -477,17 +482,20 @@ export function App() {
       const cloud=await loadSupabaseModule();
       lifecycle.assertCurrent(token);
       const ordered=[...group].sort((a,b)=>a.createdAt-b.createdAt||(a.record.rowNumber??0)-(b.record.rowNumber??0));
-      for(const draft of ordered) {
+      for(const [index, draft] of ordered.entries()) {
         lifecycle.assertCurrent(token);
         setWriteProgress(`正在提交 ${accepted+1} / ${ordered.length} 条`);
-        const fresh=await cloud.loadCloudWorkspace(workspace.farm.id);
+        const fresh=index === 0 ? workspace : await cloud.loadCloudWorkspace(workspace.farm.id);
         lifecycle.assertCurrent(token);
-        const result=await submitDraft(cloud.supabase,workspace.profile.accountID,fresh.farm,draft,()=>buildBusinessCommands({...draft.record,id:draft.id},fresh),{assertCurrent:()=>lifecycle.assertCurrent(token)});
+        const {result}=await submitWorkspaceDraft({cloud,workspace:fresh,draft,
+          assertCurrent:()=>lifecycle.assertCurrent(token),
+          onProgress:message=>{lifecycle.assertCurrent(token);setWriteProgress(`第 ${index+1} / ${ordered.length} 条：${message}`);}});
         lifecycle.assertCurrent(token);
         if(result.status!=="accepted")throw new Error(`${draft.record.sheet}：${result.status==="conflict"?"云端发现冲突":"云端拒绝保存"}，请打开原始回执核对。`);
         accepted++;await refreshDrafts();
       }
       workspaceDataSource.invalidate({farmID:workspace.farm.id});
+      setWriteProgress(`云端已接受 ${accepted} 条，正在更新资料…`);
       try {const fresh=await cloud.loadCloudWorkspace(workspace.farm.id);lifecycle.assertCurrent(token);setWorkspace(fresh);showToast(`云端已接受 ${accepted} 条记录，资料与原始回执已更新。`);}
       catch(e){if(lifecycle.current(token))showToast(`云端已接受 ${accepted} 条记录；读取刷新未完成：${e.message}`,"warning");}
     } catch(e) {throw new Error(`${accepted?`已接受 ${accepted} 条，其余停止提交。`:""}${e.message}`);}
@@ -560,9 +568,9 @@ export function App() {
   let content;
   switch (activePage) {
     case "flock":
-    case "pens": content = <FlockPage workspace={workspace} initialView={activePage === "pens" ? "pens" : "sheep"} selectedID={routeContext.selectedID} onCreateRecord={openRecord} onLabelSubmit={sendLabelActions} />; break;
+    case "pens": content = <FlockPage key={workspace.farm.id} workspace={workspace} initialView={activePage === "pens" ? "pens" : "sheep"} selectedID={routeContext.selectedID} initialPenScope={routeContext.penScope} resumePenDraft={routeContext.penDraft} onCreateRecord={openRecord} onLabelSubmit={sendLabelActions} onPenSubmit={sendPenAction} onNavigate={navigate} />; break;
     case "alerts": content = <AlertsPage workspace={workspace} selectedID={routeContext.selectedID} onNavigate={navigate} onCreateRecord={openRecord} />; break;
-    case "entry": content = <EntryPage drafts={drafts} busy={writeBusy} progress={writeProgress} onSubmitGroup={sendDraftGroup} onResume={draft=>openRecord(draft.record.sheet,{draft})} onSubmitDraft={sendSavedDraft} onDiscardDraft={deleteDraft} onImport={importRecords} workspace={workspace} onCreateRecord={openRecord} onNavigate={navigate} />; break;
+    case "entry": content = <EntryPage drafts={drafts} busy={writeBusy} progress={writeProgress} onSubmitGroup={sendDraftGroup} onResume={draft=>draft.record.penAction?navigate("pens",{penDraft:draft}):openRecord(draft.record.sheet,{draft})} onSubmitDraft={sendSavedDraft} onDiscardDraft={deleteDraft} onImport={importRecords} workspace={workspace} onCreateRecord={openRecord} onNavigate={navigate} />; break;
     case "care": content = <CarePage workspace={workspace} onCreateRecord={openRecord} />; break;
     case "batches": content = <ProductionBatchesPage workspace={workspace} onCreateRecord={openRecord} />; break;
     case "feeding":
@@ -599,7 +607,7 @@ export function App() {
       data-environment-phase={environmentPreferences.effectMode === "off" ? "unknown" : environment.scene.phase}
       data-environment-weather={environmentPreferences.effectMode === "off" ? "unknown" : environment.weather?.condition ?? "unknown"}
       style={{ "--surface-light-x": `${Math.round(12 + sunProgress * 76)}%`, "--surface-reflection-opacity": reflectionOpacity }}>
-      <FarmEnvironmentBackground environment={environment} mode={environmentPreferences.effectMode} surface={activePage} paused={recordDialog.open || weatherDetailOpen || activePage !== "home"} />
+      <FarmEnvironmentBackground environment={environment} mode={environmentPreferences.effectMode} surface={activePage} contentTheme={contentTheme} paused={recordDialog.open || weatherDetailOpen || activePage !== "home"} />
       <AppHeader
         activePage={routeRequest.page}
         onNavigate={navigate}

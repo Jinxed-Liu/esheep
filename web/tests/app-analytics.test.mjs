@@ -304,6 +304,27 @@ test("weaning analytics use earliest ordinary post-birth weight and weighted sam
   assert.equal(result.weaning.abnormalCount, 2);
 });
 
+test("weaning baseline indexing preserves dates, identity normalization, deterministic ties and fresh values", () => {
+  const source = {
+    sheep: [sheep("lamb", { birthAt: "2026-01-01T00:00:00Z" })],
+    weights: [
+      { id: "old", sheepID: "lamb", kilograms: 1, at: "2025-12-31T00:00:00Z" },
+      { id: "invalid", sheepID: "lamb", kilograms: 3, at: "invalid-date" },
+      { id: "zero", sheepID: "lamb", kilograms: 0, at: "2026-01-01T00:00:00Z" },
+      { id: "z", sheepID: "lamb", kilograms: 7, at: "2026-01-02T00:00:00Z" },
+      { id: "a", sheepID: " LAMB ", kilograms: 5, at: "2026-01-02T00:00:00Z" },
+      { id: "other", sheepID: "another-lamb", kilograms: 2, at: "2026-01-01T00:00:00Z" },
+      { id: "weaning-day", sheepID: "lamb", kilograms: 19, at: "2026-01-20T00:00:00Z" },
+    ],
+    weanings: [{ id: "wean", sheepID: "LAMB", weanWeight: 15, at: "2026-01-20T00:00:00Z" }],
+  };
+  const result = calculateLambAnalytics(source, { timeZone: "UTC" });
+  assert.equal(result.weaningADGSampleCount, 1);
+  assert.ok(Math.abs(result.weaning.averageADG - 10 / 18 * 1000) < 1e-10);
+  source.weights.find(row => row.id === "a").kilograms = 6;
+  assert.ok(Math.abs(calculateLambAnalytics(source, { timeZone: "UTC" }).weaning.averageADG - 9 / 18 * 1000) < 1e-10);
+});
+
 test("reproduction fixes the ewe cohort at the inclusive end date and keeps prior lambings as interval evidence", () => {
   const source = {
     pens: [{ id: penA, name: "一圈" }, { id: penB, name: "二圈" }],
