@@ -123,6 +123,7 @@ final class ReproductionManagementPersistenceTests: XCTestCase {
             defer { try? FileManager.default.removeItem(at: root) }
             let archive = root.appending(path: "archive")
             let manifest = try ESheepCloudCheckpointArchive.export(farmID: farm.id, context: context, directory: archive)
+            XCTAssertEqual(manifest.minimumClientCapability, 1)
             let importer = try ESheepCloudCheckpointImporter(manifest: manifest, accountID: account.effectiveAccountID,
                 storeURL: root.appending(path: "verified.store"))
             for chunk in manifest.chunks {
@@ -166,7 +167,8 @@ final class ReproductionManagementPersistenceTests: XCTestCase {
         try context.save()
         let snapshot = try await FarmOperationalAlertSnapshotActor(container: container).load(farmID: farm.id)
         XCTAssertTrue(snapshot.reproductionConfigured)
-        XCTAssertEqual(snapshot.operationalAlerts.filter { $0.kind.isReproductionManagement }.map(\.subjectID), [sheep.id])
+        XCTAssertEqual(Set(snapshot.operationalAlerts.filter { $0.kind.isReproductionManagement }.map(\.subjectID)), Set([sheep.id, other.id]))
+        XCTAssertEqual(snapshot.operationalAlerts.first { $0.subjectID == other.id && $0.kind.isReproductionManagement }?.kind, .reproductionReview)
         XCTAssertFalse(snapshot.operationalAlerts.contains { $0.kind == .pregnancyCheckOverdue })
         let alert = try XCTUnwrap(snapshot.operationalAlerts.first { $0.subjectID == sheep.id })
         XCTAssertTrue(alert.detail.contains("青年母羊"))
@@ -176,7 +178,7 @@ final class ReproductionManagementPersistenceTests: XCTestCase {
             conditionFingerprint: alert.conditionFingerprint, deferredUntil: Date.now.addingTimeInterval(86_400)))),
             in: .init(accountID: account.effectiveAccountID, farmID: farm.id, role: .owner), context: context)
         let deferred = try await FarmOperationalAlertSnapshotActor(container: container).load(farmID: farm.id)
-        XCTAssertTrue(deferred.operationalAlerts.filter { $0.kind.isReproductionManagement }.isEmpty)
+        XCTAssertEqual(deferred.operationalAlerts.filter { $0.kind.isReproductionManagement }.map(\.subjectID), [other.id])
     }
 
     func testAuthoritativeV2ReplayCarriesNewSettingsAndLegacyRuleUpdatePreservesThem() throws {

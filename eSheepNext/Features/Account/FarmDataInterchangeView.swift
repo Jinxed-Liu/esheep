@@ -533,6 +533,9 @@ private struct FarmDataTaskView: View {
                 }
                 if let excelPreview {
                     Section("导入检查") {
+                        LabeledContent("可接受数据行", value: "\(excelPreview.acceptableRowCount) 行")
+                        LabeledContent("繁殖待核实数据行", value: "\(excelPreview.reproductionReviewRowCount) 行")
+                        LabeledContent("错误数据行", value: "\(excelPreview.errorRowCount) 行")
                         LabeledContent("待写入") {
                             Text("\(excelPreview.rows.count) 条")
                         }
@@ -548,7 +551,7 @@ private struct FarmDataTaskView: View {
                         ForEach(excelPreview.issues.prefix(40)) { issue in
                             Label("\(issue.sheet) 第 \(issue.row) 行 · \(issue.field)：\(issue.message)", systemImage: issue.severity == .error ? "xmark.octagon" : "exclamationmark.triangle")
                                 .font(.footnote)
-                                .foregroundStyle(issue.severity == .error ? .red : .secondary)
+                                .foregroundStyle(issue.severity == .error ? Color.red : Color.secondary)
                         }
                         Button("确认导入 \(excelPreview.rows.count) 条") { commitExcel(excelPreview) }
                             .disabled(isWorking || !excelPreview.canCommit)
@@ -574,7 +577,7 @@ private struct FarmDataTaskView: View {
                         }
                         ForEach(preview.issues.prefix(20)) { issue in
                             Label("第 \(issue.rowNumber) 行 · \(issue.message)", systemImage: issue.severity == .error ? "xmark.octagon" : "exclamationmark.triangle")
-                                .foregroundStyle(issue.severity == .error ? .red : .secondary)
+                                .foregroundStyle(issue.severity == .error ? Color.red : Color.secondary)
                         }
                         if !newPenNames.isEmpty {
                             Text("待新建羊舍：\(newPenNames.joined(separator: "、"))")

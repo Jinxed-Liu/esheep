@@ -1,5 +1,5 @@
+import ESMotion
 import PhotosUI
-import Charts
 import SwiftData
 import SwiftUI
 import UIKit
@@ -91,6 +91,7 @@ struct HerdManagementView: View {
                             SheepAvatarView(photo: sheep.avatarPhoto, size: 48, sex: sheep.sex)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(sheep.earTag).font(.headline)
+                                if let state = sheep.reproductionState { Text(verbatim: state).font(.caption).foregroundStyle(.secondary) }
                                 SheepLabelChips(labels: labels.filter { assignments[sheep.id]?.labelIDs.contains($0.id) == true }, primaryID: assignments[sheep.id]?.primaryLabelID)
                                 HStack(spacing: 4) {
                                     if !sheep.breed.isEmpty {
@@ -266,7 +267,7 @@ struct HerdManagementView: View {
                     $0.farmID == farmID && $0.deletedAt == nil
                 }))
                 exportDocument = InHerdSheepExportDocument(
-                    data: InHerdSheepExport.csvData(farmID: farmID, sheep: exportedSheep, pens: pens)
+                    data: InHerdSheepExport.csvData(farmID: farmID, sheep: exportedSheep, pens: pens, reproduction: try modelContext.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate { $0.farmID == farmID && $0.deletedAt == nil })))
                 )
                 exportedSheepCount = exportedSheep.count
             case .removed:
@@ -368,8 +369,9 @@ private struct HerdSheepRow: Identifiable, Sendable {
     let isCurrentlyPresent: Bool
     let searchableText: String
     let avatarPhoto: SheepPhotoReference?
+    let reproductionState: String?
 
-    init(_ sheep: SheepRecord, avatarPhoto: SheepPhotoReference?) {
+    init(_ sheep: SheepRecord, avatarPhoto: SheepPhotoReference?, reproductionState: String? = nil) {
         id = sheep.id
         earTag = sheep.earTag
         breed = sheep.breed
@@ -380,6 +382,7 @@ private struct HerdSheepRow: Identifiable, Sendable {
         isCurrentlyPresent = sheep.isCurrentlyPresent
         searchableText = SearchText.normalized(sheep.earTag + "\u{0}" + sheep.breed)
         self.avatarPhoto = avatarPhoto
+        self.reproductionState = reproductionState
     }
 
     func currentPenDisplayName(_ penName: String?) -> String {
@@ -429,7 +432,9 @@ private actor HerdSnapshotActor {
             farmID: farmID,
             context: context
         )
-        let rows = sheep.map { HerdSheepRow($0, avatarPhoto: avatarPhotos[$0.id]) }
+        let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate { $0.farmID == farmID && $0.deletedAt == nil }))
+        let states = ReproductionReminderValidity.states(records: reproduction, eweIDs: sheep.filter { $0.sex == .ewe }.map(\.id), now: .now)
+        let rows = sheep.map { HerdSheepRow($0, avatarPhoto: avatarPhotos[$0.id], reproductionState: states[$0.id]?.displayState) }
         let occupiedPenIDs = Set(rows.lazy.compactMap { item in
             item.isCurrentlyPresent ? item.currentPenID : nil
         })
@@ -624,6 +629,7 @@ struct SheepDetailEntryView: View {
 struct SheepDetailView: View {
     @Environment(CloudCollaborationStore.self) private var collaboration
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     let account: AccountProfile
     let farm: FarmRecord
@@ -665,14 +671,19 @@ struct SheepDetailView: View {
 
     @ViewBuilder
     private var quickEntryButtons: some View {
-        Button("称重", systemImage: "scalemass") { quickEntry = .weight }
-        Button("健康记录", systemImage: "cross.case") { quickEntry = .health }
-        Menu("更多", systemImage: "ellipsis.circle") {
-            Button("转群") { quickEntry = .transfer }
-            Button("断奶") { quickEntry = .weaning }
-            Button("离场") { quickEntry = .removal }
-            Button("备注") { quickEntry = .note }
+        if subject.sex == .ewe {
+            quickEntryButton(.reproduction, identifier: "sheep-record-reproduction")
+            quickEntryButton(.lambing, identifier: "sheep-record-lambing")
         }
+        quickEntryButton(.weight, identifier: "sheep-record-weight")
+        quickEntryButton(.health, identifier: "sheep-record-health")
+    }
+
+    private func quickEntryButton(_ action: HomeQuickAction, identifier: String) -> some View {
+        HomeShortcut(title: action.title, symbol: action.symbol) {
+            quickEntry = action.entry
+        }
+        .accessibilityIdentifier(identifier)
     }
 
     private var sheepPhotos: [SheepDetailPhotoSnapshot] { detailSnapshot?.photos ?? [] }
@@ -700,14 +711,29 @@ struct SheepDetailView: View {
                 .listRowInsets(.init())
                 .listRowBackground(Color.clear)
             }
+            productionStatusSection
             latestWeightSummary
+            if let detailSnapshot, subject.purpose == SheepPurpose.fattening.rawValue || subject.purpose == SheepPurpose.weanedLamb.rawValue {
+                Section { SheepGrowthTrendView(detail: detailSnapshot) }
+            }
             if subject.isCurrentlyPresent && CapabilitySet(role: farm.role).allows(.recordProduction) {
-                Section {
-                    ViewThatFits(in: .horizontal) {
-                        HStack { quickEntryButtons }
-                        VStack(alignment: .leading) { quickEntryButtons }
+                Section("常用操作") {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 260 : 150))], spacing: 12) {
+                        quickEntryButtons
+                        Menu {
+                            Button("转群") { quickEntry = .transfer }
+                            Button("断奶") { quickEntry = .weaning }
+                            Button("离场") { quickEntry = .removal }
+                            Button("备注") { quickEntry = .note }
+                        } label: {
+                            HomeShortcutLabel(title: "更多记录", symbol: "ellipsis")
+                        }
+                        .buttonStyle(MotionSurfaceButtonStyle())
+                        .accessibilityLabel("更多记录")
+                        .accessibilityIdentifier("sheep-record-more")
                     }
-                    .buttonStyle(.borderless)
+                    .listRowInsets(.init())
+                    .listRowBackground(Color.clear)
                 }
             }
             SheepLabelDetailSection(account: account, farm: farm, sheepID: subject.id)
@@ -993,20 +1019,109 @@ struct SheepDetailView: View {
     }
 
     @ViewBuilder
+    private var productionStatusSection: some View {
+        if let detail = detailSnapshot {
+            Section("生产信息") {
+                LabeledContent("当前用途", value: subject.purpose)
+                if !subject.isCurrentlyPresent {
+                    if let removedAt = subject.removedAt { LabeledContent("离群日期") { Text(removedAt, format: .dateTime.year().month().day()) } }
+                }
+                if let birth = subject.birthAt, birth <= detail.factsReadAt {
+                    let months = Calendar.farm(identifier: detail.timeZoneIdentifier).dateComponents([.month], from: birth, to: detail.factsReadAt).month ?? 0
+                    LabeledContent("月龄", value: "\(months) 个月")
+                    if subject.sex == .ewe, detail.reproductionState?.completedParity == 0 {
+                        let confirmed = detail.managementSettings.youthBreedingConfirmedSheepIDs.contains(subject.id)
+                        let maturityDate = Calendar.farm(identifier: detail.timeZoneIdentifier).date(byAdding: .month, value: detail.managementSettings.minimumAgeMonths, to: birth) ?? detail.factsReadAt
+                        LabeledContent("参配确认", value: detail.factsReadAt <= maturityDate ? "未超过参配月龄" : confirmed ? "已人工确认" : "待人工确认")
+                    }
+                }
+                if subject.sex == .ram {
+                    LabeledContent("已记录配种", value: "\(detail.recordedBreedingCount) 条")
+                    LabeledContent("已关联后代", value: "\(detail.recordedOffspringCount) 只")
+                    NavigationLink("查看后代与系谱") { SheepPedigreeView(account: account, farm: farm, sheepID: subject.id) }
+                }
+                if subject.purpose == SheepPurpose.sucklingLamb.rawValue || subject.purpose == SheepPurpose.weanedLamb.rawValue {
+                    if let birth = subject.birthAt {
+                        let days = Calendar.farm(identifier: detail.timeZoneIdentifier).dateComponents([.day], from: Calendar.farm(identifier: detail.timeZoneIdentifier).startOfDay(for: birth), to: Calendar.farm(identifier: detail.timeZoneIdentifier).startOfDay(for: detail.factsReadAt)).day ?? 0
+                        LabeledContent("日龄", value: "\(days) 天")
+                    }
+                    LabeledContent("断奶事实", value: detail.weanedAt == nil ? "未记录断奶" : "已记录断奶")
+                }
+                if let weanedAt = detail.weanedAt { LabeledContent("断奶日期") { Text(weanedAt, format: .dateTime.year().month().day()) } }
+                if detail.isPreBreedingLamb {
+                    LabeledContent("繁殖管理", value: "羔羊，未进入繁殖管理")
+                    Text("尚无自身繁殖记录，不因缺少胎次资料列入繁殖待核实。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } else if let cycle = detail.reproductionState {
+                    LabeledContent("本轮繁殖状态", value: cycle.displayState)
+                    LabeledContent("已完成产羔胎次", value: cycle.completedParity.map { "\($0) 胎" } ?? "待核实")
+                    LabeledContent("本轮目标胎次", value: cycle.targetParity.map { "第 \($0) 胎" } ?? "待核实")
+                    if let check = cycle.check {
+                        LabeledContent("本轮检胎日期") { Text(check.occurredAt, format: .dateTime.year().month().day()) }
+                        LabeledContent("检胎原始结果", value: check.result)
+                    }
+                    if let breeding = cycle.breeding { LabeledContent("本轮配种日期") { Text(breeding.occurredAt, format: .dateTime.year().month().day()) } }
+                    if let last = cycle.lastLambingAt {
+                        let days = Calendar.farm(identifier: detail.timeZoneIdentifier).dateComponents([.day], from: Calendar.farm(identifier: detail.timeZoneIdentifier).startOfDay(for: last), to: Calendar.farm(identifier: detail.timeZoneIdentifier).startOfDay(for: detail.factsReadAt)).day ?? 0
+                        LabeledContent("距上次产羔", value: "\(days) 天")
+                    }
+                    if let expected = cycle.expectedLambingAt(days: detail.gestationDays, calendar: Calendar.farm(identifier: detail.timeZoneIdentifier)) {
+                        LabeledContent("预计产羔（估算）") { Text(expected, format: .dateTime.year().month().day()) }
+                    }
+                    ForEach(cycle.issues, id: \.self) { Text(verbatim: $0).font(.footnote).foregroundStyle(.orange) }
+                    if cycle.pregnancy == .recheck { Label("待复检", systemImage: "heart.text.square").foregroundStyle(.orange) }
+                    NavigationLink(cycle.issues.isEmpty ? "本轮依据与繁殖历史" : "繁殖资料待核实") {
+                        ReproductionEvidenceView(account: account, farm: farm, eweID: subject.id)
+                    }
+                }
+                if subject.purpose == SheepPurpose.fattening.rawValue {
+                    if let start = detail.fatteningStartedAt {
+                        LabeledContent("本次育肥开始") { Text(start, format: .dateTime.year().month().day()) }
+                        let intervals = detail.weightGainIntervals.filter { $0.startDate >= start }
+                        let days = intervals.reduce(0) { $0 + $1.intervalDays }
+                        if days > 0 {
+                            let gain = intervals.reduce(0.0) { $0 + $1.totalGainKilograms } / Double(days) * 1000
+                            LabeledContent("本次育肥期日增重", value: "\(gain.formatted(.number.precision(.fractionLength(0)))) 克/天")
+                        }
+                    } else { Text("缺少可确认的育肥开始记录，暂不能计算育肥期表现。").font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+        }
+    }
+
     private var latestWeightSummary: some View {
         Section {
-            if let latest = detailSnapshot?.weights.first {
+            if let latest = detailSnapshot?.canonicalWeights.last {
                 NavigationLink {
-                    List { weightChartSection }
+                    List {
+                        if let detailSnapshot { Section { SheepGrowthTrendView(detail: detailSnapshot) } }
+                        rawWeightHistorySection
+                    }
                         .navigationTitle("体重与增重")
                         .navigationBarTitleDisplayMode(.inline)
                 } label: {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("最近体重").font(.subheadline).foregroundStyle(.secondary)
+                        Text("最近实测体重").font(.subheadline).foregroundStyle(.secondary)
                         Text("\(WeightPrecision.displayText(latest.kilogramsText)) 千克")
                             .font(.title2.weight(.semibold))
                             .monospacedDigit()
                             .foregroundStyle(.primary)
+                        if let interval = detailSnapshot?.weightGainIntervals.last {
+                            Text("最近区间日增重 \((interval.kilogramsPerDay * 1000).formatted(.number.precision(.fractionLength(0)))) 克/天")
+                                .font(.subheadline).monospacedDigit()
+                            Text("\(interval.startDate, format: .dateTime.month().day())—\(interval.endDate, format: .dateTime.month().day()) · \(interval.intervalDays) 天")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let detailSnapshot {
+                            let days = Calendar.farm(identifier: detailSnapshot.timeZoneIdentifier).dateComponents([.day], from: Calendar.farm(identifier: detailSnapshot.timeZoneIdentifier).startOfDay(for: latest.occurredAt), to: Calendar.farm(identifier: detailSnapshot.timeZoneIdentifier).startOfDay(for: detailSnapshot.factsReadAt)).day ?? 0
+                            Text("距上次称重 \(days) 天").font(.caption).foregroundStyle(.secondary)
+                            if let threshold = detailSnapshot.managementSettings.weighingReminderDays, days >= threshold {
+                                Label("待称重", systemImage: "scalemass").foregroundStyle(.orange)
+                            }
+                            if (detailSnapshot.weightGainIntervals.last?.kilogramsPerDay ?? 0) < 0 {
+                                Label("最近区间体重下降，点击核对记录", systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+                            }
+                        }
                         Text(latest.occurredAt, format: .dateTime.year().month().day().hour().minute())
                             .font(.footnote)
                             .foregroundStyle(.secondary)
@@ -1021,45 +1136,30 @@ struct SheepDetailView: View {
     }
 
     @ViewBuilder
-    private var weightChartSection: some View {
-        let records = Array((detailSnapshot?.weights ?? []).reversed())
-        let gainIntervals = detailSnapshot?.weightGainIntervals ?? []
-        if let latest = records.last {
-            Section("体重") {
-                LabeledContent("最近体重", value: "\(WeightPrecision.displayText(latest.kilogramsText)) 千克")
-                if records.count >= 2 {
-                    Chart(records, id: \.id) { record in
-                        LineMark(x: .value("日期", record.occurredAt), y: .value("体重", record.kilograms))
-                        PointMark(x: .value("日期", record.occurredAt), y: .value("体重", record.kilograms))
+    private var rawWeightHistorySection: some View {
+        let records = detailSnapshot?.weights ?? []
+        if !records.isEmpty {
+            Section {
+                DisclosureGroup("原始称重记录（全部 \(records.count) 条）") {
+                    ForEach(records) { record in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(WeightPrecision.displayText(record.kilogramsText)) 千克")
+                                .monospacedDigit()
+                            Text(record.occurredAt, format: .dateTime.year().month().day().hour().minute())
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(verbatim: "来源：" + record.source.displayName)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.accessibilityElement(children: .combine)
                     }
-                    .frame(height: 160)
-                    .accessibilityLabel("\(subject.earTag)体重变化曲线，共\(records.count)个体重数据点")
                 }
-            }
-            if !gainIntervals.isEmpty {
-                Section {
-                    ForEach(gainIntervals.reversed()) { interval in
-                        SheepWeightGainRow(interval: interval)
-                    }
-                } header: {
-                    Text("阶段日增重")
-                } footer: {
-                    Text("按相邻日期的有效体重计算：（本次体重－上次体重）÷ 间隔天数；同一天只采用一个权威体重点。")
-                }
+            } footer: {
+                Text("保留全部原始测量，包括同日重称；不受上方图表范围筛选影响。图表计算采用每日有效体重点。")
             }
         }
     }
 
     @ViewBuilder
     private var analyticsSection: some View {
-        if let lifecycleInsight = detailSnapshot?.lifecycleInsight {
-            Section(LocalizedStringKey(lifecycleInsight.title)) {
-                Text(LocalizedStringKey(lifecycleInsight.summary))
-                ForEach(lifecycleInsight.details, id: \.self) { Text($0).font(.footnote).foregroundStyle(.secondary) }
-            }
-        } else if isLoadingDetail {
-            Section { ProgressView("正在计算羊只分析") }
-        }
         if let reproductionInsight = detailSnapshot?.reproductionInsight, !reproductionInsight.details.isEmpty {
             Section(LocalizedStringKey(reproductionInsight.title)) {
                 Text(LocalizedStringKey(reproductionInsight.summary))
@@ -1373,24 +1473,6 @@ struct SheepDetailView: View {
         } catch {
             photoMessage = "删除失败：\(error.localizedDescription)"
         }
-    }
-}
-
-private struct SheepWeightGainRow: View {
-    let interval: SheepDetailWeightGainSnapshot
-
-    var body: some View {
-        LabeledContent {
-            Text("\(interval.kilogramsPerDay, format: .number.precision(.fractionLength(3))) 千克/天")
-        } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("\(interval.startDate, format: .dateTime.year().month().day()) → \(interval.endDate, format: .dateTime.year().month().day())")
-                Text("\(WeightPrecision.displayText(interval.startKilogramsText)) → \(WeightPrecision.displayText(interval.endKilogramsText)) 千克 · \(interval.intervalDays) 天")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -2021,7 +2103,10 @@ private struct PenDetailView: View {
                             sheepID: item.id
                         )
                     } label: {
-                        Text(item.earTag)
+                        VStack(alignment: .leading) {
+                            Text(item.earTag)
+                            if let state = item.reproductionState { Text(verbatim: state).font(.caption).foregroundStyle(.secondary) }
+                        }
                     }
                 }
             }

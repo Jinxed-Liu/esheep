@@ -295,6 +295,28 @@ async function withUnsignedWrite(run) {
   }
 }
 
+test("reproduction writes require an explicit numeric cloud capability before signing and keep unsupported drafts", async () => {
+  for (const version of [undefined, null, 0, "1", 1]) {
+    await withUnsignedWrite(async ({ workspace, state, cloud, draft }) => {
+      const invoke = cloud.supabase.functions.invoke;
+      cloud.supabase.functions.invoke = async (name, request) => request.body.action === "capabilities"
+        ? { data: { reproduction_contract_version: version } } : invoke(name, request);
+      const submit = () => submitDraft(cloud.supabase, workspace.profile.accountID, workspace.farm, draft,
+        () => [{ kind: "care.reproduction.recordBatch", occurredAt: Date.now(),
+          body: { reproductionCycleID: crypto.randomUUID() }, streams: [] }]);
+      if (version === 1) {
+        assert.equal((await submit()).status, "accepted");
+        assert.equal(state.sends, 1);
+      } else {
+        await assert.rejects(submit, /云端尚未启用繁殖周期关联/);
+        const saved = (await listDrafts(workspace.profile.accountID, workspace.farm.id))[0];
+        assert.equal(saved.signed, undefined);
+        assert.equal(state.sends, 0);
+      }
+    });
+  }
+});
+
 test("fresh single writes avoid a whole-farm read and check auth/status concurrently", { timeout: 2000 }, async () => {
   await withUnsignedWrite(async ({ workspace, state, cloud, draft }) => {
     const auth = deferred(), rpc = cloud.supabase.rpc;

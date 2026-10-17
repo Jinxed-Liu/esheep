@@ -115,7 +115,8 @@ final class ReproductionManagementAnalyticsTests: XCTestCase {
         let result = try ReproductionManagementEngine.calculate(snapshot: snapshot(sheep, facts: facts, settings: settings(confirmed: sheep.map(\.id))))
         let byTag = Dictionary(uniqueKeysWithValues: result.ewes.map { ($0.earTag, $0) })
         XCTAssertEqual(byTag["BIRTH"]?.pregnancy, .unexamined)
-        XCTAssertEqual(byTag["REBREED"]?.pregnancy, .unexamined)
+        // An unresolved positive followed by mating is a conflict, not an automatic reset.
+        XCTAssertEqual(byTag["REBREED"]?.pregnancy, .uncertain)
         XCTAssertEqual(byTag["ABORT"]?.pregnancy, .unexamined)
         XCTAssertEqual(byTag["INDEPENDENT"]?.pregnancy, .pregnant)
         XCTAssertEqual(byTag["RECHECK"]?.pregnancy, .recheck)

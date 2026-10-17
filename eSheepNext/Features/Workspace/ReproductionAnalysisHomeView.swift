@@ -79,6 +79,7 @@ struct ReproductionAnalysisHomeView: View {
                 header
                 summary
                 currentNavigation
+                NavigationLink { ReproductionReviewCenter(account: account, farm: farm) } label: { Label("繁殖资料待核实", systemImage: "checklist") }
                 historyNavigation
                 settingsNavigation
                 ReproductionDataStatusView(model: model, dataStore: dataStore)

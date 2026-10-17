@@ -207,7 +207,7 @@ final class SheepDetailSnapshotActorTests: XCTestCase {
         XCTAssertTrue(snapshot.timeline.contains { $0.title == "初生重" && $0.detail == "3.20 千克" })
         XCTAssertFalse(snapshot.timeline.contains { $0.detail.contains("其他羊治疗") })
         XCTAssertEqual(snapshot.lifecycleInsight.summary, "S3-SH030 湖羊")
-        XCTAssertEqual(snapshot.reproductionInsight.summary, "S3-SH030 共1胎")
+        XCTAssertEqual(snapshot.reproductionInsight.summary, "S3-SH030 已记录产羔 1 次")
 
         let workbook = try await reader.singleSheepXLSXData(
             farmID: farmID,

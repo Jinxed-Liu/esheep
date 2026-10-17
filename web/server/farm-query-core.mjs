@@ -1,3 +1,4 @@
+import { resolveReproductionState, pregnancyNames } from "../src/lib/reproductionCycles.js";
 const SUPPORTED_KINDS = [
   "available_data",
   "farm_overview",
@@ -7,6 +8,7 @@ const SUPPORTED_KINDS = [
   "weight_summary",
   "lamb_summary",
   "reproduction_summary",
+  "reproduction_state",
   "feed_intake_summary",
 ];
 
@@ -280,6 +282,17 @@ export function createFarmQueryEngine(analytics) {
       const filters = { selectedYear, selectedWeaningMonth };
       const result = calculateLambAnalytics(source, { ...filters, timeZone });
       return envelope(snapshot, kind, filters, result.allLambingCount ?? 0, compactLamb(result));
+    }
+
+    if (kind === "reproduction_state") {
+      const filters = { earTag:text(request.earTag),penID:text(request.penID),breed:text(request.breed),state:text(request.state),limit:finiteLimit(request.limit) };
+      if(filters.state&&!Object.hasOwn(pregnancyNames,filters.state))throw new Error("繁殖状态筛选值无效。");
+      const records=(source.reproduction??[]).map(r=>({...r,kindRawValue:r.kindRawValue??r.kind,occurredAt:new Date(r.at??r.occurredAt).getTime()}));
+      const grouped=new Map();for(const r of records){const group=grouped.get(r.eweID)??[];group.push(r);grouped.set(r.eweID,group);}
+      const all=(snapshot.activeSheep??[]).filter(s=>["ewe","母羊","母"].includes(s.sex)&&(!filters.earTag||normalized(s.earTag).includes(normalized(filters.earTag)))&&(!filters.penID||normalized(s.penID)===normalized(filters.penID))&&(!filters.breed||s.breed===filters.breed)).map(s=>({earTag:s.earTag,pen:s.pen,...resolveReproductionState(s.id,grouped.get(s.id)??[],now.getTime())}));
+      const rows=all.filter(s=>!filters.state||s.pregnancy===filters.state);
+      const counts=Object.fromEntries(Object.keys(pregnancyNames).map(state=>[state,all.filter(s=>s.pregnancy===state).length]));
+      return envelope(snapshot,kind,filters,rows.length,{counts,totalMatches:rows.length,rows:rows.slice(0,filters.limit),basis:"胎次、繁殖周期与配种轮次统一投影；待核实不计为已孕或空怀"},{returnedRows:Math.min(rows.length,filters.limit),resultTruncated:rows.length>filters.limit});
     }
 
     if (kind === "reproduction_summary") {

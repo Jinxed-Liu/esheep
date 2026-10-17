@@ -74,6 +74,9 @@ export default function EntryPage({ workspace, onCreateRecord, onNavigate, draft
     try {
       const { inspectExcelWorkbook } = await import("../../lib/excelWorkbook.js");
       const result = await inspectExcelWorkbook(file, `${excelTemplateBase}.json`);
+      const {reviewReproductionImports} = await import("../../lib/reproductionImportReview.js");
+      result.reproductionReview = await reviewReproductionImports(result.records,workspace);
+      result.issues.push(...result.reproductionReview.errors.map(r=>`${r.sheet} 第 ${r.row} 行：${r.message}`));
       setWorkbookState({ status: result.issues.length ? "invalid" : "ready", result, error: "" });
     } catch (error) {
       setWorkbookState({ status: "invalid", result: null, error: error.message || "工作簿读取失败。" });
@@ -129,6 +132,8 @@ export default function EntryPage({ workspace, onCreateRecord, onNavigate, draft
                   <strong>{workbookState.status === "ready" ? `结构预检通过 · App 模板 v${workbookState.result.version}` : "工作簿需要修正"}</strong>
                   <small>{workbookState.result.fileName}</small>
                   {workbookState.result.summaries.length ? <em>{workbookState.result.summaries.map((item) => `${item.name} ${item.rowCount} 行`).join(" · ")}</em> : null}
+                  {workbookState.result.reproductionReview ? <em>可接受 {workbookState.result.reproductionReview.acceptableRowCount} 行 · 繁殖待核实 {workbookState.result.reproductionReview.reviewRowCount} 行 · 繁殖错误 {workbookState.result.reproductionReview.errorRowCount} 行</em> : null}
+                  {workbookState.result.reproductionReview?.reviews.map(r=><em className="issue" key={`${r.sheet}:${r.row}:${r.earTag}`}>{r.sheet} 第 {r.row} 行 · {r.earTag}：{r.reasons.join("；")}</em>)}
                   {workbookState.result.issues.slice(0, 6).map((issue) => <em className="issue" key={issue}>{issue}</em>)}
                   {workbookState.result.issues.length > 6 ? <em className="issue">另有 {workbookState.result.issues.length - 6} 项问题</em> : null}
                 </span>

@@ -18,6 +18,7 @@ struct PenSheepRowSnapshot: Identifiable, Sendable, Hashable {
     let id: UUID
     let earTag: String
     let purpose: String
+    var reproductionState: String?
 }
 
 struct PenDetailSnapshot: Sendable, Hashable {
@@ -116,8 +117,10 @@ actor PenManagementSnapshotActor {
         }
         let sheepDescriptor = FetchDescriptor<SheepRecord>(predicate: sheepPredicate)
         let sheepRecords: [SheepRecord] = try context.fetch(sheepDescriptor)
+        let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate { $0.farmID == farmID && $0.deletedAt == nil }))
+        let states = ReproductionReminderValidity.states(records: reproduction, now: .now)
         let sheepRows: [PenSheepRowSnapshot] = sheepRecords.map {
-            PenSheepRowSnapshot(id: $0.id, earTag: $0.earTag, purpose: $0.purpose)
+            PenSheepRowSnapshot(id: $0.id, earTag: $0.earTag, purpose: $0.purpose, reproductionState: $0.sex == .ewe ? states[$0.id]?.displayState ?? "结果待核实" : nil)
         }
         let sheep: [PenSheepRowSnapshot] = sheepRows.sorted {
             let comparison = $0.earTag.localizedStandardCompare($1.earTag)

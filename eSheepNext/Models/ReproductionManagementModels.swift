@@ -26,6 +26,7 @@ struct ReproductionManagementSettings: Codable, Equatable, Sendable {
     var postpartumWarningDays: Int?
     var maidenReminderMonths: Int?
     var maidenWarningMonths: Int?
+    var weighingReminderDays: Int?
 
     var hasPostpartumRule: Bool { postpartumReminderDays != nil && postpartumWarningDays != nil }
     var hasMaidenRule: Bool { maidenReminderMonths != nil && maidenWarningMonths != nil }
@@ -57,6 +58,7 @@ struct ReproductionManagementSettings: Codable, Equatable, Sendable {
         case let (reminder?, warning?) where minimumAgeMonths <= reminder && reminder < warning && warning <= 120: break
         default: throw FarmCommandError.invalidNumber("未产羔月龄规则，提醒不得早于统计月龄且警告须大于提醒")
         }
+        if let days = weighingReminderDays, !(1...3650).contains(days) { throw FarmCommandError.invalidNumber("称重周期须为 1–3650 天") }
         var result = self
         result.selectedPenIDs.sort { $0.uuidString < $1.uuidString }
         result.youthBreedingConfirmedSheepIDs.sort { $0.uuidString < $1.uuidString }

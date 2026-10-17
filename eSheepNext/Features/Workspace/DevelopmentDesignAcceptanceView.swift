@@ -46,7 +46,11 @@ struct DevelopmentDesignAcceptanceView: View {
     @ViewBuilder
     private func acceptanceContent(_ fixture: DesignAcceptanceFixture) -> some View {
         let arguments = ProcessInfo.processInfo.arguments
-        if arguments.contains("--design-reproduction") {
+        if arguments.contains("--design-real-farm") {
+            DevelopmentRealFarmAcceptanceView(account: fixture.account, farm: fixture.farm)
+        } else if arguments.contains("--design-sheep-detail") {
+            DevelopmentSheepDetailAcceptanceView(account: fixture.account, farm: fixture.farm)
+        } else if arguments.contains("--design-reproduction") {
             DevelopmentReproductionAcceptanceView(account: fixture.account, farm: fixture.farm)
         } else if arguments.contains("--design-insight-voice-waveform") {
             DesignAcceptanceVoiceWaveformView()
@@ -196,6 +200,38 @@ private final class DesignAcceptanceFixture {
 
     init() throws {
         let args = ProcessInfo.processInfo.arguments
+        if args.contains("--design-real-farm") {
+            guard let index = args.firstIndex(of: "--design-fixture-id"),
+                  args.indices.contains(index + 1), let fixtureID = UUID(uuidString: args[index + 1]) else {
+                throw MiMoClientError.invalidRequest
+            }
+            let directory = URL.applicationSupportDirectory.appending(path: "RealFarmAcceptance", directoryHint: .isDirectory)
+                .appending(path: fixtureID.uuidString, directoryHint: .isDirectory)
+            let marker = try JSONDecoder().decode(DevelopmentRealFarmAcceptanceMarker.self,
+                from: Data(contentsOf: directory.appending(path: "isolation.json")))
+            let url = directory.appending(path: "acceptance.store")
+            guard marker.fixtureID == fixtureID, marker.offlineOnly,
+                  FileManager.default.fileExists(atPath: url.path) else { throw MiMoClientError.invalidRequest }
+            container = try AppSchema.makeContainer(name: "RealFarmAcceptance", url: url)
+            let context = container.mainContext
+            guard let storedFarm = try context.fetch(FetchDescriptor<FarmRecord>()).first(where: { $0.id == marker.farmID }),
+                  try context.fetchCount(FetchDescriptor<SheepRecord>()) == marker.sheepRecordCount else {
+                throw MiMoClientError.invalidRequest
+            }
+            farm = storedFarm
+            if let existing = try context.fetch(FetchDescriptor<AccountProfile>()).first {
+                account = existing
+            } else {
+                account = AccountProfile(appleUserIdentifier: "real-farm-isolation-\(fixtureID)", displayName: "隔离副本验收")
+                context.insert(account)
+                try context.save()
+            }
+            session = AppSession(activeAccountProfileID: account.id, persistedLocalSessionAccountID: nil,
+                                 persistActiveAccountProfileID: { _ in }, clearActiveAccountProfileID: {})
+            session.selectedFarmID = farm.id
+            collaboration = CloudCollaborationStore(container: container, allowsRemoteConnections: false)
+            return
+        }
         let insightReady = args.contains("--design-insight-ready")
         let reproductionReady = args.contains("--design-reproduction")
         let offlineSend = insightReady && args.contains("--design-insight-offline-send")
@@ -237,6 +273,7 @@ private final class DesignAcceptanceFixture {
         }
         if reproductionReady {
             try DevelopmentReproductionAcceptance.seed(account: account, farm: farm, context: context)
+            if args.contains("--design-sheep-detail") { try DevelopmentSheepDetailAcceptanceView.seed(farm: farm, context: context) }
         }
         if let index = args.firstIndex(of: "--design-role"), args.indices.contains(index + 1), let role = FarmRole(rawValue: args[index + 1]) {
             farm.roleRawValue = role.rawValue

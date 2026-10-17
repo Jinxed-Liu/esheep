@@ -1681,6 +1681,7 @@ final class FarmCommandService {
         removalBatchState: RemovalBatchExecutionState? = nil,
         batchState: BatchExecutionState? = nil
     ) throws -> StagedCommandResult {
+        let command = try ReproductionCommandNormalizer.normalize(command, farmID: farm.farmID, context: context)
         let farmID = farm.farmID
         let requiredCapability: FarmCapability
         if case .restoreTombstonedEntity(let tombstoneID) = command,

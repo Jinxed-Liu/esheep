@@ -20,6 +20,7 @@ enum FarmDataQuerySkill {
 
     static let instructions = """
     牧场事实技能：先理解用户实际询问的量，再自主选择工具。直接明细和单表聚合使用 query_farm_data；涉及同一对象的相邻记录、首末记录、差值、间隔天数或变化速率时，使用 calculate_farm_data 组合通用算子。不要直接选择看起来相近的数据库字段，也不要把工具输出原样当成最终回答。
+    - 当前孕检状态必须使用统一繁殖周期投影：query_kind=current_herd、sex=ewe、group_by=reproduction_state、metric=count；不得用历史最后一条孕检结果直接计为当前已孕或空怀。明细同时返回胎次、目标胎次与待核实原因。
     - 当前在场、在群、存栏羊只：query_kind=current_herd。状态固定使用全 App 共用的当前投影规则，自动排除历史归档；不得用“没有离群事件”近似代替当前在场状态。
     - 出生羔羊数、产羔羔羊数：query_kind=born_lambs。技能固定读取产羔事件并累加 lambCount。
     - 按出生月份同时询问在群、死亡、出售、淘汰或转出：query_kind=born_lamb_lifecycle。技能同时读取产羔事件总数与羊只档案当前生命周期状态，并把不同口径分列展示。
@@ -168,7 +169,7 @@ enum FarmDataQuerySkill {
         let allowedGroups: Set<String>
         switch queryKind {
         case .currentHerd, .sheepProfiles:
-            allowedGroups = ["none", "pen", "breed", "sex", "status", "month"]
+            allowedGroups = ["none", "pen", "breed", "sex", "status", "month", "reproduction_state"]
         case .bornLambs, .lambingEvents, .reproductionRecords:
             allowedGroups = ["none", "pen", "breed", "kind", "month"]
         case .bornLambLifecycle:

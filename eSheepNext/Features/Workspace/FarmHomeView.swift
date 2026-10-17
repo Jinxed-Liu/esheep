@@ -505,23 +505,32 @@ private struct TodayFeedDetailView: View {
     }
 }
 
-private struct HomeShortcut: View {
+struct HomeShortcut: View {
     let title: String
     let symbol: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack {
-                Image(systemName: symbol)
-                Text(LocalizedStringKey(title))
-                Spacer()
-            }
-            .padding(14)
-            .background(.background, in: .rect(cornerRadius: 16))
+            HomeShortcutLabel(title: title, symbol: symbol)
         }
         .buttonStyle(MotionSurfaceButtonStyle())
         .accessibilityLabel(title)
+    }
+}
+
+struct HomeShortcutLabel: View {
+    let title: String
+    let symbol: String
+
+    var body: some View {
+        HStack {
+            Image(systemName: symbol)
+            Text(LocalizedStringKey(title))
+            Spacer()
+        }
+        .padding(14)
+        .background(.background, in: .rect(cornerRadius: 16))
     }
 }
 
