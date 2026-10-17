@@ -125,7 +125,8 @@ enum FarmDataInterchange {
         reproduction: [ReproductionRecord],
         transfers: [TransferRecord],
         allSheep: [SheepRecord] = [],
-        semenDonors: [SemenDonorRecord] = []
+        semenDonors: [SemenDonorRecord] = [],
+        detail: SheepDetailSnapshot? = nil
     ) throws -> Data {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -134,7 +135,7 @@ enum FarmDataInterchange {
         let pedigreeSheep = allSheep.isEmpty ? [sheep] : allSheep.filter { $0.farmID == sheep.farmID && $0.deletedAt == nil }
         let byID = Dictionary(uniqueKeysWithValues: pedigreeSheep.map { ($0.id, $0) })
         let donor = sheep.semenDonorID.flatMap { id in semenDonors.first { $0.id == id && $0.farmID == sheep.farmID } }
-        let profileTable: [[String]] = [
+        var profileTable: [[String]] = [
             ["单羊档案", sheep.earTag, "", ""],
             ["字段", "值", "", ""],
             ["品种", sheep.breed, "", ""],
@@ -149,6 +150,12 @@ enum FarmDataInterchange {
             ["种公羊资格", sheep.isBreedingRam ? "种公羊" : "否", "", ""],
             ["备注", sheep.note, "", ""],
         ]
+        let cycle = detail?.reproductionState ?? (sheep.sex == .ewe ? ReproductionCycleResolver.resolve(eweID: sheep.id, facts: ReproductionCycleResolver.facts(records: reproduction), asOf: .now) : nil)
+        if let cycle {
+            profileTable += [["已完成产羔胎次", cycle.completedParity.map { String($0) } ?? "待核实", "", ""],
+                ["本轮目标胎次", cycle.targetParity.map { String($0) } ?? "待核实", "", ""],
+                ["本轮繁殖状态", cycle.displayState, "", ""], ["繁殖资料待核实", cycle.issues.joined(separator: "；"), "", ""]]
+        }
         let weightRows = weights.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }.map { ["称重", formatter.string(from: $0.occurredAt), "\($0.displayKilogramsText) 千克", $0.note] }
         let healthRows = health.filter { $0.farmID == sheep.farmID && ($0.sheepID == sheep.id || healthRecordIDs.contains($0.id)) && $0.deletedAt == nil }.map { [HealthRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "健康", formatter.string(from: $0.occurredAt), $0.itemNameSnapshot, $0.note] }
         let reproductionRows = reproduction.filter { $0.farmID == sheep.farmID && $0.eweID == sheep.id && $0.deletedAt == nil }.map { [ReproductionRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "繁殖", formatter.string(from: $0.occurredAt), $0.result, $0.note] }
@@ -170,7 +177,9 @@ enum FarmDataInterchange {
         let childTable = [["耳号", "性别", "出生日期", "关系来源", "冻精供体快照"]] + children.map { child in
             [child.earTag, child.sex.displayName, child.birthAt.map(formatter.string(from:)) ?? "", (child.damID == sheep.id ? child.damProvenance : child.sireProvenance)?.displayName ?? "历史资料", child.semenDonorNameSnapshot ?? ""]
         }
+        let gains = [["开始日期", "结束日期", "开始体重kg", "结束体重kg", "天数", "日增重kg/天", "开始来源", "结束来源"]] + (detail?.weightGainIntervals ?? []).map { [formatter.string(from: $0.startDate), formatter.string(from: $0.endDate), $0.startKilogramsText, $0.endKilogramsText, String($0.intervalDays), String(format: "%.3f", $0.kilogramsPerDay), $0.startSource.displayName, $0.endSource.displayName] }
         return try XLSXCodec.encode(sheets: [
+            XLSXSheet(name: "体重增重区间", rows: gains),
             XLSXSheet(name: "单羊档案", rows: profileTable),
             XLSXSheet(name: "系谱关系", rows: pedigreeTable),
             XLSXSheet(name: "直接后代", rows: childTable),

@@ -34,7 +34,7 @@ export async function sha256(value) {
 }
 
 export function validateCheckpointManifest(manifest, farm) {
-  requireValue(manifest?.formatVersion === 1 && manifest.minimumClientCapability <= 1,
+  requireValue(manifest?.formatVersion === 1 && Number.isInteger(manifest.minimumClientCapability) && manifest.minimumClientCapability >= 1 && manifest.minimumClientCapability <= 2,
     "这份牧场资料需要更新网页版后才能读取。");
   requireValue(uuid.test(manifest.checkpointID) && sameID(manifest.farmID, farm.id) &&
     manifest.farmGeneration === farm.generation && Number.isSafeInteger(manifest.boundaryEventSequence) &&

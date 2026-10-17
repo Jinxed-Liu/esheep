@@ -58,12 +58,18 @@ struct CareReproductionSubjectDraft: Codable, Sendable, Equatable, Identifiable 
     let eweID: UUID
     let result: String
     let relatedBreedingRecordID: UUID?
+    let reproductionCycleID: UUID?
+    let breedingRoundID: UUID?
+    let breedingIntent: BreedingIntent?
 
-    init(id: UUID = UUID(), eweID: UUID, result: String = "", relatedBreedingRecordID: UUID? = nil) {
+    init(id: UUID = UUID(), eweID: UUID, result: String = "", relatedBreedingRecordID: UUID? = nil, reproductionCycleID: UUID? = nil, breedingRoundID: UUID? = nil, breedingIntent: BreedingIntent? = nil) {
         self.id = id
         self.eweID = eweID
         self.result = result
         self.relatedBreedingRecordID = relatedBreedingRecordID
+        self.reproductionCycleID = reproductionCycleID
+        self.breedingRoundID = breedingRoundID
+        self.breedingIntent = breedingIntent
     }
 }
 
@@ -126,19 +132,25 @@ struct CareLambingDraft: Codable, Sendable, Equatable {
     let sireID: UUID?
     let semenID: UUID?
     let relatedBreedingRecordID: UUID?
+    let reproductionCycleID: UUID?
+    let breedingRoundID: UUID?
+    let breedingIntent: BreedingIntent?
     let parity: Int
     let birthDeadCount: Int
     let offspring: [CareLambDraft]
     let penID: UUID?
     let note: String
 
-    init(id: UUID = UUID(), eweID: UUID, occurredAt: Date, sireID: UUID?, semenID: UUID?, relatedBreedingRecordID: UUID? = nil, parity: Int, birthDeadCount: Int, offspring: [CareLambDraft], penID: UUID?, note: String) {
+    init(id: UUID = UUID(), eweID: UUID, occurredAt: Date, sireID: UUID?, semenID: UUID?, relatedBreedingRecordID: UUID? = nil, reproductionCycleID: UUID? = nil, breedingRoundID: UUID? = nil, breedingIntent: BreedingIntent? = nil, parity: Int, birthDeadCount: Int, offspring: [CareLambDraft], penID: UUID?, note: String) {
         self.id = id
         self.eweID = eweID
         self.occurredAt = occurredAt
         self.sireID = sireID
         self.semenID = semenID
         self.relatedBreedingRecordID = relatedBreedingRecordID
+        self.reproductionCycleID = reproductionCycleID
+        self.breedingRoundID = breedingRoundID
+        self.breedingIntent = breedingIntent
         self.parity = parity
         self.birthDeadCount = birthDeadCount
         self.offspring = offspring

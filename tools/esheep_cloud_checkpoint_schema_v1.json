@@ -1332,7 +1332,10 @@
       "createdAt": "Date",
       "updatedAt": "Date",
       "revision": "Int",
-      "deletedAt": "Date?"
+      "deletedAt": "Date?",
+      "reproductionCycleID": "UUID?",
+      "breedingRoundID": "UUID?",
+      "breedingIntentRawValue": "String?"
     }
   },
   "RevokedCapabilityCertificateRecord": {

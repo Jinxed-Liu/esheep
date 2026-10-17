@@ -62,6 +62,10 @@ struct FarmAnalyticsSnapshot: Sendable {
         var result: String = ""
         var relatedBreedingRecordID: UUID?
         var revision: Int = 1
+        var parity: Int?
+        var reproductionCycleID: UUID?
+        var breedingRoundID: UUID?
+        var breedingIntentRawValue: String?
     }
     struct ParityEvidence: Sendable, Hashable {
         let id: UUID
@@ -217,7 +221,7 @@ struct FarmAnalyticsSnapshot: Sendable {
             },
             reproductionFacts: reproduction.filter { $0.farmID == farmID && $0.deletedAt == nil }.map {
                 ReproductionFact(id: $0.id, eweID: $0.eweID, kind: $0.kind, occurredAt: $0.occurredAt,
-                    result: $0.result, relatedBreedingRecordID: $0.relatedBreedingRecordID, revision: $0.revision)
+                    result: $0.result, relatedBreedingRecordID: $0.relatedBreedingRecordID, revision: $0.revision, parity: $0.parity, reproductionCycleID: $0.reproductionCycleID, breedingRoundID: $0.breedingRoundID, breedingIntentRawValue: $0.breedingIntentRawValue)
             },
             reproductionSettings: reproductionSettings,
             reproductionCareRule: reproductionCareRule
@@ -2821,7 +2825,7 @@ enum SheepAnalyticsEngine {
         let lambings = snapshot.lambings.filter { $0.eweID == sheepID }.sorted { $0.occurredAt < $1.occurredAt }
         var details = lambings.map { "\(FarmAnalyticsDate.month($0.occurredAt)) 第\($0.parity.map(String.init) ?? "?")胎 \($0.total)只" }
         if lambings.count >= 2 { details.append(contentsOf: zip(lambings, lambings.dropFirst()).map { "胎间距：\(FarmAnalyticsDate.days(from: $0.occurredAt, to: $1.occurredAt))天" }) }
-        return FarmInsight(title: "繁殖推演", summary: "\(sheep.earTag) 共\(lambings.count)胎", details: details)
+        return FarmInsight(title: "繁殖历史", summary: "\(sheep.earTag) 已记录产羔 \(lambings.count) 次", details: details)
     }
 
     static func herdSummary(snapshot: FarmAnalyticsSnapshot) -> FarmInsight {

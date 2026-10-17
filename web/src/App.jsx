@@ -467,11 +467,11 @@ export function App() {
     return results;
   }
   async function sendSavedDraft(draft) { return sendDraftGroup([draft]); }
-  async function sendPenAction(record, draftID, onProgress) {
+  async function sendPenAction(record, draftID, onProgress, noun = "羊舍") {
     const lifecycle = authLifecycle.current, token = lifecycle.token();
     const [{ submitPenManagement }, cloud] = await Promise.all([import("./lib/penSubmission.js"), loadSupabaseModule()]);
     lifecycle.assertCurrent(token);
-    return submitPenManagement({ cloud, workspace, record, draftID, onProgress,
+    return submitPenManagement({ cloud, workspace, record, draftID, onProgress, noun,
       assertCurrent: () => lifecycle.assertCurrent(token), onDrafts: setDrafts,
       onWorkspace: updated => { workspaceDataSource.invalidate({ farmID: workspace.farm.id }); setWorkspace(updated); } });
   }
@@ -568,7 +568,7 @@ export function App() {
   let content;
   switch (activePage) {
     case "flock":
-    case "pens": content = <FlockPage key={workspace.farm.id} workspace={workspace} initialView={activePage === "pens" ? "pens" : "sheep"} selectedID={routeContext.selectedID} initialPenScope={routeContext.penScope} resumePenDraft={routeContext.penDraft} onCreateRecord={openRecord} onLabelSubmit={sendLabelActions} onPenSubmit={sendPenAction} onNavigate={navigate} />; break;
+    case "pens": content = <FlockPage key={workspace.farm.id} workspace={workspace} initialView={activePage === "pens" ? "pens" : "sheep"} selectedID={routeContext.selectedID} initialPenScope={routeContext.penScope} resumePenDraft={routeContext.penDraft} onCreateRecord={openRecord} onLabelSubmit={sendLabelActions} onReproductionSubmit={(record,id,onProgress)=>sendPenAction(record,id,onProgress,"繁殖")} onPenSubmit={sendPenAction} onNavigate={navigate} />; break;
     case "alerts": content = <AlertsPage workspace={workspace} selectedID={routeContext.selectedID} onNavigate={navigate} onCreateRecord={openRecord} />; break;
     case "entry": content = <EntryPage drafts={drafts} busy={writeBusy} progress={writeProgress} onSubmitGroup={sendDraftGroup} onResume={draft=>draft.record.penAction?navigate("pens",{penDraft:draft}):openRecord(draft.record.sheet,{draft})} onSubmitDraft={sendSavedDraft} onDiscardDraft={deleteDraft} onImport={importRecords} workspace={workspace} onCreateRecord={openRecord} onNavigate={navigate} />; break;
     case "care": content = <CarePage workspace={workspace} onCreateRecord={openRecord} />; break;
@@ -584,7 +584,7 @@ export function App() {
     case "tmr-plans":
     case "tmr-formulas": content = <TMRPage workspace={workspace} mode={activePage} onCreateRecord={openRecord} onNavigate={navigate} />; break;
     case "insights":
-    case "assistant": content = <InsightsPage workspace={workspace} mode={activePage} onNavigate={navigate} />; break;
+    case "assistant": content = <InsightsPage workspace={workspace} mode={activePage} onNavigate={navigate} onReproductionSubmit={(record,id,onProgress)=>sendPenAction(record,id,onProgress,"繁殖")} />; break;
     case "search": content = <SearchPage searchIndex={searchIndex} onOpenResult={selectSearchResult} />; break;
     case "events": content = <EventsPage workspace={workspace} selectedID={routeContext.selectedID} exportHint={routeContext.exportHint} />; break;
     case "settings": content = <SettingsPage workspace={workspace} authState={authState} isConfigured={isSupabaseConfigured} onSignIn={handleSignIn} onAppleSignIn={handleAppleSignIn} onSignOut={handleSignOut} onReloadCloud={reloadCloud} environmentPreferences={environmentPreferences} />; break;

@@ -1,3 +1,4 @@
+import { compensateOffspring, setLambingRevoked } from "./reproductionLifecycle.js";
 import { labelKinds, applyLabelAction } from "./sheepLabels.js";
 import { replayTMR,tmrReplayKinds } from './tmrBusinessReplay.js';
 import { presentAtTime,penAtTime } from './businessValidation.js';
@@ -9,7 +10,7 @@ import { decimalMultiply, decimalSum, negate } from "./decimal.js";
 const supported = new Set(["sheep.add", "productionBatch.create", "batchMembership.assign", "batchMembership.leave", "batchMembership.restore",
   "breedingProgram.create", "feedIngredient.add", "feedRecipe.create", "feedRecipe.member.add", "feed.recordLegacy", "inventory.receive", "semen.add",
   "care.healthCatalog.upsert", "care.inventory.receive", "care.inventory.adjust", "care.health.recordBatch", "care.semen.adjust", "care.semenDonor.upsert",
-  "care.semen.setDonor", "care.reproduction.recordBatch", "care.lambing.record", "care.sheepPedigree.update", "care.sheep.setBreedingRam",
+  "care.semen.setDonor", "care.reproduction.recordBatch", "care.reproduction.correct", "care.lambing.record", "care.lambing.correct", "care.lambing.revoke", "care.lambing.restore", "care.sheepPedigree.update", "care.sheep.setBreedingRam",
   "care.careRules.update", "care.operationalAlertRules.update", "care.operationalAlert.defer", "care.careReminder.setStatus", "care.inventoryLot.setActive"]);
 
 // Match native JSONEncoder.sortedKeys and UUID encoding for the shared
@@ -22,7 +23,7 @@ function reproductionSettingsJSON(value) {
     selectedPenIDs: value.selectedPenIDs.map((id) => id.toUpperCase()).sort(),
     youthBreedingConfirmedSheepIDs: value.youthBreedingConfirmedSheepIDs.map((id) => id.toUpperCase()).sort(),
   };
-  for (const field of ["postpartumReminderDays", "postpartumWarningDays", "maidenReminderMonths", "maidenWarningMonths"]) {
+  for (const field of ["postpartumReminderDays", "postpartumWarningDays", "maidenReminderMonths", "maidenWarningMonths", "weighingReminderDays"]) {
     if (value[field] != null) settings[field] = value[field];
   }
   const sorted = (entry) => Array.isArray(entry) ? entry.map(sorted)
@@ -163,6 +164,36 @@ export async function applyExtendedV2Event(projection, event, body) {
         kindRawValue: "consumption", quantityText: decimalMultiply(args.dosePerSubjectText, subjects.length), occurredAt: args.occurredAt, sourceRecordID: args.id, note: args.itemName });
       break;
     }
+    case "care.reproduction.correct": {
+      const original=get("ReproductionRecord",args.originalID??args._0),replacement=args.replacement??args._1;
+      if(!replacement)throw new Error("繁殖修正缺少替换事实。");
+      for(const transaction of rows("SemenTransactionRecord"))if(transaction.sourceRecordID===original.id)put("SemenTransactionRecord",{id:await stableUUID(transaction.id,"reverse-delete"),semenID:transaction.semenID,kindRawValue:"adjustment",quantityText:transaction.quantityText,occurredAt:at,sourceRecordID:original.id,note:"删除配种反向恢复冻精"});
+      for(const reminder of rows("CareReminderRecord"))if(reminder.sourceEntityID===original.id)Object.assign(reminder,{deletedAt:at,revision:reminder.revision+1});
+      original.deletedAt=at;original.revision++;
+      const subjects=replacement.subjects.map(subject=>({...subject,
+        relatedBreedingRecordID:subject.relatedBreedingRecordID??(subject.reproductionCycleID==null?original.relatedBreedingRecordID:null),
+        reproductionCycleID:subject.reproductionCycleID??original.reproductionCycleID,
+        breedingRoundID:subject.reproductionCycleID==null?(original.breedingRoundID??(original.kindRawValue==="breeding"?original.id:null)):subject.breedingRoundID,
+        breedingIntent:subject.breedingIntent??original.breedingIntentRawValue}));
+      await applyExtendedV2Event(projection,event,{...body,command_kind:"care.reproduction.recordBatch",command_payload:{kind:"care.reproduction.recordBatch",body:{recordReproductionBatch:{_0:{...replacement,subjects}}}}});
+      break;
+    }
+    case "care.lambing.correct": {
+      const original=get("ReproductionRecord",args.originalID??args._0),replacement=args.replacement??args._1,reason=args.reason??args._2;
+      const oldRevision=original.revision,kept=new Set(replacement.offspring.map(r=>r.id));
+      for(const detail of rows("LambingOffspringRecord"))if(detail.lambingRecordID===original.id&&!kept.has(detail.id)){
+        await compensateOffspring(detail,original,{projection,put,at,accountID:event.actor_account_id,reason});
+        Object.assign(detail,{deletedByLambingRevocation:false,deletedAt:at,updatedAt:at,revision:detail.revision+1});
+      }
+      await applyExtendedV2Event(projection,event,{...body,command_kind:"care.lambing.record",command_payload:{kind:"care.lambing.record",body:{recordLambing:{_0:{...replacement,relatedBreedingRecordID:replacement.relatedBreedingRecordID??(replacement.reproductionCycleID==null?original.relatedBreedingRecordID:null),reproductionCycleID:replacement.reproductionCycleID??original.reproductionCycleID,breedingRoundID:replacement.reproductionCycleID==null?original.breedingRoundID:replacement.breedingRoundID}}}}});
+      const corrected=get("ReproductionRecord",replacement.id);corrected.revision=oldRevision+1;corrected.updatedAt=at;
+      break;
+    }
+    case "care.lambing.revoke": case "care.lambing.restore": {
+      const record=get("ReproductionRecord",args.recordID??args._0);
+      await setLambingRevoked(kind==="care.lambing.revoke",record,{projection,put,at,accountID:event.actor_account_id,reason:args.reason??"恢复产羔记录"});
+      break;
+    }
     case "care.reproduction.recordBatch": {
       put("CareBatchRecord", { id: args.id, kindRawValue: args.kind, occurredAt: args.occurredAt, note: args.note });
       const sourceSemen = args.semenID ? get("SemenRecord", args.semenID) : null;
@@ -170,8 +201,11 @@ export async function applyExtendedV2Event(projection, event, body) {
       for (const subject of args.subjects) {
         const id = await stableUUID(args.id, subject.id);
         put("ReproductionRecord", { ...args, ...subject, id, kindRawValue: args.kind, batchID: args.id,
-          sireID: args.sireID ?? donor?.linkedRamID ?? null, semenNameSnapshot: sourceSemen?.code ?? null,
-          semenDonorID: donor?.id ?? null, semenDonorNameSnapshot: donor?.name ?? null });
+          breedingIntentRawValue: subject.breedingIntent ?? null, sireID: args.sireID ?? donor?.linkedRamID ?? null, semenNameSnapshot: sourceSemen?.code ?? null,
+          semenDonorID: donor?.id ?? null, semenDonorNameSnapshot: donor?.name ?? null,
+          semenDonorRegistrationNumberSnapshot: donor?.registrationNumber?.trim() || null,
+          semenDonorBreedSnapshot: donor?.breed ?? null,
+          paternalSourceRawValue: args.kind === "breeding" ? (args.sireID ? "ram" : donor ? "semenDonor" : "unknown") : "unknown" });
         if (args.kind !== "abortion") await reminder({ id, type: "reproduction" }, subject.eweID, args.reminderAt, args.kind === "breeding" ? "pregnancyCheck" : "expectedLambing", `${subject.result || "母羊"} · ${args.kind === "breeding" ? "孕检" : "预产期"}`);
         if (args.semenID) put("SemenTransactionRecord", { id: await stableUUID(id, "semen-consumption"), semenID: args.semenID, kindRawValue: "consumption", quantityText: args.semenUnitsPerEweText ?? "1", occurredAt: args.occurredAt, sourceRecordID: id, note: `配种批次 ${args.id}` });
       }
@@ -179,9 +213,10 @@ export async function applyExtendedV2Event(projection, event, body) {
     }
     case "care.lambing.record": {
       const mother = get("SheepRecord", args.eweID);
-      const sourceSemen = args.semenID ? get("SemenRecord", args.semenID) : null;
+      const linked = args.relatedBreedingRecordID ? get("ReproductionRecord",args.relatedBreedingRecordID) : null;
+      const sourceSemen = (args.semenID??linked?.semenID) ? get("SemenRecord", args.semenID??linked.semenID) : null;
       const donor = sourceSemen?.donorID ? get("SemenDonorRecord", sourceSemen.donorID) : null;
-      const sireID = args.sireID ?? donor?.linkedRamID ?? null;
+      const sireID = args.sireID ?? linked?.sireID ?? donor?.linkedRamID ?? null;
       put("ReproductionRecord", { ...args, kindRawValue: "lambing", sireID, semenNameSnapshot: sourceSemen?.code ?? null, lambCount: args.offspring.length,
         semenDonorID: donor?.id ?? null, semenDonorNameSnapshot: donor?.name ?? null });
       for (const lamb of args.offspring) {
@@ -191,15 +226,19 @@ export async function applyExtendedV2Event(projection, event, body) {
         if (lamb.createSheepRecord) {
           const fatherBreed = sireID ? get("SheepRecord", sireID).breed : donor?.breed;
           const breed = lamb.breed?.trim() || (fatherBreed && mother.breed ? `${fatherBreed}-${mother.breed}串` : fatherBreed || mother.breed || "未知");
-          put("SheepRecord", { id: lamb.sheepID, earTag: lamb.earTag, breed, sexRawValue: lamb.sex, statusRawValue: "active", purpose: "哺乳羔羊",
-            initialPenID: args.penID, currentPenID: args.penID, enteredAt: args.occurredAt, birthAt: args.occurredAt, damID: args.eweID, sireID,
-            damProvenanceRawValue: "lambing", sireProvenanceRawValue: sireID || donor ? "lambing" : null, semenDonorID: donor?.id ?? null,semenDonorNameSnapshot:donor?.name??null,semenDonorRegistrationNumberSnapshot:donor?.registrationNumber??null,semenDonorBreedSnapshot:donor?.breed??null, note: "由产羔记录自动建档" });
+          const existing=projection.models.get("SheepRecord").get(lamb.sheepID);
+          if(existing?.damProvenanceRawValue==="manual"&&existing.damID!==args.eweID||existing?.sireProvenanceRawValue==="manual"&&(existing.sireID!==sireID||existing.semenDonorID!==(donor?.id??null)))throw new Error("羔羊系谱已被人工确认，不能覆盖。");
+          put("SheepRecord", { id: lamb.sheepID, earTag: lamb.earTag, breed:lamb.breed?.trim()||existing?.breed||breed, sexRawValue: lamb.sex, statusRawValue: existing?.statusRawValue??"active", purpose: existing?.purpose??"哺乳羔羊",
+            initialPenID: args.penID, currentPenID: existing?.currentPenID??args.penID, enteredAt: Math.min(existing?.enteredAt??args.occurredAt,args.occurredAt), birthAt: args.occurredAt, damID: args.eweID, sireID,
+            damProvenanceRawValue: existing?.damProvenanceRawValue==="manual"?"manual":"lambing", sireProvenanceRawValue: existing?.sireProvenanceRawValue==="manual"?"manual":sireID || donor ? "lambing" : null, semenDonorID: donor?.id ?? null,semenDonorNameSnapshot:donor?.name??null,semenDonorRegistrationNumberSnapshot:donor?.registrationNumber??null,semenDonorBreedSnapshot:donor?.breed??null, note: "由产羔记录自动建档" });
           bornSheep.push(lamb.sheepID);
-          if (weightID) put("WeightRecord", { id: weightID, sheepID: lamb.sheepID, kilogramsText: lamb.birthWeightText, occurredAt: weightAt, note: isBirth ? "初生重" : "产羔录入称重" });
+          const previousDetail=projection.models.get("LambingOffspringRecord").get(lamb.id);
+          if(previousDetail?.autoBirthWeightRecordID&&previousDetail.autoBirthWeightRecordID!==weightID){const old=projection.models.get("WeightRecord").get(previousDetail.autoBirthWeightRecordID);if(old){old.deletedAt=at;old.revision++;}}
+          if (weightID) put("WeightRecord", { id: weightID, sheepID: lamb.sheepID, kilogramsText: lamb.birthWeightText, occurredAt: weightAt, deletedAt:null, note: isBirth ? "初生重" : "产羔录入称重" });
         }
         put("LambingOffspringRecord", { id: lamb.id, lambingRecordID: args.id, sheepID: lamb.createSheepRecord ? lamb.sheepID : null,
           legacyEarTag: lamb.earTag, sexRawValue: lamb.sex, birthWeightText: isBirth ? lamb.birthWeightText : "", isStillborn: lamb.isStillborn,
-          autoCreatedSheep: lamb.createSheepRecord, autoBirthWeightRecordID: lamb.createSheepRecord ? weightID : null });
+          deletedAt:null,autoCreatedSheep: lamb.createSheepRecord, autoBirthWeightRecordID: lamb.createSheepRecord ? weightID : null });
       }
       for (const row of rows("CareReminderRecord")) if (row.sheepID === args.eweID && row.kindRawValue === "expectedLambing") Object.assign(row, { statusRawValue: "completed", completedAt: at });
       break;

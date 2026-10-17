@@ -6,18 +6,19 @@ import UniformTypeIdentifiers
 enum InHerdSheepExport {
     static let columnTitles = ["耳号", "圈舍", "出生日期", "入场日期", "品种", "性别", "用途", "状态", "备注"]
 
-    static func csvData(farmID: UUID, sheep: [SheepRecord], pens: [PenRecord]) -> Data {
+    static func csvData(farmID: UUID, sheep: [SheepRecord], pens: [PenRecord], reproduction: [ReproductionRecord]? = nil) -> Data {
         let penNames = Dictionary(
             uniqueKeysWithValues: pens
                 .filter { $0.farmID == farmID && $0.deletedAt == nil }
                 .map { ($0.id, $0.name) }
         )
         let dateFormatter = makeDateFormatter()
+        let states = ReproductionReminderValidity.states(records: reproduction ?? [], eweIDs: sheep.filter { $0.sex == .ewe }.map(\.id), now: .now)
         let rows = sheep
             .filter { $0.farmID == farmID && $0.deletedAt == nil && $0.isCurrentlyPresent }
             .sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }
             .map { item in
-                [
+                var values = [
                     item.earTag,
                     item.currentPenDisplayName(item.currentPenID.flatMap { penNames[$0] }),
                     item.birthAt.map(dateFormatter.string(from:)) ?? "",
@@ -28,9 +29,15 @@ enum InHerdSheepExport {
                     item.status.displayName,
                     item.note
                 ]
+                if reproduction != nil {
+                    let state = states[item.id]
+                    values += [state?.completedParity.map { String($0) } ?? "", state?.targetParity.map { String($0) } ?? "", state?.displayState ?? (item.sex == .ewe ? "胎次待核实" : "不适用"), state?.issues.joined(separator: "；") ?? ""]
+                }
+                return values
             }
 
-        let csv = ([columnTitles] + rows)
+        let titles = columnTitles + (reproduction == nil ? [] : ["已完成产羔胎次", "本轮目标胎次", "本轮繁殖状态", "繁殖资料待核实"])
+        let csv = ([titles] + rows)
             .map { $0.map(escapeCSVField).joined(separator: ",") }
             .joined(separator: "\r\n") + "\r\n"
         // BOM 使 Windows 版 Excel 直接识别中文 UTF-8，而不会出现乱码。

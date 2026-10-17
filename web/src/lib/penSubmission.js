@@ -3,7 +3,7 @@ import { submitWorkspaceDraft } from "./workspaceSubmission.js";
 
 // A pen form keeps one draft ID for its entire lifetime, including uncertain
 // responses. Accepted receipts and a successful projection refresh are separate.
-export async function submitPenManagement({ cloud, workspace, record, draftID, assertCurrent, onWorkspace, onDrafts, onProgress = () => {} }) {
+export async function submitPenManagement({ cloud, workspace, record, draftID, assertCurrent, onWorkspace, onDrafts, onProgress = () => {}, noun = "羊舍" }) {
   const accountID = workspace.profile.accountID, farm = workspace.farm;
   assertCurrent();
   const previous = (await listDrafts(accountID, farm.id)).find(item => item.id === draftID);
@@ -18,7 +18,7 @@ export async function submitPenManagement({ cloud, workspace, record, draftID, a
       : "云端未接受本次操作，原始回执已保留，请在“录入”中核对。");
     let refreshed = false;
     try {
-      onProgress("云端已接受，正在更新羊舍资料…");
+      onProgress(`云端已接受，正在更新${noun}资料…`);
       const updated = await cloud.loadCloudWorkspace(farm.id);
       assertCurrent();
       if (updated.profile.accountID !== accountID || updated.farm.id !== farm.id) throw new Error("账号或牧场已切换。");

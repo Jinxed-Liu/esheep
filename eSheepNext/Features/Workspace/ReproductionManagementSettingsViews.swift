@@ -189,6 +189,7 @@ struct ReproductionRuleSettingsView: View {
     let dataStore: FarmDeepAnalyticsStore
     let model: ReproductionManagementModel
     let initial: ReproductionManagementResult
+    @State private var weighingDays: String
     @State private var minimumAgeMonths: Int
     @State private var sourceSettings: ReproductionManagementSettings?
     @State private var postpartumEnabled: Bool
@@ -203,6 +204,7 @@ struct ReproductionRuleSettingsView: View {
          model: ReproductionManagementModel, initial: ReproductionManagementResult) {
         self.account = account; self.farm = farm; self.dataStore = dataStore; self.model = model; self.initial = initial
         let settings = initial.settings
+        _weighingDays = State(initialValue: settings.weighingReminderDays.map(String.init) ?? "")
         _sourceSettings = State(initialValue: initial.sourceSettings)
         _minimumAgeMonths = State(initialValue: settings.minimumAgeMonths)
         _postpartumEnabled = State(initialValue: settings.hasPostpartumRule)
@@ -247,6 +249,10 @@ struct ReproductionRuleSettingsView: View {
             } header: { Text("现有提醒设置") } footer: {
                 Text("通知沿用已有开关与汇总时间。未检胎不等于空怀；复检和结果不清分别列出。")
             }
+            Section("称重周期") {
+                numberField("称重间隔天数（可选）", text: $weighingDays)
+                Text("留空仅显示距上次称重天数；填写后显示待称重事项。").font(.footnote).foregroundStyle(.secondary)
+            }
             if !canManage { Section { Label("只有牧场主或管理员可以修改规则。", systemImage: "lock") } }
         }
         .disabled(!canManage)
@@ -272,6 +278,7 @@ struct ReproductionRuleSettingsView: View {
     private func save() {
         do {
             var settings = sourceSettings ?? .init()
+            settings.weighingReminderDays = weighingDays.trimmingCharacters(in: .whitespaces).isEmpty ? nil : try positiveInteger(weighingDays, label: "称重间隔天数")
             settings.minimumAgeMonths = minimumAgeMonths
             settings.postpartumReminderDays = postpartumEnabled ? try positiveInteger(postpartumReminder, label: "产后提醒天数") : nil
             settings.postpartumWarningDays = postpartumEnabled ? try positiveInteger(postpartumWarning, label: "产后警告天数") : nil

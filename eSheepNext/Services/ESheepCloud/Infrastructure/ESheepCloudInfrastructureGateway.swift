@@ -170,6 +170,19 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
                 throw ESheepCloudContractError.missingDeviceIdentity
             }
         }
+        let needsCycleContract = try commands.contains { signed in
+            let data = try ESheepCloudCanonicalCodec.encode(signed.command.payload)
+            let text = String(decoding: data, as: UTF8.self)
+            return text.contains("reproductionCycleID") || text.contains("breedingRoundID") || text.contains("breedingIntent")
+        }
+        if needsCycleContract {
+            struct Capabilities: Decodable { let reproduction_contract_version: Int? }
+            struct Request: Encodable { let action = "capabilities" }
+            let capability: Capabilities
+            do { capability = try await client.functions.invoke("esheep-cloud-v2-writes", options: FunctionInvokeOptions(body: Request())) }
+            catch { throw ESheepCloudInfrastructureError.reproductionCapabilityUnavailable }
+            guard (capability.reproduction_contract_version ?? 0) >= 1 else { throw ESheepCloudInfrastructureError.reproductionUpgradeRequired }
+        }
         let grouped = Dictionary(grouping: commands) {
             FarmGenerationKey(
                 farmID: $0.command.farmID,
@@ -660,6 +673,8 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
 }
 
 enum ESheepCloudInfrastructureError: LocalizedError {
+    case reproductionUpgradeRequired
+    case reproductionCapabilityUnavailable
     case malformedResponse
     case invalidSnapshotChunk
     case commandBatchTooLarge
@@ -667,6 +682,10 @@ enum ESheepCloudInfrastructureError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .reproductionCapabilityUnavailable:
+            "暂时无法确认云端繁殖关联能力，请检查连接或完成服务更新后重试。原始记录与待同步命令已保留。"
+        case .reproductionUpgradeRequired:
+            "云端尚未支持本次繁殖关联格式，请完成云端更新后重试。原始记录与待同步命令已保留。"
         case .malformedResponse:
             "eSheep+ 云返回的资料不完整，已停止应用。"
         case .invalidSnapshotChunk:

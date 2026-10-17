@@ -1,3 +1,5 @@
+import { reproductionCommand } from "./reproductionCommands.js";
+import { entryAssociation, resolveReproductionState } from "./reproductionCycles.js";
 import { labelSpec } from "./sheepLabels.js";
 import { additionalRecordSchemas } from './additionalRecordSchemas.js';
 import { additionalBusinessCommands } from './additionalBusinessCommands.js';
@@ -47,6 +49,7 @@ export function parseBusinessDate(value, timeZone = "Asia/Shanghai", optional = 
 }
 
 export async function buildBusinessCommands(record, workspace, { identity = record.importKey ?? record.id ?? crypto.randomUUID() } = {}) {
+  if(record.reproductionAction)return reproductionCommand(record,workspace);
   if(record.labelAction)return [await labelSpec(record.labelAction,record.labelDraft,workspace)];
   if(record.penAction)return [await penCommandSpec(record.penAction,record.penDraft,workspace)];
   const { sheet } = record;
@@ -178,7 +181,21 @@ export async function buildBusinessCommands(record, workspace, { identity = reco
       const kind = repro(v["类型"]); requireValue(kind, "繁殖类型请选择配种、孕检或流产；产羔请使用产羔录入。");
       const sireID = breedingRam(v["种公羊耳号"])?.id ?? null, semenID = semen(v["冻精编号"], true)?.id ?? null;
       requireValue(kind === "breeding" ? Boolean(sireID) !== Boolean(semenID) : !sireID && !semenID, "配种时种公羊与冻精必须二选一；孕检或流产不能直接确认父本。");
-      const subjects = await Promise.all(targets("母羊耳号列表").map(async (row) => { requireValue(row.sexRawValue === "ewe", `${row.earTag} 不是母羊。`); return { id: await stableUUID(id, earKey(row.earTag)), eweID: row.id, result: v["结果"] || "", relatedBreedingRecordID: null }; }));
+      const intent = v["配种轮次"] ? ({"新一轮配种":"newRound","本轮补配":"supplement"})[v["配种轮次"]] : null;
+      requireValue(!v["配种轮次"] || intent, "配种轮次须为新一轮配种或本轮补配。");
+      const subjects = await Promise.all(targets("母羊耳号列表").map(async (row) => {
+        requireValue(row.sexRawValue === "ewe", `${row.earTag} 不是母羊。`);
+        const subjectID = await stableUUID(id, earKey(row.earTag));
+        let relatedID = v["关联配种记录"] || null;
+        if (v["关联配种导入键"]) {
+          const batch = await stableUUID(workspace.farm.id, `excel-v3:繁殖记录:${v["关联配种导入键"].toLowerCase()}`);
+          const derived = await stableUUID(batch, await stableUUID(batch, earKey(row.earTag)));
+          requireValue(!relatedID || relatedID === derived, "关联配种记录与导入键冲突。"); relatedID = derived;
+        }
+        const association = entryAssociation({eweID:row.id,recordID:await stableUUID(id,subjectID),kind,occurredAt:occurred(),records:rows("ReproductionRecord"),relatedID,intent,requiresExplicitRound:!v["导入键"]});
+        return { id: subjectID, eweID: row.id, result: v["结果"] || "", relatedBreedingRecordID: relatedID,
+          ...association, breedingIntent: kind === "breeding" ? intent : null };
+      }));
       commands = [care("reproduction.recordBatch", "recordReproductionBatch", { id, kind, subjects, occurredAt: occurred(), sireID, semenID,
         semenUnitsPerEweText: decimal(v["每只冻精数量"], "每只冻精数量", false, !semenID), note, reminderAt: date("提醒日期", true) }, "careBatch", id, occurred(), true)]; break;
     }
@@ -195,9 +212,14 @@ export async function buildBusinessCommands(record, workspace, { identity = reco
           birthWeightText: decimal(weight, "羔羊体重", false, true) || "", weightOccurredAt: parseBusinessDate(weightDate, timezone, true), createSheepRecord: create === "是", isStillborn: stillborn === "是" };
       }));
       requireValue(offspring.length > 0 && new Set(offspring.filter((l) => l.createSheepRecord).map((l) => normalized(l.earTag))).size === offspring.filter((l) => l.createSheepRecord).length, "产羔明细为空或有重复耳号。");
-      const prior=rows("ReproductionRecord").filter(r=>r.eweID===ewe.id&&r.parity>=0&&((r.kindRawValue==="lambing"&&r.occurredAt<occurred())||(r.kindRawValue==="parityBaseline"&&r.occurredAt<=occurred()))).sort((a,b)=>b.occurredAt-a.occurredAt||b.updatedAt-a.updatedAt||b.createdAt-a.createdAt)[0];
-      const parity=(prior?.parity??0)+1;
-      commands = [care("lambing.record", "recordLambing", { id, eweID: ewe.id, occurredAt: occurred(), sireID, semenID, relatedBreedingRecordID: null,
+      const facts=rows("ReproductionRecord").filter(r=>r.kindRawValue!=="lambing"||r.occurredAt<occurred());
+      const state=resolveReproductionState(ewe.id,facts,occurred());
+      requireValue(state.completedParity!=null,`${ewe.earTag} 胎次待核实，请先确认。`);
+      let relatedID=v["关联配种记录"]||null;
+      if(v["关联配种导入键"]){const batch=await stableUUID(workspace.farm.id,`excel-v3:繁殖记录:${v["关联配种导入键"].toLowerCase()}`),derived=await stableUUID(batch,await stableUUID(batch,earKey(ewe.earTag)));requireValue(!relatedID||relatedID===derived,"关联配种记录与导入键冲突。");relatedID=derived;}
+      const association=entryAssociation({eweID:ewe.id,recordID:id,kind:"lambing",occurredAt:occurred(),records:facts,relatedID,requiresExplicitRound:!v["导入键"]});
+      const parity=state.completedParity+1;
+      commands = [care("lambing.record", "recordLambing", { id, eweID: ewe.id, occurredAt: occurred(), sireID, semenID, relatedBreedingRecordID: relatedID, ...association,
         parity, birthDeadCount: offspring.filter((l) => l.isStillborn).length, offspring, penID: pen(v["圈舍"], true)?.id ?? null, note }, "reproduction", id, occurred(), true)]; break;
     }
     case "系谱关系": {

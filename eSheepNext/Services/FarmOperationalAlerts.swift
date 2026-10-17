@@ -250,6 +250,12 @@ enum FarmOperationalAlertEngine {
         let occurredAt: Date
         let revision: Int
         let isDeleted: Bool
+        var result: String = ""
+        var parity: Int?
+        var relatedBreedingRecordID: UUID?
+        var reproductionCycleID: UUID?
+        var breedingRoundID: UUID?
+        var breedingIntentRawValue: String?
     }
 
     struct LambingOffspring: Sendable, Hashable {
@@ -393,11 +399,14 @@ enum FarmOperationalAlertEngine {
         for (eweID, ewe) in activeEwesByID {
             let allFacts = reproductionByEwe[eweID] ?? []
             let facts = allFacts.filter { !$0.isDeleted }.sorted(by: reproductionOrder)
-            guard let latestBreeding = facts.last(where: { $0.kind == .breeding }) else { continue }
-            let laterFacts = facts.filter { $0.occurredAt >= latestBreeding.occurredAt && $0.id != latestBreeding.id }
-            guard !laterFacts.contains(where: {
-                $0.kind == .pregnancyCheck || $0.kind == .abortion || $0.kind == .lambing
-            }) else { continue }
+            let cycle = ReproductionCycleResolver.resolve(eweID: eweID, facts: facts.map {
+                FarmAnalyticsSnapshot.ReproductionFact(id: $0.id, eweID: $0.eweID, kind: $0.kind, occurredAt: $0.occurredAt,
+                    result: $0.result, relatedBreedingRecordID: $0.relatedBreedingRecordID, revision: $0.revision,
+                    parity: $0.parity, reproductionCycleID: $0.reproductionCycleID,
+                    breedingRoundID: $0.breedingRoundID, breedingIntentRawValue: $0.breedingIntentRawValue)
+            }, asOf: now)
+            guard let latestBreeding = cycle.breeding, cycle.check == nil,
+                  !facts.contains(where: { $0.kind == .pregnancyCheck && $0.occurredAt >= latestBreeding.occurredAt && $0.occurredAt <= now }) else { continue }
             let breedingDay = calendar.startOfDay(for: latestBreeding.occurredAt)
             guard let dueAt = calendar.date(byAdding: .day, value: rule.pregnancyCheckDays, to: breedingDay),
                   let warningAt = calendar.date(byAdding: .day, value: -warningLeadDays, to: dueAt),
@@ -641,7 +650,9 @@ actor FarmOperationalAlertSnapshotActor {
                 kind: $0.kind,
                 occurredAt: $0.occurredAt,
                 revision: $0.revision,
-                isDeleted: $0.deletedAt != nil
+                isDeleted: $0.deletedAt != nil, result: $0.result, parity: $0.parity,
+                relatedBreedingRecordID: $0.relatedBreedingRecordID, reproductionCycleID: $0.reproductionCycleID,
+                breedingRoundID: $0.breedingRoundID, breedingIntentRawValue: $0.breedingIntentRawValue
             )
         }
         let lambingOffspring = try context.fetch(FetchDescriptor<LambingOffspringRecord>(predicate: #Predicate {
@@ -656,10 +667,11 @@ actor FarmOperationalAlertSnapshotActor {
                 isDeleted: $0.deletedAt != nil
             )
         }
+        let reminderStates = ReproductionReminderValidity.states(records: reproductionRecords, eweIDs: sheepRecords.filter { $0.sex == .ewe }.map(\.id), now: now)
         let reminders = try context.fetch(FetchDescriptor<CareReminderRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.deletedAt == nil
         })).compactMap { record -> FarmScheduledReminderSnapshot? in
-            guard record.status == .pending else { return nil }
+            guard record.status == .pending, ReproductionReminderValidity.isRelevant(record, state: record.sheepID.flatMap { reminderStates[$0] }) else { return nil }
             return FarmScheduledReminderSnapshot(
                 id: record.id,
                 kind: record.kind,
@@ -710,7 +722,22 @@ actor FarmOperationalAlertSnapshotActor {
         let legacyAlerts = base.operationalAlerts.filter {
             reproductionSettings?.scopeConfigured != true || ($0.kind != .pregnancyCheckDueSoon && $0.kind != .pregnancyCheckOverdue)
         }
-        let combinedAlerts = (legacyAlerts + management.operationalAlerts(deferrals: deferrals) + TMRMonitoringAlertAdapter.alerts(from: tmrSnapshot))
+        let managementAlerts = management.operationalAlerts(deferrals: deferrals)
+        let reviewedIDs = Set(management.ewes.filter { !$0.concerns.isEmpty }.map(\.id))
+        let reproductionFactEweIDs = Set(reproductionRecords.filter { $0.deletedAt == nil && $0.occurredAt <= now }.map(\.eweID))
+        let globalReviews = sheepRecords.filter { $0.sex == .ewe && $0.deletedAt == nil && !reviewedIDs.contains($0.id) }.compactMap { ewe -> FarmOperationalAlert? in
+            guard let state = reminderStates[ewe.id], !state.issues.isEmpty,
+                  !ReproductionReviewPolicy.isPreBreedingLamb(purpose: ewe.purpose, birthAt: ewe.birthAt,
+                    removedAt: ewe.removedAt, hasReproductionFacts: reproductionFactEweIDs.contains(ewe.id),
+                    asOf: now, timeZoneIdentifier: farm.timeZoneIdentifier,
+                    minimumAgeMonths: reproductionSettings?.minimumAgeMonths ?? 10) else { return nil }
+            let fingerprint = "reproduction-review:\(state.cycleID):\(state.breedingRoundID?.uuidString ?? "none"):\(state.issues.joined(separator: ";"))"
+            let alert = FarmOperationalAlertEngine.makeAlert(farmID: farmID, kind: .reproductionReview, subjectID: ewe.id,
+                sourceEntityID: state.check?.id ?? state.breeding?.id, fingerprint: fingerprint,
+                title: "\(ewe.earTag) · 繁殖资料待核实", detail: state.issues.joined(separator: "；"), dueAt: now, earTag: ewe.earTag)
+            return deferrals.contains { $0.alertID == alert.id && $0.conditionFingerprint == fingerprint && $0.deferredUntil > now && $0.deferredUntil > $0.deferredAt && $0.deferredUntil.timeIntervalSince($0.deferredAt) <= 8 * 86_400 } ? nil : alert
+        }
+        let combinedAlerts = (legacyAlerts + managementAlerts + globalReviews + TMRMonitoringAlertAdapter.alerts(from: tmrSnapshot))
             .sorted {
                 if $0.dueAt != $1.dueAt { return $0.dueAt < $1.dueAt }
                 if $0.kind.rawValue != $1.kind.rawValue { return $0.kind.rawValue < $1.kind.rawValue }

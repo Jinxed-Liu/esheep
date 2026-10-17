@@ -1083,6 +1083,9 @@ final class ReproductionRecord {
     var semenID: UUID? = nil
     var batchID: UUID? = nil
     var relatedBreedingRecordID: UUID? = nil
+    var reproductionCycleID: UUID? = nil
+    var breedingRoundID: UUID? = nil
+    var breedingIntentRawValue: String? = nil
     var semenNameSnapshot: String?
     var semenDonorID: UUID? = nil
     var semenDonorNameSnapshot: String? = nil
@@ -1100,7 +1103,7 @@ final class ReproductionRecord {
     var revision: Int = 1
     var deletedAt: Date?
 
-    init(id: UUID = UUID(), farmID: UUID, eweID: UUID, kind: ReproductionRecordKind, occurredAt: Date, sireID: UUID? = nil, semenID: UUID? = nil, batchID: UUID? = nil, relatedBreedingRecordID: UUID? = nil, semenNameSnapshot: String? = nil, semenDonorID: UUID? = nil, semenDonorNameSnapshot: String? = nil, semenDonorRegistrationNumberSnapshot: String? = nil, semenDonorBreedSnapshot: String? = nil, paternalSource: PaternalIdentitySource? = nil, result: String = "", lambCount: Int = 0, parity: Int? = nil, birthDeadCount: Int? = nil, note: String = "", legacySourceKey: String? = nil) {
+    init(id: UUID = UUID(), farmID: UUID, eweID: UUID, kind: ReproductionRecordKind, occurredAt: Date, sireID: UUID? = nil, semenID: UUID? = nil, batchID: UUID? = nil, relatedBreedingRecordID: UUID? = nil, reproductionCycleID: UUID? = nil, breedingRoundID: UUID? = nil, breedingIntentRawValue: String? = nil, semenNameSnapshot: String? = nil, semenDonorID: UUID? = nil, semenDonorNameSnapshot: String? = nil, semenDonorRegistrationNumberSnapshot: String? = nil, semenDonorBreedSnapshot: String? = nil, paternalSource: PaternalIdentitySource? = nil, result: String = "", lambCount: Int = 0, parity: Int? = nil, birthDeadCount: Int? = nil, note: String = "", legacySourceKey: String? = nil) {
         self.id = id
         self.farmID = farmID
         self.eweID = eweID
@@ -1110,6 +1113,9 @@ final class ReproductionRecord {
         self.semenID = semenID
         self.batchID = batchID
         self.relatedBreedingRecordID = relatedBreedingRecordID
+        self.reproductionCycleID = reproductionCycleID
+        self.breedingRoundID = breedingRoundID
+        self.breedingIntentRawValue = breedingIntentRawValue
         self.semenNameSnapshot = semenNameSnapshot
         self.semenDonorID = semenDonorID
         self.semenDonorNameSnapshot = semenDonorNameSnapshot

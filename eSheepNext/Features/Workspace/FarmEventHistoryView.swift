@@ -601,7 +601,10 @@ actor FarmEventHistoryActor {
                     .init(label: "胎次", value: record.parity.map { String($0) } ?? ""),
                     .init(label: "产羔数", value: record.kind == .lambing ? String(record.lambCount) : ""),
                     .init(label: "死胎数", value: record.birthDeadCount.map { String($0) } ?? ""),
-                    .init(label: "结果", value: record.result.isEmpty ? "未填写" : record.result)
+                    .init(label: "结果", value: record.result.isEmpty ? "未填写" : record.result),
+                    .init(label: "繁殖周期", value: record.reproductionCycleID == record.eweID ? "建档后的首个周期" : record.reproductionCycleID.flatMap { id in reproduction.first { $0.id == id } }.map { "\($0.kind.displayName)后周期（\($0.occurredAt.formatted(date: .numeric, time: .omitted)))" } ?? "按可靠时间线核对"),
+                    .init(label: "配种轮次", value: record.breedingIntentRawValue.flatMap(BreedingIntent.init(rawValue:))?.title ?? "历史轮次待核对"),
+                    .init(label: "关联配种", value: record.relatedBreedingRecordID.flatMap { id in reproduction.first { $0.id == id } }.map { $0.occurredAt.formatted(date: .numeric, time: .shortened) + " · 配种" } ?? (record.relatedBreedingRecordID == nil ? "未明确关联" : "关联配种已修正或撤销，须核对"))
                 ]
             )
         })

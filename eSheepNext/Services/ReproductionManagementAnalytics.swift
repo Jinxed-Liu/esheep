@@ -140,6 +140,7 @@ enum ReproductionManagementEngine {
         let factsByEwe = Dictionary(grouping: snapshot.reproductionFacts.filter { $0.occurredAt <= now }, by: \.eweID)
         let birthsByEwe = Dictionary(grouping: snapshot.lambings.filter { $0.occurredAt <= now }, by: \.eweID)
         let parityByEwe = Dictionary(grouping: snapshot.parityEvidence.filter { $0.occurredAt <= now }, by: \.eweID)
+        let cycleStates = ReproductionCycleResolver.states(snapshot: snapshot)
         var rows: [ReproductionManagementEwe] = []
         for ewe in present where ewe.sex == .ewe {
             try Task.checkCancellation()
@@ -154,10 +155,13 @@ enum ReproductionManagementEngine {
             }
             let lastBirth = births.last
             let lastParity = evidence.last
-            let parity: Int?
-            if let birth = lastBirth, lastParity == nil || birth.occurredAt > lastParity!.occurredAt {
-                parity = birth.parity.flatMap { $0 > 0 ? $0 : nil }
-            } else { parity = lastParity?.parity }
+            let cycleState = cycleStates[ewe.id]!
+            let preBreedingLamb = ReproductionReviewPolicy.isPreBreedingLamb(purpose: ewe.purpose,
+                birthAt: ewe.birthAt, removedAt: ewe.removedAt,
+                hasReproductionFacts: !facts.isEmpty || !births.isEmpty || !evidence.isEmpty,
+                asOf: now, timeZoneIdentifier: snapshot.timeZoneIdentifier,
+                minimumAgeMonths: settings.minimumAgeMonths)
+            let parity = cycleState.completedParity
             var issues: [String] = []
             if parity == nil { issues.append("缺少可确认的胎次，不能判定为未产羔") }
             let hasConflict = parity == 0 && lastBirth != nil ||
@@ -182,7 +186,8 @@ enum ReproductionManagementEngine {
             let overAge = maturityAt.map { today > $0 } ?? false
             let maiden = parity == 0 && births.isEmpty && !hasConflict
             let category: ReproductionEweCategory
-            if hasConflict || parity == nil { category = .uncertain }
+            if preBreedingLamb { category = .immature }
+            else if hasConflict || parity == nil { category = .uncertain }
             else if parity == 1 { category = .firstParity }
             else if let parity, parity >= 2 { category = .multiparous }
             else if maiden && overAge { category = confirmedYouth.contains(ewe.id) ? .young : .pendingReadiness }
@@ -190,7 +195,9 @@ enum ReproductionManagementEngine {
             else { category = .uncertain }
             let eligible = postpartum != nil || overAge
             let stage: (id: String, title: String, order: Int)
-            if let postpartum, let band = ReproductionPostpartumBand.containing(postpartum) {
+            if preBreedingLamb, let months {
+                stage = ("pre-breeding-lamb", "羔羊 · \(months) 月龄", 100 + months * 3)
+            } else if let postpartum, let band = ReproductionPostpartumBand.containing(postpartum) {
                 stage = ("postpartum-\(band.rawValue)", "产后 \(band.title)", band.rawValue)
             } else if maiden, let months {
                 stage = ("maiden-\(months)-\(category.rawValue)", "\(category.rawValue) · \(months) 月龄", 100 + months * 3 + (category == .young ? 2 : overAge ? 1 : 0))
@@ -199,9 +206,8 @@ enum ReproductionManagementEngine {
             } else {
                 stage = ("unresolved", "繁殖资料待核实", 1_000)
             }
-            let pregnancy = pregnancyEvidence(facts: facts, latestLambingAt: lastBirth?.occurredAt,
-                missingLambingConfirmedAt: missingBirth ? lastParity?.occurredAt : nil)
-            issues.append(contentsOf: pregnancy.issues)
+            let pregnancy = (state: cycleState.pregnancy, check: cycleState.check, breeding: cycleState.breeding)
+            issues.append(contentsOf: cycleState.issues)
             var concerns: [ReproductionManagementConcern] = []
             if pregnancy.state == .unexamined {
                 if eligible, let postpartum, let reminder = settings.postpartumReminderDays,
@@ -238,6 +244,7 @@ enum ReproductionManagementEngine {
             if eligible && pregnancy.state == .recheck, let checkAt = pregnancy.check?.occurredAt {
                 concerns.append(.init(kind: .recheck, severity: .review, detail: "最近检胎要求复检，请核对后续检查", dueAt: calendar.startOfDay(for: checkAt)))
             }
+            if preBreedingLamb { issues.removeAll { $0 == "缺少可确认的胎次，不能判定为未产羔" } }
             issues = Array(Set(issues)).sorted()
             if !issues.isEmpty {
                 concerns.append(.init(kind: .review, severity: .review, detail: issues.joined(separator: "；"), dueAt: today))
@@ -266,28 +273,4 @@ enum ReproductionManagementEngine {
         lhs.occurredAt == rhs.occurredAt ? lhs.id.uuidString < rhs.id.uuidString : lhs.occurredAt < rhs.occurredAt
     }
 
-    private static func pregnancyEvidence(facts: [FarmAnalyticsSnapshot.ReproductionFact], latestLambingAt: Date?, missingLambingConfirmedAt: Date?) ->
-        (state: ReproductionPregnancyState, check: FarmAnalyticsSnapshot.ReproductionFact?, breeding: FarmAnalyticsSnapshot.ReproductionFact?, issues: [String]) {
-        let boundaryFact = facts.last { $0.kind == .breeding || $0.kind == .lambing || $0.kind == .abortion }
-        let boundary = [boundaryFact?.occurredAt, latestLambingAt].compactMap { $0 }.max()
-        let breeding = boundaryFact.flatMap { item in
-            item.kind == .breeding && (latestLambingAt.map { item.occurredAt > $0 } ?? true) ? item : nil
-        }
-        let checks = facts.filter { item in
-            guard item.kind == .pregnancyCheck, boundary.map({ item.occurredAt >= $0 }) ?? true else { return false }
-            if let linked = item.relatedBreedingRecordID { return linked == breeding?.id }
-            return true
-        }
-        guard let latest = checks.last else { return (.unexamined, nil, breeding, []) }
-        let simultaneous = checks.filter { $0.occurredAt == latest.occurredAt }
-        let states = Set(simultaneous.map { ReproductionPregnancyState.classify($0.result) })
-        if states.count > 1 || boundary == latest.occurredAt {
-            return (.uncertain, latest, breeding, ["检胎结果冲突或与繁殖事件同时发生，先后关系待核实"])
-        }
-        if missingLambingConfirmedAt.map({ latest.occurredAt <= $0 }) == true {
-            return (.uncertain, latest, breeding, ["缺少最近产羔日期，历史检胎是否属于本轮待核实"])
-        }
-        let state = ReproductionPregnancyState.classify(latest.result)
-        return (state, latest, breeding, state == .uncertain ? ["检胎结果无法确认：\(latest.result.isEmpty ? "未填写" : latest.result)"] : [])
-    }
 }

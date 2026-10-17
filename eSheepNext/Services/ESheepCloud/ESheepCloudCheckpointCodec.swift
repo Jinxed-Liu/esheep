@@ -7,6 +7,7 @@ enum ESheepCloudCheckpointError: Error, LocalizedError {
     case unsupportedVersion, digestMismatch, sizeLimit, incomplete, insufficientDiskSpace
 
     var errorDescription: String? {
+        if case .unsupportedVersion = self { return "这份牧场资料包含新版业务字段，请更新 eSheep+ 后继续接收。原有资料已保留。" }
         if case .insufficientDiskSpace = self { return "本机空间不足，已保留接收进度，请释放空间后继续。" }
         return "业务检查点核对未通过，已保留原有资料。"
     }

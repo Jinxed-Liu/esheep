@@ -3,7 +3,7 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 import schema from "../../tools/esheep_cloud_checkpoint_schema_v1.json" with { type: "json" };
 import { createV2Projection, applyV2Event, finishV2Projection, decodeCheckpointValues } from "../src/lib/cloudV2Projection.js";
-import { clearCloudV2Cache, decodeCheckpointChunk, loadCloudV2Projection, validateV2Event, sha256 } from "../src/lib/cloudV2Checkpoint.js";
+import { validateCheckpointManifest, clearCloudV2Cache, decodeCheckpointChunk, loadCloudV2Projection, validateV2Event, sha256 } from "../src/lib/cloudV2Checkpoint.js";
 
 const id = (number) => `00000000-0000-4000-8000-${String(number).padStart(12, "0")}`;
 const farmID = id(1), sheepID = id(2), penA = id(3), penB = id(4);
@@ -448,4 +448,35 @@ test("incremental projection reuse is scoped to account and cannot be repopulate
   assert.equal(state.tickets, 3, "an in-flight read must not undo clearCloudV2Cache");
   state.generation = 4;
   await assert.rejects(read(), /版本已变化/);
+});
+
+
+test("reproductive association capability accepts v1 and v2 and rejects future formats clearly",()=>{
+ const checkpointID=id(91),manifest={formatVersion:1,minimumClientCapability:2,checkpointID,farmID,farmGeneration:3,boundaryEventSequence:0,boundaryEventDigest:"a".repeat(64),receiptChainDigest:"b".repeat(64),businessDigest:"c".repeat(64),modelCounts:{},chunks:[]};
+ assert.doesNotThrow(()=>validateCheckpointManifest(manifest,{id:farmID,generation:3}));
+ assert.doesNotThrow(()=>validateCheckpointManifest({...manifest,minimumClientCapability:1},{id:farmID,generation:3}));
+ assert.throws(()=>validateCheckpointManifest({...manifest,minimumClientCapability:3},{id:farmID,generation:3}),/需要更新网页版/);
+});
+
+test("reproduction revoke preserves signed operation time and advances revision across restore", () => {
+  const recordID = id(95);
+  const p = projection([record("ReproductionRecord", { id: recordID, eweID: sheepID,
+    kindRawValue: "breeding", revision: 7 })]);
+  const revoke = event(11, "record.revoke", "tombstone", {
+    entityType: "reproduction", entityID: recordID, reason: "测试记录",
+  }, [{ type: "reproduction", id: recordID }]);
+  revoke.envelope.received_at_millis = at + 60000;
+  apply(p, revoke);
+  let result = finishV2Projection(p, { now: at + 100000 });
+  const target = result.models.ReproductionRecord.find(r => r.id === recordID);
+  assert.equal(target.deletedAt, revoke.envelope.occurred_at_millis);
+  assert.equal(target.revision, 8);
+  assert.equal(result.models.TombstoneRecord[0].deletedAt, revoke.envelope.occurred_at_millis);
+  apply(p, revoke);
+  assert.equal(target.revision, 8, "duplicate replay must not advance revision again");
+  apply(p, event(12, "record.restore", "restore", { tombstoneID: id(111) },
+    [{ type: "reproduction", id: recordID }]));
+  result = finishV2Projection(p, { now: at + 100000 });
+  assert.equal(result.models.ReproductionRecord[0].deletedAt, null);
+  assert.equal(result.models.ReproductionRecord[0].revision, 9);
 });

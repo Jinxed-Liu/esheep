@@ -36,7 +36,7 @@ struct ESheepCloudCheckpointManifest: Codable, Sendable, Equatable {
     let chunks: [Chunk]
 
     func validate() throws {
-        guard formatVersion == 1, minimumClientCapability <= 1 else {
+        guard formatVersion == 1, (1...2).contains(minimumClientCapability) else {
             throw ESheepCloudCheckpointError.unsupportedVersion
         }
         let prefix = "\(farmID.uuidString.lowercased())/\(checkpointID.uuidString.lowercased())/"
@@ -129,6 +129,7 @@ enum ESheepCloudCheckpointArchive {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var chunks: [ESheepCloudCheckpointManifest.Chunk] = []
         var counts: [String: Int] = [:]
+        var minimumCapability = 1
         var buffer: [ESheepCloudCheckpointRecord] = []
         var bufferBytes = 2
         var businessHasher = SHA256()
@@ -150,6 +151,9 @@ enum ESheepCloudCheckpointArchive {
         for adapter in ESheepCloudCheckpointRegistry.adapters where adapter.disposition == .transfer {
             let rows = try adapter.exportRows(farmID, context)
             counts[adapter.name] = rows.count
+            if adapter.name == "ReproductionRecord", rows.contains(where: { row in
+                ["reproductionCycleID", "breedingRoundID", "breedingIntentRawValue"].contains { row.values[$0] != nil }
+            }) { minimumCapability = 2 }
             for row in rows {
                 let bytes = try ESheepCloudCanonicalCodec.encode(row)
                 guard bytes.count + 2 <= ESheepCloudCheckpointGzip.limit else { throw ESheepCloudCheckpointError.sizeLimit }
@@ -161,7 +165,7 @@ enum ESheepCloudCheckpointArchive {
             }
         }
         try flush()
-        let manifest = ESheepCloudCheckpointManifest(formatVersion: 1, minimumClientCapability: 1,
+        let manifest = ESheepCloudCheckpointManifest(formatVersion: 1, minimumClientCapability: minimumCapability,
             checkpointID: id, farmID: farmID, farmGeneration: generation, boundaryEventSequence: head,
             boundaryEventDigest: receipts.first?.eventDigest ?? String(repeating: "0", count: 64),
             receiptChainDigest: state.projectionDigest,

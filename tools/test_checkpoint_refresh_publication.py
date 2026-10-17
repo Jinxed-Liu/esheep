@@ -7,6 +7,14 @@ from publish_esheep_checkpoint_refresh import validate, sha
 
 class RefreshPublicationTests(unittest.TestCase):
     def test_parent_source_and_independent_proof_must_match(self):
+        for capability in (1, 2):
+            self.check_fixture(capability)
+
+    def test_unknown_capability_cannot_be_published(self):
+        with self.assertRaises(AssertionError):
+            self.check_fixture(3)
+
+    def check_fixture(self, capability):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); source = root/'source'; candidate = root/'candidate'
             source.mkdir(); (candidate/'archive').mkdir(parents=True)
@@ -23,7 +31,7 @@ class RefreshPublicationTests(unittest.TestCase):
             save(source/'profile.json',{})
             inventory_hash=save(source/'inventory.json',{p.name:sha(p.read_bytes()) for p in source.iterdir()})
             manifest=dict(farmID=farm,farmGeneration=3,checkpointID=checkpoint,boundaryEventSequence=2,
-                formatVersion=1,minimumClientCapability=1,modelCounts={'FarmRecord':1},chunks=[dict(index=0,
+                formatVersion=1,minimumClientCapability=capability,modelCounts={'FarmRecord':1},chunks=[dict(index=0,
                 objectKey=f'{farm}/{checkpoint}/00000.json.gz',modelNames=['FarmRecord'],compressedBytes=len(data),compressedSHA256=sha(data))])
             digest=save(candidate/'archive/manifest.json',manifest)
             (candidate/'archive/00000.json.gz').write_bytes(data)

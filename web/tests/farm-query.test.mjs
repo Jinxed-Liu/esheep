@@ -56,3 +56,16 @@ test("searches only the active-sheep view and reports result truncation", () => 
 test("does not invent unsupported query kinds", () => {
   assert.throws(() => runFarmQuery(snapshot, { kind: "profit_forecast" }), /不支持的查询类型/);
 });
+
+test("AI reproductive state uses the shared cycle resolver and keeps uncertain counts separate", () => {
+  const data=structuredClone(snapshot);data.analyticsSource.reproduction=[
+    {id:'parity',eweID:'sheep-1',kind:'parityBaseline',at:'2026-01-01T00:00:00Z',parity:0},
+    {id:'check',eweID:'sheep-1',kind:'pregnancyCheck',at:'2026-08-30T00:00:00Z',result:'已孕'},
+  ];
+  const result=runFarmQuery(data,{kind:'reproduction_state'});
+  assert.equal(result.result.counts.pregnant,1);assert.equal(result.result.counts.uncertain,0);
+  assert.equal(result.result.rows[0].targetParity,1);
+  data.analyticsSource.reproduction.push({id:'birth',eweID:'sheep-1',kind:'lambing',at:'2026-08-31T00:00:00Z',parity:1});
+  const closed=runFarmQuery(data,{kind:'reproduction_state'});
+  assert.equal(closed.result.counts.pregnant,0);assert.equal(closed.result.rows[0].completedParity,1);
+});

@@ -88,6 +88,11 @@ export async function submitDraft(client, accountID, farm, draft, buildSpecifica
       const specifications = await buildSpecifications();
       assertCurrent();
       if (!specifications.length || specifications.length > 25) throw new Error("单次业务操作最多包含 25 个关联命令，请拆分批次。");
+      if (specifications.some(spec => /reproductionCycleID|breedingRoundID|breedingIntent/.test(JSON.stringify(spec.body)))) {
+        const {data:capability,error:capabilityError}=await client.functions.invoke("esheep-cloud-v2-writes",{body:{action:"capabilities"}});
+        assertCurrent();
+        if(capabilityError||!(Number.isInteger(capability?.reproduction_contract_version)&&capability.reproduction_contract_version>=1))throw new Error("云端尚未启用繁殖周期关联，草稿已保留，请更新服务后重试。");
+      }
       const identity = await browserIdentity(accountID);
       assertCurrent();
       const { error } = await client.rpc("register_device", { p_device_id: identity.id,

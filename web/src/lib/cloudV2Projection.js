@@ -283,12 +283,14 @@ export function applyV2Event(projection, event, body) {
       // Safe pen deletion is a tombstone guarded by the audited cloud pipeline;
       // it retains all history. Sheep/farm cascades still need their own adapter.
       if (["sheep", "farm"].includes(entityType)) throw unsupported(`record.revoke:${entityType}`);
-      target.deletedAt = event.received_at_millis;
+      // Match native lifecycle replay: deletion takes effect at the signed
+      // operation time, even when server receipt is delayed.
+      target.deletedAt = event.occurred_at_millis;
       // Native tombstones use the original operation ID for restoration;
       // checkpoint tombstones keep their own IDs and are also indexed below.
       insert(projection, "TombstoneRecord", {
         ...metadata, id: commandID, entityType, entityID, operationID: commandID,
-        deletedAt: event.received_at_millis, restoredAt: null, reason: args.reason,
+        deletedAt: event.occurred_at_millis, restoredAt: null, reason: args.reason,
       });
     } else {
       const args = commandArguments(body, "restore");
@@ -300,6 +302,7 @@ export function applyV2Event(projection, event, body) {
       target.deletedAt = null;
       tombstone.restoredAt = event.received_at_millis;
     }
+    if (typeof target.revision === "number") target.revision += 1;
     if (["transfer", "removal"].includes(entityType)) releaseHistory(projection, target.sheepID);
     if (entityType === "weaning") projection.changedSheep.add(target.sheepID);
     addOperation(projection, event, entityType, entityID, {

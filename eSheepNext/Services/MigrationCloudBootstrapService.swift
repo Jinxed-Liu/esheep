@@ -434,6 +434,9 @@ struct FarmBaselineSnapshotService {
             payload.optionalIdentifiers["semenID"] = value.semenID
             payload.optionalIdentifiers["batchID"] = value.batchID
             payload.optionalIdentifiers["relatedBreedingRecordID"] = value.relatedBreedingRecordID
+            payload.optionalIdentifiers["reproductionCycleID"] = value.reproductionCycleID
+            payload.optionalIdentifiers["breedingRoundID"] = value.breedingRoundID
+            payload.optionalStrings["breedingIntentRawValue"] = value.breedingIntentRawValue
             payload.optionalIdentifiers["semenDonorID"] = value.semenDonorID
             payload.optionalStrings["semenDonorNameSnapshot"] = value.semenDonorNameSnapshot
             payload.optionalStrings["semenDonorRegistrationNumberSnapshot"] = value.semenDonorRegistrationNumberSnapshot

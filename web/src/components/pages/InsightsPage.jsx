@@ -1,3 +1,4 @@
+import ReproductionManagementPanel from "./ReproductionManagementPanel.jsx";
 import { useEffect, useMemo, useState } from "react";
 import { Baby } from "@phosphor-icons/react/Baby";
 import { BowlFood } from "@phosphor-icons/react/BowlFood";
@@ -531,7 +532,7 @@ function FeedAnalysis({ source, now, timeZone }) {
   );
 }
 
-export default function InsightsPage({ workspace, mode = "insights", onNavigate }) {
+export default function InsightsPage({ workspace, mode = "insights", onNavigate, onReproductionSubmit }) {
   const [view, setView] = useState("overview");
   const isCloud = workspace.mode === "cloud";
   const timeZone = workspace.farm?.timeZoneIdentifier || "Asia/Shanghai";
@@ -548,7 +549,7 @@ export default function InsightsPage({ workspace, mode = "insights", onNavigate 
         {isCloud ? <ProjectionNotice>结果直接使用云端 App 实体，采用与 iOS 相同的事件时间、自然日、固定群体、完整样本和营养覆盖规则。</ProjectionNotice> : <ProjectionNotice>当前没有已授权的云端牧场，不生成牧场结论。</ProjectionNotice>}
         {view === "weight" ? <WeightAnalysis source={source} now={now} timeZone={timeZone} /> : null}
         {view === "lamb" ? <LambAnalysis source={source} timeZone={timeZone} /> : null}
-        {view === "reproduction" ? <ReproductionAnalysis source={source} now={now} timeZone={timeZone} /> : null}
+        {view === "reproduction" ? <><ReproductionManagementPanel workspace={workspace} onNavigate={onNavigate} onSubmit={onReproductionSubmit}/><ReproductionAnalysis source={source} now={now} timeZone={timeZone} /></> : null}
         {view === "intake" ? <FeedAnalysis source={source} now={now} timeZone={timeZone} /> : null}
       </main>
     );

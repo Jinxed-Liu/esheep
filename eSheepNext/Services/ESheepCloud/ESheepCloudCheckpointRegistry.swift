@@ -1312,6 +1312,9 @@ enum ESheepCloudCheckpointRegistry {
                 .init("semenID", \ReproductionRecord.semenID),
                 .init("batchID", \ReproductionRecord.batchID),
                 .init("relatedBreedingRecordID", \ReproductionRecord.relatedBreedingRecordID),
+                .init("reproductionCycleID", \ReproductionRecord.reproductionCycleID),
+                .init("breedingRoundID", \ReproductionRecord.breedingRoundID),
+                .init("breedingIntentRawValue", \ReproductionRecord.breedingIntentRawValue),
                 .init("semenNameSnapshot", \ReproductionRecord.semenNameSnapshot),
                 .init("semenDonorID", \ReproductionRecord.semenDonorID),
                 .init("semenDonorNameSnapshot", \ReproductionRecord.semenDonorNameSnapshot),
@@ -1328,7 +1331,7 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \ReproductionRecord.updatedAt),
                 .init("revision", \ReproductionRecord.revision),
                 .init("deletedAt", \ReproductionRecord.deletedAt),
-            ], farmID: \ReproductionRecord.farmID, recordID: \ReproductionRecord.id),
+            ], farmID: \ReproductionRecord.farmID, recordID: \ReproductionRecord.id, additiveNullableFields: ["reproductionCycleID", "breedingRoundID", "breedingIntentRawValue"]),
         ])
         result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(RevokedCapabilityCertificateRecord.self, disposition: .localOnly, fields: [

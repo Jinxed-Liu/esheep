@@ -1,9 +1,10 @@
-This build focuses on farm renaming, name synchronization, and data preservation after upgrading.
+This build focuses on reproductive cycles, lamb review scope, and sheep production details while preserving existing business history.
 
-1. The production farm is now named “吉昊羊场”. After upgrading and connecting, verify the latest name on Home, the farm list, Settings, and shared invitations. The name should update even when no new business records exist.
-2. Only the farm owner can rename the farm under Settings → Farm name. Show cloud confirmation only after the server accepts the change. Offline or failed requests must not appear successful.
-3. Rename from different devices and verify that stale edits require checking the latest cloud name. Old snapshots and delayed responses must not revert a newer name. Retrying the same request must not duplicate the rename.
-4. Compare the original account, farm, sheep, pens, weighing, transfers, reproduction, and feeding history before and after upgrading. The farm ID and all business records must remain intact, and normal recording and cloud synchronization must continue working.
-5. Reopen the app and check that the latest name remains. Widgets, search, and shortcuts should refresh with farm information. The external review copy must retain its existing name.
+1. Upgrade and connect to the original farm. Verify that the account, sheep, pens, and historical records remain intact, and finish cloud synchronization before checking reproductive status.
+2. Verify breeding ewes that have entered the breeding herd but have not lambed: purpose and completed parity are independent. Revoked test breeding must be excluded from current state while later genuine breeding and pregnancy checks remain intact.
+3. Verify young lambs that have no reproductive facts of their own. Their details should say they have not entered reproductive management, without a missing-parity review alert or an automatically invented parity record.
+4. Verify the historical review entries for departed ewes. Preserve their unresolved evidence; do not silently classify ambiguous history as pregnant or open. Subsequent genuine corrections may change this list.
+5. In a test copy, explicitly choose supplemental breeding within the current round or a new breeding round. Check that pregnancy-check associations, parity, analytics, reminders, and queries agree, and that historical records remain accessible.
+6. Check the weight and interval daily-gain charts. Change date ranges and select intervals to verify endpoint weights, actual days, and sources. Preserve negative gains and do not attribute a cross-pen interval solely to one pen.
 
-Automated validation, Apple processing, internal distribution, and physical-device upgrade acceptance are tracked separately. Internal testing only; external groups and tester membership remain unchanged.
+Automated validation, Apple processing, internal distribution, and physical-device upgrade acceptance are tracked separately. For the existing internal group only; external groups and tester membership remain unchanged.

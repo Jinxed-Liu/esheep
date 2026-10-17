@@ -96,23 +96,10 @@ enum LambingEntrySemantics {
         excluding recordID: UUID?,
         records: [ReproductionRecord]
     ) -> Int? {
-        records
-            .filter {
-                $0.id != recordID &&
-                    $0.farmID == farmID &&
-                    $0.eweID == eweID &&
-                    $0.deletedAt == nil &&
-                    $0.parity.map { $0 >= 0 } == true &&
-                    (($0.kind == .lambing && $0.occurredAt < eventAt) ||
-                        ($0.kind == .parityBaseline && $0.occurredAt <= eventAt))
-            }
-            .sorted {
-                if $0.occurredAt != $1.occurredAt { return $0.occurredAt > $1.occurredAt }
-                if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
-                return $0.createdAt > $1.createdAt
-            }
-            .first?
-            .parity
+        let facts = ReproductionCycleResolver.facts(records: records.filter {
+            $0.id != recordID && $0.farmID == farmID && ($0.kind != .lambing || $0.occurredAt < eventAt)
+        })
+        return ReproductionCycleResolver.resolve(eweID: eweID, facts: facts, asOf: eventAt).completedParity
     }
 
     static func priorParityForLambing(

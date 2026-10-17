@@ -55,7 +55,7 @@ def validate(candidate, source, project):
     assert lineage['parentBoundary'] == parent['manifest']['boundaryEventSequence'] < lineage['boundary']
     assert lineage['parentCheckpointID'].lower() == parent['manifest']['checkpointID'].lower()
     assert lineage['parentManifestSHA256'] == parent['manifestSHA256']
-    assert manifest['formatVersion'] == 1 and manifest['minimumClientCapability'] == 1
+    assert manifest['formatVersion'] == 1 and manifest['minimumClientCapability'] in (1, 2)
     assert independent['historicalProtocolReceipts'] == 0
     assert independent['compressedBytes'] <= 20_000_000 and independent['databaseLogicalBytes'] <= 40_000_000
     assert independent['compressedBytes'] == sum(c['compressedBytes'] for c in manifest['chunks'])
