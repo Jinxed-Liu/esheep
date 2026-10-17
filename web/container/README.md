@@ -28,10 +28,13 @@ credential is baked into either image.
 - Production has its own `esheepplus-harness` Worker and container application.
 
 The production Worker uses `wrangler.harness.production.jsonc` and a pinned
-Cloudflare Registry image. Its 2026-09-29 image layers the current `server/` and
-`src/lib/` source over the existing 2026-09-08 `esheepplus-harness` image, whose
-installed `@openai/codex-sdk` and `@supabase/supabase-js` versions match the
-current pinned direct dependencies. The production image digest is recorded in
+Cloudflare Registry image. Its 2026-10-17 image layers the current `server/` and
+`src/lib/` source over the previously deployed 2026-09-29 image
+(`sha256:8c6f8f140beeb897b3514954a865247d6d29ad5c52cd57ffd4b7fe50e8e2b85c`).
+The base image's installed `@openai/codex-sdk` (0.151.0) and
+`@supabase/supabase-js` (2.112.3) were verified against the unchanged pinned
+dependencies, and the updated query and reproduction modules were imported in
+the resulting Linux/amd64 image. The production image digest is recorded in
 the Wrangler config; update it after building and pushing a new production image.
 
 ## Isolation and resource limits
