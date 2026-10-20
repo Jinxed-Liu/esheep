@@ -6,6 +6,34 @@ import XCTest
 
 @MainActor
 final class AppSchemaMigrationTests: XCTestCase {
+    func testV18ToV19PreservesFarmIdentityAndAddsOptionalLatinName() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "V19Identity-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "farm.store")
+        let farmID = UUID()
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV18.self)
+            XCTAssertFalse(schema.entities.first { $0.name == "ESheepCloudFarmIdentityState" }!.attributes.contains { $0.name == "latinName" })
+            let config = ModelConfiguration("latin", schema: schema, url: url, cloudKitDatabase: .none)
+            let old = try ModelContainer(for: schema, configurations: [config])
+            let context = ModelContext(old)
+            context.insert(FarmRecord(id: farmID, ownerAccountID: UUID(), name: "原有牧场"))
+            context.insert(AppSchemaV18.ESheepCloudFarmIdentityState(farmID: farmID, farmGeneration: 3, name: "原有牧场", revision: 8))
+            context.insert(NoteRecord(farmID: farmID, text: "原有历史", occurredAt: .now))
+            try context.save()
+        }
+        let migrated = try AppSchema.makeContainer(name: "latin", url: url)
+        let context = ModelContext(migrated)
+        let identity = try XCTUnwrap(try context.fetch(FetchDescriptor<ESheepCloudFarmIdentityState>()).first)
+        XCTAssertEqual(identity.farmID, farmID)
+        XCTAssertEqual(identity.name, "原有牧场")
+        XCTAssertEqual(identity.revision, 8)
+        XCTAssertNil(identity.latinName)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<NoteRecord>()).first?.text, "原有历史")
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
+    }
+
     func testV16ToV17PreservesConfiguredCareRulesAndStartsReproductionUnconfigured() throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "V17Reproduction-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -102,10 +130,10 @@ final class AppSchemaMigrationTests: XCTestCase {
 
     func testVersionedSchemaContainsEveryCurrentModel() {
         let historicalV12 = Schema(versionedSchema: AppSchemaV12.self)
-        let versioned = Schema(versionedSchema: AppSchemaV18.self)
+        let versioned = Schema(versionedSchema: AppSchemaV19.self)
         let current = AppSchema.makeSchema()
 
-        XCTAssertEqual(AppSchema.currentVersion, "18.0.0")
+        XCTAssertEqual(AppSchema.currentVersion, "19.0.0")
         XCTAssertEqual(versioned.entities.map(\.name).sorted(), current.entities.map(\.name).sorted())
         XCTAssertTrue(
             Set(versioned.entities.map(\.name)).isSuperset(
@@ -159,9 +187,10 @@ final class AppSchemaMigrationTests: XCTestCase {
                 Schema.Version(16, 0, 0),
                 Schema.Version(17, 0, 0),
                 Schema.Version(18, 0, 0),
+                Schema.Version(19, 0, 0),
             ]
         )
-        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 18)
+        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 19)
     }
 
     func testV13ToV14PreservesOriginalPendingCommandAndIdentity() throws {

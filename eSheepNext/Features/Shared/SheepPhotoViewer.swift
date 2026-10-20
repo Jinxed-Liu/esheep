@@ -2,35 +2,60 @@ import SwiftUI
 import UIKit
 
 struct SheepPhotoPreviewItem: Identifiable, Sendable, Hashable {
-    let id: UUID
-    let candidates: [SheepPhotoReference]
-    let displayedAt: Date?
+    struct Photo: Identifiable, Sendable, Hashable {
+        let reference: SheepPhotoReference
+        let displayedAt: Date?
+        var id: UUID { reference.id }
+    }
 
-    init?(
-        candidates: [SheepPhotoReference],
-        displayedAt: Date? = nil
-    ) {
-        guard let first = candidates.first else { return nil }
-        id = first.id
-        self.candidates = candidates
-        self.displayedAt = displayedAt
+    let id: UUID
+    let photos: [Photo]
+    let initialPhotoID: UUID
+
+    init?(photos: [Photo], selectedPhotoID: UUID? = nil) {
+        var seen = Set<UUID>()
+        let uniquePhotos = photos.filter { seen.insert($0.id).inserted }
+        guard let first = uniquePhotos.first else { return nil }
+        self.photos = uniquePhotos
+        initialPhotoID = uniquePhotos.first { $0.id == selectedPhotoID }?.id ?? first.id
+        id = initialPhotoID
     }
 }
 
 struct SheepPhotoViewer: View {
-    @Environment(CloudCollaborationStore.self) private var collaboration
     @Environment(\.dismiss) private var dismiss
 
     let item: SheepPhotoPreviewItem
     let earTag: String
 
-    @State private var loadState: LoadState = .loading
-    @State private var retryToken = 0
+    // The cover owns a fixed gallery snapshot; selection is seeded once per presentation.
+    @State private var selectedPhotoID: UUID
+
+    init(item: SheepPhotoPreviewItem, earTag: String) {
+        self.item = item
+        self.earTag = earTag
+        _selectedPhotoID = State(initialValue: item.initialPhotoID)
+    }
+
+    private var selectedIndex: Int {
+        item.photos.firstIndex { $0.id == selectedPhotoID } ?? 0
+    }
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            content
+            TabView(selection: $selectedPhotoID) {
+                ForEach(item.photos) { photo in
+                    SheepPhotoPage(
+                        photo: photo.reference,
+                        earTag: earTag,
+                        isActive: photo.id == selectedPhotoID
+                    )
+                    .tag(photo.id)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .accessibilityIdentifier("sheep-photo-pager")
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             HStack(spacing: 16) {
@@ -44,7 +69,7 @@ struct SheepPhotoViewer: View {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.body.weight(.semibold))
-                        .frame(width: 40, height: 40)
+                        .frame(width: 44, height: 44)
                         .background(.ultraThinMaterial, in: .circle)
                 }
                 .buttonStyle(.plain)
@@ -56,22 +81,71 @@ struct SheepPhotoViewer: View {
             .background(Color.black.opacity(0.82))
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let displayedAt = item.displayedAt {
-                Text(displayedAt, format: .dateTime.year().month().day().hour().minute())
-                    .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.82))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(Color.black.opacity(0.82))
+            VStack(spacing: 8) {
+                if item.photos.count > 1 {
+                    HStack(spacing: 24) {
+                        Button { moveSelection(by: -1) } label: {
+                            Image(systemName: "chevron.left")
+                                .frame(width: 44, height: 44)
+                                .contentShape(.rect)
+                        }
+                        .accessibilityLabel("上一张照片")
+                        .disabled(selectedIndex == 0)
+                        Text("\(selectedIndex + 1) / \(item.photos.count)")
+                            .monospacedDigit()
+                            .accessibilityLabel("第 \(selectedIndex + 1) 张，共 \(item.photos.count) 张")
+                            .accessibilityIdentifier("sheep-photo-position")
+                        Button { moveSelection(by: 1) } label: {
+                            Image(systemName: "chevron.right")
+                                .frame(width: 44, height: 44)
+                                .contentShape(.rect)
+                        }
+                        .accessibilityLabel("下一张照片")
+                        .disabled(selectedIndex == item.photos.count - 1)
+                    }
+                    .font(.subheadline.weight(.semibold))
+                }
+                if let displayedAt = item.photos[selectedIndex].displayedAt {
+                    Text(displayedAt, format: .dateTime.year().month().day().hour().minute())
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.82))
+                }
             }
-        }
-        .task(id: LoadKey(
-            candidates: item.candidates,
-            retryToken: retryToken
-        )) {
-            await loadPhoto()
+            .foregroundStyle(.white)
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity)
+            .background(Color.black.opacity(0.82))
         }
         .preferredColorScheme(.dark)
+    }
+
+    private func moveSelection(by offset: Int) {
+        let next = selectedIndex + offset
+        guard item.photos.indices.contains(next) else { return }
+        selectedPhotoID = item.photos[next].id
+    }
+}
+
+private struct SheepPhotoPage: View {
+    @Environment(CloudCollaborationStore.self) private var collaboration
+    let photo: SheepPhotoReference
+    let earTag: String
+    let isActive: Bool
+
+    @State private var loadState: LoadState = .loading
+    @State private var retryToken = 0
+
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: LoadKey(photo: photo, isActive: isActive, retryToken: retryToken)) {
+                // Release the previous original and cancel its request when moving away.
+                guard isActive else {
+                    loadState = .loading
+                    return
+                }
+                await loadPhoto()
+            }
     }
 
     @ViewBuilder
@@ -107,29 +181,27 @@ struct SheepPhotoViewer: View {
     @MainActor
     private func loadPhoto() async {
         loadState = .loading
-        for candidate in item.candidates {
-            guard !Task.isCancelled else { return }
-            do {
-                let data = try await collaboration.loadPhotoData(assetID: candidate.id)
-                let decodeTask = Task.detached(priority: .userInitiated) {
-                    guard !Task.isCancelled else { return nil as UIImage? }
-                    return UIImage(data: data)
-                }
-                let image = await withTaskCancellationHandler {
-                    await decodeTask.value
-                } onCancel: {
-                    decodeTask.cancel()
-                }
-                guard !Task.isCancelled else { return }
-                if let image {
-                    loadState = .loaded(image)
-                    return
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                continue
+        guard !Task.isCancelled else { return }
+        do {
+            let data = try await collaboration.loadPhotoData(assetID: photo.id)
+            let decodeTask = Task.detached(priority: .userInitiated) {
+                guard !Task.isCancelled else { return nil as UIImage? }
+                return UIImage(data: data)
             }
+            let image = await withTaskCancellationHandler {
+                await decodeTask.value
+            } onCancel: {
+                decodeTask.cancel()
+            }
+            guard !Task.isCancelled else { return }
+            if let image {
+                loadState = .loaded(image)
+                return
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            // Failure belongs to this photo; never substitute another gallery page.
         }
         guard !Task.isCancelled else { return }
         loadState = .failed
@@ -142,7 +214,8 @@ struct SheepPhotoViewer: View {
     }
 
     private struct LoadKey: Hashable {
-        let candidates: [SheepPhotoReference]
+        let photo: SheepPhotoReference
+        let isActive: Bool
         let retryToken: Int
     }
 }

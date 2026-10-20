@@ -702,7 +702,7 @@ struct SheepDetailView: View {
                     sheep: subject,
                     penName: penName,
                     photos: bannerPhotos,
-                    photoCount: sheepPhotos.count,
+                    photoCount: bannerPhotos.count,
                     canEdit: canEditPhotos,
                     isProcessing: isProcessingPhoto,
                     onPreview: previewBannerPhoto,
@@ -996,14 +996,15 @@ struct SheepDetailView: View {
     }
 
     private func previewPhoto(_ photo: SheepDetailPhotoSnapshot) {
-        previewingPhoto = SheepPhotoPreviewItem(
-            candidates: [SheepPhotoReference(id: photo.id, digest: photo.sha256)],
-            displayedAt: photo.displayedAt
-        )
+        previewBannerPhoto(selectedPhotoID: photo.id)
     }
 
-    private func previewBannerPhoto() {
-        previewingPhoto = SheepPhotoPreviewItem(candidates: bannerPhotos)
+    private func previewBannerPhoto(selectedPhotoID: UUID?) {
+        let dates = Dictionary(sheepPhotos.map { ($0.id, $0.displayedAt) }, uniquingKeysWith: { first, _ in first })
+        previewingPhoto = SheepPhotoPreviewItem(
+            photos: bannerPhotos.map { .init(reference: $0, displayedAt: dates[$0.id]) },
+            selectedPhotoID: selectedPhotoID
+        )
     }
 
     private func requestPhotoDeletion(_ photo: SheepDetailPhotoSnapshot) {
@@ -1478,79 +1479,120 @@ struct SheepDetailView: View {
 
 private struct SheepProfileBanner: View {
     @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var displayedPhotoID: UUID?
     let sheep: SheepDetailSubjectSnapshot
     let penName: String?
     let photos: [SheepPhotoReference]
     let photoCount: Int
     let canEdit: Bool
     let isProcessing: Bool
-    let onPreview: () -> Void
+    let onPreview: (UUID?) -> Void
     let onCamera: () -> Void
 
+    private var hasPhotos: Bool { !photos.isEmpty }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            let layout = typeSize.isAccessibilitySize
-                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
-                : AnyLayout(HStackLayout(alignment: .top, spacing: 14))
-            layout {
-                Button(action: onPreview) {
-                    SheepAvatarView(photo: photos.first, size: 72, sex: sheep.sex)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                Text(LocalizedStringKey(sheep.status.displayName))
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(hasPhotos ? Color.black.opacity(0.38) : AppTheme.brand.opacity(0.12), in: .capsule)
+                Spacer(minLength: 0)
+                if canEdit {
+                    Button(action: onCamera) {
+                        Group {
+                            if isProcessing { ProgressView() }
+                            else { Image(systemName: "camera") }
+                        }
+                        .frame(width: 44, height: 44)
+                        .background(hasPhotos ? Color.black.opacity(0.38) : AppTheme.brand.opacity(0.12), in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isProcessing)
+                    .accessibilityLabel("拍摄并设置羊只头像")
                 }
-                .buttonStyle(.plain)
-                .disabled(photos.isEmpty)
-                .accessibilityLabel("查看羊只照片，共 \(photoCount) 张")
-
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(verbatim: sheep.earTag)
-                        .font(.title2.bold())
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(LocalizedStringKey(sheep.status.displayName))
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 3)
-                        .background(AppTheme.brand.opacity(0.12), in: .capsule)
+            }
+            Spacer(minLength: hasPhotos ? 64 : 28)
+            VStack(alignment: .leading, spacing: 9) {
+                Text(verbatim: sheep.earTag)
+                    .font(.largeTitle.weight(.bold))
+                    .fontDesign(.rounded)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("\(sheep.breed.isEmpty ? "未填写品种" : sheep.breed) · \(sheep.sex.displayName)")
+                    .font(.subheadline)
+                    .foregroundStyle(hasPhotos ? Color.white.opacity(0.88) : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Rectangle()
+                    .fill(hasPhotos ? Color.white.opacity(0.22) : Color.primary.opacity(0.10))
+                    .frame(height: 0.5)
+                    .padding(.vertical, 3)
+                let layout = typeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+                    : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
+                layout {
                     Label(sheep.currentPenDisplayName(penName), systemImage: "square.grid.2x2")
-                        .font(.subheadline)
+                        .font(.subheadline.weight(.medium))
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("\(sheep.breed.isEmpty ? "未填写品种" : sheep.breed) · \(sheep.sex.displayName)")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if hasPhotos {
+                        Button { onPreview(displayedPhotoID) } label: {
+                            Label("查看照片（\(photoCount)）", systemImage: "photo.stack")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .frame(minHeight: 44)
+                                .background(Color.white.opacity(0.16), in: .capsule)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("sheep-banner-photos")
+                    }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if canEdit || photoCount > 0 {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 16) { photoActions }
-                    VStack(alignment: .leading, spacing: 8) { photoActions }
-                }
-                .font(.subheadline)
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 20))
+        .padding(20)
+        .frame(maxWidth: .infinity, minHeight: hasPhotos ? 300 : 230, alignment: .leading)
+        .foregroundStyle(hasPhotos ? Color.white : Color.primary)
+        .background {
+            GeometryReader { proxy in
+                if hasPhotos {
+                    Button { onPreview(displayedPhotoID) } label: {
+                        SheepBannerPhotoView(photos: photos, sex: sheep.sex, onPhotoLoaded: { displayedPhotoID = $0 })
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .clipped()
+                            .overlay {
+                                LinearGradient(
+                                    stops: [
+                                        .init(color: .black.opacity(0.28), location: 0),
+                                        .init(color: .black.opacity(0.06), location: 0.28),
+                                        .init(color: .black.opacity(0.68), location: 0.62),
+                                        .init(color: .black.opacity(0.90), location: 1),
+                                    ],
+                                    startPoint: .top, endPoint: .bottom
+                                )
+                            }
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("查看羊只照片，共 \(photoCount) 张")
+                } else {
+                    LinearGradient(
+                        colors: [AppTheme.brand.opacity(0.14), Color(uiColor: .secondarySystemGroupedBackground)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    )
+                    .overlay(alignment: .topTrailing) {
+                        Image(systemName: "sheep")
+                            .font(.system(size: 110, weight: .light))
+                            .foregroundStyle(AppTheme.brand.opacity(0.09))
+                            .padding(.top, 50)
+                            .padding(.trailing, 20)
+                            .accessibilityHidden(true)
+                    }
+                }
+            }
+        }
+        .clipShape(.rect(cornerRadius: 24))
         .accessibilityElement(children: .contain)
-    }
-
-    @ViewBuilder
-    private var photoActions: some View {
-        if photoCount > 0 {
-            Button(action: onPreview) { Label("查看照片（\(photoCount)）", systemImage: "photo.stack") }
-                .buttonStyle(.borderless)
-                .frame(minHeight: 44)
-        }
-        if canEdit {
-            Button(action: onCamera) {
-                if isProcessing { ProgressView("正在处理照片") }
-                else { Label("拍照", systemImage: "camera") }
-            }
-            .buttonStyle(.borderless)
-            .frame(minHeight: 44)
-            .disabled(isProcessing)
-            .accessibilityLabel("拍摄并设置羊只头像")
-        }
     }
 }
 

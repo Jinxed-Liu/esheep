@@ -44293,6 +44293,1331 @@
           }
         }
       }
+    },
+    "小薇宋体" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Xiaowei serif"
+          }
+        }
+      }
+    },
+    "行草笔刷" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Running-script brush"
+          }
+        }
+      }
+    },
+    "毛笔手写" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calligraphic handwriting"
+          }
+        }
+      }
+    },
+    "母羊展示卡 · 胎次、胎间距、产后天数" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ewe card · parity, lambing interval, postpartum days"
+          }
+        }
+      }
+    },
+    "公羊展示卡 · 月龄、出生日期、当前羊舍" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ram card · age, birth date, current pen"
+          }
+        }
+      }
+    },
+    "通用展示卡 · 月龄、出生日期、当前羊舍" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "General card · age, birth date, current pen"
+          }
+        }
+      }
+    },
+    "月龄数值" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Age in months value"
+          }
+        }
+      }
+    },
+    "出生日期数值" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Birth date value"
+          }
+        }
+      }
+    },
+    "当前羊舍数值" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Current pen value"
+          }
+        }
+      }
+    },
+    "%lld 月龄" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld months old"
+          }
+        }
+      }
+    },
+    "第 %lld 张，共 %lld 张" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Photo %lld of %lld"
+          }
+        }
+      }
+    },
+    "下一张照片" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Next photo"
+          }
+        }
+      }
+    },
+    "上一张照片" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Previous photo"
+          }
+        }
+      }
+    },
+    "自定义排版与我的模板" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Customize and my templates"
+          }
+        }
+      }
+    },
+    "自定义海报" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Customize poster"
+          }
+        }
+      }
+    },
+    "点选元素后拖动，或在下方精确调整。修改只用于海报，不改变羊只档案。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap an element to drag it, or adjust it below. Changes affect this poster only, not the sheep record."
+          }
+        }
+      }
+    },
+    "保存为我的模板" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save as my template"
+          }
+        }
+      }
+    },
+    "模板名称" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Template name"
+          }
+        }
+      }
+    },
+    "保存排版和新增文字；下次使用时，耳号、照片和羊只资料自动更新。模板保存在这台设备上。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saves the design and added captions. The ear tag, photo, and sheep details update when reused. Templates are stored on this device."
+          }
+        }
+      }
+    },
+    "尚未保存模板" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No saved templates"
+          }
+        }
+      }
+    },
+    "删除已保存模板" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete saved template"
+          }
+        }
+      }
+    },
+    "我的模板" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "My templates"
+          }
+        }
+      }
+    },
+    "保存模板" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save template"
+          }
+        }
+      }
+    },
+    "选择元素" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select element"
+          }
+        }
+      }
+    },
+    "添加文字" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add text"
+          }
+        }
+      }
+    },
+    "添加线条" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add line"
+          }
+        }
+      }
+    },
+    "添加笔触" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add brushstroke"
+          }
+        }
+      }
+    },
+    "添加图片" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add image"
+          }
+        }
+      }
+    },
+    "显示此元素" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Show this element"
+          }
+        }
+      }
+    },
+    "文字内容" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text content"
+          }
+        }
+      }
+    },
+    "字体" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Font"
+          }
+        }
+      }
+    },
+    "字号" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Font size"
+          }
+        }
+      }
+    },
+    "字间距" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Letter spacing"
+          }
+        }
+      }
+    },
+    "文字居中" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Center text"
+          }
+        }
+      }
+    },
+    "更换图片" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Replace image"
+          }
+        }
+      }
+    },
+    "照片缩放" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Photo zoom"
+          }
+        }
+      }
+    },
+    "照片内水平位置" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Photo horizontal offset"
+          }
+        }
+      }
+    },
+    "照片内垂直位置" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Photo vertical offset"
+          }
+        }
+      }
+    },
+    "颜色" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Color"
+          }
+        }
+      }
+    },
+    "水平位置" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Horizontal position"
+          }
+        }
+      }
+    },
+    "垂直位置" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vertical position"
+          }
+        }
+      }
+    },
+    "宽度" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Width"
+          }
+        }
+      }
+    },
+    "高度" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Height"
+          }
+        }
+      }
+    },
+    "旋转" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rotation"
+          }
+        }
+      }
+    },
+    "不透明度" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opacity"
+          }
+        }
+      }
+    },
+    "移到顶层" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bring to front"
+          }
+        }
+      }
+    },
+    "移到底层" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send to back"
+          }
+        }
+      }
+    },
+    "恢复此元素" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reset element"
+          }
+        }
+      }
+    },
+    "画布底色" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Canvas color"
+          }
+        }
+      }
+    },
+    "若底色被照片遮住，可在元素菜单中隐藏“照片背景”。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "If the photo covers the canvas color, hide Photo backdrop in the element menu."
+          }
+        }
+      }
+    },
+    "恢复整张默认设计" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reset entire design"
+          }
+        }
+      }
+    },
+    "自定义文字" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Custom text"
+          }
+        }
+      }
+    },
+    "自定义图片" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Custom image"
+          }
+        }
+      }
+    },
+    "自定义装饰" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Custom decoration"
+          }
+        }
+      }
+    },
+    "请输入文字" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter text"
+          }
+        }
+      }
+    },
+    "读取模板失败，原文件已保留。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not read templates. The original file has been preserved."
+          }
+        }
+      }
+    },
+    "模板已保存，可在“我的模板”中使用。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Template saved. Find it in My templates."
+          }
+        }
+      }
+    },
+    "保存模板失败，请重试。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not save the template. Please try again."
+          }
+        }
+      }
+    },
+    "此模板版本暂不支持。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This template version is not supported."
+          }
+        }
+      }
+    },
+    "已套用模板，羊只资料来自当前羊只。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Template applied with the current sheep’s details."
+          }
+        }
+      }
+    },
+    "删除模板失败，请重试。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not delete the template. Please try again."
+          }
+        }
+      }
+    },
+    "无法读取这张图片。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to read this image."
+          }
+        }
+      }
+    },
+    "读取图片失败，请重试。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Could not read the image. Please try again."
+          }
+        }
+      }
+    },
+    "杂志衬线" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Editorial serif"
+          }
+        }
+      }
+    },
+    "中文宋体" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Classic serif"
+          }
+        }
+      }
+    },
+    "简洁黑体" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Clean sans serif"
+          }
+        }
+      }
+    },
+    "醒目笔刷" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bold brush"
+          }
+        }
+      }
+    },
+    "中文手写" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chinese handwriting"
+          }
+        }
+      }
+    },
+    "底部山形" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mountain decoration"
+          }
+        }
+      }
+    },
+    "底部黄色笔触" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Footer brushstroke"
+          }
+        }
+      }
+    },
+    "照片背景" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Photo backdrop"
+          }
+        }
+      }
+    },
+    "光影渐变" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shading gradient"
+          }
+        }
+      }
+    },
+    "顶部英文装饰" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Masthead caption"
+          }
+        }
+      }
+    },
+    "品牌 Logo" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brand logo"
+          }
+        }
+      }
+    },
+    "品牌文字" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brand text"
+          }
+        }
+      }
+    },
+    "身份分隔线" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Identity divider"
+          }
+        }
+      }
+    },
+    "在场状态" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Presence status"
+          }
+        }
+      }
+    },
+    "牧场手写落款" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Farm signature"
+          }
+        }
+      }
+    },
+    "底部英文装饰" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Footer caption"
+          }
+        }
+      }
+    },
+    "黄色短线" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accent line"
+          }
+        }
+      }
+    },
+    "手写状态" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Handwritten status"
+          }
+        }
+      }
+    },
+    "状态下划线" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Status underline"
+          }
+        }
+      }
+    },
+    "指标分隔线" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Metric divider"
+          }
+        }
+      }
+    },
+    "系谱分隔线" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pedigree divider"
+          }
+        }
+      }
+    },
+    "上次产羔标签" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Last lambing label"
+          }
+        }
+      }
+    },
+    "上次产羔日期" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Last lambing date"
+          }
+        }
+      }
+    },
+    "笔刷耳号" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brush ear tag"
+          }
+        }
+      }
+    },
+    "生成日期标签" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Generation date label"
+          }
+        }
+      }
+    },
+    "当前胎次数值" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Current parity value"
+          }
+        }
+      }
+    },
+    "最近胎间距数值" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Latest lambing interval value"
+          }
+        }
+      }
+    },
+    "当前产后天数数值" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Postpartum days value"
+          }
+        }
+      }
+    },
+    "母本标签" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dam label"
+          }
+        }
+      }
+    },
+    "父本标签" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sire label"
+          }
+        }
+      }
+    },
+    "父本耳号" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sire ear tag"
+          }
+        }
+      }
+    },
+    "外祖母标签" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Maternal granddam label"
+          }
+        }
+      }
+    },
+    "外祖母耳号" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Maternal granddam ear tag"
+          }
+        }
+      }
+    },
+    "外祖父标签" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Maternal grandsire label"
+          }
+        }
+      }
+    },
+    "外祖父耳号" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Maternal grandsire ear tag"
+          }
+        }
+      }
+    },
+    "祖母标签" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paternal granddam label"
+          }
+        }
+      }
+    },
+    "祖母耳号" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paternal granddam ear tag"
+          }
+        }
+      }
+    },
+    "祖父标签" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paternal grandsire label"
+          }
+        }
+      }
+    },
+    "祖父耳号" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paternal grandsire ear tag"
+          }
+        }
+      }
+    },
+    "横图 · 浅色" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Landscape · Light"
+          }
+        }
+      }
+    },
+    "横图 · 深色" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Landscape · Dark"
+          }
+        }
+      }
+    },
+    "竖图 · 浅色" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Portrait · Light"
+          }
+        }
+      }
+    },
+    "竖图 · 深色" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Portrait · Dark"
+          }
+        }
+      }
+    },
+    "杂志封面" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Magazine cover"
+          }
+        }
+      }
+    },
+    "种羊展示卡" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Breeding card"
+          }
+        }
+      }
+    },
+    "极简摄影" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Photo print"
+          }
+        }
+      }
+    },
+    "海报风格" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poster style"
+          }
+        }
+      }
+    },
+    "大幅照片、醒目耳号与牧场落款" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A full photo, statement ear tag, and farm signature"
+          }
+        }
+      }
+    },
+    "展示照片、繁殖指标与三代系谱" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Photo, reproduction metrics, and a three-generation pedigree"
+          }
+        }
+      }
+    },
+    "只展示照片、耳号与基础身份信息" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Photo, ear tag, and basic identity only"
+          }
+        }
+      }
+    },
+    "当前头像照片不可用，海报将使用无照片版式。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The current photo is unavailable. A photo-free layout will be used."
+          }
+        }
+      }
+    },
+    "照片待补充" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Photo not yet added"
+          }
+        }
+      }
+    },
+    "当前头像照片不可用，海报将使用品牌占位图。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The current photo is unavailable. The poster will use a branded placeholder."
+          }
+        }
+      }
+    },
+    "松林深绿" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forest green"
+          }
+        }
+      }
+    },
+    "暖白纸感" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Warm ivory"
+          }
+        }
+      }
+    },
+    "横图 · 松林深绿" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Landscape · Forest"
+          }
+        }
+      }
+    },
+    "横图 · 暖白纸感" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Landscape · Ivory"
+          }
+        }
+      }
+    },
+    "竖图 · 松林深绿" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Portrait · Forest"
+          }
+        }
+      }
+    },
+    "竖图 · 暖白纸感" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Portrait · Ivory"
+          }
+        }
+      }
+    },
+    "海报预览" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poster preview"
+          }
+        }
+      }
+    },
+    "生成日期" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Created on"
+          }
+        }
+      }
+    },
+    "英文名或拼音名（选填）" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "English or Pinyin name (optional)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "英文名或拼音名（选填）"
+          }
+        }
+      }
+    },
+    "云端英文名／拼音名" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cloud English / Pinyin name"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "云端英文名／拼音名"
+          }
+        }
+      }
+    },
+    "牧场英文名／拼音名" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Farm English / Pinyin name"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "牧场英文名／拼音名"
+          }
+        }
+      }
+    },
+    "牧场英文落款" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Farm English signature"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "牧场英文落款"
+          }
+        }
+      }
+    },
+    "仅牧场所有者可以修改名称，每项最多 80 个字符。英文名或拼音名为全局牧场资料，会同步给牧场成员并用于分享海报；留空时海报隐藏此行。现有羊只和历史记录全部保留。" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Only the farm owner can edit names, up to 80 characters each. The English or Pinyin name syncs to farm members and appears on share posters. Leave it blank to hide the line. Existing sheep and history are preserved."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅牧场所有者可以修改名称，每项最多 80 个字符。英文名或拼音名为全局牧场资料，会同步给牧场成员并用于分享海报；留空时海报隐藏此行。现有羊只和历史记录全部保留。"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

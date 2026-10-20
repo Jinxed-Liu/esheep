@@ -19,11 +19,11 @@ actor ESheepCloudMembershipInfrastructureGateway: ESheepCloudMembershipGateway, 
         return identity
     }
 
-    func renameFarm(farmID: UUID, generation: Int, name: String, expectedRevision: Int64,
+    func renameFarm(farmID: UUID, generation: Int, name: String, latinName: String?, expectedRevision: Int64,
                     requestID: UUID) async throws -> ESheepCloudFarmIdentityV2 {
         let identity: ESheepCloudFarmIdentityV2 = try await client.rpc(
-            "esheep_cloud_rename_farm_v2", params: RenameFarmParameters(
-                p_farm_id: farmID, p_farm_generation: generation, p_name: name,
+            "esheep_cloud_update_farm_identity_v2", params: RenameFarmParameters(
+                p_farm_id: farmID, p_farm_generation: generation, p_name: name, p_latin_name: latinName ?? "",
                 p_expected_revision: expectedRevision, p_request_id: requestID)
         ).execute().value
         try identity.validate(farmID: farmID, generation: generation)
@@ -233,6 +233,7 @@ private struct RenameFarmParameters: Encodable, Sendable {
     let p_farm_id: UUID
     let p_farm_generation: Int
     let p_name: String
+    let p_latin_name: String
     let p_expected_revision: Int64
     let p_request_id: UUID
 }

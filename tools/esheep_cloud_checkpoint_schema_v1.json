@@ -1853,7 +1853,8 @@
       "farmID": "UUID",
       "farmGeneration": "Int",
       "name": "String",
-      "revision": "Int64"
+      "revision": "Int64",
+      "latinName": "String?"
     }
   }
 }

@@ -62,5 +62,5 @@ enum ESheepCloudMembershipError: LocalizedError {
 
 protocol ESheepCloudFarmIdentityGateway: Sendable {
     func farmIdentity(farmID: UUID, generation: Int) async throws -> ESheepCloudFarmIdentityV2
-    func renameFarm(farmID: UUID, generation: Int, name: String, expectedRevision: Int64, requestID: UUID) async throws -> ESheepCloudFarmIdentityV2
+    func renameFarm(farmID: UUID, generation: Int, name: String, latinName: String?, expectedRevision: Int64, requestID: UUID) async throws -> ESheepCloudFarmIdentityV2
 }
