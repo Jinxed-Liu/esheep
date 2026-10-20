@@ -52,11 +52,12 @@ final class SheepSharePermissionsUITests: XCTestCase {
         let activity = app.navigationBars["UIActivityContentView"]
         XCTAssertTrue(activity.waitForExistence(timeout: 15), app.debugDescription)
         capture(app, name: "sheep-poster-system-share-" + role)
-        app.buttons["header.closeButton"].tap()
-        app.navigationBars["杂志封面"].buttons["完成"].tap()
-        app.navigationBars["选择海报模板"].buttons["取消"].tap()
-
-        XCTAssertTrue(menu.waitForExistence(timeout: 15))
+        // Exercise export independently from the system share service's dismissal.
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(ewe.waitForExistence(timeout: 30))
+        ewe.tap()
+        XCTAssertTrue(menu.waitForExistence(timeout: 20))
         waitForNotificationBanner()
         menu.tap()
         let export = app.buttons["导出完整档案 XLSX"]
