@@ -1,10 +1,10 @@
-This build focuses on reproductive cycles, lamb review scope, and sheep production details while preserving existing business history.
+This update improves sheep share posters, global farm names, and multi-photo browsing.
 
-1. Upgrade and connect to the original farm. Verify that the account, sheep, pens, and historical records remain intact, and finish cloud synchronization before checking reproductive status.
-2. Verify breeding ewes that have entered the breeding herd but have not lambed: purpose and completed parity are independent. Revoked test breeding must be excluded from current state while later genuine breeding and pregnancy checks remain intact.
-3. Verify young lambs that have no reproductive facts of their own. Their details should say they have not entered reproductive management, without a missing-parity review alert or an automatically invented parity record.
-4. Verify the historical review entries for departed ewes. Preserve their unresolved evidence; do not silently classify ambiguous history as pregnant or open. Subsequent genuine corrections may change this list.
-5. In a test copy, explicitly choose supplemental breeding within the current round or a new breeding round. Check that pregnancy-check associations, parity, analytics, reminders, and queries agree, and that historical records remain accessible.
-6. Check the weight and interval daily-gain charts. Change date ranges and select intervals to verify endpoint weights, actual days, and sources. Preserve negative gains and do not attribute a cross-pen interval solely to one pen.
+1. Upgrade and open your existing farm. Confirm your account, sheep, pens, photos, and history are preserved, then allow cloud sync to finish.
+2. In Settings → Farm Name, save an optional English or Pinyin name. Reopen the page and check member sync. A blank value hides the corresponding poster text. Concurrent edits should prompt you to review the latest cloud values.
+3. Switch between Magazine Cover, Breeding Card, and Minimal Photography. Check bilingual farm-name alignment, long names, the current brand icon, and photo layout.
+4. Customize text, Chinese fonts, colors, position, layers, and photo crop. Save a personal template and reuse it for another sheep. Confirm current sheep and farm data are used and exported images match the preview.
+5. Ewes should show reproductive metrics. Rams and sheep with unknown sex should show age, birth date, and current pen instead. Missing data must remain unspecified.
+6. Browse multiple photos from sheep details. Check the initially selected photo, paging, dates, and avatar selection. Other photos should remain accessible when one fails to load.
 
-Automated validation, Apple processing, internal distribution, and physical-device upgrade acceptance are tracked separately. For the existing internal group only; external groups and tester membership remain unchanged.
+For the existing internal testing group only. Apple distribution and real-device upgrade, sign-in, sync, and business acceptance are tracked separately.

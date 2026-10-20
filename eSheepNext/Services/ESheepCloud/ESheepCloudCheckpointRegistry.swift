@@ -434,6 +434,7 @@ enum ESheepCloudCheckpointRegistry {
                 .init("farmGeneration", \ESheepCloudFarmIdentityState.farmGeneration),
                 .init("name", \ESheepCloudFarmIdentityState.name),
                 .init("revision", \ESheepCloudFarmIdentityState.revision),
+                .init("latinName", \ESheepCloudFarmIdentityState.latinName),
             ], farmID: \ESheepCloudFarmIdentityState.farmID, recordID: \ESheepCloudFarmIdentityState.id),
             ESheepCloudCheckpointModelAdapter(ESheepCloudFarmState.self, disposition: .localOnly, fields: [
                 .init("id", \ESheepCloudFarmState.id),

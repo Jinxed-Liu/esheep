@@ -262,7 +262,7 @@ final class CloudCollaborationStore {
         return identity
     }
 
-    func renameESheepCloudFarm(farmID: UUID, generation: Int, name: String,
+    func renameESheepCloudFarm(farmID: UUID, generation: Int, name: String, latinName: String?,
                               expectedRevision: Int64, requestID: UUID) async throws -> ESheepCloudFarmIdentityV2 {
         guard let identityGateway = eSheepCloudMembershipGateway as? any ESheepCloudFarmIdentityGateway,
               !DevelopmentSupabaseNetworkGate.isForcedOffline else {
@@ -272,7 +272,7 @@ final class CloudCollaborationStore {
             throw ESheepCloudRuntimeError.accountMismatch
         }
         let identity = try await identityGateway.renameFarm(farmID: farmID, generation: generation,
-            name: name, expectedRevision: expectedRevision, requestID: requestID)
+            name: name, latinName: latinName, expectedRevision: expectedRevision, requestID: requestID)
         guard activeESheepCloudAccountID() == accountID else {
             throw ESheepCloudRuntimeError.accountMismatch
         }

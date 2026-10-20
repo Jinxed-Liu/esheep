@@ -633,11 +633,14 @@ final class ESheepCloudFarmIdentityState {
     var name: String
     var revision: Int64
 
-    init(farmID: UUID, farmGeneration: Int, name: String, revision: Int64) {
+    var latinName: String? = nil
+
+    init(farmID: UUID, farmGeneration: Int, name: String, revision: Int64, latinName: String? = nil) {
         self.id = UUID()
         self.farmID = farmID
         self.farmGeneration = farmGeneration
         self.name = name
+        self.latinName = latinName
         self.revision = revision
     }
 }

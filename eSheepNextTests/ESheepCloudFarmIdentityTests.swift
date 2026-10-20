@@ -17,7 +17,7 @@ final class ESheepCloudFarmIdentityTests: XCTestCase {
         try context.save()
         let store = ESheepCloudLocalStore(container: container)
         let page = ESheepCloudEventPageV2(events: [], cloudHead: 0, hasMore: false,
-            farmIdentity: .init(farmID: farm.id, farmGeneration: 3, name: "吉昊羊场", revision: 1))
+            farmIdentity: .init(farmID: farm.id, farmGeneration: 3, name: "吉昊羊场", revision: 1, latinName: "Jihao Farm"))
         let count = try await store.applyEventPage(page, farmID: farm.id, farmGeneration: 3)
         XCTAssertEqual(count, 0)
         let verification = ModelContext(container)
@@ -26,6 +26,7 @@ final class ESheepCloudFarmIdentityTests: XCTestCase {
         XCTAssertEqual(farms.first { $0.id == copy.id }?.name, "星露谷牧场 · 外测审核副本")
         XCTAssertEqual(try verification.fetch(FetchDescriptor<NoteRecord>()).first?.text, note.text)
         XCTAssertEqual(try verification.fetch(FetchDescriptor<ESheepCloudFarmIdentityState>()).first?.revision, 1)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<ESheepCloudFarmIdentityState>()).first?.latinName, "Jihao Farm")
         XCTAssertEqual(try verification.fetchCount(FetchDescriptor<ESheepCloudEventReceipt>()), 0)
     }
 
@@ -47,6 +48,24 @@ final class ESheepCloudFarmIdentityTests: XCTestCase {
             XCTAssertThrowsError(try ESheepCloudFarmIdentityProjection.apply(identity, state: state, context: context))
         }
         XCTAssertEqual(farm.name, "吉昊羊场")
+    }
+
+    func testLatinNameUsesSameRevisionAndCanBeCleared() throws {
+        let container = try AppSchema.makeContainer(name: UUID().uuidString, isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let farm = FarmRecord(ownerAccountID: UUID(), name: "测试牧场")
+        let state = ESheepCloudFarmState(farmID: farm.id, farmGeneration: 3, activityState: .active)
+        context.insert(farm); context.insert(state)
+        let first = ESheepCloudFarmIdentityV2(farmID: farm.id, farmGeneration: 3, name: farm.name, revision: 1, latinName: "Test Farm")
+        try ESheepCloudFarmIdentityProjection.apply(first, state: state, context: context)
+        try context.save()
+        XCTAssertThrowsError(try ESheepCloudFarmIdentityProjection.apply(.init(farmID: farm.id, farmGeneration: 3, name: farm.name, revision: 1, latinName: "Different"), state: state, context: context))
+        try ESheepCloudFarmIdentityProjection.apply(.init(farmID: farm.id, farmGeneration: 3, name: farm.name, revision: 2), state: state, context: context)
+        try ESheepCloudFarmIdentityProjection.apply(first, state: state, context: context)
+        XCTAssertNil(try context.fetch(FetchDescriptor<ESheepCloudFarmIdentityState>()).first?.latinName)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<ESheepCloudFarmIdentityState>()).first?.revision, 2)
+        let old = Data("{\"farmID\":\"\(farm.id)\",\"farmGeneration\":3,\"name\":\"Legacy\",\"revision\":0}".utf8)
+        XCTAssertNil(try JSONDecoder().decode(ESheepCloudFarmIdentityV2.self, from: old).latinName)
     }
 
     func testNameValidationAndOldPageDecodingRemainCompatible() throws {

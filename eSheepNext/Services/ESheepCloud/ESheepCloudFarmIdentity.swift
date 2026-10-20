@@ -7,10 +7,11 @@ struct ESheepCloudFarmIdentityV2: Codable, Sendable, Equatable {
     let farmGeneration: Int
     let name: String
     let revision: Int64
+    var latinName: String? = nil
 
     func validate(farmID: UUID, generation: Int) throws {
         guard self.farmID == farmID, farmGeneration == generation, revision >= 0,
-              Self.validName(name) else {
+              Self.validName(name), latinName == nil || Self.validName(latinName!) else {
             throw ESheepCloudMembershipError.malformedResponse
         }
     }
@@ -37,7 +38,7 @@ enum ESheepCloudFarmIdentityProjection {
         guard let farm = try context.fetch(FetchDescriptor<FarmRecord>(predicate: #Predicate {
             $0.id == farmID && $0.deletedAt == nil
         })).first else { throw ESheepCloudMembershipError.malformedResponse }
-        if identity.revision == watermark?.revision, watermark?.name != identity.name {
+        if identity.revision == watermark?.revision, (watermark?.name != identity.name || watermark?.latinName != identity.latinName) {
             throw ESheepCloudMembershipError.malformedResponse
         }
         if farm.name != identity.name {
@@ -47,9 +48,10 @@ enum ESheepCloudFarmIdentityProjection {
         if let watermark {
             if watermark.revision != identity.revision { watermark.revision = identity.revision }
             if watermark.name != identity.name { watermark.name = identity.name }
+            watermark.latinName = identity.latinName
         } else {
             context.insert(ESheepCloudFarmIdentityState(farmID: farmID, farmGeneration: generation,
-                name: identity.name, revision: identity.revision))
+                name: identity.name, revision: identity.revision, latinName: identity.latinName))
         }
     }
 }
