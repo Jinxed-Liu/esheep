@@ -70,7 +70,6 @@ final class SheepSharePermissionsUITests: XCTestCase {
         let hasFile = fileName.waitForExistence(timeout: 20)
         capture(app, name: "sheep-xlsx-export-" + role)
         XCTAssertTrue(hasFile, app.debugDescription)
-        app.buttons["取消"].firstMatch.tap()
     }
 
     @MainActor
