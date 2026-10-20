@@ -2,22 +2,22 @@ import XCTest
 
 final class SheepSharePermissionsUITests: XCTestCase {
     @MainActor
-    func testAdministratorCanSharePosterWithoutFullArchiveExport() {
-        verifySharing(role: "administrator", canExportArchive: false)
+    func testAdministratorCanSharePosterAndExportSheepArchive() {
+        verifySharingAndExport(role: "administrator")
     }
 
     @MainActor
-    func testWorkerCanSharePosterWithoutFullArchiveExport() {
-        verifySharing(role: "worker", canExportArchive: false)
+    func testWorkerCanSharePosterAndExportSheepArchive() {
+        verifySharingAndExport(role: "worker")
     }
 
     @MainActor
-    func testOwnerCanSharePosterAndExportFullArchive() {
-        verifySharing(role: "owner", canExportArchive: true)
+    func testOwnerCanSharePosterAndExportSheepArchive() {
+        verifySharingAndExport(role: "owner")
     }
 
     @MainActor
-    private func verifySharing(role: String, canExportArchive: Bool) {
+    private func verifySharingAndExport(role: String) {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = [
@@ -33,26 +33,59 @@ final class SheepSharePermissionsUITests: XCTestCase {
 
         let menu = app.buttons["分享或导出羊只档案"]
         XCTAssertTrue(menu.waitForExistence(timeout: 20))
-        XCTAssertTrue(menu.isEnabled, "Members must be able to open the poster sharing menu.")
+        XCTAssertTrue(menu.isEnabled, "Members must be able to open the sharing menu.")
+        waitForNotificationBanner()
         menu.tap()
         let poster = app.buttons["分享羊只海报"]
         XCTAssertTrue(poster.waitForExistence(timeout: 10))
         XCTAssertTrue(poster.isEnabled)
-        XCTAssertEqual(app.buttons["导出完整档案 XLSX"].isEnabled, canExportArchive)
+        XCTAssertTrue(app.buttons["导出完整档案 XLSX"].isEnabled)
+        waitForNotificationBanner()
         poster.tap()
 
         let preview = app.buttons["预览并分享"]
         XCTAssertTrue(preview.waitForExistence(timeout: 30))
-        XCTAssertTrue(preview.isEnabled)
         preview.tap()
         let share = app.buttons["sheepPoster.sharePoster"]
         XCTAssertTrue(share.waitForExistence(timeout: 20))
-        XCTAssertTrue(share.isEnabled)
         share.tap()
-        XCTAssertTrue(app.buttons["拷贝"].waitForExistence(timeout: 15),
-                      "The generated poster must reach the system share sheet.")
+        let activity = app.navigationBars["UIActivityContentView"]
+        XCTAssertTrue(activity.waitForExistence(timeout: 15), app.debugDescription)
+        capture(app, name: "sheep-poster-system-share-" + role)
+        app.buttons["header.closeButton"].tap()
+        app.navigationBars["杂志封面"].buttons["完成"].tap()
+        app.navigationBars["选择海报模板"].buttons["取消"].tap()
+
+        XCTAssertTrue(menu.waitForExistence(timeout: 15))
+        waitForNotificationBanner()
+        menu.tap()
+        let export = app.buttons["导出完整档案 XLSX"]
+        XCTAssertTrue(export.waitForExistence(timeout: 10))
+        XCTAssertTrue(export.isEnabled)
+        waitForNotificationBanner()
+        export.tap()
+        let fileName = app.textFields.matching(NSPredicate(
+            format: "value CONTAINS %@", "羊只档案_QA-010"
+        )).firstMatch
+        let hasFile = fileName.waitForExistence(timeout: 20)
+        capture(app, name: "sheep-xlsx-export-" + role)
+        XCTAssertTrue(hasFile, app.debugDescription)
+        app.buttons["取消"].firstMatch.tap()
+    }
+
+    @MainActor
+    private func waitForNotificationBanner() {
+        let banner = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+            .descendants(matching: .any)["NotificationShortLookView"].firstMatch
+        if banner.exists {
+            XCTAssertTrue(banner.waitForNonExistence(timeout: 15))
+        }
+    }
+
+    @MainActor
+    private func capture(_ app: XCUIApplication, name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = "sheep-poster-system-share-" + role
+        attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
     }

@@ -1,4 +1,4 @@
-Fixes sheep poster sharing being unavailable to administrators and workers. Farm members can share posters; full XLSX archive export continues to follow existing role permissions.
+Fixes sheep poster sharing and individual sheep XLSX archive export being unavailable to administrators and workers. Both actions are available to farm members; whole-farm exports retain their existing role permissions.
 
 This update improves sheep share posters, global farm names, and multi-photo browsing.
 

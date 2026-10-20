@@ -890,7 +890,6 @@ struct SheepDetailView: View {
                     Button("导出完整档案 XLSX", systemImage: "tablecells") {
                         exportSingleSheep()
                     }
-                    .disabled(!farmContext.capabilities.allows(.exportFarm))
                 } label: {
                     if isPreparingExport {
                         ProgressView()
@@ -899,7 +898,7 @@ struct SheepDetailView: View {
                     }
                 }
                 .accessibilityLabel("分享或导出羊只档案")
-                .disabled(isPreparingExport)
+                .disabled(isPreparingExport || !farmContext.capabilities.allows(.readFarm))
             }
         }
         .sheet(item: $quickEntry, onDismiss: { Task { await reloadDetailSnapshot() } }) { entry in
@@ -1418,7 +1417,7 @@ struct SheepDetailView: View {
     }
 
     private func exportSingleSheep() {
-        guard !isPreparingExport, farmContext.capabilities.allows(.exportFarm) else { return }
+        guard !isPreparingExport, farmContext.capabilities.allows(.readFarm) else { return }
         isPreparingExport = true
         Task {
             defer { isPreparingExport = false }
