@@ -898,7 +898,7 @@ struct SheepDetailView: View {
                     }
                 }
                 .accessibilityLabel("分享或导出羊只档案")
-                .disabled(isPreparingExport || !CapabilitySet(role: farm.role).allows(.exportFarm))
+                .disabled(isPreparingExport || !farmContext.capabilities.allows(.readFarm))
             }
         }
         .sheet(item: $quickEntry, onDismiss: { Task { await reloadDetailSnapshot() } }) { entry in
@@ -1417,7 +1417,7 @@ struct SheepDetailView: View {
     }
 
     private func exportSingleSheep() {
-        guard !isPreparingExport else { return }
+        guard !isPreparingExport, farmContext.capabilities.allows(.readFarm) else { return }
         isPreparingExport = true
         Task {
             defer { isPreparingExport = false }

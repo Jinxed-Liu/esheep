@@ -1,3 +1,5 @@
+Fixes sheep poster sharing and individual sheep XLSX archive export being unavailable to administrators and workers. Both actions are available to farm members; whole-farm exports retain their existing role permissions.
+
 This update improves sheep share posters, global farm names, and multi-photo browsing.
 
 1. Upgrade and open your existing farm. Confirm your account, sheep, pens, photos, and history are preserved, then allow cloud sync to finish.
