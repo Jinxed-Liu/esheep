@@ -1563,7 +1563,10 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
                recognizers.allSatisfy({ candidate in
                    candidate.delegate === self && savedRecognizers.contains { $0.recognizer === candidate }
                }) {
-                recognizers.forEach { $0.isEnabled = true }
+                for recognizer in recognizers {
+                    if recognizer.state != .possible { trace("layout enable state=\(recognizer.state.rawValue) enabled=\(recognizer.isEnabled)") }
+                    recognizer.isEnabled = true
+                }
                 return
             }
             restore()
@@ -1583,7 +1586,17 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
                 ))
                 recognizer.delegate = self
                 recognizer.isEnabled = true
+#if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--design-acceptance") {
+                    recognizer.addTarget(self, action: #selector(reportGestureState(_:)))
+                }
+#endif
             }
+        }
+
+        @objc private func reportGestureState(_ recognizer: UIGestureRecognizer) {
+            let pan = recognizer as? UIPanGestureRecognizer
+            trace("state=\(recognizer.state.rawValue) translation=\(String(describing: pan?.translation(in: pan?.view))) velocity=\(String(describing: pan?.velocity(in: pan?.view))) progress=\(owningNavigationController?.transitionCoordinator?.percentComplete ?? -1)")
         }
 
         private var navigationOwner: (UINavigationController, UIViewController)? {
@@ -1602,6 +1615,7 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
             // A newly visible destination may have installed its own policy.
             // Restore only while this bridge still owns the recognizer.
             for saved in savedRecognizers {
+                saved.recognizer?.removeTarget(self, action: #selector(reportGestureState(_:)))
                 if let recognizer = saved.recognizer, recognizer.delegate === self {
                     recognizer.delegate = saved.delegate
                     recognizer.isEnabled = saved.wasEnabled
