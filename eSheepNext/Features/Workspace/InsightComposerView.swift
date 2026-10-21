@@ -375,7 +375,14 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
 
     private var audioBar: some View {
         HStack(spacing: 4) {
-            Button(action: onDiscardAudio) {
+            Button {
+#if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--design-acceptance") {
+                    NSLog("InsightInteraction audio cancel activated")
+                }
+#endif
+                onDiscardAudio()
+            } label: {
                 audioControlIcon("xmark", size: 14)
             }
             .buttonStyle(.plain)

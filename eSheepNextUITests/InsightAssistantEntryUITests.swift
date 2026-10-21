@@ -95,7 +95,11 @@ final class InsightAssistantEntryUITests: XCTestCase {
 
         cancel.tap()
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: bar)
-        XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 5), .completed)
+        let removedResult = XCTWaiter.wait(for: [removed], timeout: 5)
+        if removedResult != .completed {
+            attachInteractionFailure(of: app, named: "voice-cancel-not-completed")
+        }
+        XCTAssertEqual(removedResult, .completed)
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         XCTAssertEqual(input.value as? String, originalDraft)
         XCTAssertEqual(app.staticTexts["design.audio.fixture.state"].label, "样本数 0，发送次数 0")

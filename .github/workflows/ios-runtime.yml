@@ -2,6 +2,11 @@ name: iOS runtime regression
 
 on:
   workflow_dispatch:
+    inputs:
+      focused_interactions:
+        description: 'Run only native return and voice cancellation diagnostics'
+        type: boolean
+        default: false
   pull_request:
     paths:
       - 'eSheepNext/**'
@@ -126,7 +131,15 @@ jobs:
           PYMONITOR
           runtime_monitor_pid=$!
           trap 'kill "$runtime_monitor_pid" 2>/dev/null || true' EXIT
-          xcodebuild test-without-building \
+          focused_tests=()
+          if [ "${{ inputs.focused_interactions }}" = "true" ]; then
+            focused_tests=(
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testLeadingEdgeSwipeReturnsToListAndKeepsTheReplyRunning
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testKnownVoiceTimelineUsesASingleRowAndPreservesTheUnsentDraft
+            )
+          fi
+          xcodebuild test-without-building "${focused_tests[@]}" \
             -project eSheepNext.xcodeproj \
             -scheme eSheepNextUI \
             -configuration Debug \
@@ -142,6 +155,7 @@ jobs:
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/assistant-entry.log"
       - name: Verify atomic rollback on existing model references
+        if: ${{ !inputs.focused_interactions }}
         timeout-minutes: 10
         run: |
           set -euo pipefail
@@ -165,6 +179,7 @@ jobs:
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/ios-rollback.log"
       - name: Run the complete existing XCTest suites
+        if: ${{ !inputs.focused_interactions }}
         run: |
           set -euo pipefail
           xcodebuild test \
@@ -205,6 +220,12 @@ jobs:
           name: assistant-ui-screenshots-${{ github.sha }}
           if-no-files-found: ignore
           path: ${{ runner.temp }}/assistant-ui-screenshots
+      - name: Collect interaction diagnostics
+        if: always()
+        run: |
+          xcrun simctl spawn "$IOS_SIMULATOR_ID" log show --last 45m --style compact \
+            --predicate 'eventMessage CONTAINS "InsightInteraction"' > "$RUNNER_TEMP/interaction-diagnostics.log" 2>&1 || true
+          cat "$RUNNER_TEMP/interaction-diagnostics.log"
       - name: Print runtime result and crash details
         if: always()
         run: |
@@ -243,6 +264,7 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/assistant-build.log
+            ${{ runner.temp }}/interaction-diagnostics.log
             ${{ runner.temp }}/assistant-entry.log
             ${{ runner.temp }}/assistant-entry.xcresult
             ${{ runner.temp }}/ios-unit.log
