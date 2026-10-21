@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       focused_interactions:
-        description: 'Run only native return and voice cancellation diagnostics'
+        description: 'Run only native return and voice cancellation regressions'
         type: boolean
         default: false
       interaction_iterations:
@@ -229,12 +229,6 @@ jobs:
           name: assistant-ui-screenshots-${{ github.sha }}
           if-no-files-found: ignore
           path: ${{ runner.temp }}/assistant-ui-screenshots
-      - name: Collect interaction diagnostics
-        if: always()
-        run: |
-          xcrun simctl spawn "$IOS_SIMULATOR_ID" log show --last 45m --style compact \
-            --predicate 'eventMessage CONTAINS "InsightInteraction"' > "$RUNNER_TEMP/interaction-diagnostics.log" 2>&1 || true
-          cat "$RUNNER_TEMP/interaction-diagnostics.log"
       - name: Print runtime result and crash details
         if: always()
         run: |
@@ -273,7 +267,6 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/assistant-build.log
-            ${{ runner.temp }}/interaction-diagnostics.log
             ${{ runner.temp }}/assistant-entry.log
             ${{ runner.temp }}/assistant-entry.xcresult
             ${{ runner.temp }}/ios-unit.log

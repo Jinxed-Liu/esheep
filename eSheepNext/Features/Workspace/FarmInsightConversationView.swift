@@ -1537,14 +1537,6 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
             }
         }
 
-        private func trace(_ message: String) {
-#if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--design-acceptance") {
-                NSLog("InsightInteraction pop %@", message)
-            }
-#endif
-        }
-
         private func installIfNeeded() {
             guard isVisible, view.window != nil,
                   let (navigation, screen) = navigationOwner,
@@ -1563,10 +1555,7 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
                recognizers.allSatisfy({ candidate in
                    candidate.delegate === self && savedRecognizers.contains { $0.recognizer === candidate }
                }) {
-                for recognizer in recognizers {
-                    if recognizer.state != .possible { trace("layout enable state=\(recognizer.state.rawValue) enabled=\(recognizer.isEnabled)") }
-                    recognizer.isEnabled = true
-                }
+                recognizers.forEach { $0.isEnabled = true }
                 return
             }
             restore()
@@ -1576,7 +1565,6 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
                     previousBridge.restore()
                 }
             }
-            trace("install count=\(recognizers.count) top=\(type(of: screen)) transition=\(navigation.transitionCoordinator != nil)")
             owningNavigationController = navigation
             owningScreen = screen
             contentRecognizer = content
@@ -1586,22 +1574,6 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
                 ))
                 recognizer.delegate = self
                 recognizer.isEnabled = true
-#if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--design-acceptance") {
-                    recognizer.addTarget(self, action: #selector(reportGestureState(_:)))
-                }
-#endif
-            }
-        }
-
-        private var gestureTrace: [String] = []
-
-        @objc private func reportGestureState(_ recognizer: UIGestureRecognizer) {
-            let pan = recognizer as? UIPanGestureRecognizer
-            if recognizer.state == .began { gestureTrace.removeAll() }
-            gestureTrace.append("t=\(ProcessInfo.processInfo.systemUptime) state=\(recognizer.state.rawValue) translation=\(String(describing: pan?.translation(in: pan?.view))) velocity=\(String(describing: pan?.velocity(in: pan?.view))) progress=\(owningNavigationController?.transitionCoordinator?.percentComplete ?? -1)")
-            if recognizer.state == .ended || recognizer.state == .cancelled || recognizer.state == .failed {
-                trace("timeline " + gestureTrace.joined(separator: " | "))
             }
         }
 
@@ -1617,11 +1589,9 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
         }
 
         private func restore() {
-            if !savedRecognizers.isEmpty { trace("restore visible=\(isVisible)") }
             // A newly visible destination may have installed its own policy.
             // Restore only while this bridge still owns the recognizer.
             for saved in savedRecognizers {
-                saved.recognizer?.removeTarget(self, action: #selector(reportGestureState(_:)))
                 if let recognizer = saved.recognizer, recognizer.delegate === self {
                     recognizer.delegate = saved.delegate
                     recognizer.isEnabled = saved.wasEnabled
@@ -1634,7 +1604,6 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            trace("begin \(type(of: gestureRecognizer)) visible=\(isVisible) presentation=\(isPresentationActive) top=\(owningNavigationController?.topViewController === owningScreen) transition=\(owningNavigationController?.transitionCoordinator != nil)")
             guard isVisible, !isPresentationActive, savedRecognizers.contains(where: { $0.recognizer === gestureRecognizer }),
                   let navigation = owningNavigationController,
                   navigation.topViewController === owningScreen,
@@ -1681,7 +1650,6 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-            trace("touch \(type(of: gestureRecognizer)) target=\(touch.view.map { String(describing: type(of: $0)) } ?? "nil") contentBlocked=\(isContentInteraction(touch.view))")
             if gestureRecognizer === contentRecognizer, isContentInteraction(touch.view) { return false }
             return previousDelegate(for: gestureRecognizer)?.gestureRecognizer?(gestureRecognizer, shouldReceive: touch) ?? true
         }
