@@ -136,18 +136,19 @@ jobs:
           PYMONITOR
           runtime_monitor_pid=$!
           trap 'kill "$runtime_monitor_pid" 2>/dev/null || true' EXIT
-          focused_tests=()
+          test_arguments=(test-without-building)
           if [ "${{ inputs.focused_interactions }}" = "true" ]; then
-            focused_tests=(
-              -test-iterations "${{ inputs.interaction_iterations || '1' }}"
-              -test-repetition-relaunch-enabled YES
+            test_arguments+=(
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testLeadingEdgeSwipeReturnsToListAndKeepsTheReplyRunning
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testKnownVoiceTimelineUsesASingleRowAndPreservesTheUnsentDraft
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testRepeatedPendingVoiceCancellationPreservesDraftAndKeyboard
             )
+            if [ "${{ inputs.interaction_iterations }}" = "3" ]; then
+              test_arguments+=(-test-iterations 3 -test-repetition-relaunch-enabled YES)
+            fi
           fi
-          xcodebuild test-without-building "${focused_tests[@]}" \
+          xcodebuild "${test_arguments[@]}" \
             -project eSheepNext.xcodeproj \
             -scheme eSheepNextUI \
             -configuration Debug \
