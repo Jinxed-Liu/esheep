@@ -1594,9 +1594,15 @@ private struct InsightConversationInteractivePopSupport: UIViewControllerReprese
             }
         }
 
+        private var gestureTrace: [String] = []
+
         @objc private func reportGestureState(_ recognizer: UIGestureRecognizer) {
             let pan = recognizer as? UIPanGestureRecognizer
-            trace("state=\(recognizer.state.rawValue) translation=\(String(describing: pan?.translation(in: pan?.view))) velocity=\(String(describing: pan?.velocity(in: pan?.view))) progress=\(owningNavigationController?.transitionCoordinator?.percentComplete ?? -1)")
+            if recognizer.state == .began { gestureTrace.removeAll() }
+            gestureTrace.append("t=\(ProcessInfo.processInfo.systemUptime) state=\(recognizer.state.rawValue) translation=\(String(describing: pan?.translation(in: pan?.view))) velocity=\(String(describing: pan?.velocity(in: pan?.view))) progress=\(owningNavigationController?.transitionCoordinator?.percentComplete ?? -1)")
+            if recognizer.state == .ended || recognizer.state == .cancelled || recognizer.state == .failed {
+                trace("timeline " + gestureTrace.joined(separator: " | "))
+            }
         }
 
         private var navigationOwner: (UINavigationController, UIViewController)? {

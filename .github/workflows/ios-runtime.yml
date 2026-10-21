@@ -144,6 +144,7 @@ jobs:
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testLeadingEdgeSwipeReturnsToListAndKeepsTheReplyRunning
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testKnownVoiceTimelineUsesASingleRowAndPreservesTheUnsentDraft
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testRepeatedPendingVoiceCancellationPreservesDraftAndKeyboard
             )
           fi
           xcodebuild test-without-building "${focused_tests[@]}" \

@@ -408,6 +408,36 @@ final class InsightAssistantEntryUITests: XCTestCase {
     }
 
     @MainActor
+    func testRepeatedPendingVoiceCancellationPreservesDraftAndKeyboard() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--design-acceptance", "--design-insight-voice-waveform",
+                               "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["design.audio.fixture.notice"].waitForExistence(timeout: 30))
+        let input = composerField(in: app)
+        input.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        for iteration in 0..<6 {
+            app.buttons["design.audio.fixture.begin"].tap()
+            let stop = app.buttons["insight.audio.stop"]
+            XCTAssertTrue(stop.waitForExistence(timeout: 5))
+            stop.tap()
+            XCTAssertTrue(app.buttons["insight.audio.playback"].waitForExistence(timeout: 5))
+            app.buttons["insight.audio.cancel"].tap()
+            let removed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                app.staticTexts["design.audio.fixture.state"].label == "样本数 0，发送次数 0" &&
+                !app.otherElements["insight.audio.bar"].exists
+            }, object: app)
+            let result = XCTWaiter.wait(for: [removed], timeout: 5)
+            if result != .completed { attachInteractionFailure(of: app, named: "repeated-pending-cancel-\(iteration)") }
+            XCTAssertEqual(result, .completed)
+            XCTAssertEqual(input.value as? String, "录音前的原始草稿")
+            XCTAssertTrue(app.keyboards.firstMatch.exists)
+        }
+    }
+
+    @MainActor
     func testLeadingEdgeSwipeReturnsToListAndKeepsTheReplyRunning() {
         assertNativeSwipeKeepsTheReplyRunning(startingAtEdge: true)
     }

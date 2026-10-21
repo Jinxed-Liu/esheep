@@ -118,6 +118,7 @@ private struct DesignAcceptanceVoiceWaveformView: View {
                     attachments: { EmptyView() }, context: { EmptyView() }
                 )
             }
+            .background(DesignAcceptanceTouchTrace())
             .navigationTitle("波形时间序列样本")
             .navigationBarTitleDisplayMode(.inline)
             .onDisappear { recorder.endWaveformDesignPreview() }
@@ -175,6 +176,45 @@ private struct DesignAcceptanceVoiceWaveformView: View {
         pendingAudio = nil
         isPlaying = false
         sampleCount = 0
+    }
+}
+
+/// Reject every touch after observing its native target; never recognize or cancel it.
+private struct DesignAcceptanceTouchTrace: UIViewRepresentable {
+    func makeUIView(context: Context) -> Anchor { Anchor() }
+    func updateUIView(_ view: Anchor, context: Context) {}
+    static func dismantleUIView(_ view: Anchor, coordinator: ()) { view.detach() }
+    final class Anchor: UIView, UIGestureRecognizerDelegate {
+        private weak var observedWindow: UIWindow?
+        private var observer: UITapGestureRecognizer?
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            detach()
+            guard let window else { return }
+            let recognizer = UITapGestureRecognizer()
+            recognizer.delegate = self
+            recognizer.cancelsTouchesInView = false
+            window.addGestureRecognizer(recognizer)
+            observer = recognizer
+            observedWindow = window
+            isUserInteractionEnabled = false
+        }
+        func detach() {
+            if let observer { observedWindow?.removeGestureRecognizer(observer) }
+            observer = nil
+            observedWindow = nil
+        }
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            var hierarchy: [String] = []
+            var candidate = touch.view
+            for _ in 0..<6 {
+                guard let view = candidate else { break }
+                hierarchy.append(String(describing: type(of: view)))
+                candidate = view.superview
+            }
+            NSLog("InsightInteraction voice touch %@ target %@", String(describing: touch.location(in: observedWindow)), hierarchy.joined(separator: ">"))
+            return false
+        }
     }
 }
 
