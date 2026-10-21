@@ -93,9 +93,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
                        "Stopping must retain pending audio rather than send it automatically.")
         attachScreenshot(of: app, named: "voice-time-sample-fixture-pending-unsent-single-row")
 
-        cancel.tap()
-        let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: bar)
-        XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 5), .completed)
+        cancelVoiceFixture(in: app, expectedDraft: originalDraft, evidenceName: "voice-pending-cancel")
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         XCTAssertEqual(input.value as? String, originalDraft)
         XCTAssertEqual(app.staticTexts["design.audio.fixture.state"].label, "样本数 0，发送次数 0")
@@ -105,19 +103,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
         app.buttons["design.audio.fixture.begin"].tap()
         XCTAssertTrue(bar.waitForExistence(timeout: 5))
         XCTAssertEqual(bar.value as? String, "0:06", "A new recording must not inherit the old seven-second history.")
-        cancel.tap()
-        // Synchronize with the restored visible state and a fresh query. A
-        // reused bar handle can retain its previous snapshot during transition.
-        let cancelled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            let restoredInput = self.composerField(in: app)
-            let currentBar = app.descendants(matching: .any)
-                .matching(identifier: "insight.audio.bar").firstMatch
-            return app.staticTexts["design.audio.fixture.state"].label == "样本数 0，发送次数 0" &&
-                restoredInput.exists && restoredInput.value as? String == originalDraft &&
-                !currentBar.exists
-        }, object: app)
-        XCTAssertEqual(XCTWaiter.wait(for: [cancelled], timeout: 10), .completed,
-                       "Cancelling must restore the original draft with zero samples, no send, and no audio bar.")
+        cancelVoiceFixture(in: app, expectedDraft: originalDraft, evidenceName: "voice-recording-cancel")
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         XCTAssertEqual(input.value as? String, originalDraft)
         XCTAssertEqual(app.staticTexts["design.audio.fixture.state"].label, "样本数 0，发送次数 0")
@@ -130,14 +116,7 @@ final class InsightAssistantEntryUITests: XCTestCase {
         // The original PNG must distinguish the empty pre-recording portion
         // from the actual silent samples, which are rendered as small dots.
         attachScreenshot(of: app, named: "voice-time-sample-fixture-one-second-origin-gap-and-silence")
-        cancel.tap()
-        let originCancelled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            let restoredInput = self.composerField(in: app)
-            return app.staticTexts["design.audio.fixture.state"].label == "样本数 0，发送次数 0" &&
-                restoredInput.exists && restoredInput.value as? String == originalDraft &&
-                !app.descendants(matching: .any).matching(identifier: "insight.audio.bar").firstMatch.exists
-        }, object: app)
-        XCTAssertEqual(XCTWaiter.wait(for: [originCancelled], timeout: 10), .completed)
+        cancelVoiceFixture(in: app, expectedDraft: originalDraft, evidenceName: "voice-origin-cancel")
         XCTAssertEqual(input.value as? String, originalDraft)
         XCTAssertEqual(app.staticTexts["design.audio.fixture.state"].label, "样本数 0，发送次数 0")
     }
@@ -404,6 +383,51 @@ final class InsightAssistantEntryUITests: XCTestCase {
     }
 
     @MainActor
+    func testRepeatedPendingVoiceCancellationPreservesDraftAndKeyboard() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--design-acceptance", "--design-insight-voice-waveform",
+                               "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["design.audio.fixture.notice"].waitForExistence(timeout: 30))
+        let input = composerField(in: app)
+        input.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        for iteration in 0..<6 {
+            app.buttons["design.audio.fixture.begin"].tap()
+            let stop = app.buttons["insight.audio.stop"]
+            XCTAssertTrue(stop.waitForExistence(timeout: 5))
+            stop.tap()
+            XCTAssertTrue(app.buttons["insight.audio.playback"].waitForExistence(timeout: 5))
+            cancelVoiceFixture(in: app, expectedDraft: "录音前的原始草稿",
+                               evidenceName: "repeated-pending-cancel-\(iteration)")
+            XCTAssertEqual(input.value as? String, "录音前的原始草稿")
+            XCTAssertTrue(app.keyboards.firstMatch.exists)
+        }
+    }
+
+    @MainActor
+    private func cancelVoiceFixture(in app: XCUIApplication, expectedDraft: String?, evidenceName: String) {
+        let cancel = app.buttons["insight.audio.cancel"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true AND enabled == true"), object: cancel)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
+        // A brief, single press gives the simulator distinct touch-down/up
+        // delivery under load. Never retry the action after a missed cancel.
+        cancel.press(forDuration: 0.2)
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let input = self.composerField(in: app)
+            let bar = app.descendants(matching: .any).matching(identifier: "insight.audio.bar").firstMatch
+            return app.staticTexts["design.audio.fixture.state"].label == "样本数 0，发送次数 0" &&
+                input.exists && input.value as? String == expectedDraft && !bar.exists &&
+                app.keyboards.firstMatch.exists
+        }, object: app)
+        let result = XCTWaiter.wait(for: [removed], timeout: 10)
+        if result != .completed { attachInteractionFailure(of: app, named: evidenceName) }
+        XCTAssertEqual(result, .completed,
+                       "One cancel must clear the audio, restore the unchanged draft and keyboard, and send nothing.")
+    }
+
+    @MainActor
     func testLeadingEdgeSwipeReturnsToListAndKeepsTheReplyRunning() {
         assertNativeSwipeKeepsTheReplyRunning(startingAtEdge: true)
     }
@@ -436,7 +460,14 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: send)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed)
         send.tap()
-        XCTAssertTrue(app.buttons["insight.composer.stop"].waitForExistence(timeout: 5))
+        // The first keyboard/send on a freshly booted hosted simulator can
+        // finish well after the synthesized tap. Observe the destination's
+        // ready state before starting a second, unrelated interaction.
+        let conversationReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.buttons["insight.composer.stop"].isHittable &&
+                app.descendants(matching: .any).matching(identifier: "insight.conversation.identity").firstMatch.exists
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [conversationReady], timeout: 30), .completed)
         XCTAssertFalse(app.staticTexts[response].exists)
 
         // Use UIKit's real edge or full-content interactive pop recognizer;
@@ -445,7 +476,10 @@ final class InsightAssistantEntryUITests: XCTestCase {
         // Starting within the page needs more than a half-width displacement
         // to complete UIKit's interactive transition rather than cancel it.
         let destination = app.coordinate(withNormalizedOffset: CGVector(dx: startingAtEdge ? 0.85 : 0.98, dy: 0.45))
-        edge.press(forDuration: 0.05, thenDragTo: destination, withVelocity: .fast, thenHoldForDuration: 0)
+        // Hosted simulators can coalesce a fast drag and its immediate lift
+        // into one callback batch. Exercise an unambiguous completed drag,
+        // allowing UIKit to update transition progress before lifting.
+        edge.press(forDuration: 0.1, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 0.2)
         let returnedToList = app.buttons["聊天菜单"].waitForExistence(timeout: 5)
         if !returnedToList {
             attachInteractionFailure(of: app, named: "\(startingAtEdge ? "edge" : "content")-swipe-list-not-ready")
