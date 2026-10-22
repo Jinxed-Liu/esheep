@@ -274,6 +274,7 @@ private final class DesignAcceptanceFixture {
         if reproductionReady {
             try DevelopmentReproductionAcceptance.seed(account: account, farm: farm, context: context)
             if args.contains("--design-sheep-detail") { try DevelopmentSheepDetailAcceptanceView.seed(farm: farm, context: context) }
+            try DevelopmentPosterAcceptance.seed(account: account, farm: farm, context: context)
         }
         if let index = args.firstIndex(of: "--design-role"), args.indices.contains(index + 1), let role = FarmRole(rawValue: args[index + 1]) {
             farm.roleRawValue = role.rawValue

@@ -556,6 +556,8 @@ struct SheepSharePosterSelectionView: View {
                 SheepSharePosterThumbnail(snapshot: snapshot, image: image, template: selectedTemplate, style: selectedStyle,
                                           customization: currentCustomization.wrappedValue)
                     .frame(maxWidth: 300)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityIdentifier("sheepPoster.thumbnail")
                     .clipShape(.rect(cornerRadius: 8))
                     .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
                     .frame(maxWidth: .infinity)
@@ -780,12 +782,19 @@ private struct SheepSharePosterPreviewView: View {
 
     let payload: SheepSharePosterPreviewPayload
     @State private var activityItem: SheepSharePosterActivityItem?
+    #if DEBUG
+    @State private var exportEvidence = DevelopmentPosterExportEvidence()
+    #endif
 
     var body: some View {
         ScrollView {
             Image(uiImage: payload.image)
                 .resizable()
                 .scaledToFit()
+                .accessibilityIdentifier("sheepPoster.previewImage")
+                #if DEBUG
+                .accessibilityValue(exportEvidence.value(preview: payload.image))
+                #endif
                 .clipShape(.rect(cornerRadius: 18))
                 .shadow(color: .black.opacity(0.12), radius: 16, y: 7)
                 .padding(20)
@@ -818,7 +827,11 @@ private struct SheepSharePosterPreviewView: View {
             .accessibilityIdentifier("sheepPoster.sharePoster")
         }
         .sheet(item: $activityItem) { item in
+            #if DEBUG
+            SheepSharePosterActivityView(image: item.image, evidence: exportEvidence)
+            #else
             SheepSharePosterActivityView(image: item.image)
+            #endif
         }
     }
 }
@@ -830,9 +843,18 @@ private struct SheepSharePosterActivityItem: Identifiable {
 
 private struct SheepSharePosterActivityView: UIViewControllerRepresentable {
     let image: UIImage
+    #if DEBUG
+    var evidence: DevelopmentPosterExportEvidence?
+    #endif
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [image], applicationActivities: nil)
+        #if DEBUG
+        if DevelopmentPosterAcceptance.directory != nil, let evidence {
+            return UIActivityViewController(activityItems: [image],
+                applicationActivities: [DevelopmentPosterSaveActivity(evidence: evidence)])
+        }
+        #endif
+        return UIActivityViewController(activityItems: [image], applicationActivities: nil)
     }
 
     func updateUIViewController(

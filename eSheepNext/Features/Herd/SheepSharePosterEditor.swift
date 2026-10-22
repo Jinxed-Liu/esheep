@@ -49,6 +49,7 @@ struct SheepSharePosterEditor: View {
                         .padding(.horizontal, 20)
                         .padding(.bottom, 20)
                     }
+                    .accessibilityIdentifier("sheepPoster.editor.inspector")
                 }
                 .padding(.top, 12)
             }
@@ -59,9 +60,11 @@ struct SheepSharePosterEditor: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("撤销", systemImage: "arrow.uturn.backward") { undo() }
                         .disabled(history.isEmpty)
+                        .accessibilityIdentifier("sheepPoster.editor.undo")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
+                        .accessibilityIdentifier("sheepPoster.editor.done")
                 }
             }
             .task { loadTemplates() }
@@ -72,6 +75,7 @@ struct SheepSharePosterEditor: View {
             }
             .alert("保存为我的模板", isPresented: $isNamingTemplate) {
                 TextField("模板名称", text: $templateName)
+                    .accessibilityIdentifier("sheepPoster.editor.templateName")
                 Button("保存") { saveTemplate() }
                     .disabled(templateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("取消", role: .cancel) {}
@@ -94,6 +98,7 @@ struct SheepSharePosterEditor: View {
                 }
                 ForEach(savedTemplates) { saved in
                     Button(saved.name) { applyTemplate(saved) }
+                        .accessibilityIdentifier("sheepPoster.editor.apply.\(saved.name)")
                 }
                 if !savedTemplates.isEmpty {
                     Menu("删除已保存模板") {
@@ -105,11 +110,13 @@ struct SheepSharePosterEditor: View {
             } label: {
                 Label("我的模板", systemImage: "square.stack")
             }
+            .accessibilityIdentifier("sheepPoster.editor.templates")
             Spacer()
             Button("保存模板", systemImage: "square.and.arrow.down") {
                 templateName = ""
                 isNamingTemplate = true
             }
+            .accessibilityIdentifier("sheepPoster.editor.saveTemplate")
         }
         .font(.subheadline.weight(.medium))
     }
@@ -123,7 +130,12 @@ struct SheepSharePosterEditor: View {
             .frame(width: width, height: width * 640 / 360, alignment: .topLeading)
             .clipped()
             .shadow(color: .black.opacity(0.14), radius: 12, y: 5)
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("sheepPoster.editor.canvas")
+            #if DEBUG
+            .accessibilityValue(DevelopmentPosterAcceptance.state(snapshot: snapshot, image: image, style: style,
+                template: template, customization: customization, selectedID: selectedID))
+            #endif
     }
 
     private var elementPicker: some View {
@@ -136,12 +148,14 @@ struct SheepSharePosterEditor: View {
                         Label(LocalizedStringKey(element.title),
                               systemImage: element.isHidden ? "eye.slash" : (element.id == selectedID ? "checkmark.circle" : "circle"))
                     }
+                    .accessibilityIdentifier("sheepPoster.editor.select.\(element.id)")
                 }
             } label: {
                 Label(selected.map { String(localized: String.LocalizationValue($0.title)) } ?? String(localized: "选择元素"),
                       systemImage: "square.on.square")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .accessibilityIdentifier("sheepPoster.editor.elements")
             Menu {
                 Button("添加文字", systemImage: "textformat") { addElement(.text) }
                 Button("添加线条", systemImage: "line.diagonal") { addElement(.rule) }
@@ -150,6 +164,7 @@ struct SheepSharePosterEditor: View {
             } label: {
                 Label("添加", systemImage: "plus")
             }
+            .accessibilityIdentifier("sheepPoster.editor.add")
         }
         .font(.subheadline.weight(.medium))
         .padding(14)
@@ -162,11 +177,13 @@ struct SheepSharePosterEditor: View {
                 get: { !element.isHidden },
                 set: { value in remember(); update { $0.isHidden = !value } }
             ))
+            .accessibilityIdentifier("sheepPoster.editor.visible")
             if element.kind == .text {
                 TextField("文字内容", text: Binding(
                     get: { selected?.text ?? "" },
                     set: { value in remember(); update { $0.text = value } }
                 ), axis: .vertical)
+                .accessibilityIdentifier("sheepPoster.editor.text")
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...4)
                 Text("字体").font(.subheadline.weight(.medium))
@@ -193,6 +210,7 @@ struct SheepSharePosterEditor: View {
                                 }
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("sheepPoster.editor.font.\(font.rawValue)")
                             .accessibilityLabel(LocalizedStringKey(font.title))
                             .accessibilityAddTraits(element.font == font ? .isSelected : [])
                         }
@@ -220,6 +238,7 @@ struct SheepSharePosterEditor: View {
                     get: { selected?.color.color ?? .white },
                     set: { color in remember(); update { $0.color = colorComponents(color) } }
                 ), supportsOpacity: false)
+                .accessibilityIdentifier("sheepPoster.editor.color")
             }
             slider("水平位置", value: number(\.x, fallback: element.x), range: -180...360)
             slider("垂直位置", value: number(\.y, fallback: element.y), range: -160...640)
@@ -231,10 +250,12 @@ struct SheepSharePosterEditor: View {
                 Button("移到顶层") {
                     remember(); update { $0.layerOrder = (elements.map(\.order).max() ?? 10) + 1 }
                 }
+                .accessibilityIdentifier("sheepPoster.editor.front")
                 Spacer()
                 Button("移到底层") {
                     remember(); update { $0.layerOrder = (elements.map(\.order).min() ?? 0) - 1 }
                 }
+                .accessibilityIdentifier("sheepPoster.editor.back")
             }
             Divider()
             HStack {
@@ -267,6 +288,7 @@ struct SheepSharePosterEditor: View {
                 get: { customization.background?.color ?? (style == .breeding && template.theme == .light ? Color(red: 0.86, green: 0.94, blue: 1) : .black) },
                 set: { remember(); customization.background = colorComponents($0) }
             ), supportsOpacity: false)
+            .accessibilityIdentifier("sheepPoster.editor.background")
             Text("若底色被照片遮住，可在元素菜单中隐藏“照片背景”。")
                 .font(.caption).foregroundStyle(.secondary)
             Button("恢复整张默认设计") {
@@ -274,6 +296,7 @@ struct SheepSharePosterEditor: View {
                 customization = .init()
                 selectedID = "earTag"
             }
+            .accessibilityIdentifier("sheepPoster.editor.reset")
         }
         .font(.subheadline)
         .padding(16)
@@ -290,6 +313,7 @@ struct SheepSharePosterEditor: View {
             }
             Slider(value: value, in: range, onEditingChanged: { editing in if editing { remember() } })
                 .accessibilityLabel(LocalizedStringKey(title))
+                .accessibilityIdentifier("sheepPoster.editor.slider.\(title)")
         }
     }
 
