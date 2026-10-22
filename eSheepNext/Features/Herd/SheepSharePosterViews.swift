@@ -593,6 +593,7 @@ struct SheepSharePosterSelectionView: View {
             .padding(.top, 18)
             .padding(.bottom, 24)
         }
+        .accessibilityIdentifier("sheepPoster.selection")
     }
 
     private func posterTile(

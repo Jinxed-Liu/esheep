@@ -200,6 +200,15 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         tap("done")
         let thumbnail = app.descendants(matching: .any)["sheepPoster.thumbnail"].firstMatch
         XCTAssertTrue(thumbnail.waitForExistence(timeout: 10))
+        let selection = app.scrollViews["sheepPoster.selection"]
+        // Opening the editor scrolled the gallery. Restore the entire thumbnail
+        // before comparing pixels, rather than capturing its clipped viewport.
+        for _ in 0..<8 {
+            if thumbnail.frame.minY >= selection.frame.minY { break }
+            selection.swipeDown()
+        }
+        XCTAssertGreaterThanOrEqual(thumbnail.frame.minY, selection.frame.minY)
+        XCTAssertLessThan(thumbnail.frame.maxY, app.buttons["sheepPoster.previewAndShare"].frame.minY)
         // Capture real on-screen composition before asking the exporter to render.
         let screen = thumbnail.screenshot().image
         app.buttons["sheepPoster.previewAndShare"].tap()
@@ -285,9 +294,18 @@ final class SheepSharePosterEditorUITests: XCTestCase {
     private func openEditor() {
         let button = app.buttons["sheepPoster.customize"]
         XCTAssertTrue(button.waitForExistence(timeout: 10))
-        if !button.isHittable { app.swipeUp() }
+        let scroll = app.scrollViews["sheepPoster.selection"]
+        let preview = app.buttons["sheepPoster.previewAndShare"]
+        // A partially clipped button can be reported hittable while its center
+        // is covered by the fixed preview action. Keep the entire target above it.
+        for _ in 0..<8 {
+            if button.isHittable && button.frame.maxY < preview.frame.minY - 8 { break }
+            scroll.swipeUp()
+        }
+        XCTAssertTrue(button.isHittable)
+        XCTAssertLessThan(button.frame.maxY, preview.frame.minY - 8)
         button.tap()
-        XCTAssertTrue(app.buttons[prefix + "elements"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons[prefix + "elements"].waitForExistence(timeout: 10), app.debugDescription)
     }
 
     private func tap(_ id: String) {

@@ -269,7 +269,8 @@ verify_web() {
   (cd "$repo_root/web" && npm run build)
   run_node_test_with_discovery_gate "$repo_root/web"
   # npm test discovers tests/sites-worker.test.mjs; avoid running it twice.
-  (cd "$repo_root/web" && npm audit)
+  node --test "$repo_root/tools/tests/npm-audit.test.mjs"
+  (cd "$repo_root/web" && node "$repo_root/tools/npm-audit.mjs")
 }
 
 verify_backend() {
@@ -279,7 +280,7 @@ verify_backend() {
   require_command rg
   require_command rsync
 
-  (cd "$repo_root/backend/identity-worker" && npm run check && npm audit)
+  (cd "$repo_root/backend/identity-worker" && npm run check && node "$repo_root/tools/npm-audit.mjs")
   run_worker_vitest_from_ascii_copy "$repo_root/backend/identity-worker"
 
   (cd "$repo_root/backend/cloudbase-identity-gateway" && npm run check)
