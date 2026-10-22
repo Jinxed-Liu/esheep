@@ -1,12 +1,8 @@
-Fixes sheep poster sharing and individual sheep XLSX archive export being unavailable to administrators and workers. Both actions are available to farm members; whole-farm exports retain their existing role permissions.
+Fixes cloud sync stopping after an upgrade because of legacy farm English-name metadata, and fixes sheep photo upload failures.
 
-This update improves sheep share posters, global farm names, and multi-photo browsing.
+1. Upgrade the existing installation and open your current account and farm. Allow sync to finish, then check recent lambing and removal records and bilingual farm names against the cloud.
+2. Retry photos that were pending before the upgrade. Confirm the original photos upload and the avatar updates without duplicate photos or business records.
+3. Check full-size photos, avatars, and thumbnails. Reopen the app and confirm photos and sync state remain correct.
+4. Local photos must remain available during a network interruption and support retry when connectivity returns. Pending uploads must not be reported as fully saved.
 
-1. Upgrade and open your existing farm. Confirm your account, sheep, pens, photos, and history are preserved, then allow cloud sync to finish.
-2. In Settings → Farm Name, save an optional English or Pinyin name. Reopen the page and check member sync. A blank value hides the corresponding poster text. Concurrent edits should prompt you to review the latest cloud values.
-3. Switch between Magazine Cover, Breeding Card, and Minimal Photography. Check bilingual farm-name alignment, long names, the current brand icon, and photo layout.
-4. Customize text, Chinese fonts, colors, position, layers, and photo crop. Save a personal template and reuse it for another sheep. Confirm current sheep and farm data are used and exported images match the preview.
-5. Ewes should show reproductive metrics. Rams and sheep with unknown sex should show age, birth date, and current pen instead. Missing data must remain unspecified.
-6. Browse multiple photos from sheep details. Check the initially selected photo, paging, dates, and avatar selection. Other photos should remain accessible when one fails to load.
-
-For the existing internal testing group only. Apple distribution and real-device upgrade, sign-in, sync, and business acceptance are tracked separately.
+For the existing internal testing group only. Apple distribution, real-device upgrade, cloud sync, and photo upload acceptance are tracked separately.

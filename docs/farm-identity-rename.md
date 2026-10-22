@@ -16,6 +16,10 @@ App schema V16 adds only a local-only `ESheepCloudFarmIdentityState`. V15 and ea
 
 ## Validation
 
+Schema V20 freezes the shipped V19 identity shape and adds local-only verification markers. Clients predating Latin-name support can have the correct name revision with an unknown nil Latin name. The first authenticated same-revision response may enrich only that migrated unknown value, never a known nil, another non-nil value or a different Chinese name. New writes and cleared names remain strict at the same revision.
+
+V19 could roll an entire incremental page back and enter integrity hold on this upgrade mismatch. Recovery is limited to its exact legacy enrichment signature at an already verified cursor, after the page and history rebuild succeed atomically. Any integrity failure encountered by the fixed client permanently disables this compatibility recovery for that identity. Neither the migration nor recovery creates business commands, replaces the device database, removes pending photo files/intents, or stamps pending work as safely saved.
+
 Database tests cover permissions, RLS, request replay, revision conflicts, wrong generation, invalid names, frozen farms, unchanged review-copy name and business cursor, and empty-page/status propagation. Native tests cover metadata application, delayed responses, foreign scope rejection, old-response decoding, snapshot protection and V15 upgrade preservation. The live one-off rename and its before/after evidence are stored separately under `backups/farm-rename-20261013/`.
 
 ## Public RPC grants

@@ -30,6 +30,7 @@ final class AppSchemaMigrationTests: XCTestCase {
         XCTAssertEqual(identity.name, "原有牧场")
         XCTAssertEqual(identity.revision, 8)
         XCTAssertNil(identity.latinName)
+        XCTAssertFalse(identity.latinNameVerified)
         XCTAssertEqual(try context.fetch(FetchDescriptor<NoteRecord>()).first?.text, "原有历史")
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
     }
@@ -130,10 +131,10 @@ final class AppSchemaMigrationTests: XCTestCase {
 
     func testVersionedSchemaContainsEveryCurrentModel() {
         let historicalV12 = Schema(versionedSchema: AppSchemaV12.self)
-        let versioned = Schema(versionedSchema: AppSchemaV19.self)
+        let versioned = Schema(versionedSchema: AppSchemaV20.self)
         let current = AppSchema.makeSchema()
 
-        XCTAssertEqual(AppSchema.currentVersion, "19.0.0")
+        XCTAssertEqual(AppSchema.currentVersion, "20.0.0")
         XCTAssertEqual(versioned.entities.map(\.name).sorted(), current.entities.map(\.name).sorted())
         XCTAssertTrue(
             Set(versioned.entities.map(\.name)).isSuperset(
@@ -188,9 +189,10 @@ final class AppSchemaMigrationTests: XCTestCase {
                 Schema.Version(17, 0, 0),
                 Schema.Version(18, 0, 0),
                 Schema.Version(19, 0, 0),
+                Schema.Version(20, 0, 0),
             ]
         )
-        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 19)
+        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 20)
     }
 
     func testV13ToV14PreservesOriginalPendingCommandAndIdentity() throws {

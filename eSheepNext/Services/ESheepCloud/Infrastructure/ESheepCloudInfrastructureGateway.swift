@@ -6,9 +6,11 @@ import Supabase
 /// SDK backs eSheep+ Cloud. No SDK type crosses this adapter boundary.
 actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTransferTransport, ESheepCloudCheckpointGateway {
     private let client: SupabaseClient
+    private let transferSession: URLSession
 
-    init(client: SupabaseClient) {
+    init(client: SupabaseClient, transferSession: URLSession = .shared) {
         self.client = client
+        self.transferSession = transferSession
     }
 
     func openCheckpoint(farmID: UUID, farmGeneration: Int, checkpointID: UUID?) async throws -> ESheepCloudCheckpointTicket {
@@ -301,6 +303,13 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
                 authorizationToken = nil
                 expiresAt = .now.addingTimeInterval(10 * 60)
             } else {
+                // Storage checks INSERT/UPDATE RLS while issuing the ticket,
+                // before TUS receives Upload-Metadata. Send the same variant
+                // checksum now so the private bucket's SHA policy can pass.
+                let metadataData = try Self.uploadObjectMetadata(
+                    request.metadata, variantSHA256: request.variantSHA256
+                )
+                storage.setHeader(metadataData.base64EncodedString(), forKey: "x-metadata")
                 let signed = try await storage.createSignedUploadURL(
                     path: wire.objectKey,
                     options: .init(upsert: true)
@@ -339,11 +348,8 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
               let endpoint = Self.resumableUploadEndpoint(from: ticket.signedURL) else {
             throw ESheepCloudInfrastructureError.malformedResponse
         }
-        var objectMetadata = descriptor.metadata
-        objectMetadata["sha256"] = descriptor.variantSHA256
-        let metadataData = try JSONSerialization.data(
-            withJSONObject: objectMetadata,
-            options: [.sortedKeys]
+        let metadataData = try Self.uploadObjectMetadata(
+            descriptor.metadata, variantSHA256: descriptor.variantSHA256
         )
         guard let metadataJSON = String(data: metadataData, encoding: .utf8) else {
             throw ESheepCloudInfrastructureError.malformedResponse
@@ -366,7 +372,7 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
         request.setValue(header, forHTTPHeaderField: "Upload-Metadata")
         request.setValue(token, forHTTPHeaderField: "x-signature")
         request.setValue("true", forHTTPHeaderField: "x-upsert")
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await transferSession.data(for: request)
         let http = try Self.requireSuccess(response, allowed: [201])
         guard let location = http.value(forHTTPHeaderField: "Location"),
               let sessionURL = URL(string: location, relativeTo: endpoint)?.absoluteURL else {
@@ -387,7 +393,7 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
         request.httpMethod = "HEAD"
         request.setValue("1.0.0", forHTTPHeaderField: "Tus-Resumable")
         request.setValue(authorizationToken, forHTTPHeaderField: "x-signature")
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await transferSession.data(for: request)
         let http = try Self.requireSuccess(response, allowed: [200, 204])
         guard let raw = http.value(forHTTPHeaderField: "Upload-Offset"),
               let offset = Int64(raw), offset >= 0 else {
@@ -417,7 +423,7 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
             forHTTPHeaderField: "Content-Type"
         )
         request.setValue(authorizationToken, forHTTPHeaderField: "x-signature")
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await transferSession.data(for: request)
         let http = try Self.requireSuccess(response, allowed: [204])
         guard let raw = http.value(forHTTPHeaderField: "Upload-Offset"),
               let offset = Int64(raw), offset >= byteOffset else {
@@ -453,7 +459,7 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
         ticket: ESheepCloudAssetTransferTicketV2,
         destinationURL: URL
     ) async throws {
-        let (temporaryURL, response) = try await URLSession.shared.download(
+        let (temporaryURL, response) = try await transferSession.download(
             from: ticket.signedURL
         )
         _ = try Self.requireSuccess(response, allowed: Array(200..<300))
@@ -652,10 +658,23 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
         ), let range = components.path.range(of: "/storage/v1/") else {
             return nil
         }
-        components.path = String(components.path[..<range.upperBound]) + "upload/resumable"
+        // A signed upload credential is accepted only by the /sign route.
+        // The plain resumable endpoint requires a user's bearer token.
+        components.path = String(components.path[..<range.upperBound]) + "upload/resumable/sign"
         components.query = nil
         components.fragment = nil
         return components.url
+    }
+
+    private static func uploadObjectMetadata(
+        _ metadata: [String: String], variantSHA256: String
+    ) throws -> Data {
+        guard variantSHA256.isInfrastructureSHA256 else {
+            throw ESheepCloudInfrastructureError.malformedResponse
+        }
+        var objectMetadata = metadata
+        objectMetadata["sha256"] = variantSHA256
+        return try JSONSerialization.data(withJSONObject: objectMetadata, options: [.sortedKeys])
     }
 
     private static func requireSuccess(

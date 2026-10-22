@@ -63,7 +63,7 @@ final class ReproductionCycleResolverTests: XCTestCase {
     }
 
     func testSharedAppAndWebCycleContract() throws {
-        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/reproduction-cycle-cases.json")
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "reproduction-cycle-cases", withExtension: "json"))
         let fixtures = try JSONDecoder().decode([Fixture].self, from: Data(contentsOf: url))
         XCTAssertGreaterThanOrEqual(fixtures.count, 19)
         let names: [ReproductionPregnancyState: String] = [.pregnant: "pregnant", .open: "open", .recheck: "recheck", .unexamined: "unexamined", .uncertain: "uncertain"]

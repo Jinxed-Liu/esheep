@@ -215,9 +215,12 @@ actor ESheepCloudAssetCoordinator {
             do {
                 try await upload(work)
                 completed += 1
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                try? markFailed(work, traceID: UUID().uuidString.lowercased())
-                throw error
+                let failure = ESheepCloudSyncFailure.classify(error)
+                try? markFailed(work, traceID: failure.traceID)
+                throw failure
             }
         }
         return completed
