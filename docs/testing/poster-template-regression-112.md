@@ -37,7 +37,7 @@ New cases: 9 UI tests and 3 unit/integration tests. The UI tests observe DEBUG-o
 
 ## Run on a Mac with stable Xcode
 
-The synchronized source groups include the new files automatically. The existing `iOS runtime regression` PR workflow runs the nine poster UI cases first, then skips that class in the remaining UI pass to avoid duplication; the full unit suite includes the 23 poster cases. The previous complete baseline run took 47 minutes, so the job budget is raised from 60 to 90 minutes. The new UI group has a 40-minute budget and a 360-second per-test limit, with zero skips and exactly nine discovered tests required. No existing regression gate is removed.
+The synchronized source groups include the new files automatically. The existing `iOS runtime regression` PR workflow runs the nine poster UI cases first, then skips that class in the remaining UI pass to avoid duplication; the full unit suite includes the 23 poster cases. The previous complete baseline run took 47 minutes, so the job budget is raised from 60 to 90 minutes. The new UI group has a 40-minute budget and a 360-second default per-test limit (600 seconds only for the save/rebind case with two process relaunches), with zero skips and exactly nine discovered tests required. No existing regression gate is removed.
 
 For focused execution, replace the simulator ID with an available disposable simulator:
 
@@ -85,6 +85,20 @@ Run `39739836731` failed all nine UI cases at `openEditor`. Its exported accessi
 - Include the full read-only editor JSON in failure attachments, because XCTest truncates long accessibility values in hierarchy text.
 - Cherry-pick `8915d5cc4de09302ad15f56d9418d76316a557a0` for npm 10's bulk-to-quick audit fallback. The controlled server times out both first-attempt endpoints, then succeeds on retry. Independent Mac verification reports 8/8 helper tests on npm 10.9.8 and 11.21.1 (Node 22.23.1); local Linux helper tests also pass 8/8. No audit threshold or retry assertion is removed.
 - Keep the total job budget at 90 minutes. Increase the poster step from 30 to 40 minutes to include XCTest startup and nine real UI flows; retain the 360-second limit for every case, all nine required results and all subsequent regression gates.
+
+### Follow-up from `9e82096`
+
+[Repository verification](https://github.com/Jinxed-Liu/esheep/actions/runs/39753022964) passed static, Web, backend and disposable database for this same head. [iOS run 39753022963](https://github.com/Jinxed-Liu/esheep/actions/runs/39753022963) compiled successfully and provided two additional findings:
+
+- Nil-or-empty AX matching still failed for cleared TextFields. The hierarchy omits `value`, but that does not guarantee XCTest's `value` property is nil. Replace this intermediate presentation check with a wait for the selected element's bound text to equal the empty string. Keep the exact final native text and reopened editor-state assertions.
+- With drag priority, tap selection succeeded and a 24-point drag moved the element 52.3946 logical points, as expected. The test then read the canvas AX width **after** movement; an overflowing element had expanded the AX union, producing an incorrect expectation of 47.3524. Capture the initial contained canvas scale before the gesture. Keep both coordinate assertions at their original accuracy and require undo to restore the complete customization.
+
+- The complete failure-state attachments confirm that every failed clear assertion had already produced an empty bound text. The new predicate therefore checks the observed business value directly, rather than widening the final text comparison.
+- Photo selection, crop, both offsets, undo and reset passed in 149.536 seconds. The menu repair is validated for this flow.
+- The color failure screenshot shows the editor, not a remote system picker. Its synthesized event touched the actual visible well at `(352, 658)`. Bound the scaled poster's hit region to its displayed rectangle so clipped, interactive content cannot cover inspector controls. The color-opening assertion will validate this boundary change in the next run.
+- The save/rebind flow completed all five text edits and saved the template, then hit the six-minute test limit at its first process relaunch (421.236 seconds including timeout cleanup). Set only this case's `executionTimeAllowance` to 600 seconds; keep the default at 360, the poster step at 40 minutes, and the overall job at 90. All nine cases and their assertions remain mandatory.
+
+Final simulator acceptance remains pending until the corrected assertions and every original gate pass together.
 
 ## Remaining physical-device acceptance
 

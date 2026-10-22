@@ -111,7 +111,7 @@ jobs:
         run: xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
       - name: Run isolated poster editor regressions
         if: ${{ !inputs.focused_interactions }}
-        # Includes initial XCTest startup; retain the 360-second per-case bound.
+        # Includes XCTest startup; only the two-relaunch template case requests 600s.
         timeout-minutes: 40
         run: |
           set -euo pipefail
@@ -122,7 +122,7 @@ jobs:
             -only-testing:eSheepNextUITests/SheepSharePosterEditorUITests \
             -resultBundlePath "$RUNNER_TEMP/poster-editor.xcresult" \
             -parallel-testing-enabled NO -test-timeouts-enabled YES \
-            -default-test-execution-time-allowance 360 -maximum-test-execution-time-allowance 360 \
+            -default-test-execution-time-allowance 360 -maximum-test-execution-time-allowance 600 \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/poster-editor.log"
           xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/poster-editor.xcresult" --compact \

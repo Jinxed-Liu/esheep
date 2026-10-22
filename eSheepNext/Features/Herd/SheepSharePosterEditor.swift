@@ -129,6 +129,9 @@ struct SheepSharePosterEditor: View {
             .scaleEffect(scale, anchor: .topLeading)
             .frame(width: width, height: width * 640 / 360, alignment: .topLeading)
             .clipped()
+            // Clipping drawing alone does not bound the scaled poster's hit area.
+            // Keep its interactive layers from covering inspector controls below.
+            .contentShape(.rect)
             .shadow(color: .black.opacity(0.14), radius: 12, y: 5)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("sheepPoster.editor.canvas")

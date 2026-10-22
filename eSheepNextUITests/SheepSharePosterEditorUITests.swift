@@ -27,6 +27,9 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         let baseline = try state()
         let before = try element("earTag", in: baseline)
         let canvas = app.descendants(matching: .any)[prefix + "canvas"].firstMatch
+        // Moving a wide element beyond the canvas can expand its AX union frame.
+        // Measure the initially contained layout before performing the gesture.
+        let scale = canvas.frame.width / 360
         let sex = try element("sex", in: baseline)
         let tapX = try XCTUnwrap(sex["x"] as? Double) + XCTUnwrap(sex["width"] as? Double) / 2
         let tapY = try XCTUnwrap(sex["y"] as? Double) + XCTUnwrap(sex["height"] as? Double) / 2
@@ -41,7 +44,6 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         start.press(forDuration: 0.2, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
         XCTAssertEqual(try state()["selectedID"] as? String, "earTag", app.debugDescription)
         let after = try element("earTag")
-        let scale = canvas.frame.width / 360
         XCTAssertEqual(try XCTUnwrap(after["x"] as? Double) - XCTUnwrap(before["x"] as? Double),
                        Double(24 / scale), accuracy: 5, app.debugDescription)
         XCTAssertEqual(try XCTUnwrap(after["y"] as? Double) - XCTUnwrap(before["y"] as? Double),
@@ -113,6 +115,9 @@ final class SheepSharePosterEditorUITests: XCTestCase {
     }
 
     func testSavedTemplateSurvivesRelaunchAndRebindsEveryCurrentSheepField() throws {
+        // This flow edits five fields, saves, and verifies two real relaunches.
+        // Measured CI execution reached the first relaunch at the six-minute cap.
+        executionTimeAllowance = 600
         launch()
         openPoster(tag: "QA-001", style: "种羊展示卡")
         openEditor()
@@ -423,11 +428,18 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         XCTAssertTrue(selectAll.waitForExistence(timeout: 5), app.debugDescription)
         selectAll.tap()
         field.typeText(XCUIKeyboardKey.delete.rawValue)
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == nil OR value == %@", ""), object: field)], timeout: 5), .completed,
-            app.debugDescription)
-        // UIKit can expose an empty field as either nil or an empty string.
-        // Independently require that the editor's actual text was cleared.
+        // An empty UIKit field can report its placeholder as its AX value even
+        // when hierarchy text omits that value. Wait for the actual bound text.
+        let canvas = app.descendants(matching: .any)[prefix + "canvas"].firstMatch
+        let cleared = NSPredicate { object, _ in
+            guard let canvas = object as? XCUIElement, let json = canvas.value as? String,
+                  let state = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+                  let elements = state["elements"] as? [[String: Any]],
+                  let selected = elements.first(where: { $0["id"] as? String == selectedID }) else { return false }
+            return selected["text"] as? String == ""
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: cleared, object: canvas)],
+                                     timeout: 5), .completed, app.debugDescription)
         XCTAssertEqual(try element(selectedID)["text"] as? String, "")
         field.typeText(text)
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
