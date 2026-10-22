@@ -37,7 +37,7 @@ New cases: 9 UI tests and 3 unit/integration tests. The UI tests observe DEBUG-o
 
 ## Run on a Mac with stable Xcode
 
-The synchronized source groups include the new files automatically. The existing `iOS runtime regression` PR workflow runs the full UI scheme and unit suite; no separate duplicate workflow is added.
+The synchronized source groups include the new files automatically. The existing `iOS runtime regression` PR workflow runs the nine poster UI cases first, then skips that class in the remaining UI pass to avoid duplication; the full unit suite includes the 23 poster cases. The previous complete baseline run took 47 minutes, so the job budget is raised from 60 to 90 minutes. The new UI group has a 30-minute budget and a 360-second per-test limit, with zero skips and exactly nine discovered tests required. No existing regression gate is removed.
 
 For focused execution, replace the simulator ID with an available disposable simulator:
 
@@ -58,7 +58,9 @@ Do not accept a zero-discovery, skipped or failing result. Expected discovery: 9
 ## Validation status
 
 - Local Linux: CI-mode static gate passed (`VERIFY_PUBLIC_CONFIG=0 VERIFY_ALLOW_LEGAL_PLACEHOLDERS=1 ./tools/verify_local.sh static`). This is not Swift compilation or simulator execution.
-- Simulator / Swift build: pending CI at initial submission. New tests must pass before the draft is considered ready.
+- Swift app/UI-test compilation: passed for `1652600` in iOS runtime run `39738921054`. This does not mean the UI tests passed. The follow-up CI grouping change runs poster UI tests first.
+- Simulator interaction results: pending. New tests must pass before the draft is considered ready.
+- Repository verification run `39738921124`: static, Web and disposable database passed; backend stopped at existing Vitest/@vitest/mocker dependency advisories (GHSA-qxg6-89mg-rqv8 and GHSA-xp26-3454-mjgp). No backend files are changed by this PR.
 - Physical device / installed TestFlight 112: not performed.
 - No runtime defect is confirmed from source inspection alone; no speculative product behavior fix is included.
 
