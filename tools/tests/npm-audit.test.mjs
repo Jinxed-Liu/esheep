@@ -54,11 +54,16 @@ test('npm audit errors without a FetchError code retry only known network failur
 test('real npm audit recovers from a controlled local registry timeout', { timeout: 15000 }, async context => {
     const directory = await mkdtemp(join(tmpdir(), 'esheep-audit-'));
     let requests = 0;
+    let bulkRequests = 0;
     const registry = createServer((request, response) => {
         request.resume();
-        if (++requests === 1) return; // First request times out; no external network is used.
+        requests++;
+        if (request.url.endsWith('/advisories/bulk')) bulkRequests++;
+        // npm 10 falls back to the quick endpoint after a bulk timeout.
+        // Fail the whole first audit invocation, including that fallback.
+        if (bulkRequests === 1) return;
         response.writeHead(200, { 'content-type': 'application/json' });
-        response.end('{}');
+        response.end(request.url.endsWith('/audits/quick') ? '{"advisories":{}}' : '{}');
     });
     try {
         await writeFile(join(directory, 'package.json'), JSON.stringify({ name: 'synthetic-audit', version: '1.0.0',
@@ -75,7 +80,8 @@ test('real npm audit recovers from a controlled local registry timeout', { timeo
         const code = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
         assert.equal(code, 0, output);
         assert.match(output, /temporary network failure \(ETIMEDOUT\)/);
-        assert.equal(requests, 2, output);
+        assert.equal(bulkRequests, 2, output);
+        assert.ok(requests >= 2 && requests <= 3, output);
     } finally {
         registry.closeAllConnections();
         await new Promise(resolve => registry.close(resolve));
