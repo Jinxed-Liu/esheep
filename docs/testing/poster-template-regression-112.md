@@ -98,6 +98,14 @@ Run `39739836731` failed all nine UI cases at `openEditor`. Its exported accessi
 - The color failure screenshot shows the editor, not a remote system picker. Its synthesized event touched the actual visible well at `(352, 658)`. Bound the scaled poster's hit region to its displayed rectangle so clipped, interactive content cannot cover inspector controls. The color-opening assertion will validate this boundary change in the next run.
 - The save/rebind flow completed all five text edits and saved the template, then hit the six-minute test limit at its first process relaunch (421.236 seconds including timeout cleanup). Set only this case's `executionTimeAllowance` to 600 seconds; keep the default at 360, the poster step at 40 minutes, and the overall job at 90. All nine cases and their assertions remain mandatory.
 
+### Follow-up from `dcaefbc`
+
+[iOS run 39758451696](https://github.com/Jinxed-Liu/esheep/actions/runs/39758451696) executed all nine poster cases: six passed and three failed. Breeding editing, scaled dragging/undo, cross-style persisted templates, minimal editing, photo crop/undo/reset, and the full two-relaunch cross-sheep template flow passed. The latter completed in 405.828 seconds, validating its separate 600-second budget. Static, Web, backend and disposable database checks passed for this head.
+
+- Thumbnail/preview pixel comparisons and 1080×1920 output dimensions passed. The real share sheet exposed `Save regression PNG` as an `actionGroupCell`, not a Button; query its actual Cell type. The exact saved-byte readback assertion remains required.
+- Magazine rotation stayed at zero. Its synthesized event contains a single 15.775-point movement in 31.55 ms. Replace short best-effort slider adjustments with continuous native drags and a final hold, retaining the changed-value and full undo/reset assertions.
+- The color well still did not open after a correctly positioned 50 ms tap; the canvas boundary change did not resolve this failure. Use a 200 ms press on the actual well to test touch recognition inside the scroll view. This remains a candidate until the native panel, color change and undo assertions pass; no claim of a confirmed color fix is made.
+
 Final simulator acceptance remains pending until the corrected assertions and every original gate pass together.
 
 ## Remaining physical-device acceptance

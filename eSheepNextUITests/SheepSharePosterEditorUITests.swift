@@ -85,7 +85,7 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         // The native picker is opened by the well, not the row's empty center.
         let colorFrame = colorPicker.frame
         colorPicker.coordinate(withNormalizedOffset: CGVector(dx: 1 - colorFrame.height / (2 * colorFrame.width),
-                                                              dy: 0.5)).tap()
+                                                              dy: 0.5)).press(forDuration: 0.2)
         let slidersTab = app.buttons.matching(NSPredicate(format: "label IN %@", ["滑块", "Sliders"])).firstMatch
         XCTAssertTrue(slidersTab.waitForExistence(timeout: 10), app.debugDescription)
         slidersTab.tap()
@@ -242,7 +242,8 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         try assertVisuallyClose(screen, image)
         try assertVisuallyClose(preview.screenshot().image, image)
         app.buttons["sheepPoster.sharePoster"].tap()
-        let save = app.buttons["Save regression PNG"]
+        // UIActivityViewController exposes application activities as collection cells.
+        let save = app.cells["Save regression PNG"]
         XCTAssertTrue(save.waitForExistence(timeout: 15), app.debugDescription)
         save.tap()
         XCTAssertTrue(preview.waitForExistence(timeout: 15))
@@ -456,7 +457,16 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         let before = try element(id)[field] as? Double
         let slider = app.sliders[prefix + "slider." + title]
         reveal(slider)
-        slider.adjust(toNormalizedSliderPosition: position)
+        // XCTest's short adjustment emitted a single 32 ms movement for the
+        // rotation control. Deliver a continuous native drag and final hold.
+        let frame = slider.frame
+        let inset = min(frame.height / 2, frame.width / 2)
+        let track = frame.width - 2 * inset
+        let origin = slider.coordinate(withNormalizedOffset: .zero)
+        let start = origin.withOffset(CGVector(dx: inset + track * slider.normalizedSliderPosition,
+                                               dy: frame.height / 2))
+        let end = origin.withOffset(CGVector(dx: inset + track * position, dy: frame.height / 2))
+        start.press(forDuration: 0.2, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
         let after = try element(id)[field] as? Double
         XCTAssertNotEqual(before, after, title)
     }
