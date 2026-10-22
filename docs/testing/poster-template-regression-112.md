@@ -37,7 +37,7 @@ New cases: 9 UI tests and 3 unit/integration tests. The UI tests observe DEBUG-o
 
 ## Run on a Mac with stable Xcode
 
-The synchronized source groups include the new files automatically. The existing `iOS runtime regression` PR workflow runs the nine poster UI cases first, then skips that class in the remaining UI pass to avoid duplication; the full unit suite includes the 23 poster cases. The previous complete baseline run took 47 minutes, so the job budget is raised from 60 to 90 minutes. The new UI group has a 30-minute budget and a 360-second per-test limit, with zero skips and exactly nine discovered tests required. No existing regression gate is removed.
+The synchronized source groups include the new files automatically. The existing `iOS runtime regression` PR workflow runs the nine poster UI cases first, then skips that class in the remaining UI pass to avoid duplication; the full unit suite includes the 23 poster cases. The previous complete baseline run took 47 minutes, so the job budget is raised from 60 to 90 minutes. The new UI group has a 40-minute budget and a 360-second per-test limit, with zero skips and exactly nine discovered tests required. No existing regression gate is removed.
 
 For focused execution, replace the simulator ID with an available disposable simulator:
 
@@ -62,7 +62,7 @@ Do not accept a zero-discovery, skipped or failing result. Expected discovery: 9
 - Simulator interaction results: pending. New tests must pass before the draft is considered ready.
 - Repository verification run `39738921124`: static, Web and disposable database passed; backend stopped at Vitest/@vitest/mocker dependency advisories (GHSA-qxg6-89mg-rqv8 and GHSA-xp26-3454-mjgp). The CI repair below updates that test dependency.
 - Physical device / installed TestFlight 112: not performed.
-- No runtime defect is confirmed from source inspection alone; no speculative product behavior fix is included.
+- A canvas gesture-priority adjustment is under simulator validation; it must pass both tap selection and scaled displacement/undo assertions before acceptance.
 
 ## CI failure repair
 
@@ -73,6 +73,18 @@ Run `39739836731` failed all nine UI cases at `openEditor`. Its exported accessi
 - Bound npm audit requests and retry only temporary network failures, at most three attempts. Vulnerability findings, authentication errors, malformed responses and exhausted retries still fail. Eight automated tests cover those distinctions, including a real npm request against a controlled localhost server; no security severity threshold is lowered.
 - Source commit `6006c9ad5ac111a97f89a9ce243706dfa820292c`: [repository verification](https://github.com/Jinxed-Liu/esheep/actions/runs/39743886877) passed all four jobs (static, Web, backend, disposable database). Web: 270 tests; backend: 16 worker + 33 gateway tests; retry helper: 6 tests. Dependency audits pass.
 - [iOS verification](https://github.com/Jinxed-Liu/esheep/actions/runs/39743886996) compiled and reached the editor in every case, then exposed additional automation failures. Recordings show text inserted before the original value, fast inspector scrolling past controls, and a long native menu whose target was not reached. The short drag emitted only one movement event. The next repair uses native Select All with exact-value waits, controlled inspector drags, title-aware menu selection with selected-ID assertions, and a slower continuous canvas drag. Failure screenshots and accessibility hierarchies are now captured before process termination. All nine tests and their content/undo/pixel assertions remain required; simulator acceptance is still pending.
+
+### Follow-up from `77118d0`
+
+[Repository verification](https://github.com/Jinxed-Liu/esheep/actions/runs/39747848548) passed all four jobs. In [iOS run 39747848504](https://github.com/Jinxed-Liu/esheep/actions/runs/39747848504), magazine editing, minimal editing and cross-style persisted-template application passed. The poster step reached its 30-minute limit just after starting the ninth case, so the result bundle could not be finalized and subsequent suites did not run. Remaining failures are not accepted as completed coverage:
+
+- Breeding editing cleared a native TextField whose AX value became nil rather than an empty string. Accept either empty AX representation, and independently require the selected element's real text to be empty. The final replacement text must still match exactly in both UI and editor state.
+- The long element menu retained its IDs but its visual order differed when opening upwards. Infer the scroll direction from visible IDs. Cache one accessibility snapshot per scroll instead of repeatedly requesting live frames during sorting.
+- ColorPicker exposes its label and trailing well as one wide AX row. Tap the actual color well and keep inspector controls above the home-indicator region. Continue requiring a changed color and full undo.
+- A slower canvas drag still produced zero movement. The expected delta 52.3946 for a 24-point drag corresponds to a 164.9-point canvas, consistent with its failure hierarchy (the preceding 12-point test expected 26.1973). Give the native element drag priority over its tap recognizer, add a separate tap-selection assertion, and retain exact scaled movement and undo checks. This candidate requires the next simulator run; a passing state read alone is not sufficient.
+- Include the full read-only editor JSON in failure attachments, because XCTest truncates long accessibility values in hierarchy text.
+- Cherry-pick `8915d5cc4de09302ad15f56d9418d76316a557a0` for npm 10's bulk-to-quick audit fallback. The controlled server times out both first-attempt endpoints, then succeeds on retry. Independent Mac verification reports 8/8 helper tests on npm 10.9.8 and 11.21.1 (Node 22.23.1); local Linux helper tests also pass 8/8. No audit threshold or retry assertion is removed.
+- Keep the total job budget at 90 minutes. Increase the poster step from 30 to 40 minutes to include XCTest startup and nine real UI flows; retain the 360-second limit for every case, all nine required results and all subsequent regression gates.
 
 ## Remaining physical-device acceptance
 

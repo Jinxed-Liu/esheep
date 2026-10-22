@@ -902,7 +902,9 @@ struct SheepSharePosterView: View {
                     .contentShape(.rect)
                     .rotationEffect(.degrees(element.rotation))
                     .onTapGesture { onSelect?(element.id) }
-                    .gesture(
+                    // Give movement priority once the drag distance is reached;
+                    // a stationary touch still selects the element.
+                    .highPriorityGesture(
                         DragGesture(minimumDistance: 2, coordinateSpace: .global)
                             .onChanged { value in
                                 onSelect?(element.id)

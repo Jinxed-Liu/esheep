@@ -111,7 +111,8 @@ jobs:
         run: xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
       - name: Run isolated poster editor regressions
         if: ${{ !inputs.focused_interactions }}
-        timeout-minutes: 30
+        # Includes initial XCTest startup; retain the 360-second per-case bound.
+        timeout-minutes: 40
         run: |
           set -euo pipefail
           xcodebuild test-without-building \
