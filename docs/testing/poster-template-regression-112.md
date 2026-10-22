@@ -60,9 +60,19 @@ Do not accept a zero-discovery, skipped or failing result. Expected discovery: 9
 - Local Linux: CI-mode static gate passed (`VERIFY_PUBLIC_CONFIG=0 VERIFY_ALLOW_LEGAL_PLACEHOLDERS=1 ./tools/verify_local.sh static`). This is not Swift compilation or simulator execution.
 - Swift app/UI-test compilation: passed for `1652600` in iOS runtime run `39738921054`. This does not mean the UI tests passed. The follow-up CI grouping change runs poster UI tests first.
 - Simulator interaction results: pending. New tests must pass before the draft is considered ready.
-- Repository verification run `39738921124`: static, Web and disposable database passed; backend stopped at existing Vitest/@vitest/mocker dependency advisories (GHSA-qxg6-89mg-rqv8 and GHSA-xp26-3454-mjgp). No backend files are changed by this PR.
+- Repository verification run `39738921124`: static, Web and disposable database passed; backend stopped at Vitest/@vitest/mocker dependency advisories (GHSA-qxg6-89mg-rqv8 and GHSA-xp26-3454-mjgp). The CI repair below updates that test dependency.
 - Physical device / installed TestFlight 112: not performed.
 - No runtime defect is confirmed from source inspection alone; no speculative product behavior fix is included.
+
+## CI failure repair
+
+Run `39739836731` failed all nine UI cases at `openEditor`. Its exported accessibility hierarchy shows that the tap opened the poster **preview**, not the editor: the partially clipped customize button overlapped the fixed preview action. `isHittable` alone did not ensure that the button's center was an unobstructed tap target.
+
+- Give the real selection scroll view a stable accessibility identifier. Scroll the entire customize button above the fixed action before tapping, and assert both visibility and geometry. Restore the gallery scroll position before thumbnail pixel comparisons so the test does not compare a clipped image.
+- Update only Vitest and its matching `@vitest/*` packages from 4.1.11 to 4.1.12, retaining unrelated locked dependencies. A clean install, worker tests and audit pass with the updated lockfile.
+- Bound npm audit requests and retry only temporary network failures, at most three attempts. Vulnerability findings, authentication errors, malformed responses and exhausted retries still fail. Eight automated tests cover those distinctions, including a real npm request against a controlled localhost server; no security severity threshold is lowered.
+- Source commit `6006c9ad5ac111a97f89a9ce243706dfa820292c`: [repository verification](https://github.com/Jinxed-Liu/esheep/actions/runs/39743886877) passed all four jobs (static, Web, backend, disposable database). Web: 270 tests; backend: 16 worker + 33 gateway tests; retry helper: 6 tests. Dependency audits pass.
+- [iOS verification](https://github.com/Jinxed-Liu/esheep/actions/runs/39743886996) compiled and reached the editor in every case, then exposed additional automation failures. Recordings show text inserted before the original value, fast inspector scrolling past controls, and a long native menu whose target was not reached. The short drag emitted only one movement event. The next repair uses native Select All with exact-value waits, controlled inspector drags, title-aware menu selection with selected-ID assertions, and a slower continuous canvas drag. Failure screenshots and accessibility hierarchies are now captured before process termination. All nine tests and their content/undo/pixel assertions remain required; simulator acceptance is still pending.
 
 ## Remaining physical-device acceptance
 

@@ -18,7 +18,11 @@ export async function audit({ args = [], run = spawnSync, wait = ms => new Promi
         if (report?.metadata?.vulnerabilities?.total > 0 || Object.keys(report?.vulnerabilities ?? {}).length > 0) {
             return result.status || 1;
         }
-        const code = report?.error?.code || result.error?.code;
+        // npm's audit command sometimes strips the FetchError code and emits
+        // only a top-level message/statusCode (unlike npm install).
+        const code = report?.error?.code || result.error?.code
+            || (/^network timeout at:/i.test(report?.message ?? '') ? 'ETIMEDOUT' : undefined)
+            || ([502, 503, 504].includes(report?.statusCode) ? `E${report.statusCode}` : undefined);
         if (!transientCodes.has(code) || attempt === attempts) return result.status || 1;
         output(`npm audit temporary network failure (${code}); retry ${attempt}/${attempts - 1}\n`);
         await wait(2000 * attempt);

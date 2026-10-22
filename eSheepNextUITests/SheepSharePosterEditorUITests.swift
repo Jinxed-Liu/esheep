@@ -27,15 +27,20 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         let baseline = try state()
         let before = try element("earTag", in: baseline)
         let canvas = app.descendants(matching: .any)[prefix + "canvas"].firstMatch
-        let start = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.18))
-        let end = start.withOffset(CGVector(dx: 12, dy: 16))
-        start.press(forDuration: 0.1, thenDragTo: end)
+        let x = try XCTUnwrap(before["x"] as? Double) + XCTUnwrap(before["width"] as? Double) / 2
+        let y = try XCTUnwrap(before["y"] as? Double) + XCTUnwrap(before["height"] as? Double) / 2
+        let start = canvas.coordinate(withNormalizedOffset: CGVector(dx: x / 360, dy: y / 640))
+        let end = start.withOffset(CGVector(dx: 24, dy: 24))
+        // The default velocity sent only a down/move/up in 40 ms. Give the
+        // native recognizer an actual continuous drag, including its final frame.
+        start.press(forDuration: 0.2, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertEqual(try state()["selectedID"] as? String, "earTag", app.debugDescription)
         let after = try element("earTag")
         let scale = canvas.frame.width / 360
         XCTAssertEqual(try XCTUnwrap(after["x"] as? Double) - XCTUnwrap(before["x"] as? Double),
-                       Double(12 / scale), accuracy: 5)
+                       Double(24 / scale), accuracy: 5, app.debugDescription)
         XCTAssertEqual(try XCTUnwrap(after["y"] as? Double) - XCTUnwrap(before["y"] as? Double),
-                       Double(16 / scale), accuracy: 5)
+                       Double(24 / scale), accuracy: 5)
         tap("undo")
         assertCustomization(try state(), equals: baseline)
     }
@@ -277,7 +282,16 @@ final class SheepSharePosterEditorUITests: XCTestCase {
             "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         let application = app
-        addTeardownBlock { @MainActor in application.terminate() }
+        addTeardownBlock { @MainActor [self] in
+            if testRun?.hasSucceeded == false {
+                capture("failure-before-termination")
+                let hierarchy = XCTAttachment(string: application.debugDescription)
+                hierarchy.name = "failure-accessibility-hierarchy"
+                hierarchy.lifetime = .keepAlways
+                add(hierarchy)
+            }
+            application.terminate()
+        }
     }
 
     private func openPoster(tag: String, style: String) {
@@ -315,13 +329,31 @@ final class SheepSharePosterEditorUITests: XCTestCase {
     }
 
     private func select(_ id: String) {
-        tap("elements")
-        let item = app.buttons[prefix + "select." + id]
-        for _ in 0..<8 {
-            if item.isHittable { break }
-            app.swipeUp()
+        guard let current = try? state(), let elements = current["elements"] as? [[String: Any]],
+              let title = elements.first(where: { $0["id"] as? String == id })?["title"] as? String else {
+            XCTFail("Missing element: " + id); return
         }
-        XCTAssertTrue(item.isHittable, id); item.tap()
+        if current["selectedID"] as? String == id { return }
+        tap("elements")
+        // UIKit's presentation of SwiftUI Menu can expose the localized title
+        // without the SwiftUI identifier. The state assertion below checks the ID.
+        let item = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label == %@",
+            prefix + "select." + id, title)).firstMatch
+        let titles = elements.compactMap { $0["title"] as? String }
+        for _ in 0..<16 {
+            if item.exists && item.isHittable { break }
+            let visible = app.buttons.matching(NSPredicate(format: "label IN %@", titles))
+                .allElementsBoundByIndex.filter { $0.isHittable }.sorted { $0.frame.midY < $1.frame.midY }
+            guard let first = visible.first, let last = visible.last, last.frame.midY > first.frame.midY + 80 else {
+                XCTFail("No scrollable element menu: " + app.debugDescription); return
+            }
+            last.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.05,
+                       thenDragTo: first.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)),
+                       withVelocity: .slow, thenHoldForDuration: 0.1)
+        }
+        XCTAssertTrue(item.isHittable, id + "\n" + app.debugDescription); item.tap()
+        XCTAssertEqual((try? state())?["selectedID"] as? String, id)
     }
 
     private func addText() {
@@ -337,13 +369,26 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         let field = app.descendants(matching: .any)[prefix + "text"].firstMatch
         reveal(field, upwards: false)
         let selectedID = try XCTUnwrap(try state()["selectedID"] as? String)
-        let old = try XCTUnwrap(field.value as? String)
         field.tap()
-        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count) + text)
-        XCTAssertEqual(field.value as? String, text)
+        // A tap can place the cursor at the beginning. Use native selection,
+        // rather than assuming that repeated backspace deletes the old value.
+        field.press(forDuration: 1.1)
+        let selectAll = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label IN %@", ["全选", "Select All"])).firstMatch
+        XCTAssertTrue(selectAll.waitForExistence(timeout: 5), app.debugDescription)
+        selectAll.tap()
+        field.typeText(XCUIKeyboardKey.delete.rawValue)
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", ""), object: field)], timeout: 5), .completed,
+            app.debugDescription)
+        field.typeText(text)
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", text), object: field)], timeout: 5), .completed,
+            app.debugDescription)
         // Leave the editor and reopen to dismiss the keyboard via production UI.
         tap("done"); openEditor()
         select(selectedID)
+        XCTAssertEqual(try element(selectedID)["text"] as? String, text)
     }
 
     private func changeSlider(_ title: String, position: CGFloat, field: String) throws {
@@ -358,11 +403,19 @@ final class SheepSharePosterEditorUITests: XCTestCase {
 
     private func reveal(_ element: XCUIElement, upwards: Bool = true) {
         let inspector = app.scrollViews[prefix + "inspector"]
-        for _ in 0..<14 {
-            if element.isHittable { return }
-            if upwards { inspector.swipeUp(velocity: .fast) } else { inspector.swipeDown(velocity: .fast) }
+        for _ in 0..<24 {
+            let viewport = inspector.frame.insetBy(dx: 0, dy: 8)
+            let frame = element.frame
+            if element.isHittable && frame.minY >= viewport.minY && frame.maxY <= viewport.maxY { return }
+            let moveUp = frame.isEmpty ? upwards : frame.midY > viewport.midY
+            // Short, controlled drags prevent momentum from skipping the target.
+            // The outer padding avoids changing sliders while trying to scroll.
+            inspector.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: moveUp ? 0.8 : 0.2))
+                .press(forDuration: 0.05,
+                       thenDragTo: inspector.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: moveUp ? 0.2 : 0.8)),
+                       withVelocity: .slow, thenHoldForDuration: 0.1)
         }
-        XCTAssertTrue(element.isHittable, element.description)
+        XCTFail("Could not reveal \(element.description)\n\(app.debugDescription)")
     }
 
     private func tapInspectorButton(_ id: String) {
