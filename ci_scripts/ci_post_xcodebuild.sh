@@ -1,11 +1,14 @@
 #!/bin/sh
-# Validate internal archives; keep opt-in checkpoint maintenance independent.
+# Validate release archives; keep opt-in checkpoint maintenance independent.
 set -eu
 
 if [ "${ESHEEP_TESTFLIGHT_RELEASE:-0}" = "1" ]; then
   [ "${CI_XCODE_CLOUD:-}" = "TRUE" ] || exit 1
-  [ "${CI_WORKFLOW:-}" = "TestFlight 3.2 Internal" ] || exit 1
-  [ "${CI_BRANCH:-}" = "main" ] || exit 1
+  case "${CI_WORKFLOW:-}:${CI_BRANCH:-}" in
+    'TestFlight 3.2 Internal:main'|'TestFlight 3.2 External Candidate:codex/external-testflight-3-2') ;;
+    *) exit 1 ;;
+  esac
+  case "${CI_START_CONDITION:-}" in manual|manual_rebuild) ;; *) exit 1 ;; esac
   [ -z "${CI_PULL_REQUEST_NUMBER:-}" ] || exit 1
   [ "${CI_XCODEBUILD_ACTION:-}" = "archive" ] || exit 1
   [ "${CI_XCODEBUILD_EXIT_CODE:-1}" = "0" ] || exit 1

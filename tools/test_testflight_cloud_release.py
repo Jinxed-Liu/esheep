@@ -86,6 +86,25 @@ class CloudReleasePreparationTests(unittest.TestCase):
                 self.assertFalse(self.config.exists())
                 self.assertEqual(self.project.read_text(), self.source)
 
+    def test_external_candidate_only_accepts_its_isolated_release_branch(self):
+        result = self.prepare(CI_WORKFLOW="TestFlight 3.2 External Candidate",
+                              CI_BRANCH="codex/external-testflight-3-2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.config.exists())
+
+    def test_external_release_does_not_expand_internal_or_automatic_access(self):
+        cases = (
+            {"CI_WORKFLOW": "TestFlight 3.2 External Candidate", "CI_BRANCH": "main"},
+            {"CI_BRANCH": "codex/external-testflight-3-2"},
+            {"CI_WORKFLOW": "TestFlight 3.2 External Candidate", "CI_BRANCH": "codex/external-testflight-3-2", "CI_START_CONDITION": "schedule"},
+            {"CI_WORKFLOW": "TestFlight 3.2 External Candidate", "CI_BRANCH": "codex/external-testflight-3-2", "CI_PULL_REQUEST_NUMBER": "18"},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                self.assertNotEqual(self.prepare(**overrides).returncode, 0)
+                self.assertFalse(self.config.exists())
+                self.assertEqual(self.project.read_text(), self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
