@@ -45,6 +45,9 @@ final class SingleSheepArchiveTests: XCTestCase {
             for (name, count) in expectedCounts {
                 let rows = try table(name, in: sheets)
                 XCTAssertEqual(rows.count - 1, count, "\(role): \(name)")
+                if let expectedIDs = f.expectedRecordIDs[name] {
+                    XCTAssertEqual(Set(rows.dropFirst().map { $0[0] }), expectedIDs, name)
+                }
                 for row in rows.dropFirst() {
                     XCTAssertEqual(row.count, rows[0].count, name)
                     XCTAssertEqual(row[1], f.farm.id.uuidString, name)
@@ -54,19 +57,28 @@ final class SingleSheepArchiveTests: XCTestCase {
             }
             let weights = try dictionaries("体重记录", in: sheets)
             XCTAssertEqual(weights.map { $0["体重kg"]! }, ["3.50", "12.25", "30.25", "31.75"])
+            XCTAssertEqual(weights.map { $0["发生时间"]! }, ["2023-01-01 00:30", "2023-03-01 08:00", "2023-06-01 09:00", "2023-06-01 16:00"])
             XCTAssertEqual(weights.suffix(2).map { $0["备注"]! }, ["上午称重", "下午称重"])
+            let gains = try dictionaries("体重增重区间", in: sheets)
+            XCTAssertEqual(gains.count, 2, "Same-day measurements must not create a zero-day gain interval")
+            XCTAssertEqual(gains.map { $0["天数"]! }, ["59", "92"])
+            XCTAssertEqual(gains.map { $0["结束体重kg"]! }, ["12.25", "31.75"])
             let transfers = try dictionaries("转群记录", in: sheets)
             XCTAssertEqual(transfers[0]["转出圈舍"], "虚构旧圈")
             XCTAssertEqual(transfers[0]["转入圈舍"], "虚构新圈")
             XCTAssertEqual(transfers[1]["转出圈舍ID"], f.newPen.id.uuidString)
             XCTAssertEqual(transfers[1]["转入圈舍ID"], "")
+            XCTAssertEqual(transfers.map { $0["发生时间"]! }, ["2023-05-01 08:00", "2024-08-01 08:00"])
             let health = try dictionaries("健康记录", in: sheets)
+            XCTAssertEqual(health.map { $0["发生时间"]! }, ["2023-02-01 08:00", "2023-04-01 08:00"])
             let historical = try XCTUnwrap(health.first { $0["项目"] == "历史群体治疗" })
             XCTAssertEqual(historical["剂量"], "2.5")
             XCTAssertEqual(historical["单位"], "mL")
             XCTAssertEqual(historical["给药途径"], "口服")
             XCTAssertEqual(historical["原记录羊只ID"], "")
             let reproduction = try dictionaries("繁殖记录", in: sheets)
+            XCTAssertEqual(reproduction.map { $0["类型"]! }, ["胎次确认", "配种", "孕检", "产羔", "流产"])
+            XCTAssertEqual(reproduction.map { $0["发生时间"]! }, ["2024-01-01 08:00", "2024-01-31 08:00", "2024-03-01 08:00", "2024-03-31 08:00", "2024-04-30 08:00"])
             let lambing = try XCTUnwrap(reproduction.first { $0["类型"] == "产羔" })
             XCTAssertEqual(lambing["母羊ID"], f.sheep.id.uuidString)
             XCTAssertEqual(lambing["胎次"], "2")
@@ -75,6 +87,10 @@ final class SingleSheepArchiveTests: XCTestCase {
             XCTAssertEqual(try dictionaries("离场记录", in: sheets)[0]["原因"], "虚构历史出售")
             XCTAssertEqual(try dictionaries("备注记录", in: sheets)[0]["备注"], "历史随访 & <正常>")
             XCTAssertEqual(try dictionaries("用途记录", in: sheets)[0]["备注"], "虚构用途变更")
+            for (name, expectedDate) in ["断奶记录": "2023-03-01 08:00", "离场记录": "2024-09-01 08:00",
+                                         "备注记录": "2024-02-01 08:00", "用途记录": "2023-12-01 08:00"] {
+                XCTAssertEqual(try dictionaries(name, in: sheets)[0]["发生时间"], expectedDate, name)
+            }
             assertNoForbiddenCells(sheets)
         }
     }
@@ -280,6 +296,7 @@ final class SingleSheepArchiveTests: XCTestCase {
         let oldPen: PenRecord
         let newPen: PenRecord
         let linkedHealth: HealthRecord
+        let expectedRecordIDs: [String: Set<String>]
 
         init(role: FarmRole) throws {
             container = try AppSchema.makeContainer(name: "synthetic-single-archive-\(UUID())", isStoredInMemoryOnly: true)
@@ -312,12 +329,14 @@ final class SingleSheepArchiveTests: XCTestCase {
             for (date, weight, note) in [("2023-06-01T01:00:00Z", "30.25", "上午称重"), ("2023-06-01T08:00:00Z", "31.75", "下午称重")] {
                 context.insert(WeightRecord(farmID: farm.id, sheepID: sheep.id, kilogramsText: weight, occurredAt: Self.date(date), note: note))
             }
-            context.insert(WeaningRecord(farmID: farm.id, sheepID: sheep.id, occurredAt: Self.date("2023-03-01T00:00:00Z"), weanWeightText: "12.25", birthAt: sheep.birthAt, birthWeightText: "3.5", note: "虚构断奶"))
+            let validWeaning = WeaningRecord(farmID: farm.id, sheepID: sheep.id, occurredAt: Self.date("2023-03-01T00:00:00Z"), weanWeightText: "12.25", birthAt: sheep.birthAt, birthWeightText: "3.5", note: "虚构断奶")
+            context.insert(validWeaning)
             let birth = ReproductionRecord(farmID: farm.id, eweID: dam.id, kind: .lambing, occurredAt: sheep.enteredAt)
             context.insert(birth)
             context.insert(LambingOffspringRecord(farmID: farm.id, lambingRecordID: birth.id, sheepID: sheep.id, legacyEarTag: sheep.earTag, sexRawValue: LambSex.female.rawValue, birthWeightText: "3.5"))
-            context.insert(TransferRecord(farmID: farm.id, sheepID: sheep.id, fromPenID: oldPen.id, toPenID: newPen.id, occurredAt: Self.date("2023-05-01T00:00:00Z"), note: "虚构转群一"))
-            context.insert(TransferRecord(farmID: farm.id, sheepID: sheep.id, fromPenID: newPen.id, toPenID: nil, occurredAt: Self.date("2024-08-01T00:00:00Z"), note: "虚构转群二"))
+            let firstTransfer = TransferRecord(farmID: farm.id, sheepID: sheep.id, fromPenID: oldPen.id, toPenID: newPen.id, occurredAt: Self.date("2023-05-01T00:00:00Z"), note: "虚构转群一")
+            let secondTransfer = TransferRecord(farmID: farm.id, sheepID: sheep.id, fromPenID: newPen.id, toPenID: nil, occurredAt: Self.date("2024-08-01T00:00:00Z"), note: "虚构转群二")
+            context.insert(firstTransfer); context.insert(secondTransfer)
             let direct = HealthRecord(farmID: farm.id, sheepID: sheep.id, penID: nil, kind: .vaccination, itemNameSnapshot: "虚构疫苗", occurredAt: Self.date("2023-02-01T00:00:00Z"))
             context.insert(direct)
             linkedHealth = HealthRecord(farmID: farm.id, sheepID: nil, penID: oldPen.id, kind: .treatment, itemNameSnapshot: "历史群体治疗", occurredAt: Self.date("2023-04-01T00:00:00Z"), note: "旧圈舍成员快照", quantityText: "2.5", unit: "mL", route: "口服")
@@ -328,17 +347,29 @@ final class SingleSheepArchiveTests: XCTestCase {
             }
             context.insert(HealthSubjectLink(farmID: farm.id, healthRecordID: UUID(), sheepID: sheep.id))
             context.insert(HealthRecord(farmID: farm.id, sheepID: nil, penID: newPen.id, kind: .treatment, itemNameSnapshot: "FORBIDDEN unlinked pen treatment", occurredAt: sheep.enteredAt))
+            var reproductionIDs = Set<String>()
             for (index, kind) in ReproductionRecordKind.allCases.enumerated() {
-                context.insert(ReproductionRecord(farmID: farm.id, eweID: sheep.id, kind: kind,
+                let record = ReproductionRecord(farmID: farm.id, eweID: sheep.id, kind: kind,
                     occurredAt: Self.date("2024-01-01T00:00:00Z").addingTimeInterval(Double(index) * 30 * 86_400),
                     sireID: sire.id, result: kind == .pregnancyCheck ? "阳性" : "", lambCount: kind == .lambing ? 3 : 0,
-                    parity: kind == .parityBaseline ? 1 : (kind == .lambing ? 2 : nil), birthDeadCount: kind == .lambing ? 1 : nil, note: "虚构繁殖-\(kind.rawValue)"))
+                    parity: kind == .parityBaseline ? 1 : (kind == .lambing ? 2 : nil), birthDeadCount: kind == .lambing ? 1 : nil, note: "虚构繁殖-\(kind.rawValue)")
+                context.insert(record)
+                reproductionIDs.insert(record.id.uuidString)
             }
-            context.insert(RemovalRecord(farmID: farm.id, sheepID: sheep.id, kind: .sold, reason: "虚构历史出售", occurredAt: sheep.removedAt!))
-            context.insert(NoteRecord(farmID: farm.id, sheepID: sheep.id, text: "历史随访 & <正常>", occurredAt: Self.date("2024-02-01T00:00:00Z")))
+            let validRemoval = RemovalRecord(farmID: farm.id, sheepID: sheep.id, kind: .sold, reason: "虚构历史出售", occurredAt: sheep.removedAt!)
+            let validNote = NoteRecord(farmID: farm.id, sheepID: sheep.id, text: "历史随访 & <正常>", occurredAt: Self.date("2024-02-01T00:00:00Z"))
+            context.insert(validRemoval); context.insert(validNote)
             let purpose = FarmCommand.care(.setSheepPurpose(sheepID: sheep.id, purpose: .breedingEwe, reason: "虚构用途变更", expectedRevision: 1))
             let payload = try FarmCommandCloudPayloadEncoder.encode(purpose)
-            context.insert(DomainOperation(farmID: farm.id, accountID: farm.ownerAccountID, kind: .care, occurredAt: Self.date("2023-12-01T00:00:00Z"), summary: "用途变更", entityID: sheep.id, payload: payload))
+            let purposeOperation = DomainOperation(farmID: farm.id, accountID: farm.ownerAccountID, kind: .care, occurredAt: Self.date("2023-12-01T00:00:00Z"), summary: "用途变更", entityID: sheep.id, payload: payload)
+            context.insert(purposeOperation)
+            expectedRecordIDs = [
+                "健康记录": [direct.id.uuidString, linkedHealth.id.uuidString],
+                "转群记录": [firstTransfer.id.uuidString, secondTransfer.id.uuidString],
+                "繁殖记录": reproductionIDs, "断奶记录": [validWeaning.id.uuidString],
+                "离场记录": [validRemoval.id.uuidString], "备注记录": [validNote.id.uuidString],
+                "用途记录": [purposeOperation.id.uuidString]
+            ]
 
             // Adversarial combinations: another sheep; same sheep UUID under a
             // foreign farm; a second foreign farm; and tombstoned target records.
