@@ -237,18 +237,10 @@ struct SheepSharePosterEditor: View {
                     slider("照片内垂直位置", value: number(\.photoY, fallback: element.photoY), range: -320...320)
                 }
             } else {
-                HStack {
-                    Text("颜色")
-                    Spacer()
-                    ColorPicker("颜色", selection: Binding(
-                        get: { selected?.color.color ?? .white },
-                        set: { color in remember(); update { $0.color = colorComponents(color) } }
-                    ), supportsOpacity: false)
-                    .labelsHidden()
-                    .fixedSize()
-                    .accessibilityIdentifier("sheepPoster.editor.color")
-                    .frame(minWidth: 44, minHeight: 44)
-                }
+                SheepPosterColorControl(title: "颜色", identifier: "sheepPoster.editor.color", selection: Binding(
+                    get: { selected?.color.color ?? .white },
+                    set: { color in remember(); update { $0.color = colorComponents(color) } }
+                ))
             }
             slider("水平位置", value: number(\.x, fallback: element.x), range: -180...360)
             slider("垂直位置", value: number(\.y, fallback: element.y), range: -160...640)
@@ -294,11 +286,10 @@ struct SheepSharePosterEditor: View {
 
     private var backgroundInspector: some View {
         VStack(spacing: 16) {
-            ColorPicker("画布底色", selection: Binding(
+            SheepPosterColorControl(title: "画布底色", identifier: "sheepPoster.editor.background", selection: Binding(
                 get: { customization.background?.color ?? (style == .breeding && template.theme == .light ? Color(red: 0.86, green: 0.94, blue: 1) : .black) },
                 set: { remember(); customization.background = colorComponents($0) }
-            ), supportsOpacity: false)
-            .accessibilityIdentifier("sheepPoster.editor.background")
+            ))
             Text("若底色被照片遮住，可在元素菜单中隐藏“照片背景”。")
                 .font(.caption).foregroundStyle(.secondary)
             Button("恢复整张默认设计") {
@@ -439,5 +430,79 @@ struct SheepSharePosterEditor: View {
             }
         } catch { errorMessage = String(localized: "读取图片失败，请重试。") }
         photoSelection = nil
+    }
+}
+
+/// Own the nested presentation in SwiftUI instead of asking an embedded color
+/// well to locate a presenter through the gallery and editor sheets.
+private struct SheepPosterColorControl: View {
+    let title: LocalizedStringKey
+    let identifier: String
+    @Binding var selection: Color
+    @State private var isPresented = false
+
+    var body: some View {
+        Button { isPresented = true } label: {
+            HStack {
+                Text(title).foregroundStyle(.primary)
+                Spacer()
+                Circle().fill(selection)
+                    .overlay { Circle().strokeBorder(.secondary, lineWidth: 1) }
+                    .frame(width: 28, height: 28)
+            }
+            .frame(minHeight: 44)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(identifier)
+        .sheet(isPresented: $isPresented) {
+            NavigationStack {
+                SheepPosterNativeColorPicker(selection: $selection, isPresented: $isPresented)
+                    .navigationTitle(title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("完成") { isPresented = false }
+                                .accessibilityIdentifier(identifier + ".done")
+                        }
+                    }
+            }
+        }
+    }
+}
+
+private struct SheepPosterNativeColorPicker: UIViewControllerRepresentable {
+    @Binding var selection: Color
+    @Binding var isPresented: Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIViewController(context: Context) -> UIColorPickerViewController {
+        let controller = UIColorPickerViewController()
+        controller.supportsAlpha = false
+        controller.selectedColor = UIColor(selection)
+        controller.delegate = context.coordinator
+        controller.view.accessibilityIdentifier = "sheepPoster.nativeColorPicker"
+        return controller
+    }
+
+    func updateUIViewController(_ controller: UIColorPickerViewController, context: Context) {
+        context.coordinator.parent = self
+        let color = UIColor(selection)
+        if !controller.selectedColor.isEqual(color) { controller.selectedColor = color }
+    }
+
+    final class Coordinator: NSObject, UIColorPickerViewControllerDelegate {
+        var parent: SheepPosterNativeColorPicker
+        init(parent: SheepPosterNativeColorPicker) { self.parent = parent }
+
+        func colorPickerViewController(_ viewController: UIColorPickerViewController,
+                                       didSelect color: UIColor, continuously: Bool) {
+            parent.selection = Color(uiColor: color)
+        }
+
+        func colorPickerViewControllerDidFinish(_ viewController: UIColorPickerViewController) {
+            parent.isPresented = false
+        }
     }
 }

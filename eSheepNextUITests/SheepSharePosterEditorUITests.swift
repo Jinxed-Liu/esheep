@@ -81,20 +81,21 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         let baseline = try state()
         let colorPicker = app.buttons[prefix + "color"]
         reveal(colorPicker)
-        // The native well has its own accessibility frame, separate from its
-        // visual label. Activate the control rather than estimating a row offset.
-        XCTAssertLessThanOrEqual(colorPicker.frame.width, 60)
+        // The whole accessible row owns a sheet containing UIKit's native picker.
         colorPicker.tap()
-        let slidersTab = app.buttons.matching(NSPredicate(format: "label IN %@", ["滑块", "Sliders"])).firstMatch
+        let picker = app.descendants(matching: .any)["sheepPoster.nativeColorPicker"].firstMatch
+        XCTAssertTrue(picker.waitForExistence(timeout: 10), app.debugDescription)
+        let slidersTab = picker.buttons.matching(NSPredicate(format: "label IN %@", ["滑块", "Sliders"])).firstMatch
         XCTAssertTrue(slidersTab.waitForExistence(timeout: 10), app.debugDescription)
         slidersTab.tap()
         // Native RGB controls; do not depend on a particular localized field name.
-        let sliders = app.sliders
+        let sliders = picker.sliders
         XCTAssertTrue(sliders.firstMatch.waitForExistence(timeout: 5))
         sliders.element(boundBy: 0).adjust(toNormalizedSliderPosition: 0.2)
-        let close = app.buttons.matching(NSPredicate(format: "label IN %@", ["关闭", "Close"])).firstMatch
+        let close = app.buttons[prefix + "color.done"]
         XCTAssertTrue(close.waitForExistence(timeout: 5), app.debugDescription)
         close.tap()
+        XCTAssertTrue(picker.waitForNonExistence(timeout: 5))
         let changed = try element("earTag")
         XCTAssertNotEqual(changed["color"] as? NSDictionary, try element("earTag", in: baseline)["color"] as? NSDictionary)
         capture("native-color-picker-result")
@@ -458,8 +459,9 @@ final class SheepSharePosterEditorUITests: XCTestCase {
     }
 
     private func changeSlider(_ title: String, position: CGFloat, field: String) throws {
-        let id = try XCTUnwrap(try state()["selectedID"] as? String)
-        let before = try element(id)[field] as? Double
+        let initial = try state()
+        let id = try XCTUnwrap(initial["selectedID"] as? String)
+        let before = try element(id, in: initial)[field] as? Double
         let slider = app.sliders[prefix + "slider." + title]
         reveal(slider)
         // XCTest's short adjustment emitted a single 32 ms movement for the
@@ -478,17 +480,24 @@ final class SheepSharePosterEditorUITests: XCTestCase {
 
     private func reveal(_ element: XCUIElement, upwards: Bool = true) {
         let inspector = app.scrollViews[prefix + "inspector"]
+        // The viewport does not move while its contents scroll. Resolve its
+        // coordinates once, avoiding repeated remote AX queries per touch event.
+        let inspectorFrame = inspector.frame
+        let appFrame = app.frame
+        let viewport = inspectorFrame.intersection(appFrame.insetBy(dx: 0, dy: 44)).insetBy(dx: 0, dy: 8)
+        let origin = app.coordinate(withNormalizedOffset: .zero)
+        let x = inspectorFrame.minX + inspectorFrame.width * 0.02 - appFrame.minX
+        let top = origin.withOffset(CGVector(dx: x, dy: inspectorFrame.minY + inspectorFrame.height * 0.2 - appFrame.minY))
+        let bottom = origin.withOffset(CGVector(dx: x, dy: inspectorFrame.minY + inspectorFrame.height * 0.8 - appFrame.minY))
         for _ in 0..<24 {
             // The scroll view's AX frame can extend underneath the home indicator.
-            let viewport = inspector.frame.intersection(app.frame.insetBy(dx: 0, dy: 44)).insetBy(dx: 0, dy: 8)
             let frame = element.frame
-            if element.isHittable && frame.minY >= viewport.minY && frame.maxY <= viewport.maxY { return }
+            if frame.minY >= viewport.minY && frame.maxY <= viewport.maxY && element.isHittable { return }
             let moveUp = frame.isEmpty ? upwards : frame.midY > viewport.midY
             // Short, controlled drags prevent momentum from skipping the target.
             // The outer padding avoids changing sliders while trying to scroll.
-            inspector.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: moveUp ? 0.8 : 0.2))
-                .press(forDuration: 0.05,
-                       thenDragTo: inspector.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: moveUp ? 0.2 : 0.8)),
+            (moveUp ? bottom : top)
+                .press(forDuration: 0.05, thenDragTo: moveUp ? top : bottom,
                        withVelocity: .slow, thenHoldForDuration: 0.1)
         }
         XCTFail("Could not reveal \(element.description)\n\(app.debugDescription)")

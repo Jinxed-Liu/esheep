@@ -118,6 +118,15 @@ Final simulator acceptance remains pending until the corrected assertions and ev
 
 Local Swift parsing, the static gate and unsigned iOS app/UI-test build-for-testing pass with Xcode 27.0. No local simulator runtime is installed; CI still supplies runtime evidence. Final simulator acceptance remains pending; the latest run did not reach the original UI, rollback or complete unit gates.
 
+### Follow-up from `6f6fac3`
+
+[iOS run 39771056850](https://github.com/Jinxed-Liu/esheep/actions/runs/39771056850) launched all nine poster cases: seven passed, including the complete PNG save/readback case, and two failed. The first case timed out, causing XCTest to restart its runner and report the remaining eight separately.
+
+- Breeding editing completed its reset/undo assertions and reached reopening at 480 seconds. The first launch alone spent 93 seconds establishing automation; a later initial presentation also incurred a 60-second idle wait. Do not raise its budget again. Cache the inspector's stationary viewport and use application-relative drag coordinates so every synthetic event does not re-resolve the same scroll view multiple times. Preserve the same drag path, speed, full visibility/hittability checks and every edit/reset/reopen assertion. Reuse the already-read initial state for slider comparisons.
+- The isolated 28×28 native color well still did not present a panel when tapped. The editor now owns the color sheet explicitly and embeds UIKit's `UIColorPickerViewController`, routing delegate changes through the existing binding and undo history. Both element and background colors use this presentation. Tests require the actual native picker, scope RGB sliders inside it, dismiss through an identified Done button, verify color mutation, undo and visibility restoration. This removes dependence on a color well finding a presenter through nested gallery/editor sheets; runtime acceptance is still pending.
+
+Unsigned app and UI-test compilation passes locally. The seven already-passing cases and every original CI gate remain required on the next head.
+
 ## Remaining physical-device acceptance
 
 Use a disposable local test farm and synthetic images, never a production farm. Install the actual TestFlight build 112 and record device, OS and build. Exercise native PhotosPicker replacement and cancellation, Chinese IME/multiline text, color controls, font selection, drag and layer order, photo crop, undo, reset, save/relaunch and A→B reuse. Test a ram and missing-photo sheep as well as two ewes. Save the shared image through a real system destination and reopen it; compare with the preview including dimensions, crop, characters and dynamic facts. Record failures with screenshots and image files. Report these separately from DEBUG simulator results and from any subsequently fixed build.
