@@ -108,6 +108,16 @@ Run `39739836731` failed all nine UI cases at `openEditor`. Its exported accessi
 
 Final simulator acceptance remains pending until the corrected assertions and every original gate pass together.
 
+### Follow-up from `c4d4d1c`
+
+[iOS run 39763548693](https://github.com/Jinxed-Liu/esheep/actions/runs/39763548693) passed six poster cases, including magazine rotation and both persisted-template flows. Three cases were reported failed:
+
+- The PNG case completed both pixel comparisons, saved the actual share activity bytes and verified exact equality. Its teardown then introduced a new failure by querying an editor canvas while the preview was displayed. `hasSucceeded` is not a failure predicate during teardown; use `totalFailureCount > 0` and check canvas existence before optional diagnostic reads. This preserves every PNG assertion and avoids treating missing diagnostic UI as a product failure.
+- The breeding edit/reset/reopen case reached its final assertion at 358 seconds, then crossed the 360-second limit while collecting unnecessary failure evidence. Give the three complete editing flows a bounded 480-second allowance; retain 360 seconds for short cases and 600 for the two-relaunch template flow. No correctness assertions or required cases are removed.
+- Color screenshots and the synthesized event confirm the press landed at (352, 658), directly on the visible well, but no native panel appeared. Separate the native `ColorPicker` from its visible label with a fixed-size, labels-hidden control and a 44-point layout area. The test now taps the actual control's own accessibility frame and requires the native panel, changed color, full undo and visibility restoration. This is a candidate repair awaiting simulator evidence, not a confirmed passing interaction.
+
+Local Swift parsing, the static gate and unsigned iOS app/UI-test build-for-testing pass with Xcode 27.0. No local simulator runtime is installed; CI still supplies runtime evidence. Final simulator acceptance remains pending; the latest run did not reach the original UI, rollback or complete unit gates.
+
 ## Remaining physical-device acceptance
 
 Use a disposable local test farm and synthetic images, never a production farm. Install the actual TestFlight build 112 and record device, OS and build. Exercise native PhotosPicker replacement and cancellation, Chinese IME/multiline text, color controls, font selection, drag and layer order, photo crop, undo, reset, save/relaunch and A→B reuse. Test a ram and missing-photo sheep as well as two ewes. Save the shared image through a real system destination and reopen it; compare with the preview including dimensions, crop, characters and dynamic facts. Record failures with screenshots and image files. Report these separately from DEBUG simulator results and from any subsequently fixed build.

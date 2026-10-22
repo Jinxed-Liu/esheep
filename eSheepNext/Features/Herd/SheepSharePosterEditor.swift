@@ -237,11 +237,18 @@ struct SheepSharePosterEditor: View {
                     slider("照片内垂直位置", value: number(\.photoY, fallback: element.photoY), range: -320...320)
                 }
             } else {
-                ColorPicker("颜色", selection: Binding(
-                    get: { selected?.color.color ?? .white },
-                    set: { color in remember(); update { $0.color = colorComponents(color) } }
-                ), supportsOpacity: false)
-                .accessibilityIdentifier("sheepPoster.editor.color")
+                HStack {
+                    Text("颜色")
+                    Spacer()
+                    ColorPicker("颜色", selection: Binding(
+                        get: { selected?.color.color ?? .white },
+                        set: { color in remember(); update { $0.color = colorComponents(color) } }
+                    ), supportsOpacity: false)
+                    .labelsHidden()
+                    .fixedSize()
+                    .accessibilityIdentifier("sheepPoster.editor.color")
+                    .frame(minWidth: 44, minHeight: 44)
+                }
             }
             slider("水平位置", value: number(\.x, fallback: element.x), range: -180...360)
             slider("垂直位置", value: number(\.y, fallback: element.y), range: -160...640)

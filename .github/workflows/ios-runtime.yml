@@ -111,7 +111,8 @@ jobs:
         run: xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
       - name: Run isolated poster editor regressions
         if: ${{ !inputs.focused_interactions }}
-        # Includes XCTest startup; only the two-relaunch template case requests 600s.
+        # Includes XCTest startup; full editing flows request 480s and the
+        # two-relaunch template case requests 600s. Short cases retain 360s.
         timeout-minutes: 40
         run: |
           set -euo pipefail

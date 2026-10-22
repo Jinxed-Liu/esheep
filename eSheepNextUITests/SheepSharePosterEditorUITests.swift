@@ -81,11 +81,10 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         let baseline = try state()
         let colorPicker = app.buttons[prefix + "color"]
         reveal(colorPicker)
-        // SwiftUI exposes the label and trailing color well as one AX row.
-        // The native picker is opened by the well, not the row's empty center.
-        let colorFrame = colorPicker.frame
-        colorPicker.coordinate(withNormalizedOffset: CGVector(dx: 1 - colorFrame.height / (2 * colorFrame.width),
-                                                              dy: 0.5)).press(forDuration: 0.2)
+        // The native well has its own accessibility frame, separate from its
+        // visual label. Activate the control rather than estimating a row offset.
+        XCTAssertLessThanOrEqual(colorPicker.frame.width, 60)
+        colorPicker.tap()
         let slidersTab = app.buttons.matching(NSPredicate(format: "label IN %@", ["滑块", "Sliders"])).firstMatch
         XCTAssertTrue(slidersTab.waitForExistence(timeout: 10), app.debugDescription)
         slidersTab.tap()
@@ -257,6 +256,9 @@ final class SheepSharePosterEditorUITests: XCTestCase {
     }
 
     private func verifyEditing(style: String) throws {
+        // The complete edit/reset/reopen flow reached its final assertion at
+        // 358 seconds on CI. Leave bounded time for evidence and app teardown.
+        executionTimeAllowance = 480
         launch()
         openPoster(tag: "QA-001", style: style)
         openEditor()
@@ -299,13 +301,16 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         app.launch()
         let application = app
         addTeardownBlock { @MainActor [self] in
-            if testRun?.hasSucceeded == false {
+            // hasSucceeded is false until the run finishes, including teardown.
+            // Only collect failure evidence when an assertion actually failed.
+            if (testRun?.totalFailureCount ?? 0) > 0 {
                 capture("failure-before-termination")
                 let hierarchy = XCTAttachment(string: application.debugDescription)
                 hierarchy.name = "failure-accessibility-hierarchy"
                 hierarchy.lifetime = .keepAlways
                 add(hierarchy)
-                if let value = try? state(),
+                let canvas = application.descendants(matching: .any)[prefix + "canvas"].firstMatch
+                if canvas.exists, let value = try? jsonValue(canvas),
                    let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]),
                    let json = String(data: data, encoding: .utf8) {
                     let stateAttachment = XCTAttachment(string: json)
