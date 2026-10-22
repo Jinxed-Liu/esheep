@@ -38,7 +38,7 @@ concurrency:
 jobs:
   assistant-entry:
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
@@ -109,6 +109,25 @@ jobs:
       - name: Wait for the simulator to finish booting
         timeout-minutes: 3
         run: xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
+      - name: Run isolated poster editor regressions
+        if: ${{ !inputs.focused_interactions }}
+        # Includes XCTest startup; full editing flows request 480s and the
+        # two-relaunch template case requests 600s. Short cases retain 360s.
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          xcodebuild test-without-building \
+            -project eSheepNext.xcodeproj -scheme eSheepNextUI -configuration Debug \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived-data" \
+            -only-testing:eSheepNextUITests/SheepSharePosterEditorUITests \
+            -resultBundlePath "$RUNNER_TEMP/poster-editor.xcresult" \
+            -parallel-testing-enabled NO -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 360 -maximum-test-execution-time-allowance 600 \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/poster-editor.log"
+          xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/poster-editor.xcresult" --compact \
+            | python3 -c 'import json,sys; s=json.load(sys.stdin); assert s["totalTestCount"] == 9 and s["failedTests"] == 0 and s["skippedTests"] == 0, s'
       - name: Run the real assistant entry UI regression
         # Cover the growing UI suite, including first-launch simulator overhead.
         # Each individual test retains its 240-second execution limit.
@@ -136,7 +155,8 @@ jobs:
           PYMONITOR
           runtime_monitor_pid=$!
           trap 'kill "$runtime_monitor_pid" 2>/dev/null || true' EXIT
-          test_arguments=(test-without-building)
+          # Poster cases already ran above; keep the original suite nonduplicative.
+          test_arguments=(test-without-building -skip-testing:eSheepNextUITests/SheepSharePosterEditorUITests)
           if [ "${{ inputs.focused_interactions }}" = "true" ]; then
             test_arguments+=(
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning
@@ -203,6 +223,13 @@ jobs:
             'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30 -Xfrontend -warn-long-expression-type-checking=500' \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/ios-unit.log"
+      - name: Export poster evidence
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/poster-editor.xcresult" ]; then
+            xcrun xcresulttool export attachments --path "$RUNNER_TEMP/poster-editor.xcresult" --output-path "$RUNNER_TEMP/poster-evidence"
+            xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/poster-editor.xcresult" || true
+          fi
       - name: Export assistant UI screenshots
         if: always()
         run: |
@@ -266,6 +293,9 @@ jobs:
           name: assistant-entry-${{ github.sha }}
           if-no-files-found: warn
           path: |
+            ${{ runner.temp }}/poster-editor.log
+            ${{ runner.temp }}/poster-editor.xcresult
+            ${{ runner.temp }}/poster-evidence
             ${{ runner.temp }}/assistant-build.log
             ${{ runner.temp }}/assistant-entry.log
             ${{ runner.temp }}/assistant-entry.xcresult

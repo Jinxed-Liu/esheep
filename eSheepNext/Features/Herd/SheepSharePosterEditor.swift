@@ -49,6 +49,7 @@ struct SheepSharePosterEditor: View {
                         .padding(.horizontal, 20)
                         .padding(.bottom, 20)
                     }
+                    .accessibilityIdentifier("sheepPoster.editor.inspector")
                 }
                 .padding(.top, 12)
             }
@@ -59,9 +60,11 @@ struct SheepSharePosterEditor: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("撤销", systemImage: "arrow.uturn.backward") { undo() }
                         .disabled(history.isEmpty)
+                        .accessibilityIdentifier("sheepPoster.editor.undo")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
+                        .accessibilityIdentifier("sheepPoster.editor.done")
                 }
             }
             .task { loadTemplates() }
@@ -72,6 +75,7 @@ struct SheepSharePosterEditor: View {
             }
             .alert("保存为我的模板", isPresented: $isNamingTemplate) {
                 TextField("模板名称", text: $templateName)
+                    .accessibilityIdentifier("sheepPoster.editor.templateName")
                 Button("保存") { saveTemplate() }
                     .disabled(templateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("取消", role: .cancel) {}
@@ -94,6 +98,7 @@ struct SheepSharePosterEditor: View {
                 }
                 ForEach(savedTemplates) { saved in
                     Button(saved.name) { applyTemplate(saved) }
+                        .accessibilityIdentifier("sheepPoster.editor.apply.\(saved.name)")
                 }
                 if !savedTemplates.isEmpty {
                     Menu("删除已保存模板") {
@@ -105,11 +110,13 @@ struct SheepSharePosterEditor: View {
             } label: {
                 Label("我的模板", systemImage: "square.stack")
             }
+            .accessibilityIdentifier("sheepPoster.editor.templates")
             Spacer()
             Button("保存模板", systemImage: "square.and.arrow.down") {
                 templateName = ""
                 isNamingTemplate = true
             }
+            .accessibilityIdentifier("sheepPoster.editor.saveTemplate")
         }
         .font(.subheadline.weight(.medium))
     }
@@ -122,8 +129,16 @@ struct SheepSharePosterEditor: View {
             .scaleEffect(scale, anchor: .topLeading)
             .frame(width: width, height: width * 640 / 360, alignment: .topLeading)
             .clipped()
+            // Clipping drawing alone does not bound the scaled poster's hit area.
+            // Keep its interactive layers from covering inspector controls below.
+            .contentShape(.rect)
             .shadow(color: .black.opacity(0.14), radius: 12, y: 5)
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("sheepPoster.editor.canvas")
+            #if DEBUG
+            .accessibilityValue(DevelopmentPosterAcceptance.state(snapshot: snapshot, image: image, style: style,
+                template: template, customization: customization, selectedID: selectedID))
+            #endif
     }
 
     private var elementPicker: some View {
@@ -136,12 +151,14 @@ struct SheepSharePosterEditor: View {
                         Label(LocalizedStringKey(element.title),
                               systemImage: element.isHidden ? "eye.slash" : (element.id == selectedID ? "checkmark.circle" : "circle"))
                     }
+                    .accessibilityIdentifier("sheepPoster.editor.select.\(element.id)")
                 }
             } label: {
                 Label(selected.map { String(localized: String.LocalizationValue($0.title)) } ?? String(localized: "选择元素"),
                       systemImage: "square.on.square")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .accessibilityIdentifier("sheepPoster.editor.elements")
             Menu {
                 Button("添加文字", systemImage: "textformat") { addElement(.text) }
                 Button("添加线条", systemImage: "line.diagonal") { addElement(.rule) }
@@ -150,6 +167,7 @@ struct SheepSharePosterEditor: View {
             } label: {
                 Label("添加", systemImage: "plus")
             }
+            .accessibilityIdentifier("sheepPoster.editor.add")
         }
         .font(.subheadline.weight(.medium))
         .padding(14)
@@ -162,11 +180,13 @@ struct SheepSharePosterEditor: View {
                 get: { !element.isHidden },
                 set: { value in remember(); update { $0.isHidden = !value } }
             ))
+            .accessibilityIdentifier("sheepPoster.editor.visible")
             if element.kind == .text {
                 TextField("文字内容", text: Binding(
                     get: { selected?.text ?? "" },
                     set: { value in remember(); update { $0.text = value } }
                 ), axis: .vertical)
+                .accessibilityIdentifier("sheepPoster.editor.text")
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...4)
                 Text("字体").font(.subheadline.weight(.medium))
@@ -193,6 +213,7 @@ struct SheepSharePosterEditor: View {
                                 }
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("sheepPoster.editor.font.\(font.rawValue)")
                             .accessibilityLabel(LocalizedStringKey(font.title))
                             .accessibilityAddTraits(element.font == font ? .isSelected : [])
                         }
@@ -216,10 +237,10 @@ struct SheepSharePosterEditor: View {
                     slider("照片内垂直位置", value: number(\.photoY, fallback: element.photoY), range: -320...320)
                 }
             } else {
-                ColorPicker("颜色", selection: Binding(
+                SheepPosterColorControl(title: "颜色", identifier: "sheepPoster.editor.color", selection: Binding(
                     get: { selected?.color.color ?? .white },
                     set: { color in remember(); update { $0.color = colorComponents(color) } }
-                ), supportsOpacity: false)
+                ))
             }
             slider("水平位置", value: number(\.x, fallback: element.x), range: -180...360)
             slider("垂直位置", value: number(\.y, fallback: element.y), range: -160...640)
@@ -231,10 +252,12 @@ struct SheepSharePosterEditor: View {
                 Button("移到顶层") {
                     remember(); update { $0.layerOrder = (elements.map(\.order).max() ?? 10) + 1 }
                 }
+                .accessibilityIdentifier("sheepPoster.editor.front")
                 Spacer()
                 Button("移到底层") {
                     remember(); update { $0.layerOrder = (elements.map(\.order).min() ?? 0) - 1 }
                 }
+                .accessibilityIdentifier("sheepPoster.editor.back")
             }
             Divider()
             HStack {
@@ -263,10 +286,10 @@ struct SheepSharePosterEditor: View {
 
     private var backgroundInspector: some View {
         VStack(spacing: 16) {
-            ColorPicker("画布底色", selection: Binding(
+            SheepPosterColorControl(title: "画布底色", identifier: "sheepPoster.editor.background", selection: Binding(
                 get: { customization.background?.color ?? (style == .breeding && template.theme == .light ? Color(red: 0.86, green: 0.94, blue: 1) : .black) },
                 set: { remember(); customization.background = colorComponents($0) }
-            ), supportsOpacity: false)
+            ))
             Text("若底色被照片遮住，可在元素菜单中隐藏“照片背景”。")
                 .font(.caption).foregroundStyle(.secondary)
             Button("恢复整张默认设计") {
@@ -274,6 +297,7 @@ struct SheepSharePosterEditor: View {
                 customization = .init()
                 selectedID = "earTag"
             }
+            .accessibilityIdentifier("sheepPoster.editor.reset")
         }
         .font(.subheadline)
         .padding(16)
@@ -290,6 +314,7 @@ struct SheepSharePosterEditor: View {
             }
             Slider(value: value, in: range, onEditingChanged: { editing in if editing { remember() } })
                 .accessibilityLabel(LocalizedStringKey(title))
+                .accessibilityIdentifier("sheepPoster.editor.slider.\(title)")
         }
     }
 
@@ -405,5 +430,79 @@ struct SheepSharePosterEditor: View {
             }
         } catch { errorMessage = String(localized: "读取图片失败，请重试。") }
         photoSelection = nil
+    }
+}
+
+/// Own the nested presentation in SwiftUI instead of asking an embedded color
+/// well to locate a presenter through the gallery and editor sheets.
+private struct SheepPosterColorControl: View {
+    let title: LocalizedStringKey
+    let identifier: String
+    @Binding var selection: Color
+    @State private var isPresented = false
+
+    var body: some View {
+        Button { isPresented = true } label: {
+            HStack {
+                Text(title).foregroundStyle(.primary)
+                Spacer()
+                Circle().fill(selection)
+                    .overlay { Circle().strokeBorder(.secondary, lineWidth: 1) }
+                    .frame(width: 28, height: 28)
+            }
+            .frame(minHeight: 44)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(identifier)
+        .sheet(isPresented: $isPresented) {
+            NavigationStack {
+                SheepPosterNativeColorPicker(selection: $selection, isPresented: $isPresented)
+                    .navigationTitle(title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("完成") { isPresented = false }
+                                .accessibilityIdentifier(identifier + ".done")
+                        }
+                    }
+            }
+        }
+    }
+}
+
+private struct SheepPosterNativeColorPicker: UIViewControllerRepresentable {
+    @Binding var selection: Color
+    @Binding var isPresented: Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIViewController(context: Context) -> UIColorPickerViewController {
+        let controller = UIColorPickerViewController()
+        controller.supportsAlpha = false
+        controller.selectedColor = UIColor(selection)
+        controller.delegate = context.coordinator
+        controller.view.accessibilityIdentifier = "sheepPoster.nativeColorPicker"
+        return controller
+    }
+
+    func updateUIViewController(_ controller: UIColorPickerViewController, context: Context) {
+        context.coordinator.parent = self
+        let color = UIColor(selection)
+        if !controller.selectedColor.isEqual(color) { controller.selectedColor = color }
+    }
+
+    final class Coordinator: NSObject, UIColorPickerViewControllerDelegate {
+        var parent: SheepPosterNativeColorPicker
+        init(parent: SheepPosterNativeColorPicker) { self.parent = parent }
+
+        func colorPickerViewController(_ viewController: UIColorPickerViewController,
+                                       didSelect color: UIColor, continuously: Bool) {
+            parent.selection = Color(uiColor: color)
+        }
+
+        func colorPickerViewControllerDidFinish(_ viewController: UIColorPickerViewController) {
+            parent.isPresented = false
+        }
     }
 }

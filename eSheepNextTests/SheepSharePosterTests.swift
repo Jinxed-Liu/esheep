@@ -414,6 +414,110 @@ final class SheepSharePosterTests: XCTestCase {
         XCTAssertEqual(snapshot.metrics.postpartumDays, 9)
     }
 
+    func testDiskTemplateRebindsAllLiveFieldsAcrossStylesAndSexes() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = directory.appendingPathComponent("templates.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let oldPhoto = try XCTUnwrap(image(size: CGSize(width: 64, height: 48)).pngData())
+        let artwork = try XCTUnwrap(image(size: CGSize(width: 24, height: 24)).pngData())
+        let liveIDs: Set<String> = ["farm", "farm.latinName", "farm.signature", "farm.latinSignature",
+            "earTag", "breed", "role", "sex", "status", "date.value", "lastLambing.value",
+            "family.dam.earTag", "family.sire.earTag", "family.maternalGranddam.earTag",
+            "family.maternalGrandsire.earTag", "family.paternalGranddam.earTag", "family.paternalGrandsire.earTag",
+            "metric.0.value", "metric.1.value", "metric.2.value",
+            "identity.age.value", "identity.birth.value", "identity.pen.value"]
+        for style in SheepSharePosterStyle.allCases {
+            var custom = SheepSharePosterCustomization()
+            custom.background = .sky
+            custom.photoData = oldPhoto
+            for id in liveIDs {
+                custom.overrides[id] = .init(x: 40, y: 50, rotation: 5, font: .serif,
+                                             color: .yellow, text: "OLD-" + id, layerOrder: 23)
+            }
+            for id in ["photo", "photo.backdrop"] {
+                custom.overrides[id] = .init(x: 8, imageData: oldPhoto, photoZoom: 1.8, photoX: 12, photoY: -20)
+            }
+            custom.additions = [
+                .init(id: "custom.caption", title: "自定义文字", text: "保留用户设计", x: 20, y: 30, width: 200, height: 30),
+                .init(id: "custom.art", title: "自定义图片", kind: .image, x: 20, y: 60, width: 24, height: 24, imageData: artwork)
+            ]
+            custom.overrides["custom.caption"] = .init(font: .brush, text: "修改后的新增文字")
+            let saved = SheepSharePosterSavedTemplate(id: UUID(), name: "Isolation",
+                style: style.rawValue, template: "portraitLight", customization: custom.reusable, updatedAt: .now)
+            try SheepSharePosterTemplateStore.save([saved], to: url)
+            let loaded = try XCTUnwrap(SheepSharePosterTemplateStore.load(from: url).first)
+            XCTAssertNil(loaded.customization.photoData)
+            XCTAssertEqual(loaded.customization.background, .sky)
+            XCTAssertEqual(loaded.customization.additions, custom.additions)
+            for id in liveIDs {
+                XCTAssertNil(loaded.customization.overrides[id]?.text, id)
+                XCTAssertEqual(loaded.customization.overrides[id]?.x, 40, id)
+                XCTAssertEqual(loaded.customization.overrides[id]?.font, .serif, id)
+                XCTAssertEqual(loaded.customization.overrides[id]?.color, .yellow, id)
+                XCTAssertEqual(loaded.customization.overrides[id]?.layerOrder, 23, id)
+            }
+            for id in ["photo", "photo.backdrop"] {
+                XCTAssertNil(loaded.customization.overrides[id]?.imageData)
+                XCTAssertEqual(loaded.customization.overrides[id]?.photoZoom, 1.8)
+                XCTAssertEqual(loaded.customization.overrides[id]?.photoX, 12)
+                XCTAssertEqual(loaded.customization.overrides[id]?.photoY, -20)
+            }
+            for sex in [SheepSex.ewe, .ram, .unknown] {
+                let snapshot = cardSnapshot(sex: sex)
+                let defaults = SheepSharePosterLayout.elements(snapshot: snapshot, style: style, template: .portraitLight)
+                let resolved = loaded.customization.reusable.elements(from: defaults)
+                for original in defaults where liveIDs.contains(original.id) {
+                    XCTAssertEqual(resolved.first { $0.id == original.id }?.text, original.text, original.id)
+                }
+                XCTAssertFalse(resolved.contains { $0.text.hasPrefix("OLD-") })
+                XCTAssertEqual(resolved.first { $0.id == "custom.caption" }?.text, "修改后的新增文字")
+                XCTAssertEqual(resolved.first { $0.id == "custom.art" }?.imageData, artwork)
+            }
+            XCTAssertEqual(custom.photoData, oldPhoto, "Saving must leave the current editor intact")
+        }
+    }
+
+    func testReusedTemplateRendersCurrentPhotoAndPreservesCrop() throws {
+        let old = image(size: CGSize(width: 120, height: 80))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let current = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 80), format: format).image { ctx in
+            UIColor.blue.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 120, height: 80))
+            UIColor.red.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 30, height: 80))
+        }
+        for style in SheepSharePosterStyle.allCases {
+            var edits = SheepSharePosterCustomization()
+            edits.photoData = try XCTUnwrap(old.pngData())
+            edits.overrides["photo"] = .init(imageData: old.pngData(), photoZoom: 1.6, photoX: 24, photoY: -10)
+            edits.overrides["photo.backdrop"] = .init(imageData: old.pngData())
+            let loaded = try JSONDecoder().decode(SheepSharePosterCustomization.self,
+                from: JSONEncoder().encode(edits.reusable))
+            // Construct the expected design independently of the sanitization routine.
+            var expected = SheepSharePosterCustomization()
+            expected.overrides["photo"] = .init(photoZoom: 1.6, photoX: 24, photoY: -10)
+            func rendered(_ design: SheepSharePosterCustomization, _ photo: UIImage) throws -> Data {
+                try XCTUnwrap(SheepSharePosterRenderer.render(snapshot: posterSnapshot, image: photo,
+                    template: .portraitLight, style: style, customization: design)?.pngData())
+            }
+            let actual = try rendered(loaded, current)
+            XCTAssertEqual(actual, try rendered(expected, current), style.rawValue)
+            XCTAssertNotEqual(actual, try rendered(expected, old), "Must not use previous sheep's photo")
+            XCTAssertNotEqual(actual, try rendered(.init(), current), "Saved crop must affect the rendered image")
+        }
+    }
+
+    func testCorruptPersonalTemplateFileThrowsWithoutOverwritingEvidence() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let url = directory.appendingPathComponent("templates.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        XCTAssertTrue(try SheepSharePosterTemplateStore.load(from: url).isEmpty)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let corrupt = Data("[{broken-template".utf8)
+        try corrupt.write(to: url)
+        XCTAssertThrowsError(try SheepSharePosterTemplateStore.load(from: url))
+        XCTAssertEqual(try Data(contentsOf: url), corrupt)
+    }
+
     private func image(size: CGSize) -> UIImage {
         UIGraphicsImageRenderer(size: size).image { context in
             UIColor.systemGreen.setFill()

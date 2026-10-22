@@ -231,7 +231,12 @@ struct SheepSharePosterSavedTemplate: Identifiable, Codable {
 
 enum SheepSharePosterTemplateStore {
     static var fileURL: URL {
-        URL.applicationSupportDirectory
+        #if DEBUG
+        if let directory = DevelopmentPosterAcceptance.directory {
+            return directory.appending(path: "templates-v1.json")
+        }
+        #endif
+        return URL.applicationSupportDirectory
             .appending(path: "SheepPosterTemplates", directoryHint: .isDirectory)
             .appending(path: "templates-v1.json")
     }
