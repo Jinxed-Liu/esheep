@@ -41,6 +41,15 @@ XCTest 附件保留实际文件；CI 另用 Python `zipfile` 和 `ElementTree` �
 | 150 条早期历史、空类别、XML 特殊字符、公式形文本 | 不截断历史；空表保留表头；文本按字面值往返而不执行公式 |
 | 单羊/整场权限矩阵 | 单羊 `readFarm` 不隐含整场 `exportFarm`；原有显式授权行为保留 |
 
+三角色各自导出同一结构的历史母羊夹具，工作簿中的有效明细数量应完全相同：
+
+| 体重 | 健康 | 转群 | 繁殖 | 断奶 | 离场 | 备注 | 用途 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 4 | 2 | 2 | 5 | 1 | 1 | 1 | 1 |
+
+计数不含表头；对应记录 ID 集合、每行牧场/羊只 ID、核心字段和日期一起断言。
+另有公羊 1 条配种、夏令时重叠 2 条独立称重、150 条长期称重、1 条合法历史群体治疗的独立档案。
+
 ## 修复范围
 
 - 日期格式原来依赖设备时区，现在读取牧场时区并在档案中注明。
@@ -62,15 +71,33 @@ XCTest 附件保留实际文件；CI 另用 Python `zipfile` 和 `ElementTree` �
 | 管理员 | 允许 | 不允许 |
 | 员工 | 允许 | 不允许 |
 
+角色回归使用虚构 `FarmRecord.role` 与 `CapabilitySet`/`SettingsVisibilityPolicy` 断言。
+源码同时核对 `HerdViews.exportSingleSheep` 仍检查 `readFarm`，整场导出入口仍检查 `exportFarm`；
+这些权限实现与基线没有差异。没有把角色夹具导出当作重新登录后的 UI 或真机权限验收。
+
 ## 执行证据
 
 - Linux 静态门禁通过：`VERIFY_PUBLIC_CONFIG=0 VERIFY_ALLOW_LEGAL_PLACEHOLDERS=1 ./tools/verify_local.sh static`。
   这是仓库 CI 使用的静态模式，不是发布门禁或真机验收。
 - 修复前测试提交：`1841260d35665f7ec68d619914f3504e130e296d`。
-  [修复前运行](https://github.com/Jinxed-Liu/esheep/actions/runs/39738228915)。结果待记录。
+  [修复前运行](https://github.com/Jinxed-Liu/esheep/actions/runs/39738228915)：40 项中 35 项通过、5 项失败；
+  原有 33 项全部通过，新加的拒绝非法主体和权限矩阵也通过。失败来自实际内容断言，不是编译或模拟器启动失败。
+  [原始证据附件](https://github.com/Jinxed-Liu/esheep/actions/runs/39738228915/artifacts/12408991594)
+  含日志、xcresult 和 5 份实际生成的 XLSX。另下载附件用 Python ZIP/XML 读取，确认原公羊时间线为空，
+  原历史母羊时间线缺初生重、断奶重、离场和备注，混合数组档案出现被删除供体标记。
+  150 条普通称重原本已完整导出；该用例的基线失败是缺少新增明细表，不是发现原实现截断 150 条记录。
 - 初次修复提交：`2312e425d196bde8ba1615749bf4fbfb6abac8ee`。
-  [修复后运行](https://github.com/Jinxed-Liu/esheep/actions/runs/39738816857)。结果待记录。
-- 专项工作流：`.github/workflows/single-sheep-archive.yml`，稳定 Xcode 26.6、iPhone 17 Pro 模拟器，
+  [修复后运行](https://github.com/Jinxed-Liu/esheep/actions/runs/39738816857)：41/41 项通过，
+  包括 8 项新增内容/隔离/权限测试和 33 项已有测试；独立 Python 检查通过 8 份实际 XLSX。
+  此次比基线多一项健康成员链接专项测试。
+- 最终源码提交：`7ebbb8c71487d6698d1ae2592ab5ba34c2cd5d6f`。
+  增强精确记录 ID、日期及增重区间断言，并保留历史未知事件类型的原值。
+  [最终运行](https://github.com/Jinxed-Liu/esheep/actions/runs/39740576486)：**41/41 项通过，0 失败、0 跳过；
+  8 份实际 XLSX 的独立 ZIP/XML 检查全部通过**。
+  [下载最终日志、xcresult 与 XLSX 附件](https://github.com/Jinxed-Liu/esheep/actions/runs/39740576486/artifacts/12409421943)。
+  附件 SHA-256：`085acc862cc38fb5b0c1fa90a33390dae7f85ff4e91119ca96685149a4a5005e`。
+- 专项工作流：`.github/workflows/single-sheep-archive.yml`，稳定 Xcode 26.6（17F113）、iPhone 17 Pro / iOS 26.5 模拟器，
   只选择内容/数据交换/详情快照/权限可见性单元测试，不调用分享面板 UI 测试。
 
-完成前应以对应 SHA 的 XCTest 结果和独立 OOXML 解析结果为准，不能用构建成功、面板打开或工作簿非空代替内容通过。
+结论依据实际保存并重新解析的文件及上述断言，而非构建成功、面板打开或工作簿非空。
+代码保存在 `codex/single-sheep-xlsx-integrity`，尚未合并或发布；不会改变已经安装的第 112 版二进制。
