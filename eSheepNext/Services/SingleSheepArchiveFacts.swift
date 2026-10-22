@@ -54,7 +54,7 @@ enum SingleSheepArchiveFacts {
             prefix($0.id) + [date($0.date), $0.source.displayName, WeightPrecision.displayText($0.kilogramsText), $0.note]
         }
         let healthRows = ordered(health, date: \.occurredAt, id: \.id).map {
-            prefix($0.id) + [date($0.occurredAt), $0.kind.displayName, $0.itemNameSnapshot,
+            prefix($0.id) + [date($0.occurredAt), HealthRecordKind(rawValue: $0.kindRawValue)?.displayName ?? $0.kindRawValue, $0.itemNameSnapshot,
                             $0.quantityText ?? "", $0.unit, $0.route, $0.sheepID?.uuidString ?? "",
                             $0.penID?.uuidString ?? "", $0.note]
         }
@@ -64,7 +64,7 @@ enum SingleSheepArchiveFacts {
         }
         let reproductionRows: [[String]] = ordered(reproduction, date: \.occurredAt, id: \.id).map { record in
             var row = prefix(record.id)
-            row += [date(record.occurredAt), record.kind.displayName, record.eweID.uuidString,
+            row += [date(record.occurredAt), ReproductionRecordKind(rawValue: record.kindRawValue)?.displayName ?? record.kindRawValue, record.eweID.uuidString,
                     record.sireID?.uuidString ?? "", record.result]
             row += [record.parity.map { String($0) } ?? "", record.kind == .lambing ? String(record.lambCount) : "",
                     record.birthDeadCount.map { String($0) } ?? "", record.relatedBreedingRecordID?.uuidString ?? ""]
