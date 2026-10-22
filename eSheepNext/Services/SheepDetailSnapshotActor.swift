@@ -511,7 +511,7 @@ actor SheepDetailSnapshotActor {
     func singleSheepXLSXData(
         farmID: UUID,
         sheepID: UUID,
-        penName: String?
+        penName _: String?
     ) throws -> Data {
         try Task.checkCancellation()
         let context = ModelContext(container)
@@ -527,9 +527,25 @@ actor SheepDetailSnapshotActor {
         let transfers = try context.fetch(FetchDescriptor<TransferRecord>(predicate: #Predicate {
             $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil
         }))
+        let isRam = sheep.sex == .ram
         let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
-            $0.farmID == farmID && $0.eweID == sheepID && $0.deletedAt == nil
+            $0.farmID == farmID && $0.deletedAt == nil &&
+                ($0.eweID == sheepID || (isRam && $0.sireID == sheepID && $0.kindRawValue == "breeding"))
         }))
+        let weanings = try context.fetch(FetchDescriptor<WeaningRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil
+        }))
+        let removals = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil
+        }))
+        let notes = try context.fetch(FetchDescriptor<NoteRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil
+        }))
+        let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+            $0.farmID == farmID && $0.deletedAt == nil
+        }))
+        // Resolve from the same scoped store, not a potentially stale UI label.
+        let penName = pens.first { $0.id == sheep.currentPenID }?.name
         let health = try healthRecords(
             context: context,
             farmID: farmID,
@@ -552,7 +568,11 @@ actor SheepDetailSnapshotActor {
             transfers: transfers,
             allSheep: allSheep,
             semenDonors: donors,
-            detail: try load(farmID: farmID, sheepID: sheepID, subject: SheepDetailSubjectSnapshot(record: sheep))
+            detail: try load(farmID: farmID, sheepID: sheepID, subject: SheepDetailSubjectSnapshot(record: sheep)),
+            weanings: weanings,
+            removals: removals,
+            notes: notes,
+            pens: pens
         )
     }
 
@@ -576,7 +596,8 @@ actor SheepDetailSnapshotActor {
                 $0.farmID == farmID && $0.id == targetID && $0.deletedAt == nil
             })
             descriptor.fetchLimit = 1
-            if let linked = try context.fetch(descriptor).first {
+            if let linked = try context.fetch(descriptor).first,
+               linked.sheepID == nil || linked.sheepID == sheepID {
                 recordsByID[linked.id] = linked
             }
         }

@@ -95,6 +95,33 @@ final class SingleSheepArchiveTests: XCTestCase {
         assertNoForbiddenCells(sheets)
     }
 
+    func testHistoricalHealthUsesSubjectLinksNotCurrentPenOrForeignMembership() async throws {
+        let f = try Fixture(role: .worker)
+        let target = SheepRecord(farmID: f.farm.id, earTag: "SYN-MEMBERSHIP", breed: "虚构", sex: .ewe,
+                                 penID: f.newPen.id, enteredAt: f.sheep.enteredAt)
+        f.context.insert(target)
+        // Membership in the old pen's treatment remains valid after moving.
+        f.context.insert(HealthSubjectLink(farmID: f.farm.id, healthRecordID: f.linkedHealth.id, sheepID: target.id))
+        let foreignLinkOnly = HealthRecord(farmID: f.farm.id, sheepID: nil, penID: f.oldPen.id, kind: .treatment,
+                                           itemNameSnapshot: "FORBIDDEN foreign membership", occurredAt: f.sheep.enteredAt)
+        f.context.insert(foreignLinkOnly)
+        f.context.insert(HealthSubjectLink(farmID: f.otherFarm.id, healthRecordID: foreignLinkOnly.id, sheepID: target.id))
+        // A malformed link cannot override another sheep's explicit ownership.
+        let otherSheepHealth = HealthRecord(farmID: f.farm.id, sheepID: f.sheep.id, penID: nil, kind: .treatment,
+                                            itemNameSnapshot: "FORBIDDEN conflicting membership", occurredAt: f.sheep.enteredAt)
+        f.context.insert(otherSheepHealth)
+        f.context.insert(HealthSubjectLink(farmID: f.farm.id, healthRecordID: otherSheepHealth.id, sheepID: target.id))
+        try f.context.save()
+        let data = try await SheepDetailSnapshotActor(container: f.container)
+            .singleSheepXLSXData(farmID: f.farm.id, sheepID: target.id, penName: "FORBIDDEN stale UI pen")
+        let sheets = try saveAndRead(data, name: "historical-membership")
+        let rows = try dictionaries("健康记录", in: sheets)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0]["项目"], "历史群体治疗")
+        XCTAssertEqual(try field("当前圈舍", in: table("单羊档案", in: sheets)), "虚构新圈")
+        assertNoForbiddenCells(sheets)
+    }
+
     func testArchiveRejectsDeletedMissingAndWrongFarmSubjects() async throws {
         let f = try Fixture(role: .administrator)
         let reader = SheepDetailSnapshotActor(container: f.container)
