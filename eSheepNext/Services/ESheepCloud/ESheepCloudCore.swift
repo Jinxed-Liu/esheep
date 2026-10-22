@@ -461,6 +461,8 @@ actor ESheepCloudLocalStore {
               state.farmGeneration == farmGeneration else {
             throw ESheepCloudCoreError.farmGenerationChanged
         }
+        let recoverLegacyIdentityHold = try ESheepCloudFarmIdentityProjection.canRecoverLegacyHold(
+            page.farmIdentity, state: state, context: context)
         // An empty response is the normal steady-state case. Do not construct
         // replay indexes or materialize any business/receipt table here.
         if page.events.isEmpty {
@@ -471,6 +473,9 @@ actor ESheepCloudLocalStore {
                 try ESheepCloudFarmIdentityProjection.apply(identity, state: state, context: context)
             }
             state.cloudEventHead = max(state.cloudEventHead, page.cloudHead)
+            if recoverLegacyIdentityHold, page.cloudHead == state.lastAppliedEventSequence {
+                restoreVerifiedIdentityPrefix(state)
+            }
             if context.hasChanges { try context.save() }
             return 0
         }
@@ -507,6 +512,11 @@ actor ESheepCloudLocalStore {
                     from: earliestHistoryChange
                 )
             }
+            // The old failure rolled the entire page back to a verified prefix.
+            // Recover only its exact legacy identity signature, and only after
+            // every event, digest, dependency and history update succeeds again.
+            // Other integrity holds remain held. Pending photos remain pending.
+            if recoverLegacyIdentityHold { restoreVerifiedIdentityPrefix(state) }
             try context.save()
             return page.events.count
         } catch {
@@ -519,6 +529,15 @@ actor ESheepCloudLocalStore {
             )
             throw error
         }
+    }
+
+    private func restoreVerifiedIdentityPrefix(_ state: ESheepCloudFarmState) {
+        state.integrityState = .passed
+        state.activityState = .active
+        state.integrityFailureTraceID = nil
+        state.lastIntegrityCheckAt = .now
+        state.lastVerifiedEventSequence = state.lastAppliedEventSequence
+        state.lastSafeSaveAt = nil
     }
 
     func markSending(
@@ -939,6 +958,8 @@ actor ESheepCloudLocalStore {
         state.integrityState = .failed
         state.integrityFailureTraceID = traceID
         state.lastSafeSaveAt = nil
+        try ESheepCloudFarmIdentityProjection.blockLegacyHoldRecovery(
+            farmID: farmID, generation: state.farmGeneration, context: context)
         try context.save()
     }
 

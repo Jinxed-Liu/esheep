@@ -1854,7 +1854,9 @@
       "farmGeneration": "Int",
       "name": "String",
       "revision": "Int64",
-      "latinName": "String?"
+      "latinName": "String?",
+      "latinNameVerified": "Bool",
+      "legacyIntegrityRecoveryBlocked": "Bool"
     }
   }
 }

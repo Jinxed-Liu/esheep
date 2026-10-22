@@ -4,6 +4,13 @@ import Supabase
 extension ESheepCloudSyncFailure {
     static func classify(_ error: Error) -> Self {
         if let failure = error as? Self { return failure }
+        if let storage = error as? StorageError,
+           let code = storage.statusCode.flatMap(Int.init) {
+            // A missing photo object is an integrity problem, unlike a
+            // missing Edge Function, which means the service is unavailable.
+            if code == 404 { return Self(kind: .integrity, statusCode: code) }
+            return classify(FunctionsError.httpError(code: code, data: Data()))
+        }
         if case let FunctionsError.httpError(code, data) = error {
             struct Detail: Decodable { let category: Kind; let trace_id: UUID }
             if let detail = try? JSONDecoder().decode(Detail.self, from: data) {
@@ -40,6 +47,13 @@ extension ESheepCloudSyncFailure {
         }
         if error is ESheepCloudProjectionError || error is ESheepCloudContractError || error is ESheepCloudCheckpointError {
             return Self(kind: .integrity)
+        }
+        if let membership = error as? ESheepCloudMembershipError {
+            switch membership {
+            case .malformedResponse: return Self(kind: .integrity)
+            case .accountMismatch: return Self(kind: .authentication)
+            case .invalidRole: return Self(kind: .permission)
+            }
         }
         if let error = error as? PostgrestError {
             if error.code == "42501" { return Self(kind: .permission) }

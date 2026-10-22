@@ -672,6 +672,29 @@ enum AppSchemaV18: VersionedSchema {
 
 enum AppSchemaV19: VersionedSchema {
     static let versionIdentifier = Schema.Version(19, 0, 0)
+    @Model
+    final class ESheepCloudFarmIdentityState {
+        var id: UUID
+        var farmID: UUID
+        var farmGeneration: Int
+        var name: String
+        var revision: Int64
+        var latinName: String? = nil
+
+        init(farmID: UUID, farmGeneration: Int, name: String, revision: Int64, latinName: String? = nil) {
+            self.id = UUID()
+            self.farmID = farmID
+            self.farmGeneration = farmGeneration
+            self.name = name
+            self.revision = revision
+            self.latinName = latinName
+        }
+    }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeUnverifiedIdentity(AppSchema.modelTypes) }
+}
+
+enum AppSchemaV20: VersionedSchema {
+    static let versionIdentifier = Schema.Version(20, 0, 0)
     static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
 }
 
@@ -698,6 +721,7 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             AppSchemaV17.self,
             AppSchemaV18.self,
             AppSchemaV19.self,
+            AppSchemaV20.self,
         ]
     }
 
@@ -842,11 +866,16 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: AppSchemaV16.self, toVersion: AppSchemaV17.self),
             .lightweight(fromVersion: AppSchemaV17.self, toVersion: AppSchemaV18.self),
             .lightweight(fromVersion: AppSchemaV18.self, toVersion: AppSchemaV19.self),
+            .lightweight(fromVersion: AppSchemaV19.self, toVersion: AppSchemaV20.self),
         ]
     }
 }
 
 enum AppSchema {
+    fileprivate static func freezeUnverifiedIdentity(_ models: [any PersistentModel.Type]) -> [any PersistentModel.Type] {
+        models.map { ObjectIdentifier($0) == ObjectIdentifier(ESheepCloudFarmIdentityState.self) ? AppSchemaV19.ESheepCloudFarmIdentityState.self : $0 }
+    }
+
     fileprivate static func freezeIdentity(_ models: [any PersistentModel.Type]) -> [any PersistentModel.Type] {
         models.map { ObjectIdentifier($0) == ObjectIdentifier(ESheepCloudFarmIdentityState.self) ? AppSchemaV18.ESheepCloudFarmIdentityState.self : $0 }
     }
@@ -859,7 +888,7 @@ enum AppSchema {
         freezeReproduction(models).map { ObjectIdentifier($0) == ObjectIdentifier(FarmCareRuleRecord.self) ? AppSchemaV16.FarmCareRuleRecord.self : $0 }
     }
 
-    static let currentVersion = "19.0.0"
+    static let currentVersion = "20.0.0"
 
     static func defaultStoreURL(name: String = "eSheepNext") -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -1234,7 +1263,7 @@ enum AppSchema {
     }
 
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV19.self)
+        Schema(versionedSchema: AppSchemaV20.self)
     }
 
     static func makeConfiguration(
