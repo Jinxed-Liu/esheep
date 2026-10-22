@@ -59,8 +59,14 @@ enum ESheepCloudFarmIdentityProjection {
     }
 
     static func apply(_ identity: ESheepCloudFarmIdentityV2,
-                      state: ESheepCloudFarmState, context: ModelContext) throws {
+                      state: ESheepCloudFarmState, context: ModelContext,
+                      allowLegacyHoldEnrichment: Bool = false) throws {
         try identity.validate(farmID: state.farmID, generation: state.farmGeneration)
+        // Membership discovery and name settings can run before event pull.
+        // Keep the legacy marker until the event page can validate the prefix
+        // and commit the enrichment together with recovery of the held state.
+        if !allowLegacyHoldEnrichment,
+           try canRecoverLegacyHold(identity, state: state, context: context) { return }
         let farmID = state.farmID
         let generation = state.farmGeneration
         let watermark = try context.fetch(FetchDescriptor<ESheepCloudFarmIdentityState>(predicate: #Predicate {

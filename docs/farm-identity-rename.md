@@ -20,6 +20,8 @@ Schema V20 freezes the shipped V19 identity shape and adds local-only verificati
 
 V19 could roll an entire incremental page back and enter integrity hold on this upgrade mismatch. Recovery is limited to its exact legacy enrichment signature at an already verified cursor, after the page and history rebuild succeed atomically. Any integrity failure encountered by the fixed client permanently disables this compatibility recovery for that identity. Neither the migration nor recovery creates business commands, replaces the device database, removes pending photo files/intents, or stamps pending work as safely saved.
 
+Identity-only refreshes from membership discovery or name settings defer this specific enrichment while the legacy hold is recoverable. The event page must commit the name enrichment and recovery together; an earlier identity refresh must not consume the migration marker or clear a hold on its own.
+
 Database tests cover permissions, RLS, request replay, revision conflicts, wrong generation, invalid names, frozen farms, unchanged review-copy name and business cursor, and empty-page/status propagation. Native tests cover metadata application, delayed responses, foreign scope rejection, old-response decoding, snapshot protection and V15 upgrade preservation. The live one-off rename and its before/after evidence are stored separately under `backups/farm-rename-20261013/`.
 
 ## Public RPC grants

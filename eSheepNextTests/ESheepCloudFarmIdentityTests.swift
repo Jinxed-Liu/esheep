@@ -5,6 +5,31 @@ import XCTest
 
 @MainActor
 final class ESheepCloudFarmIdentityTests: XCTestCase {
+    func testMembershipRefreshBeforeEventPullDoesNotConsumeLegacyRecovery() async throws {
+        let container = try AppSchema.makeContainer(name: UUID().uuidString, isStoredInMemoryOnly: true)
+        let context = ModelContext(container)
+        let farm = FarmRecord(ownerAccountID: UUID(), name: "测试牧场")
+        let state = ESheepCloudFarmState(farmID: farm.id, farmGeneration: 3, activityState: .integrityHold)
+        state.integrityState = .failed
+        state.lastAppliedEventSequence = 7
+        state.lastVerifiedEventSequence = 7
+        let watermark = ESheepCloudFarmIdentityState(farmID: farm.id, farmGeneration: 3, name: farm.name, revision: 2)
+        watermark.latinNameVerified = false
+        context.insert(farm); context.insert(state); context.insert(watermark); try context.save()
+        let incoming = ESheepCloudFarmIdentityV2(farmID: farm.id, farmGeneration: 3, name: farm.name, revision: 2, latinName: "Test Farm")
+        // Account discovery and the name settings screen use this identity-only path.
+        try ESheepCloudFarmIdentityProjection.apply(incoming, state: state, context: context)
+        try context.save()
+        XCTAssertFalse(watermark.latinNameVerified)
+        XCTAssertNil(watermark.latinName)
+        XCTAssertEqual(state.integrityState, .failed)
+        _ = try await ESheepCloudLocalStore(container: container).applyEventPage(
+            .init(events: [], cloudHead: 7, hasMore: false, farmIdentity: incoming), farmID: farm.id, farmGeneration: 3)
+        let verification = ModelContext(container)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<ESheepCloudFarmState>()).first?.integrityState, .passed)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<ESheepCloudFarmIdentityState>()).first?.latinName, "Test Farm")
+    }
+
     func testV19UpgradeEnrichesIdentityAndReleasesOnlyTheVerifiedPrefixHold() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "IdentityUpgrade-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

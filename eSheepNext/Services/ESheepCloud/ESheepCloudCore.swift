@@ -470,7 +470,8 @@ actor ESheepCloudLocalStore {
                 throw ESheepCloudProjectionError.streamDigestMismatch
             }
             if let identity = page.farmIdentity {
-                try ESheepCloudFarmIdentityProjection.apply(identity, state: state, context: context)
+                try ESheepCloudFarmIdentityProjection.apply(identity, state: state, context: context,
+                    allowLegacyHoldEnrichment: page.cloudHead == state.lastAppliedEventSequence)
             }
             state.cloudEventHead = max(state.cloudEventHead, page.cloudHead)
             if recoverLegacyIdentityHold, page.cloudHead == state.lastAppliedEventSequence {
@@ -501,7 +502,8 @@ actor ESheepCloudLocalStore {
             replayContext.registerInsertedModels(in: context)
             domainApplyService.rebuildPendingReplayIndex(in: context)
             if let identity = page.farmIdentity {
-                try ESheepCloudFarmIdentityProjection.apply(identity, state: state, context: context)
+                try ESheepCloudFarmIdentityProjection.apply(identity, state: state, context: context,
+                    allowLegacyHoldEnrichment: true)
             }
             state.cloudEventHead = max(state.cloudEventHead, page.cloudHead)
             try finalizeAcceptedIntents(farmID: farmID, context: context)
