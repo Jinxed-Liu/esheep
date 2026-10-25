@@ -45,9 +45,9 @@ final class PenManagementUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["启用 · 空舍"].waitForExistence(timeout: 10))
         app.buttons["编辑"].tap()
         XCTAssertTrue(retire.waitForExistence(timeout: 10))
-        // A vertical SwiftUI TextField is exposed as a TextView on iOS 17.
-        let reason = app.textViews["删除原因"].exists
-            ? app.textViews["删除原因"] : app.textFields["删除原因"]
+        // The native type differs by OS, and the placeholder disappears after
+        // typing. Keep the same real input addressable throughout the edit.
+        let reason = app.descendants(matching: .any)["pen-deletion-reason"].firstMatch
         XCTAssertTrue(reason.exists)
         if !reason.isHittable { app.swipeUp() }
         // The legacy TextView's synthesized hit point lies on its top edge
@@ -57,7 +57,19 @@ final class PenManagementUITests: XCTestCase {
         reason.typeText("Isolated UI test cleanup")
         XCTAssertEqual(reason.value as? String, "Isolated UI test cleanup")
         let delete = app.buttons["delete-unused-pen"]
-        if !delete.isHittable { app.swipeUp() }
+        let keyboard = app.keyboards.firstMatch
+        let visibleBottom = keyboard.exists ? keyboard.frame.minY : app.frame.maxY - 44
+        if !delete.isHittable || delete.frame.maxY > visibleBottom - 8 {
+            // Scroll the visible form padding, above the keyboard and outside
+            // text controls, until the next row can receive an ordinary tap.
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: 8, dy: visibleBottom - app.frame.minY - 24))
+            let endY = max(app.navigationBars.firstMatch.frame.maxY + 24, visibleBottom - 200)
+            let end = origin.withOffset(CGVector(dx: 8, dy: endY - app.frame.minY))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
+        }
+        XCTAssertTrue(delete.isHittable)
+        XCTAssertLessThanOrEqual(delete.frame.maxY, keyboard.exists ? keyboard.frame.minY - 8 : app.frame.maxY - 44)
         XCTAssertTrue(delete.isEnabled)
         delete.tap()
         app.buttons["确认删除"].tap()

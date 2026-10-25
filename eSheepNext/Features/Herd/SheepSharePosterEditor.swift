@@ -472,9 +472,20 @@ private struct SheepPosterTemplateNamePrompt: ViewModifier {
 /// system alert, but connect its native text field and UIAlertAction directly.
 /// Newer systems continue using the original SwiftUI alert above.
 private struct SheepPosterLegacyTemplateNamePrompt: UIViewControllerRepresentable {
+    @Environment(\.locale) private var locale
     @Binding var isPresented: Bool
     @Binding var name: String
     let onSave: (String) -> Void
+
+    private func localized(_ value: String.LocalizationValue) -> String {
+        // UIKit does not inherit SwiftUI's in-app language preference.
+        let language = Bundle.preferredLocalizations(
+            from: Bundle.main.localizations, forPreferences: [locale.identifier]
+        ).first
+        let bundle = language.flatMap { Bundle.main.path(forResource: $0, ofType: "lproj") }
+            .flatMap { Bundle(path: $0) } ?? .main
+        return String(localized: value, bundle: bundle, locale: locale)
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -491,9 +502,15 @@ private struct SheepPosterLegacyTemplateNamePrompt: UIViewControllerRepresentabl
 
     func updateUIViewController(_ controller: AnchorController, context: Context) {
         context.coordinator.parent = self
-        DispatchQueue.main.async { [weak controller, weak coordinator = context.coordinator] in
-            guard let controller else { return }
-            coordinator?.refresh(from: controller)
+        // Read the binding during SwiftUI's update so presentation changes
+        // participate in dependency tracking; defer only the UIKit presentation.
+        if isPresented {
+            DispatchQueue.main.async { [weak controller, weak coordinator = context.coordinator] in
+                guard let controller else { return }
+                coordinator?.refresh(from: controller)
+            }
+        } else {
+            context.coordinator.dismiss(animated: true)
         }
     }
 
@@ -523,18 +540,18 @@ private struct SheepPosterLegacyTemplateNamePrompt: UIViewControllerRepresentabl
             guard prompt == nil, controller.viewIfLoaded?.window != nil,
                   controller.presentedViewController == nil else { return }
             let alert = UIAlertController(
-                title: String(localized: "保存为我的模板"),
-                message: String(localized: "保存排版和新增文字；下次使用时，耳号、照片和羊只资料自动更新。模板保存在这台设备上。"),
+                title: parent.localized("保存为我的模板"),
+                message: parent.localized("保存排版和新增文字；下次使用时，耳号、照片和羊只资料自动更新。模板保存在这台设备上。"),
                 preferredStyle: .alert
             )
             prompt = alert
             alert.addTextField { [weak self] field in
-                field.placeholder = String(localized: "模板名称")
+                field.placeholder = self?.parent.localized("模板名称")
                 field.accessibilityIdentifier = "sheepPoster.editor.templateName"
                 field.text = self?.parent.name
                 field.addTarget(self, action: #selector(Coordinator.nameChanged(_:)), for: .editingChanged)
             }
-            let save = UIAlertAction(title: String(localized: "保存"), style: .default) { [weak self, weak alert] _ in
+            let save = UIAlertAction(title: parent.localized("保存"), style: .default) { [weak self, weak alert] _ in
                 guard let self, let alert else { return }
                 // Read the text from the control that the user actually edited,
                 // before dismissal can tear down the alert's text-field binding.
@@ -552,7 +569,7 @@ private struct SheepPosterLegacyTemplateNamePrompt: UIViewControllerRepresentabl
             save.isEnabled = !parent.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             saveAction = save
             alert.addAction(save)
-            alert.addAction(UIAlertAction(title: String(localized: "取消"), style: .cancel) { [weak self] _ in
+            alert.addAction(UIAlertAction(title: parent.localized("取消"), style: .cancel) { [weak self] _ in
                 self?.prompt = nil
                 self?.saveAction = nil
                 self?.parent.isPresented = false

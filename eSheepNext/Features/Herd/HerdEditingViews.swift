@@ -56,6 +56,7 @@ struct EditPenView: View {
             if canManageLifecycle {
                 Section {
                     TextField("删除原因", text: $deletionReason, axis: .vertical)
+                        .accessibilityIdentifier("pen-deletion-reason")
                     Button("安全删除羊舍", role: .destructive) { isConfirmingDeletion = true }
                         .disabled(hasProtectedReferences != false || deletionReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .accessibilityIdentifier("delete-unused-pen")
