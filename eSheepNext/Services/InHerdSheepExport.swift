@@ -14,27 +14,32 @@ enum InHerdSheepExport {
         )
         let dateFormatter = makeDateFormatter()
         let states = ReproductionReminderValidity.states(records: reproduction ?? [], eweIDs: sheep.filter { $0.sex == .ewe }.map(\.id), now: .now)
-        let rows = sheep
+        let currentSheep = sheep
             .filter { $0.farmID == farmID && $0.deletedAt == nil && $0.isCurrentlyPresent }
             .sorted { $0.earTag.localizedStandardCompare($1.earTag) == .orderedAscending }
-            .map { item in
-                var values = [
-                    item.earTag,
-                    item.currentPenDisplayName(item.currentPenID.flatMap { penNames[$0] }),
-                    item.birthAt.map(dateFormatter.string(from:)) ?? "",
-                    dateFormatter.string(from: item.enteredAt),
-                    item.breed,
-                    item.sex.displayName,
-                    item.purpose,
-                    item.status.displayName,
-                    item.note
-                ]
-                if reproduction != nil {
-                    let state = states[item.id]
-                    values += [state?.completedParity.map { String($0) } ?? "", state?.targetParity.map { String($0) } ?? "", state?.displayState ?? (item.sex == .ewe ? "胎次待核实" : "不适用"), state?.issues.joined(separator: "；") ?? ""]
-                }
-                return values
+        let rows: [[String]] = currentSheep.map { item -> [String] in
+            var values: [String] = [
+                item.earTag,
+                item.currentPenDisplayName(item.currentPenID.flatMap { penNames[$0] }),
+                item.birthAt.map(dateFormatter.string(from:)) ?? "",
+                dateFormatter.string(from: item.enteredAt),
+                item.breed,
+                item.sex.displayName,
+                item.purpose,
+                item.status.displayName,
+                item.note
+            ]
+            if reproduction != nil {
+                let state = states[item.id]
+                let completedParity = state?.completedParity
+                let targetParity = state?.targetParity
+                values.append(completedParity.map { String($0) } ?? "")
+                values.append(targetParity.map { String($0) } ?? "")
+                values.append(state?.displayState ?? (item.sex == .ewe ? "胎次待核实" : "不适用"))
+                values.append(state?.issues.joined(separator: "；") ?? "")
             }
+            return values
+        }
 
         let titles = columnTitles + (reproduction == nil ? [] : ["已完成产羔胎次", "本轮目标胎次", "本轮繁殖状态", "繁殖资料待核实"])
         let csv = ([titles] + rows)
