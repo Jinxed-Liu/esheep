@@ -215,8 +215,10 @@ def suite_commands(destination, scheme, output_dir):
               "-configuration", "Debug", "-destination", destination.destination,
               "-derivedDataPath", str(suite_dir / "DerivedData"),
               "-parallel-testing-enabled", "NO", "-maximum-parallel-testing-workers", "1"]
-    # Xcode 26's runtime-fault collector crashes on iOS 17 UIKit input analytics.
-    # The older UI plan changes only that collector; the default keeps it enabled.
+    # iOS 17's XCTest automation library crashes in its os_log fault callback
+    # for UIKit input analytics. Its legacy detectRuntimeIssues entry combines
+    # the fault collector and Main Thread Checker, so both must be off in the
+    # older UI plan. The modern plan retains the default diagnostics.
     if scheme == "eSheepNextUI" and version_tuple(destination.version)[0] == 17:
         common += ["-testPlan", "Legacy17"]
     # Match package builds to the simulator's active architecture. Building both

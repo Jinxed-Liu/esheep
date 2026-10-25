@@ -133,6 +133,17 @@ jobs:
           encoded = json.dumps(report, indent=2, default=str)
           (root / 'runtime-diagnostics-policy.json').write_text(encoded)
           print(encoded)
+          if os.environ['COMPATIBILITY_RUNTIME'] == '17':
+              legacy = [value for name, value in report.items() if '_Legacy17_' in name]
+              if len(legacy) != 1:
+                  raise SystemExit('Expected exactly one generated Legacy17 test configuration')
+              policy = legacy[0].get('RuntimeDiagnosticsPolicy', {})
+              main_thread_keys = [key for key in policy if 'MainThreadChecker' in key]
+              if len(main_thread_keys) != 1:
+                  raise SystemExit('Missing generated Main Thread Checker policy')
+              for key in ('XCTOtherRuntimeIssuesDetectionPolicy', *main_thread_keys):
+                  if policy.get(key, {}).get('detectionEnabled') is not False:
+                      raise SystemExit('Legacy17 combined runtime collector was not disabled: ' + key)
           PY
       - name: Run the complete unit and performance suites
         if: ${{ inputs.scope != 'avatar-lifecycle' }}

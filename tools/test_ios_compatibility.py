@@ -462,7 +462,7 @@ class UITestPlanPolicyTests(unittest.TestCase):
                         else:
                             self.assertNotIn("-testPlan", command)
 
-    def test_plans_run_the_same_complete_target_and_change_only_the_collector(self):
+    def test_plans_run_the_same_complete_target_and_change_only_legacy_diagnostics(self):
         plans = {}
         for name in ("ModernUI", "Legacy17"):
             plan = json.loads((compatibility.ROOT / "TestPlans" / f"{name}.xctestplan").read_text())
@@ -480,8 +480,10 @@ class UITestPlanPolicyTests(unittest.TestCase):
             self.assertEqual(plan["configurations"][0]["options"], {})
             plans[name] = plan
         self.assertEqual(plans["ModernUI"]["defaultOptions"], {})
-        self.assertEqual(set(plans["Legacy17"]["defaultOptions"]), {"runtimeIssueDetection"})
-        self.assertIs(plans["Legacy17"]["defaultOptions"]["runtimeIssueDetection"]["enabled"], False)
+        self.assertEqual(plans["Legacy17"]["defaultOptions"], {
+            "runtimeIssueDetection": {"enabled": False},
+            "mainThreadCheckerDetectionPolicy": {"enabled": False},
+        })
         plans["Legacy17"]["defaultOptions"].clear()
         self.assertEqual(plans["Legacy17"], plans["ModernUI"])
 

@@ -86,6 +86,8 @@ ALLOW_LOCAL_DB_RESET=1 ./tools/verify_local.sh db
 
 手动检查默认 `scope=full`，要求完整单元／性能和两端全部 7 项交互；`scope=avatar-lifecycle` 仅用于头像及前后台两项聚焦诊断，结果清单会标明未运行单元／性能，不能替代最终完整验收。
 
+`Legacy17` UI 测试计划关闭 XCTest 的普通运行时日志检测及 Main Thread Checker 检测。iOS 17.5 的自动化库只有合并的 `detectRuntimeIssues` 入口；只关闭日志检测仍会注册故障回调，在后台恢复键盘输入会话时出现 `UITextInputSessionActionAnalytics → runtime_issue_os_log_fault_callback → strcmp(NULL)` 崩溃（诊断 run `40175795164` 已保存 `.ips`）。CI 核对生成的两项策略均为关闭。此限制仅适用于旧系统 UI 测试诊断，所有交互断言、崩溃失败判定和单元／性能测试保留；iOS 26 使用默认完整诊断，不把旧系统结果表述为 Main Thread Checker 验收。
+
 UI 套件要求零跳过。全量 XCTest 套件仅允许下列六个既有私有输入验收测试在缺少对应 fixture 时跳过，并明确报告为未执行。2026-10-04 的 main 基线实际发现 789 项，其中 786 项通过、0 项失败，跳过的是前三项；当前 main 还包含后三项可选私有验收。私有测试未执行不代表真实牧场数据验收通过。
 
 - `eSheepNextTests/ESheepCloudIntegratedTests/testRealCloudSourceBuildsCheckpointAndImportsWithoutHistoricalReceipts`：缺少封存的 SELECT-only 云源。
