@@ -2,6 +2,16 @@ name: iOS compatibility focused checks
 
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Full acceptance or focused avatar/lifecycle diagnosis
+        type: choice
+        default: full
+        options:
+          - full
+          - avatar-lifecycle
+
+run-name: iOS compatibility ${{ inputs.scope || 'full' }} (${{ github.ref_name }})
 
 permissions:
   contents: read
@@ -30,6 +40,7 @@ jobs:
       DEVELOPER_DIR: /Applications/${{ matrix.xcode }}.app/Contents/Developer
       COMPATIBILITY_RUNTIME: ${{ matrix.runtime }}
       COMPATIBILITY_SCHEME: ${{ matrix.scheme }}
+      COMPATIBILITY_SCOPE: ${{ inputs.scope || 'full' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -38,6 +49,17 @@ jobs:
         run: |
           set -euo pipefail
           touch "$RUNNER_TEMP/compatibility-started"
+          python3 - <<'PYSCOPE'
+          import json, os
+          from pathlib import Path
+          scope = os.environ['COMPATIBILITY_SCOPE']
+          report = {'head': os.environ['GITHUB_SHA'], 'scope': scope,
+                    'fullAcceptance': scope == 'full',
+                    'unitAndPerformanceRequested': scope == 'full',
+                    'expectedUICases': 7 if scope == 'full' else 2}
+          (Path(os.environ['RUNNER_TEMP']) / 'compatibility-validation.json').write_text(json.dumps(report, indent=2))
+          print(json.dumps(report))
+          PYSCOPE
           xcodebuild -version
           xcrun simctl list --json > "$RUNNER_TEMP/simulators.json"
           if [ "$COMPATIBILITY_RUNTIME" = 17 ]; then
@@ -73,7 +95,11 @@ jobs:
         run: |
           set -euo pipefail
           xcodebuild -showTestPlans -project eSheepNext.xcodeproj -scheme eSheepNextUI
-          for compatibility_build_scheme in eSheepNextUI eSheepNext; do
+          compatibility_build_schemes=(eSheepNextUI)
+          if [ "$COMPATIBILITY_SCOPE" = full ]; then
+            compatibility_build_schemes+=(eSheepNext)
+          fi
+          for compatibility_build_scheme in "${compatibility_build_schemes[@]}"; do
             gesture_test_plan_options=(-configuration Debug)
             if [ "$compatibility_build_scheme" = eSheepNextUI ] && [ "$COMPATIBILITY_RUNTIME" = 17 ]; then
               gesture_test_plan_options+=(-testPlan Legacy17)
@@ -109,6 +135,7 @@ jobs:
           print(encoded)
           PY
       - name: Run the complete unit and performance suites
+        if: ${{ inputs.scope != 'avatar-lifecycle' }}
         run: |
           set -euo pipefail
           xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
@@ -121,7 +148,7 @@ jobs:
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/full-unit.log"
       - name: Verify keyboard retention with the real voice controls
-        if: ${{ always() && steps.build.outcome == 'success' }}
+        if: ${{ always() && steps.build.outcome == 'success' && inputs.scope != 'avatar-lifecycle' }}
         run: |
           set -euo pipefail
           gesture_test_plan_options=(-configuration Debug)
@@ -161,6 +188,13 @@ jobs:
             -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testBriefBackgroundSwitchPreservesTheRunningReply
             -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testRepeatedPendingVoiceCancellationPreservesDraftAndKeyboard
           )
+          if [ "$COMPATIBILITY_SCOPE" = avatar-lifecycle ]; then
+            gesture_diagnostic_filters=(
+              -only-testing:eSheepNextUITests/PlatformCompatibilityUITests
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testBriefBackgroundSwitchPreservesTheRunningReply
+            )
+          fi
+          xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
           xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme eSheepNextUI \
             -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
             -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
@@ -212,14 +246,19 @@ jobs:
           sys.path.insert(0, 'tools')
           import verify_ios_compatibility as gate
           directory = Path(os.environ['RUNNER_TEMP'])
-          for result in ('full-unit', 'gestures', 'native-interactions'):
+          focused = os.environ['COMPATIBILITY_SCOPE'] == 'avatar-lifecycle'
+          required = ('native-interactions',) if focused else ('full-unit', 'gestures', 'native-interactions')
+          expected_ui_counts = {'gestures': 1, 'native-interactions': 2 if focused else 6}
+          for result in required:
               path = directory / (result + '-summary.json')
-              if not path.exists(): continue
+              if not path.exists(): raise gate.GateError('Missing required test summary: ' + result)
               summary = json.loads(path.read_text())
               log = directory / (result + '.log')
               skipped = gate.parse_skipped_test_identifiers(log.read_text(errors='replace'))
               gate.validate_summary(summary, allow_fixture_skips=result == 'full-unit',
                                     skipped_test_identifiers=skipped)
+              if result in expected_ui_counts and summary['totalTestCount'] != expected_ui_counts[result]:
+                  raise gate.GateError('Unexpected UI discovery count for ' + result)
               (directory / (result + '-skipped-tests.json')).write_text(json.dumps([
                   {'identifier': name, 'baselineReason': gate.KNOWN_FULL_UNIT_FIXTURE_SKIPS[name]}
                   for name in sorted(skipped)
@@ -255,6 +294,7 @@ jobs:
             ${{ runner.temp }}/*-summary.json
             ${{ runner.temp }}/*-skipped-tests.json
             ${{ runner.temp }}/runtime-diagnostics-policy.json
+            ${{ runner.temp }}/compatibility-validation.json
             ${{ runner.temp }}/gesture-screenshots
       - name: Preserve the actual interaction recordings
         if: always()

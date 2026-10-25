@@ -84,6 +84,8 @@ ALLOW_LOCAL_DB_RESET=1 ./tools/verify_local.sh db
 
 为避免开发过程中反复运行失败任务产生 GitHub 邮件，`codex/ios17-compatibility` 和 `codex/ios17-compatibility-validation` 分支关闭推送自动检查；兼容性候选集中使用手动检查验证。`ios-platform-gestures.yml` 仅支持手动启动，覆盖真实语音按钮的键盘保留、波形与草稿恢复，以及新版返回手势和附件面板。主分支和其他开发分支继续使用原有自动门禁。
 
+手动检查默认 `scope=full`，要求完整单元／性能和两端全部 7 项交互；`scope=avatar-lifecycle` 仅用于头像及前后台两项聚焦诊断，结果清单会标明未运行单元／性能，不能替代最终完整验收。
+
 UI 套件要求零跳过。全量 XCTest 套件仅允许下列六个既有私有输入验收测试在缺少对应 fixture 时跳过，并明确报告为未执行。2026-10-04 的 main 基线实际发现 789 项，其中 786 项通过、0 项失败，跳过的是前三项；当前 main 还包含后三项可选私有验收。私有测试未执行不代表真实牧场数据验收通过。
 
 - `eSheepNextTests/ESheepCloudIntegratedTests/testRealCloudSourceBuildsCheckpointAndImportsWithoutHistoricalReceipts`：缺少封存的 SELECT-only 云源。

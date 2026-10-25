@@ -53,8 +53,10 @@ struct SettingsAvatarHeader: View, Animatable {
             .allowsHitTesting(motion.titleProgress < 1 || progress > 0.01)
             .accessibilityAction(named: Text("更换头像"), onEdit)
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .frame(height: height, alignment: .topLeading)
+        // The pull stretches the hit target beyond the viewport. Keep that
+        // visual overflow out of the scroll view's layout width, otherwise
+        // every stretch relayouts the viewport and resets its content offset.
+        .frame(width: width, height: height, alignment: .topLeading)
         .accessibilityElement(children: .contain)
         .accessibilityValue(Text(account.displayName + " · " + farm.name))
         .onGeometryChange(for: CGFloat.self) { geometry in

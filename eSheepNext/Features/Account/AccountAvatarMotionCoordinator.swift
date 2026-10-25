@@ -137,9 +137,10 @@ final class AccountAvatarMotionCoordinator {
         let logger = Logger(subsystem: "com.sheepfarm.next.avatar", category: "compatibility")
         let offset = Double(scrollOffset)
         let state = String(describing: interaction)
+        let originX = Double(contentOrigin.x)
         let originY = Double(contentOrigin.y)
         let expansionValue = Double(expansion)
-        logger.notice("AVATAR_SCROLL_EVIDENCE event=\(event, privacy: .public) offset=\(offset) originY=\(originY) expansion=\(expansionValue) state=\(state, privacy: .public)")
+        logger.notice("AVATAR_SCROLL_EVIDENCE event=\(event, privacy: .public) offset=\(offset) originX=\(originX) originY=\(originY) expansion=\(expansionValue) state=\(state, privacy: .public)")
     }
     #endif
 
