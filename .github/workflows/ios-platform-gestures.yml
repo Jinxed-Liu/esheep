@@ -4,17 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       scope:
-        description: Full acceptance or focused interaction validation
+        description: Select affected checks; full acceptance requires an explicit request
         type: choice
-        default: full
+        default: composer-pen
         options:
           - full
           - avatar-lifecycle
           - lifecycle-stability
           - postmerge-ui
           - template-pen
+          - composer-pen
 
-run-name: iOS compatibility ${{ inputs.scope || 'full' }} (${{ github.ref_name }})
+run-name: iOS compatibility ${{ inputs.scope || 'composer-pen' }} (${{ github.ref_name }})
 
 permissions:
   contents: read
@@ -43,7 +44,7 @@ jobs:
       DEVELOPER_DIR: /Applications/${{ matrix.xcode }}.app/Contents/Developer
       COMPATIBILITY_RUNTIME: ${{ matrix.runtime }}
       COMPATIBILITY_SCHEME: ${{ matrix.scheme }}
-      COMPATIBILITY_SCOPE: ${{ inputs.scope || 'full' }}
+      COMPATIBILITY_SCOPE: ${{ inputs.scope || 'composer-pen' }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -60,7 +61,7 @@ jobs:
                     'fullAcceptance': scope == 'full',
                     'unitAndPerformanceRequested': scope == 'full',
                     'expectedUICases': {'full': 7, 'avatar-lifecycle': 2, 'lifecycle-stability': 3,
-                                        'postmerge-ui': 10, 'template-pen': 3}[scope]}
+                                        'postmerge-ui': 10, 'template-pen': 3, 'composer-pen': 2}[scope]}
           (Path(os.environ['RUNNER_TEMP']) / 'compatibility-validation.json').write_text(json.dumps(report, indent=2))
           print(json.dumps(report))
           PYSCOPE
@@ -88,7 +89,7 @@ jobs:
           if not runtimes: raise SystemExit('The requested stable runtime is unavailable.')
           runtime = max(runtimes, key=lambda r: gate.version_tuple(r['version']))
           model = 'iPhone-15-Pro' if major == 17 else 'iPhone-17-Pro'
-          if major == 17 and os.environ['COMPATIBILITY_SCOPE'] in ('postmerge-ui', 'template-pen'):
+          if major == 17 and os.environ['COMPATIBILITY_SCOPE'] in ('postmerge-ui', 'template-pen', 'composer-pen'):
               model = 'iPhone-15-Pro-Max'  # Match the failing broad legacy gate.
           udid = subprocess.check_output(['xcrun', 'simctl', 'create', 'eSheep compatibility gestures',
                   'com.apple.CoreSimulator.SimDeviceType.' + model, runtime['identifier']], text=True).strip()
@@ -234,6 +235,12 @@ jobs:
               -only-testing:eSheepNextUITests/SheepSharePosterEditorUITests/testSavedTemplateSurvivesRelaunchAndRebindsEveryCurrentSheepField
             )
           fi
+          if [ "$COMPATIBILITY_SCOPE" = composer-pen ]; then
+            gesture_diagnostic_filters=(
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testListComposerUsesReturnForNewlineAndSendPersistsConversation
+              -only-testing:eSheepNextUITests/PenManagementUITests/testManagementEntryCreateEditRetireReactivateAndSafeDelete
+            )
+          fi
           gesture_maximum_seconds=240
           if [ "$COMPATIBILITY_SCOPE" = postmerge-ui ] || [ "$COMPATIBILITY_SCOPE" = template-pen ]; then
             # Honor the existing poster cases' explicit 480/600-second budgets,
@@ -331,6 +338,9 @@ jobs:
           elif scope == 'template-pen':
               required = ('native-interactions',)
               expected_ui_counts = {'native-interactions': 3}
+          elif scope == 'composer-pen':
+              required = ('native-interactions',)
+              expected_ui_counts = {'native-interactions': 2}
           else:
               raise gate.GateError('Unknown validation scope: ' + scope)
           for result in required:

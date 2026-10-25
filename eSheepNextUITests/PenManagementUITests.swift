@@ -60,12 +60,14 @@ final class PenManagementUITests: XCTestCase {
         let keyboard = app.keyboards.firstMatch
         let visibleBottom = keyboard.exists ? keyboard.frame.minY : app.frame.maxY - 44
         if !delete.isHittable || delete.frame.maxY > visibleBottom - 8 {
-            // Scroll the visible form padding, above the keyboard and outside
-            // text controls, until the next row can receive an ordinary tap.
+            // The iOS 17 candidate bar starts above Keyboard.frame.minY.
+            // Begin above the focused field, on the visible form, so the
+            // keyboard cannot consume the scroll intended to reveal this row.
             let origin = app.coordinate(withNormalizedOffset: .zero)
-            let start = origin.withOffset(CGVector(dx: 8, dy: visibleBottom - app.frame.minY - 24))
-            let endY = max(app.navigationBars.firstMatch.frame.maxY + 24, visibleBottom - 200)
-            let end = origin.withOffset(CGVector(dx: 8, dy: endY - app.frame.minY))
+            let startY = min(visibleBottom - 24, reason.frame.minY - 16)
+            let start = origin.withOffset(CGVector(dx: app.frame.width / 2, dy: startY - app.frame.minY))
+            let endY = max(app.navigationBars.firstMatch.frame.maxY + 24, startY - 176)
+            let end = origin.withOffset(CGVector(dx: app.frame.width / 2, dy: endY - app.frame.minY))
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.1)
         }
         XCTAssertTrue(delete.isHittable)
