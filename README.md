@@ -86,7 +86,7 @@ ALLOW_LOCAL_DB_RESET=1 ./tools/verify_local.sh db
 
 手动检查默认 `scope=full`，要求完整单元／性能和两端全部 7 项交互；`scope=avatar-lifecycle` 仅用于头像及前后台两项聚焦诊断；`scope=lifecycle-stability` 对前后台用例分别执行三次，每次均须通过，不以重试后的成功覆盖失败。两个聚焦范围的结果清单会标明未运行单元／性能，不能替代最终完整验收。前后台用例检查真实桌面和仅在 DEBUG 隔离启动中显示的实际 `scenePhase` 后台次数，再验证原回复恢复与请求不重复，避免把旧系统 XCTest 的进程可见状态当作场景状态。
 
-`Legacy17` UI 测试计划关闭 XCTest 的普通运行时日志检测及 Main Thread Checker 检测。诊断 run `40175795164` 已保存 iOS 17.5 后台恢复输入会话时的 `.ips`：`UITextInputSessionActionAnalytics → runtime_issue_os_log_fault_callback → strcmp(NULL)`；仅关闭日志检测时仍出现此测试库崩溃。因此旧系统 UI 计划同时关闭两项作为测试工具兼容措施，CI 核对生成策略，具体回调注册机制未直接验证。此限制仅适用于旧系统 UI 测试诊断，所有交互断言、崩溃失败判定和单元／性能测试保留；iOS 26 使用默认完整诊断，不把旧系统结果表述为 Main Thread Checker 验收。
+`Legacy17` UI 测试计划显式关闭 XCTest 的普通运行时日志、Main Thread Checker 和 Thread Performance Checker 三类诊断。run `40175795164` 以及三轮稳定性检查 `40182914135` 已保存 iOS 17.5 后台恢复输入会话时的 `.ips`：`UITextInputSessionActionAnalytics → runtime_issue_os_log_fault_callback → strcmp(NULL)`；关闭前两项后仍有两轮发生同一测试库崩溃。第三项此前沿用默认配置，现在一并显式关闭并由 CI 核对生成策略；是否能阻止旧回调仍须实际稳定性结果验证，不能仅凭配置断言其注册机制。此限制仅适用于旧系统 UI 诊断，所有交互断言、崩溃失败判定、单元／性能测试及原性能阈值保留；iOS 26 使用默认完整诊断，不把旧系统功能结果表述为线程诊断验收。三项配置名称可对照 [Alamofire 的测试计划](https://github.com/Alamofire/Alamofire/blob/bda9ed57d72988a3a2ada33d824583541f86eac6/Tests/Test%20Plans/iOS.xctestplan)。
 
 UI 套件要求零跳过。全量 XCTest 套件仅允许下列六个既有私有输入验收测试在缺少对应 fixture 时跳过，并明确报告为未执行。2026-10-04 的 main 基线实际发现 789 项，其中 786 项通过、0 项失败，跳过的是前三项；当前 main 还包含后三项可选私有验收。私有测试未执行不代表真实牧场数据验收通过。
 

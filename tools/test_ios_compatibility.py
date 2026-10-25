@@ -483,6 +483,7 @@ class UITestPlanPolicyTests(unittest.TestCase):
         self.assertEqual(plans["Legacy17"]["defaultOptions"], {
             "runtimeIssueDetection": {"enabled": False},
             "mainThreadCheckerDetectionPolicy": {"enabled": False},
+            "threadPerformanceCheckerRuntimeIssueDetection": {"enabled": False},
         })
         plans["Legacy17"]["defaultOptions"].clear()
         self.assertEqual(plans["Legacy17"], plans["ModernUI"])

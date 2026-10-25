@@ -12,6 +12,9 @@
     },
     "runtimeIssueDetection": {
       "enabled": false
+    },
+    "threadPerformanceCheckerRuntimeIssueDetection": {
+      "enabled": false
     }
   },
   "testTargets": [
