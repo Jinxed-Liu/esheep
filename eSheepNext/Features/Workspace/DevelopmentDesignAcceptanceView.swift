@@ -12,6 +12,11 @@ struct DevelopmentDesignAcceptanceView: View {
     @State private var notifications = FarmNotificationService()
     @State private var subscription = SubscriptionService()
     @State private var motion = MotionEngine()
+    @State private var backgroundTransitionCount = 0
+
+    private var observesSceneLifecycle: Bool {
+        ProcessInfo.processInfo.arguments.contains("--design-scene-lifecycle")
+    }
 
     var body: some View {
         Group {
@@ -30,6 +35,19 @@ struct DevelopmentDesignAcceptanceView: View {
             } else if let failure { Text(failure) }
             else { ProgressView("正在准备隔离测试牧场") }
         }
+        .overlay(alignment: .topTrailing) {
+            if observesSceneLifecycle {
+                // Observe actual scene events without driving the lifecycle or
+                // altering the coordinator. This view exists only in DEBUG.
+                Text("后台次数：\(backgroundTransitionCount)")
+                    .font(.caption2)
+                    .padding(4)
+                    .background(.regularMaterial)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("design.scene.background-count")
+                    .accessibilityValue(String(backgroundTransitionCount))
+            }
+        }
         .task {
             guard fixture == nil else { return }
             do {
@@ -44,7 +62,10 @@ struct DevelopmentDesignAcceptanceView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .inactive { InsightSessionCoordinator.shared.prepareForBackgroundTransition() }
-            if phase == .background { InsightSessionCoordinator.shared.setForeground(false) }
+            if phase == .background {
+                if observesSceneLifecycle { backgroundTransitionCount += 1 }
+                InsightSessionCoordinator.shared.setForeground(false)
+            }
             else if phase == .active { InsightSessionCoordinator.shared.setForeground(true) }
         }
         .onAppear {

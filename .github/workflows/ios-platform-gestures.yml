@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       scope:
-        description: Full acceptance or focused avatar/lifecycle diagnosis
+        description: Full acceptance or focused interaction validation
         type: choice
         default: full
         options:
           - full
           - avatar-lifecycle
+          - lifecycle-stability
 
 run-name: iOS compatibility ${{ inputs.scope || 'full' }} (${{ github.ref_name }})
 
@@ -56,7 +57,7 @@ jobs:
           report = {'head': os.environ['GITHUB_SHA'], 'scope': scope,
                     'fullAcceptance': scope == 'full',
                     'unitAndPerformanceRequested': scope == 'full',
-                    'expectedUICases': 7 if scope == 'full' else 2}
+                    'expectedUICases': {'full': 7, 'avatar-lifecycle': 2, 'lifecycle-stability': 3}[scope]}
           (Path(os.environ['RUNNER_TEMP']) / 'compatibility-validation.json').write_text(json.dumps(report, indent=2))
           print(json.dumps(report))
           PYSCOPE
@@ -146,7 +147,7 @@ jobs:
                       raise SystemExit('Legacy17 combined runtime collector was not disabled: ' + key)
           PY
       - name: Run the complete unit and performance suites
-        if: ${{ inputs.scope != 'avatar-lifecycle' }}
+        if: ${{ inputs.scope == 'full' }}
         run: |
           set -euo pipefail
           xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
@@ -159,7 +160,7 @@ jobs:
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/full-unit.log"
       - name: Verify keyboard retention with the real voice controls
-        if: ${{ always() && steps.build.outcome == 'success' && inputs.scope != 'avatar-lifecycle' }}
+        if: ${{ always() && steps.build.outcome == 'success' && inputs.scope == 'full' }}
         run: |
           set -euo pipefail
           gesture_test_plan_options=(-configuration Debug)
@@ -205,17 +206,32 @@ jobs:
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testBriefBackgroundSwitchPreservesTheRunningReply
             )
           fi
+          gesture_result_names=(native-interactions)
+          if [ "$COMPATIBILITY_SCOPE" = lifecycle-stability ]; then
+            gesture_diagnostic_filters=(
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testBriefBackgroundSwitchPreservesTheRunningReply
+            )
+            # Three independent executions, never retry-until-pass. Preserve
+            # every result and fail the step if any execution fails.
+            gesture_result_names=(native-interactions-1 native-interactions-2 native-interactions-3)
+          fi
           xcrun simctl bootstatus "$IOS_SIMULATOR_ID" -b
-          xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme eSheepNextUI \
-            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
-            -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
-            -resultBundlePath "$RUNNER_TEMP/native-interactions.xcresult" -parallel-testing-enabled NO \
-            -test-timeouts-enabled YES -default-test-execution-time-allowance 240 \
-            -maximum-test-execution-time-allowance 240 \
-            "${gesture_test_plan_options[@]}" \
-            "${gesture_diagnostic_filters[@]}" \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
-            2>&1 | tee "$RUNNER_TEMP/native-interactions.log"
+          gesture_failed=0
+          for gesture_result_name in "${gesture_result_names[@]}"; do
+            if ! xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme eSheepNextUI \
+              -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
+              -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
+              -resultBundlePath "$RUNNER_TEMP/$gesture_result_name.xcresult" -parallel-testing-enabled NO \
+              -test-timeouts-enabled YES -default-test-execution-time-allowance 240 \
+              -maximum-test-execution-time-allowance 240 \
+              "${gesture_test_plan_options[@]}" \
+              "${gesture_diagnostic_filters[@]}" \
+              ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+              2>&1 | tee "$RUNNER_TEMP/$gesture_result_name.log"; then
+              gesture_failed=1
+            fi
+          done
+          exit "$gesture_failed"
       - name: Export screenshots
         if: always()
         run: |
@@ -245,7 +261,7 @@ jobs:
                           output.mkdir(exist_ok=True)
                           shutil.copy2(report, output / (str(index) + '-' + report.name))
           PYCRASH
-          for gesture_result_name in full-unit gestures native-interactions; do
+          for gesture_result_name in full-unit gestures native-interactions native-interactions-1 native-interactions-2 native-interactions-3; do
             if [ -d "$RUNNER_TEMP/$gesture_result_name.xcresult" ]; then
               xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/$gesture_result_name.xcresult" > "$RUNNER_TEMP/$gesture_result_name-summary.json"
               xcrun xcresulttool export attachments --path "$RUNNER_TEMP/$gesture_result_name.xcresult" --output-path "$RUNNER_TEMP/gesture-screenshots/$gesture_result_name"
@@ -257,9 +273,18 @@ jobs:
           sys.path.insert(0, 'tools')
           import verify_ios_compatibility as gate
           directory = Path(os.environ['RUNNER_TEMP'])
-          focused = os.environ['COMPATIBILITY_SCOPE'] == 'avatar-lifecycle'
-          required = ('native-interactions',) if focused else ('full-unit', 'gestures', 'native-interactions')
-          expected_ui_counts = {'gestures': 1, 'native-interactions': 2 if focused else 6}
+          scope = os.environ['COMPATIBILITY_SCOPE']
+          if scope == 'lifecycle-stability':
+              required = tuple('native-interactions-' + str(index) for index in range(1, 4))
+              expected_ui_counts = dict.fromkeys(required, 1)
+          elif scope == 'avatar-lifecycle':
+              required = ('native-interactions',)
+              expected_ui_counts = {'native-interactions': 2}
+          elif scope == 'full':
+              required = ('full-unit', 'gestures', 'native-interactions')
+              expected_ui_counts = {'gestures': 1, 'native-interactions': 6}
+          else:
+              raise gate.GateError('Unknown validation scope: ' + scope)
           for result in required:
               path = directory / (result + '-summary.json')
               if not path.exists(): raise gate.GateError('Missing required test summary: ' + result)
@@ -298,7 +323,7 @@ jobs:
             ${{ runner.temp }}/gesture-build.log
             ${{ runner.temp }}/gestures.log
             ${{ runner.temp }}/full-unit.log
-            ${{ runner.temp }}/native-interactions.log
+            ${{ runner.temp }}/native-interactions*.log
             ${{ runner.temp }}/avatar-scroll.log
             ${{ runner.temp }}/app-runtime.log
             ${{ runner.temp }}/compatibility-crash-reports

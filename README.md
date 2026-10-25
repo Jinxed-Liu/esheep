@@ -84,7 +84,7 @@ ALLOW_LOCAL_DB_RESET=1 ./tools/verify_local.sh db
 
 为避免开发过程中反复运行失败任务产生 GitHub 邮件，`codex/ios17-compatibility` 和 `codex/ios17-compatibility-validation` 分支关闭推送自动检查；兼容性候选集中使用手动检查验证。`ios-platform-gestures.yml` 仅支持手动启动，覆盖真实语音按钮的键盘保留、波形与草稿恢复，以及新版返回手势和附件面板。主分支和其他开发分支继续使用原有自动门禁。
 
-手动检查默认 `scope=full`，要求完整单元／性能和两端全部 7 项交互；`scope=avatar-lifecycle` 仅用于头像及前后台两项聚焦诊断，结果清单会标明未运行单元／性能，不能替代最终完整验收。
+手动检查默认 `scope=full`，要求完整单元／性能和两端全部 7 项交互；`scope=avatar-lifecycle` 仅用于头像及前后台两项聚焦诊断；`scope=lifecycle-stability` 对前后台用例分别执行三次，每次均须通过，不以重试后的成功覆盖失败。两个聚焦范围的结果清单会标明未运行单元／性能，不能替代最终完整验收。前后台用例检查真实桌面和仅在 DEBUG 隔离启动中显示的实际 `scenePhase` 后台次数，再验证原回复恢复与请求不重复，避免把旧系统 XCTest 的进程可见状态当作场景状态。
 
 `Legacy17` UI 测试计划关闭 XCTest 的普通运行时日志检测及 Main Thread Checker 检测。诊断 run `40175795164` 已保存 iOS 17.5 后台恢复输入会话时的 `.ips`：`UITextInputSessionActionAnalytics → runtime_issue_os_log_fault_callback → strcmp(NULL)`；仅关闭日志检测时仍出现此测试库崩溃。因此旧系统 UI 计划同时关闭两项作为测试工具兼容措施，CI 核对生成策略，具体回调注册机制未直接验证。此限制仅适用于旧系统 UI 测试诊断，所有交互断言、崩溃失败判定和单元／性能测试保留；iOS 26 使用默认完整诊断，不把旧系统结果表述为 Main Thread Checker 验收。
 

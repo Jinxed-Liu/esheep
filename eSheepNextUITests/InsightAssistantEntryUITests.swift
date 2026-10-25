@@ -759,13 +759,16 @@ final class InsightAssistantEntryUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = [
             "--design-acceptance", "--design-insight-ready", "--design-insight-offline-send",
-            "--design-insight-slow-response",
+            "--design-insight-slow-response", "--design-scene-lifecycle",
             "--design-insight-expected-message-base64", Data(message.utf8).base64EncodedString(),
             "--design-role", "administrator",
             "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
         ]
         app.launch()
         openAssistantEntry(in: app)
+        let backgroundCount = app.staticTexts["design.scene.background-count"]
+        XCTAssertTrue(backgroundCount.waitForExistence(timeout: 5))
+        XCTAssertEqual(backgroundCount.value as? String, "0")
         let composer = composerField(in: app)
         composer.tap()
         composer.typeText(message)
@@ -780,14 +783,19 @@ final class InsightAssistantEntryUITests: XCTestCase {
         // Exercise the real SwiftUI scene lifecycle with the existing isolated
         // delayed responder. This fixture makes no provider or farm-data claim.
         XCUIDevice.shared.press(.home)
-        let backgrounded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            app.state == .runningBackground || app.state == .runningBackgroundSuspended
-        }, object: app)
-        XCTAssertEqual(XCTWaiter.wait(for: [backgrounded], timeout: 5), .completed,
-                       "The real background transition did not complete.")
+        // On iOS 17 XCTest can report the process as visible after SpringBoard
+        // backgrounds its scene. Require the real Home screen, then verify the
+        // scene's own event count on return instead of that process-state proxy.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let homeIcon = springboard.icons["eSheep+ Dev"]
+        XCTAssertTrue(homeIcon.waitForExistence(timeout: 5), "The real Home screen did not appear.")
+        XCTAssertTrue(homeIcon.isHittable, "The Home screen was not interactive.")
+        attachScreenshot(of: springboard, named: "reply-running-real-home-screen")
         app.activate()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10),
                       "The app terminated or failed to return to the foreground.")
+        XCTAssertEqual(backgroundCount.value as? String, "1",
+                       "The running conversation did not receive exactly one real scene background event.")
         let completed = app.staticTexts[response].waitForExistence(timeout: 30)
         if !completed {
             attachScreenshot(of: app, named: "reply-background-return-failure")
