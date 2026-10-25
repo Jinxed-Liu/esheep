@@ -804,7 +804,7 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
                     try context.save()
                 }
             ),
-            .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self),
+            v4ToV5,
             .lightweight(fromVersion: AppSchemaV5.self, toVersion: AppSchemaV6.self),
             .lightweight(fromVersion: AppSchemaV6.self, toVersion: AppSchemaV7.self),
             .lightweight(fromVersion: AppSchemaV7.self, toVersion: AppSchemaV8.self),
@@ -868,6 +868,24 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: AppSchemaV18.self, toVersion: AppSchemaV19.self),
             .lightweight(fromVersion: AppSchemaV19.self, toVersion: AppSchemaV20.self),
         ]
+    }
+}
+
+extension AppSchemaMigrationPlan {
+    private static var v4ToV5: MigrationStage {
+        if #available(iOS 18, *) {
+            return .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self)
+        }
+        // Keep V4 as an explicit migration boundary on the original SwiftData
+        // runtime. Its persisted checksum is valid, but the combined lightweight
+        // path can reject it before migration begins. No business rows change
+        // in this callback; the historical schemas and mapping stay intact.
+        return .custom(
+            fromVersion: AppSchemaV4.self,
+            toVersion: AppSchemaV5.self,
+            willMigrate: nil,
+            didMigrate: { _ in }
+        )
     }
 }
 

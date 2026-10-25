@@ -163,6 +163,7 @@ jobs:
           fi
           gesture_diagnostic_filters+=(
             -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testBriefBackgroundSwitchPreservesTheRunningReply
+            -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testRepeatedPendingVoiceCancellationPreservesDraftAndKeyboard
           )
           xcodebuild test-without-building -project eSheepNext.xcodeproj -scheme eSheepNextUI \
             -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
