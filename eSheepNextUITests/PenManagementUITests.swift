@@ -45,7 +45,10 @@ final class PenManagementUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["启用 · 空舍"].waitForExistence(timeout: 10))
         app.buttons["编辑"].tap()
         XCTAssertTrue(retire.waitForExistence(timeout: 10))
-        let reason = app.textFields["删除原因"]
+        // A vertical SwiftUI TextField is exposed as a TextView on iOS 17.
+        let reason = app.textViews["删除原因"].exists
+            ? app.textViews["删除原因"] : app.textFields["删除原因"]
+        XCTAssertTrue(reason.exists)
         if !reason.isHittable { app.swipeUp() }
         reason.tap(); reason.typeText("Isolated UI test cleanup")
         let delete = app.buttons["delete-unused-pen"]

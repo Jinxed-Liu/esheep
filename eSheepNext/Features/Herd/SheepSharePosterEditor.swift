@@ -137,7 +137,8 @@ struct SheepSharePosterEditor: View {
             .accessibilityIdentifier("sheepPoster.editor.canvas")
             #if DEBUG
             .accessibilityValue(DevelopmentPosterAcceptance.state(snapshot: snapshot, image: image, style: style,
-                template: template, customization: customization, selectedID: selectedID))
+                template: template, customization: customization, selectedID: selectedID,
+                savedTemplateNames: savedTemplates.map(\.name)))
             #endif
     }
 
@@ -370,9 +371,15 @@ struct SheepSharePosterEditor: View {
     private func loadTemplates() {
         do { savedTemplates = try SheepSharePosterTemplateStore.load() }
         catch { errorMessage = String(localized: "读取模板失败，原文件已保留。") }
+        #if DEBUG
+        DevelopmentPosterAcceptance.recordTemplateEvent("load")
+        #endif
     }
     private func saveTemplate() {
         let name = String(templateName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+        #if DEBUG
+        DevelopmentPosterAcceptance.recordTemplateEvent("save-requested", inputName: name)
+        #endif
         guard !name.isEmpty else { return }
         do {
             var latest = try SheepSharePosterTemplateStore.load()
@@ -381,7 +388,15 @@ struct SheepSharePosterEditor: View {
             try SheepSharePosterTemplateStore.save(latest)
             savedTemplates = latest
             statusMessage = "模板已保存，可在“我的模板”中使用。"
-        } catch { errorMessage = String(localized: "保存模板失败，请重试。") }
+            #if DEBUG
+            DevelopmentPosterAcceptance.recordTemplateEvent("save-completed", inputName: name)
+            #endif
+        } catch {
+            errorMessage = String(localized: "保存模板失败，请重试。")
+            #if DEBUG
+            DevelopmentPosterAcceptance.recordTemplateEvent("save-failed", inputName: name, error: error)
+            #endif
+        }
     }
     private func applyTemplate(_ saved: SheepSharePosterSavedTemplate) {
         guard let savedStyle = SheepSharePosterStyle(rawValue: saved.style),

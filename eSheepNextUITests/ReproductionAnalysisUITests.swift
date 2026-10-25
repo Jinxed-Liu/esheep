@@ -15,11 +15,19 @@ final class ReproductionAnalysisUITests: XCTestCase {
 
     @MainActor
     private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
+        // iOS 17 reports a row hittable with only a few points exposed beside
+        // the home indicator. Move its whole hit target inside the viewport.
+        let viewport = app.frame.insetBy(dx: 0, dy: 44)
         for _ in 0..<6 {
-            if element.isHittable { return }
-            app.swipeUp()
+            if element.isHittable && viewport.contains(element.frame) { return }
+            if element.exists && element.frame.midY < viewport.minY {
+                app.swipeDown()
+            } else {
+                app.swipeUp()
+            }
         }
         XCTAssertTrue(element.isHittable)
+        XCTAssertTrue(viewport.contains(element.frame), "The complete target must be visible before tapping it.")
     }
 
     @MainActor

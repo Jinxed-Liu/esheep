@@ -139,8 +139,11 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         let name = app.alerts.textFields.firstMatch
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.tap(); name.typeText("Poster-112")
+        XCTAssertEqual(name.value as? String, "Poster-112")
+        XCTAssertTrue(app.alerts.buttons["保存"].isEnabled)
         app.alerts.buttons["保存"].tap()
         XCTAssertTrue(app.alerts.firstMatch.waitForNonExistence(timeout: 10))
+        try assertTemplateWasPersisted("Poster-112")
         // Save must not sanitize the currently edited sheep's poster in place.
         assertCustomization(try state(), equals: editedA)
         tap("done")
@@ -194,8 +197,11 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         let name = app.alerts.textFields.firstMatch
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.tap(); name.typeText("Minimal-112")
+        XCTAssertEqual(name.value as? String, "Minimal-112")
+        XCTAssertTrue(app.alerts.buttons["保存"].isEnabled)
         app.alerts.buttons["保存"].tap()
         XCTAssertTrue(app.alerts.firstMatch.waitForNonExistence(timeout: 10))
+        try assertTemplateWasPersisted("Minimal-112")
         app.terminate(); app.launch()
         openPoster(tag: "QA-002", style: "杂志封面")
         openEditor()
@@ -420,6 +426,23 @@ final class SheepSharePosterEditorUITests: XCTestCase {
     private func applyTemplate(_ name: String) {
         tap("templates")
         tap("apply." + name)
+    }
+
+    private func assertTemplateWasPersisted(_ name: String) throws {
+        let current = try state()
+        let attachment = XCTAttachment(string: String(decoding: try JSONSerialization.data(
+            withJSONObject: current, options: [.sortedKeys, .prettyPrinted]), as: UTF8.self))
+        attachment.name = "template-after-save-" + name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        capture("template-after-save-" + name)
+        let store = try XCTUnwrap(current["templateStore"] as? [String: Any])
+        XCTAssertTrue((current["savedTemplateNames"] as? [String])?.contains(name) == true,
+                      "Saving must immediately update the template menu.")
+        XCTAssertEqual(store["exists"] as? Bool, true, "Saving must create the real isolated template file.")
+        XCTAssertTrue((store["names"] as? [String])?.contains(name) == true,
+                      "The actual saved file must contain the named template before termination.")
+        XCTAssertNil(store["error"])
     }
 
     private func replaceText(_ text: String) throws {

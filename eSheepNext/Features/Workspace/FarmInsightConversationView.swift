@@ -540,7 +540,9 @@ struct FarmInsightConversationView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 18)
-                .modifier(InsightTranscriptContentGeometry())
+                .modifier(InsightTranscriptContentGeometry { oldGeometry, newGeometry in
+                    transcriptGeometryChanged(from: oldGeometry, to: newGeometry, proxy: proxy)
+                })
             }
             .accessibilityIdentifier("insight.conversation.transcript")
             .contentShape(.rect)
@@ -563,13 +565,7 @@ struct FarmInsightConversationView: View {
                 scrollToRequestedMessageOrBottom(proxy, animated: true)
             }
             .modifier(InsightTranscriptScrollGeometryObserver { oldGeometry, newGeometry in
-                let viewportShrank = oldGeometry.viewportHeight > 0 &&
-                    newGeometry.viewportHeight < oldGeometry.viewportHeight
-                let nativeInsetsGrew = newGeometry.reservedHeight > oldGeometry.reservedHeight
-                guard viewportShrank || nativeInsetsGrew ||
-                    (pendingTranscriptLayoutScroll && oldGeometry.contentHeight != newGeometry.contentHeight) else { return }
-                pendingTranscriptLayoutScroll = false
-                scrollToRequestedMessageOrBottom(proxy, animated: false)
+                transcriptGeometryChanged(from: oldGeometry, to: newGeometry, proxy: proxy)
             })
             .onChange(of: searchResultTargetID) { _, messageID in
                 guard let messageID else { return }
@@ -1435,6 +1431,20 @@ struct FarmInsightConversationView: View {
         ].joined(separator: ":")
     }
 
+    private func transcriptGeometryChanged(
+        from oldGeometry: InsightTranscriptScrollGeometry,
+        to newGeometry: InsightTranscriptScrollGeometry,
+        proxy: ScrollViewProxy
+    ) {
+        let viewportShrank = oldGeometry.viewportHeight > 0 &&
+            newGeometry.viewportHeight < oldGeometry.viewportHeight
+        let nativeInsetsGrew = newGeometry.reservedHeight > oldGeometry.reservedHeight
+        guard viewportShrank || nativeInsetsGrew ||
+            (pendingTranscriptLayoutScroll && oldGeometry.contentHeight != newGeometry.contentHeight) else { return }
+        pendingTranscriptLayoutScroll = false
+        scrollToRequestedMessageOrBottom(proxy, animated: false)
+    }
+
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
         if animated {
             withAnimation(.easeOut(duration: 0.22)) {
@@ -1465,40 +1475,23 @@ private struct InsightTranscriptScrollGeometry: Equatable, Sendable {
     static let empty = Self(contentHeight: 0, viewportHeight: 0, reservedHeight: 0)
 }
 
-private struct InsightTranscriptContentHeightPreference: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 private struct InsightTranscriptContentGeometry: ViewModifier {
+    let action: (InsightTranscriptScrollGeometry, InsightTranscriptScrollGeometry) -> Void
+
     @ViewBuilder
     func body(content: Content) -> some View {
         if #available(iOS 18, *) {
             content
         } else {
             content.background {
-                GeometryReader { geometry in
-                    Color.clear.preference(
-                        key: InsightTranscriptContentHeightPreference.self,
-                        value: geometry.size.height
-                    )
-                }
+                InsightTranscriptLegacyScrollGeometry(action: action)
             }
         }
     }
 }
 
-private struct InsightTranscriptViewportGeometry: Equatable, Sendable {
-    let height: CGFloat
-    let reservedHeight: CGFloat
-}
-
 private struct InsightTranscriptScrollGeometryObserver: ViewModifier {
     let action: (InsightTranscriptScrollGeometry, InsightTranscriptScrollGeometry) -> Void
-    @State private var legacyGeometry = InsightTranscriptScrollGeometry.empty
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -1514,33 +1507,90 @@ private struct InsightTranscriptScrollGeometryObserver: ViewModifier {
             }
         } else {
             content
-                .onPreferenceChange(InsightTranscriptContentHeightPreference.self) { height in
-                    updateLegacyGeometry(.init(
-                        contentHeight: height,
-                        viewportHeight: legacyGeometry.viewportHeight,
-                        reservedHeight: legacyGeometry.reservedHeight
-                    ))
-                }
-                .onGeometryChange(for: InsightTranscriptViewportGeometry.self) { geometry in
-                    InsightTranscriptViewportGeometry(
-                        height: geometry.size.height,
-                        reservedHeight: geometry.safeAreaInsets.top + geometry.safeAreaInsets.bottom
-                    )
-                } action: { viewport in
-                    updateLegacyGeometry(.init(
-                        contentHeight: legacyGeometry.contentHeight,
-                        viewportHeight: viewport.height,
-                        reservedHeight: viewport.reservedHeight
-                    ))
-                }
         }
     }
+}
 
-    private func updateLegacyGeometry(_ newGeometry: InsightTranscriptScrollGeometry) {
-        let oldGeometry = legacyGeometry
-        guard oldGeometry != newGeometry else { return }
-        legacyGeometry = newGeometry
-        action(oldGeometry, newGeometry)
+/// On iOS 17 the full-window SwiftUI geometry stays unchanged when safe-area
+/// bars and the keyboard change the scroll view's adjusted content insets.
+/// Observe those actual layout values from inside the transcript, without
+/// replacing its delegate, gestures, insets, or native scroll animations.
+private struct InsightTranscriptLegacyScrollGeometry: UIViewRepresentable {
+    let action: (InsightTranscriptScrollGeometry, InsightTranscriptScrollGeometry) -> Void
+
+    func makeUIView(context: Context) -> AnchorView {
+        let view = AnchorView()
+        view.isUserInteractionEnabled = false
+        view.action = action
+        return view
+    }
+
+    func updateUIView(_ view: AnchorView, context: Context) {
+        view.action = action
+    }
+
+    static func dismantleUIView(_ view: AnchorView, coordinator: ()) {
+        view.invalidate()
+    }
+
+    final class AnchorView: UIView {
+        var action: ((InsightTranscriptScrollGeometry, InsightTranscriptScrollGeometry) -> Void)?
+        private weak var scrollView: UIScrollView?
+        private var observations: [NSKeyValueObservation] = []
+        private var geometry = InsightTranscriptScrollGeometry.empty
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window == nil { invalidate() } else { connect() }
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            connect()
+        }
+
+        func invalidate() {
+            observations.removeAll()
+            scrollView = nil
+            geometry = .empty
+        }
+
+        private func connect() {
+            guard window != nil else { return }
+            var ancestor = superview
+            while let view = ancestor, !(view is UIScrollView) { ancestor = view.superview }
+            guard let scroll = ancestor as? UIScrollView, scroll !== scrollView else { return }
+            invalidate()
+            scrollView = scroll
+            observations = [
+                scroll.observe(\.contentSize, options: [.initial, .new]) { [weak self] _, _ in
+                    DispatchQueue.main.async { self?.publishGeometry() }
+                },
+                scroll.observe(\.adjustedContentInset, options: [.new]) { [weak self] _, _ in
+                    DispatchQueue.main.async { self?.publishGeometry() }
+                },
+                scroll.observe(\.bounds, options: [.old, .new]) { [weak self] _, change in
+                    guard change.oldValue?.size != change.newValue?.size else { return }
+                    DispatchQueue.main.async { self?.publishGeometry() }
+                }
+            ]
+        }
+
+        private func publishGeometry() {
+            guard let scrollView, window != nil else { return }
+            let inset = scrollView.adjustedContentInset
+            let next = InsightTranscriptScrollGeometry(
+                contentHeight: scrollView.contentSize.height,
+                viewportHeight: scrollView.bounds.height,
+                reservedHeight: inset.top + inset.bottom
+            )
+            guard geometry != next else { return }
+            let previous = geometry
+            geometry = next
+            // KVO delivery is deferred to the main queue so scrollTo uses the
+            // completed layout, including the keyboard and multiline composer.
+            action?(previous, next)
+        }
     }
 }
 

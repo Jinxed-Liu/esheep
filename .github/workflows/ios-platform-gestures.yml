@@ -11,6 +11,7 @@ on:
           - full
           - avatar-lifecycle
           - lifecycle-stability
+          - postmerge-ui
 
 run-name: iOS compatibility ${{ inputs.scope || 'full' }} (${{ github.ref_name }})
 
@@ -57,7 +58,7 @@ jobs:
           report = {'head': os.environ['GITHUB_SHA'], 'scope': scope,
                     'fullAcceptance': scope == 'full',
                     'unitAndPerformanceRequested': scope == 'full',
-                    'expectedUICases': {'full': 7, 'avatar-lifecycle': 2, 'lifecycle-stability': 3}[scope]}
+                    'expectedUICases': {'full': 7, 'avatar-lifecycle': 2, 'lifecycle-stability': 3, 'postmerge-ui': 10}[scope]}
           (Path(os.environ['RUNNER_TEMP']) / 'compatibility-validation.json').write_text(json.dumps(report, indent=2))
           print(json.dumps(report))
           PYSCOPE
@@ -85,6 +86,8 @@ jobs:
           if not runtimes: raise SystemExit('The requested stable runtime is unavailable.')
           runtime = max(runtimes, key=lambda r: gate.version_tuple(r['version']))
           model = 'iPhone-15-Pro' if major == 17 else 'iPhone-17-Pro'
+          if major == 17 and os.environ['COMPATIBILITY_SCOPE'] == 'postmerge-ui':
+              model = 'iPhone-15-Pro-Max'  # Match the failing broad legacy gate.
           udid = subprocess.check_output(['xcrun', 'simctl', 'create', 'eSheep compatibility gestures',
                   'com.apple.CoreSimulator.SimDeviceType.' + model, runtime['identifier']], text=True).strip()
           with open(os.environ['GITHUB_ENV'], 'a') as output:
@@ -183,7 +186,7 @@ jobs:
             "${gesture_test_options[@]}" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/gestures.log"
-      - name: Run the available native composer interactions
+      - name: Run the selected native UI interactions
         if: ${{ always() && matrix.scheme == 'eSheepNextUI' && steps.build.outcome == 'success' }}
         run: |
           set -euo pipefail
@@ -207,7 +210,27 @@ jobs:
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testBriefBackgroundSwitchPreservesTheRunningReply
             )
           fi
+          if [ "$COMPATIBILITY_SCOPE" = postmerge-ui ]; then
+            gesture_diagnostic_filters=(
+              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testDelayedLongReviewedReplyAppearsOnTheCurrentPage
+              -only-testing:eSheepNextUITests/PenManagementUITests/testManagementEntryCreateEditRetireReactivateAndSafeDelete
+              -only-testing:eSheepNextUITests/ReproductionAnalysisUITests/testOccupiedPenSelectorHidesEmptyPenAndKeepsIndividualChoices
+              -only-testing:eSheepNextUITests/SheepSharePermissionsUITests/testAdministratorCanSharePosterAndExportSheepArchive
+              -only-testing:eSheepNextUITests/SheepSharePermissionsUITests/testOwnerCanSharePosterAndExportSheepArchive
+              -only-testing:eSheepNextUITests/SheepSharePermissionsUITests/testWorkerCanSharePosterAndExportSheepArchive
+              -only-testing:eSheepNextUITests/SheepSharePosterEditorUITests/testBreedingTextFontGeometryLayersUndoAndReset
+              -only-testing:eSheepNextUITests/SheepSharePosterEditorUITests/testCrossStyleTemplateApplicationKeepsTheSavedDesign
+              -only-testing:eSheepNextUITests/SheepSharePosterEditorUITests/testNativeColorPickerAndVisibilityAreUndoable
+              -only-testing:eSheepNextUITests/SheepSharePosterEditorUITests/testSavedTemplateSurvivesRelaunchAndRebindsEveryCurrentSheepField
+            )
+          fi
           gesture_result_names=(native-interactions)
+          gesture_maximum_seconds=240
+          if [ "$COMPATIBILITY_SCOPE" = postmerge-ui ]; then
+            # Honor the existing poster cases' explicit 480/600-second budgets,
+            # as ios-runtime.yml does. Other cases retain the 240-second default.
+            gesture_maximum_seconds=600
+          fi
           if [ "$COMPATIBILITY_SCOPE" = lifecycle-stability ]; then
             gesture_diagnostic_filters=(
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testBriefBackgroundSwitchPreservesTheRunningReply
@@ -224,7 +247,7 @@ jobs:
               -derivedDataPath "$RUNNER_TEMP/gesture-derived-data" \
               -resultBundlePath "$RUNNER_TEMP/$gesture_result_name.xcresult" -parallel-testing-enabled NO \
               -test-timeouts-enabled YES -default-test-execution-time-allowance 240 \
-              -maximum-test-execution-time-allowance 240 \
+              -maximum-test-execution-time-allowance "$gesture_maximum_seconds" \
               "${gesture_test_plan_options[@]}" \
               "${gesture_diagnostic_filters[@]}" \
               ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
@@ -239,6 +262,10 @@ jobs:
           if ! xcrun simctl spawn "$IOS_SIMULATOR_ID" log show --last 45m --style compact \
             --predicate 'subsystem == "com.sheepfarm.next.avatar"' > "$RUNNER_TEMP/avatar-scroll.log" 2>&1; then
             echo "Avatar fixture scroll diagnostics were unavailable; see avatar-scroll.log."
+          fi
+          if ! xcrun simctl spawn "$IOS_SIMULATOR_ID" log show --last 45m --style compact \
+            --predicate 'subsystem == "com.sheepfarm.next.poster"' > "$RUNNER_TEMP/poster-store.log" 2>&1; then
+            echo "Poster fixture store diagnostics were unavailable; see poster-store.log."
           fi
           if ! xcrun simctl spawn "$IOS_SIMULATOR_ID" log show --last 45m --style compact \
             --predicate 'process == "eSheepNext" OR eventMessage CONTAINS[c] "com.sheepfarm.next.dev"' > "$RUNNER_TEMP/app-runtime.log" 2>&1; then
@@ -265,6 +292,7 @@ jobs:
           for gesture_result_name in full-unit gestures native-interactions native-interactions-1 native-interactions-2 native-interactions-3; do
             if [ -d "$RUNNER_TEMP/$gesture_result_name.xcresult" ]; then
               xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/$gesture_result_name.xcresult" > "$RUNNER_TEMP/$gesture_result_name-summary.json"
+              xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/$gesture_result_name.xcresult" > "$RUNNER_TEMP/$gesture_result_name-tests.json"
               xcrun xcresulttool export attachments --path "$RUNNER_TEMP/$gesture_result_name.xcresult" --output-path "$RUNNER_TEMP/gesture-screenshots/$gesture_result_name"
             fi
           done
@@ -284,6 +312,9 @@ jobs:
           elif scope == 'full':
               required = ('full-unit', 'gestures', 'native-interactions')
               expected_ui_counts = {'gestures': 1, 'native-interactions': 6}
+          elif scope == 'postmerge-ui':
+              required = ('native-interactions',)
+              expected_ui_counts = {'native-interactions': 10}
           else:
               raise gate.GateError('Unknown validation scope: ' + scope)
           for result in required:
@@ -326,9 +357,11 @@ jobs:
             ${{ runner.temp }}/full-unit.log
             ${{ runner.temp }}/native-interactions*.log
             ${{ runner.temp }}/avatar-scroll.log
+            ${{ runner.temp }}/poster-store.log
             ${{ runner.temp }}/app-runtime.log
             ${{ runner.temp }}/compatibility-crash-reports
             ${{ runner.temp }}/*-summary.json
+            ${{ runner.temp }}/*-tests.json
             ${{ runner.temp }}/*-skipped-tests.json
             ${{ runner.temp }}/runtime-diagnostics-policy.json
             ${{ runner.temp }}/compatibility-validation.json

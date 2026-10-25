@@ -1,5 +1,6 @@
 #if DEBUG
 import CryptoKit
+import OSLog
 import SwiftData
 import SwiftUI
 import UIKit
@@ -26,7 +27,7 @@ enum DevelopmentPosterAcceptance {
 
     static func state(snapshot: SheepSharePosterSnapshot, image: UIImage?, style: SheepSharePosterStyle,
                       template: SheepSharePosterTemplate, customization: SheepSharePosterCustomization,
-                      selectedID: String) -> String {
+                      selectedID: String, savedTemplateNames: [String]) -> String {
         guard directory != nil else { return "" }
         struct State: Encodable {
             let style: String
@@ -35,13 +36,57 @@ enum DevelopmentPosterAcceptance {
             let customization: SheepSharePosterCustomization
             let elements: [SheepPosterElement]
             let photoDigest: String
+            let savedTemplateNames: [String]
+            let templateStore: TemplateStoreEvidence
         }
         let source = customization.photoData.flatMap(UIImage.init(data:)) ?? image
         let value = State(style: style.rawValue, template: template.rawValue, selectedID: selectedID,
                           customization: customization,
                           elements: customization.elements(from: SheepSharePosterLayout.elements(snapshot: snapshot, style: style, template: template)),
-                          photoDigest: source?.pngData().map(digest) ?? "missing")
+                          photoDigest: source?.pngData().map(digest) ?? "missing",
+                          savedTemplateNames: savedTemplateNames, templateStore: templateStoreEvidence())
         return encoded(value)
+    }
+
+    private struct TemplateStoreEvidence: Encodable {
+        let fixtureID: String?
+        let exists: Bool
+        let digest: String?
+        let names: [String]
+        let error: String?
+    }
+
+    private static func templateStoreEvidence() -> TemplateStoreEvidence {
+        guard let directory else {
+            return .init(fixtureID: nil, exists: false, digest: nil, names: [], error: nil)
+        }
+        let url = directory.appending(path: "templates-v1.json")
+        let exists = FileManager.default.fileExists(atPath: url.path)
+        do {
+            let data = exists ? try Data(contentsOf: url) : nil
+            let names = try data.map { try JSONDecoder().decode([SheepSharePosterSavedTemplate].self, from: $0).map(\.name) } ?? []
+            return .init(fixtureID: directory.lastPathComponent, exists: exists,
+                         digest: data.map(digest), names: names, error: nil)
+        } catch {
+            return .init(fixtureID: directory.lastPathComponent, exists: exists,
+                         digest: nil, names: [], error: String(describing: error))
+        }
+    }
+
+    /// Read-only evidence for the opt-in local fixture. No production paths or
+    /// names are read or logged, and the existing template file is never edited.
+    static func recordTemplateEvent(_ event: String, inputName: String? = nil, error: Error? = nil) {
+        guard directory != nil else { return }
+        struct Event: Encodable {
+            let event: String
+            let inputName: String?
+            let store: TemplateStoreEvidence
+            let error: String?
+        }
+        let value = Event(event: event, inputName: inputName, store: templateStoreEvidence(),
+                          error: error.map { String(describing: $0) })
+        Logger(subsystem: "com.sheepfarm.next.poster", category: "fixture-store")
+            .notice("\(encoded(value), privacy: .public)")
     }
 
     nonisolated static func encoded<T: Encodable>(_ value: T) -> String {
