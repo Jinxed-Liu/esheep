@@ -464,16 +464,20 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         let before = try element(id, in: initial)[field] as? Double
         let slider = app.sliders[prefix + "slider." + title]
         reveal(slider)
-        // XCTest's short adjustment emitted a single 32 ms movement for the
-        // rotation control. Deliver a continuous native drag and final hold.
+        // A 15-point rotation adjustment at .slow (250 pt/s) still emits only
+        // a 60 ms movement. Keep the requested endpoints, but give the native
+        // slider half a second of actual movement even for a short adjustment.
         let frame = slider.frame
         let inset = min(frame.height / 2, frame.width / 2)
         let track = frame.width - 2 * inset
+        let initialPosition = slider.normalizedSliderPosition
         let origin = slider.coordinate(withNormalizedOffset: .zero)
-        let start = origin.withOffset(CGVector(dx: inset + track * slider.normalizedSliderPosition,
+        let start = origin.withOffset(CGVector(dx: inset + track * initialPosition,
                                                dy: frame.height / 2))
         let end = origin.withOffset(CGVector(dx: inset + track * position, dy: frame.height / 2))
-        start.press(forDuration: 0.2, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+        let distance = abs(track * (position - initialPosition))
+        let velocity = XCUIGestureVelocity(rawValue: max(distance / 0.5, 1))
+        start.press(forDuration: 0.2, thenDragTo: end, withVelocity: velocity, thenHoldForDuration: 0.2)
         let after = try element(id)[field] as? Double
         XCTAssertNotEqual(before, after, title)
     }
