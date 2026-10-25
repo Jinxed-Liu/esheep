@@ -50,7 +50,12 @@ final class PenManagementUITests: XCTestCase {
             ? app.textViews["删除原因"] : app.textFields["删除原因"]
         XCTAssertTrue(reason.exists)
         if !reason.isHittable { app.swipeUp() }
-        reason.tap(); reason.typeText("Isolated UI test cleanup")
+        // The legacy TextView's synthesized hit point lies on its top edge
+        // (45, 571.33 for a frame of 40, 571.33, 350, 23), missing text focus.
+        reason.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        reason.typeText("Isolated UI test cleanup")
+        XCTAssertEqual(reason.value as? String, "Isolated UI test cleanup")
         let delete = app.buttons["delete-unused-pen"]
         if !delete.isHittable { app.swipeUp() }
         XCTAssertTrue(delete.isEnabled)

@@ -159,6 +159,7 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         tap("saveTemplate")
         let name = app.alerts.textFields.firstMatch
         XCTAssertTrue(name.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.alerts.buttons["保存"].isEnabled)
         name.tap(); name.typeText("Poster-112")
         XCTAssertEqual(name.value as? String, "Poster-112")
         XCTAssertTrue(app.alerts.buttons["保存"].isEnabled)
@@ -217,6 +218,7 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         tap("saveTemplate")
         let name = app.alerts.textFields.firstMatch
         XCTAssertTrue(name.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.alerts.buttons["保存"].isEnabled)
         name.tap(); name.typeText("Minimal-112")
         XCTAssertEqual(name.value as? String, "Minimal-112")
         XCTAssertTrue(app.alerts.buttons["保存"].isEnabled)

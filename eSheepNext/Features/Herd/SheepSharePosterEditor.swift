@@ -73,15 +73,9 @@ struct SheepSharePosterEditor: View {
                 let target = imageTargetID
                 Task { await loadImage(item, for: target) }
             }
-            .alert("保存为我的模板", isPresented: $isNamingTemplate) {
-                TextField("模板名称", text: $templateName)
-                    .accessibilityIdentifier("sheepPoster.editor.templateName")
-                Button("保存") { saveTemplate() }
-                    .disabled(templateName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("保存排版和新增文字；下次使用时，耳号、照片和羊只资料自动更新。模板保存在这台设备上。")
-            }
+            .modifier(SheepPosterTemplateNamePrompt(
+                isPresented: $isNamingTemplate, name: $templateName, onSave: saveTemplate
+            ))
             .alert("海报", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
                 Button("完成", role: .cancel) {}
             } message: {
@@ -375,8 +369,8 @@ struct SheepSharePosterEditor: View {
         DevelopmentPosterAcceptance.recordTemplateEvent("load")
         #endif
     }
-    private func saveTemplate() {
-        let name = String(templateName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+    private func saveTemplate(_ enteredName: String) {
+        let name = String(enteredName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
         #if DEBUG
         DevelopmentPosterAcceptance.recordTemplateEvent("save-requested", inputName: name)
         #endif
@@ -445,6 +439,139 @@ struct SheepSharePosterEditor: View {
             }
         } catch { errorMessage = String(localized: "读取图片失败，请重试。") }
         photoSelection = nil
+    }
+}
+
+private struct SheepPosterTemplateNamePrompt: ViewModifier {
+    @Binding var isPresented: Bool
+    @Binding var name: String
+    let onSave: (String) -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content.alert("保存为我的模板", isPresented: $isPresented) {
+                TextField("模板名称", text: $name)
+                    .accessibilityIdentifier("sheepPoster.editor.templateName")
+                Button("保存") { onSave(name) }
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("保存排版和新增文字；下次使用时，耳号、照片和羊只资料自动更新。模板保存在这台设备上。")
+            }
+        } else {
+            content.background {
+                SheepPosterLegacyTemplateNamePrompt(isPresented: $isPresented, name: $name, onSave: onSave)
+            }
+        }
+    }
+}
+
+/// iOS 17 dismisses the SwiftUI text-entry alert without invoking its save
+/// action after the initially disabled action becomes enabled. Keep the same
+/// system alert, but connect its native text field and UIAlertAction directly.
+/// Newer systems continue using the original SwiftUI alert above.
+private struct SheepPosterLegacyTemplateNamePrompt: UIViewControllerRepresentable {
+    @Binding var isPresented: Bool
+    @Binding var name: String
+    let onSave: (String) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIViewController(context: Context) -> AnchorController {
+        let controller = AnchorController()
+        controller.view.backgroundColor = .clear
+        controller.view.isUserInteractionEnabled = false
+        controller.onAppear = { [weak controller, weak coordinator = context.coordinator] in
+            guard let controller else { return }
+            coordinator?.refresh(from: controller)
+        }
+        return controller
+    }
+
+    func updateUIViewController(_ controller: AnchorController, context: Context) {
+        context.coordinator.parent = self
+        DispatchQueue.main.async { [weak controller, weak coordinator = context.coordinator] in
+            guard let controller else { return }
+            coordinator?.refresh(from: controller)
+        }
+    }
+
+    static func dismantleUIViewController(_ controller: AnchorController, coordinator: Coordinator) {
+        controller.onAppear = nil
+        coordinator.dismiss(animated: false)
+    }
+
+    final class AnchorController: UIViewController {
+        var onAppear: (() -> Void)?
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            onAppear?()
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var parent: SheepPosterLegacyTemplateNamePrompt
+        private var prompt: UIAlertController?
+        private var saveAction: UIAlertAction?
+
+        init(parent: SheepPosterLegacyTemplateNamePrompt) { self.parent = parent }
+
+        func refresh(from controller: UIViewController) {
+            guard parent.isPresented else { dismiss(animated: true); return }
+            guard prompt == nil, controller.viewIfLoaded?.window != nil,
+                  controller.presentedViewController == nil else { return }
+            let alert = UIAlertController(
+                title: String(localized: "保存为我的模板"),
+                message: String(localized: "保存排版和新增文字；下次使用时，耳号、照片和羊只资料自动更新。模板保存在这台设备上。"),
+                preferredStyle: .alert
+            )
+            prompt = alert
+            alert.addTextField { [weak self] field in
+                field.placeholder = String(localized: "模板名称")
+                field.accessibilityIdentifier = "sheepPoster.editor.templateName"
+                field.text = self?.parent.name
+                field.addTarget(self, action: #selector(Coordinator.nameChanged(_:)), for: .editingChanged)
+            }
+            let save = UIAlertAction(title: String(localized: "保存"), style: .default) { [weak self, weak alert] _ in
+                guard let self, let alert else { return }
+                // Read the text from the control that the user actually edited,
+                // before dismissal can tear down the alert's text-field binding.
+                let enteredName = alert.textFields?.first?.text ?? ""
+                guard !enteredName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                let onSave = self.parent.onSave
+                self.prompt = nil
+                self.saveAction = nil
+                self.parent.name = enteredName
+                self.parent.isPresented = false
+                // UIKit owns the alert's dismissal. Commit from the native
+                // action itself, without depending on a second dismissal callback.
+                onSave(enteredName)
+            }
+            save.isEnabled = !parent.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            saveAction = save
+            alert.addAction(save)
+            alert.addAction(UIAlertAction(title: String(localized: "取消"), style: .cancel) { [weak self] _ in
+                self?.prompt = nil
+                self?.saveAction = nil
+                self?.parent.isPresented = false
+            })
+            controller.present(alert, animated: true)
+        }
+
+        @objc private func nameChanged(_ field: UITextField) {
+            let value = field.text ?? ""
+            parent.name = value
+            saveAction?.isEnabled = !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        func dismiss(animated: Bool) {
+            let alert = prompt
+            prompt = nil
+            saveAction = nil
+            alert?.dismiss(animated: animated)
+        }
     }
 }
 
