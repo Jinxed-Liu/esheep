@@ -88,10 +88,31 @@ final class SheepSharePosterEditorUITests: XCTestCase {
         let slidersTab = picker.buttons.matching(NSPredicate(format: "label IN %@", ["滑块", "Sliders"])).firstMatch
         XCTAssertTrue(slidersTab.waitForExistence(timeout: 10), app.debugDescription)
         slidersTab.tap()
-        // Native RGB controls; do not depend on a particular localized field name.
-        let sliders = picker.sliders
-        XCTAssertTrue(sliders.firstMatch.waitForExistence(timeout: 5))
-        sliders.element(boundBy: 0).adjust(toNormalizedSliderPosition: 0.2)
+        if #available(iOS 18, *) {
+            let sliders = picker.sliders
+            XCTAssertTrue(sliders.firstMatch.waitForExistence(timeout: 5))
+            sliders.element(boundBy: 0).adjust(toNormalizedSliderPosition: 0.2)
+        } else {
+            // iOS 17 exposes native RGB tracks as Other rather than Slider.
+            // Use an actual thumb drag; the diagnostic state supplies only its
+            // starting color, never a shortcut for changing the selected color.
+            let red = picker.otherElements.matching(NSPredicate(
+                format: "label IN %@", ["红色", "红", "Red"]
+            )).firstMatch
+            XCTAssertTrue(red.waitForExistence(timeout: 5), picker.debugDescription)
+            XCTAssertTrue(red.isHittable, picker.debugDescription)
+            let color = try XCTUnwrap(try element("earTag", in: baseline)["color"] as? [String: Any])
+            let initial = CGFloat(try XCTUnwrap(color["red"] as? Double))
+            let frame = red.frame
+            let inset = frame.height / 2
+            let track = frame.width - 2 * inset
+            XCTAssertGreaterThan(track, 0)
+            let origin = red.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: inset + track * initial, dy: frame.height / 2))
+            let end = origin.withOffset(CGVector(dx: inset + track * 0.2, dy: frame.height / 2))
+            let velocity = XCUIGestureVelocity(rawValue: max(abs(track * (0.2 - initial)) / 0.5, 1))
+            start.press(forDuration: 0.2, thenDragTo: end, withVelocity: velocity, thenHoldForDuration: 0.2)
+        }
         let close = app.buttons[prefix + "color.done"]
         XCTAssertTrue(close.waitForExistence(timeout: 5), app.debugDescription)
         close.tap()

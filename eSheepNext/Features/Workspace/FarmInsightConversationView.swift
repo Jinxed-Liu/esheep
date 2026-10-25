@@ -1,4 +1,5 @@
 import PhotosUI
+import OSLog
 import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
@@ -1531,6 +1532,7 @@ private struct InsightTranscriptLegacyScrollGeometry: UIViewRepresentable {
 
     static func dismantleUIView(_ view: AnchorView, coordinator: ()) {
         view.invalidate()
+        view.action = nil
     }
 
     final class AnchorView: UIView {
@@ -1587,6 +1589,15 @@ private struct InsightTranscriptLegacyScrollGeometry: UIViewRepresentable {
             guard geometry != next else { return }
             let previous = geometry
             geometry = next
+            #if DEBUG
+            let args = ProcessInfo.processInfo.arguments
+            if ["--design-acceptance", "--design-insight-offline-send", "--design-insight-long-response"].allSatisfy(args.contains)
+                && !args.contains("--design-real-farm") {
+                let detail = "\(previous) -> \(next)"
+                Logger(subsystem: "com.sheepfarm.next.transcript", category: "fixture-layout")
+                    .notice("\(detail, privacy: .public)")
+            }
+            #endif
             // KVO delivery is deferred to the main queue so scrollTo uses the
             // completed layout, including the keyboard and multiline composer.
             action?(previous, next)

@@ -268,6 +268,10 @@ jobs:
             echo "Poster fixture store diagnostics were unavailable; see poster-store.log."
           fi
           if ! xcrun simctl spawn "$IOS_SIMULATOR_ID" log show --last 45m --style compact \
+            --predicate 'subsystem == "com.sheepfarm.next.transcript"' > "$RUNNER_TEMP/transcript-layout.log" 2>&1; then
+            echo "Transcript fixture layout diagnostics were unavailable; see transcript-layout.log."
+          fi
+          if ! xcrun simctl spawn "$IOS_SIMULATOR_ID" log show --last 45m --style compact \
             --predicate 'process == "eSheepNext" OR eventMessage CONTAINS[c] "com.sheepfarm.next.dev"' > "$RUNNER_TEMP/app-runtime.log" 2>&1; then
             echo "App runtime diagnostics were unavailable; see app-runtime.log."
           fi
@@ -358,6 +362,7 @@ jobs:
             ${{ runner.temp }}/native-interactions*.log
             ${{ runner.temp }}/avatar-scroll.log
             ${{ runner.temp }}/poster-store.log
+            ${{ runner.temp }}/transcript-layout.log
             ${{ runner.temp }}/app-runtime.log
             ${{ runner.temp }}/compatibility-crash-reports
             ${{ runner.temp }}/*-summary.json
