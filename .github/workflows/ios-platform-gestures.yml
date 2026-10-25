@@ -37,6 +37,7 @@ jobs:
       - name: Prepare the stable simulator
         run: |
           set -euo pipefail
+          touch "$RUNNER_TEMP/compatibility-started"
           xcodebuild -version
           xcrun simctl list --json > "$RUNNER_TEMP/simulators.json"
           if [ "$COMPATIBILITY_RUNTIME" = 17 ]; then
@@ -177,6 +178,28 @@ jobs:
             --predicate 'subsystem == "com.sheepfarm.next.avatar"' > "$RUNNER_TEMP/avatar-scroll.log" 2>&1; then
             echo "Avatar fixture scroll diagnostics were unavailable; see avatar-scroll.log."
           fi
+          if ! xcrun simctl spawn "$IOS_SIMULATOR_ID" log show --last 45m --style compact \
+            --predicate 'process == "eSheepNext" OR eventMessage CONTAINS[c] "com.sheepfarm.next.dev"' > "$RUNNER_TEMP/app-runtime.log" 2>&1; then
+            echo "App runtime diagnostics were unavailable; see app-runtime.log."
+          fi
+          python3 - <<'PYCRASH'
+          import os, shutil
+          from pathlib import Path
+          temporary = Path(os.environ['RUNNER_TEMP'])
+          marker = temporary / 'compatibility-started'
+          if marker.exists():
+              started = marker.stat().st_mtime
+              device = os.environ.get('IOS_SIMULATOR_ID', '')
+              roots = [Path.home() / 'Library/Logs/DiagnosticReports',
+                       Path.home() / 'Library/Developer/CoreSimulator/Devices' / device / 'data/Library/Logs/CrashReporter']
+              output = temporary / 'compatibility-crash-reports'
+              for index, root in enumerate(roots):
+                  if not root.exists(): continue
+                  for report in root.rglob('*'):
+                      if report.is_file() and report.suffix in {'.ips', '.crash'} and 'esheep' in report.name.lower() and report.stat().st_mtime >= started:
+                          output.mkdir(exist_ok=True)
+                          shutil.copy2(report, output / (str(index) + '-' + report.name))
+          PYCRASH
           for gesture_result_name in full-unit gestures native-interactions; do
             if [ -d "$RUNNER_TEMP/$gesture_result_name.xcresult" ]; then
               xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/$gesture_result_name.xcresult" > "$RUNNER_TEMP/$gesture_result_name-summary.json"
@@ -227,6 +250,8 @@ jobs:
             ${{ runner.temp }}/full-unit.log
             ${{ runner.temp }}/native-interactions.log
             ${{ runner.temp }}/avatar-scroll.log
+            ${{ runner.temp }}/app-runtime.log
+            ${{ runner.temp }}/compatibility-crash-reports
             ${{ runner.temp }}/*-summary.json
             ${{ runner.temp }}/*-skipped-tests.json
             ${{ runner.temp }}/runtime-diagnostics-policy.json

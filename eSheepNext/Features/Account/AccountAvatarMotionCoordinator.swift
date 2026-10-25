@@ -78,6 +78,9 @@ final class AccountAvatarMotionCoordinator {
         guard origin.x.isFinite, origin.y.isFinite else { return }
         if abs(contentOrigin.x - origin.x) > 0.5 || abs(contentOrigin.y - origin.y) > 0.5 {
             contentOrigin = origin
+            #if DEBUG
+            traceFixtureScroll("viewport-origin")
+            #endif
         }
     }
 

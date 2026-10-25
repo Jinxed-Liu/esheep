@@ -270,7 +270,6 @@ struct SettingsHomeView: View {
         }
         .scrollIndicators(.hidden)
         .compatibilityScrollEdgeHidden(true, for: .top)
-        .ignoresSafeArea(.container, edges: .top)
         .onGeometryChange(for: CGPoint.self) { geometry in
             geometry.frame(in: .global).origin
         } action: { origin in
@@ -279,6 +278,9 @@ struct SettingsHomeView: View {
             // drag displacement back into header height and cancels the pull.
             avatarMotion.updateContentOrigin(origin)
         }
+        // Measure inside this modifier: its outer layout still starts below
+        // the navigation safe area even though the scroll viewport fills it.
+        .ignoresSafeArea(.container, edges: .top)
         .background(AppTheme.pageBackground)
         .modifier(SettingsAvatarScrollTrackingModifier(
             motion: avatarMotion,

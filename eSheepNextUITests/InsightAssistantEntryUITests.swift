@@ -775,8 +775,23 @@ final class InsightAssistantEntryUITests: XCTestCase {
         // Exercise the real SwiftUI scene lifecycle with the existing isolated
         // delayed responder. This fixture makes no provider or farm-data claim.
         XCUIDevice.shared.press(.home)
+        let backgrounded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.state == .runningBackground || app.state == .runningBackgroundSuspended
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [backgrounded], timeout: 5), .completed,
+                       "The real background transition did not complete.")
         app.activate()
-        XCTAssertTrue(app.staticTexts[response].waitForExistence(timeout: 30), "A brief background switch abandoned the running response.")
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10),
+                      "The app terminated or failed to return to the foreground.")
+        let completed = app.staticTexts[response].waitForExistence(timeout: 30)
+        if !completed {
+            attachScreenshot(of: app, named: "reply-background-return-failure")
+            let hierarchy = XCTAttachment(string: "Application state: \(app.state.rawValue)\n" + app.debugDescription)
+            hierarchy.name = "reply-background-return-failure-accessibility"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+        }
+        XCTAssertTrue(completed, "A brief background switch abandoned the running response.")
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", message)).count, 1, "The original request was duplicated after returning.")
         XCTAssertFalse(app.staticTexts["登录状态已变更，请重新检查后继续。"].exists)
         XCTAssertFalse(app.buttons["insight.composer.stop"].exists)
