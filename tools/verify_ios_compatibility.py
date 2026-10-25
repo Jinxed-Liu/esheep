@@ -20,9 +20,10 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMES = ("eSheepNextUI", "eSheepNext")
-# These three opt-in acceptance tests already skip on the main-branch baseline
-# when their private inputs are absent. This is an identifier allowlist, never
-# an allowance for an arbitrary number of skipped tests.
+# These opt-in acceptance tests are unchanged from main and require private
+# inputs absent from hosted CI. This is an identifier allowlist, never an
+# allowance for an arbitrary number of skipped tests. Keep them reported as
+# skipped, not passed, in both the raw summary and the evidence manifest.
 KNOWN_FULL_UNIT_FIXTURE_SKIPS = {
     "eSheepNextTests/ESheepCloudIntegratedTests/"
     "testRealCloudSourceBuildsCheckpointAndImportsWithoutHistoricalReceipts":
@@ -33,6 +34,15 @@ KNOWN_FULL_UNIT_FIXTURE_SKIPS = {
     "eSheepNextTests/ESheepCloudV2Tests/"
     "testRealFarmRepairSnapshotVerifiesAndActivatesFromEmptyStore":
         "Set ESHEEP_V2_REPLAY_FIXTURE to a private full-scale repair fixture",
+    "eSheepNextTests/RealFarmIsolationAcceptanceTests/"
+    "testPrivateAuthoritativeCheckpointAndEventReplay":
+        "Supply a private authoritative checkpoint directory",
+    "eSheepNextTests/RealFarmIsolationAcceptanceTests/"
+    "testPrivateDatabaseMigrationAndPageProjections":
+        "Supply a private backup directory for isolated real-farm acceptance",
+    "eSheepNextTests/ReproductionCycleResolverTests/"
+    "testAuthoritativeReadOnlyCloudAuditMatchesWebAtSameCutoffWhenProvided":
+        "Provide the private, read-only authoritative cloud audit fixture",
 }
 
 

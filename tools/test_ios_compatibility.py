@@ -34,6 +34,12 @@ BASELINE_SKIP_LOG = """\
 2026-10-04T09:35:08.2596160Z Test Case '-[eSheepNextTests.ESheepCloudV2Tests testRealFarmForwardHistoryRepairMatchesEverySheepInIncrementalAndFreshReplay]' skipped (0.002 seconds).
 2026-10-04T09:35:08.2599320Z /Users/runner/work/esheep/esheep/eSheepNextTests/ESheepCloudV2Tests.swift:320: -[eSheepNextTests.ESheepCloudV2Tests testRealFarmRepairSnapshotVerifiesAndActivatesFromEmptyStore] : Test skipped - Set ESHEEP_V2_REPLAY_FIXTURE to a private full-scale repair fixture
 2026-10-04T09:35:08.2600760Z Test Case '-[eSheepNextTests.ESheepCloudV2Tests testRealFarmRepairSnapshotVerifiesAndActivatesFromEmptyStore]' skipped (0.001 seconds).
+/Users/runner/work/esheep/esheep/eSheepNextTests/RealFarmIsolationAcceptanceTests.swift:130: -[eSheepNextTests.RealFarmIsolationAcceptanceTests testPrivateAuthoritativeCheckpointAndEventReplay] : Test skipped - Supply a private authoritative checkpoint directory
+Test Case '-[eSheepNextTests.RealFarmIsolationAcceptanceTests testPrivateAuthoritativeCheckpointAndEventReplay]' skipped (0.005 seconds).
+/Users/runner/work/esheep/esheep/eSheepNextTests/RealFarmIsolationAcceptanceTests.swift:11: -[eSheepNextTests.RealFarmIsolationAcceptanceTests testPrivateDatabaseMigrationAndPageProjections] : Test skipped - Supply a private backup directory for isolated real-farm acceptance
+Test Case '-[eSheepNextTests.RealFarmIsolationAcceptanceTests testPrivateDatabaseMigrationAndPageProjections]' skipped (0.006 seconds).
+/Users/runner/work/esheep/esheep/eSheepNextTests/ReproductionCycleResolverTests.swift:88: -[eSheepNextTests.ReproductionCycleResolverTests testAuthoritativeReadOnlyCloudAuditMatchesWebAtSameCutoffWhenProvided] : Test skipped - Provide the private, read-only authoritative cloud audit fixture
+Test Case '-[eSheepNextTests.ReproductionCycleResolverTests testAuthoritativeReadOnlyCloudAuditMatchesWebAtSameCutoffWhenProvided]' skipped (0.029 seconds).
 """
 
 
