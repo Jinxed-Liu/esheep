@@ -57,15 +57,6 @@ struct SettingsAvatarHeader: View, Animatable {
         .frame(height: height, alignment: .topLeading)
         .accessibilityElement(children: .contain)
         .accessibilityValue(Text(account.displayName + " · " + farm.name))
-        .onGeometryChange(for: CGPoint.self) { geometry in
-            geometry.frame(in: .global).origin
-        } action: { origin in
-            // Only the stable content origin is measured; expansion changes
-            // height beneath this point and never supplies animation progress.
-            motion.updateContentOrigin(CGPoint(
-                x: origin.x, y: origin.y + motion.scrollOffset
-            ))
-        }
         .onGeometryChange(for: CGFloat.self) { geometry in
             geometry.size.width
         } action: { width in

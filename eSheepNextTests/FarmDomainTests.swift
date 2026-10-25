@@ -2370,8 +2370,9 @@ final class FarmDomainTests: XCTestCase {
     }
 
     private func makeContainer() throws -> ModelContainer {
-        let schema = Schema(AppSchema.modelTypes)
-        let configuration = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
-        return try ModelContainer(for: schema, configurations: configuration)
+        // Commit tests must use the same versioned destination as the app.
+        // An unversioned parallel model can supply incompatible backing
+        // entities on iOS 17 even when its entity hashes match.
+        try AppSchema.makeContainer(isStoredInMemoryOnly: true)
     }
 }

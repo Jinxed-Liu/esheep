@@ -730,7 +730,7 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
     // custom stage here; opening a store must never trigger business commands.
     static var stages: [MigrationStage] {
         [
-            .lightweight(fromVersion: AppSchemaV1.self, toVersion: AppSchemaV2.self),
+            schemaOnlyStage(fromVersion: AppSchemaV1.self, toVersion: AppSchemaV2.self),
             .custom(
                 fromVersion: AppSchemaV2.self,
                 toVersion: AppSchemaV3.self,
@@ -804,13 +804,13 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
                     try context.save()
                 }
             ),
-            v4ToV5,
-            .lightweight(fromVersion: AppSchemaV5.self, toVersion: AppSchemaV6.self),
-            .lightweight(fromVersion: AppSchemaV6.self, toVersion: AppSchemaV7.self),
-            .lightweight(fromVersion: AppSchemaV7.self, toVersion: AppSchemaV8.self),
-            .lightweight(fromVersion: AppSchemaV8.self, toVersion: AppSchemaV9_0.self),
-            .lightweight(fromVersion: AppSchemaV9_0.self, toVersion: AppSchemaV9.self),
-            .lightweight(fromVersion: AppSchemaV9.self, toVersion: AppSchemaV10.self),
+            schemaOnlyStage(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self),
+            schemaOnlyStage(fromVersion: AppSchemaV5.self, toVersion: AppSchemaV6.self),
+            schemaOnlyStage(fromVersion: AppSchemaV6.self, toVersion: AppSchemaV7.self),
+            schemaOnlyStage(fromVersion: AppSchemaV7.self, toVersion: AppSchemaV8.self),
+            schemaOnlyStage(fromVersion: AppSchemaV8.self, toVersion: AppSchemaV9_0.self),
+            schemaOnlyStage(fromVersion: AppSchemaV9_0.self, toVersion: AppSchemaV9.self),
+            schemaOnlyStage(fromVersion: AppSchemaV9.self, toVersion: AppSchemaV10.self),
             .custom(
                 fromVersion: AppSchemaV10.self,
                 toVersion: AppSchemaV11.self,
@@ -854,35 +854,38 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             // V12 only adds the eSheep+ Cloud V2 ledger. Existing V1 rows are
             // deliberately preserved unchanged as migration/audit input; a
             // farm switches authority only after server-side parity succeeds.
-            .lightweight(fromVersion: AppSchemaV11.self, toVersion: AppSchemaV12.self),
+            schemaOnlyStage(fromVersion: AppSchemaV11.self, toVersion: AppSchemaV12.self),
             // V13 adds account scoping and durable projection checkpoints to
             // an existing initial-sync session. All new fields are optional or
             // have a scalar default, so an installed Build 16 store can be
             // upgraded without replaying business data.
-            .lightweight(fromVersion: AppSchemaV12.self, toVersion: AppSchemaV13.self),
-            .lightweight(fromVersion: AppSchemaV13.self, toVersion: AppSchemaV14.self),
-            .lightweight(fromVersion: AppSchemaV14.self, toVersion: AppSchemaV15.self),
-            .lightweight(fromVersion: AppSchemaV15.self, toVersion: AppSchemaV16.self),
-            .lightweight(fromVersion: AppSchemaV16.self, toVersion: AppSchemaV17.self),
-            .lightweight(fromVersion: AppSchemaV17.self, toVersion: AppSchemaV18.self),
-            .lightweight(fromVersion: AppSchemaV18.self, toVersion: AppSchemaV19.self),
-            .lightweight(fromVersion: AppSchemaV19.self, toVersion: AppSchemaV20.self),
+            schemaOnlyStage(fromVersion: AppSchemaV12.self, toVersion: AppSchemaV13.self),
+            schemaOnlyStage(fromVersion: AppSchemaV13.self, toVersion: AppSchemaV14.self),
+            schemaOnlyStage(fromVersion: AppSchemaV14.self, toVersion: AppSchemaV15.self),
+            schemaOnlyStage(fromVersion: AppSchemaV15.self, toVersion: AppSchemaV16.self),
+            schemaOnlyStage(fromVersion: AppSchemaV16.self, toVersion: AppSchemaV17.self),
+            schemaOnlyStage(fromVersion: AppSchemaV17.self, toVersion: AppSchemaV18.self),
+            schemaOnlyStage(fromVersion: AppSchemaV18.self, toVersion: AppSchemaV19.self),
+            schemaOnlyStage(fromVersion: AppSchemaV19.self, toVersion: AppSchemaV20.self),
         ]
     }
 }
 
 extension AppSchemaMigrationPlan {
-    private static var v4ToV5: MigrationStage {
+    private static func schemaOnlyStage(
+        fromVersion: any VersionedSchema.Type,
+        toVersion: any VersionedSchema.Type
+    ) -> MigrationStage {
         if #available(iOS 18, *) {
-            return .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self)
+            return .lightweight(fromVersion: fromVersion, toVersion: toVersion)
         }
-        // Keep V4 as an explicit migration boundary on the original SwiftData
-        // runtime. Its persisted checksum is valid, but the combined lightweight
-        // path can reject it before migration begins. No business rows change
-        // in this callback; the historical schemas and mapping stay intact.
+        // The iOS 17 runtime can omit an installed intermediate version when
+        // combining consecutive lightweight stages. Keep every historical
+        // boundary explicit; the inferred mapping still performs the schema
+        // change, and this callback neither edits nor creates business rows.
         return .custom(
-            fromVersion: AppSchemaV4.self,
-            toVersion: AppSchemaV5.self,
+            fromVersion: fromVersion,
+            toVersion: toVersion,
             willMigrate: nil,
             didMigrate: { _ in }
         )

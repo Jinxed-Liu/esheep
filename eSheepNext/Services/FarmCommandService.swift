@@ -3857,20 +3857,21 @@ final class FarmCommandService {
             sheep.legacyStatusSnapshotIsAuthoritative = false
             sheep.legacyPenSnapshotIsAuthoritative = false
             let entityID = recordID ?? UUID()
-            let existing = try context.fetch(FetchDescriptor<RemovalRecord>()).filter {
-                $0.id == entityID && $0.farmID == farm.farmID
-            }
+            let farmID = farm.farmID
+            // Keep the same identity/revision checks without materializing
+            // every earlier removal and operation for each item in a batch.
+            let existing = try context.fetch(FetchDescriptor<RemovalRecord>(predicate: #Predicate {
+                $0.id == entityID && $0.farmID == farmID
+            }))
             guard !existing.contains(where: { $0.deletedAt == nil }) else {
                 throw FarmCommandError.duplicateRemovalRecord
             }
-            let operationRevision = try context.fetch(FetchDescriptor<DomainOperation>()).lazy
-                .filter { $0.farmID == farm.farmID && $0.entityID == entityID }
-                .map(\.resultingRevision)
-                .max() ?? 0
-            let tombstoneRevision = try context.fetch(FetchDescriptor<TombstoneRecord>()).lazy
-                .filter { $0.farmID == farm.farmID && $0.entityID == entityID }
-                .map(\.revision)
-                .max() ?? 0
+            let operationRevision = try context.fetch(FetchDescriptor<DomainOperation>(predicate: #Predicate {
+                $0.farmID == farmID && $0.entityID == entityID
+            })).lazy.map(\.resultingRevision).max() ?? 0
+            let tombstoneRevision = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.entityID == entityID
+            })).lazy.map(\.revision).max() ?? 0
             let projectionRevision = existing.map(\.revision).max() ?? 0
             let baseRevision = max(
                 operationRevision,

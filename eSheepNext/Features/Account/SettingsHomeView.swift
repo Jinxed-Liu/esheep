@@ -271,6 +271,14 @@ struct SettingsHomeView: View {
         .scrollIndicators(.hidden)
         .compatibilityScrollEdgeHidden(true, for: .top)
         .ignoresSafeArea(.container, edges: .top)
+        .onGeometryChange(for: CGPoint.self) { geometry in
+            geometry.frame(in: .global).origin
+        } action: { origin in
+            // Measure the stationary viewport. Combining the moving header's
+            // frame with a separately delivered scroll offset feeds transient
+            // drag displacement back into header height and cancels the pull.
+            avatarMotion.updateContentOrigin(origin)
+        }
         .background(AppTheme.pageBackground)
         .modifier(SettingsAvatarScrollTrackingModifier(
             motion: avatarMotion,
