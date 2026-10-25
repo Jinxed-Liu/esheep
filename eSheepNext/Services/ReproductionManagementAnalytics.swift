@@ -249,12 +249,19 @@ enum ReproductionManagementEngine {
             if !issues.isEmpty {
                 concerns.append(.init(kind: .review, severity: .review, detail: issues.joined(separator: "；"), dueAt: today))
             }
-            let fingerprint = facts.map { "\($0.id):\($0.revision):\($0.occurredAt.timeIntervalSince1970):\($0.result)" }.joined(separator: "|")
-                + "|parity:\(parity.map(String.init) ?? "unknown")|birth:\(ewe.birthAt?.timeIntervalSince1970 ?? -1)|pen:\(penID)|"
-                + "category:\(category.rawValue)|age:\(settings.minimumAgeMonths)|post:\(settings.postpartumReminderDays ?? -1):\(settings.postpartumWarningDays ?? -1)|young:\(settings.maidenReminderMonths ?? -1):\(settings.maidenWarningMonths ?? -1)|"
-                + "breeding:\(snapshot.reproductionCareRule?.pregnancyCheckDays ?? -1):\(snapshot.reproductionCareRule?.warningLeadDays ?? -1)|"
-                + concerns.map { "\($0.kind.rawValue):\($0.severity.rawValue):\($0.kind == .review ? 0 : $0.dueAt.timeIntervalSince1970)" }.joined(separator: "|")
-                + issues.joined(separator: "|")
+            let factFingerprint = facts.map {
+                "\($0.id):\($0.revision):\($0.occurredAt.timeIntervalSince1970):\($0.result)"
+            }.joined(separator: "|")
+            let concernFingerprint = concerns.map { concern in
+                let dueAt: TimeInterval = concern.kind == .review ? 0 : concern.dueAt.timeIntervalSince1970
+                return "\(concern.kind.rawValue):\(concern.severity.rawValue):\(dueAt)"
+            }.joined(separator: "|")
+            var fingerprint = factFingerprint
+            fingerprint += "|parity:\(parity.map { String($0) } ?? "unknown")|birth:\(ewe.birthAt?.timeIntervalSince1970 ?? -1)|pen:\(penID)|"
+            fingerprint += "category:\(category.rawValue)|age:\(settings.minimumAgeMonths)|post:\(settings.postpartumReminderDays ?? -1):\(settings.postpartumWarningDays ?? -1)|young:\(settings.maidenReminderMonths ?? -1):\(settings.maidenWarningMonths ?? -1)|"
+            fingerprint += "breeding:\(snapshot.reproductionCareRule?.pregnancyCheckDays ?? -1):\(snapshot.reproductionCareRule?.warningLeadDays ?? -1)|"
+            fingerprint += concernFingerprint
+            fingerprint += issues.joined(separator: "|")
             rows.append(.init(id: ewe.id, earTag: ewe.earTag, breed: ewe.breed, penID: penID, penName: penName,
                 parity: parity, lastLambingAt: hasReliableBirth ? lastBirth?.occurredAt : nil, postpartumDays: postpartum,
                 ageMonths: months, isConfirmedMaiden: maiden, category: category, isCheckEligible: eligible,

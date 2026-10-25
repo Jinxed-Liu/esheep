@@ -704,6 +704,57 @@ final class AppSchemaMigrationTests: XCTestCase {
         )
     }
 
+    func testUnversionedTemporaryStoreReopensWithCurrentVersionedSchema() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "UnversionedMigrationStore-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "temporary.store")
+        let farmID = UUID()
+        let ownerID = UUID()
+        let sheepID = UUID()
+        let weightID = UUID()
+        let occurredAt = Date(timeIntervalSince1970: 1_735_776_900)
+
+        // Existing import workspaces used the same model types without the
+        // application's schema version. Reopen that real on-disk format.
+        try autoreleasepool {
+            let schema = Schema(AppSchema.modelTypes)
+            let configuration = ModelConfiguration("Migration", schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: configuration)
+            let context = ModelContext(container)
+            context.insert(FarmRecord(id: farmID, ownerAccountID: ownerID, name: "已有迁移演练牧场"))
+            context.insert(SheepRecord(id: sheepID, farmID: farmID, earTag: "A001", breed: "湖羊",
+                                      sex: .ewe, penID: nil, enteredAt: occurredAt))
+            context.insert(WeightRecord(id: weightID, farmID: farmID, sheepID: sheepID,
+                                        kilogramsText: "42.25", occurredAt: occurredAt, note: "保留旧记录"))
+            try context.save()
+        }
+
+        let schema = AppSchema.makeSchema()
+        let configuration = ModelConfiguration("Migration", schema: schema, url: storeURL, cloudKitDatabase: .none)
+        let reopened = try ModelContainer(for: schema, configurations: configuration)
+        let context = ModelContext(reopened)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<FarmRecord>()), 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<SheepRecord>()), 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<WeightRecord>()), 1)
+        let farm = try XCTUnwrap(try context.fetch(FetchDescriptor<FarmRecord>()).first)
+        XCTAssertEqual(farm.id, farmID)
+        XCTAssertEqual(farm.ownerAccountID, ownerID)
+        let sheep = try XCTUnwrap(try context.fetch(FetchDescriptor<SheepRecord>()).first)
+        XCTAssertEqual(sheep.id, sheepID)
+        XCTAssertEqual(sheep.earTag, "A001")
+        let weight = try XCTUnwrap(try context.fetch(FetchDescriptor<WeightRecord>()).first)
+        XCTAssertEqual(weight.id, weightID)
+        XCTAssertEqual(weight.farmID, farmID)
+        XCTAssertEqual(weight.sheepID, sheepID)
+        XCTAssertEqual(weight.kilogramsText, "42.25")
+        XCTAssertEqual(weight.occurredAt, occurredAt)
+        XCTAssertEqual(weight.note, "保留旧记录")
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<OutboxItem>()), 0)
+    }
+
     func testInstalledV4MigratesToV5WithoutGeneratingMigrationWork() throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "AppSchemaInstalledV4-\(UUID().uuidString)", directoryHint: .isDirectory)

@@ -986,7 +986,10 @@ enum MigrationReconciliationService {
 private func migrationSchema() -> Schema {
     // Shared rebuild and commit services query the current model set, including
     // tables that remain empty in a legacy migration's isolated staging store.
-    Schema(AppSchema.modelTypes)
+    // Use the same versioned schema as the destination container. On iOS 17,
+    // keeping an unversioned model for these same types alive alongside the
+    // versioned destination can give new records incompatible backing entities.
+    AppSchema.makeSchema()
 }
 private func section(_ name: String, _ root: [String: Any]) -> [String: Any] { root[name] as? [String: Any] ?? [:] }
 private func records(_ value: Any?) -> [[String: Any]] { value as? [[String: Any]] ?? [] }

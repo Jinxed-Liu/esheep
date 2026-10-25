@@ -2371,7 +2371,7 @@ final class FarmDomainTests: XCTestCase {
 
     private func makeContainer() throws -> ModelContainer {
         let schema = Schema(AppSchema.modelTypes)
-        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        let configuration = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         return try ModelContainer(for: schema, configurations: configuration)
     }
 }

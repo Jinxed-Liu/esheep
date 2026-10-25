@@ -1,6 +1,9 @@
 import CryptoKit
 import Foundation
 import SwiftData
+#if DEBUG
+import CoreData
+#endif
 
 struct MigrationCommitResult: Sendable, Equatable {
     let farmID: UUID
@@ -68,6 +71,7 @@ struct MigrationCommitService {
                     try destinationContext.save()
                 }
             } catch {
+                reportModelConfigurationMismatch(error)
                 destinationContext.rollback()
                 throw error
             }
@@ -166,11 +170,40 @@ struct MigrationCommitService {
                 wasAlreadyCommitted: false
             )
         } catch {
+            reportModelConfigurationMismatch(error)
             destinationContext.rollback()
             try? FileManager.default.removeItem(at: stagingAssetDirectory)
             try? FileManager.default.removeItem(at: finalAssetDirectory)
             throw error
         }
+    }
+
+    private func reportModelConfigurationMismatch(_ error: Error) {
+        #if DEBUG
+        let cocoaError = error as NSError
+        guard cocoaError.domain == NSCocoaErrorDomain, cocoaError.code == 134020,
+              let object = cocoaError.userInfo[NSAffectedObjectsErrorKey] as? NSManagedObject else { return }
+        // Read model metadata before rollback releases the failed object.
+        // Do not inspect farm values, change backing entities, or retry a save.
+        let entity = object.entity
+        let objectModel = entity.managedObjectModel
+        let coordinator = object.managedObjectContext?.persistentStoreCoordinator
+        let destinationModel = coordinator?.managedObjectModel
+        let destinationEntity = entity.name.flatMap { destinationModel?.entitiesByName[$0] }
+        let evidence: [String: Any] = [
+            "entity": entity.name ?? "<unnamed>",
+            "objectModelChecksum": objectModel.versionChecksum,
+            "destinationModelChecksum": destinationModel?.versionChecksum ?? "<missing>",
+            "objectConfigurations": objectModel.configurations.sorted(),
+            "destinationConfigurations": destinationModel?.configurations.sorted() ?? [],
+            "storeConfigurations": coordinator?.persistentStores.map(\.configurationName).sorted() ?? [],
+            "sameEntityInstance": destinationEntity === entity,
+            "sameEntityHash": destinationEntity?.versionHash == entity.versionHash,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]) {
+            print("MIGRATION_MODEL_CONFIGURATION_EVIDENCE " + String(decoding: data, as: UTF8.self))
+        }
+        #endif
     }
 
     private func copyFarmRecords(

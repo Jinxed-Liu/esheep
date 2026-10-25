@@ -150,18 +150,13 @@ jobs:
           if [ "$COMPATIBILITY_RUNTIME" = 17 ] && [ "$COMPATIBILITY_SCHEME" = eSheepNextUI ]; then
             gesture_test_plan_options+=(-testPlan Legacy17)
           fi
-          if [ "$COMPATIBILITY_RUNTIME" = 26 ]; then
-            gesture_diagnostic_filters=(
-              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning
-              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testFloatingAttachmentPanelPreservesTheDraftAndPresentsTheSelectedAction
-              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testKnownVoiceTimelineUsesASingleRowAndPreservesTheUnsentDraft
-            )
-          else
-            gesture_diagnostic_filters=(
-              -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testKnownVoiceTimelineUsesASingleRowAndPreservesTheUnsentDraft
-            )
-          fi
-          gesture_diagnostic_filters+=(
+          # The swipe test uses native content-pop on iOS 26 and native
+          # edge-pop on older systems. Exercise both paths on the final head.
+          gesture_diagnostic_filters=(
+            -only-testing:eSheepNextUITests/PlatformCompatibilityUITests
+            -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testContentSwipeReturnsToListAndKeepsTheReplyRunning
+            -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testFloatingAttachmentPanelPreservesTheDraftAndPresentsTheSelectedAction
+            -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testKnownVoiceTimelineUsesASingleRowAndPreservesTheUnsentDraft
             -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testBriefBackgroundSwitchPreservesTheRunningReply
             -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testRepeatedPendingVoiceCancellationPreservesDraftAndKeyboard
           )
