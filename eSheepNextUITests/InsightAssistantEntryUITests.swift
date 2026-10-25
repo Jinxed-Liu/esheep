@@ -490,11 +490,16 @@ final class InsightAssistantEntryUITests: XCTestCase {
         // A brief, single press gives the simulator distinct touch-down/up
         // delivery under load. Never retry the action after a missed cancel.
         cancel.press(forDuration: 0.2)
+        // A missing firstMatch walks the entire live keyboard hierarchy one
+        // element at a time. On iOS 26 a Chinese candidate-label lookup can
+        // exhaust this wait even after cancellation has already completed.
+        // Count the same global matches in one snapshot; zero still requires
+        // that no audio bar exists anywhere in the app.
+        let audioBars = app.descendants(matching: .any).matching(identifier: "insight.audio.bar")
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             let input = self.composerField(in: app)
-            let bar = app.descendants(matching: .any).matching(identifier: "insight.audio.bar").firstMatch
             return app.staticTexts["design.audio.fixture.state"].label == "样本数 0，发送次数 0" &&
-                input.exists && input.value as? String == expectedDraft && !bar.exists &&
+                input.exists && input.value as? String == expectedDraft && audioBars.count == 0 &&
                 app.keyboards.firstMatch.exists
         }, object: app)
         let result = XCTWaiter.wait(for: [removed], timeout: 10)
