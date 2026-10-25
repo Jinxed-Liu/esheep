@@ -67,7 +67,9 @@ final class SheepSharePermissionsUITests: XCTestCase {
         export.tap()
         // A fresh iOS 26 Files provider may omit the filename field until a
         // destination exists. Verify the export picker itself across OS versions.
-        let save = app.buttons["保存"]
+        // iOS 17's native export picker labels its completion action "移动";
+        // newer Files UI uses "保存". Both must accompany the actual File View.
+        let save = app.buttons.matching(NSPredicate(format: "label IN %@", ["保存", "移动"])).firstMatch
         let hasSave = save.waitForExistence(timeout: 30)
         let hasFileView = app.collectionViews["File View"].waitForExistence(timeout: 10)
         capture(app, name: "sheep-xlsx-export-" + role)
