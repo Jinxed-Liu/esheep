@@ -84,10 +84,13 @@ ALLOW_LOCAL_DB_RESET=1 ./tools/verify_local.sh db
 
 为避免开发过程中反复运行失败任务产生 GitHub 邮件，`codex/ios17-compatibility` 和 `codex/ios17-compatibility-validation` 分支关闭推送自动检查；兼容性候选集中使用手动检查验证。`ios-platform-gestures.yml` 仅支持手动启动，覆盖真实语音按钮的键盘保留、波形与草稿恢复，以及新版返回手势和附件面板。主分支和其他开发分支继续使用原有自动门禁。
 
-UI 套件要求零跳过。全量 XCTest 套件仅允许以下三个既有私有输入验收测试跳过；2026-10-04 的 main 基线实际发现 789 项，其中 786 项通过、0 项失败，跳过的正是这三项：
+UI 套件要求零跳过。全量 XCTest 套件仅允许下列六个既有私有输入验收测试在缺少对应 fixture 时跳过，并明确报告为未执行。2026-10-04 的 main 基线实际发现 789 项，其中 786 项通过、0 项失败，跳过的是前三项；当前 main 还包含后三项可选私有验收。私有测试未执行不代表真实牧场数据验收通过。
 
 - `eSheepNextTests/ESheepCloudIntegratedTests/testRealCloudSourceBuildsCheckpointAndImportsWithoutHistoricalReceipts`：缺少封存的 SELECT-only 云源。
 - `eSheepNextTests/ESheepCloudV2Tests/testRealFarmForwardHistoryRepairMatchesEverySheepInIncrementalAndFreshReplay`：未安装牧场所有者批准的私有基线 fixture。
 - `eSheepNextTests/ESheepCloudV2Tests/testRealFarmRepairSnapshotVerifiesAndActivatesFromEmptyStore`：缺少私有全量修复 fixture（`ESHEEP_V2_REPLAY_FIXTURE`）。
+- `eSheepNextTests/RealFarmIsolationAcceptanceTests/testPrivateAuthoritativeCheckpointAndEventReplay`：缺少私有权威检查点目录（`ESHEEP_PRIVATE_ACCEPTANCE_ROOT`）。
+- `eSheepNextTests/RealFarmIsolationAcceptanceTests/testPrivateDatabaseMigrationAndPageProjections`：缺少私有备份目录（`ESHEEP_PRIVATE_ACCEPTANCE_ROOT`）。
+- `eSheepNextTests/ReproductionCycleResolverTests/testAuthoritativeReadOnlyCloudAuditMatchesWebAtSameCutoffWhenProvided`：缺少只读权威云审计 fixture（`ESHEEP_REPRODUCTION_AUDIT_FIXTURE`）。
 
-门禁按 `test.log` 中实际完成的跳过测试完整标识去重，并与结果包的跳过数逐项核对；未知测试、缺少日志标识、数量不符、任何失败或零项实际通过都会失败。三个测试允许全部执行，也允许只跳过其中一部分。原始 `summary.json` 保留不变，`skipped-tests.json` 另存核实的标识和既有基线原因；不会用固定的“允许跳过三项”掩盖其他跳过。
+门禁按 `test.log` 中实际完成的跳过测试完整标识去重，并与结果包的跳过数逐项核对；未知测试、缺少日志标识、数量不符、任何失败或零项实际通过都会失败。这些测试允许全部执行，也允许只跳过其中一部分。原始 `summary.json` 保留不变，`skipped-tests.json` 另存核实的标识和既有基线原因；不会用固定的允许跳过数量掩盖其他跳过。
