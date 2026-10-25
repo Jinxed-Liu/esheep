@@ -1,0 +1,877 @@
+[
+  {
+    "name": "zero baseline without mating permits real pregnancy fact",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768089600000,
+        "result": "阳性"
+      }
+    ],
+    "expectedState": "pregnant",
+    "expectedParity": 0,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "lambing closes old positive",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767657600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "已孕"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "lambing",
+        "occurredAt": 1773273600000,
+        "parity": 1
+      }
+    ],
+    "expectedState": "unexamined",
+    "expectedParity": 1,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000013"
+  },
+  {
+    "name": "after lambing check belongs to next parity",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "lambing",
+        "occurredAt": 1770681600000,
+        "parity": 2
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000014",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1774137600000,
+        "result": "空怀"
+      }
+    ],
+    "expectedState": "open",
+    "expectedParity": 2,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000013"
+  },
+  {
+    "name": "abortion closes pregnancy without parity increase",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767657600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "已孕"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "abortion",
+        "occurredAt": 1770681600000
+      }
+    ],
+    "expectedState": "unexamined",
+    "expectedParity": 0,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000013"
+  },
+  {
+    "name": "new round does not inherit old open check",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767657600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "空怀"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1770681600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000013",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      }
+    ],
+    "expectedState": "unexamined",
+    "expectedParity": 0,
+    "expectedRoundID": "00000000-0000-4000-8000-000000000013",
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "explicit supplement preserves root",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767657600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767830400000,
+        "breedingIntentRawValue": "supplement",
+        "relatedBreedingRecordID": "00000000-0000-4000-8000-000000000011",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      }
+    ],
+    "expectedState": "unexamined",
+    "expectedParity": 0,
+    "expectedRoundID": "00000000-0000-4000-8000-000000000011",
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "legacy multiple matings require review",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767657600000
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767830400000
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1769817600000,
+        "result": "阳性"
+      }
+    ],
+    "expectedState": "uncertain",
+    "expectedParity": 0,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "simultaneous contradictory checks require review",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "阳性"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "阴性"
+      }
+    ],
+    "expectedState": "uncertain",
+    "expectedParity": 0,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "missing parity is not confirmed zero",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "阳性"
+      }
+    ],
+    "expectedState": "uncertain",
+    "expectedParity": null,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "pregnancy followed by mating is a conflict",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767657600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "阳性"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1770681600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000013",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      }
+    ],
+    "expectedState": "uncertain",
+    "expectedParity": 0,
+    "expectedRoundID": "00000000-0000-4000-8000-000000000013",
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "explicit association cannot cross closure",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767657600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "lambing",
+        "occurredAt": 1770681600000,
+        "parity": 1
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1772409600000,
+        "result": "阳性",
+        "relatedBreedingRecordID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      }
+    ],
+    "expectedState": "uncertain",
+    "expectedParity": 1,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000012"
+  },
+  {
+    "name": "future checks excluded",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767657600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1776729600000,
+        "result": "阳性"
+      }
+    ],
+    "expectedState": "unexamined",
+    "expectedParity": 0,
+    "expectedRoundID": "00000000-0000-4000-8000-000000000011",
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "recheck stays recheck",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "疑似"
+      }
+    ],
+    "expectedState": "recheck",
+    "expectedParity": 0,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "unknown result is retained",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "X?"
+      }
+    ],
+    "expectedState": "uncertain",
+    "expectedParity": 0,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "explicit latest check chooses new round",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767657600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "空怀"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1770681600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000013",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000014",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1773273600000,
+        "result": "阳性",
+        "relatedBreedingRecordID": "00000000-0000-4000-8000-000000000013",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000013",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      }
+    ],
+    "expectedState": "pregnant",
+    "expectedParity": 0,
+    "expectedRoundID": "00000000-0000-4000-8000-000000000013",
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "unlinked check cannot choose among two rounds",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767657600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "空怀"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1770681600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000013",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000014",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1773273600000,
+        "result": "阳性"
+      }
+    ],
+    "expectedState": "uncertain",
+    "expectedParity": 0,
+    "expectedRoundID": "00000000-0000-4000-8000-000000000013",
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "historical cutoff is independent of later closure",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1769817600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767657600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "阳性"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "lambing",
+        "occurredAt": 1773273600000,
+        "parity": 1
+      }
+    ],
+    "expectedState": "pregnant",
+    "expectedParity": 0,
+    "expectedRoundID": "00000000-0000-4000-8000-000000000011",
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "deleted closure restores original cycle",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767657600000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000011",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000012",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "阳性"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000013",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "lambing",
+        "occurredAt": 1773273600000,
+        "parity": 1,
+        "deletedAt": 1774137600000
+      }
+    ],
+    "expectedState": "pregnant",
+    "expectedParity": 0,
+    "expectedRoundID": "00000000-0000-4000-8000-000000000011",
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "missing latest birth blocks preceding check",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1771545600000,
+        "parity": 3
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1768953600000,
+        "result": "阳性"
+      }
+    ],
+    "expectedState": "uncertain",
+    "expectedParity": 3,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "simultaneous conflicting parity cannot use record ID order",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1767325600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000021",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225601000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000022",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225601000,
+        "parity": 3
+      }
+    ],
+    "expectedState": "uncertain",
+    "expectedParity": null,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "corrected root keeps stable round references",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1767325600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000031",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767225602000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000030",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000032",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1767225603000,
+        "result": "已孕",
+        "relatedBreedingRecordID": "00000000-0000-4000-8000-000000000030",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000030",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      }
+    ],
+    "expectedState": "pregnant",
+    "expectedParity": 0,
+    "expectedRoundID": "00000000-0000-4000-8000-000000000030",
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "corrected breeding later than linked check becomes review",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1767325600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000031",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767225604000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000030",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000032",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1767225603000,
+        "result": "已孕",
+        "relatedBreedingRecordID": "00000000-0000-4000-8000-000000000030",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000030",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      }
+    ],
+    "expectedState": "uncertain",
+    "expectedParity": 0,
+    "expectedRoundID": "00000000-0000-4000-8000-000000000030",
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "positive then negative then new round waits for its own check",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1767325600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000041",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767225601000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000041"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000042",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1767225602000,
+        "result": "已孕",
+        "relatedBreedingRecordID": "00000000-0000-4000-8000-000000000041"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000043",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1767225603000,
+        "result": "空怀",
+        "relatedBreedingRecordID": "00000000-0000-4000-8000-000000000041"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000044",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "breeding",
+        "occurredAt": 1767225604000,
+        "breedingIntentRawValue": "newRound",
+        "breedingRoundID": "00000000-0000-4000-8000-000000000044"
+      }
+    ],
+    "expectedState": "unexamined",
+    "expectedParity": 0,
+    "expectedRoundID": "00000000-0000-4000-8000-000000000044",
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  },
+  {
+    "name": "parity confirmation cannot change stable cycle identity",
+    "eweID": "00000000-0000-4000-8000-000000000001",
+    "asOf": 1775865600000,
+    "records": [
+      {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225600000,
+        "parity": 0
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000051",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "pregnancyCheck",
+        "occurredAt": 1767225601000,
+        "result": "已孕",
+        "reproductionCycleID": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000052",
+        "eweID": "00000000-0000-4000-8000-000000000001",
+        "kindRawValue": "parityBaseline",
+        "occurredAt": 1767225602000,
+        "parity": 3
+      }
+    ],
+    "expectedState": "uncertain",
+    "expectedParity": 3,
+    "expectedRoundID": null,
+    "expectedCycleID": "00000000-0000-4000-8000-000000000001"
+  }
+]

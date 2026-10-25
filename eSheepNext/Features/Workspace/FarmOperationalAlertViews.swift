@@ -105,6 +105,7 @@ struct FarmOperationalAlertHomeCard: View {
     private func categorySummary(_ snapshot: FarmOperationalAlertSnapshot) -> Text {
         let weaningCount = snapshot.count(for: .weaningDueSoon) + snapshot.count(for: .weaningOverdue)
         let pregnancyCount = snapshot.count(for: .pregnancyCheckDueSoon) + snapshot.count(for: .pregnancyCheckOverdue)
+            + snapshot.operationalAlerts.count { $0.kind.isReproductionManagement }
         let tmrCount = snapshot.count(for: .tmrNotFed) + snapshot.count(for: .tmrLow) + snapshot.count(for: .tmrHigh)
         return Text("断奶 \(weaningCount) · 孕检 \(pregnancyCount) · TMR \(tmrCount) · 圈舍 \(snapshot.count(for: .invalidPen)) · 日程 \(snapshot.overdueReminders.count)")
     }
@@ -389,6 +390,8 @@ struct FarmOperationalAlertCenterView: View {
             return Text("\(alert.earTag) · 孕检即将到期")
         case .pregnancyCheckOverdue:
             return Text("\(alert.earTag) · 配种后逾期未孕检")
+        case .reproductionReminder, .reproductionWarning, .reproductionReview:
+            return Text(verbatim: alert.title)
         case .invalidPen:
             return Text("\(alert.earTag) · 未分有效圈舍")
         case .tmrNotFed:
@@ -421,6 +424,8 @@ struct FarmOperationalAlertCenterView: View {
                 timeZoneIdentifier: snapshot.timeZoneIdentifier
             )
             return Text("还有 \(days) 天到孕检期限，尚无后续孕检、流产或产羔记录。")
+        case .reproductionReminder, .reproductionWarning, .reproductionReview:
+            return Text(verbatim: alert.detail)
         case .invalidPen:
             if alert.detail == "当前在场羊只尚未分圈。" {
                 return Text("当前在场羊只尚未分圈。")
@@ -449,6 +454,7 @@ struct FarmOperationalAlertCenterView: View {
         _ alert: FarmOperationalAlert,
         snapshot: FarmOperationalAlertSnapshot
     ) -> Text {
+        if alert.kind.isReproductionManagement { return Text(verbatim: alert.kind.displayName) }
         if alert.kind == .invalidPen || alert.kind.isTMR { return Text("需立即处理") }
         if alert.kind.isDueSoon {
             let days = alert.daysUntilDue(
@@ -477,6 +483,11 @@ struct FarmOperationalAlertCenterView: View {
                 initialEweID: alert.subjectID,
                 initialRelatedBreedingID: alert.sourceEntityID
             )
+        case .reproductionReminder, .reproductionWarning:
+            ReproductionBatchEntryView(account: account, farm: farm, initialKind: .pregnancyCheck,
+                initialEweID: alert.subjectID, initialRelatedBreedingID: alert.sourceEntityID)
+        case .reproductionReview:
+            SheepDetailEntryView(account: account, farm: farm, sheepID: alert.subjectID)
         case .invalidPen:
             TransferEntryView(account: account, farm: farm, initialSheepID: alert.subjectID)
         case .tmrNotFed, .tmrLow, .tmrHigh:

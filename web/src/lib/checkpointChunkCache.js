@@ -8,6 +8,19 @@ export function createCheckpointChunkCache({ cacheStorage = globalThis.caches, a
   ).href;
 
   return {
+    async hasScope(scopePrefix) {
+      if (!available) return false;
+      try {
+        const cache = await cacheStorage.open(cacheName);
+        const keys = await cache.keys();
+        return keys.some((request) => {
+          const scope = decodeURIComponent(new URL(request.url).pathname.split("/")[2] ?? "");
+          return scope.startsWith(scopePrefix);
+        });
+      } catch {
+        return false;
+      }
+    },
     async read(scope, descriptor) {
       if (!available) return null;
       try {

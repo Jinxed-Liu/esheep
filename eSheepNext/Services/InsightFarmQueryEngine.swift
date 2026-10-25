@@ -167,6 +167,7 @@ struct InsightFarmQueryEngine {
             columns = [
                 ("ear_tag", "耳号"), ("sex", "性别"), ("breed", "品种"),
                 ("status", "状态"), ("pen", "圈舍"), ("birth_at", "出生日期"),
+                ("reproduction_state", "本轮繁殖状态"), ("completed_parity", "已完成产羔胎次"), ("target_parity", "本轮目标胎次"), ("reproduction_issues", "繁殖资料待核实"),
             ]
             let result = try sheepRows(request, farmID: farmID, context: context)
             rows = result.rows
@@ -183,7 +184,7 @@ struct InsightFarmQueryEngine {
             columns = [
                 ("occurred_at", "日期"), ("ear_tag", "母羊耳号"),
                 ("kind", "类型"), ("lamb_count", "羔羊数"),
-                ("parity", "胎次"), ("result", "结果"),
+                ("parity", "胎次"), ("result", "结果"), ("cycle_basis", "周期归属依据"),
             ]
             rows = try reproductionRows(request, farmID: farmID, context: context)
         case "health":
@@ -587,7 +588,11 @@ struct InsightFarmQueryEngine {
         let weanings = request.relations.contains(where: { $0.subject == "weanings" })
             ? try context.fetch(FetchDescriptor<WeaningRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
             : []
-        let reproduction = request.relations.contains(where: { $0.subject == "reproduction" })
+        // Sheep record rows expose parity and current pregnancy even without a
+        // relation filter. State aggregates need the same underlying facts.
+        let needsReproduction = request.metric == "records" || request.groupBy == "reproduction_state"
+            || request.relations.contains(where: { $0.subject == "reproduction" })
+        let reproduction = needsReproduction
             ? try context.fetch(FetchDescriptor<ReproductionRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
             : []
         let health = request.relations.contains(where: { $0.subject == "health" })
@@ -663,7 +668,12 @@ struct InsightFarmQueryEngine {
                       transfers: itemTransfers,
                       removals: itemRemovals
                   ) else { continue }
-            let values = [
+            let cycle = item.sex == .ewe ? ReproductionCycleResolver.resolve(eweID: item.id, facts: ReproductionCycleResolver.facts(records: reproductionBySheepID[item.id] ?? []), asOf: request.asOf) : nil
+            let values: [String: String] = [
+                "reproduction_state": cycle?.pregnancy.rawValue ?? "不适用",
+                "completed_parity": cycle.flatMap(\.completedParity).map { String($0) } ?? "待核实",
+                "target_parity": cycle.flatMap(\.targetParity).map { String($0) } ?? "待核实",
+                "reproduction_issues": cycle?.issues.joined(separator: "；") ?? "",
                 "ear_tag": item.earTag,
                 "sex": item.sex.displayName,
                 "breed": item.breed.isEmpty ? "未填写" : item.breed,
@@ -730,7 +740,10 @@ struct InsightFarmQueryEngine {
         let penNames = Dictionary(uniqueKeysWithValues: pens.map { ($0.id, $0.name) })
         let transfers = try context.fetch(FetchDescriptor<TransferRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
         let transfersBySheepID = Dictionary(grouping: transfers) { $0.sheepID }
-        return try context.fetch(FetchDescriptor<ReproductionRecord>()).compactMap { record in
+        let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>()).filter { $0.farmID == farmID && $0.deletedAt == nil }
+        let grouped = Dictionary(grouping: ReproductionCycleResolver.facts(records: reproduction), by: \.eweID)
+        let states = grouped.mapValues { ReproductionCycleResolver.resolve(eweID: $0[0].eweID, facts: $0, asOf: request.asOf) }
+        return reproduction.compactMap { record in
             guard record.farmID == farmID, record.deletedAt == nil,
                   record.occurredAt <= request.asOf, inDateRange(record.occurredAt, request),
                   let ewe = sheepByID[record.eweID],
@@ -748,6 +761,8 @@ struct InsightFarmQueryEngine {
                 "kind": record.kind.displayName, "lamb_count": String(record.lambCount),
                 "parity": record.parity.map(String.init) ?? "未填写",
                 "result": record.result.isEmpty ? "未填写" : record.result,
+                "reproduction_state": states[record.eweID]?.pregnancy.rawValue ?? "结果待核实",
+                "cycle_basis": states[record.eweID]?.association(for: record.id)?.reason ?? "历史周期记录",
                 "pen": pen, "breed": ewe.breed, "sex": ewe.sex.displayName,
             ]
             return Row(values: values, group: groupValue(request.groupBy, dateField: request.dateField, values: values), number: numeric)
@@ -1062,6 +1077,7 @@ struct InsightFarmQueryEngine {
         case "breed": values["breed"] ?? "未填写"
         case "sex": values["sex"] ?? "未填写"
         case "status": values["status"] ?? "未填写"
+        case "reproduction_state": values["reproduction_state"] ?? "结果待核实"
         case "kind": values["kind"] ?? "未填写"
         case "item": values["item"] ?? values["ingredient"] ?? "未填写"
         case "month": String((values[dateField] ?? "").prefix(7))

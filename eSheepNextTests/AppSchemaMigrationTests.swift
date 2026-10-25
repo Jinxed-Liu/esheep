@@ -6,6 +6,100 @@ import XCTest
 
 @MainActor
 final class AppSchemaMigrationTests: XCTestCase {
+    func testV18ToV19PreservesFarmIdentityAndAddsOptionalLatinName() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "V19Identity-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "farm.store")
+        let farmID = UUID()
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV18.self)
+            XCTAssertFalse(schema.entities.first { $0.name == "ESheepCloudFarmIdentityState" }!.attributes.contains { $0.name == "latinName" })
+            let config = ModelConfiguration("latin", schema: schema, url: url, cloudKitDatabase: .none)
+            let old = try ModelContainer(for: schema, configurations: [config])
+            let context = ModelContext(old)
+            context.insert(FarmRecord(id: farmID, ownerAccountID: UUID(), name: "原有牧场"))
+            context.insert(AppSchemaV18.ESheepCloudFarmIdentityState(farmID: farmID, farmGeneration: 3, name: "原有牧场", revision: 8))
+            context.insert(NoteRecord(farmID: farmID, text: "原有历史", occurredAt: .now))
+            try context.save()
+        }
+        let migrated = try AppSchema.makeContainer(name: "latin", url: url)
+        let context = ModelContext(migrated)
+        let identity = try XCTUnwrap(try context.fetch(FetchDescriptor<ESheepCloudFarmIdentityState>()).first)
+        XCTAssertEqual(identity.farmID, farmID)
+        XCTAssertEqual(identity.name, "原有牧场")
+        XCTAssertEqual(identity.revision, 8)
+        XCTAssertNil(identity.latinName)
+        XCTAssertFalse(identity.latinNameVerified)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<NoteRecord>()).first?.text, "原有历史")
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
+    }
+
+    func testV16ToV17PreservesConfiguredCareRulesAndStartsReproductionUnconfigured() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "V17Reproduction-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "farm.store")
+        let farmID = UUID(), ruleID = UUID(), noteID = UUID()
+        let original = Date(timeIntervalSince1970: 1_750_000_000)
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV16.self)
+            XCTAssertFalse(schema.entities.first { $0.name == "FarmCareRuleRecord" }?.attributes.contains { $0.name == "reproductionSettingsJSON" } ?? true)
+            let config = ModelConfiguration("reproduction", schema: schema, url: url, cloudKitDatabase: .none)
+            let old = try ModelContainer(for: schema, configurations: [config])
+            let context = ModelContext(old)
+            context.insert(FarmRecord(id: farmID, ownerAccountID: UUID(), name: "保留原始牧场"))
+            let rule = AppSchemaV16.FarmCareRuleRecord(id: ruleID, farmID: farmID,
+                pregnancyCheckDays: 43, gestationDays: 151, weaningAgeDays: 66, warningLeadDays: 5,
+                operationalAlertsConfiguredAt: original, alertDigestEnabled: true, alertDigestMinuteOfDay: 495)
+            rule.createdAt = original; rule.updatedAt = original; rule.revision = 17
+            context.insert(rule)
+            context.insert(NoteRecord(id: noteID, farmID: farmID, text: "历史不变", occurredAt: original))
+            try context.save()
+        }
+        let migrated = try AppSchema.makeContainer(name: "reproduction", url: url)
+        let context = ModelContext(migrated)
+        let rule = try XCTUnwrap(try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).first)
+        XCTAssertEqual(rule.id, ruleID)
+        XCTAssertEqual(rule.pregnancyCheckDays, 43)
+        XCTAssertEqual(rule.gestationDays, 151)
+        XCTAssertEqual(rule.weaningAgeDays, 66)
+        XCTAssertEqual(rule.warningLeadDays, 5)
+        XCTAssertEqual(rule.operationalAlertsConfiguredAt, original)
+        XCTAssertTrue(rule.alertDigestEnabled)
+        XCTAssertEqual(rule.alertDigestMinuteOfDay, 495)
+        XCTAssertEqual(rule.revision, 17)
+        XCTAssertEqual(rule.createdAt, original)
+        XCTAssertNil(rule.reproductionSettingsJSON)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<NoteRecord>()).first?.id, noteID)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<DomainOperation>()), 0)
+    }
+
+    func testV15ToV16PreservesFarmAndHistoryAndKeepsNameWatermarkLocal() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "V16Identity-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "farm.store")
+        let farmID = UUID(), noteID = UUID()
+        do {
+            let schema = Schema(versionedSchema: AppSchemaV15.self)
+            XCTAssertFalse(schema.entities.contains { $0.name == "ESheepCloudFarmIdentityState" })
+            let config = ModelConfiguration("identity", schema: schema, url: url, cloudKitDatabase: .none)
+            let old = try ModelContainer(for: schema, configurations: [config])
+            let context = ModelContext(old)
+            context.insert(FarmRecord(id: farmID, ownerAccountID: UUID(), name: "星露谷牧场"))
+            context.insert(NoteRecord(id: noteID, farmID: farmID, text: "保留全部原始历史", occurredAt: .now))
+            try context.save()
+        }
+        let migrated = try AppSchema.makeContainer(name: "identity", url: url)
+        let context = ModelContext(migrated)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<FarmRecord>()).first?.id, farmID)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<FarmRecord>()).first?.name, "星露谷牧场")
+        XCTAssertEqual(try context.fetch(FetchDescriptor<NoteRecord>()).first?.id, noteID)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<NoteRecord>()).first?.text, "保留全部原始历史")
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<ESheepCloudFarmIdentityState>()), 0)
+    }
+
     func testHistoricalSchemasDoNotAbsorbTMRModels() {
         let historicalSchemas: [any VersionedSchema.Type] = [
             AppSchemaV1.self,
@@ -37,10 +131,10 @@ final class AppSchemaMigrationTests: XCTestCase {
 
     func testVersionedSchemaContainsEveryCurrentModel() {
         let historicalV12 = Schema(versionedSchema: AppSchemaV12.self)
-        let versioned = Schema(versionedSchema: AppSchemaV15.self)
+        let versioned = Schema(versionedSchema: AppSchemaV20.self)
         let current = AppSchema.makeSchema()
 
-        XCTAssertEqual(AppSchema.currentVersion, "15.0.0")
+        XCTAssertEqual(AppSchema.currentVersion, "20.0.0")
         XCTAssertEqual(versioned.entities.map(\.name).sorted(), current.entities.map(\.name).sorted())
         XCTAssertTrue(
             Set(versioned.entities.map(\.name)).isSuperset(
@@ -91,9 +185,14 @@ final class AppSchemaMigrationTests: XCTestCase {
                 Schema.Version(13, 0, 0),
                 Schema.Version(14, 0, 0),
                 Schema.Version(15, 0, 0),
+                Schema.Version(16, 0, 0),
+                Schema.Version(17, 0, 0),
+                Schema.Version(18, 0, 0),
+                Schema.Version(19, 0, 0),
+                Schema.Version(20, 0, 0),
             ]
         )
-        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 15)
+        XCTAssertEqual(AppSchemaMigrationPlan.stages.count, 20)
     }
 
     func testV13ToV14PreservesOriginalPendingCommandAndIdentity() throws {

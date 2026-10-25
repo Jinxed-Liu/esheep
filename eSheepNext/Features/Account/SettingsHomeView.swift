@@ -127,6 +127,18 @@ struct SettingsHomeView: View {
                             SettingsCardDivider()
                         }
 
+                        if farm.role == .owner,
+                           let profile = storageProfiles.first(where: { $0.farmID == farm.id }),
+                           profile.mode == .eSheepCloud {
+                            SettingsNavigationRow(
+                                title: "牧场名称", subtitle: farm.name,
+                                systemImage: "pencil.line", iconColor: .green
+                            ) {
+                                FarmNameSettingsView(farm: farm, generation: profile.authorityGeneration)
+                            }
+                            SettingsCardDivider()
+                        }
+
                         if policy.shows(.farmLocation) {
                             SettingsNavigationRow(
                                 title: "牧场位置",

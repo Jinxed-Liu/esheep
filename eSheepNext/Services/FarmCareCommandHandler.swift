@@ -206,15 +206,19 @@ enum FarmCareCommandHandler {
         case .updateRules(let id, let checkDays, let gestationDays):
             return try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).contains { $0.id == id && $0.farmID == farmID && $0.pregnancyCheckDays == checkDays && $0.gestationDays == gestationDays }
         case .updateOperationalAlertRules(let draft):
+            let settingsJSON = try draft.reproductionSettings?.encodedJSON()
             return try context.fetch(FetchDescriptor<FarmCareRuleRecord>()).contains {
-                $0.id == draft.id && $0.farmID == farmID &&
-                $0.pregnancyCheckDays == draft.pregnancyCheckDays &&
-                $0.gestationDays == draft.gestationDays &&
-                $0.weaningAgeDays == draft.weaningAgeDays &&
-                $0.warningLeadDays == draft.effectiveWarningLeadDays &&
-                $0.alertDigestEnabled == draft.digestEnabled &&
-                $0.alertDigestMinuteOfDay == draft.digestMinuteOfDay &&
-                $0.operationalAlertsConfiguredAt != nil
+                guard $0.id == draft.id && $0.farmID == farmID else { return false }
+                let settingsMatch = settingsJSON == nil || $0.reproductionSettingsJSON == settingsJSON
+                if draft.updatesReproductionOnly == true { return settingsMatch && settingsJSON != nil }
+                return settingsMatch &&
+                    $0.pregnancyCheckDays == draft.pregnancyCheckDays &&
+                    $0.gestationDays == draft.gestationDays &&
+                    $0.weaningAgeDays == draft.weaningAgeDays &&
+                    $0.warningLeadDays == draft.effectiveWarningLeadDays &&
+                    $0.alertDigestEnabled == draft.digestEnabled &&
+                    $0.alertDigestMinuteOfDay == draft.digestMinuteOfDay &&
+                    $0.operationalAlertsConfiguredAt != nil
             }
         case .deferOperationalAlert(let draft):
             return try context.fetch(FetchDescriptor<FarmAlertDeferralRecord>()).contains {
@@ -341,7 +345,7 @@ enum FarmCareCommandHandler {
             guard replacement.id == originalID,
                   let original = try context.fetch(FetchDescriptor<ReproductionRecord>()).first(where: { $0.id == originalID && $0.farmID == farmID && $0.kind == .lambing && $0.deletedAt == nil }) else { throw FarmCommandError.sourceRecordNotFound }
             try require(reason, "修正原因")
-            try validateLambing(replacement, farmID: farmID, existingRecordID: original.id, context: context)
+            try validateLambing(replacement.preservingReproductionAssociation(from: original), farmID: farmID, existingRecordID: original.id, context: context)
 
         case .revokeLambing(let recordID, let reason):
             guard try context.fetch(FetchDescriptor<ReproductionRecord>()).contains(where: { $0.id == recordID && $0.farmID == farmID && $0.kind == .lambing && $0.deletedAt == nil }) else { throw FarmCommandError.sourceRecordNotFound }
@@ -354,12 +358,29 @@ enum FarmCareCommandHandler {
             guard (1...365).contains(checkDays), (100...220).contains(gestationDays) else { throw FarmCommandError.invalidNumber("提醒间隔") }
 
         case .updateOperationalAlertRules(let draft):
-            guard (1...365).contains(draft.pregnancyCheckDays),
-                  (100...220).contains(draft.gestationDays),
-                  (1...365).contains(draft.weaningAgeDays),
-                  (0...30).contains(draft.effectiveWarningLeadDays),
-                  (0...1_439).contains(draft.digestMinuteOfDay) else {
-                throw FarmCommandError.invalidNumber("待办与异常规则")
+            if let settings = draft.reproductionSettings {
+                _ = try settings.validated()
+                let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate { $0.farmID == farmID }))
+                let knownPenIDs = Set(pens.map(\.id))
+                guard Set(settings.selectedPenIDs).isSubset(of: knownPenIDs),
+                      Set(settings.penUsages.keys.compactMap(UUID.init(uuidString:))).isSubset(of: knownPenIDs) else {
+                    throw FarmCommandError.penNotFound
+                }
+                let sheep = try context.fetch(FetchDescriptor<SheepRecord>(predicate: #Predicate { $0.farmID == farmID }))
+                guard Set(settings.youthBreedingConfirmedSheepIDs).isSubset(of: Set(sheep.filter { $0.sex == .ewe }.map(\.id))) else {
+                    throw FarmCommandError.sheepNotFound
+                }
+            }
+            if draft.updatesReproductionOnly == true {
+                guard draft.reproductionSettings != nil else { throw FarmCommandError.missingRequiredValue("繁殖管理设置") }
+            } else {
+                guard (1...365).contains(draft.pregnancyCheckDays),
+                      (100...220).contains(draft.gestationDays),
+                      (1...365).contains(draft.weaningAgeDays),
+                      (0...30).contains(draft.effectiveWarningLeadDays),
+                      (0...1_439).contains(draft.digestMinuteOfDay) else {
+                    throw FarmCommandError.invalidNumber("待办与异常规则")
+                }
             }
 
         case .deferOperationalAlert(let draft):
@@ -629,7 +650,7 @@ enum FarmCareCommandHandler {
             let semenPerEwe = draft.semenID == nil ? nil : (Decimal.stable(draft.semenUnitsPerEweText ?? "1") ?? 1)
             for subject in draft.subjects {
                 let recordID = StableCloudUUID.derived(namespace: draft.id, name: subject.id.uuidString.lowercased())
-                context.insert(ReproductionRecord(id: recordID, farmID: farmID, eweID: subject.eweID, kind: draft.kind, occurredAt: draft.occurredAt, sireID: paternity.sireID, semenID: semenRecord?.id, batchID: draft.id, relatedBreedingRecordID: subject.relatedBreedingRecordID, semenNameSnapshot: semenRecord?.code, semenDonorID: paternity.donorID, semenDonorNameSnapshot: paternity.donorNameSnapshot, semenDonorRegistrationNumberSnapshot: paternity.donorRegistrationNumberSnapshot, semenDonorBreedSnapshot: paternity.donorBreedSnapshot, paternalSource: paternity.source, result: subject.result.trimmed, note: draft.note.trimmed))
+                context.insert(ReproductionRecord(id: recordID, farmID: farmID, eweID: subject.eweID, kind: draft.kind, occurredAt: draft.occurredAt, sireID: paternity.sireID, semenID: semenRecord?.id, batchID: draft.id, relatedBreedingRecordID: subject.relatedBreedingRecordID, reproductionCycleID: subject.reproductionCycleID, breedingRoundID: subject.breedingRoundID, breedingIntentRawValue: subject.breedingIntent?.rawValue, semenNameSnapshot: semenRecord?.code, semenDonorID: paternity.donorID, semenDonorNameSnapshot: paternity.donorNameSnapshot, semenDonorRegistrationNumberSnapshot: paternity.donorRegistrationNumberSnapshot, semenDonorBreedSnapshot: paternity.donorBreedSnapshot, paternalSource: paternity.source, result: subject.result.trimmed, note: draft.note.trimmed))
                 if let reminderAt = draft.reminderAt, draft.kind != .abortion {
                     let reminderKind: CareReminderKind = draft.kind == .breeding ? .pregnancyCheck : .expectedLambing
                     insertReminder(farmID: farmID, kind: reminderKind, sourceType: CloudEntityType.reproduction.rawValue, sourceID: recordID, sheepID: subject.eweID, dueAt: reminderAt, title: "\(subject.result.isEmpty ? "母羊" : subject.result) · \(reminderKind.displayName)", context: context)
@@ -646,7 +667,7 @@ enum FarmCareCommandHandler {
         case .recordLambing(let draft):
             if try context.fetch(FetchDescriptor<ReproductionRecord>()).contains(where: { $0.id == draft.id && $0.farmID == farmID }) { return .init(entityType: .reproduction, entityID: draft.id, baseRevision: 0, resultingRevision: 1) }
             let paternity = try resolveLambingPaternity(draft, farmID: farmID, context: context)
-            let reproduction = ReproductionRecord(id: draft.id, farmID: farmID, eweID: draft.eweID, kind: .lambing, occurredAt: draft.occurredAt, sireID: paternity.sireID, semenID: paternity.semen?.id, relatedBreedingRecordID: draft.relatedBreedingRecordID, semenNameSnapshot: paternity.semen?.code, semenDonorID: paternity.donorID, semenDonorNameSnapshot: paternity.donorNameSnapshot, semenDonorRegistrationNumberSnapshot: paternity.donorRegistrationNumberSnapshot, semenDonorBreedSnapshot: paternity.donorBreedSnapshot, paternalSource: paternity.source, lambCount: draft.offspring.count, parity: draft.parity, birthDeadCount: draft.birthDeadCount, note: draft.note.trimmed)
+            let reproduction = ReproductionRecord(id: draft.id, farmID: farmID, eweID: draft.eweID, kind: .lambing, occurredAt: draft.occurredAt, sireID: paternity.sireID, semenID: paternity.semen?.id, relatedBreedingRecordID: draft.relatedBreedingRecordID, reproductionCycleID: draft.reproductionCycleID, breedingRoundID: draft.breedingRoundID, breedingIntentRawValue: draft.breedingIntent?.rawValue, semenNameSnapshot: paternity.semen?.code, semenDonorID: paternity.donorID, semenDonorNameSnapshot: paternity.donorNameSnapshot, semenDonorRegistrationNumberSnapshot: paternity.donorRegistrationNumberSnapshot, semenDonorBreedSnapshot: paternity.donorBreedSnapshot, paternalSource: paternity.source, lambCount: draft.offspring.count, parity: draft.parity, birthDeadCount: draft.birthDeadCount, note: draft.note.trimmed)
             context.insert(reproduction)
             let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
             let ewe = sheep.first(where: { $0.id == draft.eweID && $0.farmID == farmID })
@@ -669,7 +690,17 @@ enum FarmCareCommandHandler {
             guard let original = try context.fetch(FetchDescriptor<ReproductionRecord>()).first(where: { $0.id == originalID && $0.farmID == farmID && $0.deletedAt == nil }) else { throw FarmCommandError.sourceRecordNotFound }
             try DomainEntityDeletionService.setDeletedAt(modifiedAt, type: .reproduction, id: original.id, farmID: farmID, context: context)
             context.insert(TombstoneRecord(farmID: farmID, entityType: CloudEntityType.reproduction.rawValue, entityID: originalID, deletedByAccountID: accountID, reason: "修正：\(reason.trimmed)"))
-            let result = try apply(.recordReproductionBatch(replacement), farmID: farmID, accountID: accountID, context: context, modifiedAt: modifiedAt)
+            let subjects = replacement.subjects.map { subject in
+                CareReproductionSubjectDraft(id: subject.id, eweID: subject.eweID, result: subject.result,
+                    relatedBreedingRecordID: subject.relatedBreedingRecordID ?? (subject.reproductionCycleID == nil ? original.relatedBreedingRecordID : nil),
+                    reproductionCycleID: subject.reproductionCycleID ?? original.reproductionCycleID,
+                    breedingRoundID: subject.reproductionCycleID == nil ? (original.breedingRoundID ?? (original.kind == .breeding ? original.id : nil)) : subject.breedingRoundID,
+                    breedingIntent: subject.breedingIntent ?? original.breedingIntentRawValue.flatMap(BreedingIntent.init(rawValue:)))
+            }
+            let preserved = CareReproductionBatchDraft(id: replacement.id, kind: replacement.kind, subjects: subjects,
+                occurredAt: replacement.occurredAt, sireID: replacement.sireID, semenID: replacement.semenID,
+                semenUnitsPerEweText: replacement.semenUnitsPerEweText, note: replacement.note, reminderAt: replacement.reminderAt)
+            let result = try apply(.recordReproductionBatch(preserved), farmID: farmID, accountID: accountID, context: context, modifiedAt: modifiedAt)
             return .init(entityType: result.entityType, entityID: result.entityID, baseRevision: 1, resultingRevision: 2)
 
         case .correctLambing(let originalID, let replacement, let reason):
@@ -693,15 +724,19 @@ enum FarmCareCommandHandler {
 
         case .updateOperationalAlertRules(let draft):
             let rules = try context.fetch(FetchDescriptor<FarmCareRuleRecord>())
+            let settingsJSON = try draft.reproductionSettings?.encodedJSON()
             if let record = rules.first(where: { $0.farmID == farmID }) {
                 let base = record.revision
-                record.pregnancyCheckDays = draft.pregnancyCheckDays
-                record.gestationDays = draft.gestationDays
-                record.weaningAgeDays = draft.weaningAgeDays
-                record.warningLeadDays = draft.effectiveWarningLeadDays
-                record.operationalAlertsConfiguredAt = record.operationalAlertsConfiguredAt ?? modifiedAt
-                record.alertDigestEnabled = draft.digestEnabled
-                record.alertDigestMinuteOfDay = draft.digestMinuteOfDay
+                if draft.updatesReproductionOnly != true {
+                    record.pregnancyCheckDays = draft.pregnancyCheckDays
+                    record.gestationDays = draft.gestationDays
+                    record.weaningAgeDays = draft.weaningAgeDays
+                    record.warningLeadDays = draft.effectiveWarningLeadDays
+                    record.operationalAlertsConfiguredAt = record.operationalAlertsConfiguredAt ?? modifiedAt
+                    record.alertDigestEnabled = draft.digestEnabled
+                    record.alertDigestMinuteOfDay = draft.digestMinuteOfDay
+                }
+                if let settingsJSON { record.reproductionSettingsJSON = settingsJSON }
                 record.updatedAt = modifiedAt
                 record.revision += 1
                 return .init(entityType: .careRule, entityID: record.id, baseRevision: base, resultingRevision: record.revision)
@@ -711,11 +746,12 @@ enum FarmCareCommandHandler {
                 farmID: farmID,
                 pregnancyCheckDays: draft.pregnancyCheckDays,
                 gestationDays: draft.gestationDays,
-                weaningAgeDays: draft.weaningAgeDays,
+                weaningAgeDays: draft.updatesReproductionOnly == true ? nil : draft.weaningAgeDays,
                 warningLeadDays: draft.effectiveWarningLeadDays,
-                operationalAlertsConfiguredAt: modifiedAt,
+                operationalAlertsConfiguredAt: draft.updatesReproductionOnly == true ? nil : modifiedAt,
                 alertDigestEnabled: draft.digestEnabled,
-                alertDigestMinuteOfDay: draft.digestMinuteOfDay
+                alertDigestMinuteOfDay: draft.digestMinuteOfDay,
+                reproductionSettingsJSON: settingsJSON
             ))
             return .init(entityType: .careRule, entityID: draft.id, baseRevision: 0, resultingRevision: 1)
 
@@ -1008,13 +1044,24 @@ enum FarmCareCommandHandler {
         if draft.kind != .breeding, draft.sireID != nil || draft.semenID != nil { throw FarmCommandError.pregnancyCheckCannotSetPaternity }
         if let sireID = draft.sireID, !sheep.contains(where: { $0.id == sireID && $0.farmID == farmID && $0.deletedAt == nil && $0.sex == .ram && $0.isBreedingRam }) { throw FarmCommandError.reproductionSireMustBeRam }
         if draft.kind == .breeding {
-            guard (draft.sireID == nil) != (draft.semenID == nil), draft.subjects.allSatisfy({ $0.relatedBreedingRecordID == nil }) else { throw FarmCommandError.pedigreePaternalSourceConflict }
+            guard (draft.sireID == nil) != (draft.semenID == nil), draft.subjects.allSatisfy({ $0.relatedBreedingRecordID == nil || $0.breedingIntent == .supplement }) else { throw FarmCommandError.pedigreePaternalSourceConflict }
             _ = try resolvePaternity(sireID: draft.sireID, semenID: draft.semenID, farmID: farmID, context: context)
         } else {
             for subject in draft.subjects {
                 if let relatedID = subject.relatedBreedingRecordID {
                     _ = try linkedBreeding(relatedID, eweID: subject.eweID, eventAt: draft.occurredAt, closesBreeding: draft.kind == .abortion, farmID: farmID, context: context)
                 }
+            }
+        }
+        let cycleRecords = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate { $0.farmID == farmID }))
+        for subject in draft.subjects {
+            if subject.reproductionCycleID != nil || subject.breedingRoundID != nil || subject.breedingIntent != nil || subject.relatedBreedingRecordID != nil {
+                _ = try ReproductionEntryAssociation.resolve(eweID: subject.eweID,
+                    recordID: StableCloudUUID.derived(namespace: draft.id, name: subject.id.uuidString.lowercased()),
+                    kind: draft.kind, occurredAt: draft.occurredAt, records: cycleRecords,
+                    relatedID: subject.relatedBreedingRecordID, intent: subject.breedingIntent,
+                    expectedCycleID: subject.reproductionCycleID, expectedRoundID: subject.breedingRoundID,
+                    excludingID: semenCreditSourceID)
             }
         }
         if let semenID = draft.semenID {
@@ -1324,6 +1371,7 @@ enum FarmCareCommandHandler {
 
     private static func applyLambingCorrection(originalID: UUID, replacement: CareLambingDraft, reason: String, accountID: UUID, farmID: UUID, context: ModelContext, modifiedAt: Date) throws -> CareApplyResult {
         guard let reproduction = try context.fetch(FetchDescriptor<ReproductionRecord>()).first(where: { $0.id == originalID && $0.farmID == farmID && $0.kind == .lambing && $0.deletedAt == nil }) else { throw FarmCommandError.sourceRecordNotFound }
+        let replacement = replacement.preservingReproductionAssociation(from: reproduction)
         let base = reproduction.revision
         let previousEweID = reproduction.eweID
         let previousSireID = reproduction.sireID
@@ -1408,6 +1456,9 @@ enum FarmCareCommandHandler {
         reproduction.sireID = paternity.sireID
         reproduction.semenID = paternity.semen?.id
         reproduction.relatedBreedingRecordID = replacement.relatedBreedingRecordID
+        reproduction.reproductionCycleID = replacement.reproductionCycleID ?? reproduction.reproductionCycleID
+        reproduction.breedingRoundID = replacement.breedingRoundID ?? reproduction.breedingRoundID
+        reproduction.breedingIntentRawValue = replacement.breedingIntent?.rawValue ?? reproduction.breedingIntentRawValue
         reproduction.semenNameSnapshot = paternity.semen?.code
         reproduction.semenDonorID = paternity.donorID
         reproduction.semenDonorNameSnapshot = paternity.donorNameSnapshot

@@ -1,6 +1,7 @@
 import SwiftData
 import SwiftUI
 import UIKit
+import CoreText
 
 enum SheepSharePosterPhotoLayout: String, CaseIterable, Sendable {
     case landscape
@@ -29,6 +30,30 @@ enum SheepSharePosterTheme: String, CaseIterable, Sendable {
         switch self {
         case .dark: "深色"
         case .light: "浅色"
+        }
+    }
+}
+
+enum SheepSharePosterStyle: String, CaseIterable, Identifiable, Sendable {
+    case magazine
+    case breeding
+    case minimal
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .magazine: "杂志封面"
+        case .breeding: "种羊展示卡"
+        case .minimal: "极简摄影"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .magazine: "大幅照片、醒目耳号与牧场落款"
+        case .breeding: "展示照片、繁殖指标与三代系谱"
+        case .minimal: "只展示照片、耳号与基础身份信息"
         }
     }
 }
@@ -247,6 +272,7 @@ struct SheepSharePosterMetrics: Sendable, Equatable {
 
 struct SheepSharePosterSnapshot: Sendable, Equatable {
     let farmName: String
+    var farmLatinName: String? = nil
     let subject: SheepDetailSubjectSnapshot
     let penName: String?
     let photoReference: SheepPhotoReference?
@@ -271,6 +297,50 @@ struct SheepSharePosterSnapshot: Sendable, Equatable {
     }
 }
 
+struct SheepSharePosterCardField: Equatable {
+    let id: String
+    let title: String
+    let value: String
+}
+
+extension SheepSharePosterSnapshot {
+    var breedingCardSummary: String {
+        switch subject.sex {
+        case .ewe: "母羊展示卡 · 胎次、胎间距、产后天数"
+        case .ram: "公羊展示卡 · 月龄、出生日期、当前羊舍"
+        case .unknown: "通用展示卡 · 月龄、出生日期、当前羊舍"
+        }
+    }
+
+    var posterCardFields: [SheepSharePosterCardField] {
+        if subject.sex == .ewe {
+            return [
+                .init(id: "metric.0", title: "当前胎次", value: metrics.parityText),
+                .init(id: "metric.1", title: "最近胎间距", value: metrics.intervalText),
+                .init(id: "metric.2", title: "当前产后天数", value: metrics.postpartumText)
+            ]
+        }
+        let calendar = Calendar.current
+        let birth = subject.birthAt.flatMap { $0 <= generatedAt ? $0 : nil }
+        let age = birth.flatMap {
+            calendar.dateComponents([.month], from: calendar.startOfDay(for: $0),
+                                    to: calendar.startOfDay(for: generatedAt)).month
+        }
+        let birthText = birth.map { date in
+            let parts = calendar.dateComponents([.year, .month, .day], from: date)
+            return String(format: "%04d.%02d.%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+        } ?? String(localized: "未填写")
+        let currentPen = penName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [
+            .init(id: "identity.age", title: "月龄",
+                  value: age.map { String(localized: "\($0) 月龄") } ?? String(localized: "未填写")),
+            .init(id: "identity.birth", title: "出生日期", value: birthText),
+            .init(id: "identity.pen", title: "当前羊舍",
+                  value: currentPen.flatMap { $0.isEmpty ? nil : $0 } ?? String(localized: "未分配"))
+        ]
+    }
+}
+
 actor SheepSharePosterSnapshotActor {
     private let container: ModelContainer
 
@@ -291,6 +361,13 @@ actor SheepSharePosterSnapshotActor {
         })).first else {
             throw SheepDetailSnapshotError.sheepNotFound
         }
+        let cloudState = try context.fetch(FetchDescriptor<ESheepCloudFarmState>(predicate: #Predicate {
+            $0.farmID == farmID
+        })).first
+        let generation = cloudState?.farmGeneration ?? -1
+        let identity = try context.fetch(FetchDescriptor<ESheepCloudFarmIdentityState>(predicate: #Predicate {
+            $0.farmID == farmID && $0.farmGeneration == generation
+        })).first
         let subject = SheepDetailSubjectSnapshot(record: record)
         let penName: String?
         if let penID = subject.currentPenID {
@@ -332,7 +409,8 @@ actor SheepSharePosterSnapshotActor {
             : nil
         try Task.checkCancellation()
         return SheepSharePosterSnapshot(
-            farmName: farmName,
+            farmName: identity?.name ?? farmName,
+            farmLatinName: identity?.latinName,
             subject: subject,
             penName: penName,
             photoReference: photoReference,
@@ -392,10 +470,18 @@ struct SheepSharePosterSelectionView: View {
     let sheepID: UUID
 
     @State private var loadState: LoadState = .loading
+    @State private var selectedStyle: SheepSharePosterStyle = .magazine
     @State private var selectedTemplate: SheepSharePosterTemplate = .landscapeLight
     @State private var previewPayload: SheepSharePosterPreviewPayload?
     @State private var isRendering = false
     @State private var errorMessage: String?
+    @State private var isCustomizing = false
+    @State private var customizations: [SheepSharePosterStyle: SheepSharePosterCustomization] = [:]
+
+    private var currentCustomization: Binding<SheepSharePosterCustomization> {
+        Binding(get: { customizations[selectedStyle] ?? .init() },
+                set: { customizations[selectedStyle] = $0 })
+    }
 
     private let columns = [
         GridItem(.flexible(), spacing: 14),
@@ -437,6 +523,12 @@ struct SheepSharePosterSelectionView: View {
                 SheepSharePosterPreviewView(payload: payload)
             }
         }
+        .sheet(isPresented: $isCustomizing) {
+            if case .loaded(let snapshot, let image) = loadState {
+                SheepSharePosterEditor(snapshot: snapshot, image: image, style: $selectedStyle,
+                                       template: $selectedTemplate, customization: currentCustomization)
+            }
+        }
         .alert("海报", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -452,51 +544,47 @@ struct SheepSharePosterSelectionView: View {
         image: UIImage?
     ) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
-                HStack(spacing: 6) {
-                    Text("为")
-                    Text(snapshot.subject.earTag)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(AppTheme.brand)
-                    Text("选择分享样式")
+            VStack(alignment: .leading, spacing: 20) {
+                Picker("海报风格", selection: $selectedStyle) {
+                    ForEach(SheepSharePosterStyle.allCases) { style in
+                        Text(LocalizedStringKey(style.title)).tag(style)
+                    }
                 }
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("sheepPoster.style")
 
-                templateSection(
-                    title: SheepSharePosterPhotoLayout.landscape.sectionTitle,
-                    templates: SheepSharePosterTemplate.templates(for: .landscape),
-                    snapshot: snapshot,
-                    image: image
-                )
-                templateSection(
-                    title: SheepSharePosterPhotoLayout.portrait.sectionTitle,
-                    templates: SheepSharePosterTemplate.templates(for: .portrait),
-                    snapshot: snapshot,
-                    image: image
-                )
+                SheepSharePosterThumbnail(snapshot: snapshot, image: image, template: selectedTemplate, style: selectedStyle,
+                                          customization: currentCustomization.wrappedValue)
+                    .frame(maxWidth: 300)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityIdentifier("sheepPoster.thumbnail")
+                    .clipShape(.rect(cornerRadius: 8))
+                    .shadow(color: .black.opacity(0.12), radius: 16, y: 6)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityLabel("海报预览")
 
-                HStack {
-                    Text("分享内容")
-                    Spacer()
-                    Text("系谱与繁殖信息")
+                Button("自定义排版与我的模板", systemImage: "slider.horizontal.3") { isCustomizing = true }
+                    .buttonStyle(.bordered)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("sheepPoster.customize")
+
+                LazyVGrid(columns: columns, spacing: 10) {
+                    ForEach(SheepSharePosterTemplate.allCases) { template in
+                        posterTile(template: template)
+                    }
+                }
+
+                Text(LocalizedStringKey(selectedStyle.subtitle))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if selectedStyle == .breeding {
+                    Text(LocalizedStringKey(snapshot.breedingCardSummary))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                }
-                .font(.body)
-                .padding(.horizontal, 18)
-                .frame(minHeight: 56)
-                .background(.background, in: .rect(cornerRadius: 14))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
                 }
 
                 if image == nil {
-                    Label("当前头像照片不可用，海报会使用系统羊只图形。", systemImage: "info.circle")
+                    Label("当前头像照片不可用，海报将使用无照片版式。", systemImage: "info.circle")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -505,57 +593,45 @@ struct SheepSharePosterSelectionView: View {
             .padding(.top, 18)
             .padding(.bottom, 24)
         }
-    }
-
-    private func templateSection(
-        title: String,
-        templates: [SheepSharePosterTemplate],
-        snapshot: SheepSharePosterSnapshot,
-        image: UIImage?
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(LocalizedStringKey(title))
-                .font(.headline)
-            LazyVGrid(columns: columns, spacing: 14) {
-                ForEach(templates) { template in
-                    posterTile(template: template, snapshot: snapshot, image: image)
-                }
-            }
-        }
+        .accessibilityIdentifier("sheepPoster.selection")
     }
 
     private func posterTile(
-        template: SheepSharePosterTemplate,
-        snapshot: SheepSharePosterSnapshot,
-        image: UIImage?
+        template: SheepSharePosterTemplate
     ) -> some View {
         let isSelected = selectedTemplate == template
+        let palette = SheepSharePosterPalette(theme: template.theme, style: selectedStyle)
         return Button {
             selectedTemplate = template
         } label: {
-            VStack(spacing: 8) {
-                ZStack(alignment: .topTrailing) {
-                    SheepSharePosterThumbnail(
-                        snapshot: snapshot,
-                        image: image,
-                        template: template
-                    )
-                    .clipShape(.rect(cornerRadius: 12))
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(palette.background)
+                    .frame(width: 24, height: 32)
                     .overlay {
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(isSelected ? AppTheme.brandSoft : Color.primary.opacity(0.10), lineWidth: isSelected ? 3 : 1)
+                        Image(systemName: template.photoLayout == .landscape ? "rectangle" : "rectangle.portrait")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(palette.accent)
                     }
-
-                    if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.title3.weight(.semibold))
-                            .foregroundStyle(.white, AppTheme.brandSoft)
-                            .padding(7)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 4).strokeBorder(.primary.opacity(0.12), lineWidth: 0.5)
                     }
-                }
                 Text(LocalizedStringKey(template.displayName))
-                    .font(.subheadline.weight(isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? AppTheme.brand : .primary)
+                    .font(.caption.weight(isSelected ? .semibold : .regular))
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.brand)
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, minHeight: 52)
+            .background(isSelected ? AppTheme.brand.opacity(0.08) : Color(uiColor: .secondarySystemGroupedBackground), in: .rect(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(isSelected ? AppTheme.brand : Color.primary.opacity(0.08), lineWidth: isSelected ? 1.5 : 0.5)
             }
             .contentShape(.rect)
         }
@@ -630,7 +706,9 @@ struct SheepSharePosterSelectionView: View {
         guard let rendered = SheepSharePosterRenderer.render(
             snapshot: snapshot,
             image: image,
-            template: selectedTemplate
+            template: selectedTemplate,
+            style: selectedStyle,
+            customization: currentCustomization.wrappedValue
         ) else {
             errorMessage = "海报生成失败，请稍后重试。"
             return
@@ -638,6 +716,7 @@ struct SheepSharePosterSelectionView: View {
         previewPayload = SheepSharePosterPreviewPayload(
             image: rendered,
             template: selectedTemplate,
+            style: selectedStyle,
             earTag: snapshot.subject.earTag
         )
     }
@@ -653,11 +732,13 @@ private struct SheepSharePosterThumbnail: View {
     let snapshot: SheepSharePosterSnapshot
     let image: UIImage?
     let template: SheepSharePosterTemplate
+    var style: SheepSharePosterStyle = .magazine
+    var customization = SheepSharePosterCustomization()
 
     var body: some View {
         GeometryReader { proxy in
             let scale = proxy.size.width / SheepSharePosterTemplate.logicalSize.width
-            SheepSharePosterView(snapshot: snapshot, image: image, template: template)
+            SheepSharePosterView(snapshot: snapshot, image: image, template: template, style: style, customization: customization)
                 .scaleEffect(scale, anchor: .topLeading)
         }
         .aspectRatio(SheepSharePosterTemplate.posterAspectRatio, contentMode: .fit)
@@ -670,13 +751,17 @@ enum SheepSharePosterRenderer {
     static func render(
         snapshot: SheepSharePosterSnapshot,
         image: UIImage?,
-        template: SheepSharePosterTemplate
+        template: SheepSharePosterTemplate,
+        style: SheepSharePosterStyle = .magazine,
+        customization: SheepSharePosterCustomization = .init()
     ) -> UIImage? {
         let renderer = ImageRenderer(
             content: SheepSharePosterView(
                 snapshot: snapshot,
                 image: image,
-                template: template
+                template: template,
+                style: style,
+                customization: customization
             )
         )
         renderer.scale = 3
@@ -689,6 +774,7 @@ struct SheepSharePosterPreviewPayload: Identifiable {
     let id = UUID()
     let image: UIImage
     let template: SheepSharePosterTemplate
+    let style: SheepSharePosterStyle
     let earTag: String
 }
 
@@ -697,18 +783,25 @@ private struct SheepSharePosterPreviewView: View {
 
     let payload: SheepSharePosterPreviewPayload
     @State private var activityItem: SheepSharePosterActivityItem?
+    #if DEBUG
+    @State private var exportEvidence = DevelopmentPosterExportEvidence()
+    #endif
 
     var body: some View {
         ScrollView {
             Image(uiImage: payload.image)
                 .resizable()
                 .scaledToFit()
+                .accessibilityIdentifier("sheepPoster.previewImage")
+                #if DEBUG
+                .accessibilityValue(exportEvidence.value(preview: payload.image))
+                #endif
                 .clipShape(.rect(cornerRadius: 18))
                 .shadow(color: .black.opacity(0.12), radius: 16, y: 7)
                 .padding(20)
         }
         .background(AppTheme.pageBackground)
-        .navigationTitle(payload.template.displayName)
+        .navigationTitle(LocalizedStringKey(payload.style.title))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -735,7 +828,11 @@ private struct SheepSharePosterPreviewView: View {
             .accessibilityIdentifier("sheepPoster.sharePoster")
         }
         .sheet(item: $activityItem) { item in
+            #if DEBUG
+            SheepSharePosterActivityView(image: item.image, evidence: exportEvidence)
+            #else
             SheepSharePosterActivityView(image: item.image)
+            #endif
         }
     }
 }
@@ -747,9 +844,18 @@ private struct SheepSharePosterActivityItem: Identifiable {
 
 private struct SheepSharePosterActivityView: UIViewControllerRepresentable {
     let image: UIImage
+    #if DEBUG
+    var evidence: DevelopmentPosterExportEvidence?
+    #endif
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [image], applicationActivities: nil)
+        #if DEBUG
+        if DevelopmentPosterAcceptance.directory != nil, let evidence {
+            return UIActivityViewController(activityItems: [image],
+                applicationActivities: [DevelopmentPosterSaveActivity(evidence: evidence)])
+        }
+        #endif
+        return UIActivityViewController(activityItems: [image], applicationActivities: nil)
     }
 
     func updateUIViewController(
@@ -758,502 +864,229 @@ private struct SheepSharePosterActivityView: UIViewControllerRepresentable {
     ) {}
 }
 
-private struct SheepSharePosterView: View {
+struct SheepSharePosterView: View {
     let snapshot: SheepSharePosterSnapshot
     let image: UIImage?
     let template: SheepSharePosterTemplate
-
-    var body: some View {
-        Group {
-            switch template.photoLayout {
-            case .landscape:
-                landscapePhotoPoster
-            case .portrait:
-                portraitPhotoPoster
-            }
-        }
-        .frame(
-            width: SheepSharePosterTemplate.logicalSize.width,
-            height: SheepSharePosterTemplate.logicalSize.height
-        )
-        .background(palette.background)
-        .clipped()
-        .environment(\.colorScheme, template.theme == .dark ? .dark : .light)
-    }
-
-    private var landscapePhotoPoster: some View {
-        VStack(spacing: 0) {
-            ZStack(alignment: .topLeading) {
-                posterPhoto
-                    .frame(
-                        width: SheepSharePosterTemplate.logicalSize.width,
-                        height: 260
-                    )
-                    .clipped()
-                brandRegion
-            }
-            .frame(
-                width: SheepSharePosterTemplate.logicalSize.width,
-                height: 260,
-                alignment: .topLeading
-            )
-            .clipped()
-            VStack(alignment: .leading, spacing: 10) {
-                landscapeIdentityHeader
-                SheepSharePosterPedigreeView(
-                    snapshot: snapshot,
-                    palette: palette,
-                    compact: true
-                )
-                metricStrip
-                footer
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 14)
-            .padding(.bottom, 12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .background(palette.background)
-        }
-    }
-
-    private var portraitPhotoPoster: some View {
-        ZStack {
-            posterPhoto
-                .frame(
-                    width: SheepSharePosterTemplate.logicalSize.width,
-                    height: SheepSharePosterTemplate.logicalSize.height
-                )
-                .clipped()
-            portraitPhotoWash
-            brandRegion
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            VStack(alignment: .leading, spacing: 10) {
-                Spacer()
-                    .frame(height: 64)
-                portraitIdentityHeader
-                Spacer(minLength: 18)
-                SheepSharePosterPedigreeView(
-                    snapshot: snapshot,
-                    palette: palette,
-                    compact: false
-                )
-                metricStrip
-                footer
-            }
-            .padding(16)
-        }
-    }
-
-    private var portraitPhotoWash: some View {
-        LinearGradient(
-            stops: template.theme == .dark
-                ? [
-                    .init(color: Color.black.opacity(0.10), location: 0),
-                    .init(color: Color.black.opacity(0.04), location: 0.34),
-                    .init(color: Color.black.opacity(0.28), location: 0.58),
-                    .init(color: Color.black.opacity(0.68), location: 1)
-                ]
-                : [
-                    .init(color: Color.white.opacity(0.12), location: 0),
-                    .init(color: Color.white.opacity(0.02), location: 0.34),
-                    .init(color: Color.white.opacity(0.30), location: 0.58),
-                    .init(color: Color.white.opacity(0.78), location: 1)
-                ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-    }
-
-    @ViewBuilder
-    private var posterPhoto: some View {
-        if let image {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-        } else {
-            ZStack {
-                palette.photoFallback
-                Image(systemName: "sheep")
-                    .font(.system(size: 76, weight: .medium))
-                    .foregroundStyle(palette.accent.opacity(0.72))
-            }
-        }
-    }
-
-    private var brandRegion: some View {
-        ZStack(alignment: .topLeading) {
-            RadialGradient(
-                stops: template.theme == .dark
-                    ? [
-                        .init(color: Color.black.opacity(0.72), location: 0),
-                        .init(color: Color.black.opacity(0.42), location: 0.34),
-                        .init(color: Color.black.opacity(0), location: 0.80)
-                    ]
-                    : [
-                        .init(color: Color.white.opacity(0.96), location: 0),
-                        .init(color: Color.white.opacity(0.66), location: 0.34),
-                        .init(color: Color.white.opacity(0), location: 0.80)
-                    ],
-                center: .topLeading,
-                startRadius: 0,
-                endRadius: 145
-            )
-
-            VStack(spacing: 1) {
-                Image("PosterBrandMark")
-                    .renderingMode(.template)
-                    .resizable()
-                    .scaledToFit()
-                    .foregroundStyle(palette.logoForeground)
-                    .frame(width: 38, height: 36)
-                Text("eSheep+")
-                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                Text(snapshot.farmName)
-                    .font(.system(size: 8, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-            .frame(width: 64)
-            .padding(.leading, 14)
-            .padding(.top, 12)
-            .foregroundStyle(palette.logoForeground)
-            .shadow(color: palette.logoShadow, radius: 1.5, y: 1)
-        }
-        .frame(width: 145, height: 120)
-        .allowsHitTesting(false)
-    }
-
-    private var landscapeIdentityHeader: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text(snapshot.subject.earTag)
-                    .font(.system(size: 31, weight: .bold, design: .rounded))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.65)
-                Text(LocalizedStringKey(snapshot.roleTitle))
-                    .font(.system(size: 8, weight: .semibold))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .foregroundStyle(.white)
-                    .background(palette.accent, in: .capsule)
-            }
-            Text(snapshot.identityLine)
-                .font(.system(size: 10, weight: .medium))
-                .lineLimit(1)
-                .foregroundStyle(palette.secondaryForeground)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var portraitIdentityHeader: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(LocalizedStringKey(snapshot.roleTitle))
-                .font(.system(size: 19, weight: .semibold))
-                .lineLimit(1)
-            Text(snapshot.subject.earTag)
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-                .foregroundStyle(palette.accent)
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-            Text("品种  \(breedDisplayName)")
-                .font(.system(size: 10, weight: .medium))
-                .lineLimit(1)
-            Text([snapshot.subject.sex.displayName, snapshot.subject.status.displayName].joined(separator: " · "))
-                .font(.system(size: 10, weight: .medium))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(palette.identityRibbon)
-        }
-        .foregroundStyle(palette.foreground)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            LinearGradient(
-                colors: [palette.identityBackdrop, .clear],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        }
-    }
-
-    private var breedDisplayName: String {
-        snapshot.subject.breed.isEmpty ? "未填写" : snapshot.subject.breed
-    }
-
-    private var metricStrip: some View {
-        HStack(spacing: 0) {
-            metric(symbol: "number", title: "当前胎次", value: snapshot.metrics.parityText)
-            metricDivider
-            metric(symbol: "calendar", title: "最近胎间距", value: snapshot.metrics.intervalText)
-            metricDivider
-            metric(symbol: "sheep", title: "上次产羔", value: snapshot.metrics.lastLambingText)
-            metricDivider
-            metric(symbol: "clock", title: "当前产后天数", value: snapshot.metrics.postpartumText)
-        }
-        .padding(.vertical, 9)
-        .padding(.horizontal, 3)
-        .background(template.photoLayout == .portrait ? palette.panel.opacity(0.90) : .clear)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(palette.line.opacity(0.55))
-                .frame(height: 0.7)
-        }
-    }
-
-    private func metric(symbol: String, title: String, value: String) -> some View {
-        VStack(spacing: 2) {
-            Image(systemName: symbol)
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(palette.accent)
-            Text(LocalizedStringKey(title))
-                .font(.system(size: 6.5, weight: .medium))
-                .lineLimit(1)
-                .foregroundStyle(palette.accent)
-            Text(value)
-                .font(.system(size: 10.2, weight: .semibold, design: .rounded))
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private var metricDivider: some View {
-        Rectangle()
-            .fill(palette.line)
-            .frame(width: 0.7, height: 34)
-    }
-
-    private var footer: some View {
-        HStack(spacing: 10) {
-            Rectangle()
-                .frame(width: 20, height: 0.7)
-            Text(LocalizedStringKey(generatedDateText))
-            Rectangle()
-                .frame(width: 20, height: 0.7)
-        }
-        .frame(maxWidth: .infinity)
-        .font(.system(size: 7, weight: .medium, design: .rounded))
-        .foregroundStyle(palette.secondaryForeground)
-    }
-
-    private var generatedDateText: String {
-        let components = Calendar.current.dateComponents(
-            [.year, .month, .day],
-            from: snapshot.generatedAt
-        )
-        guard let year = components.year,
-              let month = components.month,
-              let day = components.day else { return "" }
-        return String(format: "%04d.%02d.%02d", year, month, day)
-    }
+    var style: SheepSharePosterStyle = .magazine
+    var customization = SheepSharePosterCustomization()
+    var selectedID: String?
+    var interactionScale: CGFloat = 1
+    var onSelect: ((String) -> Void)?
+    var onMove: ((String, CGSize, Bool) -> Void)?
 
     private var palette: SheepSharePosterPalette {
-        SheepSharePosterPalette(theme: template.theme)
+        .init(theme: template.theme, style: style)
     }
-}
-
-struct SheepSharePosterPedigreeLayout: Sendable, Equatable {
-    let height: CGFloat
-    let grandNodeHeight: CGFloat = 34
-    let parentNodeHeight: CGFloat = 42
-    let subjectNodeHeight: CGFloat = 48
-    let grandY: CGFloat
-    let parentY: CGFloat
-    let subjectY: CGFloat
-
-    init(compact: Bool) {
-        height = compact ? 160 : 164
-        grandY = grandNodeHeight / 2
-        parentY = compact ? 73 : 75
-        subjectY = height - subjectNodeHeight / 2
+    private var elements: [SheepPosterElement] {
+        customization.elements(from: SheepSharePosterLayout.elements(snapshot: snapshot, style: style, template: template))
     }
-
-    var grandBottom: CGFloat { grandY + grandNodeHeight / 2 }
-    var parentTop: CGFloat { parentY - parentNodeHeight / 2 }
-    var parentBottom: CGFloat { parentY + parentNodeHeight / 2 }
-    var subjectTop: CGFloat { subjectY - subjectNodeHeight / 2 }
-    var subjectBottom: CGFloat { subjectY + subjectNodeHeight / 2 }
-    var grandJunctionY: CGFloat { (grandBottom + parentTop) / 2 }
-    var parentJunctionY: CGFloat { (parentBottom + subjectTop) / 2 }
-}
-
-private struct SheepSharePosterPedigreeView: View {
-    let snapshot: SheepSharePosterSnapshot
-    let palette: SheepSharePosterPalette
-    let compact: Bool
+    private var sourcePhoto: UIImage? {
+        customization.photoData.flatMap(UIImage.init(data:)) ?? image
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("核心系谱")
-                .font(.system(size: 10.5, weight: .bold))
-                .foregroundStyle(palette.sectionTitle)
-            GeometryReader { proxy in
-                let width = proxy.size.width
-                Canvas { context, size in
-                    let grandXs = [0.125, 0.375, 0.625, 0.875].map { size.width * $0 }
-                    let parentXs = [size.width * 0.25, size.width * 0.75]
-                    var path = Path()
-                    for index in 0..<2 {
-                        let left = grandXs[index * 2]
-                        let right = grandXs[index * 2 + 1]
-                        path.move(to: CGPoint(x: left, y: pedigreeLayout.grandBottom))
-                        path.addLine(to: CGPoint(x: left, y: pedigreeLayout.grandJunctionY))
-                        path.addLine(to: CGPoint(x: right, y: pedigreeLayout.grandJunctionY))
-                        path.addLine(to: CGPoint(x: right, y: pedigreeLayout.grandBottom))
-                        path.move(to: CGPoint(x: parentXs[index], y: pedigreeLayout.grandJunctionY))
-                        path.addLine(to: CGPoint(x: parentXs[index], y: pedigreeLayout.parentTop))
+        ZStack(alignment: .topLeading) {
+            (customization.background?.color ?? palette.background)
+                .zIndex(-Double.greatestFiniteMagnitude)
+            ForEach(elements.filter { !$0.isHidden }) { element in
+                layer(element)
+                    .frame(width: element.width, height: element.height,
+                           alignment: element.centered ? .center : .leading)
+                    .opacity(element.opacity)
+                    .overlay {
+                        if selectedID == element.id {
+                            Rectangle().strokeBorder(.blue, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        }
                     }
-                    path.move(to: CGPoint(x: parentXs[0], y: pedigreeLayout.parentBottom))
-                    path.addLine(to: CGPoint(x: parentXs[0], y: pedigreeLayout.parentJunctionY))
-                    path.addLine(to: CGPoint(x: parentXs[1], y: pedigreeLayout.parentJunctionY))
-                    path.addLine(to: CGPoint(x: parentXs[1], y: pedigreeLayout.parentBottom))
-                    path.move(to: CGPoint(x: size.width * 0.5, y: pedigreeLayout.parentJunctionY))
-                    path.addLine(to: CGPoint(x: size.width * 0.5, y: pedigreeLayout.subjectTop))
-                    context.stroke(path, with: .color(palette.line), lineWidth: 1)
-                }
-                Group {
-                    node(label: "外祖母", relative: snapshot.pedigree.maternalGranddam, width: width * 0.20, height: pedigreeLayout.grandNodeHeight, strong: false)
-                        .position(x: width * 0.125, y: pedigreeLayout.grandY)
-                    node(label: "外祖父", relative: snapshot.pedigree.maternalGrandsire, width: width * 0.20, height: pedigreeLayout.grandNodeHeight, strong: false)
-                        .position(x: width * 0.375, y: pedigreeLayout.grandY)
-                    node(label: "祖母", relative: snapshot.pedigree.paternalGranddam, width: width * 0.20, height: pedigreeLayout.grandNodeHeight, strong: false)
-                        .position(x: width * 0.625, y: pedigreeLayout.grandY)
-                    node(label: "祖父", relative: snapshot.pedigree.paternalGrandsire, width: width * 0.20, height: pedigreeLayout.grandNodeHeight, strong: false)
-                        .position(x: width * 0.875, y: pedigreeLayout.grandY)
-                    node(label: "母本", relative: snapshot.pedigree.dam, width: width * 0.28, height: pedigreeLayout.parentNodeHeight, strong: true)
-                        .position(x: width * 0.25, y: pedigreeLayout.parentY)
-                    node(label: "父本", relative: snapshot.pedigree.sire, width: width * 0.28, height: pedigreeLayout.parentNodeHeight, strong: true)
-                        .position(x: width * 0.75, y: pedigreeLayout.parentY)
-                    node(
-                        label: "本羊",
-                        relative: SheepSharePosterRelative(
-                            earTag: snapshot.subject.earTag,
-                            breed: snapshot.subject.breed
-                        ),
-                        width: width * 0.43,
-                        height: pedigreeLayout.subjectNodeHeight,
-                        strong: true
+                    .contentShape(.rect)
+                    .rotationEffect(.degrees(element.rotation))
+                    .onTapGesture { onSelect?(element.id) }
+                    // Give movement priority once the drag distance is reached;
+                    // a stationary touch still selects the element.
+                    .highPriorityGesture(
+                        DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                            .onChanged { value in
+                                onSelect?(element.id)
+                                onMove?(element.id, CGSize(width: value.translation.width / interactionScale,
+                                                         height: value.translation.height / interactionScale), false)
+                            }
+                            .onEnded { value in
+                                onMove?(element.id, CGSize(width: value.translation.width / interactionScale,
+                                                         height: value.translation.height / interactionScale), true)
+                            },
+                        including: onMove == nil ? .none : .all
                     )
-                    .position(x: width * 0.5, y: pedigreeLayout.subjectY)
+                    .allowsHitTesting(onSelect != nil && (element.kind != .shade || selectedID == element.id))
+                    .position(x: element.x + element.width / 2, y: element.y + element.height / 2)
+                    .zIndex(element.order)
+            }
+        }
+        .frame(width: 360, height: 640)
+        .clipped()
+        .environment(\.colorScheme, template.theme == .dark ? .dark : .light)
+        .environment(\.dynamicTypeSize, .medium)
+    }
+
+    @ViewBuilder private func layer(_ element: SheepPosterElement) -> some View {
+        switch element.kind {
+        case .text:
+            Text(element.text)
+                .font(element.font.font(size: element.fontSize, text: element.text))
+                .tracking(element.tracking)
+                .foregroundStyle(element.color.color)
+                .multilineTextAlignment(element.centered ? .center : .leading)
+                .lineLimit(element.text.contains("\n") ? 3 : 1)
+                .minimumScaleFactor(0.2)
+        case .photo, .photoBackdrop:
+            if let photo = element.imageData.flatMap(UIImage.init(data:)) ?? sourcePhoto {
+                Image(uiImage: photo).resizable().scaledToFill()
+                    .frame(width: element.width, height: element.height)
+                    .scaleEffect(element.photoZoom)
+                    .offset(x: element.photoX, y: element.photoY)
+                    .clipped()
+                    .blur(radius: element.kind == .photoBackdrop ? 10 : 0, opaque: true)
+                    .mask {
+                        if element.kind == .photo && style != .breeding {
+                            LinearGradient(stops: [
+                                .init(color: .clear, location: 0),
+                                .init(color: .black, location: 0.13),
+                                .init(color: .black, location: 0.90),
+                                .init(color: .clear, location: 1)
+                            ], startPoint: .top, endPoint: .bottom)
+                        } else if element.kind == .photo {
+                            LinearGradient(stops: [
+                                .init(color: .clear, location: 0),
+                                .init(color: .black, location: 0.08),
+                                .init(color: .black, location: 1)
+                            ], startPoint: .top, endPoint: .bottom)
+                        } else { Rectangle() }
+                    }
+            } else {
+                ZStack {
+                    LinearGradient(colors: [palette.panel, palette.background],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                    if element.kind == .photo {
+                        Text("照片待补充").font(.system(size: 11)).tracking(3)
+                            .foregroundStyle(palette.foreground.opacity(0.5))
+                    }
                 }
             }
-            .frame(height: pedigreeLayout.height)
-            .clipped()
-        }
-        .padding(.horizontal, compact ? 0 : 12)
-        .padding(.top, compact ? 2 : 10)
-        .padding(.bottom, compact ? 4 : 10)
-        .background {
-            if compact {
-                Color.clear
+        case .logo, .image:
+            if let customImage = element.imageData.flatMap(UIImage.init(data:)) {
+                Image(uiImage: customImage).resizable().scaledToFit()
+            } else if element.kind == .logo {
+                Image("PosterAppIcon").resizable().scaledToFit()
             } else {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(palette.panel.opacity(0.92))
+                Rectangle().fill(.gray.opacity(0.15))
+                    .overlay { Image(systemName: "photo").foregroundStyle(.secondary) }
+            }
+        case .rule:
+            Rectangle().fill(element.color.color)
+        case .brush:
+            SheepSharePosterBrushStroke().fill(element.color.color)
+        case .mountains:
+            Canvas { context, size in
+                for index in 0..<3 {
+                    var ridge = Path()
+                    ridge.move(to: CGPoint(x: 0, y: size.height))
+                    ridge.addLine(to: CGPoint(x: 0, y: size.height * 0.6))
+                    for step in 1...9 {
+                        let wave = sin(Double(step) * 1.7 + Double(index) * 2.1)
+                        let point = CGPoint(x: size.width * Double(step) / 9,
+                                            y: size.height * (0.35 + Double(index) * 0.16 + wave * 0.14))
+                        ridge.addQuadCurve(to: point, control: CGPoint(x: point.x - size.width / 18,
+                                                                      y: point.y - size.height * 0.14))
+                    }
+                    ridge.addLine(to: CGPoint(x: size.width, y: size.height))
+                    ridge.closeSubpath()
+                    context.fill(ridge, with: .color(element.color.color.opacity(0.10 + Double(index) * 0.06)))
+                }
+            }
+        case .shade:
+            LinearGradient(stops: [
+                .init(color: element.color.color.opacity(0.63), location: 0),
+                .init(color: element.color.color.opacity(0.30), location: 0.28),
+                .init(color: .clear, location: 0.55),
+                .init(color: element.color.color.opacity(0.1), location: 0.73),
+                .init(color: element.color.color.opacity(0.7), location: 1)
+            ], startPoint: .top, endPoint: .bottom)
+        }
+    }
+}
+
+enum SheepSharePosterTypography {
+    // Register bundled OFL fonts once, before both on-screen and exported text
+    // are laid out. This also works offline and on a clean installation.
+    private static let registration: Void = {
+        for name in ["Knewave-Regular", "MaShanZheng-Regular", "NotoSerifSC",
+                     "ZCOOLXiaoWei-Regular", "ZhiMangXing-Regular"] {
+            if let url = Bundle.main.url(forResource: name, withExtension: "ttf") {
+                CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
             }
         }
+    }()
+
+    static func register() { _ = registration }
+
+    static func brush(size: CGFloat) -> Font {
+        _ = registration
+        return .custom("Knewave-Regular", fixedSize: size)
     }
 
-    private var pedigreeLayout: SheepSharePosterPedigreeLayout {
-        SheepSharePosterPedigreeLayout(compact: compact)
+    static func handwriting(size: CGFloat) -> Font {
+        _ = registration
+        return .custom("MaShanZheng-Regular", fixedSize: size)
     }
+}
 
-    private func node(
-        label: String,
-        relative: SheepSharePosterRelative?,
-        width: CGFloat,
-        height: CGFloat,
-        strong: Bool
-    ) -> some View {
-        VStack(spacing: 1) {
-            Text(LocalizedStringKey(label))
-                .font(.system(size: 6.4, weight: .medium))
-                .foregroundStyle(palette.secondaryForeground)
-            Text(relative.map(relativeTitle) ?? "未确认")
-                .font(.system(size: strong ? 8.2 : 7.4, weight: strong ? .semibold : .medium, design: .rounded))
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-        }
-        .frame(width: width, height: height)
-        .background(strong ? palette.nodeStrong : palette.node, in: .rect(cornerRadius: 5))
-        .overlay {
-            RoundedRectangle(cornerRadius: 5)
-                .stroke(relative == nil ? palette.line.opacity(0.65) : palette.accent.opacity(0.42), lineWidth: 0.8)
-        }
-    }
-
-    private func relativeTitle(_ relative: SheepSharePosterRelative) -> String {
-        [relative.earTag, relative.breed]
-            .compactMap { value in
-                guard let value, !value.isEmpty else { return nil }
-                return value
-            }
-            .joined(separator: " · ")
+private struct SheepSharePosterBrushStroke: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let points: [CGPoint] = [
+            .init(x: 0, y: 0.48), .init(x: 0.06, y: 0.18),
+            .init(x: 0.33, y: 0.28), .init(x: 0.76, y: 0.06),
+            .init(x: 1, y: 0.2), .init(x: 0.87, y: 0.43),
+            .init(x: 0.98, y: 0.50), .init(x: 0.67, y: 0.64),
+            .init(x: 0.88, y: 0.72), .init(x: 0.39, y: 0.81),
+            .init(x: 0.03, y: 1), .init(x: 0.1, y: 0.67)
+        ]
+        path.addLines(points.map { CGPoint(x: rect.minX + $0.x * rect.width, y: rect.minY + $0.y * rect.height) })
+        path.closeSubpath()
+        return path
     }
 }
 
 private struct SheepSharePosterPalette {
     let theme: SheepSharePosterTheme
+    var style: SheepSharePosterStyle = .magazine
 
     var background: Color {
-        theme == .dark
-            ? Color(red: 0.025, green: 0.075, blue: 0.15)
-            : Color(red: 0.965, green: 0.98, blue: 1.0)
+        if style == .breeding {
+            return theme == .light
+                ? Color(red: 0.95, green: 0.98, blue: 1)
+                : Color(red: 0.025, green: 0.08, blue: 0.15)
+        }
+        return Color(red: 0.055, green: 0.065, blue: 0.06)
     }
 
     var panel: Color {
-        theme == .dark
-            ? Color(red: 0.035, green: 0.12, blue: 0.24)
-            : Color.white
+        if style == .breeding {
+            return theme == .light
+                ? Color(red: 0.73, green: 0.87, blue: 0.98)
+                : Color(red: 0.08, green: 0.19, blue: 0.31)
+        }
+        return Color(red: 0.19, green: 0.22, blue: 0.18)
     }
 
     var foreground: Color {
-        theme == .dark ? .white : Color(red: 0.08, green: 0.12, blue: 0.18)
+        style == .breeding && theme == .light
+            ? Color(red: 0.025, green: 0.12, blue: 0.22)
+            : Color(red: 0.98, green: 0.97, blue: 0.91)
     }
 
-    var secondaryForeground: Color {
-        foreground.opacity(theme == .dark ? 0.78 : 0.70)
-    }
-
-    var accent: Color { Color(red: 0.05, green: 0.38, blue: 0.88) }
-
-    var sectionTitle: Color {
-        theme == .dark ? .white : accent
-    }
-
-    var logoForeground: Color {
-        theme == .dark ? .white : accent
-    }
-
-    var logoShadow: Color {
-        theme == .dark ? Color.black.opacity(0.55) : Color.white.opacity(0.9)
-    }
-
-    var identityBackdrop: Color {
-        theme == .dark ? Color.black.opacity(0.58) : Color.white.opacity(0.82)
-    }
-
-    var identityRibbon: Color {
-        theme == .dark
-            ? Color(red: 0.46, green: 0.34, blue: 0.16).opacity(0.72)
-            : Color(red: 0.94, green: 0.82, blue: 0.62).opacity(0.72)
-    }
-
-    var line: Color {
-        theme == .dark ? Color.white.opacity(0.45) : accent.opacity(0.36)
-    }
-
-    var node: Color {
-        theme == .dark ? Color.white.opacity(0.055) : Color.gray.opacity(0.055)
-    }
-
-    var nodeStrong: Color {
-        theme == .dark ? accent.opacity(0.075) : accent.opacity(0.035)
-    }
-
-    var photoFallback: Color {
-        theme == .dark ? Color(red: 0.07, green: 0.13, blue: 0.20) : Color(red: 0.84, green: 0.92, blue: 0.99)
-    }
+    var accent: Color { Color(red: 0.98, green: 0.82, blue: 0.18) }
+    var line: Color { foreground.opacity(0.25) }
 }
 
 #Preview("羊只海报四模板") {

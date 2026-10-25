@@ -621,3 +621,31 @@ final class ESheepCloudMigrationState {
         set { phaseRawValue = newValue.rawValue; updatedAt = .now }
     }
 }
+
+
+/// Device-local cache of authenticated control-plane identity. Never transfer
+/// this watermark in a business checkpoint or change historical model shapes.
+@Model
+final class ESheepCloudFarmIdentityState {
+    var id: UUID
+    var farmID: UUID
+    var farmGeneration: Int
+    var name: String
+    var revision: Int64
+
+    var latinName: String? = nil
+    // Older clients persisted the name revision without reading latinName.
+    // A migrated nil is unknown until an authenticated identity is received.
+    var latinNameVerified: Bool = false
+    var legacyIntegrityRecoveryBlocked: Bool = false
+
+    init(farmID: UUID, farmGeneration: Int, name: String, revision: Int64, latinName: String? = nil) {
+        self.id = UUID()
+        self.farmID = farmID
+        self.farmGeneration = farmGeneration
+        self.name = name
+        self.latinName = latinName
+        self.latinNameVerified = true
+        self.revision = revision
+    }
+}

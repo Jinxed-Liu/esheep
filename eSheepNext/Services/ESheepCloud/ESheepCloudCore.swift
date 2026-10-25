@@ -217,6 +217,15 @@ actor ESheepCloudLocalStore {
         guard let item = try context.fetch(attentionQuery).first else {
             throw ESheepCloudCoreError.attentionMissing
         }
+        if item.streamType == "pen", item.fieldKey == "isActive",
+           choice == .useThisDevice || choice == .resubmit {
+            let farm = try context.fetch(FetchDescriptor<FarmRecord>(predicate: #Predicate {
+                $0.id == farmID
+            })).first
+            guard let farm, PenManagementPolicy.canManageLifecycle(role: farm.role) else {
+                throw FarmPermissionError.denied(.manageCatalogs)
+            }
+        }
         if item.state == .resolving {
             guard item.resolutionRawValue == choice.rawValue,
                   item.resolverAccountID == accountID,
@@ -452,16 +461,23 @@ actor ESheepCloudLocalStore {
               state.farmGeneration == farmGeneration else {
             throw ESheepCloudCoreError.farmGenerationChanged
         }
+        let recoverLegacyIdentityHold = try ESheepCloudFarmIdentityProjection.canRecoverLegacyHold(
+            page.farmIdentity, state: state, context: context)
         // An empty response is the normal steady-state case. Do not construct
         // replay indexes or materialize any business/receipt table here.
         if page.events.isEmpty {
             guard !page.hasMore, page.cloudHead >= state.lastAppliedEventSequence else {
                 throw ESheepCloudProjectionError.streamDigestMismatch
             }
-            if page.cloudHead > state.cloudEventHead {
-                state.cloudEventHead = page.cloudHead
-                try context.save()
+            if let identity = page.farmIdentity {
+                try ESheepCloudFarmIdentityProjection.apply(identity, state: state, context: context,
+                    allowLegacyHoldEnrichment: page.cloudHead == state.lastAppliedEventSequence)
             }
+            state.cloudEventHead = max(state.cloudEventHead, page.cloudHead)
+            if recoverLegacyIdentityHold, page.cloudHead == state.lastAppliedEventSequence {
+                restoreVerifiedIdentityPrefix(state)
+            }
+            if context.hasChanges { try context.save() }
             return 0
         }
         var earliestHistoryChange: Date?
@@ -485,6 +501,10 @@ actor ESheepCloudLocalStore {
             }
             replayContext.registerInsertedModels(in: context)
             domainApplyService.rebuildPendingReplayIndex(in: context)
+            if let identity = page.farmIdentity {
+                try ESheepCloudFarmIdentityProjection.apply(identity, state: state, context: context,
+                    allowLegacyHoldEnrichment: true)
+            }
             state.cloudEventHead = max(state.cloudEventHead, page.cloudHead)
             try finalizeAcceptedIntents(farmID: farmID, context: context)
             if let earliestHistoryChange {
@@ -494,6 +514,11 @@ actor ESheepCloudLocalStore {
                     from: earliestHistoryChange
                 )
             }
+            // The old failure rolled the entire page back to a verified prefix.
+            // Recover only its exact legacy identity signature, and only after
+            // every event, digest, dependency and history update succeeds again.
+            // Other integrity holds remain held. Pending photos remain pending.
+            if recoverLegacyIdentityHold { restoreVerifiedIdentityPrefix(state) }
             try context.save()
             return page.events.count
         } catch {
@@ -506,6 +531,15 @@ actor ESheepCloudLocalStore {
             )
             throw error
         }
+    }
+
+    private func restoreVerifiedIdentityPrefix(_ state: ESheepCloudFarmState) {
+        state.integrityState = .passed
+        state.activityState = .active
+        state.integrityFailureTraceID = nil
+        state.lastIntegrityCheckAt = .now
+        state.lastVerifiedEventSequence = state.lastAppliedEventSequence
+        state.lastSafeSaveAt = nil
     }
 
     func markSending(
@@ -926,6 +960,8 @@ actor ESheepCloudLocalStore {
         state.integrityState = .failed
         state.integrityFailureTraceID = traceID
         state.lastSafeSaveAt = nil
+        try ESheepCloudFarmIdentityProjection.blockLegacyHoldRecovery(
+            farmID: farmID, generation: state.farmGeneration, context: context)
         try context.save()
     }
 

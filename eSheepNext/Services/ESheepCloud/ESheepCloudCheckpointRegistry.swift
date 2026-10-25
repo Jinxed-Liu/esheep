@@ -428,6 +428,16 @@ enum ESheepCloudCheckpointRegistry {
             ], farmID: \ESheepCloudEventReceipt.farmID, recordID: \ESheepCloudEventReceipt.id),
         ])
         result.append(contentsOf: [
+            ESheepCloudCheckpointModelAdapter(ESheepCloudFarmIdentityState.self, disposition: .localOnly, fields: [
+                .init("id", \ESheepCloudFarmIdentityState.id),
+                .init("farmID", \ESheepCloudFarmIdentityState.farmID),
+                .init("farmGeneration", \ESheepCloudFarmIdentityState.farmGeneration),
+                .init("name", \ESheepCloudFarmIdentityState.name),
+                .init("revision", \ESheepCloudFarmIdentityState.revision),
+                .init("latinName", \ESheepCloudFarmIdentityState.latinName),
+                .init("latinNameVerified", \ESheepCloudFarmIdentityState.latinNameVerified),
+                .init("legacyIntegrityRecoveryBlocked", \ESheepCloudFarmIdentityState.legacyIntegrityRecoveryBlocked),
+            ], farmID: \ESheepCloudFarmIdentityState.farmID, recordID: \ESheepCloudFarmIdentityState.id),
             ESheepCloudCheckpointModelAdapter(ESheepCloudFarmState.self, disposition: .localOnly, fields: [
                 .init("id", \ESheepCloudFarmState.id),
                 .init("farmID", \ESheepCloudFarmState.farmID),
@@ -602,10 +612,12 @@ enum ESheepCloudCheckpointRegistry {
                 .init("operationalAlertsConfiguredAt", \FarmCareRuleRecord.operationalAlertsConfiguredAt),
                 .init("alertDigestEnabled", \FarmCareRuleRecord.alertDigestEnabled),
                 .init("alertDigestMinuteOfDay", \FarmCareRuleRecord.alertDigestMinuteOfDay),
+                .init("reproductionSettingsJSON", \FarmCareRuleRecord.reproductionSettingsJSON),
                 .init("createdAt", \FarmCareRuleRecord.createdAt),
                 .init("updatedAt", \FarmCareRuleRecord.updatedAt),
                 .init("revision", \FarmCareRuleRecord.revision),
-            ], farmID: \FarmCareRuleRecord.farmID, recordID: \FarmCareRuleRecord.id),
+            ], farmID: \FarmCareRuleRecord.farmID, recordID: \FarmCareRuleRecord.id,
+                additiveNullableFields: ["reproductionSettingsJSON"]),
         ])
         result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(FarmCheckpointRecord.self, disposition: .localOnly, fields: [
@@ -1303,6 +1315,9 @@ enum ESheepCloudCheckpointRegistry {
                 .init("semenID", \ReproductionRecord.semenID),
                 .init("batchID", \ReproductionRecord.batchID),
                 .init("relatedBreedingRecordID", \ReproductionRecord.relatedBreedingRecordID),
+                .init("reproductionCycleID", \ReproductionRecord.reproductionCycleID),
+                .init("breedingRoundID", \ReproductionRecord.breedingRoundID),
+                .init("breedingIntentRawValue", \ReproductionRecord.breedingIntentRawValue),
                 .init("semenNameSnapshot", \ReproductionRecord.semenNameSnapshot),
                 .init("semenDonorID", \ReproductionRecord.semenDonorID),
                 .init("semenDonorNameSnapshot", \ReproductionRecord.semenDonorNameSnapshot),
@@ -1319,7 +1334,7 @@ enum ESheepCloudCheckpointRegistry {
                 .init("updatedAt", \ReproductionRecord.updatedAt),
                 .init("revision", \ReproductionRecord.revision),
                 .init("deletedAt", \ReproductionRecord.deletedAt),
-            ], farmID: \ReproductionRecord.farmID, recordID: \ReproductionRecord.id),
+            ], farmID: \ReproductionRecord.farmID, recordID: \ReproductionRecord.id, additiveNullableFields: ["reproductionCycleID", "breedingRoundID", "breedingIntentRawValue"]),
         ])
         result.append(contentsOf: [
             ESheepCloudCheckpointModelAdapter(RevokedCapabilityCertificateRecord.self, disposition: .localOnly, fields: [

@@ -28,6 +28,7 @@ struct ESheepCloudFarmAccessV2: Sendable, Equatable {
     let memberAccountID: UUID
     let role: FarmRole
     let initialSyncReady: Bool
+    var farmIdentity: ESheepCloudFarmIdentityV2? = nil
 }
 
 protocol ESheepCloudMembershipGateway: Sendable {
@@ -56,4 +57,10 @@ enum ESheepCloudMembershipError: LocalizedError {
             "当前登录账号与 eSheep+ 云返回的牧场权限不一致，请重新登录。"
         }
     }
+}
+
+
+protocol ESheepCloudFarmIdentityGateway: Sendable {
+    func farmIdentity(farmID: UUID, generation: Int) async throws -> ESheepCloudFarmIdentityV2
+    func renameFarm(farmID: UUID, generation: Int, name: String, latinName: String?, expectedRevision: Int64, requestID: UUID) async throws -> ESheepCloudFarmIdentityV2
 }

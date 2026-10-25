@@ -44,6 +44,7 @@ struct SheepAvatarView: View {
 struct SheepBannerPhotoView: View {
     let photos: [SheepPhotoReference]
     var sex: SheepSex = .unknown
+    var onPhotoLoaded: ((UUID) -> Void)? = nil
 
     var body: some View {
         ZStack {
@@ -59,7 +60,8 @@ struct SheepBannerPhotoView: View {
                 SheepPhotoImage(
                     photos: photos,
                     maximumPixelSize: 1_200,
-                    renderingMode: .fullFrame
+                    renderingMode: .fullFrame,
+                    onPhotoLoaded: onPhotoLoaded
                 )
             } else if sex != .unknown {
                 SheepLabelIcon(color: sex == .ram ? .yellow : .green, width: 130)
@@ -78,6 +80,7 @@ private struct SheepPhotoImage: View {
     let photos: [SheepPhotoReference]
     let maximumPixelSize: Int
     let renderingMode: SheepPhotoRenderingMode
+    var onPhotoLoaded: ((UUID) -> Void)? = nil
     @State private var image: UIImage?
     @State private var didFail = false
 
@@ -115,7 +118,11 @@ private struct SheepPhotoImage: View {
                     renderingMode: renderingMode,
                     collaboration: collaboration
                 )
-                if loaded != nil { break }
+                if loaded != nil {
+                    guard !Task.isCancelled else { return }
+                    onPhotoLoaded?(photo.id)
+                    break
+                }
             }
             guard !Task.isCancelled else { return }
             image = loaded

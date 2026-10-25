@@ -87,6 +87,17 @@ enum FarmWidgetSnapshotBuilder {
             card.rows = [.init(label: "今日预产提醒", value: "\(due.count { $0.dueAt < tomorrow }) 条"),
                          .init(label: "涉及母羊", value: "\(Set(due.compactMap(\.sheepID)).count) 只")]
         case .pregnancy, .weaning:
+            if kind == .pregnancy && alerts.reproductionConfigured {
+                let reminders = alerts.operationalAlerts.count { $0.kind == .reproductionReminder }
+                let warnings = alerts.operationalAlerts.count { $0.kind == .reproductionWarning }
+                let reviews = alerts.operationalAlerts.count { $0.kind == .reproductionReview }
+                card.subtitle = "范围内繁殖母羊待处理"
+                card.value = "\(reminders + warnings + reviews)"; card.unit = "只"
+                card.rows = [.init(label: "提醒", value: "\(reminders) 只"), .init(label: "警告", value: "\(warnings) 只"),
+                    .init(label: "待核实", value: "\(reviews) 只")]
+                card.note = "同羊多项原因合并 · 沿用繁殖分析范围"
+                break
+            }
             guard alerts.rule?.isConfigured == true else { return .waiting(kind: kind, message: "请先配置待办与异常规则") }
             let soon: FarmOperationalAlertKind = kind == .pregnancy ? .pregnancyCheckDueSoon : .weaningDueSoon
             let overdue: FarmOperationalAlertKind = kind == .pregnancy ? .pregnancyCheckOverdue : .weaningOverdue

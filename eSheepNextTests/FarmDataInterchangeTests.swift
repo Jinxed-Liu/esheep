@@ -75,7 +75,10 @@ final class FarmDataInterchangeTests: XCTestCase {
         let csv = "耳号,品种,性别,圈舍,入场日期,出生日期,备注\nA001,湖羊,母羊,一号圈,2026-01-01,2025-01-01,导入\n"
         let preview = try FarmDataInterchange.preview(data: Data(csv.utf8), fileExtension: "csv")
 
-        let result = try FarmImportCommitService.commit(preview, account: account, farm: farm, context: context)
+        XCTAssertEqual(try FarmImportCommitService.newPenNames(preview, farmID: farm.id, context: context), ["一号圈"])
+        XCTAssertThrowsError(try FarmImportCommitService.commit(preview, account: account, farm: farm, context: context))
+        XCTAssertTrue(try context.fetch(FetchDescriptor<PenRecord>()).isEmpty)
+        let result = try FarmImportCommitService.commit(preview, account: account, farm: farm, context: context, approvedNewPenNames: ["一号圈"])
 
         XCTAssertEqual(result, FarmImportCommitResult(importedCount: 1, skippedCount: 0))
         XCTAssertEqual(try context.fetch(FetchDescriptor<SheepRecord>()).filter { $0.farmID == farm.id }.count, 1)
@@ -85,6 +88,12 @@ final class FarmDataInterchangeTests: XCTestCase {
 
         let second = try FarmDataInterchange.preview(data: Data(csv.utf8), fileExtension: "csv", existingEarTags: ["A001"])
         XCTAssertTrue(second.acceptedRows.isEmpty)
+        // A preview can become stale after another entry creates the sheep.
+        // Skipped sheep must not create unused pens from their old preview.
+        let stale = try FarmDataInterchange.preview(data: Data(csv.replacingOccurrences(of: "一号圈", with: "陌生新舍").utf8), fileExtension: "csv")
+        XCTAssertTrue(try FarmImportCommitService.newPenNames(stale, farmID: farm.id, context: context).isEmpty)
+        XCTAssertEqual(try FarmImportCommitService.commit(stale, account: account, farm: farm, context: context), FarmImportCommitResult(importedCount: 0, skippedCount: 1))
+        XCTAssertEqual(try context.fetch(FetchDescriptor<PenRecord>()).filter { $0.farmID == farm.id }.count, 1)
     }
 
     func testSingleSheepWorkbookContainsTimelineFacts() throws {

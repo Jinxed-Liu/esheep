@@ -145,6 +145,11 @@ function addField(fields, label, value) {
   fields.push({ label, value: String(value) });
 }
 
+export function projectFarmOperationIdentity(row, payload = {}, actorName) {
+  const { id, at, actor, revision } = eventBase(row, unwrapBootstrapPayload(payload), actorName);
+  return { id, at, actor, revision };
+}
+
 function eventBase(row, payload, actorName) {
   const careOccurredAt = nestedValue(payload?.careCommand, "occurredAt");
   return {
@@ -643,6 +648,14 @@ export function projectFarmOperationEvent({
 
   const alertRules = commandValue(payload, "updateOperationalAlertRules");
   if (alertRules) {
+    if (alertRules.updatesReproductionOnly === true && alertRules.reproductionSettings) {
+      const settings = alertRules.reproductionSettings;
+      addField(fields, "参与羊舍", `${settings.selectedPenIDs?.length ?? 0} 个`);
+      addField(fields, "参配月龄", `超过 ${settings.minimumAgeMonths} 月龄`);
+      addField(fields, "人工确认可参配", `${settings.youthBreedingConfirmedSheepIDs?.length ?? 0} 只`);
+      return { ...base, type: "note", label: "繁殖分析设置更新", object: "牧场繁殖设置",
+        detail: `参与羊舍 ${settings.selectedPenIDs?.length ?? 0} 个 · 参配须月龄及人工确认`, note: "", fields };
+    }
     addField(fields, "妊娠期", `${alertRules.gestationDays} 天`);
     addField(fields, "孕检日龄", `${alertRules.pregnancyCheckDays} 天`);
     addField(fields, "断奶日龄", `${alertRules.weaningAgeDays} 天`);
@@ -737,6 +750,10 @@ export function projectionToReproductionRecord(row, payload = {}) {
       penID: lambing.penID ?? null,
       at: isoDate(at),
       kind: "lambing",
+      reproductionCycleID: lambing.reproductionCycleID ?? null,
+      breedingRoundID: lambing.breedingRoundID ?? null,
+      relatedBreedingRecordID: lambing.relatedBreedingRecordID ?? null,
+      breedingIntentRawValue: lambing.breedingIntent ?? null,
       result: "",
       lambCount: offspring.length,
       parity: finiteInteger(lambing.parity),
@@ -765,6 +782,10 @@ export function projectionToReproductionRecord(row, payload = {}) {
     penID: firstValue(payload, "optionalIdentifiers", "penID") ?? null,
     at: isoDate(at),
     kind: firstValue(payload, "strings", "kind") ?? "reproduction",
+    reproductionCycleID: firstValue(payload, "optionalIdentifiers", "reproductionCycleID") ?? null,
+    breedingRoundID: firstValue(payload, "optionalIdentifiers", "breedingRoundID") ?? null,
+    relatedBreedingRecordID: firstValue(payload, "optionalIdentifiers", "relatedBreedingRecordID") ?? null,
+    breedingIntentRawValue: firstValue(payload, "optionalStrings", "breedingIntentRawValue") ?? null,
     result: firstValue(payload, "strings", "result") ?? "",
     lambCount: finiteInteger(firstValue(payload, "integers", "lambCount")),
     parity: finiteInteger(firstValue(payload, "integers", "parity")),
@@ -924,4 +945,12 @@ export function buildFarmInsightData({
     dailyPenCounts,
   };
   return buildDefaultAppAnalytics(snapshot, { now: asOf, timeZone });
+}
+
+// Each verified workspace owns its analysis result and its original cutoff.
+// Home needs the underlying facts, but the four reports are first used in Insights.
+export function createFarmInsightReader(options) {
+  const input = { ...options, asOf: options.asOf ?? new Date() };
+  let result;
+  return () => result ??= buildFarmInsightData(input);
 }

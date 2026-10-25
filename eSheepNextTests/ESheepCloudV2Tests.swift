@@ -1831,6 +1831,27 @@ final class ESheepCloudV2Tests: XCTestCase {
         )
     }
 
+    func testWorkerCannotApplyPenLifecycleConflictButCanKeepCloud() async throws {
+        let fixture = try makeFixture()
+        let farm = FarmRecord(ownerAccountID: fixture.accountID, name: "权限测试", role: .worker)
+        farm.id = fixture.farmID
+        fixture.context.insert(farm)
+        let attention = makeAttention(id: UUID(), commandID: UUID(), deviceValue: .boolean(false), cloudValue: .boolean(true), fixture: fixture)
+        attention.streamType = "pen"
+        attention.fieldKey = "isActive"
+        fixture.context.insert(attention)
+        try fixture.context.save()
+        let store = ESheepCloudLocalStore(container: fixture.container)
+        do {
+            _ = try await store.beginAttentionResolution(attentionID: attention.id, choice: .useThisDevice,
+                farmID: fixture.farmID, accountID: fixture.accountID, deviceID: fixture.deviceID)
+            XCTFail("Workers must not change a pen's lifecycle through a conflict decision.")
+        } catch is FarmPermissionError { }
+        let kept = try await store.beginAttentionResolution(attentionID: attention.id, choice: .keepCloud,
+            farmID: fixture.farmID, accountID: fixture.accountID, deviceID: fixture.deviceID)
+        XCTAssertEqual(kept.choice, .keepCloud)
+    }
+
     func testAttentionResolutionSurvivesTimeoutAndQueriesBeforeRetry() async throws {
         let fixture = try makeFixture()
         let attentionID = UUID()

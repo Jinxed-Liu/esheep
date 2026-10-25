@@ -82,9 +82,7 @@ enum AppSchemaV1: VersionedSchema {
         }
     }
 
-    static var models: [any PersistentModel.Type] {
-        AppSchema.preV3BusinessModelTypesWithoutDomainOperation + [DomainOperation.self, OutboxItem.self]
-    }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV3BusinessModelTypesWithoutDomainOperation + [DomainOperation.self, OutboxItem.self]) }
 }
 
 enum AppSchemaV2: VersionedSchema {
@@ -127,34 +125,32 @@ enum AppSchemaV2: VersionedSchema {
         }
     }
 
-    static var models: [any PersistentModel.Type] {
-        AppSchema.preV3BusinessModelTypes + [OutboxItem.self] + AppSchema.insightModelTypes
-    }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV3BusinessModelTypes + [OutboxItem.self] + AppSchema.insightModelTypes) }
 }
 
 enum AppSchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV4ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV4ModelTypes) }
 }
 
 enum AppSchemaV4: VersionedSchema {
     static let versionIdentifier = Schema.Version(4, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV5ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV5ModelTypes) }
 }
 
 enum AppSchemaV5: VersionedSchema {
     static let versionIdentifier = Schema.Version(5, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV6ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV6ModelTypes) }
 }
 
 enum AppSchemaV6: VersionedSchema {
     static let versionIdentifier = Schema.Version(6, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV7ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV7ModelTypes) }
 }
 
 enum AppSchemaV7: VersionedSchema {
     static let versionIdentifier = Schema.Version(7, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV8ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV8ModelTypes) }
 
     // Freeze the feed domain exactly as it existed before the rebuild.  These
     // are schema-only types; runtime code continues to use the V8 models
@@ -309,7 +305,7 @@ enum AppSchemaV7: VersionedSchema {
 
 enum AppSchemaV8: VersionedSchema {
     static let versionIdentifier = Schema.Version(8, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV9ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV9ModelTypes) }
 
     /// Freeze the V8 care-rule shape before V9 adds operational-alert fields.
     /// Existing V8 stores must be recognized without treating the live V9
@@ -345,7 +341,7 @@ enum AppSchemaV8: VersionedSchema {
 /// devices. V9.1 adds only the configurable early-warning lead time.
 enum AppSchemaV9_0: VersionedSchema {
     static let versionIdentifier = Schema.Version(9, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV9_1ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV9_1ModelTypes) }
 
     @Model
     final class FarmCareRuleRecord {
@@ -388,7 +384,7 @@ enum AppSchemaV9_0: VersionedSchema {
 
 enum AppSchemaV9: VersionedSchema {
     static let versionIdentifier = Schema.Version(9, 1, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV10ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV10ModelTypes) }
 
     /// Freeze the V9 feed shape. V10 persists explicit excluded sheep UUIDs;
     /// keeping this schema-only type prevents an installed V9 store from
@@ -458,12 +454,12 @@ enum AppSchemaV9: VersionedSchema {
 
 enum AppSchemaV10: VersionedSchema {
     static let versionIdentifier = Schema.Version(10, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV11ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV11ModelTypes) }
 }
 
 enum AppSchemaV11: VersionedSchema {
     static let versionIdentifier = Schema.Version(11, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.preV12ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.preV12ModelTypes) }
 }
 
 enum AppSchemaV12: VersionedSchema {
@@ -524,23 +520,181 @@ enum AppSchemaV12: VersionedSchema {
         }
     }
 
-    static var models: [any PersistentModel.Type] {
-        AppSchema.v12ModelTypes
-    }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.v12ModelTypes) }
 }
 
 enum AppSchemaV13: VersionedSchema {
     static let versionIdentifier = Schema.Version(13, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.v13ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.v13ModelTypes) }
 }
 
 enum AppSchemaV14: VersionedSchema {
     static let versionIdentifier = Schema.Version(14, 0, 0)
-    static var models: [any PersistentModel.Type] { AppSchema.v14ModelTypes }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.v14ModelTypes) }
 }
 
 enum AppSchemaV15: VersionedSchema {
     static let versionIdentifier = Schema.Version(15, 0, 0)
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.v15ModelTypes) }
+}
+
+enum AppSchemaV16: VersionedSchema {
+    static let versionIdentifier = Schema.Version(16, 0, 0)
+
+    // Freeze the exact V16 care-rule shape before V17 adds shared reproduction settings.
+    @Model
+    final class FarmCareRuleRecord {
+        var id: UUID
+        var farmID: UUID
+        var pregnancyCheckDays: Int
+        var gestationDays: Int
+        var weaningAgeDays: Int?
+        var warningLeadDays: Int = 0
+        var operationalAlertsConfiguredAt: Date?
+        var alertDigestEnabled: Bool = false
+        var alertDigestMinuteOfDay: Int = 480
+        var createdAt: Date
+        var updatedAt: Date
+        var revision: Int
+
+        init(
+            id: UUID = UUID(),
+            farmID: UUID,
+            pregnancyCheckDays: Int = 45,
+            gestationDays: Int = 150,
+            weaningAgeDays: Int? = nil,
+            warningLeadDays: Int = 0,
+            operationalAlertsConfiguredAt: Date? = nil,
+            alertDigestEnabled: Bool = false,
+            alertDigestMinuteOfDay: Int = 480
+        ) {
+            self.id = id
+            self.farmID = farmID
+            self.pregnancyCheckDays = pregnancyCheckDays
+            self.gestationDays = gestationDays
+            self.weaningAgeDays = weaningAgeDays
+            self.warningLeadDays = warningLeadDays
+            self.operationalAlertsConfiguredAt = operationalAlertsConfiguredAt
+            self.alertDigestEnabled = alertDigestEnabled
+            self.alertDigestMinuteOfDay = alertDigestMinuteOfDay
+            self.createdAt = .now
+            self.updatedAt = .now
+            self.revision = 1
+        }
+    }
+
+    static var models: [any PersistentModel.Type] { AppSchema.freezeCareRules(AppSchema.modelTypes) }
+}
+
+enum AppSchemaV17: VersionedSchema {
+    static let versionIdentifier = Schema.Version(17, 0, 0)
+    @Model
+    final class ReproductionRecord {
+        var id: UUID
+        var farmID: UUID
+        var eweID: UUID
+        var kindRawValue: String
+        var occurredAt: Date
+        var sireID: UUID?
+        var semenID: UUID? = nil
+        var batchID: UUID? = nil
+        var relatedBreedingRecordID: UUID? = nil
+        var semenNameSnapshot: String?
+        var semenDonorID: UUID? = nil
+        var semenDonorNameSnapshot: String? = nil
+        var semenDonorRegistrationNumberSnapshot: String? = nil
+        var semenDonorBreedSnapshot: String? = nil
+        var paternalSourceRawValue: String? = nil
+        var result: String
+        var lambCount: Int
+        var parity: Int?
+        var birthDeadCount: Int?
+        var note: String
+        var legacySourceKey: String?
+        var createdAt: Date
+        var updatedAt: Date = Date.now
+        var revision: Int = 1
+        var deletedAt: Date?
+
+        init(id: UUID = UUID(), farmID: UUID, eweID: UUID, kind: ReproductionRecordKind, occurredAt: Date, sireID: UUID? = nil, semenID: UUID? = nil, batchID: UUID? = nil, relatedBreedingRecordID: UUID? = nil, semenNameSnapshot: String? = nil, semenDonorID: UUID? = nil, semenDonorNameSnapshot: String? = nil, semenDonorRegistrationNumberSnapshot: String? = nil, semenDonorBreedSnapshot: String? = nil, paternalSource: PaternalIdentitySource? = nil, result: String = "", lambCount: Int = 0, parity: Int? = nil, birthDeadCount: Int? = nil, note: String = "", legacySourceKey: String? = nil) {
+            self.id = id
+            self.farmID = farmID
+            self.eweID = eweID
+            self.kindRawValue = kind.rawValue
+            self.occurredAt = occurredAt
+            self.sireID = sireID
+            self.semenID = semenID
+            self.batchID = batchID
+            self.relatedBreedingRecordID = relatedBreedingRecordID
+            self.semenNameSnapshot = semenNameSnapshot
+            self.semenDonorID = semenDonorID
+            self.semenDonorNameSnapshot = semenDonorNameSnapshot
+            self.semenDonorRegistrationNumberSnapshot = semenDonorRegistrationNumberSnapshot
+            self.semenDonorBreedSnapshot = semenDonorBreedSnapshot
+            self.paternalSourceRawValue = paternalSource?.rawValue
+            self.result = result
+            self.lambCount = lambCount
+            self.parity = parity
+            self.birthDeadCount = birthDeadCount
+            self.note = note
+            self.legacySourceKey = legacySourceKey
+            self.createdAt = .now
+            self.updatedAt = self.createdAt
+        }
+
+        var kind: ReproductionRecordKind { ReproductionRecordKind(rawValue: kindRawValue) ?? .breeding }
+        var paternalSource: PaternalIdentitySource { PaternalIdentitySource(rawValue: paternalSourceRawValue ?? "") ?? .unknown }
+    }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeReproduction(AppSchema.modelTypes) }
+}
+
+enum AppSchemaV18: VersionedSchema {
+    static let versionIdentifier = Schema.Version(18, 0, 0)
+    @Model
+    final class ESheepCloudFarmIdentityState {
+        var id: UUID
+        var farmID: UUID
+        var farmGeneration: Int
+        var name: String
+        var revision: Int64
+
+        init(farmID: UUID, farmGeneration: Int, name: String, revision: Int64) {
+            self.id = UUID()
+            self.farmID = farmID
+            self.farmGeneration = farmGeneration
+            self.name = name
+            self.revision = revision
+        }
+    }
+
+    static var models: [any PersistentModel.Type] { AppSchema.freezeIdentity(AppSchema.modelTypes) }
+}
+
+enum AppSchemaV19: VersionedSchema {
+    static let versionIdentifier = Schema.Version(19, 0, 0)
+    @Model
+    final class ESheepCloudFarmIdentityState {
+        var id: UUID
+        var farmID: UUID
+        var farmGeneration: Int
+        var name: String
+        var revision: Int64
+        var latinName: String? = nil
+
+        init(farmID: UUID, farmGeneration: Int, name: String, revision: Int64, latinName: String? = nil) {
+            self.id = UUID()
+            self.farmID = farmID
+            self.farmGeneration = farmGeneration
+            self.name = name
+            self.revision = revision
+            self.latinName = latinName
+        }
+    }
+    static var models: [any PersistentModel.Type] { AppSchema.freezeUnverifiedIdentity(AppSchema.modelTypes) }
+}
+
+enum AppSchemaV20: VersionedSchema {
+    static let versionIdentifier = Schema.Version(20, 0, 0)
     static var models: [any PersistentModel.Type] { AppSchema.modelTypes }
 }
 
@@ -563,6 +717,11 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             AppSchemaV13.self,
             AppSchemaV14.self,
             AppSchemaV15.self,
+            AppSchemaV16.self,
+            AppSchemaV17.self,
+            AppSchemaV18.self,
+            AppSchemaV19.self,
+            AppSchemaV20.self,
         ]
     }
 
@@ -703,12 +862,33 @@ enum AppSchemaMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: AppSchemaV12.self, toVersion: AppSchemaV13.self),
             .lightweight(fromVersion: AppSchemaV13.self, toVersion: AppSchemaV14.self),
             .lightweight(fromVersion: AppSchemaV14.self, toVersion: AppSchemaV15.self),
+            .lightweight(fromVersion: AppSchemaV15.self, toVersion: AppSchemaV16.self),
+            .lightweight(fromVersion: AppSchemaV16.self, toVersion: AppSchemaV17.self),
+            .lightweight(fromVersion: AppSchemaV17.self, toVersion: AppSchemaV18.self),
+            .lightweight(fromVersion: AppSchemaV18.self, toVersion: AppSchemaV19.self),
+            .lightweight(fromVersion: AppSchemaV19.self, toVersion: AppSchemaV20.self),
         ]
     }
 }
 
 enum AppSchema {
-    static let currentVersion = "15.0.0"
+    fileprivate static func freezeUnverifiedIdentity(_ models: [any PersistentModel.Type]) -> [any PersistentModel.Type] {
+        models.map { ObjectIdentifier($0) == ObjectIdentifier(ESheepCloudFarmIdentityState.self) ? AppSchemaV19.ESheepCloudFarmIdentityState.self : $0 }
+    }
+
+    fileprivate static func freezeIdentity(_ models: [any PersistentModel.Type]) -> [any PersistentModel.Type] {
+        models.map { ObjectIdentifier($0) == ObjectIdentifier(ESheepCloudFarmIdentityState.self) ? AppSchemaV18.ESheepCloudFarmIdentityState.self : $0 }
+    }
+
+    fileprivate static func freezeReproduction(_ models: [any PersistentModel.Type]) -> [any PersistentModel.Type] {
+        freezeIdentity(models).map { ObjectIdentifier($0) == ObjectIdentifier(ReproductionRecord.self) ? AppSchemaV17.ReproductionRecord.self : $0 }
+    }
+
+    fileprivate static func freezeCareRules(_ models: [any PersistentModel.Type]) -> [any PersistentModel.Type] {
+        freezeReproduction(models).map { ObjectIdentifier($0) == ObjectIdentifier(FarmCareRuleRecord.self) ? AppSchemaV16.FarmCareRuleRecord.self : $0 }
+    }
+
+    static let currentVersion = "20.0.0"
 
     static func defaultStoreURL(name: String = "eSheepNext") -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -1034,8 +1214,12 @@ enum AppSchema {
 
     fileprivate static var v14ModelTypes: [any PersistentModel.Type] { v13ModelTypes + [ESheepCloudCheckpointState.self] }
 
-    static var modelTypes: [any PersistentModel.Type] {
+    fileprivate static var v15ModelTypes: [any PersistentModel.Type] {
         v14ModelTypes + [SheepLabelRecord.self, SheepLabelAssignmentRecord.self, SheepLabelChangeRecord.self]
+    }
+
+    static var modelTypes: [any PersistentModel.Type] {
+        v15ModelTypes + [ESheepCloudFarmIdentityState.self]
     }
 
     fileprivate static var preV4ModelTypes: [any PersistentModel.Type] {
@@ -1079,7 +1263,7 @@ enum AppSchema {
     }
 
     static func makeSchema() -> Schema {
-        Schema(versionedSchema: AppSchemaV15.self)
+        Schema(versionedSchema: AppSchemaV20.self)
     }
 
     static func makeConfiguration(

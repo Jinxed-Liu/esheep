@@ -68,7 +68,7 @@ export function HomeDashboard({ workspace, environment, onNavigate, onCreateReco
         </div>
         <div className="sky-metrics">
           {metrics.map(({ key, label, unit, icon, tone, page }) => (
-            <button key={key} className="sky-metric" type="button" onClick={() => onNavigate(page)}>
+            <button key={key} className="sky-metric" type="button" onClick={() => onNavigate(page, page === "pens" ? { penScope: "occupied" } : {})}>
               <GlassIcon icon={icon} tone={tone} />
               <span className="sky-metric-copy"><span>{label}</span><strong>{count(workspace.metrics[key])}<small>{unit}</small></strong></span>
             </button>
@@ -86,7 +86,7 @@ export function HomeDashboard({ workspace, environment, onNavigate, onCreateReco
           </button>
           <button className="sky-production-row" type="button" onClick={() => onNavigate("pens")}>
             <GlassIcon icon={Barn} tone="blue" />
-            <span className="sky-row-copy"><strong>圈舍状态</strong><small>查看各圈舍羊只分布与状态</small><span className="sky-row-details">圈舍信息<span>·</span>存栏数量<span>·</span>羊只状态<span>·</span>管理记录</span></span>
+            <span className="sky-row-copy"><strong>羊舍管理</strong><small>查看存栏，维护羊舍档案与启用状态</small><span className="sky-row-details">新建羊舍<span>·</span>编辑资料<span>·</span>停用与启用<span>·</span>安全删除</span></span>
             <CaretRight size={23} />
           </button>
         </section>

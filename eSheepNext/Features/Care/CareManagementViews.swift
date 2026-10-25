@@ -481,6 +481,7 @@ struct ReproductionBatchEntryView: View {
     @Query private var reminders: [CareReminderRecord]
     let account: AccountProfile; let farm: FarmRecord
     private let service = FarmCommandService()
+    @State private var breedingIntents: [UUID: BreedingIntent] = [:]
     @State private var kind = ReproductionRecordKind.breeding; @State private var selected = Set<UUID>(); @State private var results: [UUID: String] = [:]; @State private var relatedBreedings: [UUID: UUID] = [:]; @State private var sireID: UUID?; @State private var semenID: UUID?; @State private var semenUnits = "1"; @State private var occurredAt = Date.now; @State private var reminderAt = Date.now; @State private var note = ""; @State private var errorMessage: String?
 
     init(
@@ -527,6 +528,7 @@ struct ReproductionBatchEntryView: View {
             ProductionDraftField("selected", $selected, reset: { [] }),
             ProductionDraftField("results", $results, reset: { [:] }),
             ProductionDraftField("relatedBreedings", $relatedBreedings, reset: { [:] }),
+            ProductionDraftField("breedingIntents", $breedingIntents, reset: { [:] }),
             ProductionDraftField("sireID", $sireID, reset: { nil }),
             ProductionDraftField("semenID", $semenID, reset: { nil }),
             ProductionDraftField("semenUnits", $semenUnits, reset: { "" }),
@@ -570,6 +572,21 @@ struct ReproductionBatchEntryView: View {
                         .buttonStyle(.borderless)
                         .accessibilityLabel("移除母羊耳号 \(ewe.earTag)")
                     }
+                    let cycle = ReproductionCycleResolver.resolve(eweID: ewe.id,
+                        facts: ReproductionCycleResolver.facts(records: reproduction), asOf: occurredAt)
+                    Text(verbatim: "\(cycle.parityText) · \(cycle.targetParityText) · \(cycle.displayState)")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    if kind == .breeding {
+                        Picker("配种轮次", selection: Binding(get: { breedingIntents[ewe.id] ?? .newRound }, set: { breedingIntents[ewe.id] = $0; relatedBreedings.removeValue(forKey: ewe.id) })) {
+                            ForEach(BreedingIntent.allCases) { Text(verbatim: $0.title).tag($0) }
+                        }
+                        if breedingIntents[ewe.id] == .supplement {
+                            Picker("本轮关联配种", selection: breedingBinding(for: ewe.id)) {
+                                Text("请选择关联配种").tag(UUID?.none)
+                                ForEach(openBreedings(for: ewe.id), id: \.id) { record in Text(verbatim: breedingLabel(record)).tag(UUID?.some(record.id)) }
+                            }
+                        }
+                    }
                     if selected.contains(ewe.id), kind != .breeding {
                         TextField("\(ewe.earTag)结果", text: Binding(get: { results[ewe.id, default: ""] }, set: { results[ewe.id] = $0 }))
                         Picker("关联配种", selection: breedingBinding(for: ewe.id)) {
@@ -611,16 +628,41 @@ struct ReproductionBatchEntryView: View {
         .onChange(of: semenID) { _, value in guard !entrySession.isApplyingFields else { return }; if value != nil { sireID = nil } }
     }
     private func remove(_ id: UUID) {
+        breedingIntents.removeValue(forKey: id)
         selected.remove(id)
         results.removeValue(forKey: id)
         relatedBreedings.removeValue(forKey: id)
     }
     private func breedingBinding(for eweID: UUID) -> Binding<UUID?> { Binding(get: { relatedBreedings[eweID] }, set: { value in if let value { relatedBreedings[eweID] = value } else { relatedBreedings.removeValue(forKey: eweID) } }) }
-    private func openBreedings(for eweID: UUID) -> [ReproductionRecord] { reproduction.filter { record in record.farmID == farm.id && record.eweID == eweID && record.kind == .breeding && record.deletedAt == nil && record.occurredAt <= occurredAt && !reproduction.contains { closure in closure.farmID == farm.id && closure.relatedBreedingRecordID == record.id && closure.deletedAt == nil && (closure.kind == .lambing || closure.kind == .abortion) } } }
+    private func openBreedings(for eweID: UUID) -> [ReproductionRecord] { reproduction.filter { record in record.farmID == farm.id && record.eweID == eweID && record.kind == .breeding && record.deletedAt == nil && record.occurredAt <= occurredAt && !reproduction.contains { closure in closure.farmID == farm.id && closure.eweID == record.eweID && closure.occurredAt >= record.occurredAt && closure.occurredAt <= occurredAt && closure.deletedAt == nil && (closure.kind == .lambing || closure.kind == .abortion) } } }
     private func breedingLabel(_ record: ReproductionRecord) -> String { "\(record.occurredAt.formatted(date: .abbreviated, time: .omitted)) · \(record.paternalSource.displayName)" }
     private func expectedLambingDate(for record: ReproductionRecord) -> Date { Calendar.current.date(byAdding: .day, value: rule?.gestationDays ?? 150, to: record.occurredAt) ?? record.occurredAt }
     private func updateReminder() { let days = kind == .breeding ? (rule?.pregnancyCheckDays ?? 45) : (rule?.gestationDays ?? 150); reminderAt = Calendar.current.date(byAdding: .day, value: days, to: occurredAt) ?? occurredAt }
-    private func save() { let subjects = selected.map { CareReproductionSubjectDraft(eweID: $0, result: results[$0] ?? "", relatedBreedingRecordID: kind == .breeding ? nil : relatedBreedings[$0]) }; let draft = CareReproductionBatchDraft(id: UUID(), kind: kind, subjects: subjects, occurredAt: occurredAt, sireID: kind == .breeding ? sireID : nil, semenID: kind == .breeding ? semenID : nil, semenUnitsPerEweText: kind == .breeding && semenID != nil ? semenUnits : nil, note: note, reminderAt: kind == .abortion ? nil : reminderAt); do { try entrySession.execute(.care(.recordReproductionBatch(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); let refreshed = (try? modelContext.fetch(FetchDescriptor<CareReminderRecord>())) ?? reminders; Task { await notifications.rescheduleCareReminders(refreshed, farmID: farm.id) }; entrySession.complete() } catch { errorMessage = error.localizedDescription } }
+    private func save() {
+        do {
+            let batchID = UUID()
+            let subjects = try selected.sorted { $0.uuidString < $1.uuidString }.map { eweID in
+                let subjectID = UUID()
+                let intent: BreedingIntent? = kind == .breeding ? (breedingIntents[eweID] ?? .newRound) : nil
+                let relatedID = kind == .breeding && intent != .supplement ? nil : relatedBreedings[eweID]
+                let value = try ReproductionEntryAssociation.resolve(eweID: eweID,
+                    recordID: StableCloudUUID.derived(namespace: batchID, name: subjectID.uuidString.lowercased()),
+                    kind: kind, occurredAt: occurredAt, records: reproduction, relatedID: relatedID, intent: intent, requiresExplicitRound: true)
+                return CareReproductionSubjectDraft(id: subjectID, eweID: eweID, result: results[eweID] ?? "",
+                    relatedBreedingRecordID: relatedID, reproductionCycleID: value.cycleID,
+                    breedingRoundID: value.roundID, breedingIntent: intent)
+            }
+            let draft = CareReproductionBatchDraft(id: batchID, kind: kind, subjects: subjects, occurredAt: occurredAt,
+                sireID: kind == .breeding ? sireID : nil, semenID: kind == .breeding ? semenID : nil,
+                semenUnitsPerEweText: kind == .breeding && semenID != nil ? semenUnits : nil,
+                note: note, reminderAt: kind == .abortion ? nil : reminderAt)
+            try entrySession.execute(.care(.recordReproductionBatch(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            let refreshed = (try? modelContext.fetch(FetchDescriptor<CareReminderRecord>())) ?? reminders
+            Task { await notifications.rescheduleCareReminders(refreshed, farmID: farm.id) }
+            entrySession.complete()
+        } catch { errorMessage = error.localizedDescription }
+    }
+
 }
 
 private struct LambFormRow: Identifiable, Codable {
@@ -866,7 +908,7 @@ struct CareLambingEntryView: View {
     private var gestationDays: Int { rules.first { $0.farmID == farm.id }?.gestationDays ?? 150 }
     private var eweCandidates: [SheepEarTagSearchCandidate] { ewes.map { .init(sheep: $0) } }
     private var ramCandidates: [SheepEarTagSearchCandidate] { breedingRams.map { .init(sheep: $0) } }
-    private var openBreedings: [ReproductionRecord] { guard let eweID else { return [] }; return reproduction.filter { record in record.farmID == farm.id && record.eweID == eweID && record.kind == .breeding && record.deletedAt == nil && record.occurredAt <= occurredAt && !reproduction.contains { closure in closure.farmID == farm.id && closure.relatedBreedingRecordID == record.id && closure.deletedAt == nil && (closure.kind == .lambing || closure.kind == .abortion) } } }
+    private var openBreedings: [ReproductionRecord] { guard let eweID else { return [] }; return reproduction.filter { record in record.farmID == farm.id && record.eweID == eweID && record.kind == .breeding && record.deletedAt == nil && record.occurredAt <= occurredAt && !reproduction.contains { closure in closure.farmID == farm.id && closure.eweID == record.eweID && closure.occurredAt >= record.occurredAt && closure.occurredAt <= occurredAt && closure.deletedAt == nil && (closure.kind == .lambing || closure.kind == .abortion) } } }
     private var relatedBreeding: ReproductionRecord? { relatedBreedingID.flatMap { id in openBreedings.first { $0.id == id } } }
     private var sireCandidateBreedSuggestion: String? {
         guard relatedBreedingID == nil, sireID == nil, semenID == nil else { return nil }
@@ -1094,6 +1136,9 @@ struct CareLambingEntryView: View {
         }
         let draft = CareLambingDraft(id: UUID(), eweID: eweID, occurredAt: occurredAt, sireID: relatedBreedingID == nil ? sireID : nil, semenID: relatedBreedingID == nil ? semenID : nil, relatedBreedingRecordID: relatedBreedingID, parity: nextParity, birthDeadCount: offspring.count(where: \.isStillborn), offspring: offspring, penID: penID, note: note)
         do {
+            let state = ReproductionCycleResolver.resolve(eweID: eweID, facts: ReproductionCycleResolver.facts(records: reproduction), asOf: occurredAt)
+            guard state.completedParity != nil else { throw FarmCommandError.missingRequiredValue("母羊胎次待核实，请先在档案中确认") }
+            _ = try ReproductionEntryAssociation.resolve(eweID: eweID, recordID: draft.id, kind: .lambing, occurredAt: occurredAt, records: reproduction, relatedID: relatedBreedingID, intent: nil, requiresExplicitRound: true)
             try entrySession.execute(.care(.recordLambing(draft)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
             entrySession.complete()
         } catch { errorMessage = error.localizedDescription }
@@ -1262,7 +1307,7 @@ struct ReproductionHistoryView: View {
     private func earTag(_ id: UUID) -> String { sheep.first(where: { $0.id == id })?.earTag ?? "未知母羊" }
 }
 
-private struct ReproductionRecordDetailView: View {
+struct ReproductionRecordDetailView: View {
     @Environment(\.modelContext) private var modelContext; @Query private var sheep: [SheepRecord]; @Query private var tombstones: [TombstoneRecord]
     let account: AccountProfile; let farm: FarmRecord; let record: ReproductionRecord; private let service = FarmCommandService(); @State private var errorMessage: String?; @State private var correction: ReproductionCorrectionDestination?; @State private var showRevokePrompt = false; @State private var revokeReason = ""
     private var eweName: String { sheep.first(where: { $0.id == record.eweID })?.earTag ?? "未知母羊" }
@@ -1281,6 +1326,9 @@ private struct ReproductionCorrectionDestination: Identifiable { let id: UUID }
 
 struct ReproductionCorrectionView: View {
     @Environment(\.dismiss) private var dismiss; @Environment(\.modelContext) private var modelContext
+    @Query private var reproduction: [ReproductionRecord]
+    @State private var relatedID: UUID?
+    @State private var intent: BreedingIntent = .newRound
     @Query private var sheep: [SheepRecord]; @Query private var semen: [SemenRecord]; @Query private var reminders: [CareReminderRecord]; @Query private var semenTransactions: [SemenTransactionRecord]
     let account: AccountProfile; let farm: FarmRecord; let record: ReproductionRecord; private let service = FarmCommandService()
     @State private var occurredAt = Date.now; @State private var sireID: UUID?; @State private var semenID: UUID?; @State private var semenUnits = "1"; @State private var result = ""; @State private var note = ""; @State private var reason = ""; @State private var hasReminder = false; @State private var reminderAt = Date.now; @State private var errorMessage: String?
@@ -1293,6 +1341,17 @@ struct ReproductionCorrectionView: View {
                 LabeledContent("类型", value: record.kind.displayName)
                 DatePicker("发生时间", selection: $occurredAt)
                 TextField("结果", text: $result)
+                if record.kind == .breeding {
+                    Picker("配种轮次", selection: $intent) { ForEach(BreedingIntent.allCases) { Text(verbatim: $0.title).tag($0) } }
+                }
+                if record.kind != .breeding || intent == .supplement {
+                    Picker("关联配种", selection: $relatedID) {
+                        Text("未关联（按可靠时间线核对）").tag(UUID?.none)
+                        ForEach(reproduction.filter { $0.farmID == farm.id && $0.eweID == record.eweID && $0.id != record.id && $0.deletedAt == nil && $0.kind == .breeding && $0.occurredAt < occurredAt }, id: \.id) { value in
+                            Text(value.occurredAt, format: .dateTime.year().month().day().hour().minute()).tag(UUID?.some(value.id))
+                        }
+                    }
+                }
                 if record.kind == .breeding {
                     SheepEarTagSingleSearchField(
                         candidates: ramCandidates,
@@ -1310,13 +1369,30 @@ struct ReproductionCorrectionView: View {
             Section("审计") { TextField("修正原因", text: $reason, axis: .vertical) }
         }
         .navigationTitle("修正繁殖记录").toolbar { EntrySaveToolbar(action: save) }.recordErrorAlert($errorMessage)
-        .onAppear { occurredAt = record.occurredAt; sireID = record.sireID; semenID = record.semenID; result = record.result; note = record.note; semenUnits = semenTransactions.first(where: { $0.farmID == farm.id && $0.sourceRecordID == record.id && $0.kind == .consumption && $0.deletedAt == nil })?.quantityText ?? "1"; if let reminder = reminders.first(where: { $0.farmID == farm.id && $0.sourceEntityID == record.id && $0.deletedAt == nil }) { hasReminder = true; reminderAt = reminder.dueAt } }
+        .onAppear { relatedID = record.relatedBreedingRecordID; intent = record.breedingIntentRawValue.flatMap(BreedingIntent.init(rawValue:)) ?? .newRound; occurredAt = record.occurredAt; sireID = record.sireID; semenID = record.semenID; result = record.result; note = record.note; semenUnits = semenTransactions.first(where: { $0.farmID == farm.id && $0.sourceRecordID == record.id && $0.kind == .consumption && $0.deletedAt == nil })?.quantityText ?? "1"; if let reminder = reminders.first(where: { $0.farmID == farm.id && $0.sourceEntityID == record.id && $0.deletedAt == nil }) { hasReminder = true; reminderAt = reminder.dueAt } }
         .onChange(of: sireID) { _, value in if value != nil { semenID = nil } }
         .onChange(of: semenID) { _, value in if value != nil { sireID = nil } }
     }
     private func save() {
-        let draft = CareReproductionBatchDraft(id: UUID(), kind: record.kind, subjects: [.init(eweID: record.eweID, result: result)], occurredAt: occurredAt, sireID: record.kind == .breeding ? sireID : nil, semenID: record.kind == .breeding ? semenID : nil, semenUnitsPerEweText: record.kind == .breeding && semenID != nil ? semenUnits : nil, note: note, reminderAt: record.kind == .abortion || !hasReminder ? nil : reminderAt)
-        do { try service.execute(.care(.correctReproduction(originalID: record.id, replacement: draft, reason: reason)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext); dismiss() } catch { errorMessage = error.localizedDescription }
+        do {
+            let batchID = UUID(), subjectID = UUID()
+            let selectedRelated = record.kind == .breeding && intent == .newRound ? nil : relatedID
+            let value = try ReproductionEntryAssociation.resolve(eweID: record.eweID,
+                recordID: record.id, kind: record.kind, occurredAt: occurredAt,
+                records: reproduction.filter { $0.farmID == farm.id }, relatedID: selectedRelated,
+                intent: record.kind == .breeding ? intent : nil,
+                expectedRoundID: record.kind == .breeding && intent == .newRound ? (record.breedingRoundID ?? record.id) : nil,
+                excludingID: record.id)
+            let subject = CareReproductionSubjectDraft(id: subjectID, eweID: record.eweID, result: result,
+                relatedBreedingRecordID: selectedRelated, reproductionCycleID: value.cycleID,
+                breedingRoundID: value.roundID, breedingIntent: record.kind == .breeding ? intent : nil)
+            let draft = CareReproductionBatchDraft(id: batchID, kind: record.kind, subjects: [subject], occurredAt: occurredAt,
+                sireID: record.kind == .breeding ? sireID : nil, semenID: record.kind == .breeding ? semenID : nil,
+                semenUnitsPerEweText: record.kind == .breeding && semenID != nil ? semenUnits : nil,
+                note: note, reminderAt: record.kind == .abortion || !hasReminder ? nil : reminderAt)
+            try service.execute(.care(.correctReproduction(originalID: record.id, replacement: draft, reason: reason)), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext)
+            dismiss()
+        } catch { errorMessage = error.localizedDescription }
     }
 }
 

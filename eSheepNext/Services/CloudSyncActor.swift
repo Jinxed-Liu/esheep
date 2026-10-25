@@ -257,6 +257,52 @@ final class CloudCollaborationStore {
         return value
     }
 
+    func eSheepCloudFarmIdentity(farmID: UUID, generation: Int) async throws -> ESheepCloudFarmIdentityV2 {
+        guard let identityGateway = eSheepCloudMembershipGateway as? any ESheepCloudFarmIdentityGateway,
+              !DevelopmentSupabaseNetworkGate.isForcedOffline else {
+            throw ESheepCloudRuntimeError.unavailable
+        }
+        guard let accountID = activeESheepCloudAccountID() else {
+            throw ESheepCloudRuntimeError.accountMismatch
+        }
+        let identity = try await identityGateway.farmIdentity(farmID: farmID, generation: generation)
+        guard activeESheepCloudAccountID() == accountID else {
+            throw ESheepCloudRuntimeError.accountMismatch
+        }
+        try applyESheepCloudFarmIdentity(identity)
+        return identity
+    }
+
+    func renameESheepCloudFarm(farmID: UUID, generation: Int, name: String, latinName: String?,
+                              expectedRevision: Int64, requestID: UUID) async throws -> ESheepCloudFarmIdentityV2 {
+        guard let identityGateway = eSheepCloudMembershipGateway as? any ESheepCloudFarmIdentityGateway,
+              !DevelopmentSupabaseNetworkGate.isForcedOffline else {
+            throw ESheepCloudRuntimeError.unavailable
+        }
+        guard let accountID = activeESheepCloudAccountID() else {
+            throw ESheepCloudRuntimeError.accountMismatch
+        }
+        let identity = try await identityGateway.renameFarm(farmID: farmID, generation: generation,
+            name: name, latinName: latinName, expectedRevision: expectedRevision, requestID: requestID)
+        guard activeESheepCloudAccountID() == accountID else {
+            throw ESheepCloudRuntimeError.accountMismatch
+        }
+        try applyESheepCloudFarmIdentity(identity)
+        return identity
+    }
+
+    private func applyESheepCloudFarmIdentity(_ identity: ESheepCloudFarmIdentityV2) throws {
+        let context = ModelContext(modelContainer)
+        context.autosaveEnabled = false
+        let farmID = identity.farmID
+        guard let state = try context.fetch(FetchDescriptor<ESheepCloudFarmState>(predicate: #Predicate {
+            $0.farmID == farmID
+        })).first else { throw ESheepCloudMembershipError.malformedResponse }
+        try ESheepCloudFarmIdentityProjection.apply(identity, state: state, context: context)
+        if context.hasChanges { try context.save() }
+        CloudRuntimeNotification.postSyncWake(farmID: farmID)
+    }
+
     func eSheepCloudMembers(farmID: UUID) async throws -> [ESheepCloudMemberV2] {
         guard let eSheepCloudMembershipGateway else {
             throw ESheepCloudRuntimeError.unavailable
@@ -443,6 +489,11 @@ final class CloudCollaborationStore {
             eSheepCloudInitialSyncTaskAccountIDsByFarmID.removeValue(forKey: farmID)
         }
         let report = try await task.value
+        if let identityGateway = eSheepCloudMembershipGateway as? any ESheepCloudFarmIdentityGateway {
+            let identity = try await identityGateway.farmIdentity(
+                farmID: farmID, generation: report.farmGeneration)
+            try applyESheepCloudFarmIdentity(identity)
+        }
         eSheepCloudCoresByFarmID.removeValue(forKey: farmID)
         eSheepCloudCoreAccountIDsByFarmID.removeValue(forKey: farmID)
         eSheepCloudViewStatesByFarmID.removeValue(forKey: farmID)
@@ -1066,6 +1117,14 @@ final class CloudCollaborationStore {
                 if let farm = farms.first(where: { $0.id == access.farmID }) {
                     farm.roleRawValue = access.role.rawValue
                     farm.membershipStatusRawValue = FarmMembershipStatus.active.rawValue
+                    let farmID = access.farmID
+                    let generation = access.farmGeneration
+                    if let identity = access.farmIdentity,
+                       let state = try context.fetch(FetchDescriptor<ESheepCloudFarmState>(predicate: #Predicate {
+                           $0.farmID == farmID && $0.farmGeneration == generation
+                       })).first {
+                        try ESheepCloudFarmIdentityProjection.apply(identity, state: state, context: context)
+                    }
                 }
             } else {
                 membership.statusRawValue = FarmMembershipStatus.revoked.rawValue

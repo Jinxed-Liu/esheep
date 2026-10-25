@@ -1,11 +1,8 @@
-Focus on AI assistant analysis stability, background recovery, live results, and the updated chat and voice composer.
+Fixes cloud sync stopping after an upgrade because of legacy farm English-name metadata, and fixes sheep photo upload failures.
 
-1. Analyze average daily weight gain for production batch eight across the six requested pens: 大棚一舍, 大棚四舍, 大棚十二舍, 大棚十三舍, 大棚十四舍 and 大棚十五舍. Check pen and batch selection, sample coverage, transfer evidence, calculation semantics and completeness. Missing weighing samples must not be treated as zero gain.
-2. Briefly background a long analysis, then return to the same conversation. Progress and the final answer should appear in place. Backgrounding alone must not be reported as an authentication change. After relaunch, interruption or recovery messages should match the actual task state.
-3. Check long-title readability, edge-swipe navigation, full-screen scrolling, and native glass and scroll-edge treatment. Lower content should remain visible through the edge rather than disappear behind a large opaque area.
-4. Check the narrower idle composer and its expansion on focus. Attachment, context, plan mode, reasoning gauge, microphone and send controls should share a vertical centre. Plan mode belongs in the bottom control row. The gauge and slider should reflect the selected analysis strength.
-5. Check the floating attachment menu, camera/photo/file entry points, outside dismissal and keyboard handoff. Check reasoning and context capsules, transitions, colour, haptics and Reduce Motion behaviour.
-6. Tap or hold to record. The grey single-row waveform should advance left with time and distinguish sound from silence. Release or stop to keep an unsent recording and play it back; send once, or cancel while retaining existing text and attachments. Check denied permission, retry and background return while recording.
-7. Check multiline input, a new draft after sending, conversation switching and draft recovery after relaunch. After upgrading, verify the existing account, farm, weighing and transfer history, then perform normal cloud sync.
+1. Upgrade the existing installation and open your current account and farm. Allow sync to finish, then check recent lambing and removal records and bilingual farm names against the cloud.
+2. Retry photos that were pending before the upgrade. Confirm the original photos upload and the avatar updates without duplicate photos or business records.
+3. Check full-size photos, avatars, and thumbnails. Reopen the app and confirm photos and sync state remain correct.
+4. Local photos must remain available during a network interruption and support retry when connectivity returns. Pending uploads must not be reported as fully saved.
 
-Automated checks and internal distribution are recorded separately. Real microphone and AI service behaviour, background interactions, upgrades and farm-data consistency still require internal tester verification.
+For the existing internal testing group only. Apple distribution, real-device upgrade, cloud sync, and photo upload acceptance are tracked separately.

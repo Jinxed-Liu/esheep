@@ -590,6 +590,9 @@ struct RemoteDomainApplyService {
                 }
                 return .duplicate
             }
+            let previouslyInserted = authoritativeRecordingDate.map { _ in
+                Set(context.insertedModelsArray.map { ObjectIdentifier($0) })
+            }
             let result = try FarmCareCommandHandler.validateAndApply(
                 command,
                 farmID: envelope.farmID,
@@ -607,6 +610,26 @@ struct RemoteDomainApplyService {
                     replayIndex?.register(audit)
                 }
             )
+            if let recordedAt = authoritativeRecordingDate, let previouslyInserted {
+                // Care commands insert their records directly. Stamp only this
+                // event's new objects, never earlier uncommitted events in the
+                // same page, with the immutable receipt time.
+                for model in context.insertedModelsArray where !previouslyInserted.contains(ObjectIdentifier(model)) {
+                    switch model {
+                    case let value as ReproductionRecord:
+                        value.createdAt = recordedAt; value.updatedAt = recordedAt
+                    case let value as CareBatchRecord: value.createdAt = recordedAt
+                    case let value as SemenTransactionRecord: value.createdAt = recordedAt
+                    case let value as CareReminderRecord: value.createdAt = recordedAt
+                    case let value as LambingOffspringRecord:
+                        value.createdAt = recordedAt; value.updatedAt = recordedAt
+                    case let value as WeightRecord: value.recordedAt = recordedAt
+                    case let value as SheepRecord:
+                        value.createdAt = recordedAt; value.updatedAt = recordedAt
+                    default: break
+                    }
+                }
+            }
             guard result.entityType.rawValue == envelope.entityType, result.entityID == envelope.entityID else { throw RemoteDomainApplyError.invalidPayload("careCommand.target") }
             _ = try alignCareProjectionRevision(for: envelope, context: context)
             return .applied(rebuildHistoryFrom: command.rebuildHistoryFrom)
@@ -1697,7 +1720,7 @@ struct RemoteDomainApplyService {
             if kind == .lambing, !payload.lambingOffspring.isEmpty, payload.lambingOffspring.count != lambCount {
                 throw RemoteDomainApplyError.invalidPayload("lambingOffspring")
             }
-            let record = ReproductionRecord(id: envelope.entityID, farmID: envelope.farmID, eweID: try identifier("eweID", payload), kind: kind, occurredAt: try date("occurredAt", payload), sireID: optionalID("sireID", payload), semenID: optionalID("semenID", payload), batchID: optionalID("batchID", payload), relatedBreedingRecordID: optionalID("relatedBreedingRecordID", payload), semenNameSnapshot: optionalString("semenName", payload), semenDonorID: optionalID("semenDonorID", payload), semenDonorNameSnapshot: optionalString("semenDonorNameSnapshot", payload), semenDonorRegistrationNumberSnapshot: optionalString("semenDonorRegistrationNumberSnapshot", payload), semenDonorBreedSnapshot: optionalString("semenDonorBreedSnapshot", payload), paternalSource: optionalString("paternalSource", payload).flatMap(PaternalIdentitySource.init(rawValue:)), result: payload.strings["result"] ?? "", lambCount: lambCount, parity: payload.integers["parity"], birthDeadCount: payload.integers["birthDeadCount"], note: payload.strings["note"] ?? "")
+            let record = ReproductionRecord(id: envelope.entityID, farmID: envelope.farmID, eweID: try identifier("eweID", payload), kind: kind, occurredAt: try date("occurredAt", payload), sireID: optionalID("sireID", payload), semenID: optionalID("semenID", payload), batchID: optionalID("batchID", payload), relatedBreedingRecordID: optionalID("relatedBreedingRecordID", payload), reproductionCycleID: optionalID("reproductionCycleID", payload), breedingRoundID: optionalID("breedingRoundID", payload), breedingIntentRawValue: optionalString("breedingIntentRawValue", payload), semenNameSnapshot: optionalString("semenName", payload), semenDonorID: optionalID("semenDonorID", payload), semenDonorNameSnapshot: optionalString("semenDonorNameSnapshot", payload), semenDonorRegistrationNumberSnapshot: optionalString("semenDonorRegistrationNumberSnapshot", payload), semenDonorBreedSnapshot: optionalString("semenDonorBreedSnapshot", payload), paternalSource: optionalString("paternalSource", payload).flatMap(PaternalIdentitySource.init(rawValue:)), result: payload.strings["result"] ?? "", lambCount: lambCount, parity: payload.integers["parity"], birthDeadCount: payload.integers["birthDeadCount"], note: payload.strings["note"] ?? "")
             record.revision = envelope.revision
             record.updatedAt = envelope.modifiedAt
             insertIndexed(record, context: context)
@@ -2406,6 +2429,7 @@ struct RemoteDomainApplyService {
             case let value as WeightRecord: value.recordedAt = date
             case let value as WeaningRecord: value.recordedAt = date
             case let value as RemovalRecord: value.recordedAt = date
+            case let value as TransferRecord: value.recordedAt = date
             default: break
             }
         }

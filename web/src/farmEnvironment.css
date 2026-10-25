@@ -1,7 +1,8 @@
 /* Pasture light and weather are a view-only layer. Production facts stay in the panels above it. */
-body:has(.farm-environment) { background: #e8f5fb; }
+:root { background: var(--browser-canvas, #f5fbff); }
+body:has(.farm-environment) { background: var(--browser-canvas, #e8f5fb); }
 .app-shell:has(.farm-environment) { isolation: isolate; }
-.farm-environment { position: fixed; z-index: -1; inset: 0; overflow: hidden; pointer-events: none; background: #e8f5fb; }
+.farm-environment { position: fixed; z-index: -1; inset: 0; overflow: hidden; pointer-events: none; background: var(--browser-canvas, #e8f5fb); }
 .farm-environment-photo, .farm-environment-color, .farm-environment-clouds, .farm-environment-haze {
   position: absolute; inset: 0; transition: opacity 2.4s ease, filter 2.4s ease, background 2.4s ease;
 }
@@ -355,4 +356,35 @@ body:has(.farm-environment) { background: #e8f5fb; }
 }
 @media (prefers-reduced-motion: reduce) {
   .app-shell :is(.sky-panel, .sky-metric, .sky-navigation, .farm-weather-line) { transition: none; }
+}
+
+/* Shared mobile viewport rules follow surface styles so overlays retain safe bounds. */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+/* Backgrounds fill the screen; only interactive content stays inside the safe area.
+   Browsers without cutouts report zero, so desktop and ordinary tabs keep their layout. */
+#root { padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left); }
+.app-shell { min-height: calc(100svh - var(--safe-top) - var(--safe-bottom)); }
+.modal-backdrop {
+  padding: max(24px, var(--safe-top)) max(24px, var(--safe-right)) max(24px, var(--safe-bottom)) max(24px, var(--safe-left));
+}
+.record-dialog { max-height: calc(100dvh - max(24px, var(--safe-top)) - max(24px, var(--safe-bottom))); }
+.farm-weather-backdrop { padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left); }
+.farm-weather-detail { max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom)); }
+@media (max-width: 600px) {
+  .sky-navigation {
+    left: calc(12px + var(--safe-left)); right: calc(12px + var(--safe-right));
+    bottom: calc(12px + var(--safe-bottom));
+  }
+  .sky-home, .feature-page { padding-bottom: calc(110px + var(--safe-bottom)); }
+  .sky-header .popover {
+    top: calc(74px + var(--safe-top));
+    left: calc(12px + var(--safe-left)); right: calc(12px + var(--safe-right));
+  }
+  .modal-backdrop { padding: calc(20px + var(--safe-top)) var(--safe-right) var(--safe-bottom) var(--safe-left); }
+  .record-dialog { max-height: calc(100dvh - 20px - var(--safe-top) - var(--safe-bottom)); }
 }

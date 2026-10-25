@@ -7,6 +7,7 @@ enum ESheepCloudCheckpointError: Error, LocalizedError {
     case unsupportedVersion, digestMismatch, sizeLimit, incomplete, insufficientDiskSpace
 
     var errorDescription: String? {
+        if case .unsupportedVersion = self { return "这份牧场资料包含新版业务字段，请更新 eSheep+ 后继续接收。原有资料已保留。" }
         if case .insufficientDiskSpace = self { return "本机空间不足，已保留接收进度，请释放空间后继续。" }
         return "业务检查点核对未通过，已保留原有资料。"
     }
@@ -157,7 +158,8 @@ struct ESheepCloudCheckpointModelAdapter {
         disposition: ESheepCloudCheckpointDisposition,
         fields: [ESheepCloudCheckpointField<M>],
         farmID: KeyPath<M, UUID>?,
-        recordID: KeyPath<M, UUID>
+        recordID: KeyPath<M, UUID>,
+        additiveNullableFields: Set<String> = []
     ) {
         name = String(describing: model)
         self.disposition = disposition
@@ -173,8 +175,12 @@ struct ESheepCloudCheckpointModelAdapter {
             if let operation = value as? DomainOperation {
                 try ESheepCloudPurposeHistory.validateCheckpointOperation(operation)
             }
-            return ESheepCloudCheckpointRecord(model: modelName,
-                values: try Dictionary(uniqueKeysWithValues: fields.map { ($0.name, try $0.read(value)) }))
+            var values = try Dictionary(uniqueKeysWithValues: fields.map { ($0.name, try $0.read(value)) })
+            // Omit only declared additive nulls. An old checkpoint then retains
+            // its exact original bytes/digest after materialisation, while a
+            // non-null new setting remains protected by the business digest.
+            for name in additiveNullableFields where values[name] == .null { values.removeValue(forKey: name) }
+            return ESheepCloudCheckpointRecord(model: modelName, values: values)
         }
         exportRecord = { value in
             guard let typed = value as? M else { throw ESheepCloudCheckpointError.malformedRecord }
@@ -189,15 +195,17 @@ struct ESheepCloudCheckpointModelAdapter {
                 .map(encodeRecord)
         }
         insertRow = { row, requestedFarm, context in
+            var values = row.values
+            for name in additiveNullableFields where values[name] == nil { values[name] = .null }
             guard disposition == .transfer, row.model == modelName,
-                  Set(row.values.keys) == Set(fields.map(\.name)) else {
+                  Set(values.keys) == Set(fields.map(\.name)) else {
                 throw ESheepCloudCheckpointError.malformedRecord
             }
             // Fill a new, unattached backing object before constructing the
             // model. This avoids invoking business command initializers, which
             // legitimately create current timestamps and inferred defaults.
             let backing: any BackingData<M> = M.createBackingData()
-            for field in fields { try field.write(backing, row.values[field.name]!) }
+            for field in fields { try field.write(backing, values[field.name]!) }
             let value = M(backingData: backing)
             let owner = farmID.map { value[keyPath: $0] } ?? value[keyPath: recordID]
             guard owner == requestedFarm else { throw ESheepCloudCheckpointError.foreignFarm }

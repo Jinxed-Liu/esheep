@@ -21,6 +21,9 @@ test("verified checkpoint bytes survive a new cache instance and stay scoped to 
   await createCheckpointChunkCache(options).write("account-a:farm:generation:checkpoint:manifest-a", descriptor, bytes);
 
   const reopened = createCheckpointChunkCache(options);
+  assert.equal(await reopened.hasScope("account-a:farm:generation:"), true);
+  assert.equal(await reopened.hasScope("account-b:farm:generation:"), false);
+  assert.equal(await reopened.hasScope("account-a:farm:new-generation:"), false);
   assert.deepEqual(await reopened.read("account-a:farm:generation:checkpoint:manifest-a", descriptor), bytes);
   assert.equal(await reopened.read("account-b:farm:generation:checkpoint:manifest-a", descriptor), null);
   assert.equal(await reopened.read("account-a:farm:generation:checkpoint:manifest-b", descriptor), null);
@@ -29,12 +32,14 @@ test("verified checkpoint bytes survive a new cache instance and stay scoped to 
   assert.equal(await reopened.read("account-a:farm:generation:checkpoint-old:manifest-a", descriptor), null);
   assert.deepEqual(await reopened.read("account-a:farm:generation:checkpoint:manifest-a", descriptor), bytes);
   await reopened.clear();
+  assert.equal(await reopened.hasScope("account-a:farm:generation:"), false);
   assert.equal(await reopened.read("account-a:farm:generation:checkpoint:manifest-a", descriptor), null);
 });
 
 test("unavailable browser storage keeps cloud reads usable", async () => {
   const cache = createCheckpointChunkCache({ cacheStorage: null, appOrigin: "https://esheepplus.example" });
   const descriptor = { index: 0, compressedBytes: 1, compressedSHA256: "a".repeat(64) };
+  assert.equal(await cache.hasScope("scope"), false);
   assert.equal(await cache.read("scope", descriptor), null);
   await cache.write("scope", descriptor, Uint8Array.of(1));
   await cache.clear();

@@ -9,6 +9,10 @@ const maxChunkBytes = 8 * 1024 * 1024;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const digestPattern = /^[0-9a-f]{64}$/;
 const checkpointCache = new Map();
+// Continue only a fully verified in-memory projection. Every reuse still checks
+// current cloud authority and validates every new event before publication.
+const verifiedProjections = new Map();
+let cacheEpoch = 0;
 const sameID = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 
 export class CloudV2ReadError extends Error {
@@ -30,7 +34,7 @@ export async function sha256(value) {
 }
 
 export function validateCheckpointManifest(manifest, farm) {
-  requireValue(manifest?.formatVersion === 1 && manifest.minimumClientCapability <= 1,
+  requireValue(manifest?.formatVersion === 1 && Number.isInteger(manifest.minimumClientCapability) && manifest.minimumClientCapability >= 1 && manifest.minimumClientCapability <= 2,
     "这份牧场资料需要更新网页版后才能读取。");
   requireValue(uuid.test(manifest.checkpointID) && sameID(manifest.farmID, farm.id) &&
     manifest.farmGeneration === farm.generation && Number.isSafeInteger(manifest.boundaryEventSequence) &&
@@ -125,98 +129,194 @@ async function rpc(client, name, params, signal) {
   return data;
 }
 
+async function checkpointTicket(client, farm, signal, checkpointID) {
+  const { data, error } = await client.functions.invoke("esheep-cloud-checkpoints", {
+    body: { farm_id: farm.id, farm_generation: farm.generation,
+      ...(checkpointID ? { checkpoint_id: checkpointID } : {}) }, signal,
+  });
+  if (error) throw new CloudV2ReadError("暂时无法下载牧场资料，请刷新重试。", "CLOUD_V2_DOWNLOAD_FAILED");
+  return data;
+}
+
+async function checkpointSource(client, farm, signal, persistentCache, scopePrefix) {
+  // This hint only selects a network path. The manifest and permission always
+  // come from the authenticated cloud, and every cached byte is checked again.
+  if (await persistentCache.hasScope?.(scopePrefix)) {
+    return rpc(client, "esheep_cloud_checkpoint_manifest_v1", {
+      p_farm_id: farm.id, p_farm_generation: farm.generation, p_checkpoint_id: null,
+    }, signal);
+  }
+  return checkpointTicket(client, farm, signal);
+}
+
+function validateDownloads(ticket, manifest) {
+  requireValue(Array.isArray(ticket?.downloads) && ticket.downloads.length === manifest.chunks.length &&
+    ticket.downloads.every((download, index) => download.index === index));
+}
+
 export async function loadCloudV2Projection(client, farm, { accountID, storageOrigin, signal, onProgress = () => {}, fetchImpl = fetch, persistentCache = browserCheckpointChunkCache } = {}) {
+  const epoch = cacheEpoch;
+  const verifiedKey = `${storageOrigin}:${accountID}:${farm.id.toLowerCase()}:${farm.generation}`;
+  const verified = verifiedProjections.get(verifiedKey);
   onProgress("正在确认牧场最新版本…");
-  const status = await rpc(client, "esheep_cloud_fetch_status_v2", { p_farm_id: farm.id }, signal);
+  // These independent reads both enforce current membership. Overlap them so
+  // first-time downloads do not wait for another control-plane round trip.
+  const [status, initialSource] = await Promise.all([
+    rpc(client, "esheep_cloud_fetch_status_v2", { p_farm_id: farm.id }, signal),
+    verified ? null : checkpointSource(client, farm, signal, persistentCache, `${verifiedKey}:`),
+  ]);
   requireValue(status?.farm_generation === farm.generation && sameID(status.farm_id, farm.id), "牧场云同步版本已变化，请刷新重试。");
   requireValue(status.v2_ready === true, "牧场正在准备云端资料，请稍后重试。");
   const targetHead = status.cloud_head;
   requireValue(Number.isSafeInteger(targetHead) && targetHead >= 0);
-  const { data: ticket, error } = await client.functions.invoke("esheep-cloud-checkpoints", {
-    body: { farm_id: farm.id, farm_generation: farm.generation }, signal,
-  });
-  if (error) throw new CloudV2ReadError("暂时无法下载牧场资料，请刷新重试。", "CLOUD_V2_DOWNLOAD_FAILED");
-  requireValue(ticket?.manifest, "牧场尚无可供网页版读取的已验证资料，请联系管理员。当前成员权限仍然有效。");
-  const manifest = ticket.manifest;
-  validateCheckpointManifest(manifest, farm);
-  requireValue(manifest.boundaryEventSequence <= targetHead, "牧场资料刚刚更新，请刷新重试。");
-  requireValue(Array.isArray(ticket.downloads) && ticket.downloads.length === manifest.chunks.length &&
-    ticket.downloads.every((download, index) => download.index === index));
-  const cacheKey = `${accountID}:${farm.id.toLowerCase()}:${farm.generation}:${manifest.checkpointID.toLowerCase()}`;
-  const manifestFingerprint = await sha256(JSON.stringify(manifest));
-  const persistentScope = `${storageOrigin}:${cacheKey}:${manifestFingerprint}`;
-  let cached = checkpointCache.get(cacheKey);
-  let projection;
-  if (cached) requireValue(cached.fingerprint === manifestFingerprint);
-  if (!cached) {
-    const rows = [];
-    const descriptors = manifest.chunks.filter(needsChunk);
-    // Six bounded slots overlap network waits without the old batch barrier.
-    let completed = 0;
-    onProgress(`正在读取牧场资料：0 / ${descriptors.length}`);
-    const pages = await concurrentRead(descriptors, async (descriptor, readSignal) => {
-        let bytes = await persistentCache.read(persistentScope, descriptor);
-        if (bytes) {
-          try {
-            const records = (await decodeCheckpointChunk(bytes, descriptor, readSignal))
-              .filter((row) => webCheckpointModels.has(row.model));
-            onProgress(`正在核对本地牧场资料：${++completed} / ${descriptors.length}`);
-            return records;
-          } catch (error) {
-            if (readSignal?.aborted) throw error;
-            // A damaged local copy is replaced by the signed cloud copy below.
-            bytes = null;
+  const pullEvents = (after) => rpc(client, "esheep_cloud_pull_events_v2", {
+    p_farm_id: farm.id, p_farm_generation: farm.generation, p_after_event_sequence: after, p_limit: 1000,
+  }, signal);
+  let firstPage;
+  const prefetchEvents = (after) => {
+    if (after >= targetHead) return;
+    // The authorized immutable boundary is enough to start this independent
+    // read. Consume it only after every checkpoint byte/model is verified.
+    // Capture failures immediately, including when checkpoint validation fails.
+    firstPage = { after, result: pullEvents(after).then(page => ({ page }), error => ({ error })) };
+  };
+  let projection, manifest, persistentScope, cursor;
+  if (verified && verified.revision <= targetHead) {
+    prefetchEvents(verified.revision);
+    projection = structuredClone(verified.projection);
+    manifest = projection.manifest;
+    persistentScope = verified.persistentScope;
+    cursor = verified.revision;
+  } else {
+    const source = verified
+      ? await checkpointSource(client, farm, signal, persistentCache, `${verifiedKey}:`)
+      : initialSource;
+    requireValue(source?.manifest, "牧场尚无可供网页版读取的已验证资料，请联系管理员。当前成员权限仍然有效。");
+    manifest = source.manifest;
+    validateCheckpointManifest(manifest, farm);
+    requireValue(manifest.boundaryEventSequence <= targetHead, "牧场资料刚刚更新，请刷新重试。");
+    if (source.downloads) validateDownloads(source, manifest);
+    prefetchEvents(manifest.boundaryEventSequence);
+    const cacheKey = `${accountID}:${farm.id.toLowerCase()}:${farm.generation}:${manifest.checkpointID.toLowerCase()}`;
+    const manifestFingerprint = await sha256(JSON.stringify(manifest));
+    let ticketPromise = source.downloads ? Promise.resolve(source) : null;
+    const downloads = () => ticketPromise ??= checkpointTicket(client, farm, signal, manifest.checkpointID).then(async (ticket) => {
+      // Repair missing/corrupt chunks from this exact immutable checkpoint,
+      // never mix a newly published checkpoint into the in-progress receive.
+      requireValue(ticket?.manifest && await sha256(JSON.stringify(ticket.manifest)) === manifestFingerprint);
+      validateDownloads(ticket, manifest);
+      return ticket;
+    });
+    persistentScope = `${storageOrigin}:${cacheKey}:${manifestFingerprint}`;
+    let cached = checkpointCache.get(cacheKey);
+    if (cached) requireValue(cached.fingerprint === manifestFingerprint);
+    if (!cached) {
+      const rows = [];
+      const descriptors = manifest.chunks.filter(needsChunk);
+      // Six bounded slots overlap network waits without the old batch barrier.
+      let completed = 0;
+      onProgress(`正在读取牧场资料：0 / ${descriptors.length}`);
+      const pages = await concurrentRead(descriptors, async (descriptor, readSignal) => {
+          let bytes = await persistentCache.read(persistentScope, descriptor);
+          if (bytes) {
+            try {
+              const records = (await decodeCheckpointChunk(bytes, descriptor, readSignal))
+                .filter((row) => webCheckpointModels.has(row.model));
+              onProgress(`正在核对本地牧场资料：${++completed} / ${descriptors.length}`);
+              return records;
+            } catch (error) {
+              if (readSignal?.aborted) throw error;
+              // A damaged local copy is replaced by the signed cloud copy below.
+              bytes = null;
+            }
           }
-        }
-        const address = new URL(ticket.downloads[descriptor.index].url);
-        requireValue(address.protocol === "https:" && address.origin === storageOrigin &&
-          decodeURIComponent(address.pathname) === `/storage/v1/object/sign/esheep-cloud-checkpoints/${descriptor.objectKey}`);
-        const response = await fetchImpl(address, { signal: readSignal, credentials: "omit", cache: "no-store" });
-        if (!response.ok) throw new CloudV2ReadError("牧场资料下载失败，请刷新重试。", "CLOUD_V2_DOWNLOAD_FAILED");
-        bytes = await readBounded(response.body, descriptor.compressedBytes, readSignal);
-        const records = (await decodeCheckpointChunk(bytes, descriptor, readSignal))
-          .filter((row) => webCheckpointModels.has(row.model));
-        await persistentCache.write(persistentScope, descriptor, bytes);
-        onProgress(`正在下载并核对牧场资料：${++completed} / ${descriptors.length}`);
-        return records;
-    }, { signal });
-    for (const page of pages) rows.push(...page);
-    // Checks selected model counts, duplicate identities and farm ownership.
-    onProgress("正在整理牧场资料…");
-    projection = createV2Projection(rows, manifest);
-    cached = { fingerprint: manifestFingerprint, rows };
-    checkpointCache.clear();
-    checkpointCache.set(cacheKey, cached);
-  }
-  projection ??= createV2Projection(cached.rows, manifest);
-  let cursor = manifest.boundaryEventSequence;
-  while (cursor < targetHead) {
-    signal?.throwIfAborted();
-    onProgress(`正在同步近期更新：${cursor - manifest.boundaryEventSequence} / ${targetHead - manifest.boundaryEventSequence}`);
-    const page = await rpc(client, "esheep_cloud_pull_events_v2", {
-      p_farm_id: farm.id, p_farm_generation: farm.generation, p_after_event_sequence: cursor, p_limit: 1000,
-    }, signal);
-    requireValue(Array.isArray(page?.events) && page.events.length > 0 && page.events.length <= 1000 &&
-      Number.isSafeInteger(page.cloud_head) && page.cloud_head >= targetHead);
-    for (const event of page.events) {
-      if (cursor === targetHead) break;
-      const body = await validateV2Event(event, farm, cursor + 1);
-      if (!await applyExtendedV2Event(projection, event, body)) applyV2Event(projection, event, body);
-      cursor = event.event_sequence;
+          const ticket = await downloads();
+          const address = new URL(ticket.downloads[descriptor.index].url);
+          requireValue(address.protocol === "https:" && address.origin === storageOrigin &&
+            decodeURIComponent(address.pathname) === `/storage/v1/object/sign/esheep-cloud-checkpoints/${descriptor.objectKey}`);
+          const response = await fetchImpl(address, { signal: readSignal, credentials: "omit", cache: "no-store" });
+          if (!response.ok) throw new CloudV2ReadError("牧场资料下载失败，请刷新重试。", "CLOUD_V2_DOWNLOAD_FAILED");
+          bytes = await readBounded(response.body, descriptor.compressedBytes, readSignal);
+          const records = (await decodeCheckpointChunk(bytes, descriptor, readSignal))
+            .filter((row) => webCheckpointModels.has(row.model));
+          await persistentCache.write(persistentScope, descriptor, bytes);
+          onProgress(`正在下载并核对牧场资料：${++completed} / ${descriptors.length}`);
+          return records;
+      }, { signal });
+      for (const page of pages) rows.push(...page);
+      // Checks selected model counts, duplicate identities and farm ownership.
+      onProgress("正在整理牧场资料…");
+      projection = createV2Projection(rows, manifest);
+      cached = { fingerprint: manifestFingerprint, rows };
+      checkpointCache.clear();
+      checkpointCache.set(cacheKey, cached);
     }
+    projection ??= createV2Projection(cached.rows, manifest);
+    cursor = manifest.boundaryEventSequence;
   }
-  // Recheck permission and generation after the download. Never publish a
-  // partially loaded or changed-authority workspace to the UI.
-  onProgress("正在完成校验，即将打开牧场…");
-  const finalStatus = await rpc(client, "esheep_cloud_fetch_status_v2", { p_farm_id: farm.id }, signal);
-  requireValue(finalStatus.farm_generation === farm.generation && finalStatus.cloud_head >= targetHead && finalStatus.v2_ready === true,
-    "牧场云同步版本已变化，请刷新重试。");
-  signal?.throwIfAborted();
-  await persistentCache.prune?.(`${storageOrigin}:${accountID}:${farm.id.toLowerCase()}:${farm.generation}:`, persistentScope);
-  return { ...finishV2Projection(projection), manifest, revision: targetHead };
+  const startingCursor = cursor;
+  try {
+    while (cursor < targetHead) {
+      signal?.throwIfAborted();
+      onProgress(`正在同步近期更新：${cursor - startingCursor} / ${targetHead - startingCursor}`);
+      const prefetched = firstPage?.after === cursor ? await firstPage.result : null;
+      firstPage = null;
+      if (prefetched?.error) throw prefetched.error;
+      const page = prefetched ? prefetched.page : await pullEvents(cursor);
+      requireValue(Array.isArray(page?.events) && page.events.length > 0 && page.events.length <= 1000 &&
+        Number.isSafeInteger(page.cloud_head) && page.cloud_head >= targetHead);
+      for (const event of page.events) {
+        if (cursor === targetHead) break;
+        const body = await validateV2Event(event, farm, cursor + 1);
+        if (!await applyExtendedV2Event(projection, event, body)) applyV2Event(projection, event, body);
+        cursor = event.event_sequence;
+      }
+    }
+    // Recheck permission and generation after the download. Never publish a
+    // partially loaded or changed-authority workspace to the UI.
+    onProgress("正在完成校验，即将打开牧场…");
+    const finalStatus = await rpc(client, "esheep_cloud_fetch_status_v2", { p_farm_id: farm.id }, signal);
+    requireValue(sameID(finalStatus.farm_id, farm.id) && finalStatus.farm_generation === farm.generation && finalStatus.cloud_head >= targetHead && finalStatus.v2_ready === true,
+      "牧场云同步版本已变化，请刷新重试。");
+    applyFarmIdentity(projection, finalStatus.farm_identity, farm);
+    signal?.throwIfAborted();
+    const verifiedProjection = structuredClone(projection);
+    const result = { ...finishV2Projection(projection), manifest, revision: targetHead };
+    if (!verified) await persistentCache.prune?.(`${storageOrigin}:${accountID}:${farm.id.toLowerCase()}:${farm.generation}:`, persistentScope);
+    signal?.throwIfAborted();
+    // A signed-out or superseded read cannot repopulate the private session cache.
+    const latest = verifiedProjections.get(verifiedKey);
+    if (epoch === cacheEpoch && (!latest || latest.revision <= targetHead)) {
+      verifiedProjections.delete(verifiedKey);
+      verifiedProjections.set(verifiedKey, { projection: verifiedProjection, manifest: verifiedProjection.manifest, persistentScope, revision: targetHead });
+      while (verifiedProjections.size > 2) verifiedProjections.delete(verifiedProjections.keys().next().value);
+    }
+    return result;
+  } catch (error) {
+    if (verifiedProjections.get(verifiedKey) === verified) verifiedProjections.delete(verifiedKey);
+    throw error;
+  }
+}
+
+// Live identity is authenticated control-plane data. Apply it only after
+// checkpoint/event verification; cached immutable rows remain unchanged.
+export function applyFarmIdentity(projection, identity, farm) {
+  if (identity == null) return;
+  requireValue(sameID(identity.farmID, farm.id) && identity.farmGeneration === farm.generation &&
+    Number.isSafeInteger(identity.revision) && identity.revision >= 0 &&
+    typeof identity.name === "string" && identity.name.trim().length > 0 &&
+    [...identity.name].length <= 80 && !/[\u0000-\u001f\u007f-\u009f]/u.test(identity.name));
+  const row = projection.models.get("FarmRecord")?.get(farm.id.toLowerCase());
+  requireValue(row && sameID(row.id, identity.farmID));
+  if (identity.revision < (projection.farmNameRevision ?? -1)) return;
+  requireValue(identity.revision !== projection.farmNameRevision || row.name === identity.name);
+  row.name = identity.name;
+  projection.farmNameRevision = identity.revision;
 }
 
 export async function clearCloudV2Cache() {
+  cacheEpoch++;
+  verifiedProjections.clear();
   checkpointCache.clear();
   await browserCheckpointChunkCache.clear();
 }

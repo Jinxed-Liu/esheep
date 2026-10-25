@@ -1,3 +1,4 @@
+import { entryAssociation } from "./reproductionCycles.js";
 import { decimalSum,decimalMultiply,negate } from './decimal.js';
 const live=(models,name)=>(models[name]??[]).filter(r=>r.deletedAt==null);
 const requireValue=(condition,message)=>{if(!condition)throw new Error(message);};
@@ -16,7 +17,7 @@ export function validateBusinessSpecifications(specs,{models}) {
  case 'care.inventory.adjust':requireValue(Number(decimalSum([balance('InventoryTransactionRecord','inventoryLotID',a.lotID),a.quantityDeltaText]))>=0,'调整后药品库存不能为负数。');break;
  case 'care.semen.adjust':requireValue(Number(decimalSum([balance('SemenTransactionRecord','semenID',a.semenID,get('SemenRecord',a.semenID)?.quantityText||'0'),a.quantityDeltaText]))>=0,'调整后冻精库存不能为负数。');break;
  case 'care.health.recordBatch':if(a.inventoryLotID){const lot=get('InventoryLotRecord',a.inventoryLotID);requireValue(lot?.isActive,'所选药品库存批次已停用。');requireValue(Number(decimalSum([balance('InventoryTransactionRecord','inventoryLotID',a.inventoryLotID),negate(decimalMultiply(a.dosePerSubjectText,a.subjectIDs.length))]))>=0,'药品库存不足以覆盖本次全部羊只的用量。');}break;
- case 'care.reproduction.recordBatch':if(a.semenID){const semen=get('SemenRecord',a.semenID);requireValue(!semen.donorID||get('SemenDonorRecord',semen.donorID)?.statusRawValue==='active','冻精供体已停用。');requireValue(Number(decimalSum([balance('SemenTransactionRecord','semenID',a.semenID,semen.quantityText||'0'),negate(decimalMultiply(a.semenUnitsPerEweText??'1',a.subjects.length))]))>=0,'冻精库存不足以覆盖全部母羊。');}break;
+ case 'care.reproduction.recordBatch':for(const subject of a.subjects){ if(subject.reproductionCycleID||subject.breedingRoundID||subject.breedingIntent||subject.relatedBreedingRecordID)entryAssociation({eweID:subject.eweID,recordID:subject.breedingIntent==='newRound'?subject.breedingRoundID:subject.id,kind:a.kind,occurredAt:a.occurredAt,records:rows('ReproductionRecord'),relatedID:subject.relatedBreedingRecordID,intent:subject.breedingIntent,expectedCycleID:subject.reproductionCycleID,expectedRoundID:subject.breedingRoundID});}if(a.semenID){const semen=get('SemenRecord',a.semenID);requireValue(!semen.donorID||get('SemenDonorRecord',semen.donorID)?.statusRawValue==='active','冻精供体已停用。');requireValue(Number(decimalSum([balance('SemenTransactionRecord','semenID',a.semenID,semen.quantityText||'0'),negate(decimalMultiply(a.semenUnitsPerEweText??'1',a.subjects.length))]))>=0,'冻精库存不足以覆盖全部母羊。');}break;
  case 'care.lambing.record':{
  requireValue(a.occurredAt<=Date.now(),'产羔时间不能在未来。');
  const next=rows('ReproductionRecord').filter(r=>r.eweID===a.eweID&&['lambing','parityBaseline'].includes(r.kindRawValue)&&r.occurredAt>a.occurredAt).sort(order)[0];requireValue(next?.kindRawValue!=='lambing'||next.parity===a.parity+1,'本次产羔胎次与后续产羔记录冲突。');

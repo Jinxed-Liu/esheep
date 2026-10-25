@@ -196,6 +196,7 @@ export class WorkspaceDataSource {
           signal: controller.signal,
           sections: combinedSections,
           requestGeneration: generation,
+          verifiedUser: options.verifiedUser,
         });
         if (controller.signal.aborted || this.requestGeneration !== generation) {
           throw abortError();

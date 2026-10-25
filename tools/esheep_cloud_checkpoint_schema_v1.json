@@ -574,6 +574,7 @@
       "operationalAlertsConfiguredAt": "Date?",
       "alertDigestEnabled": "Bool",
       "alertDigestMinuteOfDay": "Int",
+      "reproductionSettingsJSON": "String?",
       "createdAt": "Date",
       "updatedAt": "Date",
       "revision": "Int"
@@ -1331,7 +1332,10 @@
       "createdAt": "Date",
       "updatedAt": "Date",
       "revision": "Int",
-      "deletedAt": "Date?"
+      "deletedAt": "Date?",
+      "reproductionCycleID": "UUID?",
+      "breedingRoundID": "UUID?",
+      "breedingIntentRawValue": "String?"
     }
   },
   "RevokedCapabilityCertificateRecord": {
@@ -1840,6 +1844,19 @@
       "detail": "String",
       "snapshotsJSON": "String",
       "occurredAt": "Date"
+    }
+  },
+  "ESheepCloudFarmIdentityState": {
+    "disposition": "localOnly",
+    "fields": {
+      "id": "UUID",
+      "farmID": "UUID",
+      "farmGeneration": "Int",
+      "name": "String",
+      "revision": "Int64",
+      "latinName": "String?",
+      "latinNameVerified": "Bool",
+      "legacyIntegrityRecoveryBlocked": "Bool"
     }
   }
 }

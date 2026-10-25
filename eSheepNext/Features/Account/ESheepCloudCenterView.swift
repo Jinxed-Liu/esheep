@@ -907,6 +907,10 @@ private struct ESheepCloudAttentionDetailView: View {
         item.state == .open && !isResolving
     }
 
+    private var canApplyDeviceValue: Bool {
+        item.streamType != "pen" || item.fieldKey != "isActive" || PenManagementPolicy.canManageLifecycle(role: farm.role)
+    }
+
     var body: some View {
         Form {
             Section("需要确认的内容") {
@@ -973,7 +977,12 @@ private struct ESheepCloudAttentionDetailView: View {
                     Button("采用这台设备的内容") {
                         proposedChoice = .useThisDevice
                     }
+                    .disabled(!canApplyDeviceValue)
                     .accessibilityHint("将这台设备准备保存的内容作为最终内容")
+                    if !canApplyDeviceValue {
+                        Text("羊舍启用状态由牧场主或管理员决定。你可以保留云端内容或放弃本次操作。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
 
                     Button("保留云端内容") {
                         proposedChoice = .keepCloud

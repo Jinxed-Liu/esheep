@@ -126,6 +126,7 @@ Supported QUERY_KIND values:
 - event_search (query, types comma-separated, startAt, endAt, limit)
 - weight_summary (scope=all|inHerdOnly|removedOnly, penID, batchID, cutoff)
 - lamb_summary (selectedYear, selectedWeaningMonth=全部|01..12)
+- reproduction_state (earTag, penID, breed, state=pregnant|open|recheck|unexamined|uncertain, limit): 当前孕检状态与数量必须使用此统一周期投影，不得用历史最后一次孕检替代。
 - reproduction_summary (startDate, endDate, penScope=all|pen|unassigned, penID, breed)
 - feed_intake_summary (startDate, endDateExclusive, selectedPenIDs comma-separated)
 

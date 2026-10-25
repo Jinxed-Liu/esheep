@@ -1167,6 +1167,7 @@ struct ESheepCloudEventPageV2: Codable, Sendable, Equatable {
     let events: [ESheepCloudEventEnvelopeV2]
     let cloudHead: Int64
     let hasMore: Bool
+    var farmIdentity: ESheepCloudFarmIdentityV2? = nil
 }
 
 enum ESheepCloudAttentionResolutionChoiceV2: String, Codable, Sendable, Equatable {

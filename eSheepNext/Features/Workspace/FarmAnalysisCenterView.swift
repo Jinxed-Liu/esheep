@@ -70,10 +70,10 @@ struct FarmAnalysisCenterView: View {
             .accessibilityIdentifier("analysis-lamb-entry")
             SettingsCardDivider()
             SettingsNavigationRow(
-                title: "繁殖分析", subtitle: "胎均产羔、胎间距与母羊表现",
+                title: "繁殖分析", subtitle: "羊舍繁殖状态、检胎管理与历史表现",
                 systemImage: "heart.text.square", iconColor: .pink
             ) {
-                ReproductionAnalysisView(farm: farm, dataStore: deepAnalytics)
+                ReproductionAnalysisHomeView(account: account, farm: farm, dataStore: deepAnalytics)
             }
             .accessibilityIdentifier("analysis-reproduction-entry")
             SettingsCardDivider()
@@ -1725,11 +1725,14 @@ private enum ReproductionAnalysisSheet: Identifiable {
     var id: String { "reproduction-filters" }
 }
 
-private struct ReproductionAnalysisView: View {
+enum ReproductionHistoryMode { case rhythm, production }
+
+struct ReproductionHistoryAnalysisView: View {
     @Environment(\.modelContext) private var modelContext
 
     let farm: FarmRecord
     let dataStore: FarmDeepAnalyticsStore
+    let mode: ReproductionHistoryMode
     @State private var filter = ReproductionAnalyticsFilter.recentYear()
     @State private var selectedSection = ReproductionAnalysisSection.interval
     @State private var presentedSheet: ReproductionAnalysisSheet?
@@ -1748,18 +1751,7 @@ private struct ReproductionAnalysisView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                #if DEBUG
-                NavigationLink {
-                    PenReproductionAnalysisView(farm: farm, dataStore: dataStore)
-                } label: {
-                    Label("羊舍母羊分析 · 四项名单与总体评价", systemImage: "house.and.flag")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                        .background(AppTheme.brand.opacity(0.08), in: .rect(cornerRadius: 16))
-                }
-                #endif
-                Text("从胎均、繁殖间隔到品种维度查看繁殖效率")
+                Text(mode == .rhythm ? "按截止日固定母羊群查看繁殖节律" : "查看胎均产羔、初生重与品种表现")
                     .analysisPageSubtitle()
                 AnalysisFilterBar {
                     ReproductionFilterChip(symbol: "calendar", title: Text(verbatim: dateRangeText)) {
@@ -1780,27 +1772,30 @@ private struct ReproductionAnalysisView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     if result.incompleteLambingCount > 0 {
-                    AnalysisNotice(content: Text("有 \(result.incompleteLambingCount) 胎缺少胎次、死胎数或逐只羔羊明细，仅不纳入需要这些字段的指标；胎间距和产后天数仍按产羔日期计算。"))
+                        AnalysisNotice(content: Text("有 \(result.incompleteLambingCount) 胎缺少胎次、死胎数或逐只羔羊明细，仅不纳入需要这些字段的指标；胎间距和产后天数仍按产羔日期计算。"))
                     }
-                    MetricGrid {
-                        AnalysisMetric(title: "平均每胎", value: number(result.overview.averageTotal), unit: "羔", tint: .pink)
-                        AnalysisMetric(title: "死亡率", value: percent(result.overview.mortalityRate), unit: nil, tint: .red)
-                        AnalysisMetric(title: "平均初生重", value: number(result.overview.averageBirthWeight), unit: "千克", tint: .orange)
-                    }
-                    Picker("分析维度", selection: $selectedSection) {
-                        ForEach(ReproductionAnalysisSection.allCases) { Text(LocalizedStringKey($0.rawValue)).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    selectedSectionContent(result)
-                    AnalysisCard(title: "月度产羔") {
-                        if result.monthly.isEmpty { AnalysisEmpty(text: "当前筛选范围没有完整的繁殖记录") }
-                        ForEach(result.monthly) { item in
-                            AnalysisRow(
-                                title: Text(verbatim: item.month),
-                                detail: Text("\(item.lambings) 胎 · \(item.total) 羔"),
-                                trailing: Text("公/母 \(item.male)/\(item.female)")
-                            )
-                            if item.id != result.monthly.last?.id { Divider() }
+                    if mode == .rhythm {
+                        Picker("分析维度", selection: $selectedSection) {
+                            ForEach([ReproductionAnalysisSection.interval, .postpartum]) {
+                                Text(LocalizedStringKey($0.rawValue)).tag($0)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        selectedSectionContent(result, section: selectedSection)
+                    } else {
+                        MetricGrid {
+                            AnalysisMetric(title: "平均每胎", value: number(result.overview.averageTotal), unit: "羔", tint: .pink)
+                            AnalysisMetric(title: "产羔死胎比例", value: percent(result.overview.mortalityRate), unit: nil, tint: .red)
+                            AnalysisMetric(title: "平均初生重", value: number(result.overview.averageBirthWeight), unit: "千克", tint: .orange)
+                        }
+                        selectedSectionContent(result, section: .breed)
+                        AnalysisCard(title: "月度产羔") {
+                            if result.monthly.isEmpty { AnalysisEmpty(text: "当前筛选范围没有完整的繁殖记录") }
+                            ForEach(result.monthly) { item in
+                                AnalysisRow(title: Text(verbatim: item.month), detail: Text("\(item.lambings) 胎 · \(item.total) 羔"),
+                                    trailing: Text("公/母 \(item.male)/\(item.female)"))
+                                if item.id != result.monthly.last?.id { Divider() }
+                            }
                         }
                     }
                 } else if let errorMessage = dataStore.errorMessage, analytics.snapshot == nil {
@@ -1815,7 +1810,7 @@ private struct ReproductionAnalysisView: View {
         }
         .scrollIndicators(.hidden)
         .background(AppTheme.pageBackground)
-        .navigationTitle("繁殖表现")
+        .navigationTitle(mode == .rhythm ? "繁殖节律" : "产羔与品种表现")
         .task(id: dataStore.revision) { await applySharedSnapshot() }
         .refreshable {
             await dataStore.load(container: modelContext.container, farmID: farm.id, force: true)
@@ -1848,8 +1843,8 @@ private struct ReproductionAnalysisView: View {
     private func calculateReproduction() { analytics.calculateReproduction(filter: filter) }
 
     @ViewBuilder
-    private func selectedSectionContent(_ result: FarmReproductionAnalyticsResult) -> some View {
-        switch selectedSection {
+    private func selectedSectionContent(_ result: FarmReproductionAnalyticsResult, section: ReproductionAnalysisSection) -> some View {
+        switch section {
         case .interval:
             AnalysisCard(title: "胎间距趋势", caption: "固定截止日羊舍母羊群；绿色区域为 150–240 天目标区间") {
                 ReproductionHistoryChart(

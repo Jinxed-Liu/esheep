@@ -69,7 +69,8 @@ export async function inspectExcelWorkbook(file, contractURL) {
     const sheet = sheets.find((item) => item.name === schema.name);
     if (!sheet) continue;
     const header = sheet.rows[0]?.map((value) => String(value).trim()) ?? [];
-    for (const column of schema.columns) if (!header.includes(column)) issues.push(`${schema.name}：缺少模板字段“${column}”`);
+    const legacyOptional = schema.name === "繁殖记录" ? ["配种轮次", "关联配种记录", "关联配种导入键"] : schema.name === "产羔" ? ["关联配种记录", "关联配种导入键"] : schema.name === "新建羊只" ? ["当前胎次"] : [];
+    for (const column of schema.columns) if (!header.includes(column) && !legacyOptional.includes(column)) issues.push(`${schema.name}：缺少模板字段“${column}”`);
     const headerIndex = new Map(header.map((name, index) => [name, index]));
     let rowCount = 0;
     for (const [offset, row] of sheet.rows.slice(1).entries()) {

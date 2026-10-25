@@ -81,8 +81,11 @@ final class FarmNotificationService {
         let prefix = "care:\(farmID.uuidString.lowercased()):"
         let pending = await center.pendingNotificationRequests()
         center.removePendingNotificationRequests(withIdentifiers: pending.map(\.identifier).filter { $0.hasPrefix(prefix) })
+        let context = reminders.first?.modelContext
+        let records = (try? context?.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate { $0.farmID == farmID }))) ?? []
+        let states = ReproductionReminderValidity.states(records: records, now: now)
         let upcoming = reminders.filter {
-            $0.farmID == farmID && $0.deletedAt == nil && $0.status == .pending && $0.dueAt > now
+            $0.farmID == farmID && $0.deletedAt == nil && $0.status == .pending && $0.dueAt > now && ReproductionReminderValidity.isRelevant($0, state: $0.sheepID.flatMap { states[$0] })
         }.sorted { $0.dueAt < $1.dueAt }.prefix(60)
         for reminder in upcoming {
             let content = UNMutableNotificationContent()

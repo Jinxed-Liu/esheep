@@ -55,6 +55,15 @@ test("same-account sign-in and token refresh keep the verified workspace without
   assert.deepEqual(changes, ["account-a"]);
 });
 
+test('startup forwards the exact Auth result only to its matching workspace load', async()=>{
+  const user={id:'account-a'};
+  const {lifecycle}=fixture({verifyUser:async()=>user,loadWorkspace:async(farmID,options)=>{
+    assert.equal(farmID,'farm');assert.equal(options.verifiedUser,user);
+    return {profile:{userID:user.id}};
+  }});
+  await lifecycle.restore({farmID:'farm'});
+});
+
 test("sign-out cannot be undone by a late verification result", async () => {
   const verification = deferred();
   let loads = 0;

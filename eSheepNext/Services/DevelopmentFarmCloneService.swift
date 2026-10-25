@@ -800,6 +800,9 @@ enum DevelopmentFarmCloneService {
                     semenID: map.optional(value.semenID),
                     batchID: map.optional(value.batchID),
                     relatedBreedingRecordID: map.optional(value.relatedBreedingRecordID),
+                    reproductionCycleID: map.optional(value.reproductionCycleID),
+                    breedingRoundID: map.optional(value.breedingRoundID),
+                    breedingIntentRawValue: value.breedingIntentRawValue,
                     semenNameSnapshot: value.semenNameSnapshot,
                     semenDonorID: map.optional(value.semenDonorID),
                     semenDonorNameSnapshot: value.semenDonorNameSnapshot,
@@ -894,7 +897,8 @@ enum DevelopmentFarmCloneService {
                     warningLeadDays: value.warningLeadDays,
                     operationalAlertsConfiguredAt: value.operationalAlertsConfiguredAt,
                     alertDigestEnabled: value.alertDigestEnabled,
-                    alertDigestMinuteOfDay: value.alertDigestMinuteOfDay
+                    alertDigestMinuteOfDay: value.alertDigestMinuteOfDay,
+                    reproductionSettingsJSON: try ReproductionManagementSettings.decode(value.reproductionSettingsJSON)?.remappingIDs(map.id).encodedJSON()
                 )
                 record.createdAt = value.createdAt
                 record.updatedAt = value.updatedAt

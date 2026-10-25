@@ -110,6 +110,9 @@ private struct FarmExcelPagePreviewView: View {
         List {
             Section("核对结果") {
                 LabeledContent("Excel 数据行", value: "\(preview.rows.count) 行")
+                LabeledContent("可接受数据行", value: "\(preview.acceptableRowCount) 行")
+                LabeledContent("繁殖待核实数据行", value: "\(preview.reproductionReviewRowCount) 行")
+                LabeledContent("错误数据行", value: "\(preview.errorRowCount) 行")
                 LabeledContent("待写入记录", value: "\(preview.expandedRecordCount) 条")
                 LabeledContent("阻断错误", value: "\(preview.errorCount) 条")
                 LabeledContent("提醒", value: "\(preview.warningCount) 条")

@@ -65,6 +65,11 @@ struct FarmWorkbenchView: View {
 
     private var management: some View {
         SettingsCard(title: "管理") {
+            SettingsNavigationRow(title: "羊舍管理", subtitle: "新建、编辑、停用与安全删除", systemImage: "building.2", iconColor: .blue) {
+                PenManagementView(account: account, farm: farm)
+            }
+            .accessibilityIdentifier("workbench-pen-management")
+            SettingsCardDivider()
             SettingsNavigationRow(title: "羊只标签", subtitle: "新建标签、设置颜色、查看关联羊只", systemImage: "tag", iconColor: .orange) {
                 SheepLabelManagementView(account: account, farm: farm)
             }

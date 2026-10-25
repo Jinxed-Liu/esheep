@@ -5,7 +5,7 @@ function jsonSafe(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
-function compactActiveSheep(sheep = []) {
+function compactActiveSheep(sheep = [], states = {}) {
   return sheep.map((item) => ({
     id: item.id,
     earTag: item.earTag,
@@ -20,6 +20,7 @@ function compactActiveSheep(sheep = []) {
     latestWeight: item.latestWeight,
     latestWeightAt: item.latestWeightAt,
     profileIncomplete: Boolean(item.profileIncomplete),
+    reproduction: states[item.id] ?? null,
   }));
 }
 
@@ -63,7 +64,7 @@ export function buildAssistantSnapshot(workspace) {
       feeds: analyticsSource.feeds?.length ?? 0,
       eventsTruncated: events.length > MAX_EVENT_ROWS,
     },
-    activeSheep: compactActiveSheep(workspace.sheep ?? []),
+    activeSheep: compactActiveSheep(workspace.sheep ?? [], workspace.reproductionStates ?? {}),
     pens: workspace.pens ?? [],
     events: events.slice(0, MAX_EVENT_ROWS),
     analyticsSource,

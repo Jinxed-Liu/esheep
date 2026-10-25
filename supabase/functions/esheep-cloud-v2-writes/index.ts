@@ -1,3 +1,4 @@
+import { reproductionContractVersion, validateReproductionContract } from "./reproduction-contract.mjs";
 import { withCheckpointCors } from "../esheep-cloud-checkpoints/cors.mjs";
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 
@@ -36,7 +37,8 @@ type ConfirmAssetRequest = {
   variant: "thumbnail" | "avatar" | "original";
 };
 
-type WriteRequest = SubmitRequest | ResolutionRequest | ConfirmAssetRequest;
+type CapabilityRequest = { action: "capabilities" };
+type WriteRequest = SubmitRequest | ResolutionRequest | ConfirmAssetRequest | CapabilityRequest;
 
 type AssetVerificationTarget = {
   asset_id: string;
@@ -221,6 +223,7 @@ const submitCommands = async (
       requireUUID(unsigned.farmID, "farm_id") !== farmID ||
       requireNonnegativeInteger(unsigned.farmGeneration, "farm_generation") !== farmGeneration
     ) throw new Error("command_scope_mismatch");
+    validateReproductionContract(unsigned);
     const deviceID = requireUUID(unsigned.deviceID, "device_id");
     let device = devices.get(deviceID);
     if (!device) {
@@ -348,7 +351,9 @@ Deno.serve(withCheckpointCors(async (request) => {
       auth: { autoRefreshToken: false, persistSession: false },
     });
     const body = await request.json() as WriteRequest;
-    const result = body.action === "submit_commands"
+    const result = body.action === "capabilities"
+      ? { reproduction_contract_version: reproductionContractVersion }
+      : body.action === "submit_commands"
       ? await submitCommands(admin, user.id, body)
       : body.action === "resolve_attention"
       ? await resolveAttention(admin, user.id, body)

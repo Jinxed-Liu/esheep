@@ -55,7 +55,13 @@ struct DevelopmentDesignAcceptanceView: View {
     @ViewBuilder
     private func acceptanceContent(_ fixture: DesignAcceptanceFixture) -> some View {
         let arguments = ProcessInfo.processInfo.arguments
-        if arguments.contains("--design-insight-voice-waveform") {
+        if arguments.contains("--design-real-farm") {
+            DevelopmentRealFarmAcceptanceView(account: fixture.account, farm: fixture.farm)
+        } else if arguments.contains("--design-sheep-detail") {
+            DevelopmentSheepDetailAcceptanceView(account: fixture.account, farm: fixture.farm)
+        } else if arguments.contains("--design-reproduction") {
+            DevelopmentReproductionAcceptanceView(account: fixture.account, farm: fixture.farm)
+        } else if arguments.contains("--design-insight-voice-waveform") {
             DesignAcceptanceVoiceWaveformView()
         } else if arguments.contains("--design-account-crop"), let image = UIImage(named: "MiMoAssistantAvatar") {
             AccountAvatarCropEditor(account: fixture.account, draft: AccountAvatarDraft(image: image))
@@ -203,12 +209,46 @@ private final class DesignAcceptanceFixture {
 
     init() throws {
         let args = ProcessInfo.processInfo.arguments
+        if args.contains("--design-real-farm") {
+            guard let index = args.firstIndex(of: "--design-fixture-id"),
+                  args.indices.contains(index + 1), let fixtureID = UUID(uuidString: args[index + 1]) else {
+                throw MiMoClientError.invalidRequest
+            }
+            let directory = URL.applicationSupportDirectory.appending(path: "RealFarmAcceptance", directoryHint: .isDirectory)
+                .appending(path: fixtureID.uuidString, directoryHint: .isDirectory)
+            let marker = try JSONDecoder().decode(DevelopmentRealFarmAcceptanceMarker.self,
+                from: Data(contentsOf: directory.appending(path: "isolation.json")))
+            let url = directory.appending(path: "acceptance.store")
+            guard marker.fixtureID == fixtureID, marker.offlineOnly,
+                  FileManager.default.fileExists(atPath: url.path) else { throw MiMoClientError.invalidRequest }
+            container = try AppSchema.makeContainer(name: "RealFarmAcceptance", url: url)
+            let context = container.mainContext
+            guard let storedFarm = try context.fetch(FetchDescriptor<FarmRecord>()).first(where: { $0.id == marker.farmID }),
+                  try context.fetchCount(FetchDescriptor<SheepRecord>()) == marker.sheepRecordCount else {
+                throw MiMoClientError.invalidRequest
+            }
+            farm = storedFarm
+            if let existing = try context.fetch(FetchDescriptor<AccountProfile>()).first {
+                account = existing
+            } else {
+                account = AccountProfile(appleUserIdentifier: "real-farm-isolation-\(fixtureID)", displayName: "隔离副本验收")
+                context.insert(account)
+                try context.save()
+            }
+            session = AppSession(activeAccountProfileID: account.id, persistedLocalSessionAccountID: nil,
+                                 persistActiveAccountProfileID: { _ in }, clearActiveAccountProfileID: {})
+            session.selectedFarmID = farm.id
+            collaboration = CloudCollaborationStore(container: container, allowsRemoteConnections: false)
+            return
+        }
         let insightReady = args.contains("--design-insight-ready")
+        let reproductionReady = args.contains("--design-reproduction")
         let offlineSend = insightReady && args.contains("--design-insight-offline-send")
         let workspaceDirectory = URL.applicationSupportDirectory.appending(path: "DesignAcceptance", directoryHint: .isDirectory)
         var directory = insightReady
             ? workspaceDirectory.appending(path: offlineSend ? "InsightOfflineSend" : "InsightReady", directoryHint: .isDirectory)
             : workspaceDirectory
+        if reproductionReady { directory = workspaceDirectory.appending(path: "Reproduction", directoryHint: .isDirectory) }
         if let index = args.firstIndex(of: "--design-fixture-id") {
             guard args.indices.contains(index + 1), let fixtureID = UUID(uuidString: args[index + 1]) else {
                 throw MiMoClientError.invalidRequest
@@ -218,7 +258,8 @@ private final class DesignAcceptanceFixture {
             directory = directory.appending(path: fixtureID.uuidString, directoryHint: .isDirectory)
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let storeName = offlineSend ? "DesignInsightOfflineSendAcceptance" : (insightReady ? "DesignInsightReadyAcceptance" : "DesignAcceptance")
+        let storeName = reproductionReady ? "DesignReproductionAcceptance"
+            : offlineSend ? "DesignInsightOfflineSendAcceptance" : (insightReady ? "DesignInsightReadyAcceptance" : "DesignAcceptance")
         container = try AppSchema.makeContainer(name: storeName,
             url: directory.appending(path: "acceptance.store"))
         let context = container.mainContext
@@ -236,8 +277,13 @@ private final class DesignAcceptanceFixture {
             context.insert(pen)
             try context.save()
             for index in 1...12 {
-                try FarmCommandService().execute(.addSheep(earTag: String(format: "QA-%03d", index), breed: "湖羊", sex: .ewe, penID: pen.id, occurredAt: Date.now.addingTimeInterval(-200 * 86400), birthAt: Date.now.addingTimeInterval(-400 * 86400), currentParity: 0, note: "隔离验收数据"), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: .administrator), context: context)
+                try FarmCommandService().execute(.addSheep(earTag: String(format: "QA-%03d", index), breed: "湖羊", sex: .ewe, penID: pen.id, occurredAt: Date.now.addingTimeInterval(-(reproductionReady ? 350 : 200) * 86400), birthAt: Date.now.addingTimeInterval(-400 * 86400), currentParity: 0, note: "隔离验收数据"), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: .administrator), context: context)
             }
+        }
+        if reproductionReady {
+            try DevelopmentReproductionAcceptance.seed(account: account, farm: farm, context: context)
+            if args.contains("--design-sheep-detail") { try DevelopmentSheepDetailAcceptanceView.seed(farm: farm, context: context) }
+            try DevelopmentPosterAcceptance.seed(account: account, farm: farm, context: context)
         }
         if let index = args.firstIndex(of: "--design-role"), args.indices.contains(index + 1), let role = FarmRole(rawValue: args[index + 1]) {
             farm.roleRawValue = role.rawValue

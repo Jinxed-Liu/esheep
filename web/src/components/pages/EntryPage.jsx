@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { ArrowsLeftRight } from "@phosphor-icons/react/ArrowsLeftRight";
 import { Baby } from "@phosphor-icons/react/Baby";
+import { Barn } from "@phosphor-icons/react/Barn";
 import { CaretRight } from "@phosphor-icons/react/CaretRight";
 import { CheckCircle } from "@phosphor-icons/react/CheckCircle";
 import { DownloadSimple } from "@phosphor-icons/react/DownloadSimple";
@@ -50,6 +51,7 @@ const recordGroups = [
 ];
 
 const managementItems = [
+  { id: "pens", label: "羊舍管理", detail: "新建、编辑、停用与安全删除", icon: Barn },
   { id: "batches", label: "生产批次", detail: "育肥、后备与产羔批次", icon: Factory },
   { id: "care", label: "护理管理", detail: "药品、疫苗与库存预警", icon: FirstAidKit },
   { id: "events", label: "事件历史与导出", detail: "审计、筛选和导出业务事件", icon: Notebook },
@@ -72,6 +74,9 @@ export default function EntryPage({ workspace, onCreateRecord, onNavigate, draft
     try {
       const { inspectExcelWorkbook } = await import("../../lib/excelWorkbook.js");
       const result = await inspectExcelWorkbook(file, `${excelTemplateBase}.json`);
+      const {reviewReproductionImports} = await import("../../lib/reproductionImportReview.js");
+      result.reproductionReview = await reviewReproductionImports(result.records,workspace);
+      result.issues.push(...result.reproductionReview.errors.map(r=>`${r.sheet} 第 ${r.row} 行：${r.message}`));
       setWorkbookState({ status: result.issues.length ? "invalid" : "ready", result, error: "" });
     } catch (error) {
       setWorkbookState({ status: "invalid", result: null, error: error.message || "工作簿读取失败。" });
@@ -127,6 +132,8 @@ export default function EntryPage({ workspace, onCreateRecord, onNavigate, draft
                   <strong>{workbookState.status === "ready" ? `结构预检通过 · App 模板 v${workbookState.result.version}` : "工作簿需要修正"}</strong>
                   <small>{workbookState.result.fileName}</small>
                   {workbookState.result.summaries.length ? <em>{workbookState.result.summaries.map((item) => `${item.name} ${item.rowCount} 行`).join(" · ")}</em> : null}
+                  {workbookState.result.reproductionReview ? <em>可接受 {workbookState.result.reproductionReview.acceptableRowCount} 行 · 繁殖待核实 {workbookState.result.reproductionReview.reviewRowCount} 行 · 繁殖错误 {workbookState.result.reproductionReview.errorRowCount} 行</em> : null}
+                  {workbookState.result.reproductionReview?.reviews.map(r=><em className="issue" key={`${r.sheet}:${r.row}:${r.earTag}`}>{r.sheet} 第 {r.row} 行 · {r.earTag}：{r.reasons.join("；")}</em>)}
                   {workbookState.result.issues.slice(0, 6).map((issue) => <em className="issue" key={issue}>{issue}</em>)}
                   {workbookState.result.issues.length > 6 ? <em className="issue">另有 {workbookState.result.issues.length - 6} 项问题</em> : null}
                 </span>

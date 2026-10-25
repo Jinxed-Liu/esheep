@@ -1925,7 +1925,11 @@ class ESheepCloudProjectionTransaction {
         if let farm = try context.fetch(FetchDescriptor<FarmRecord>())
             .first(where: { $0.id == seed.id }) {
             farm.ownerAccountID = seed.ownerAccountID
-            farm.name = seed.name
+            let farmID = seed.id
+            let hasLiveIdentity = try context.fetch(FetchDescriptor<ESheepCloudFarmIdentityState>(predicate: #Predicate {
+                $0.farmID == farmID
+            })).contains { $0.revision >= 0 }
+            if !hasLiveIdentity { farm.name = seed.name }
             farm.roleRawValue = seed.role.rawValue
             farm.membershipStatusRawValue = seed.membershipStatusRawValue
             farm.updatedAt = seed.updatedAt

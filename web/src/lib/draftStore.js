@@ -48,7 +48,7 @@ export async function saveDraft(accountID, farm, record, draftID) {
     if (existing && (existing.farmID !== farm.id.toLowerCase() || existing.signed)) {
       throw new Error("已经生成提交请求的记录不能改写；请保留原始回执并另建更正记录。");
     }
-    const draft = { ...existing, id: existing?.id ?? crypto.randomUUID(), farmID: farm.id.toLowerCase(),
+    const draft = { ...existing, id: existing?.id ?? draftID ?? crypto.randomUUID(), farmID: farm.id.toLowerCase(),
       generation: farm.generation, record, status: "draft", createdAt: existing?.createdAt ?? Date.now(), updatedAt: Date.now() };
     state.drafts = state.drafts.filter((item) => item.id !== draft.id).concat(draft);
     return draft;

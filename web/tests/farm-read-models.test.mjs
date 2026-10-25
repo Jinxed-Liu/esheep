@@ -3,11 +3,44 @@ import test from "node:test";
 import {
   buildEventSheepIndex,
   buildFarmInsightData,
+  createFarmInsightReader,
+  projectFarmOperationIdentity,
   projectFarmOperationEvent,
   projectionToReproductionRecord,
   projectionToWeaningRecord,
   projectionToWeightRecord,
 } from "../src/lib/farmReadModels.js";
+
+test('native-history attribution matches full legacy event identity without formatting unused details', () => {
+  const encode = value => Buffer.from(JSON.stringify(value)).toString('base64');
+  for (const payload of [
+    {kind:'recordWeight',strings:{kilogramsText:'43.25'},dates:{occurredAt:'2026-08-20T01:00:00Z'}},
+    {kind:'care',careCommand:{recordLambing:{_0:{occurredAt:'2026-08-19T02:00:00Z'}}}},
+    {historySource:'bootstrapEntity',kind:'createBatch',strings:{name:'历史批次'}},
+    {kind:'bootstrapEntity',dataValues:{snapshot:encode({sourcePayload:encode({kind:'recordWeight',dates:{occurredAt:'2026-08-20T01:00:00Z'}})})}},
+    {},
+  ]) {
+    for (const row of [operation(),operation({operation_id:null})]) {
+      const full = projectFarmOperationEvent({row,payload,actorName:'张三'});
+      assert.deepEqual(projectFarmOperationIdentity(row,payload,'张三'),
+        {id:full.id,at:full.at,actor:full.actor,revision:full.revision});
+    }
+  }
+});
+
+test('insight reports are computed on first access once per workspace at the original cutoff', () => {
+  let reads = 0;
+  const source = {sheep:[],pens:[],get weights(){reads++;return [];}};
+  const options = {source,timeZone:'Asia/Shanghai',asOf:new Date('2026-10-15T00:00:00Z')};
+  const read = createFarmInsightReader(options);
+  assert.equal(reads,0,'the homepage must not calculate reports');
+  const actual = read(), firstReads = reads;
+  assert(firstReads>0);
+  assert.equal(read(),actual);
+  assert.equal(reads,firstReads);
+  assert.deepEqual(actual,buildFarmInsightData(options));
+  assert.notEqual(createFarmInsightReader(options)(),actual,'a new cloud workspace owns a new report');
+});
 
 function operation(overrides = {}) {
   return {

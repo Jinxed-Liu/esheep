@@ -6,9 +6,11 @@ import Supabase
 /// SDK backs eSheep+ Cloud. No SDK type crosses this adapter boundary.
 actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTransferTransport, ESheepCloudCheckpointGateway {
     private let client: SupabaseClient
+    private let transferSession: URLSession
 
-    init(client: SupabaseClient) {
+    init(client: SupabaseClient, transferSession: URLSession = .shared) {
         self.client = client
+        self.transferSession = transferSession
     }
 
     func openCheckpoint(farmID: UUID, farmGeneration: Int, checkpointID: UUID?) async throws -> ESheepCloudCheckpointTicket {
@@ -150,11 +152,13 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
               (wire.hasMore == ((events.last?.eventSequence ?? max(0, eventSequence)) < wire.cloudHead)) else {
             throw ESheepCloudInfrastructureError.malformedResponse
         }
+        try wire.farmIdentity?.validate(farmID: farmID, generation: farmGeneration)
         for event in events { try event.validateDigest() }
         return ESheepCloudEventPageV2(
             events: events,
             cloudHead: wire.cloudHead,
-            hasMore: wire.hasMore
+            hasMore: wire.hasMore,
+            farmIdentity: wire.farmIdentity
         )
     }
 
@@ -167,6 +171,19 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
             guard !signed.deviceSignature.isEmpty else {
                 throw ESheepCloudContractError.missingDeviceIdentity
             }
+        }
+        let needsCycleContract = try commands.contains { signed in
+            let data = try ESheepCloudCanonicalCodec.encode(signed.command.payload)
+            let text = String(decoding: data, as: UTF8.self)
+            return text.contains("reproductionCycleID") || text.contains("breedingRoundID") || text.contains("breedingIntent")
+        }
+        if needsCycleContract {
+            struct Capabilities: Decodable { let reproduction_contract_version: Int? }
+            struct Request: Encodable { let action = "capabilities" }
+            let capability: Capabilities
+            do { capability = try await client.functions.invoke("esheep-cloud-v2-writes", options: FunctionInvokeOptions(body: Request())) }
+            catch { throw ESheepCloudInfrastructureError.reproductionCapabilityUnavailable }
+            guard (capability.reproduction_contract_version ?? 0) >= 1 else { throw ESheepCloudInfrastructureError.reproductionUpgradeRequired }
         }
         let grouped = Dictionary(grouping: commands) {
             FarmGenerationKey(
@@ -286,6 +303,13 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
                 authorizationToken = nil
                 expiresAt = .now.addingTimeInterval(10 * 60)
             } else {
+                // Storage checks INSERT/UPDATE RLS while issuing the ticket,
+                // before TUS receives Upload-Metadata. Send the same variant
+                // checksum now so the private bucket's SHA policy can pass.
+                let metadataData = try Self.uploadObjectMetadata(
+                    request.metadata, variantSHA256: request.variantSHA256
+                )
+                storage.setHeader(metadataData.base64EncodedString(), forKey: "x-metadata")
                 let signed = try await storage.createSignedUploadURL(
                     path: wire.objectKey,
                     options: .init(upsert: true)
@@ -324,11 +348,8 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
               let endpoint = Self.resumableUploadEndpoint(from: ticket.signedURL) else {
             throw ESheepCloudInfrastructureError.malformedResponse
         }
-        var objectMetadata = descriptor.metadata
-        objectMetadata["sha256"] = descriptor.variantSHA256
-        let metadataData = try JSONSerialization.data(
-            withJSONObject: objectMetadata,
-            options: [.sortedKeys]
+        let metadataData = try Self.uploadObjectMetadata(
+            descriptor.metadata, variantSHA256: descriptor.variantSHA256
         )
         guard let metadataJSON = String(data: metadataData, encoding: .utf8) else {
             throw ESheepCloudInfrastructureError.malformedResponse
@@ -351,7 +372,7 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
         request.setValue(header, forHTTPHeaderField: "Upload-Metadata")
         request.setValue(token, forHTTPHeaderField: "x-signature")
         request.setValue("true", forHTTPHeaderField: "x-upsert")
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await transferSession.data(for: request)
         let http = try Self.requireSuccess(response, allowed: [201])
         guard let location = http.value(forHTTPHeaderField: "Location"),
               let sessionURL = URL(string: location, relativeTo: endpoint)?.absoluteURL else {
@@ -372,7 +393,7 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
         request.httpMethod = "HEAD"
         request.setValue("1.0.0", forHTTPHeaderField: "Tus-Resumable")
         request.setValue(authorizationToken, forHTTPHeaderField: "x-signature")
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await transferSession.data(for: request)
         let http = try Self.requireSuccess(response, allowed: [200, 204])
         guard let raw = http.value(forHTTPHeaderField: "Upload-Offset"),
               let offset = Int64(raw), offset >= 0 else {
@@ -402,7 +423,7 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
             forHTTPHeaderField: "Content-Type"
         )
         request.setValue(authorizationToken, forHTTPHeaderField: "x-signature")
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (_, response) = try await transferSession.data(for: request)
         let http = try Self.requireSuccess(response, allowed: [204])
         guard let raw = http.value(forHTTPHeaderField: "Upload-Offset"),
               let offset = Int64(raw), offset >= byteOffset else {
@@ -438,7 +459,7 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
         ticket: ESheepCloudAssetTransferTicketV2,
         destinationURL: URL
     ) async throws {
-        let (temporaryURL, response) = try await URLSession.shared.download(
+        let (temporaryURL, response) = try await transferSession.download(
             from: ticket.signedURL
         )
         _ = try Self.requireSuccess(response, allowed: Array(200..<300))
@@ -637,10 +658,23 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
         ), let range = components.path.range(of: "/storage/v1/") else {
             return nil
         }
-        components.path = String(components.path[..<range.upperBound]) + "upload/resumable"
+        // A signed upload credential is accepted only by the /sign route.
+        // The plain resumable endpoint requires a user's bearer token.
+        components.path = String(components.path[..<range.upperBound]) + "upload/resumable/sign"
         components.query = nil
         components.fragment = nil
         return components.url
+    }
+
+    private static func uploadObjectMetadata(
+        _ metadata: [String: String], variantSHA256: String
+    ) throws -> Data {
+        guard variantSHA256.isInfrastructureSHA256 else {
+            throw ESheepCloudInfrastructureError.malformedResponse
+        }
+        var objectMetadata = metadata
+        objectMetadata["sha256"] = variantSHA256
+        return try JSONSerialization.data(withJSONObject: objectMetadata, options: [.sortedKeys])
     }
 
     private static func requireSuccess(
@@ -658,6 +692,8 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
 }
 
 enum ESheepCloudInfrastructureError: LocalizedError {
+    case reproductionUpgradeRequired
+    case reproductionCapabilityUnavailable
     case malformedResponse
     case invalidSnapshotChunk
     case commandBatchTooLarge
@@ -665,6 +701,10 @@ enum ESheepCloudInfrastructureError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .reproductionCapabilityUnavailable:
+            "暂时无法确认云端繁殖关联能力，请检查连接或完成服务更新后重试。原始记录与待同步命令已保留。"
+        case .reproductionUpgradeRequired:
+            "云端尚未支持本次繁殖关联格式，请完成云端更新后重试。原始记录与待同步命令已保留。"
         case .malformedResponse:
             "eSheep+ 云返回的资料不完整，已停止应用。"
         case .invalidSnapshotChunk:
@@ -875,8 +915,10 @@ private struct EventPageWire: Decodable, Sendable {
     let events: [EventWire]
     let cloudHead: Int64
     let hasMore: Bool
+    let farmIdentity: ESheepCloudFarmIdentityV2?
 
     enum CodingKeys: String, CodingKey {
+        case farmIdentity = "farm_identity"
         case events
         case cloudHead = "cloud_head"
         case hasMore = "has_more"

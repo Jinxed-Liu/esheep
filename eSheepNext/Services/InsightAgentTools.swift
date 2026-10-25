@@ -229,7 +229,7 @@ final class InsightToolRegistry {
                     "item_name": Self.string("健康项目、饲料原料或库存名称关键词；不筛选时传空字符串"),
                     "group_by": Self.enumString(
                         "分组字段",
-                        values: ["none", "pen", "breed", "sex", "status", "kind", "item", "month"]
+                        values: ["none", "pen", "breed", "sex", "status", "kind", "item", "month", "reproduction_state"]
                     ),
                     "metric": Self.enumString(
                         "结果形式；records 返回明细，其余返回确定性聚合",
@@ -1373,11 +1373,11 @@ final class InsightToolRegistry {
                     "sireID?", "semenID?", "semenUnitsPerEweText?", "note", "reminderAt?",
                 ],
                 "CareReproductionSubjectDraft": [
-                    "id", "eweID", "result", "relatedBreedingRecordID?",
+                    "id", "eweID", "result", "relatedBreedingRecordID?", "reproductionCycleID?", "breedingRoundID?", "breedingIntent?",
                 ],
                 "CareLambingDraft": [
                     "id", "eweID", "occurredAt", "sireID?", "semenID?",
-                    "relatedBreedingRecordID?", "parity", "birthDeadCount",
+                    "relatedBreedingRecordID?", "reproductionCycleID?", "breedingRoundID?", "breedingIntent?", "parity", "birthDeadCount",
                     "offspring[]:CareLambDraft", "penID?", "note",
                 ],
                 "CareLambDraft": [

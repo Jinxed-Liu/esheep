@@ -84,7 +84,8 @@ struct SheepDetailSubjectSnapshot: Sendable, Hashable {
             currentPenID: currentPenID,
             birthAt: birthAt,
             enteredAt: enteredAt,
-            removedAt: removedAt
+            removedAt: removedAt,
+            isHistoricalArchive: isHistoricalArchive
         )
     }
 }
@@ -111,13 +112,16 @@ struct SheepDetailWeightGainSnapshot: Identifiable, Sendable, Hashable {
     let endKilogramsText: String
     let intervalDays: Int
     let kilogramsPerDay: Double
+    var startSource: SheepWeightSource = .weighing
+    var endSource: SheepWeightSource = .weighing
+    var totalGainKilograms: Double { kilogramsPerDay * Double(intervalDays) }
 }
 
 enum SheepDetailWeightGainBuilder {
-    static func intervals(from samples: [SheepWeightSample]) -> [SheepDetailWeightGainSnapshot] {
-        let canonical = SheepWeightSampleBuilder.dailyCanonical(samples)
+    static func intervals(from samples: [SheepWeightSample], calendar: Calendar = FarmAnalyticsDate.calendar) -> [SheepDetailWeightGainSnapshot] {
+        let canonical = SheepWeightSampleBuilder.dailyCanonical(samples, calendar: calendar)
         return zip(canonical, canonical.dropFirst()).compactMap { previous, current in
-            let intervalDays = FarmAnalyticsDate.days(from: previous.occurredAt, to: current.occurredAt)
+            let intervalDays = calendar.dateComponents([.day], from: calendar.startOfDay(for: previous.occurredAt), to: calendar.startOfDay(for: current.occurredAt)).day ?? 0
             guard intervalDays > 0 else { return nil }
             return SheepDetailWeightGainSnapshot(
                 id: current.id,
@@ -126,7 +130,8 @@ enum SheepDetailWeightGainBuilder {
                 startKilogramsText: previous.kilogramsText,
                 endKilogramsText: current.kilogramsText,
                 intervalDays: intervalDays,
-                kilogramsPerDay: (current.kilograms - previous.kilograms) / Double(intervalDays)
+                kilogramsPerDay: (current.kilograms - previous.kilograms) / Double(intervalDays),
+                startSource: previous.source, endSource: current.source
             )
         }
     }
@@ -157,6 +162,17 @@ struct SheepDetailSnapshot: Sendable {
     let currentParity: Int?
     let lifecycleInsight: FarmInsight
     let reproductionInsight: FarmInsight
+    var reproductionState: ReproductionStateSnapshot?
+    var canonicalWeights: [SheepDetailWeightSnapshot] = []
+    var timeZoneIdentifier: String = "Asia/Shanghai"
+    var factsReadAt: Date = .now
+    var managementSettings: ReproductionManagementSettings = .init()
+    var gestationDays: Int = 150
+    var weanedAt: Date?
+    var fatteningStartedAt: Date?
+    var recordedBreedingCount: Int = 0
+    var recordedOffspringCount: Int = 0
+    var isPreBreedingLamb = false
 }
 
 struct SheepDetailScreenSnapshot: Sendable {
@@ -253,6 +269,13 @@ actor SheepDetailSnapshotActor {
         try Task.checkCancellation()
         let context = ModelContext(container)
         context.autosaveEnabled = false
+        let factsReadAt = Date.now
+        let farm = try context.fetch(FetchDescriptor<FarmRecord>(predicate: #Predicate { $0.id == farmID })).first
+        var calendar = Calendar(identifier: .gregorian)
+        guard let timeZone = TimeZone(identifier: farm?.timeZoneIdentifier ?? "Asia/Shanghai") else { throw FarmCommandError.invalidFarmTimeZone }
+        calendar.timeZone = timeZone
+        let rules = try context.fetch(FetchDescriptor<FarmCareRuleRecord>(predicate: #Predicate { $0.farmID == farmID })).first
+        let settings = try ReproductionManagementSettings.decode(rules?.reproductionSettingsJSON) ?? .init()
 
         let weights = try context.fetch(FetchDescriptor<WeightRecord>(
             predicate: #Predicate {
@@ -310,6 +333,16 @@ actor SheepDetailSnapshotActor {
             },
             sortBy: [SortDescriptor(\ReproductionRecord.occurredAt, order: .reverse)]
         ))
+        let recordedBreedingCount: Int
+        let recordedOffspringCount: Int
+        if subject.sex == .ram {
+            recordedBreedingCount = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.sireID == sheepID && $0.kindRawValue == "breeding" && $0.deletedAt == nil && $0.occurredAt <= factsReadAt
+            })).count
+            recordedOffspringCount = try context.fetchCount(FetchDescriptor<SheepRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.sireID == sheepID && $0.deletedAt == nil
+            }))
+        } else { recordedBreedingCount = 0; recordedOffspringCount = 0 }
         let photos = try context.fetch(FetchDescriptor<PhotoAssetRecord>(
             predicate: #Predicate {
                 $0.farmID == farmID && $0.sheepID == sheepID && $0.deletedAt == nil
@@ -376,6 +409,10 @@ actor SheepDetailSnapshotActor {
                 source: .lambingBirth
             ))
         }
+        weightSamples = weightSamples.filter { $0.occurredAt <= factsReadAt }
+        let canonicalWeights = SheepWeightSampleBuilder.dailyCanonical(weightSamples, calendar: calendar).map {
+            SheepDetailWeightSnapshot(id: $0.id, kilogramsText: $0.kilogramsText, kilograms: $0.kilograms, occurredAt: $0.occurredAt, source: $0.source)
+        }
         let weightValues = SheepWeightSampleBuilder.deduplicatingEquivalentFacts(weightSamples).reversed().map { sample in
             SheepDetailWeightSnapshot(
                 id: sample.id,
@@ -419,6 +456,7 @@ actor SheepDetailSnapshotActor {
         timeline.append(contentsOf: photoValues.map {
             SheepDetailTimelineEntry(id: $0.id, title: "照片", detail: "新增羊只影像", date: $0.displayedAt)
         })
+        timeline.append(contentsOf: purposeTimeline.map { SheepDetailTimelineEntry(id: $0.id, title: "用途变更", detail: $0.transitionText, date: $0.occurredAt) })
         timeline.sort { $0.date > $1.date }
 
         let analyticsSnapshot = FarmAnalyticsSnapshot(
@@ -444,22 +482,29 @@ actor SheepDetailSnapshotActor {
             removals: [],
             transfers: [],
             batchMemberships: [],
-            feeds: []
+            feeds: [], timeZoneIdentifier: timeZone.identifier, factsReadAt: factsReadAt,
+            reproductionFacts: ReproductionCycleResolver.facts(records: reproduction)
         )
+        let cycle = subject.sex == .ewe ? ReproductionCycleResolver.resolve(eweID: sheepID, snapshot: analyticsSnapshot) : nil
+        let currentPurposeStart = purposeTimeline.last(where: { $0.occurredAt <= factsReadAt })
         return SheepDetailSnapshot(
             weights: weightValues,
-            weightGainIntervals: SheepDetailWeightGainBuilder.intervals(from: weightSamples),
+            weightGainIntervals: SheepDetailWeightGainBuilder.intervals(from: weightSamples, calendar: calendar),
             photos: photoValues,
             purposeTimeline: purposeTimeline,
             timeline: timeline,
-            currentParity: LambingEntrySemantics.currentParity(
-                eweID: sheepID,
-                farmID: farmID,
-                before: .distantFuture,
-                records: reproduction
-            ),
+            currentParity: cycle?.completedParity,
             lifecycleInsight: SheepAnalyticsEngine.lifecycle(sheepID: sheepID, snapshot: analyticsSnapshot),
-            reproductionInsight: SheepAnalyticsEngine.reproduction(sheepID: sheepID, snapshot: analyticsSnapshot)
+            reproductionInsight: SheepAnalyticsEngine.reproduction(sheepID: sheepID, snapshot: analyticsSnapshot),
+            reproductionState: cycle, canonicalWeights: canonicalWeights, timeZoneIdentifier: timeZone.identifier,
+            factsReadAt: factsReadAt, managementSettings: settings, gestationDays: rules?.gestationDays ?? 150,
+            weanedAt: weanings.filter { $0.occurredAt <= factsReadAt }.map(\.occurredAt).max(),
+            fatteningStartedAt: currentPurposeStart?.purpose == .fattening ? currentPurposeStart?.occurredAt : nil,
+            recordedBreedingCount: recordedBreedingCount, recordedOffspringCount: recordedOffspringCount,
+            isPreBreedingLamb: subject.sex == .ewe && ReproductionReviewPolicy.isPreBreedingLamb(
+                purpose: subject.purpose, birthAt: subject.birthAt, removedAt: subject.removedAt,
+                hasReproductionFacts: reproduction.contains { $0.occurredAt <= factsReadAt },
+                asOf: factsReadAt, timeZoneIdentifier: timeZone.identifier, minimumAgeMonths: settings.minimumAgeMonths)
         )
     }
 
@@ -506,7 +551,8 @@ actor SheepDetailSnapshotActor {
             reproduction: reproduction,
             transfers: transfers,
             allSheep: allSheep,
-            semenDonors: donors
+            semenDonors: donors,
+            detail: try load(farmID: farmID, sheepID: sheepID, subject: SheepDetailSubjectSnapshot(record: sheep))
         )
     }
 

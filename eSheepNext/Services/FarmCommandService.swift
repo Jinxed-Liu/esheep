@@ -553,6 +553,8 @@ enum FarmCommand: Sendable {
         switch self {
         case .updateFarmLocation:
             .editFarmLocation
+        case .setPenActive:
+            .manageCatalogs
         case .tombstoneEntity(let entityType, _, _)
             where entityType == .productionBatch || entityType == .batchMembership:
             .manageCatalogs
@@ -1679,6 +1681,7 @@ final class FarmCommandService {
         removalBatchState: RemovalBatchExecutionState? = nil,
         batchState: BatchExecutionState? = nil
     ) throws -> StagedCommandResult {
+        let command = try ReproductionCommandNormalizer.normalize(command, farmID: farm.farmID, context: context)
         let farmID = farm.farmID
         let requiredCapability: FarmCapability
         if case .restoreTombstonedEntity(let tombstoneID) = command,
@@ -1692,6 +1695,19 @@ final class FarmCommandService {
             requiredCapability = command.requiredCapability
         }
         guard farm.capabilities.allows(requiredCapability) else {
+            throw FarmPermissionError.denied(requiredCapability)
+        }
+        let changesPenLifecycle: Bool
+        switch command {
+        case .setPenActive: changesPenLifecycle = true
+        case .tombstoneEntity(let type, _, _): changesPenLifecycle = type == .pen
+        case .restoreTombstonedEntity(let id):
+            changesPenLifecycle = try context.fetch(FetchDescriptor<TombstoneRecord>(predicate: #Predicate {
+                $0.id == id && $0.farmID == farmID
+            })).first?.entityType == CloudEntityType.pen.rawValue
+        default: changesPenLifecycle = false
+        }
+        if changesPenLifecycle && !PenManagementPolicy.canManageLifecycle(role: farm.role) {
             throw FarmPermissionError.denied(requiredCapability)
         }
 
@@ -3040,10 +3056,10 @@ final class FarmCommandService {
             guard TimeZone(identifier: timeZoneIdentifier) != nil else { throw FarmCommandError.invalidFarmTimeZone }
             if let accuracy, accuracy < 0 { throw FarmCommandError.invalidNumber("定位精度") }
         case .createPen(let name, _):
-            _ = try required(name, label: "圈舍名称")
+            try PenManagementPolicy.validateName(name, farmID: farmID, context: context)
         case .updatePen(let penID, let name, _):
             try assertPen(penID, farmID: farmID, context: context, includeInactive: true)
-            _ = try required(name, label: "圈舍名称")
+            try PenManagementPolicy.validateName(name, excluding: penID, farmID: farmID, context: context)
         case .setPenActive(let penID, let isActive):
             try assertPen(penID, farmID: farmID, context: context, includeInactive: true)
             if !isActive {
@@ -3532,11 +3548,10 @@ final class FarmCommandService {
                 throw FarmCommandError.parityBaselineManagedInProfile
             }
             if entityType == .pen {
-                let sheep = try context.fetch(FetchDescriptor<SheepRecord>())
-                let transfers = try context.fetch(FetchDescriptor<TransferRecord>())
-                let hasReferences = sheep.contains { $0.farmID == farmID && ($0.currentPenID == entityID || $0.initialPenID == entityID) }
-                    || transfers.contains { $0.farmID == farmID && ($0.fromPenID == entityID || $0.toPenID == entityID) }
-                guard !hasReferences else { throw FarmCommandError.protectedPenReferences }
+                try assertPen(entityID, farmID: farmID, context: context, includeInactive: true)
+                guard try !PenManagementPolicy.hasReferences(penID: entityID, farmID: farmID, context: context) else {
+                    throw FarmCommandError.protectedPenReferences
+                }
             }
             if entityType == .sheep {
                 guard try !hasSheepReferences(entityID, farmID: farmID, context: context) else {
@@ -3576,6 +3591,13 @@ final class FarmCommandService {
                 throw FarmCommandError.missingRequiredValue("可恢复的删除记录")
             }
             guard CloudEntityType(rawValue: tombstone.entityType) != nil else { throw FarmCommandError.missingRequiredValue("可恢复的实体类型") }
+            if tombstone.entityType == CloudEntityType.pen.rawValue {
+                let id = tombstone.entityID
+                guard let pen = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate {
+                    $0.id == id && $0.farmID == farmID
+                })).first else { throw FarmCommandError.penNotFound }
+                try PenManagementPolicy.validateName(pen.name, excluding: id, farmID: farmID, context: context)
+            }
         }
     }
 

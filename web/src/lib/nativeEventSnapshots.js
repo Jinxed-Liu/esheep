@@ -2,6 +2,7 @@ import { decimalRound } from "./decimal.js";
 import { farmDateText } from "./eventExport.js";
 import { sha256 } from "./cloudV2Writes.js";
 import { decodeCheckpointData } from "./checkpointData.js";
+import { concurrentRead } from "./concurrentRead.js";
 
 export async function stableUUID(namespace, name) {
   const hex = await sha256(new TextEncoder().encode(`${namespace.toLowerCase()}\n${name}`));
@@ -25,6 +26,14 @@ export async function nativeEventSnapshots(models, { timeZone = "Asia/Shanghai",
   const tag = (id, fallback = "未知羊只") => sheep.get(id)?.earTag ?? fallback;
   const pen = (id, fallback = "未分圈") => pens.get(id)?.name ?? fallback;
   const day = (value) => value == null ? "" : farmDateText(value, timeZone, false);
+  const reproductionByID = index(models.ReproductionRecord??[]);
+  const cycleLabel = row => row.reproductionCycleID === row.eweID ? "建档后的首个周期" : reproductionByID.has(row.reproductionCycleID) ? `${reproNames[reproductionByID.get(row.reproductionCycleID).kindRawValue]}后周期（${day(reproductionByID.get(row.reproductionCycleID).occurredAt)}）` : "按可靠时间线核对";
+  const breedingLabel = row => reproductionByID.has(row.relatedBreedingRecordID) ? `${day(reproductionByID.get(row.relatedBreedingRecordID).occurredAt)} · 配种` : row.relatedBreedingRecordID ? "关联配种已修正或撤销，须核对" : "未明确关联";
+  const visibleSheep = rows("SheepRecord").filter((r) => !r.isHistoricalArchive);
+  // Birth IDs are independent immutable hashes. Bounded concurrency avoids a
+  // round trip through WebCrypto for every sheep in sequence on a fresh page.
+  const birthIDs = new Map(await concurrentRead(visibleSheep.filter((row) => row.birthAt != null),
+    async (row) => [row.id, await stableUUID(row.id, "farm-event-birth")]));
   const events = [];
   function add(record, entityType, scope, category, title, subject, detail, pairs, overrides = {}) {
     const related = [record.sheepID, record.eweID, record.sireID].filter(Boolean);
@@ -33,11 +42,11 @@ export async function nativeEventSnapshots(models, { timeZone = "Asia/Shanghai",
       recordedAt: new Date(record.recordedAt ?? record.createdAt).toISOString(), fields: fieldList(pairs),
       relatedSheepIDs: related, status: "synced", actor: "未记录", revision:record.revision, ...overrides });
   }
-  for (const row of rows("SheepRecord").filter((r) => !r.isHistoricalArchive)) {
+  for (const row of visibleSheep) {
     const sex = sexNames[row.sexRawValue] ?? "未知";
     add({ ...row, occurredAt: row.enteredAt }, "sheep", "sheep", "herd", "新建羊只", row.earTag,
       `${sex} · ${row.breed} · ${pen(row.initialPenID)}`, [["耳号", row.earTag], ["性别", sex], ["品种", row.breed], ["入场圈舍", pen(row.initialPenID)]], { relatedSheepIDs: [row.id] });
-    if (row.birthAt != null) add({ ...row, id: await stableUUID(row.id, "farm-event-birth"), occurredAt: row.birthAt, note: "" },
+    if (row.birthAt != null) add({ ...row, id: birthIDs.get(row.id), occurredAt: row.birthAt, note: "" },
       "sheep", "birth", "herd", "出生", row.earTag, `${sex} · ${row.breed}`,
       [["耳号", row.earTag], ["性别", sex], ["品种", row.breed], ["出生日期", day(row.birthAt)], ["初始圈舍", pen(row.initialPenID)],
         ["母本", tag(row.damID, "未关联")], ["父本来源", tag(row.sireID, row.semenDonorNameSnapshot ?? "未关联")], ["羊只档案ID", row.id]],
@@ -120,7 +129,7 @@ export async function nativeEventSnapshots(models, { timeZone = "Asia/Shanghai",
   for (const row of rows("ReproductionRecord")) add(row, "reproduction", "reproduction", "reproduction", reproNames[row.kindRawValue] ?? row.kindRawValue,
     tag(row.eweID, "未知母羊"), row.kindRawValue === "lambing" ? `产羔 ${row.lambCount} 只` : row.result || row.semenNameSnapshot || tag(row.sireID, "已录入"),
     [["母羊", tag(row.eweID, "未知母羊")], ["公羊", tag(row.sireID, "未关联")], ["冻精", row.semenNameSnapshot ?? "未使用"], ["冻精供体", row.semenDonorNameSnapshot],
-      ["胎次", row.parity], ["产羔数", row.kindRawValue === "lambing" ? row.lambCount : ""], ["死胎数", row.birthDeadCount], ["结果", row.result || "未填写"]]);
+      ["胎次", row.parity], ["产羔数", row.kindRawValue === "lambing" ? row.lambCount : ""], ["死胎数", row.birthDeadCount], ["结果", row.result || "未填写"], ["繁殖周期",cycleLabel(row)], ["配种轮次",({newRound:"新一轮配种",supplement:"本轮补配"})[row.breedingIntentRawValue]??"历史轮次待核对"], ["关联配种",breedingLabel(row)]]);
   for (const row of rows("NoteRecord")) add({ ...row, note: "" }, "note", "note", "note", "备注", row.sheepID ? tag(row.sheepID) : row.penID ? pen(row.penID) : "未关联对象", row.text, [["内容", row.text]]);
   for (const [model, entity, targetModel, fk, nameKey, label, reversal] of [
     ["InventoryTransactionRecord", "inventoryTransaction", "InventoryLotRecord", "inventoryLotID", "catalogName", "药品疫苗", "删除健康记录反向恢复库存："],

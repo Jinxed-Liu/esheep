@@ -830,6 +830,8 @@ enum ESheepCloudEventReducer {
         state.integrityState = .failed
         state.integrityFailureTraceID = traceID
         state.lastSafeSaveAt = nil
+        try ESheepCloudFarmIdentityProjection.blockLegacyHoldRecovery(
+            farmID: farmID, generation: farmGeneration, context: context)
         try context.save()
     }
 
