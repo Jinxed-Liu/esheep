@@ -173,6 +173,10 @@ jobs:
       - name: Export screenshots
         if: always()
         run: |
+          if ! xcrun simctl spawn "$IOS_SIMULATOR_ID" log show --last 45m --style compact \
+            --predicate 'subsystem == "com.sheepfarm.next.avatar"' > "$RUNNER_TEMP/avatar-scroll.log" 2>&1; then
+            echo "Avatar fixture scroll diagnostics were unavailable; see avatar-scroll.log."
+          fi
           for gesture_result_name in full-unit gestures native-interactions; do
             if [ -d "$RUNNER_TEMP/$gesture_result_name.xcresult" ]; then
               xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/$gesture_result_name.xcresult" > "$RUNNER_TEMP/$gesture_result_name-summary.json"
@@ -222,6 +226,7 @@ jobs:
             ${{ runner.temp }}/gestures.log
             ${{ runner.temp }}/full-unit.log
             ${{ runner.temp }}/native-interactions.log
+            ${{ runner.temp }}/avatar-scroll.log
             ${{ runner.temp }}/*-summary.json
             ${{ runner.temp }}/*-skipped-tests.json
             ${{ runner.temp }}/runtime-diagnostics-policy.json

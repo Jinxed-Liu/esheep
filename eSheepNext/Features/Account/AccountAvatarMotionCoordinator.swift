@@ -1,6 +1,9 @@
 import Observation
 import SwiftUI
 import UIKit
+#if DEBUG
+import OSLog
+#endif
 
 /// Owns presentation effects; the gesture reducer stays independent of SwiftUI.
 @MainActor
@@ -102,18 +105,38 @@ final class AccountAvatarMotionCoordinator {
 
     func beginDragging() {
         interaction.beginDragging()
+        #if DEBUG
+        traceFixtureScroll("begin")
+        #endif
     }
 
     func endDragging() {
         // Eligibility is reset at finger release, before scroll deceleration.
+        #if DEBUG
+        traceFixtureScroll("end-before-release")
+        #endif
         interaction.endDragging()
     }
 
     func updateScroll(offsetY: CGFloat, hasImage: Bool) {
         guard offsetY.isFinite else { return }
         scrollOffset = offsetY
-        apply(interaction.update(offsetY: offsetY, hasImage: hasImage))
+        let effect = interaction.update(offsetY: offsetY, hasImage: hasImage)
+        #if DEBUG
+        if offsetY <= -32 { traceFixtureScroll("pull-\(effect)") }
+        #endif
+        apply(effect)
     }
+
+    #if DEBUG
+    private func traceFixtureScroll(_ event: String) {
+        guard ProcessInfo.processInfo.arguments.contains("--design-account-settings") else { return }
+        let logger = Logger(subsystem: "com.sheepfarm.next.avatar", category: "compatibility")
+        let offset = Double(scrollOffset)
+        let state = String(describing: interaction)
+        logger.notice("AVATAR_SCROLL_EVIDENCE event=\(event, privacy: .public) offset=\(offset) state=\(state, privacy: .public)")
+    }
+    #endif
 
     func tapAvatar() {
         switch interaction.presentation {

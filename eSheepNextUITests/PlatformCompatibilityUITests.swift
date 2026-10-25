@@ -111,7 +111,10 @@ final class PlatformCompatibilityUITests: XCTestCase {
             CGVector(dx: viewport.width / 2, dy: startY - viewport.minY)
         )
         let end = start.withOffset(CGVector(dx: 0, dy: distance))
-        start.press(forDuration: 0.1, thenDragTo: end)
+        // Keep the finger down briefly at the destination so native scroll
+        // geometry is delivered before release on a loaded hosted simulator.
+        // This remains one drag per stage, with no retries or tap fallback.
+        start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
     }
 
     @MainActor
