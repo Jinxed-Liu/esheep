@@ -449,6 +449,21 @@ class FixtureSkipValidationTests(unittest.TestCase):
 
 
 class UITestPlanPolicyTests(unittest.TestCase):
+    def test_ui_preserves_explicit_poster_budgets_without_raising_other_defaults(self):
+        for version in ("17.5", "26.5"):
+            for scheme in compatibility.SCHEMES:
+                with self.subTest(version=version, scheme=scheme):
+                    destination = compatibility.Destination(LEGACY_RUNTIME, version, "iPhone", LEGACY_UDID)
+                    _, _, test = compatibility.suite_commands(destination, scheme, Path("/tmp/time-policy"))
+                    default = "-default-test-execution-time-allowance"
+                    maximum = "-maximum-test-execution-time-allowance"
+                    if scheme == "eSheepNextUI":
+                        self.assertEqual(test[test.index(default) + 1], "240")
+                        self.assertEqual(test[test.index(maximum) + 1], "600")
+                    else:
+                        self.assertNotIn(default, test)
+                        self.assertNotIn(maximum, test)
+
     def test_only_ios17_ui_uses_the_legacy_plan_for_build_and_test(self):
         for version in ("17.0", "17.5", "18.0", "26.5"):
             for scheme in compatibility.SCHEMES:

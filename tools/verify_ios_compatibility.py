@@ -232,8 +232,11 @@ def suite_commands(destination, scheme, output_dir):
     test = ["xcodebuild", "test-without-building", *common,
             "-resultBundlePath", str(suite_dir / "Tests.xcresult")]
     if scheme == "eSheepNextUI":
+        # Keep ordinary UI cases at 240s, while honoring the poster suite's
+        # existing explicit 480s editing and 600s two-relaunch allowances.
+        # ios-runtime.yml already permits those same per-case budgets.
         test += ["-test-timeouts-enabled", "YES", "-default-test-execution-time-allowance", "240",
-                 "-maximum-test-execution-time-allowance", "240"]
+                 "-maximum-test-execution-time-allowance", "600"]
     test += settings
     return suite_dir, build, test
 
