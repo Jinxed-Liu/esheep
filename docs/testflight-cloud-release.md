@@ -1,4 +1,4 @@
-# 从 main 发布内部 TestFlight
+# 从 main 发布 TestFlight
 
 在 App Store Connect 的 Xcode Cloud 产品 `eSheepNext` 中，手动启动
 `TestFlight 3.2 Internal` 工作流并选择 `main`。启动前记录 main 的完整 SHA，
@@ -23,7 +23,7 @@ build 标识。适配与模拟器证据见 [Duo 验收记录](iphone-duo-adaptat
 | `ESHEEP_RELEASE_SUPABASE_PUBLISHABLE_KEY` | Production publishable key，已在 Cloud 保存 |
 | `ESHEEP_TESTFLIGHT_VERSION` | 可选；当前预期版本默认为 `3.2`，升级版本时同步更新 |
 
-`ci_pre_xcodebuild.sh` 仅接受此工作流从 main 发起的手动 Archive，不接受 PR、
+`ci_pre_xcodebuild.sh` 仅接受下述两个工作流从 main 发起的手动 Archive，不接受 PR、
 定时任务或检查点任务。它校验客户端配置，在临时 Cloud checkout 内生成被 Git
 忽略的 Release 配置，并把 App、Widget 的构建号统一设为 `CI_BUILD_NUMBER`。
 Cloud 按产品递增分配构建号，无需每次在仓库写死数字。手动启动前仍需核对
@@ -51,3 +51,15 @@ GitHub Actions 的 `Repository verification` 执行静态、Web、backend 和一
 分发成功与真机安装、升级、登录、云同步和业务验收分别记录。该工作流仅面向
 内部测试；外部测试、Beta Review、公共链接、测试员增删和 App Store 提交需要
 相应的用户授权。
+
+## 已授权的外部测试
+
+外部候选使用现有 `TestFlight 3.2 External Candidate` 工作流，手动选择 `main`，
+采用普通 App Store Connect 分发归档，不能选择“仅限内部测试”。旧的
+`codex/external-testflight-3-2` 发布分支已由 main 接管，脚本不再接受该分支。
+启动前核实实际 Xcode 版本、main 的完整 SHA、相关检查和本次发布授权。
+
+Apple 处理完成后，核对同一版本与构建号的测试说明及出口合规，再加入现有
+`3.1 External` 组；如需 Beta App Review，提交后记录审核状态。只有组中显示
+可供外部测试，才记为分发完成。上传成功、审核中和可安装必须分开记录。
+本流程不增删测试员、不更改公共链接，也不提交 App Store 正式版本。

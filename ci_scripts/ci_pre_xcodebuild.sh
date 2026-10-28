@@ -5,7 +5,7 @@ set -eu
 [ "${CI_XCODE_CLOUD:-}" = "TRUE" ] || exit 0
 [ "${ESHEEP_TESTFLIGHT_RELEASE:-0}" = "1" ] || exit 0
 case "${CI_WORKFLOW:-}:${CI_BRANCH:-}" in
-  'TestFlight 3.2 Internal:main'|'TestFlight 3.2 External Candidate:codex/external-testflight-3-2') ;;
+  'TestFlight 3.2 Internal:main'|'TestFlight 3.2 External Candidate:main') ;;
   *) echo 'Release workflow and branch are not an approved pair.' >&2; exit 1 ;;
 esac
 [ "${CI_XCODEBUILD_ACTION:-}" = "archive" ] || exit 1

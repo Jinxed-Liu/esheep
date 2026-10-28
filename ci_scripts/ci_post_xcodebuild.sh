@@ -5,7 +5,7 @@ set -eu
 if [ "${ESHEEP_TESTFLIGHT_RELEASE:-0}" = "1" ]; then
   [ "${CI_XCODE_CLOUD:-}" = "TRUE" ] || exit 1
   case "${CI_WORKFLOW:-}:${CI_BRANCH:-}" in
-    'TestFlight 3.2 Internal:main'|'TestFlight 3.2 External Candidate:codex/external-testflight-3-2') ;;
+    'TestFlight 3.2 Internal:main'|'TestFlight 3.2 External Candidate:main') ;;
     *) exit 1 ;;
   esac
   case "${CI_START_CONDITION:-}" in manual|manual_rebuild) ;; *) exit 1 ;; esac

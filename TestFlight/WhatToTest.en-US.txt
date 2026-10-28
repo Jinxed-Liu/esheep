@@ -1,8 +1,10 @@
-Fixes cloud sync stopping after an upgrade because of legacy farm English-name metadata, and fixes sheep photo upload failures.
+Adds a dedicated search tab for sheep, pens, and existing events, with categorized results and detail navigation. Fixes repeated sheep detail pages when opening reproduction evidence and history.
 
-1. Upgrade the existing installation and open your current account and farm. Allow sync to finish, then check recent lambing and removal records and bilingual farm names against the cloud.
-2. Retry photos that were pending before the upgrade. Confirm the original photos upload and the avatar updates without duplicate photos or business records.
-3. Check full-size photos, avatars, and thumbnails. Reopen the app and confirm photos and sync state remain correct.
-4. Local photos must remain available during a network interruption and support retry when connectivity returns. Pending uploads must not be reported as fully saved.
+1. Search by current or previous ear tag, pen name, event type, date, or note. Check category counts, category selection, and Show All.
+2. Open sheep, pen, and event details, then return to search. The query and filters should be retained.
+3. With the keyboard visible, scroll to the bottom and verify the final result and Show All remain visible and tappable. Horizontal filters should use the screen width.
+4. From the Home herd count, open a ewe and enter reproduction evidence and history three times. Open a lambing record and return one level at a time. Each tap should open the intended page without adding duplicate sheep details.
+5. Repeat the same journey from search and confirm the query is retained on return.
+6. Export a single-sheep archive and check historical dates, event details, and related offspring. Also check large-screen layouts and avatar display.
 
-For the existing internal testing group only. Apple distribution, real-device upgrade, cloud sync, and photo upload acceptance are tracked separately.
+Please report the entry point, ear tag, steps, and screenshots. Viewing details in a real farm does not require changing business records.
