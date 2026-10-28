@@ -66,7 +66,7 @@ struct FarmSearchView: View {
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
                     }
-    
+
                     if (isLoadingSource || isSearching) && results.isEmpty {
                         ProgressView("正在搜索").frame(maxWidth: .infinity, minHeight: 180)
                             .listRowBackground(Color.clear)
