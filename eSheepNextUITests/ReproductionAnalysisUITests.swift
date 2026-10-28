@@ -185,7 +185,15 @@ final class ReproductionAnalysisUITests: XCTestCase {
         app.alerts.textFields.firstMatch.tap()
         app.alerts.textFields.firstMatch.typeText("隔离回归验证")
         app.alerts.buttons["撤销"].tap()
-        XCTAssertTrue(app.buttons["安全恢复产羔"].waitForExistence(timeout: 10))
+        let canRestore = app.buttons["安全恢复产羔"].waitForExistence(timeout: 10)
+        if !canRestore {
+            screenshot(app, name: "lambing-revocation-result")
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "lambing-revocation-hierarchy"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+        }
+        XCTAssertTrue(canRestore)
         back()
         XCTAssertTrue(app.buttons["event-type-lambing"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["没有匹配的事件"].waitForExistence(timeout: 10))
