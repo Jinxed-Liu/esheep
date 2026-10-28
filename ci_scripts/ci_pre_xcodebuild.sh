@@ -1,22 +1,18 @@
 #!/bin/sh
 set -eu
 
-# Prepare Production inputs only for the dedicated manual internal archive.
+# Prepare Production inputs only for explicitly paired manual release workflows.
 [ "${CI_XCODE_CLOUD:-}" = "TRUE" ] || exit 0
 [ "${ESHEEP_TESTFLIGHT_RELEASE:-0}" = "1" ] || exit 0
-[ "${CI_WORKFLOW:-}" = "TestFlight 3.2 Internal" ] || {
-  echo 'Internal releases require the dedicated TestFlight workflow.' >&2
-  exit 1
-}
+case "${CI_WORKFLOW:-}:${CI_BRANCH:-}" in
+  'TestFlight 3.2 Internal:main'|'TestFlight 3.2 External Candidate:codex/external-testflight-3-2') ;;
+  *) echo 'Release workflow and branch are not an approved pair.' >&2; exit 1 ;;
+esac
 [ "${CI_XCODEBUILD_ACTION:-}" = "archive" ] || exit 1
-[ "${CI_BRANCH:-}" = "main" ] || {
-  echo 'Internal releases require the main branch.' >&2
-  exit 1
-}
 [ -z "${CI_PULL_REQUEST_NUMBER:-}" ] || exit 1
 case "${CI_START_CONDITION:-}" in
   manual|manual_rebuild) ;;
-  *) echo 'Internal releases require a manual Cloud run.' >&2; exit 1 ;;
+  *) echo 'Releases require a manual Cloud run.' >&2; exit 1 ;;
 esac
 
 build_number="${CI_BUILD_NUMBER:?Missing Cloud build number}"
@@ -64,4 +60,4 @@ if count < 2:
     raise SystemExit("App and Widget version settings are unavailable.")
 project.write_text(updated)
 PY
-echo "Prepared Production configuration and Cloud build $build_number for the internal archive."
+echo "Prepared Production configuration and Cloud build $build_number for the release archive."
