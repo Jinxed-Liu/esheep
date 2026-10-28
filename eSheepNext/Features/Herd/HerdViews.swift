@@ -626,10 +626,6 @@ struct SheepDetailEntryView: View {
     }
 }
 
-private struct SheepReproductionEvidenceRoute: Hashable {
-    let eweID: UUID
-}
-
 struct SheepDetailView: View {
     @Environment(CloudCollaborationStore.self) private var collaboration
     @Environment(\.modelContext) private var modelContext
@@ -973,9 +969,6 @@ struct SheepDetailView: View {
             guard let item else { return }
             addPhoto(item, setAsAvatar: false)
         }
-        .navigationDestination(for: SheepReproductionEvidenceRoute.self) { route in
-            ReproductionEvidenceView(account: account, farm: farm, eweID: route.eweID)
-        }
         .onAppear {
             if hasAppeared {
                 Task { await reloadEntryAndDetail() }
@@ -1078,8 +1071,17 @@ struct SheepDetailView: View {
                     }
                     ForEach(cycle.issues, id: \.self) { Text(verbatim: $0).font(.footnote).foregroundStyle(.orange) }
                     if cycle.pregnancy == .recheck { Label("待复检", systemImage: "heart.text.square").foregroundStyle(.orange) }
-                    NavigationLink(cycle.issues.isEmpty ? "本轮依据与繁殖历史" : "繁殖资料待核实",
-                        value: SheepReproductionEvidenceRoute(eweID: subject.id))
+                    // Sheep profiles can sit above a bound home destination.
+                    // Keep the next page in that view stack: appending a value
+                    // route here reorders the underlying path and can replay
+                    // the still-present herd/profile destinations above it.
+                    NavigationLink {
+                        ReproductionEvidenceView(account: account, farm: farm, eweID: subject.id)
+                            .equatable()
+                    } label: {
+                        Text(cycle.issues.isEmpty ? "本轮依据与繁殖历史" : "繁殖资料待核实")
+                    }
+                    .accessibilityIdentifier("sheep-reproduction-history")
                 }
                 if subject.purpose == SheepPurpose.fattening.rawValue {
                     if let start = detail.fatteningStartedAt {

@@ -78,7 +78,7 @@ struct DevelopmentDesignAcceptanceView: View {
         let arguments = ProcessInfo.processInfo.arguments
         if arguments.contains("--design-real-farm") {
             DevelopmentRealFarmAcceptanceView(account: fixture.account, farm: fixture.farm)
-        } else if arguments.contains("--design-search") {
+        } else if arguments.contains("--design-search") || arguments.contains("--design-workspace") {
             FarmWorkspaceView(account: fixture.account, farms: [fixture.farm], sharedFarmAdmissionStatus: nil)
         } else if arguments.contains("--design-sheep-detail") {
             DevelopmentSheepDetailAcceptanceView(account: fixture.account, farm: fixture.farm)
