@@ -101,6 +101,9 @@ struct FarmWorkspaceView: View {
         NavigationStack {
             FarmSearchView(account: account, farm: farm, query: query)
         }
+        // Let the search tab's container place its field for the current bar
+        // axis, without adding search fields to the other workspace tabs.
+        .searchable(text: query, prompt: "搜索羊只、羊舍、事件")
     }
 }
 
@@ -112,22 +115,79 @@ struct FarmNavigationToolbar: ToolbarContent {
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            FarmSwitcher(
-                farms: farms,
-                activeFarm: activeFarm,
-                sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
-            )
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-            NavigationLink {
-                FarmSettingsView(account: account, farm: activeFarm)
-            } label: {
-                FarmToolbarAccountAvatar(account: account)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("账户与牧场设置")
+            farmSwitcher
+                .farmVerticalToolbarContent { accountLink }
         }
         .sharedBackgroundVisibility(.hidden)
+        .farmVerticalPreferred()
+        ToolbarItem(placement: .topBarTrailing) {
+            accountLink
+                .farmVerticalToolbarContent { farmSwitcher }
+        }
+        .sharedBackgroundVisibility(.hidden)
+        .farmVerticalPreferred()
+    }
+
+    private var farmSwitcher: some View {
+        FarmSwitcher(farms: farms, activeFarm: activeFarm,
+                     sharedFarmAdmissionStatus: sharedFarmAdmissionStatus)
+    }
+
+    private var accountLink: some View {
+        NavigationLink {
+            FarmSettingsView(account: account, farm: activeFarm)
+        } label: {
+            FarmToolbarAccountAvatar(account: account)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("账户与牧场设置")
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func farmVerticalToolbarContent<VerticalContent: View>(@ViewBuilder _ content: () -> VerticalContent) -> some View {
+#if canImport(SwiftUI, _version: 8.0.85)
+        if #available(iOS 27.1, *) {
+            FarmToolbarAxisContent(horizontal: self, vertical: content())
+        } else {
+            self
+        }
+#else
+        self
+#endif
+    }
+}
+
+#if canImport(SwiftUI, _version: 8.0.85)
+@available(iOS 27.1, *)
+private struct FarmToolbarAxisContent<HorizontalContent: View, VerticalContent: View>: View {
+    @Environment(\.toolbarVerticalEdge) private var verticalEdge
+    let horizontal: HorizontalContent
+    let vertical: VerticalContent
+
+    var body: some View {
+        if verticalEdge == nil {
+            horizontal
+        } else {
+            vertical
+        }
+    }
+}
+#endif
+
+private extension ToolbarContent {
+    @ToolbarContentBuilder
+    func farmVerticalPreferred() -> some ToolbarContent {
+#if canImport(SwiftUI, _version: 8.0.85)
+        if #available(iOS 27.1, *) {
+            self.axisBehavior(.verticalPreferred)
+        } else {
+            self
+        }
+#else
+        self
+#endif
     }
 }
 
@@ -150,7 +210,28 @@ private struct FarmSwitcher: View {
     let sharedFarmAdmissionStatus: SharedFarmAdmissionStatus?
 
     var body: some View {
-        Menu {
+#if canImport(SwiftUI, _version: 8.0.85)
+        if #available(iOS 27.1, *) {
+            AdaptiveFarmSwitcher(name: activeFarm.name, isJoining: sharedFarmAdmissionStatus != nil,
+                                 menuLabel: menuLabel) { menuItems }
+        } else {
+            FarmSwitcherControl(name: activeFarm.name, isJoining: sharedFarmAdmissionStatus != nil,
+                                menuLabel: menuLabel) { menuItems }
+        }
+#else
+        FarmSwitcherControl(name: activeFarm.name, isJoining: sharedFarmAdmissionStatus != nil,
+                            menuLabel: menuLabel) { menuItems }
+#endif
+    }
+
+    private var menuLabel: String {
+        sharedFarmAdmissionStatus == nil
+            ? "切换牧场，当前为\(activeFarm.name)"
+            : "切换牧场，当前为\(activeFarm.name)，正在加入共享牧场"
+    }
+
+    @ViewBuilder
+    private var menuItems: some View {
             if let sharedFarmAdmissionStatus {
                 Section("共享牧场") {
                     Label(
@@ -185,27 +266,93 @@ private struct FarmSwitcher: View {
             Button("加入牧场", systemImage: "person.badge.plus") {
                 session.isJoinFarmPresented = true
             }
-        } label: {
-            HStack(spacing: 6) {
-                farmNameText(activeFarm.name)
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.caption.weight(.semibold))
-                if sharedFarmAdmissionStatus != nil {
-                    ProgressView()
-                        .controlSize(.mini)
-                }
-            }
-        }
-        .accessibilityLabel(
-            sharedFarmAdmissionStatus == nil
-                ? "切换牧场，当前为\(activeFarm.name)"
-                : "切换牧场，当前为\(activeFarm.name)，正在加入共享牧场"
-        )
     }
 
     @ViewBuilder
     private func farmNameText(_ name: String) -> some View {
         Text(verbatim: name)
+    }
+}
+
+#if canImport(SwiftUI, _version: 8.0.85)
+@available(iOS 27.1, *)
+private struct AdaptiveFarmSwitcher<MenuContent: View>: View {
+    @Environment(\.toolbarVerticalEdge) private var verticalEdge
+    let name: String
+    let isJoining: Bool
+    let menuLabel: String
+    @ViewBuilder var menuContent: () -> MenuContent
+
+    var body: some View {
+        FarmSwitcherControl(name: name, isJoining: isJoining, menuLabel: menuLabel,
+                            isVertical: verticalEdge != nil, menuContent: menuContent)
+    }
+}
+#endif
+
+private struct FarmSwitcherControl<MenuContent: View>: View {
+    let name: String
+    let isJoining: Bool
+    let menuLabel: String
+    var isVertical = false
+    @ViewBuilder var menuContent: () -> MenuContent
+    @State private var nameHeight: CGFloat = 72
+
+    var body: some View {
+        if isVertical {
+            VStack(spacing: 0) {
+                // The scroll viewport is bounded, even for very long names.
+                // Keep it outside the Menu label so a drag scrolls the name.
+                ScrollView(.vertical) {
+                    Text(verbatim: name)
+                        .font(.caption2.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { nameHeight = $0 }
+                }
+                .scrollIndicators(.hidden)
+                .scrollBounceBehavior(.basedOnSize)
+                .defaultScrollAnchor(.center, for: .alignment)
+                .frame(height: min(104, max(76, nameHeight)))
+                .padding(.horizontal, 4)
+                .padding(.top, 12)
+                .accessibilityIdentifier("farm.switcher.name")
+
+                Menu(content: menuContent) {
+                    Group {
+                        if isJoining {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                    }
+                    .frame(width: 44, height: 44)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(menuLabel)
+                .accessibilityIdentifier("farm.switcher.menu")
+            }
+            .frame(width: 44)
+            .frame(maxHeight: 160)
+            .fixedSize(horizontal: false, vertical: true)
+            .glassEffect(.regular.interactive(), in: .capsule)
+        } else {
+            Menu(content: menuContent) {
+                HStack(spacing: 6) {
+                    Text(verbatim: name).lineLimit(1)
+                    Image(systemName: "chevron.down").font(.caption.weight(.semibold))
+                    if isJoining { ProgressView().controlSize(.mini) }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .frame(minHeight: 44)
+                .glassEffect(.regular.interactive(), in: .capsule)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(menuLabel)
+        }
     }
 }

@@ -94,7 +94,8 @@ struct InsightComposerMenuPresentation<Content: View>: UIViewRepresentable {
             guard !ownerHasModal(owner) else { removeWindow(allowsAction: false); return }
             if let window {
                 guard ownerWindow === owner else { removeWindow(allowsAction: false); return }
-                window.frame = owner.frame
+                // UIWindowScene owns the frame throughout folding/rotation.
+                // Reapplying the owner's transient frame creates a feedback loop.
                 window.overrideUserInterfaceStyle = owner.traitCollection.userInterfaceStyle
                 updateAnchor(in: owner)
                 host?.rootView = rootView
@@ -109,7 +110,6 @@ struct InsightComposerMenuPresentation<Content: View>: UIViewRepresentable {
             self.scene = scene
             updateAnchor(in: owner)
             let window = UIWindow(windowScene: scene)
-            window.frame = owner.frame
             window.backgroundColor = .clear
             window.isOpaque = false
             window.overrideUserInterfaceStyle = owner.traitCollection.userInterfaceStyle
@@ -156,7 +156,6 @@ struct InsightComposerMenuPresentation<Content: View>: UIViewRepresentable {
             // A background UIView follows the composer's actual proposal.
             // A child controller's safe-area-adjusted bounds can extend
             // below the keyboard and are not a reliable button anchor.
-            layout.topInset = owner.safeAreaInsets.top
             layout.availableBottom = owner.bounds.maxY - owner.safeAreaInsets.bottom
             if let root = owner.rootViewController?.viewIfLoaded {
                 let guide = root.keyboardLayoutGuide
@@ -291,7 +290,6 @@ private final class InsightComposerMenuLayout {
     var composerFrame = CGRect.zero
     var sourceFrame = CGRect.zero
     var panelHeight: CGFloat = 369
-    var topInset: CGFloat = 0
     var availableBottom: CGFloat = 0
     var isExpanded = false
 }
@@ -307,16 +305,21 @@ private struct InsightComposerMenuRoot<Content: View>: View {
 
     var body: some View {
         GeometryReader { geometry in
+            // The overlay has its own safe area, including a possible side bar.
+            // Convert the owner-window anchors into that inset content region.
+            let origin = geometry.frame(in: .global).origin
+            let composer = layout.composerFrame.offsetBy(dx: -origin.x, dy: -origin.y)
             let width = min(280, max(1, geometry.size.width - 24))
             // A non-key overlay does not receive the original editor's
             // keyboard safe area. Use the original window's keyboard guide.
-            let bottom = min(layout.availableBottom - 8, layout.composerFrame.maxY - 6)
-            let height = min(layout.panelHeight, max(1, bottom - layout.topInset - 12))
-            let left = min(max(12, layout.composerFrame.minX + 20), geometry.size.width - width - 12)
-            let source = layout.sourceFrame
+            let bottom = max(13, min(geometry.size.height - 12, layout.availableBottom - origin.y - 8, composer.maxY - 6))
+            let height = min(layout.panelHeight, max(1, bottom - 12))
+            let left = max(0, min(max(12, composer.minX + 20), geometry.size.width - width - 12))
+            let source = layout.sourceFrame.offsetBy(dx: -origin.x, dy: -origin.y)
             ZStack(alignment: .topLeading) {
                 Button(action: onDismiss) {
                     Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(.rect)
+                        .ignoresSafeArea()
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("关闭添加菜单")
@@ -344,7 +347,6 @@ private struct InsightComposerMenuRoot<Content: View>: View {
                 }
             }
         }
-        .ignoresSafeArea()
     }
 }
 

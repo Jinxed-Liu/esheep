@@ -10,6 +10,7 @@ struct FarmEventExportLauncher: View {
     let accountProfileID: UUID
     let farmID: UUID
     let farmName: String
+    var recordID: UUID? = nil
 
     @State private var state = FarmEventExportLoadState.loading
     @State private var reloadGeneration = 0
@@ -64,7 +65,8 @@ struct FarmEventExportLauncher: View {
         state = .loading
         do {
             try EventExportAuthorization.require(EventExportIdentity(accountProfileID: accountProfileID, farmID: farmID), session: session, context: modelContext)
-            let events = try await FarmEventHistoryActor(container: modelContext.container).load(farmID: farmID)
+            let loaded = try await FarmEventHistoryActor(container: modelContext.container).load(farmID: farmID)
+            let events = recordID.map { id in loaded.filter { $0.id == id && $0.entityType == .reproduction } } ?? loaded
             guard !Task.isCancelled else { return }
             state = .loaded(events)
         } catch is CancellationError {
@@ -168,19 +170,9 @@ struct FarmEventExportSheet: View {
                     }
                 }
                 Section("筛选条件") {
-                    Picker("业务分类", selection: $category) {
-                        Text("全部类别").tag(FarmEventCategory?.none)
-                        ForEach(FarmEventCategory.allCases) { Text($0.displayName).tag(Optional($0)) }
-                    }
                     TextField("关键词", text: $query)
-                }
-                Section("记录类型") {
-                    Picker("导出内容", selection: $scope) {
-                        ForEach(FarmEventExportScope.allCases) { item in
-                            Label(LocalizedStringKey(item.displayName), systemImage: item.symbol).tag(item)
-                        }
-                    }
-                    .pickerStyle(.menu)
+                    FarmEventScopePicker(selection: $scope)
+                        .onChange(of: scope) { _, _ in category = nil }
                 }
 
                 Section {

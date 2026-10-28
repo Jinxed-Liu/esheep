@@ -1,17 +1,31 @@
 import SwiftData
 import SwiftUI
 
-struct ReproductionEvidenceView: View {
+struct ReproductionEvidenceView: View, Equatable {
+    // Nested navigation can rebuild this value while resolving its destination.
+    // Compare stable inputs instead of freshly constructed query predicates.
+    // Query and model observations continue to deliver actual record changes.
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.accountIdentity == rhs.accountIdentity && lhs.farmIdentity == rhs.farmIdentity &&
+            lhs.queryFarmID == rhs.queryFarmID && lhs.eweID == rhs.eweID
+    }
+
     @Query private var rules: [FarmCareRuleRecord]
     @Query private var records: [ReproductionRecord]
     let account: AccountProfile
     let farm: FarmRecord
     @Query private var subject: [SheepRecord]
     let eweID: UUID
+    private let accountIdentity: ObjectIdentifier
+    private let farmIdentity: ObjectIdentifier
+    private let queryFarmID: UUID
 
     init(account: AccountProfile, farm: FarmRecord, eweID: UUID) {
         self.account = account; self.farm = farm; self.eweID = eweID
+        accountIdentity = ObjectIdentifier(account)
+        farmIdentity = ObjectIdentifier(farm)
         let farmID = farm.id
+        queryFarmID = farmID
         _rules = Query(filter: #Predicate<FarmCareRuleRecord> { $0.farmID == farmID })
         _subject = Query(filter: #Predicate<SheepRecord> { $0.farmID == farmID && $0.id == eweID })
         _records = Query(filter: #Predicate<ReproductionRecord> { $0.farmID == farmID && $0.eweID == eweID }, sort: \ReproductionRecord.occurredAt, order: .reverse)
@@ -47,7 +61,7 @@ struct ReproductionEvidenceView: View {
             Section("繁殖事实与关联依据") {
                 ForEach(records) { record in
                     NavigationLink {
-                        ReproductionRecordDetailView(account: account, farm: farm, record: record)
+                        ReproductionRecordDetailEntryView(account: account, farm: farm, recordID: record.id)
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(verbatim: record.kind.displayName + (record.result.isEmpty ? "" : " · " + record.result))

@@ -110,7 +110,7 @@ struct FarmHomeView: View {
     }
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            AdaptiveCardStack(spacing: 18) {
                 hero
                 metrics
                 if let homeLoadFailure {
@@ -119,8 +119,8 @@ struct FarmHomeView: View {
                     Button("重新读取") { homeSnapshotRefreshRevision &+= 1 }
                 }
                 FarmEventEntryLink(account: account, farm: farm)
-                operationalAlertCard
-                shortcuts
+                operationalAlertCard.adaptiveCardColumn(.leading)
+                shortcuts.adaptiveCardColumn(.trailing)
                 syncStatus
             }
             .padding(.horizontal, 16)

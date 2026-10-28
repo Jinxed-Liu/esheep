@@ -9,7 +9,30 @@ struct DevelopmentReproductionAcceptanceView: View {
     let farm: FarmRecord
     @State private var dataStore = FarmDeepAnalyticsStore()
     var body: some View {
-        NavigationStack { ReproductionAnalysisHomeView(account: account, farm: farm, dataStore: dataStore) }
+        NavigationStack {
+            if ProcessInfo.processInfo.arguments.contains("--design-reproduction-history") {
+                FarmEventHistoryView(account: account, farm: farm)
+            } else if ProcessInfo.processInfo.arguments.contains("--design-reproduction-evidence") {
+                DevelopmentReproductionEvidenceEntry(account: account, farm: farm)
+            } else {
+                ReproductionAnalysisHomeView(account: account, farm: farm, dataStore: dataStore)
+            }
+        }
+    }
+}
+
+private struct DevelopmentReproductionEvidenceEntry: View {
+    let account: AccountProfile
+    let farm: FarmRecord
+    @Query(sort: \SheepRecord.earTag) private var sheep: [SheepRecord]
+    var body: some View {
+        if let ewe = sheep.first(where: { $0.farmID == farm.id && $0.earTag == "QA-001" }) {
+            if ProcessInfo.processInfo.arguments.contains("--design-reproduction-evidence-from-sheep") {
+                SheepDetailEntryView(account: account, farm: farm, sheepID: ewe.id)
+            } else {
+                ReproductionEvidenceView(account: account, farm: farm, eweID: ewe.id)
+            }
+        }
     }
 }
 
@@ -65,6 +88,71 @@ enum DevelopmentReproductionAcceptance {
         settings.maidenReminderMonths = 10; settings.maidenWarningMonths = 12
         context.insert(FarmCareRuleRecord(farmID: farmID, weaningAgeDays: 60, operationalAlertsConfiguredAt: .now,
             reproductionSettingsJSON: try settings.encodedJSON()))
+        if ProcessInfo.processInfo.arguments.contains("--design-reproduction-history") {
+            let eweID = sheep[0].id
+            let birth = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.eweID == eweID
+            })).first { $0.kind == .lambing }!
+            birth.occurredAt = ago(8); birth.lambCount = 5; birth.birthDeadCount = 1
+            let birthID = birth.id
+            let firstLink = try context.fetch(FetchDescriptor<LambingOffspringRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.lambingRecordID == birthID
+            })).first!
+            let live = SheepRecord(farmID: farmID, earTag: "QA-LIVE", breed: "湖羊", sex: .ewe,
+                penID: adultPen.id, enteredAt: ago(8), birthAt: ago(8), damID: eweID)
+            let dead = SheepRecord(farmID: farmID, earTag: "QA-DEAD", breed: "湖羊", sex: .ram,
+                penID: adultPen.id, enteredAt: ago(8), birthAt: ago(8), damID: eweID)
+            dead.statusRawValue = SheepStatus.deceased.rawValue; dead.removedAt = ago(3)
+            context.insert(live); context.insert(dead)
+            let birthWeight = WeightRecord(farmID: farmID, sheepID: live.id, kilogramsText: "3.4", occurredAt: ago(8))
+            let laterWeight = WeightRecord(farmID: farmID, sheepID: dead.id, kilogramsText: "4.1", occurredAt: ago(5))
+            context.insert(birthWeight); context.insert(laterWeight)
+            firstLink.sheepID = live.id; firstLink.legacyEarTag = "QA-OLD"
+            firstLink.birthWeightText = "3.4"; firstLink.autoBirthWeightRecordID = birthWeight.id
+            context.insert(LambingOffspringRecord(farmID: farmID, lambingRecordID: birthID, sheepID: dead.id,
+                legacyEarTag: dead.earTag, sexRawValue: LambSex.male.rawValue, birthWeightText: "4.1",
+                autoBirthWeightRecordID: laterWeight.id))
+            context.insert(RemovalRecord(farmID: farmID, sheepID: dead.id, kind: .deceased,
+                reason: "隔离回归样本", occurredAt: ago(3)))
+            context.insert(LambingOffspringRecord(farmID: farmID, lambingRecordID: birthID, sheepID: nil,
+                legacyEarTag: "QA-UNLINKED", sexRawValue: LambSex.female.rawValue, birthWeightText: "3.1"))
+            context.insert(LambingOffspringRecord(farmID: farmID, lambingRecordID: birthID, sheepID: nil,
+                legacyEarTag: "", sexRawValue: "unknown", birthWeightText: "", isStillborn: true))
+            context.insert(ReproductionRecord(farmID: farmID, eweID: eweID, kind: .breeding,
+                occurredAt: ago(155), note: "隔离筛选样本"))
+        }
+        if ProcessInfo.processInfo.arguments.contains("--design-reproduction-evidence") {
+            let ewe = sheep[0]
+            ewe.birthAt = ago(1_800)
+            ewe.enteredAt = ago(1_600)
+            let eweID = ewe.id
+            let facts = try context.fetch(FetchDescriptor<ReproductionRecord>(predicate: #Predicate {
+                $0.farmID == farmID && $0.eweID == eweID
+            }))
+            for fact in facts {
+                if fact.kind == .parityBaseline { fact.occurredAt = ago(1_600) }
+                if fact.kind == .lambing { fact.parity = 5 }
+            }
+            for (kind, days, result) in [(ReproductionRecordKind.breeding, 90, ""),
+                                        (.pregnancyCheck, 45, "已孕"), (.abortion, 400, "")] {
+                context.insert(ReproductionRecord(farmID: farmID, eweID: ewe.id, kind: kind,
+                    occurredAt: ago(days), result: result, note: "隔离详情回归样本"))
+            }
+            for index in 1...4 {
+                context.insert(ReproductionRecord(farmID: farmID, eweID: ewe.id, kind: .lambing,
+                    occurredAt: ago(index * 300), lambCount: 1, parity: 5 - index))
+            }
+            // Stress only the explicit local fixture, never a connected farm.
+            for index in 0..<10_000 {
+                context.insert(SheepRecord(farmID: farmID, earTag: "ZZ-STRESS-\(index)",
+                    breed: "湖羊", sex: .ewe, penID: nil, enteredAt: ago(500)))
+                for _ in 0..<2 {
+                    context.insert(TombstoneRecord(farmID: farmID, entityType: CloudEntityType.reproduction.rawValue,
+                        entityID: UUID(), deletedByAccountID: account.effectiveAccountID, reason: "隔离回归样本"))
+                }
+                if index % 500 == 0 { try context.save() }
+            }
+        }
         try context.save()
     }
 }

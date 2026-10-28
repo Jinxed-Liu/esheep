@@ -48,6 +48,8 @@ struct DevelopmentDesignAcceptanceView: View {
         let arguments = ProcessInfo.processInfo.arguments
         if arguments.contains("--design-real-farm") {
             DevelopmentRealFarmAcceptanceView(account: fixture.account, farm: fixture.farm)
+        } else if arguments.contains("--design-search") {
+            FarmWorkspaceView(account: fixture.account, farms: [fixture.farm], sharedFarmAdmissionStatus: nil)
         } else if arguments.contains("--design-sheep-detail") {
             DevelopmentSheepDetailAcceptanceView(account: fixture.account, farm: fixture.farm)
         } else if arguments.contains("--design-reproduction") {
@@ -234,13 +236,23 @@ private final class DesignAcceptanceFixture {
         }
         let insightReady = args.contains("--design-insight-ready")
         let reproductionReady = args.contains("--design-reproduction")
+        let requestedFarmName: String?
+        if let index = args.firstIndex(of: "--design-farm-name") {
+            guard args.indices.contains(index + 1), !args[index + 1].hasPrefix("-"),
+                  !args[index + 1].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  args.contains("--design-fixture-id") else { throw MiMoClientError.invalidRequest }
+            requestedFarmName = args[index + 1]
+        } else {
+            requestedFarmName = nil
+        }
         let offlineSend = insightReady && args.contains("--design-insight-offline-send")
         let workspaceDirectory = URL.applicationSupportDirectory.appending(path: "DesignAcceptance", directoryHint: .isDirectory)
         var directory = insightReady
             ? workspaceDirectory.appending(path: offlineSend ? "InsightOfflineSend" : "InsightReady", directoryHint: .isDirectory)
             : workspaceDirectory
         if reproductionReady { directory = workspaceDirectory.appending(path: "Reproduction", directoryHint: .isDirectory) }
-        if insightReady || reproductionReady, let index = args.firstIndex(of: "--design-fixture-id") {
+        if insightReady || reproductionReady || requestedFarmName != nil,
+           let index = args.firstIndex(of: "--design-fixture-id") {
             guard args.indices.contains(index + 1), let fixtureID = UUID(uuidString: args[index + 1]) else {
                 throw MiMoClientError.invalidRequest
             }
@@ -260,7 +272,8 @@ private final class DesignAcceptanceFixture {
             farm = existingFarm
         } else {
             account = AccountProfile(appleUserIdentifier: "design-acceptance-local", displayName: "设计验收")
-            farm = FarmRecord(ownerAccountID: account.effectiveAccountID, name: "设计验收 · 本机测试场", role: .administrator)
+            farm = FarmRecord(ownerAccountID: account.effectiveAccountID,
+                              name: requestedFarmName ?? "设计验收 · 本机测试场", role: .administrator)
             context.insert(account)
             context.insert(farm)
             context.insert(FarmStorageProfile(farmID: farm.id, mode: .localOnly))
@@ -281,6 +294,12 @@ private final class DesignAcceptanceFixture {
         }
         session = AppSession(activeAccountProfileID: account.id, persistedLocalSessionAccountID: nil, persistActiveAccountProfileID: { _ in }, clearActiveAccountProfileID: {})
         session.selectedFarmID = farm.id
+        if args.contains("--design-search") {
+            session.selectedTab = .search
+            if let index = args.firstIndex(of: "--design-search-query"), args.indices.contains(index + 1) {
+                session.pendingSearchQuery = args[index + 1]
+            }
+        }
         collaboration = CloudCollaborationStore(container: container, allowsRemoteConnections: false)
         InsightSessionCoordinator.shared.activate(scope: InsightConversationScope(
             accountID: account.effectiveAccountID, farmID: farm.id

@@ -1303,19 +1303,95 @@ struct ReproductionHistoryView: View {
     @Query(sort: \ReproductionRecord.occurredAt, order: .reverse) private var records: [ReproductionRecord]; @Query private var sheep: [SheepRecord]
     let account: AccountProfile; let farm: FarmRecord; @State private var kind: ReproductionRecordKind?
     private var filtered: [ReproductionRecord] { records.filter { $0.farmID == farm.id && $0.kind != .parityBaseline && (kind == nil || $0.kind == kind) } }
-    var body: some View { List { Section { Picker("类型", selection: $kind) { Text("全部").tag(ReproductionRecordKind?.none); ForEach(ReproductionRecordKind.allCases.filter { $0 != .parityBaseline }, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag(ReproductionRecordKind?.some($0)) } } }; ForEach(filtered, id: \.id) { record in NavigationLink { ReproductionRecordDetailView(account: account, farm: farm, record: record) } label: { VStack(alignment: .leading) { Text("\(earTag(record.eweID)) · \(record.kind.displayName)"); Text(record.occurredAt, format: .dateTime.year().month().day()).font(.footnote).foregroundStyle(.secondary); if record.deletedAt != nil { Text("已撤销").font(.caption).foregroundStyle(.red) } } } } }.navigationTitle("繁殖历史") }
+    var body: some View { List { Section { Picker("类型", selection: $kind) { Text("全部").tag(ReproductionRecordKind?.none); ForEach(ReproductionRecordKind.allCases.filter { $0 != .parityBaseline }, id: \.self) { Text(LocalizedStringKey($0.displayName)).tag(ReproductionRecordKind?.some($0)) } } }; ForEach(filtered, id: \.id) { record in NavigationLink { ReproductionRecordDetailEntryView(account: account, farm: farm, recordID: record.id) } label: { VStack(alignment: .leading) { Text("\(earTag(record.eweID)) · \(record.kind.displayName)"); Text(record.occurredAt, format: .dateTime.year().month().day()).font(.footnote).foregroundStyle(.secondary); if record.deletedAt != nil { Text("已撤销").font(.caption).foregroundStyle(.red) } } } } }.navigationTitle("繁殖历史") }
     private func earTag(_ id: UUID) -> String { sheep.first(where: { $0.id == id })?.earTag ?? "未知母羊" }
 }
 
-struct ReproductionRecordDetailView: View {
+struct ReproductionRecordDetailView: View, Equatable {
+    private let accountIdentity: ObjectIdentifier
+    private let farmIdentity: ObjectIdentifier
+    private let recordIdentity: ObjectIdentifier
+    @State private var detailRefresh = 0
+    @State private var isPresentingEventExport = false
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.accountIdentity == rhs.accountIdentity && lhs.farmIdentity == rhs.farmIdentity &&
+            lhs.recordIdentity == rhs.recordIdentity
+    }
+    private var canCorrect: Bool { CapabilitySet(role: farm.role).allows(.editHistoricalFacts) }
+    private var canWithdraw: Bool { CapabilitySet(role: farm.role).allows(.deleteProtectedFacts) }
     @Environment(\.modelContext) private var modelContext; @Query private var sheep: [SheepRecord]; @Query private var tombstones: [TombstoneRecord]
     let account: AccountProfile; let farm: FarmRecord; let record: ReproductionRecord; private let service = FarmCommandService(); @State private var errorMessage: String?; @State private var correction: ReproductionCorrectionDestination?; @State private var showRevokePrompt = false; @State private var revokeReason = ""
+    init(account: AccountProfile, farm: FarmRecord, record: ReproductionRecord) {
+        accountIdentity = ObjectIdentifier(account)
+        farmIdentity = ObjectIdentifier(farm)
+        recordIdentity = ObjectIdentifier(record)
+        self.account = account
+        self.farm = farm
+        self.record = record
+        let farmID = farm.id
+        let eweID = record.eweID
+        let sireID = record.sireID ?? eweID
+        let recordID = record.id
+        // A record detail needs at most its dam and sire, not every local sheep.
+        // Keep historical/deleted subjects readable; this is evidence, not a picker.
+        _sheep = Query(filter: #Predicate<SheepRecord> {
+            $0.farmID == farmID && ($0.id == eweID || $0.id == sireID)
+        })
+        _tombstones = Query(filter: #Predicate<TombstoneRecord> {
+            $0.farmID == farmID && $0.entityID == recordID && $0.restoredAt == nil
+        })
+    }
+
     private var eweName: String { sheep.first(where: { $0.id == record.eweID })?.earTag ?? "未知母羊" }
     var body: some View {
         List {
+            if record.kind == .lambing {
+                Section("本次产羔") {
+                    LabeledContent("母羊", value: eweName)
+                    LabeledContent("发生时间") { Text(record.occurredAt, format: .dateTime.year().month().day().hour().minute()) }
+                    LabeledContent("本次胎次", value: record.parity.map { "第 \($0) 胎" } ?? "待核实")
+                    LabeledContent("产羔总数", value: "\(record.lambCount) 只")
+                    if let dead = record.birthDeadCount, dead >= 0, dead <= record.lambCount {
+                        LabeledContent("活产", value: "\(record.lambCount - dead) 只")
+                        LabeledContent("死胎", value: "\(dead) 只")
+                    } else { LabeledContent("出生结局", value: "未完整记录") }
+                    if record.deletedAt != nil { Text("本次产羔已撤销").foregroundStyle(.orange) }
+                }
+                LambingOffspringSection(account: account, farm: farm, recordID: record.id,
+                    revision: record.revision &+ detailRefresh)
+                Section {
+                    DisclosureGroup("父本与配种依据") {
+                        LabeledContent("父本来源", value: record.paternalSource.displayName)
+                        if let sireID = record.sireID {
+                            LabeledContent("种公羊", value: sheep.first(where: { $0.id == sireID })?.earTag ?? "关联档案暂不可用")
+                        }
+                        if let semen = record.semenNameSnapshot { LabeledContent("冻精", value: semen) }
+                        if let donor = record.semenDonorNameSnapshot { LabeledContent("供体快照", value: donor) }
+                        if let related = record.relatedBreedingRecordID {
+                            ReproductionAssociationLabel(farmID: farm.id, recordID: related)
+                        } else { Text("未明确关联配种记录") }
+                    }
+                    DisclosureGroup("备注与记录信息") {
+                        if !record.note.isEmpty { Text(record.note) }
+                        LabeledContent("录入时间") { Text(record.createdAt, format: .dateTime.year().month().day().hour().minute()) }
+                    }
+                }
+            } else {
             Section("事实") { LabeledContent("母羊", value: eweName); LabeledContent("类型", value: record.kind.displayName); LabeledContent("发生时间", value: record.occurredAt.formatted()); LabeledContent("父本来源", value: record.paternalSource.displayName); if let sireID = record.sireID { LabeledContent("种公羊", value: sheep.first(where: { $0.id == sireID })?.earTag ?? sireID.uuidString) }; if let semen = record.semenNameSnapshot { LabeledContent("冻精", value: semen) }; if let donor = record.semenDonorNameSnapshot { LabeledContent("供体快照", value: donor) }; if let related = record.relatedBreedingRecordID { LabeledContent("关联配种", value: related.uuidString) }; if !record.result.isEmpty { LabeledContent("结果", value: record.result) }; if record.kind == .lambing { LabeledContent("产羔总数", value: "\(record.lambCount)"); LabeledContent("死胎", value: "\(record.birthDeadCount ?? 0)") }; if !record.note.isEmpty { Text(record.note) } }
-            Section { if record.kind == .parityBaseline { Text("胎次请在母羊档案中确认；这里保留事实但不允许直接改写。") } else if record.deletedAt == nil { Button("修正记录") { correction = .init(id: record.id) }; Button("撤销记录", role: .destructive) { if record.kind == .lambing { revokeReason = ""; showRevokePrompt = true } else { revoke() } } } else if record.kind == .lambing { Button("安全恢复产羔") { restoreLambing() } } else if let tombstone = tombstones.first(where: { $0.farmID == farm.id && $0.entityID == record.id && $0.restoredAt == nil && !$0.reason.hasPrefix("修正：") }) { Button("恢复记录") { restore(tombstone.id) } } }
-        }.navigationTitle("繁殖记录详情").recordErrorAlert($errorMessage).sheet(item: $correction) { _ in NavigationStack { if record.kind == .lambing { LambingCorrectionView(account: account, farm: farm, record: record) } else { ReproductionCorrectionView(account: account, farm: farm, record: record) } } }.alert("撤销产羔记录", isPresented: $showRevokePrompt) { TextField("撤销原因（必填）", text: $revokeReason); Button("撤销", role: .destructive, action: revoke); Button("取消", role: .cancel) {} } message: { Text("不会删除羔羊档案及其后续记录，只补偿本次产羔自动建立且未被人工修正的关系与称重记录。") }
+            }
+            Section { if record.kind == .parityBaseline { Text("胎次请在母羊档案中确认；这里保留事实但不允许直接改写。") } else if record.deletedAt == nil { Button("修正记录") { correction = .init(id: record.id) }.disabled(!canCorrect); Button("撤销记录", role: .destructive) { if record.kind == .lambing { revokeReason = ""; showRevokePrompt = true } else { revoke() } }.disabled(!canWithdraw) } else if record.kind == .lambing { Button("安全恢复产羔") { restoreLambing() }.disabled(!canCorrect) } else if let tombstone = tombstones.first(where: { $0.farmID == farm.id && $0.entityID == record.id && $0.restoredAt == nil && !$0.reason.hasPrefix("修正：") }) { Button("恢复记录") { restore(tombstone.id) }.disabled(!canCorrect) } }
+        }.navigationTitle(record.kind == .lambing ? "产羔详情" : "繁殖记录详情").recordErrorAlert($errorMessage).sheet(item: $correction, onDismiss: { detailRefresh &+= 1 }) { _ in NavigationStack { if record.kind == .lambing { LambingCorrectionView(account: account, farm: farm, record: record) } else { ReproductionCorrectionView(account: account, farm: farm, record: record) } } }.alert("撤销产羔记录", isPresented: $showRevokePrompt) { TextField("撤销原因（必填）", text: $revokeReason); Button("撤销", role: .destructive, action: revoke); Button("取消", role: .cancel) {} } message: { Text("不会删除羔羊档案及其后续记录，只补偿本次产羔自动建立且未被人工修正的关系与称重记录。") }
+        .toolbar {
+            if record.kind == .lambing && record.deletedAt == nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("导出", systemImage: "square.and.arrow.up") { isPresentingEventExport = true }
+                        .disabled(!CapabilitySet(role: farm.role).allows(.exportEvents))
+                }
+            }
+        }
+        .sheet(isPresented: $isPresentingEventExport) {
+            FarmEventExportLauncher(accountProfileID: account.id, farmID: farm.id, farmName: farm.name, recordID: record.id)
+        }
     }
     private func revoke() { do { let command: FarmCommand = record.kind == .lambing ? .care(.revokeLambing(recordID: record.id, reason: revokeReason)) : .tombstoneEntity(entityType: .reproduction, entityID: record.id, reason: "用户撤销繁殖记录"); try service.execute(command, in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext) } catch { errorMessage = error.localizedDescription } }
     private func restore(_ id: UUID) { do { try service.execute(.restoreTombstonedEntity(tombstoneID: id), in: FarmContext(accountID: account.effectiveAccountID, farmID: farm.id, role: farm.role), context: modelContext) } catch { errorMessage = error.localizedDescription } }

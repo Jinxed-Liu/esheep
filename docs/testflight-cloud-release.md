@@ -5,9 +5,14 @@
 确认该 SHA 的 GitHub `Repository verification` 通过，并完成当前版本的
 `tools/verify_testflight_internal.sh` 门禁。
 
-工作流使用正式版 Xcode、`eSheepNext.xcodeproj`、`eSheepNext` scheme，
+正式发布时，工作流应使用正式版 Xcode 27.1 或之后的版本、`eSheepNext.xcodeproj`、`eSheepNext` scheme，
 执行 iOS Archive，分发准备为 `TestFlight（仅限内部测试）`，后续操作的目标组
 为现有的 `3.1 Internal`。
+
+Duo 的原生动态布局和竖向系统栏依赖 iOS 27.1 SDK。归档前应核实 Cloud
+工作流的实际 Xcode 版本；旧 SDK 兼容编译或本机新 SDK 验证不能代替该项。
+本机发布门禁中的 `EXPECTED_XCODE_BUILD` 应显式使用当次已核验的正式版
+build 标识。适配与模拟器证据见 [Duo 验收记录](iphone-duo-adaptation-2026-10-25.md)。
 
 工作流环境变量：
 
