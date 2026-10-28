@@ -34,11 +34,12 @@ struct FarmWorkbenchView: View {
         NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 22) {
+                    AdaptiveCardStack(spacing: 22) {
                         FarmEventEntryLink(account: account, farm: farm)
-                        management.id(WorkbenchSection.management)
-                        actionCard("生产记录", actions: productionActions).id(WorkbenchSection.records)
-                        feeding.id(WorkbenchSection.feeding)
+                        management.adaptiveCardColumn(.leading).id(WorkbenchSection.management)
+                        actionCard("生产记录", actions: productionActions)
+                            .adaptiveCardColumn(.trailing).id(WorkbenchSection.records)
+                        feeding.adaptiveCardColumn(.trailing).id(WorkbenchSection.feeding)
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)

@@ -1,6 +1,656 @@
 {
   "sourceLanguage" : "zh-Hans",
   "strings" : {
+    "历史档案": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Historical archive"
+          }
+        }
+      }
+    },
+    "搜索羊只、羊舍、事件": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search sheep, pens, and events"
+          }
+        }
+      }
+    },
+    "搜索当前牧场的羊只、羊舍和事件。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search sheep, pens, and events in the current farm."
+          }
+        }
+      }
+    },
+    "支持耳号、旧耳号、品种、羊舍名称、事件类型、日期和备注。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search by ear tag, previous tag, breed, pen name, event type, date, or notes."
+          }
+        }
+      }
+    },
+    "没有匹配结果": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No matching results"
+          }
+        }
+      }
+    },
+    "请更换关键词、切换分类或清除事件筛选。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Try another keyword or category, or clear the event filters."
+          }
+        }
+      }
+    },
+    "最近搜索": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent searches"
+          }
+        }
+      }
+    },
+    "清除最近搜索": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear recent searches"
+          }
+        }
+      }
+    },
+    "试试搜索": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Try searching"
+          }
+        }
+      }
+    },
+    "%@ %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ %lld"
+          }
+        }
+      }
+    },
+    "%@ · %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ · %lld"
+          }
+        }
+      }
+    },
+    "查看全部 %lld 条": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View all %lld results"
+          }
+        }
+      }
+    },
+    "加载更多": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Load more"
+          }
+        }
+      }
+    },
+    "旧耳号：%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Previous ear tag: %@"
+          }
+        }
+      }
+    },
+    "当前在舍 %lld 只 · 母 %lld / 公 %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Currently housed: %lld · Female %lld / Male %lld"
+          }
+        }
+      }
+    },
+    "性别待确认 %lld 只": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sex unconfirmed: %lld"
+          }
+        }
+      }
+    },
+    "备注：%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Note: %@"
+          }
+        }
+      }
+    },
+    "正在读取事件": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading event"
+          }
+        }
+      }
+    },
+    "事件已不存在": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Event no longer exists"
+          }
+        }
+      }
+    },
+    "该记录可能已撤回，请返回搜索并刷新。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This record may have been withdrawn. Return to search and refresh."
+          }
+        }
+      }
+    },
+    "繁殖记录暂不可用" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reproduction record unavailable"
+          }
+        }
+      }
+    },
+    "正在读取繁殖记录" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading reproduction record"
+          }
+        }
+      }
+    },
+    "出生" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Birth"
+          }
+        }
+      }
+    },
+    "用途变更" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Purpose Change"
+          }
+        }
+      }
+    },
+    "产羔详情" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lambing Details"
+          }
+        }
+      }
+    },
+    "产羔记录暂不可用" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lambing record unavailable"
+          }
+        }
+      }
+    },
+    "正在读取产羔记录" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading lambing record"
+          }
+        }
+      }
+    },
+    "本次羔羊" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lambs from This Event"
+          }
+        }
+      }
+    },
+    "另有 %lld 只羔羊缺少逐只明细。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Individual details are missing for %lld additional lambs."
+          }
+        }
+      }
+    },
+    "逐只明细与产羔汇总不一致，请核对原始记录。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Individual details conflict with the lambing totals. Check the original record."
+          }
+        }
+      }
+    },
+    "未记录羔羊明细" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No individual lamb details recorded"
+          }
+        }
+      }
+    },
+    "当前状态读取于 %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Current status retrieved at %@"
+          }
+        }
+      }
+    },
+    "正在读取羔羊明细" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading lamb details"
+          }
+        }
+      }
+    },
+    "记录时耳号：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ear tag at recording: %@"
+          }
+        }
+      }
+    },
+    "后续称重：%@ 千克 · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Later weight: %@ kg · %@"
+          }
+        }
+      }
+    },
+    "活产" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Liveborn"
+          }
+        }
+      }
+    },
+    "关联记录暂不可用" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Linked record unavailable"
+          }
+        }
+      }
+    },
+    "正在读取" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading"
+          }
+        }
+      }
+    },
+    "请返回刷新事件历史后重试。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Return to event history, refresh, and try again."
+          }
+        }
+      }
+    },
+    "本次产羔" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Lambing Event"
+          }
+        }
+      }
+    },
+    "本次胎次" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Parity for This Event"
+          }
+        }
+      }
+    },
+    "本次产羔已撤销" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This lambing event has been revoked"
+          }
+        }
+      }
+    },
+    "出生结局" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Birth Outcome"
+          }
+        }
+      }
+    },
+    "父本与配种依据" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sire and Breeding Evidence"
+          }
+        }
+      }
+    },
+    "备注与记录信息" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notes and Record Information"
+          }
+        }
+      }
+    },
+    "未明确关联配种记录" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No explicit link to a breeding record"
+          }
+        }
+      }
+    },
+    "事件类型" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Event Type"
+          }
+        }
+      }
+    },
+    "全部事件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All Events"
+          }
+        }
+      }
+    },
+    "全部批次事件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All Batch Events"
+          }
+        }
+      }
+    },
+    "全部离群事件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All Removal Events"
+          }
+        }
+      }
+    },
+    "全部投喂事件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All Feeding Events"
+          }
+        }
+      }
+    },
+    "全部健康事件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All Health Events"
+          }
+        }
+      }
+    },
+    "全部繁殖事件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All Reproduction Events"
+          }
+        }
+      }
+    },
+    "全部库存事件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All Inventory Events"
+          }
+        }
+      }
+    },
+    "建立生产批次" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Create Production Batch"
+          }
+        }
+      }
+    },
+    "删除生产批次" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Delete Production Batch"
+          }
+        }
+      }
+    },
+    "羊群与生长" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Herd and Growth"
+          }
+        }
+      }
+    },
+    "事件范围" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Event Scope"
+          }
+        }
+      }
+    },
+    "按事件实际发生日期筛选，包含开始日和结束日。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Filter by the actual event date, including both the start and end dates."
+          }
+        }
+      }
+    },
+    "搜索关键词会保留，可在列表单独清空。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search keywords are retained and can be cleared separately in the list."
+          }
+        }
+      }
+    },
+    "导出范围" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Export Scope"
+          }
+        }
+      }
+    },
+    "筛选条件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Filters"
+          }
+        }
+      }
+    },
+    "范围" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scope"
+          }
+        }
+      }
+    },
+    "当前筛选结果" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Current Filtered Results"
+          }
+        }
+      }
+    },
+    "关键词" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keywords"
+          }
+        }
+      }
+    },
     "放大头像" : {
       "localizations" : {
         "en" : {

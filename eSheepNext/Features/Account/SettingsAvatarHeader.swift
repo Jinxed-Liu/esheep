@@ -1,4 +1,6 @@
 import SwiftUI
+// SDK module-version guards keep the existing Xcode 26.6 CI compilable;
+// the vertical-bar APIs also require the runtime availability checks below.
 import UIKit
 
 /// The scroll-content button owns input. Its geometry never feeds back into
@@ -43,7 +45,7 @@ struct SettingsAvatarHeader: View, Animatable {
             }
             .buttonStyle(.plain)
             .offset(
-                x: layout.photoFrame.minX - motion.contentOrigin.x,
+                x: layout.photoFrame.minX,
                 y: layout.photoFrame.minY + motion.scrollOffset - motion.contentOrigin.y
             )
             .accessibilityLabel("头像")
@@ -68,7 +70,8 @@ struct SettingsAvatarHeader: View, Animatable {
             SettingsAvatarWindowProbe { value in
                 let stable = SettingsAvatarWindowMetrics(
                     width: value.width, statusBarHeight: value.statusBarHeight,
-                    windowOriginInView: .zero, supportsIsland: value.supportsIsland
+                    windowOriginInView: .zero, supportsIsland: value.supportsIsland,
+                    notchAttachment: value.notchAttachment
                 )
                 if metrics != stable { metrics = stable }
             }
@@ -118,6 +121,7 @@ struct SettingsAvatarOverlay: View, Animatable {
                 ),
                 layout: layout,
                 supportsIsland: metrics.supportsIsland,
+                notchAttachment: metrics.notchAttachment,
                 sourceHidden: motion.isSourceHidden,
                 darkAppearance: colorScheme == .dark,
                 displayScale: displayScale,
@@ -226,9 +230,11 @@ private struct SettingsAvatarWindowMetrics: Equatable, Sendable {
     let statusBarHeight: CGFloat
     let windowOriginInView: CGPoint
     let supportsIsland: Bool
+    let notchAttachment: SettingsAvatarNotchGeometry.Attachment?
 
     static let empty = Self(
-        width: 0, statusBarHeight: 0, windowOriginInView: .zero, supportsIsland: false
+        width: 0, statusBarHeight: 0, windowOriginInView: .zero,
+        supportsIsland: false, notchAttachment: nil
     )
 }
 
@@ -240,6 +246,7 @@ private struct SettingsAvatarRenderer: UIViewRepresentable {
     let subtitle: String
     let layout: SettingsAvatarRenderLayout
     let supportsIsland: Bool
+    let notchAttachment: SettingsAvatarNotchGeometry.Attachment?
     let sourceHidden: Bool
     let darkAppearance: Bool
     let displayScale: CGFloat
@@ -262,7 +269,7 @@ private struct SettingsAvatarRenderer: UIViewRepresentable {
         uiView.onMetrics = onMetrics
         uiView.render(
             image: image, initials: initials, name: name, subtitle: subtitle,
-            layout: layout, supportsIsland: supportsIsland,
+            layout: layout, supportsIsland: supportsIsland, notchAttachment: notchAttachment,
             sourceHidden: sourceHidden, darkAppearance: darkAppearance,
             displayScale: displayScale
         )
@@ -297,9 +304,10 @@ private final class SettingsAvatarRendererUIView: UIView {
     private var pendingMetrics: Task<Void, Never>?
     private var pendingAttach: Task<Void, Never>?
     private var renderLayout: SettingsAvatarRenderLayout?
-    private var islandEligible = false
+    private var attachmentEligible = false
+    private var notchAttachment: SettingsAvatarNotchGeometry.Attachment?
     private var renderDisplayScale: CGFloat = 1
-    private var compactContact: SettingsAvatarIslandGeometry.Contact?
+    private var attachmentContact: SettingsAvatarIslandGeometry.Contact?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -348,6 +356,14 @@ private final class SettingsAvatarRendererUIView: UIView {
         subtitle.lineBreakMode = .byTruncatingTail
         addSubview(title)
         addSubview(subtitle)
+#if canImport(SwiftUI, _version: 8.0.85)
+        if #available(iOS 27.1, *) {
+            registerForTraitChanges(UITraitCollection.systemTraitsAffectingVerticalBarEdge) {
+                (view: SettingsAvatarRendererUIView, _: UITraitCollection) in
+                view.setNeedsLayout()
+            }
+        }
+#endif
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -379,13 +395,16 @@ private final class SettingsAvatarRendererUIView: UIView {
     func render(
         image: UIImage?, initials: String, name: String, subtitle text: String,
         layout: SettingsAvatarRenderLayout, supportsIsland: Bool,
+        notchAttachment: SettingsAvatarNotchGeometry.Attachment?,
         sourceHidden: Bool, darkAppearance: Bool, displayScale: CGFloat
     ) {
         renderLayout = layout
-        islandEligible = supportsIsland && layout.animationsEnabled
+        let supportsAttachment = supportsIsland || notchAttachment != nil
+        attachmentEligible = supportsAttachment && layout.animationsEnabled
+        self.notchAttachment = attachmentEligible ? notchAttachment : nil
         renderDisplayScale = max(1, displayScale)
-        compactContact = islandEligible
-            ? SettingsAvatarIslandGeometry.currentContact(
+        attachmentContact = attachmentEligible
+            ? notchAttachment?.contact ?? SettingsAvatarIslandGeometry.currentContact(
                 viewportWidth: layout.width, displayScale: renderDisplayScale
             ) : nil
         photo.image = image
@@ -398,11 +417,11 @@ private final class SettingsAvatarRendererUIView: UIView {
         title.text = name
         subtitle.text = text
         composite.isHidden = sourceHidden
-        let progress = supportsIsland ? layout.maskProgress : 0
+        let progress = supportsAttachment ? layout.maskProgress : 0
         let shapeStrength = boundedSettingsAvatarProgress((progress - 0.03) / 0.03)
         canvas.isHidden = progress <= 0.03
         blackUnderlay.alpha = progress
-        islandEffect.setProgress(progress, topOverscan: compactContact?.paintOverscan ?? 0)
+        islandEffect.setProgress(progress, topOverscan: attachmentContact?.paintOverscan ?? 0)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         compositeMask.contentsScale = renderDisplayScale
@@ -412,18 +431,18 @@ private final class SettingsAvatarRendererUIView: UIView {
             cornerRadius: layout.cornerRadius,
             maskOrigin: CGPoint(
                 x: layout.windowOrigin.x + (layout.width - 171) / 2,
-                y: layout.windowOrigin.y + 47.5
+                y: layout.windowOrigin.y + (self.notchAttachment?.anchorY ?? 47.5)
             ),
             progress: progress,
             strength: shapeStrength * (1 - layout.expansion),
-            compactContact: compactContact
+            compactContact: attachmentContact
         )
         CATransaction.commit()
 
         applyGeometry(layout)
         applyTypography(layout, displayScale: displayScale)
         // Unsupported devices and Reduce Motion use the regular scroll fade.
-        let fallbackAlpha = supportsIsland && layout.animationsEnabled
+        let fallbackAlpha = attachmentEligible
             ? 1 : 1 - boundedSettingsAvatarProgress(layout.titleProgress) * (1 - layout.expansion)
         composite.alpha = fallbackAlpha
     }
@@ -431,12 +450,15 @@ private final class SettingsAvatarRendererUIView: UIView {
     private func applyGeometry(_ layout: SettingsAvatarRenderLayout) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        let clipTop = layout.windowOrigin.y + (islandEligible ? 47 * (1 - layout.expansion) : 0)
+        // The notch joins a broad, flat housing. The island's circular outer
+        // clip would cut off that wider shoulder.
+        let usesIslandClip = attachmentEligible && notchAttachment == nil
+        let clipTop = layout.windowOrigin.y + (usesIslandClip ? 47 * (1 - layout.expansion) : 0)
         clippingView.frame = CGRect(
             x: layout.windowOrigin.x, y: clipTop,
             width: layout.width, height: max(1000, bounds.height)
         )
-        clippingView.layer.cornerRadius = islandEligible ? layout.width / 2.5 * (1 - layout.expansion) : 0
+        clippingView.layer.cornerRadius = usesIslandClip ? layout.width / 2.5 * (1 - layout.expansion) : 0
         composite.frame = CGRect(
             x: -clippingView.frame.minX, y: -clippingView.frame.minY,
             width: bounds.width, height: max(bounds.height, layout.photoFrame.maxY + 60)
@@ -456,10 +478,10 @@ private final class SettingsAvatarRendererUIView: UIView {
         mirroredPhoto.center = CGPoint(x: layout.photoFrame.width / 2, y: layout.photoFrame.height / 2)
         canvas.frame = CGRect(
             x: layout.windowOrigin.x + (layout.width - 171) / 2,
-            y: layout.windowOrigin.y + 47.5, width: 171, height: 171
+            y: layout.windowOrigin.y + (notchAttachment?.anchorY ?? 47.5), width: 171, height: 171
         )
         blackUnderlay.frame = SettingsAvatarIslandGeometry.paintBounds(
-            in: canvas.bounds, topOverscan: compactContact?.paintOverscan ?? 0
+            in: canvas.bounds, topOverscan: attachmentContact?.paintOverscan ?? 0
         )
         islandEffect.frame = canvas.frame
         shadow.frame = CGRect(
@@ -866,6 +888,14 @@ private final class SettingsAvatarWindowProbeUIView: UIView {
         isAccessibilityElement = false
         accessibilityElementsHidden = true
         backgroundColor = .clear
+#if canImport(SwiftUI, _version: 8.0.85)
+        if #available(iOS 27.1, *) {
+            registerForTraitChanges(UITraitCollection.systemTraitsAffectingVerticalBarEdge) {
+                (view: SettingsAvatarWindowProbeUIView, _: UITraitCollection) in
+                view.setNeedsLayout()
+            }
+        }
+#endif
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -892,16 +922,39 @@ private final class SettingsAvatarWindowProbeUIView: UIView {
 
 @MainActor
 private func settingsAvatarWindowMetrics(view: UIView, window: UIWindow) -> SettingsAvatarWindowMetrics {
-    let status = window.windowScene?.statusBarManager?.statusBarFrame.height ?? window.safeAreaInsets.top
+    // The scroll animation is anchored to this window's top, but its width
+    // belongs to the actual content column, already outside any side bar.
+    // A vertical status bar's frame height is not a top inset.
+    let status = window.safeAreaInsets.top
+    let usesVerticalBar: Bool
+#if canImport(SwiftUI, _version: 8.0.85)
+    if #available(iOS 27.1, *) {
+        usesVerticalBar = view.traitCollection.verticalBarEdge != .unspecified
+    } else {
+        usesVerticalBar = false
+    }
+#else
+    usesVerticalBar = false
+#endif
+    let fillsWindowWidth = abs(view.bounds.width - window.bounds.width) < 0.5
     let portrait = window.windowScene?.effectiveGeometry.interfaceOrientation.isPortrait
         ?? (window.bounds.height > window.bounds.width)
+    let supportsTopAttachment = !usesVerticalBar && fillsWindowWidth
+        && view.traitCollection.userInterfaceIdiom == .phone && portrait
+        && window.windowScene?.statusBarManager?.isStatusBarHidden != true
+    let deviceIdentifier = SettingsAvatarIslandGeometry.deviceIdentifier
+    let notchAttachment = supportsTopAttachment
+        ? SettingsAvatarNotchGeometry.attachment(
+            for: deviceIdentifier, viewportWidth: view.bounds.width,
+            topInset: status, displayScale: view.traitCollection.displayScale
+        ) : nil
     return SettingsAvatarWindowMetrics(
-        width: window.bounds.width,
+        width: view.bounds.width,
         statusBarHeight: status,
-        windowOriginInView: view.convert(.zero, from: window),
-        supportsIsland: window.traitCollection.userInterfaceIdiom == .phone
-            && portrait && window.safeAreaInsets.top >= 59
-            && window.windowScene?.statusBarManager?.isStatusBarHidden != true
+        windowOriginInView: CGPoint(x: 0, y: view.convert(.zero, from: window).y),
+        supportsIsland: supportsTopAttachment && status >= 59
+            && SettingsAvatarNotchGeometry.profile(for: deviceIdentifier) == nil,
+        notchAttachment: notchAttachment
     )
 }
 

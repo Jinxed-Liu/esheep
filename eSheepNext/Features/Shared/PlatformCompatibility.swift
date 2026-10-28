@@ -10,6 +10,15 @@ enum CompatibilitySymbol {
 /// Keep the current system appearance while providing usable iOS 17 surfaces.
 extension View {
     @ViewBuilder
+    func compatibilityListSectionMargins(_ edges: Edge.Set, _ length: CGFloat) -> some View {
+        if #available(iOS 26, *) {
+            listSectionMargins(edges, length)
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
     func compatibilityToolbarVisibility(_ visibility: Visibility, for placement: ToolbarPlacement) -> some View {
         if #available(iOS 18, *) {
             toolbarVisibility(visibility, for: placement)

@@ -90,6 +90,7 @@ struct InsightAnalysisSelectorPresentation: UIViewControllerRepresentable {
         private var ownerBlurView: UIVisualEffectView?
         private var ownerBlurIsOpaque: Bool?
         private var isRemovingWindow = false
+        private var isReconciling = false
         private var transitionRevision = 0
         private var isClosing = false
         private var openingDisplayLink: CADisplayLink?
@@ -104,7 +105,9 @@ struct InsightAnalysisSelectorPresentation: UIViewControllerRepresentable {
         }
 
         func reconcile() {
-            guard !isRemovingWindow else { return }
+            guard !isRemovingWindow, !isReconciling else { return }
+            isReconciling = true
+            defer { isReconciling = false }
             guard wantsPresentation else { closeWindow(); return }
             guard let anchor, anchor.isVisible, let owner = anchor.view.window,
                   let scene = owner.windowScene, scene.activationState == .foregroundActive else { return }
@@ -115,10 +118,11 @@ struct InsightAnalysisSelectorPresentation: UIViewControllerRepresentable {
                 if controller.presentedViewController != nil { dismiss(restoreEditor: false); return }
                 ancestor = controller.parent
             }
-            if let overlayWindow {
+            if overlayWindow != nil {
                 guard ownerWindow === owner else { dismiss(restoreEditor: false); return }
                 presentsContext = configuration.contextIsPresented?.wrappedValue == true
-                overlayWindow.frame = owner.frame
+                // The scene already resizes its windows. Copying the owner's
+                // transient rotation frame fights that update and can loop.
                 updateAnchor(in: owner)
                 updateOwnerBlur()
                 host?.rootView = rootView
@@ -134,7 +138,6 @@ struct InsightAnalysisSelectorPresentation: UIViewControllerRepresentable {
             updateAnchor(in: owner)
             installOwnerBlur(in: owner)
             let window = UIWindow(windowScene: scene)
-            window.frame = owner.frame
             window.backgroundColor = .clear
             window.isOpaque = false
             // Only inspect windows in the source's own scene. System remote
@@ -153,8 +156,6 @@ struct InsightAnalysisSelectorPresentation: UIViewControllerRepresentable {
             observedScene = scene
             NotificationCenter.default.addObserver(self, selector: #selector(sceneWillDeactivate),
                 name: UIScene.willDeactivateNotification, object: scene)
-            NotificationCenter.default.addObserver(self, selector: #selector(sceneWillDeactivate),
-                name: UIApplication.willResignActiveNotification, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(transparencyChanged),
                 name: UIAccessibility.reduceTransparencyStatusDidChangeNotification, object: nil)
             // No makeKeyAndVisible: preserve the draft's first responder.
@@ -305,7 +306,6 @@ struct InsightAnalysisSelectorPresentation: UIViewControllerRepresentable {
             guard let window = overlayWindow, !isRemovingWindow else { return }
             isRemovingWindow = true
             NotificationCenter.default.removeObserver(self, name: UIScene.willDeactivateNotification, object: observedScene)
-            NotificationCenter.default.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
             NotificationCenter.default.removeObserver(self, name: UIAccessibility.reduceTransparencyStatusDidChangeNotification, object: nil)
             let owner = ownerWindow
             let editor = ownerFirstResponder
@@ -394,13 +394,18 @@ private struct InsightAnalysisSelectorRoot: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let origin = geometry.frame(in: .global).origin
             let panelWidth = max(1, min(640, geometry.size.width - 60))
-            let targetY = max(geometry.safeAreaInsets.top + selectorHeight / 2,
-                min(layout.anchorBottom - selectorHeight / 2,
-                    geometry.size.height - geometry.safeAreaInsets.bottom - selectorHeight / 2))
-            let source = layout.gaugeFrame
+            let anchorBottom = layout.anchorBottom - origin.y
+            // Non-key windows do not inherit the editor's keyboard safe area.
+            // Limit the scroll viewport to the composer anchor as well.
+            let availableBottom = min(geometry.size.height - 12, anchorBottom)
+            let panelHeight = min(selectorHeight, max(1, availableBottom - 12))
+            let targetY = max(12 + panelHeight / 2,
+                availableBottom - panelHeight / 2)
+            let source = layout.gaugeFrame.offsetBy(dx: -origin.x, dy: -origin.y)
             let sourceX = source.isEmpty ? geometry.size.width / 2 : source.midX
-            let sourceY = source.isEmpty ? layout.anchorBottom - 22 : source.midY
+            let sourceY = source.isEmpty ? anchorBottom - 22 : source.midY
             ZStack {
                 Button(action: onDismiss) {
                     Rectangle().fill(.clear)
@@ -411,12 +416,17 @@ private struct InsightAnalysisSelectorRoot: View {
                 .accessibilityLabel(contextUsage == nil ? "关闭分析强度选择器" : "关闭上下文用量")
                 .accessibilityIdentifier(contextUsage == nil ? "insight.analysis.dismiss" : "insight.context.dismiss")
 
-                focusedPanel
+                ScrollView {
+                    focusedPanel
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { selectorHeight = $0 }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .scrollIndicators(.hidden)
                 .frame(width: panelWidth)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { selectorHeight = $0 }
+                .frame(height: panelHeight)
                 .scaleEffect(
                     x: layout.isExpanded || reduceMotion ? 1 : 44 / panelWidth,
-                    y: layout.isExpanded || reduceMotion ? 1 : 44 / selectorHeight
+                    y: layout.isExpanded || reduceMotion ? 1 : 44 / max(1, panelHeight)
                 )
                 .opacity(layout.isExpanded ? 1 : 0)
                 .position(
@@ -435,7 +445,6 @@ private struct InsightAnalysisSelectorRoot: View {
                 }
             }
         }
-        .ignoresSafeArea()
         .accessibilityAction(.escape, onDismiss)
         .onKeyPress(.escape) { onDismiss(); return .handled }
     }

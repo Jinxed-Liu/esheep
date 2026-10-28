@@ -4,6 +4,9 @@ import UIKit
 
 struct SheepSharePosterEditor: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let snapshot: SheepSharePosterSnapshot
     let image: UIImage?
     @Binding var style: SheepSharePosterStyle
@@ -29,14 +32,27 @@ struct SheepSharePosterEditor: View {
     var body: some View {
         NavigationStack {
             GeometryReader { geometry in
-                let previewWidth = min(geometry.size.width - 40, max(150, geometry.size.height * 0.42 * 360 / 640))
-                VStack(spacing: 12) {
-                    templateActions.padding(.horizontal, 20)
-                    canvas(width: previewWidth)
-                        .frame(maxWidth: .infinity)
-                    elementPicker.padding(.horizontal, 20)
+                // The preview and controls need 160 and 300 points respectively.
+                // Decide from this sheet's proposal, including the keyboard and
+                // vertical bars, without assuming the iPhone is always narrow.
+                let columns = !dynamicTypeSize.isAccessibilitySize
+                    && (horizontalSizeClass == .regular || verticalSizeClass == .compact)
+                    && geometry.size.width >= 160 + 300 + 40 + 20
+                let layout = columns
+                    ? AnyLayout(HStackLayout(alignment: .top, spacing: 20))
+                    : AnyLayout(VStackLayout(spacing: 12))
+                layout {
+                    GeometryReader { preview in
+                        let width = max(1, min(preview.size.width, preview.size.height * 360 / 640))
+                        canvas(width: width)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .frame(height: columns ? nil : max(1, geometry.size.height * 0.38))
+                    .frame(maxWidth: .infinity, maxHeight: columns ? .infinity : nil)
                     ScrollView {
                         VStack(spacing: 16) {
+                            templateActions
+                            elementPicker
                             Text("点选元素后拖动，或在下方精确调整。修改只用于海报，不改变羊只档案。")
                                 .font(.caption).foregroundStyle(.secondary)
                             if let selected { inspector(selected) }
@@ -46,11 +62,12 @@ struct SheepSharePosterEditor: View {
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                         }
-                        .padding(.horizontal, 20)
                         .padding(.bottom, 20)
                     }
                     .accessibilityIdentifier("sheepPoster.editor.inspector")
+                    .frame(minWidth: columns ? 300 : nil, maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .padding(.horizontal, 20)
                 .padding(.top, 12)
             }
             .background(Color(uiColor: .systemGroupedBackground))

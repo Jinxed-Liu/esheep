@@ -754,7 +754,7 @@ class OfflineCLITests(unittest.TestCase):
         self.assertEqual(len(derived_paths), 4)
         self.assertEqual(len(result_bundles), 4)
         for path in derived_paths | result_bundles:
-            self.assertTrue(Path(path).is_relative_to(self.output_dir))
+            self.assertTrue(Path(path).resolve().is_relative_to(self.output_dir.resolve()))
         self.assertFalse(self.output_dir.exists())
 
     def test_missing_ios17_makes_offline_cli_fail(self):

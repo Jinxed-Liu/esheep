@@ -18,9 +18,28 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
     case reproduction
     case inventory
     case note
+    case lambing
+    case breeding
+    case pregnancyCheck
+    case abortion
+    case parityBaseline
+    case sold
+    case deceased
+    case culled
+    case transferredOut
+    case treatment
+    case vaccination
+    case directFeed
+    case tmrFeed
+    case inventoryReceipt
+    case inventoryAdjustment
+    case semenReceipt
+    case semenAdjustment
+    case batchCreated
+    case batchDeleted
+    case batchDeparture
 
     var id: Self { self }
-
     var displayName: String {
         switch self {
         case .all: "全部记录"
@@ -37,9 +56,66 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
         case .reproduction: "繁殖记录"
         case .inventory: "库存记录"
         case .note: "备注记录"
+        case .lambing: "产羔"
+        case .breeding: "配种"
+        case .pregnancyCheck: "孕检"
+        case .abortion: "流产"
+        case .parityBaseline: "胎次确认"
+        case .sold: "出售"
+        case .deceased: "死亡"
+        case .culled: "淘汰"
+        case .transferredOut: "转出"
+        case .treatment: "治疗"
+        case .vaccination: "疫苗"
+        case .directFeed: "直接投喂"
+        case .tmrFeed: "TMR 投喂"
+        case .inventoryReceipt: "药品疫苗入库"
+        case .inventoryAdjustment: "药品疫苗盘点"
+        case .semenReceipt: "冻精入库"
+        case .semenAdjustment: "冻精盘点"
+        case .batchCreated: "建立生产批次"
+        case .batchDeleted: "删除生产批次"
+        case .batchDeparture: "移出批次"
         }
     }
-
+    var filterName: String {
+        switch self {
+        case .all: String(localized: "全部事件")
+        case .birth: String(localized: "出生")
+        case .sheep: String(localized: "羊只建档")
+        case .batch: String(localized: "全部批次事件")
+        case .purpose: String(localized: "用途变更")
+        case .weight: String(localized: "称重")
+        case .weaning: String(localized: "断奶")
+        case .transfer: String(localized: "转群")
+        case .removal: String(localized: "全部离群事件")
+        case .feed: String(localized: "全部投喂事件")
+        case .health: String(localized: "全部健康事件")
+        case .reproduction: String(localized: "全部繁殖事件")
+        case .inventory: String(localized: "全部库存事件")
+        case .note: String(localized: "备注")
+        case .lambing: String(localized: "产羔")
+        case .breeding: String(localized: "配种")
+        case .pregnancyCheck: String(localized: "孕检")
+        case .abortion: String(localized: "流产")
+        case .parityBaseline: String(localized: "胎次确认")
+        case .sold: String(localized: "出售")
+        case .deceased: String(localized: "死亡")
+        case .culled: String(localized: "淘汰")
+        case .transferredOut: String(localized: "转出")
+        case .treatment: String(localized: "治疗")
+        case .vaccination: String(localized: "疫苗")
+        case .directFeed: String(localized: "直接投喂")
+        case .tmrFeed: String(localized: "TMR 投喂")
+        case .inventoryReceipt: String(localized: "药品疫苗入库")
+        case .inventoryAdjustment: String(localized: "药品疫苗盘点")
+        case .semenReceipt: String(localized: "冻精入库")
+        case .semenAdjustment: String(localized: "冻精盘点")
+        case .batchCreated: String(localized: "建立生产批次")
+        case .batchDeleted: String(localized: "删除生产批次")
+        case .batchDeparture: String(localized: "移出批次")
+        }
+    }
     var symbol: String {
         switch self {
         case .all: "clock.arrow.circlepath"
@@ -56,9 +132,28 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
         case .reproduction: "heart.text.clipboard"
         case .inventory: "shippingbox"
         case .note: "note.text"
+        case .lambing: "heart"
+        case .breeding: "heart.text.clipboard"
+        case .pregnancyCheck: "heart.text.clipboard"
+        case .abortion: "heart.text.clipboard"
+        case .parityBaseline: "list.number"
+        case .sold: "arrow.up.forward"
+        case .deceased: "minus.circle"
+        case .culled: "minus.circle"
+        case .transferredOut: "arrow.up.forward"
+        case .treatment: "cross.case"
+        case .vaccination: "syringe"
+        case .directFeed: "leaf"
+        case .tmrFeed: "leaf"
+        case .inventoryReceipt: "shippingbox"
+        case .inventoryAdjustment: "shippingbox"
+        case .semenReceipt: "shippingbox"
+        case .semenAdjustment: "shippingbox"
+        case .batchCreated: "square.stack.3d.up"
+        case .batchDeleted: "square.stack.3d.up"
+        case .batchDeparture: "square.stack.3d.up"
         }
     }
-
     func includes(_ event: FarmEventSnapshot) -> Bool {
         switch self {
         case .all: true
@@ -75,11 +170,72 @@ enum FarmEventExportScope: String, CaseIterable, Identifiable, Sendable {
         case .reproduction: event.entityType == .reproduction
         case .inventory: event.entityType == .inventoryTransaction || event.entityType == .semenTransaction
         case .note: event.entityType == .note
+        default: event.recordScope == self
         }
     }
 
     static func scope(for event: FarmEventSnapshot) -> FarmEventExportScope {
-        allCases.first(where: { $0 != .all && $0.includes(event) }) ?? .all
+        if let recordScope = event.recordScope { return recordScope }
+        return allCases.first(where: { $0 != .all && $0.includes(event) }) ?? .all
+    }
+}
+
+struct FarmEventScopeGroup: Identifiable {
+    let title: String
+    let scopes: [FarmEventExportScope]
+    var id: String { title }
+}
+
+extension FarmEventExportScope {
+    static let shortcuts: [Self] = [
+        .all, .lambing, .breeding, .pregnancyCheck, .weight, .weaning, .transfer,
+        .sold, .deceased, .culled, .transferredOut, .treatment, .vaccination,
+        .directFeed, .tmrFeed, .birth, .sheep, .purpose, .abortion, .parityBaseline,
+        .inventoryReceipt, .inventoryAdjustment, .semenReceipt, .semenAdjustment,
+        .batchCreated, .batchDeleted, .batchDeparture, .note
+    ]
+    static let groups: [FarmEventScopeGroup] = [
+        .init(title: "繁殖", scopes: [.reproduction, .lambing, .breeding, .pregnancyCheck, .abortion, .parityBaseline]),
+        .init(title: "羊群与生长", scopes: [.sheep, .birth, .weight, .weaning, .transfer, .purpose]),
+        .init(title: "离群", scopes: [.removal, .sold, .deceased, .culled, .transferredOut]),
+        .init(title: "健康", scopes: [.health, .treatment, .vaccination]),
+        .init(title: "饲喂", scopes: [.feed, .directFeed, .tmrFeed]),
+        .init(title: "库存", scopes: [.inventory, .inventoryReceipt, .inventoryAdjustment, .semenReceipt, .semenAdjustment]),
+        .init(title: "生产批次", scopes: [.batch, .batchCreated, .batchDeleted, .batchDeparture]),
+        .init(title: "其他", scopes: [.note])
+    ]
+    static func reproduction(_ kind: ReproductionRecordKind) -> Self {
+        switch kind {
+        case .lambing: .lambing
+        case .breeding: .breeding
+        case .pregnancyCheck: .pregnancyCheck
+        case .abortion: .abortion
+        case .parityBaseline: .parityBaseline
+        }
+    }
+    static func removal(_ kind: RemovalKind) -> Self {
+        switch kind {
+        case .sold: .sold
+        case .deceased: .deceased
+        case .culled: .culled
+        case .transferredOut: .transferredOut
+        }
+    }
+}
+
+struct FarmEventScopePicker: View {
+    @Binding var selection: FarmEventExportScope
+    var body: some View {
+        Picker("事件类型", selection: $selection) {
+            Text("全部事件").tag(FarmEventExportScope.all)
+            ForEach(FarmEventExportScope.groups) { group in
+                Section {
+                    ForEach(group.scopes) { scope in
+                        Text(verbatim: scope.filterName).tag(scope)
+                    }
+                } header: { Text(LocalizedStringKey(group.title)) }
+            }
+        }
     }
 }
 

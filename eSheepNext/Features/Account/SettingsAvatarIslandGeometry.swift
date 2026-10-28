@@ -5,14 +5,14 @@ import Foundation
 /// Keep compact-model shoulders inside the existing software clip without
 /// replacing the original flared neck with a narrow capsule-like outline.
 enum SettingsAvatarIslandGeometry {
-    struct Contact: Equatable {
+    struct Contact: Equatable, Sendable {
         let halfWidth: CGFloat
         let top: CGFloat
         let paintOverscan: CGFloat
         let pixel: CGFloat
     }
 
-    private static let deviceIdentifier = currentDeviceIdentifier()
+    static let deviceIdentifier = currentDeviceIdentifier()
 
     static func usesCompactAttachment(deviceIdentifier: String) -> Bool {
         switch deviceIdentifier {

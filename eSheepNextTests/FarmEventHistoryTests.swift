@@ -3,6 +3,50 @@ import XCTest
 @testable import eSheepNext
 
 final class FarmEventHistoryTests: XCTestCase {
+    func testEventTypeGroupsCoverEveryScopeExactlyOnce() {
+        let scopes = FarmEventExportScope.groups.flatMap(\.scopes)
+        XCTAssertEqual(Set(scopes), Set(FarmEventExportScope.allCases.filter { $0 != .all }))
+        XCTAssertEqual(scopes.count, Set(scopes).count)
+        XCTAssertTrue(FarmEventExportScope.shortcuts.contains(.lambing))
+    }
+
+    @MainActor
+    func testConcreteReproductionTypesAndChildEarTagsUseTheSameExportFilter() async throws {
+        let container = try AppSchema.makeContainer(name: "history-types-\(UUID())", isStoredInMemoryOnly: true)
+        let context = ModelContext(container), farmID = UUID(), eweID = UUID()
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        var lambingID: UUID?
+        for kind in ReproductionRecordKind.allCases {
+            let event = ReproductionRecord(farmID: farmID, eweID: eweID, kind: kind,
+                occurredAt: date, lambCount: kind == .lambing ? 1 : 0)
+            context.insert(event)
+            if kind == .lambing { lambingID = event.id }
+        }
+        let child = SheepRecord(farmID: farmID, earTag: "CURRENT-TAG", breed: "湖羊", sex: .ewe, penID: nil, enteredAt: date)
+        context.insert(child)
+        context.insert(LambingOffspringRecord(farmID: farmID, lambingRecordID: try XCTUnwrap(lambingID),
+            sheepID: child.id, legacyEarTag: "ORIGINAL-TAG", sexRawValue: "unknown", birthWeightText: ""))
+        try context.save()
+        let events = try await FarmEventHistoryActor(container: container).load(farmID: farmID)
+        for kind in ReproductionRecordKind.allCases {
+            let scope = FarmEventExportScope.reproduction(kind)
+            let filtered = FarmEventSearch.filter(events, query: "", category: nil, scope: scope)
+            XCTAssertEqual(filtered.count, 1)
+            XCTAssertEqual(filtered.first?.recordScope, scope)
+            XCTAssertEqual(FarmEventExportScope.scope(for: try XCTUnwrap(filtered.first)), scope)
+        }
+        XCTAssertEqual(FarmEventSearch.filter(events, query: "", category: nil, scope: .reproduction).count, 5)
+        for tag in ["CURRENT-TAG", "original-tag"] {
+            let matching = FarmEventSearch.filter(events, query: tag, category: nil, scope: .lambing,
+                range: .days(from: date, through: date))
+            XCTAssertEqual(matching.map(\.id), [try XCTUnwrap(lambingID)])
+            XCTAssertEqual(FarmEventCSVExport.matchingEvents(matching, scope: .lambing, range: .all).map(\.id), matching.map(\.id))
+            XCTAssertTrue(FarmEventSearch.filter(events, query: tag, category: nil, scope: .breeding).isEmpty)
+            XCTAssertTrue(FarmEventSearch.filter(events, query: tag, category: nil, scope: .lambing,
+                range: .days(from: date.addingTimeInterval(3 * 86_400), through: date.addingTimeInterval(4 * 86_400))).isEmpty)
+        }
+    }
+
     func testAllDisplayedEventsHaveEditCapabilities() {
         func event(_ entityType: CloudEntityType) -> FarmEventSnapshot {
             FarmEventSnapshot(
