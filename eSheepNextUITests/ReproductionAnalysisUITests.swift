@@ -133,8 +133,7 @@ final class ReproductionAnalysisUITests: XCTestCase {
             if searchButton.isHittable { searchButton.tap() } else { app.swipeDown() }
         }
         XCTAssertTrue(search.waitForExistence(timeout: 10))
-        search.tap(); search.typeText("QA-OLD")
-        if app.keyboards.buttons["搜索"].exists { app.keyboards.buttons["搜索"].tap() }
+        search.tap(); search.typeText("QA-OLD\n")
         let row = eventRows.matching(NSPredicate(format: "label CONTAINS %@", "QA-001")).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 10))
         screenshot(app, name: "history-lambing-filter-and-original-ear-tag")
@@ -182,9 +181,16 @@ final class ReproductionAnalysisUITests: XCTestCase {
         XCTAssertFalse(app.buttons["lambing-child-QA-UNLINKED"].exists)
         let revoke = app.buttons["撤销记录"]
         reveal(revoke, in: app); revoke.tap()
-        app.alerts.textFields.firstMatch.tap()
-        app.alerts.textFields.firstMatch.typeText("隔离回归验证")
-        app.alerts.buttons["撤销"].tap()
+        let confirmation = app.alerts["撤销产羔记录"]
+        let reason = confirmation.textFields.firstMatch
+        reason.tap()
+        reason.typeText("隔离回归验证")
+        XCTAssertEqual(reason.value as? String, "隔离回归验证")
+        let confirmRevoke = confirmation.buttons["撤销"]
+        XCTAssertTrue(confirmRevoke.isHittable)
+        // Target the visible native alert action after its keyboard layout.
+        confirmRevoke.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1)
         let canRestore = app.buttons["安全恢复产羔"].waitForExistence(timeout: 10)
         if !canRestore {
             screenshot(app, name: "lambing-revocation-result")
