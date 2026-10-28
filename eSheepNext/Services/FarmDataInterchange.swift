@@ -126,24 +126,54 @@ enum FarmDataInterchange {
         transfers: [TransferRecord],
         allSheep: [SheepRecord] = [],
         semenDonors: [SemenDonorRecord] = [],
-        detail: SheepDetailSnapshot? = nil
+        detail: SheepDetailSnapshot? = nil,
+        weanings: [WeaningRecord] = [],
+        removals: [RemovalRecord] = [],
+        notes: [NoteRecord] = [],
+        pens: [PenRecord] = []
     ) throws -> Data {
+        // Scope before deriving either the profile or the fact sheets. The
+        // serializer also accepts mixed arrays from non-actor callers.
+        let weights = weights.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }
+        let health = health.filter {
+            $0.farmID == sheep.farmID && $0.deletedAt == nil &&
+                ($0.sheepID == sheep.id || ($0.sheepID == nil && healthRecordIDs.contains($0.id)))
+        }
+        let reproduction = reproduction.filter {
+            $0.farmID == sheep.farmID && $0.deletedAt == nil &&
+                ($0.eweID == sheep.id || (sheep.sex == .ram && $0.sireID == sheep.id && $0.kindRawValue == ReproductionRecordKind.breeding.rawValue))
+        }
+        let transfers = transfers.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }
+        let weanings = weanings.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }
+        let removals = removals.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }
+        let notes = notes.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
+        guard let timeZone = TimeZone(identifier: detail?.timeZoneIdentifier ?? "Asia/Shanghai") else {
+            throw FarmCommandError.invalidFarmTimeZone
+        }
+        formatter.timeZone = timeZone
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         let pedigreeSheep = allSheep.isEmpty ? [sheep] : allSheep.filter { $0.farmID == sheep.farmID && $0.deletedAt == nil }
         let byID = Dictionary(uniqueKeysWithValues: pedigreeSheep.map { ($0.id, $0) })
-        let donor = sheep.semenDonorID.flatMap { id in semenDonors.first { $0.id == id && $0.farmID == sheep.farmID } }
+        let donor = sheep.semenDonorID.flatMap { id in semenDonors.first { $0.id == id && $0.farmID == sheep.farmID && $0.deletedAt == nil } }
         var profileTable: [[String]] = [
             ["单羊档案", sheep.earTag, "", ""],
             ["字段", "值", "", ""],
+            ["牧场ID", sheep.farmID.uuidString, "", ""],
+            ["羊只ID", sheep.id.uuidString, "", ""],
+            ["牧场时区", timeZone.identifier, "", ""],
+            ["旧耳号", sheep.legacyEarTag ?? "", "", ""],
             ["品种", sheep.breed, "", ""],
             ["性别", sheep.sex.displayName, "", ""],
             ["状态", sheep.status.displayName, "", ""],
+            ["用途", sheep.purpose, "", ""],
+            ["历史档案", sheep.isHistoricalArchive ? "是" : "否", "", ""],
             ["当前圈舍", sheep.currentPenDisplayName(penName), "", ""],
             ["入场时间", formatter.string(from: sheep.enteredAt), "", ""],
             ["出生日期", sheep.birthAt.map(formatter.string(from:)) ?? "", "", ""],
+            ["离场时间", sheep.removedAt.map(formatter.string(from:)) ?? "", "", ""],
             ["母本", sheep.damID.flatMap { byID[$0]?.earTag } ?? "未知", sheep.damProvenance?.displayName ?? "", ""],
             ["父本", sheep.sireID.flatMap { byID[$0]?.earTag } ?? "未知", sheep.sireProvenance?.displayName ?? "", ""],
             ["冻精供体", donor?.name ?? sheep.semenDonorNameSnapshot ?? "", donor?.registrationNumber ?? sheep.semenDonorRegistrationNumberSnapshot ?? "", sheep.semenDonorBreedSnapshot ?? donor?.breed ?? ""],
@@ -156,11 +186,23 @@ enum FarmDataInterchange {
                 ["本轮目标胎次", cycle.targetParity.map { String($0) } ?? "待核实", "", ""],
                 ["本轮繁殖状态", cycle.displayState, "", ""], ["繁殖资料待核实", cycle.issues.joined(separator: "；"), "", ""]]
         }
-        let weightRows = weights.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }.map { ["称重", formatter.string(from: $0.occurredAt), "\($0.displayKilogramsText) 千克", $0.note] }
-        let healthRows = health.filter { $0.farmID == sheep.farmID && ($0.sheepID == sheep.id || healthRecordIDs.contains($0.id)) && $0.deletedAt == nil }.map { [HealthRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "健康", formatter.string(from: $0.occurredAt), $0.itemNameSnapshot, $0.note] }
-        let reproductionRows = reproduction.filter { $0.farmID == sheep.farmID && $0.eweID == sheep.id && $0.deletedAt == nil }.map { [ReproductionRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "繁殖", formatter.string(from: $0.occurredAt), $0.result, $0.note] }
-        let transferRows = transfers.filter { $0.farmID == sheep.farmID && $0.sheepID == sheep.id && $0.deletedAt == nil }.map { ["转群", formatter.string(from: $0.occurredAt), "圈舍变更", $0.note] }
-        let timeline = (weightRows + healthRows + reproductionRows + transferRows).sorted { $0[1] < $1[1] }
+        let weightFacts = SingleSheepArchiveFacts.weights(records: weights, detail: detail)
+        let weightRows = weightFacts.map { [$0.source.displayName, formatter.string(from: $0.date), "\(WeightPrecision.displayText($0.kilogramsText)) 千克", $0.note] }
+        let healthRows = health.map { [HealthRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "健康", formatter.string(from: $0.occurredAt), $0.itemNameSnapshot, $0.note] }
+        let reproductionRows = reproduction.map { [ReproductionRecordKind(rawValue: $0.kindRawValue)?.displayName ?? "繁殖", formatter.string(from: $0.occurredAt), $0.result, $0.note] }
+        let transferRows = transfers.map { ["转群", formatter.string(from: $0.occurredAt), "圈舍变更", $0.note] }
+        let removalRows = removals.map { [$0.kind.displayName, formatter.string(from: $0.occurredAt), $0.reason, $0.note] }
+        let noteRows = notes.map { ["备注", formatter.string(from: $0.occurredAt), $0.text, ""] }
+        let purposes = (detail?.purposeTimeline ?? []).filter { $0.sheepID == sheep.id }
+        let purposeRows = purposes.map { ["用途变更", formatter.string(from: $0.occurredAt), $0.transitionText, $0.reason] }
+        var timeline = weightRows
+        for rows in [healthRows, reproductionRows, transferRows, removalRows, noteRows, purposeRows] {
+            timeline.append(contentsOf: rows)
+        }
+        timeline.sort {
+            if $0[1] != $1[1] { return $0[1] < $1[1] }
+            return $0.lexicographicallyPrecedes($1)
+        }
         let timelineTable = [["时间线类型", "发生时间", "内容", "备注"]] + timeline
 
         let parentIDs = [sheep.damID, sheep.sireID].compactMap { $0 }
@@ -178,13 +220,18 @@ enum FarmDataInterchange {
             [child.earTag, child.sex.displayName, child.birthAt.map(formatter.string(from:)) ?? "", (child.damID == sheep.id ? child.damProvenance : child.sireProvenance)?.displayName ?? "历史资料", child.semenDonorNameSnapshot ?? ""]
         }
         let gains = [["开始日期", "结束日期", "开始体重kg", "结束体重kg", "天数", "日增重kg/天", "开始来源", "结束来源"]] + (detail?.weightGainIntervals ?? []).map { [formatter.string(from: $0.startDate), formatter.string(from: $0.endDate), $0.startKilogramsText, $0.endKilogramsText, String($0.intervalDays), String(format: "%.3f", $0.kilogramsPerDay), $0.startSource.displayName, $0.endSource.displayName] }
+        let facts = SingleSheepArchiveFacts.sheets(
+            sheep: sheep, formatter: formatter, weights: weightFacts, health: health,
+            transfers: transfers, reproduction: reproduction, weanings: weanings,
+            removals: removals, notes: notes, purposes: purposes, pens: pens
+        )
         return try XLSXCodec.encode(sheets: [
             XLSXSheet(name: "体重增重区间", rows: gains),
             XLSXSheet(name: "单羊档案", rows: profileTable),
             XLSXSheet(name: "系谱关系", rows: pedigreeTable),
             XLSXSheet(name: "直接后代", rows: childTable),
             XLSXSheet(name: "时间线", rows: timelineTable),
-        ])
+        ] + facts)
     }
 
     private static func exportTable(farmID: UUID, sheep: [SheepRecord], pens: [PenRecord]) -> [[String]] {

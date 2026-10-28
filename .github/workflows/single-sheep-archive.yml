@@ -1,0 +1,94 @@
+name: Single sheep XLSX integrity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/**']
+    paths:
+      - 'eSheepNext/Services/FarmDataInterchange.swift'
+      - 'eSheepNext/Services/SingleSheepArchiveFacts.swift'
+      - 'eSheepNext/Services/SheepDetailSnapshotActor.swift'
+      - 'eSheepNext/Models/FarmCapabilities.swift'
+      - 'eSheepNextTests/SingleSheepArchiveTests.swift'
+      - 'tools/check_single_sheep_archive.py'
+      - '.github/workflows/single-sheep-archive.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  archive-content:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Select stable iPhone simulator
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          python3 - <<'PY'
+          import json, os, subprocess
+          sdk = tuple(map(int, subprocess.check_output(
+              ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'], text=True
+          ).strip().split('.')))
+          devices = json.loads(subprocess.check_output(
+              ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'], text=True
+          ))['devices']
+          candidates = [
+              (tuple(map(int, runtime.rsplit('iOS-', 1)[1].split('-'))), device)
+              for runtime, values in devices.items() if 'iOS-' in runtime
+              if tuple(map(int, runtime.rsplit('iOS-', 1)[1].split('-'))) <= sdk
+              for device in values
+              if device.get('isAvailable') and device['name'] == 'iPhone 17 Pro'
+          ]
+          if not candidates:
+              raise SystemExit('No approved stable iPhone simulator')
+          _, device = max(candidates, key=lambda item: item[0])
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f"IOS_SIMULATOR_ID={device['udid']}\n")
+          PY
+      - name: Generate, save and reopen synthetic single-sheep workbooks
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project eSheepNext.xcodeproj -scheme eSheepNext -configuration Debug \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID,arch=arm64" \
+            -derivedDataPath "$RUNNER_TEMP/archive-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/single-sheep-archive.xcresult" \
+            -only-testing:eSheepNextTests/SingleSheepArchiveTests \
+            -only-testing:eSheepNextTests/FarmDataInterchangeTests \
+            -only-testing:eSheepNextTests/SheepDetailSnapshotActorTests \
+            -only-testing:eSheepNextTests/SettingsVisibilityPolicyTests \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 180 \
+            -maximum-test-execution-time-allowance 180 \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES SWIFT_ENABLE_BATCH_MODE=NO \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -solver-expression-time-threshold=30' \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/single-sheep-archive.log"
+      - name: Extract actual XLSX attachments
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/single-sheep-archive.xcresult" ]; then
+            xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/single-sheep-archive.xcresult"
+            xcrun xcresulttool export attachments \
+              --path "$RUNNER_TEMP/single-sheep-archive.xcresult" \
+              --output-path "$RUNNER_TEMP/archive-attachments"
+          fi
+      - name: Independently parse OOXML with Python
+        run: python3 tools/check_single_sheep_archive.py "$RUNNER_TEMP/archive-attachments"
+      - name: Preserve synthetic workbooks and test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: single-sheep-archive-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/single-sheep-archive.log
+            ${{ runner.temp }}/single-sheep-archive.xcresult
+            ${{ runner.temp }}/archive-attachments
