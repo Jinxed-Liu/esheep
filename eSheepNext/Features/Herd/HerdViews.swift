@@ -46,9 +46,6 @@ struct HerdManagementView: View {
     }
 
     var body: some View {
-#if DEBUG
-        let _ = HomeNavigationDiagnostics.logChanges(of: Self.self)
-#endif
         let assignments = Dictionary(uniqueKeysWithValues: labelAssignments.filter { $0.farmID == farm.id }.map { ($0.sheepID, $0) })
         let labels = labelCatalog.filter { $0.farmID == farm.id }.map(\.value)
         let displayedSheep = filteredSheep.filter { SheepLabelRules.matches(ids: assignments[$0.id]?.labelIDs ?? [], selected: selectedLabelIDs, all: matchAllLabels, unlabelled: unlabelledOnly) }

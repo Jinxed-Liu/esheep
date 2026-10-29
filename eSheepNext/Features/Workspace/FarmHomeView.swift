@@ -109,9 +109,6 @@ struct FarmHomeView: View {
         "\(farm.id.uuidString.lowercased()):\(operationalAlertRefreshRevision)"
     }
     var body: some View {
-#if DEBUG
-        let _ = HomeNavigationDiagnostics.logChanges(of: Self.self)
-#endif
         ScrollView {
             AdaptiveCardStack(spacing: 18) {
                 hero
@@ -556,21 +553,3 @@ struct StatusRow: View {
         .background(.background, in: .rect(cornerRadius: 16))
     }
 }
-
-#if DEBUG
-/// Bounded diagnostics for the isolated home navigation fixture only.
-@MainActor
-enum HomeNavigationDiagnostics {
-    private static var counts: [String: Int] = [:]
-
-    static func logChanges<V: View>(of type: V.Type) {
-        guard ProcessInfo.processInfo.arguments.contains("--design-workspace") else { return }
-        let key = String(describing: type)
-        guard counts[key, default: 0] < 40 else { return }
-        counts[key, default: 0] += 1
-        if #available(iOS 17.1, *) {
-            type._logChanges()
-        }
-    }
-}
-#endif
