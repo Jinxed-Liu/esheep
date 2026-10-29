@@ -110,7 +110,7 @@ struct FarmHomeView: View {
     }
     var body: some View {
         ScrollView {
-            AdaptiveCardStack(spacing: 18) {
+            homeCardStack {
                 hero
                 metrics
                 if let homeLoadFailure {
@@ -142,11 +142,7 @@ struct FarmHomeView: View {
             FarmOperationalAlertCenterView(account: account, farm: farm)
         }
         .onChange(of: selectedMetric) { _, destination in
-            // On iOS 17 the native destination already controls the tab bar.
-            // Do not invalidate the parent TabView during its navigation push.
-            if #available(iOS 18, *) {
-                isMetricDetailPresented = destination != nil
-            }
+            isMetricDetailPresented = destination != nil
         }
         .onDisappear {
             if selectedMetric == nil {
@@ -177,6 +173,17 @@ struct FarmHomeView: View {
             guard requestID != nil else { return }
             session.pendingOperationalAlertsRequestID = nil
             isOperationalAlertCenterPresented = true
+        }
+    }
+
+    @ViewBuilder
+    private func homeCardStack<Content: View>(@ViewBuilder content: @escaping () -> Content) -> some View {
+        if #available(iOS 18, *) {
+            AdaptiveCardStack(spacing: 18, content: content)
+        } else {
+            // Preserve the pre-search native home layout on iOS 17 while
+            // retaining the adaptive columns and fold handling on newer iOS.
+            VStack(alignment: .leading, spacing: 18, content: content)
         }
     }
 
