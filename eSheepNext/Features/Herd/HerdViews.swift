@@ -9,6 +9,7 @@ struct HerdManagementView: View {
 
     let account: AccountProfile
     let farm: FarmRecord
+    var title: LocalizedStringKey = "羊只"
 
     @Query private var labelCatalog: [SheepLabelRecord]
     @Query private var labelAssignments: [SheepLabelAssignmentRecord]
@@ -46,6 +47,9 @@ struct HerdManagementView: View {
     }
 
     var body: some View {
+#if DEBUG
+        let _ = HomeNavigationDiagnostics.logChanges(of: Self.self)
+#endif
         let assignments = Dictionary(uniqueKeysWithValues: labelAssignments.filter { $0.farmID == farm.id }.map { ($0.sheepID, $0) })
         let labels = labelCatalog.filter { $0.farmID == farm.id }.map(\.value)
         let displayedSheep = filteredSheep.filter { SheepLabelRules.matches(ids: assignments[$0.id]?.labelIDs ?? [], selected: selectedLabelIDs, all: matchAllLabels, unlabelled: unlabelledOnly) }
@@ -115,7 +119,7 @@ struct HerdManagementView: View {
                 }
             }
         }
-        .navigationTitle("羊只")
+        .navigationTitle(title)
         .sheet(isPresented: $isEditingLabels) { NavigationStack { SheepLabelsEditor(account: account, farm: farm, sheepIDs: selection) } }
         .onChange(of: selectedLabelIDs) { selection.removeAll(); visibleLimit = 100 }
         .onChange(of: matchAllLabels) { selection.removeAll(); visibleLimit = 100 }

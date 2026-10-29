@@ -109,6 +109,9 @@ struct FarmHomeView: View {
         "\(farm.id.uuidString.lowercased()):\(operationalAlertRefreshRevision)"
     }
     var body: some View {
+#if DEBUG
+        let _ = HomeNavigationDiagnostics.logChanges(of: Self.self)
+#endif
         ScrollView {
             AdaptiveCardStack(spacing: 18) {
                 hero
@@ -263,42 +266,22 @@ struct FarmHomeView: View {
     }
 
     private func metricButton(_ destination: HomeMetricDestination, value: Int) -> some View {
-        metricLink(destination, value: value)
-            .buttonStyle(MotionSurfaceButtonStyle())
-            .frame(maxWidth: .infinity)
-            .accessibilityLabel(homeLoadedAt == nil ? "\(destination.title)，尚未读取" : "\(destination.title)，\(value)")
-            .accessibilityHint("打开完整页面")
-    }
-
-    @ViewBuilder
-    private func metricLink(_ destination: HomeMetricDestination, value: Int) -> some View {
-        if #available(iOS 18, *) {
-            Button {
-                selectedMetric = destination
-            } label: {
-                metricLabel(destination, value: value)
-            }
-        } else {
-            // iOS 17's item-driven presentation stalls while installing the
-            // queried herd destination. Let NavigationLink own the push/pop.
-            NavigationLink {
-                metricDestination(destination)
-                    .compatibilityToolbarVisibility(.hidden, for: .tabBar)
-            } label: {
-                metricLabel(destination, value: value)
-            }
+        Button {
+            selectedMetric = destination
+        } label: {
+            HomeMetric(title: destination.title, value: homeLoadedAt == nil ? "—" : "\(value)", symbol: destination.symbol)
+                .contentShape(.rect(cornerRadius: 20))
+                .motionTransitionSource(
+                    id: MotionTransitionID(destination.id),
+                    in: metricTransition,
+                    spec: metricTransitionSpec,
+                    background: AppTheme.pageBackground
+                )
         }
-    }
-
-    private func metricLabel(_ destination: HomeMetricDestination, value: Int) -> some View {
-        HomeMetric(title: destination.title, value: homeLoadedAt == nil ? "—" : "\(value)", symbol: destination.symbol)
-            .contentShape(.rect(cornerRadius: 20))
-            .motionTransitionSource(
-                id: MotionTransitionID(destination.id),
-                in: metricTransition,
-                spec: metricTransitionSpec,
-                background: AppTheme.pageBackground
-            )
+        .buttonStyle(MotionSurfaceButtonStyle())
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel(homeLoadedAt == nil ? "\(destination.title)，尚未读取" : "\(destination.title)，\(value)")
+        .accessibilityHint("打开完整页面")
     }
 
     private var metricTransitionSpec: MotionTransitionSpec {
@@ -312,8 +295,7 @@ struct FarmHomeView: View {
     private func metricDestination(_ destination: HomeMetricDestination) -> some View {
         switch destination {
         case .sheep:
-            HerdManagementView(account: account, farm: farm)
-                .navigationTitle("在场羊只")
+            HerdManagementView(account: account, farm: farm, title: "在场羊只")
         case .pens:
             PenManagementView(account: account, farm: farm, initialScope: .occupied)
         case .feeding:
@@ -573,3 +555,21 @@ struct StatusRow: View {
         .background(.background, in: .rect(cornerRadius: 16))
     }
 }
+
+#if DEBUG
+/// Bounded diagnostics for the isolated home navigation fixture only.
+@MainActor
+enum HomeNavigationDiagnostics {
+    private static var counts: [String: Int] = [:]
+
+    static func logChanges<V: View>(of type: V.Type) {
+        guard ProcessInfo.processInfo.arguments.contains("--design-workspace") else { return }
+        let key = String(describing: type)
+        guard counts[key, default: 0] < 40 else { return }
+        counts[key, default: 0] += 1
+        if #available(iOS 17.1, *) {
+            type._logChanges()
+        }
+    }
+}
+#endif
