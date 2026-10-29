@@ -14,6 +14,8 @@ on:
           - postmerge-ui
           - template-pen
           - composer-pen
+          - search-navigation
+          - search-normalization
 
 run-name: iOS compatibility ${{ inputs.scope || 'composer-pen' }} (${{ github.ref_name }})
 
@@ -29,15 +31,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runtime: '17'
-            host: macos-15
-            xcode: Xcode_26.3
-            scheme: eSheepNextUI
-          - runtime: '26'
-            host: macos-26
-            xcode: Xcode_26.6
-            scheme: eSheepNextUI
+        # Newer-system search acceptance is already recorded. This scope fills
+        # only the iOS 17 gap; existing scopes keep their two-runtime matrix.
+        include: ${{ fromJSON(startsWith(inputs.scope, 'search-') && '[{"runtime":"17","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"}]' || '[{"runtime":"17","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"},{"runtime":"26","host":"macos-26","xcode":"Xcode_26.6","scheme":"eSheepNextUI"}]') }}
     runs-on: ${{ matrix.host }}
     timeout-minutes: 45
     env:
@@ -61,7 +57,8 @@ jobs:
                     'fullAcceptance': scope == 'full',
                     'unitAndPerformanceRequested': scope == 'full',
                     'expectedUICases': {'full': 7, 'avatar-lifecycle': 2, 'lifecycle-stability': 3,
-                                        'postmerge-ui': 10, 'template-pen': 3, 'composer-pen': 2}[scope]}
+                                        'postmerge-ui': 10, 'template-pen': 3, 'composer-pen': 2,
+                                        'search-navigation': 9, 'search-normalization': 1}[scope]}
           (Path(os.environ['RUNNER_TEMP']) / 'compatibility-validation.json').write_text(json.dumps(report, indent=2))
           print(json.dumps(report))
           PYSCOPE
@@ -78,6 +75,7 @@ jobs:
           fi
           python3 - <<'PY'
           import json, os, subprocess, sys
+          from pathlib import Path
           sys.path.insert(0, 'tools')
           import verify_ios_compatibility as gate
           inventory = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', '--json'], text=True))
@@ -95,6 +93,13 @@ jobs:
                   'com.apple.CoreSimulator.SimDeviceType.' + model, runtime['identifier']], text=True).strip()
           with open(os.environ['GITHUB_ENV'], 'a') as output:
               output.write('IOS_SIMULATOR_ID=' + udid + '\n')
+          if os.environ['COMPATIBILITY_SCOPE'].startswith('search-'):
+              evidence = {'head': os.environ['GITHUB_SHA'], 'deviceKind': 'simulator',
+                          'deviceType': model, 'udid': udid, 'runtime': runtime,
+                          'sdkVersion': '.'.join(map(str, sdk)),
+                          'xcode': subprocess.check_output(['xcodebuild', '-version'], text=True).strip(),
+                          'testPlan': 'Legacy17', 'productionDataUsed': False}
+              (Path(os.environ['RUNNER_TEMP']) / 'search-runtime-selection.json').write_text(json.dumps(evidence, indent=2))
           print('Testing', model, 'iOS', runtime['version'], udid)
           PY
       - name: Build the actual test target
@@ -241,6 +246,35 @@ jobs:
               -only-testing:eSheepNextUITests/PenManagementUITests/testManagementEntryCreateEditRetireReactivateAndSafeDelete
             )
           fi
+          if [ "$COMPATIBILITY_SCOPE" = search-navigation ]; then
+            gesture_diagnostic_filters=(
+              -only-testing:eSheepNextUITests/FarmSearchUITests/testCategoryBarUsesScreenWidthAndLastResultClearsKeyboard
+              -only-testing:eSheepNextUITests/FarmSearchUITests/testDiscoveryOmitsExplanationAndLastSuggestionClearsKeyboard
+              -only-testing:eSheepNextUITests/FarmSearchUITests/testEarTagSearchOpensSheepAndReproductionEventAndRetainsQuery
+              -only-testing:eSheepNextUITests/FarmSearchUITests/testPenSearchShowsOccupancyAndOpensPenDetail
+              -only-testing:eSheepNextUITests/FarmSearchUITests/testTransferEventDetailAndEventFilterSheet
+              -only-testing:eSheepNextUITests/FarmSearchUITests/testLegacyEarTagSearchRetainsCategoryAndEventFiltersAfterDetails
+              -only-testing:eSheepNextUITests/FarmSearchUITests/testEquivalentNormalizedQueryRetainsSettledResults
+              -only-testing:eSheepNextUITests/ReproductionNavigationUITests/testHomeHerdProfileHistoryReturnsWithoutDuplicateDetails
+              -only-testing:eSheepNextUITests/ReproductionNavigationUITests/testSearchProfileHistoryReturnsWithoutDuplicateDetails
+            )
+          fi
+          if [ "$COMPATIBILITY_SCOPE" = search-normalization ]; then
+            gesture_diagnostic_filters=(
+              -only-testing:eSheepNextUITests/FarmSearchUITests/testEquivalentNormalizedQueryRetainsSettledResults
+            )
+          fi
+          if [[ "$COMPATIBILITY_SCOPE" = search-* ]]; then
+            python3 - "${gesture_diagnostic_filters[@]}" <<'PYSELECTION'
+          import json, os, sys
+          from pathlib import Path
+          selections = [value.removeprefix('-only-testing:') for value in sys.argv[1:]]
+          expected = {'search-navigation': 9, 'search-normalization': 1}[os.environ['COMPATIBILITY_SCOPE']]
+          if len(selections) != expected or len(set(selections)) != expected:
+              raise SystemExit('Unexpected number of distinct UI cases for the focused search scope.')
+          (Path(os.environ['RUNNER_TEMP']) / 'search-test-selection.json').write_text(json.dumps(selections, indent=2))
+          PYSELECTION
+          fi
           gesture_maximum_seconds=240
           if [ "$COMPATIBILITY_SCOPE" = postmerge-ui ] || [ "$COMPATIBILITY_SCOPE" = template-pen ]; then
             # Honor the existing poster cases' explicit 480/600-second budgets,
@@ -341,6 +375,12 @@ jobs:
           elif scope == 'composer-pen':
               required = ('native-interactions',)
               expected_ui_counts = {'native-interactions': 2}
+          elif scope == 'search-navigation':
+              required = ('native-interactions',)
+              expected_ui_counts = {'native-interactions': 9}
+          elif scope == 'search-normalization':
+              required = ('native-interactions',)
+              expected_ui_counts = {'native-interactions': 1}
           else:
               raise gate.GateError('Unknown validation scope: ' + scope)
           for result in required:
@@ -392,7 +432,15 @@ jobs:
             ${{ runner.temp }}/*-skipped-tests.json
             ${{ runner.temp }}/runtime-diagnostics-policy.json
             ${{ runner.temp }}/compatibility-validation.json
+            ${{ runner.temp }}/search-*-selection.json
             ${{ runner.temp }}/gesture-screenshots
+      - name: Preserve the original search result bundle
+        if: ${{ always() && startsWith(inputs.scope, 'search-') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.scope }}-xcresult-iOS-${{ matrix.runtime }}-${{ github.sha }}
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/native-interactions.xcresult
       - name: Preserve the actual interaction recordings
         if: always()
         uses: actions/upload-artifact@v6
@@ -400,3 +448,4 @@ jobs:
           name: compatibility-gesture-recordings-iOS-${{ matrix.runtime }}-${{ matrix.scheme }}-${{ github.sha }}
           if-no-files-found: ignore
           path: ${{ runner.temp }}/gesture-recordings
+
