@@ -98,7 +98,7 @@ struct FarmSearchView: View {
             .task(id: request) { await updateResults() }
             .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)
                 .debounce(for: .milliseconds(250), scheduler: RunLoop.main)) { _ in reloadRevision &+= 1 }
-            .onChange(of: query) { _, _ in
+            .onChange(of: normalizedQuery) { _, _ in
                 results = .empty
                 isSearching = !normalizedQuery.isEmpty
                 rowLimit = FarmSearchEngine.defaultLimit
@@ -350,3 +350,4 @@ private struct FarmSearchEventRow: View {
         .accessibilityElement(children: .combine)
     }
 }
+

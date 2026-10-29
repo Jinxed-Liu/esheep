@@ -25,12 +25,16 @@ final class ReproductionNavigationUITests: XCTestCase {
     }
 
     @MainActor
-    private func back(_ app: XCUIApplication) {
-        let button = app.buttons["BackButton"].firstMatch
-        if button.isHittable { button.tap() }
-        else {
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.5))
-                .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)))
+    private func back(_ app: XCUIApplication, to parentTitles: [String]) {
+        let nativeBack = app.navigationBars.buttons.matching(
+            NSPredicate(format: "label IN %@", parentTitles + ["返回", "Back"])).firstMatch
+        if nativeBack.exists && nativeBack.isHittable {
+            nativeBack.tap()
+        } else {
+            let sideBack = app.buttons["BackButton"].firstMatch
+            XCTAssertTrue(sideBack.waitForExistence(timeout: 5))
+            XCTAssertTrue(sideBack.isHittable)
+            sideBack.tap()
         }
     }
 
@@ -49,10 +53,10 @@ final class ReproductionNavigationUITests: XCTestCase {
             reveal(record, in: app)
             record.tap()
             XCTAssertTrue(app.navigationBars["产羔详情"].waitForExistence(timeout: 15))
-            back(app)
+            back(app, to: ["繁殖依据与历史"])
             XCTAssertTrue(history.waitForExistence(timeout: 15))
             XCTAssertTrue(history.isHittable)
-            back(app)
+            back(app, to: ["QA-001"])
             XCTAssertTrue(app.navigationBars["QA-001"].waitForExistence(timeout: 15))
             XCTAssertTrue(app.navigationBars["QA-001"].isHittable)
         }
@@ -69,9 +73,9 @@ final class ReproductionNavigationUITests: XCTestCase {
         XCTAssertTrue(sheep.waitForExistence(timeout: 20))
         sheep.tap()
         exerciseHistory(app)
-        back(app)
+        back(app, to: ["羊只", "在场羊只"])
         XCTAssertTrue(app.navigationBars["羊只"].waitForExistence(timeout: 15), "A single back must return to the herd list")
-        back(app)
+        back(app, to: ["首页", "设计验收 · 本机测试场"])
         XCTAssertTrue(herd.waitForExistence(timeout: 15))
         XCTAssertTrue(herd.isHittable)
     }
@@ -83,9 +87,10 @@ final class ReproductionNavigationUITests: XCTestCase {
         XCTAssertTrue(sheep.waitForExistence(timeout: 60))
         sheep.tap()
         exerciseHistory(app)
-        back(app)
+        back(app, to: ["搜索"])
         XCTAssertTrue(sheep.waitForExistence(timeout: 15), "A single back must return to search results")
         XCTAssertTrue(sheep.isHittable)
         XCTAssertEqual(app.searchFields.firstMatch.value as? String, "QA-001")
     }
 }
+

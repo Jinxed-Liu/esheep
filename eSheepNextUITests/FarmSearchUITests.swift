@@ -28,11 +28,17 @@ final class FarmSearchUITests: XCTestCase {
     }
 
     @MainActor private func back(_ app: XCUIApplication) {
-        let sideBack = app.buttons["BackButton"]
-        if sideBack.exists { sideBack.tap() }
-        else {
-            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.01, dy: 0.5))
-            start.press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)))
+        // iOS 17 exposes the native back action by its parent title. The
+        // baseline hierarchy showed this button while an edge drag did not pop.
+        let nativeBack = app.navigationBars.buttons.matching(
+            NSPredicate(format: "label IN %@", ["搜索", "返回", "Back"])).firstMatch
+        if nativeBack.exists && nativeBack.isHittable {
+            nativeBack.tap()
+        } else {
+            let sideBack = app.buttons["BackButton"].firstMatch
+            XCTAssertTrue(sideBack.waitForExistence(timeout: 5))
+            XCTAssertTrue(sideBack.isHittable)
+            sideBack.tap()
         }
         XCTAssertTrue(app.buttons["farm-search-category-all"].waitForExistence(timeout: 15))
     }
