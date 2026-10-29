@@ -53,6 +53,8 @@ final class FarmSearchUITests: XCTestCase {
         }
         XCTAssertTrue(search.isHittable)
         search.tap()
+        let keyboardContinue = app.buttons["Continue"]
+        if keyboardContinue.exists { keyboardContinue.tap() }
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
         return search
     }
@@ -63,7 +65,8 @@ final class FarmSearchUITests: XCTestCase {
         let results = app.descendants(matching: .any)["farm-search-results"].firstMatch
         XCTAssertTrue(results.exists)
         let content = app.frame.intersection(results.frame)
-        var top = content.minY
+        let navigation = app.navigationBars.firstMatch
+        var top = max(content.minY, navigation.exists ? navigation.frame.maxY : content.minY)
         var bottom = min(content.maxY, keyboard.frame.minY)
         // iOS 17 places .searchable at the top; newer search tabs can float it
         // above the keyboard. In either layout, keep the complete row clear.
@@ -104,8 +107,15 @@ final class FarmSearchUITests: XCTestCase {
         XCTAssertTrue(app.buttons["farm-search-pen-青年母羊舍"].waitForExistence(timeout: 30))
         let bar = app.scrollViews["farm-search-category-bar"]
         XCTAssertTrue(bar.exists)
-        XCTAssertLessThanOrEqual(bar.frame.minX, 1)
-        XCTAssertGreaterThanOrEqual(bar.frame.maxX, app.frame.maxX - 1)
+        if #available(iOS 26, *) {
+            XCTAssertLessThanOrEqual(bar.frame.minX, 1)
+            XCTAssertGreaterThanOrEqual(bar.frame.maxX, app.frame.maxX - 1)
+        } else {
+            // iOS 17 keeps the native insetGrouped section margins. The bar
+            // must fit the screen, and its final category must remain reachable.
+            XCTAssertGreaterThanOrEqual(bar.frame.minX, app.frame.minX)
+            XCTAssertLessThanOrEqual(bar.frame.maxX, app.frame.maxX)
+        }
         let search = app.searchFields.firstMatch
         let navigation = app.navigationBars.firstMatch
         var topChrome = navigation.exists ? navigation.frame.maxY : app.frame.minY
