@@ -110,7 +110,7 @@ struct FarmHomeView: View {
     }
     var body: some View {
         ScrollView {
-            homeCardStack {
+            AdaptiveCardStack(spacing: 18) {
                 hero
                 metrics
                 if let homeLoadFailure {
@@ -173,17 +173,6 @@ struct FarmHomeView: View {
             guard requestID != nil else { return }
             session.pendingOperationalAlertsRequestID = nil
             isOperationalAlertCenterPresented = true
-        }
-    }
-
-    @ViewBuilder
-    private func homeCardStack<Content: View>(@ViewBuilder content: @escaping () -> Content) -> some View {
-        if #available(iOS 18, *) {
-            AdaptiveCardStack(spacing: 18, content: content)
-        } else {
-            // Preserve the pre-search native home layout on iOS 17 while
-            // retaining the adaptive columns and fold handling on newer iOS.
-            VStack(alignment: .leading, spacing: 18, content: content)
         }
     }
 
@@ -303,12 +292,21 @@ struct FarmHomeView: View {
     private func metricDestination(_ destination: HomeMetricDestination) -> some View {
         switch destination {
         case .sheep:
-            HerdManagementView(account: account, farm: farm)
+            homeHerdDestination
                 .navigationTitle("在场羊只")
         case .pens:
             PenManagementView(account: account, farm: farm, initialScope: .occupied)
         case .feeding:
             TodayFeedDetailView(farm: farm)
+        }
+    }
+
+    @ViewBuilder
+    private var homeHerdDestination: some View {
+        if #available(iOS 18, *) {
+            HerdManagementView(account: account, farm: farm)
+        } else {
+            HomeHerdDestination(account: account, farm: farm).equatable()
         }
     }
 
@@ -392,6 +390,31 @@ struct FarmHomeView: View {
         } catch {
             operationalAlertState = .failed(error.localizedDescription)
         }
+    }
+}
+
+/// Compare stable navigation inputs rather than rebuilding the query-owning
+/// child when iOS 17 resolves the bound push. The child's own SwiftData and
+/// state observations remain active, as in ReproductionEvidenceView.
+private struct HomeHerdDestination: View, Equatable {
+    let account: AccountProfile
+    let farm: FarmRecord
+    private let accountIdentity: ObjectIdentifier
+    private let farmIdentity: ObjectIdentifier
+
+    init(account: AccountProfile, farm: FarmRecord) {
+        self.account = account
+        self.farm = farm
+        accountIdentity = ObjectIdentifier(account)
+        farmIdentity = ObjectIdentifier(farm)
+    }
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.accountIdentity == rhs.accountIdentity && lhs.farmIdentity == rhs.farmIdentity
+    }
+
+    var body: some View {
+        HerdManagementView(account: account, farm: farm)
     }
 }
 
