@@ -17,6 +17,7 @@ on:
           - search-navigation
           - search-normalization
           - search-recovery
+          - search-home-navigation
 
 run-name: iOS compatibility ${{ inputs.scope || 'composer-pen' }} (${{ github.ref_name }})
 
@@ -60,7 +61,7 @@ jobs:
                     'expectedUICases': {'full': 7, 'avatar-lifecycle': 2, 'lifecycle-stability': 3,
                                         'postmerge-ui': 10, 'template-pen': 3, 'composer-pen': 2,
                                         'search-navigation': 9, 'search-normalization': 1,
-                                        'search-recovery': 7}[scope]}
+                                        'search-recovery': 7, 'search-home-navigation': 1}[scope]}
           (Path(os.environ['RUNNER_TEMP']) / 'compatibility-validation.json').write_text(json.dumps(report, indent=2))
           print(json.dumps(report))
           PYSCOPE
@@ -279,13 +280,18 @@ jobs:
               -only-testing:eSheepNextUITests/ReproductionNavigationUITests/testSearchProfileHistoryReturnsWithoutDuplicateDetails
             )
           fi
+          if [ "$COMPATIBILITY_SCOPE" = search-home-navigation ]; then
+            gesture_diagnostic_filters=(
+              -only-testing:eSheepNextUITests/ReproductionNavigationUITests/testHomeHerdProfileHistoryReturnsWithoutDuplicateDetails
+            )
+          fi
           if [[ "$COMPATIBILITY_SCOPE" = search-* ]]; then
             python3 - "${gesture_diagnostic_filters[@]}" <<'PYSELECTION'
           import json, os, sys
           from pathlib import Path
           selections = [value.removeprefix('-only-testing:') for value in sys.argv[1:]]
           expected = {'search-navigation': 9, 'search-normalization': 1,
-                      'search-recovery': 7}[os.environ['COMPATIBILITY_SCOPE']]
+                      'search-recovery': 7, 'search-home-navigation': 1}[os.environ['COMPATIBILITY_SCOPE']]
           if len(selections) != expected or len(set(selections)) != expected:
               raise SystemExit('Unexpected number of distinct UI cases for the focused search scope.')
           (Path(os.environ['RUNNER_TEMP']) / 'search-test-selection.json').write_text(json.dumps(selections, indent=2))
@@ -432,6 +438,9 @@ jobs:
           elif scope == 'search-recovery':
               required = ('native-interactions',)
               expected_ui_counts = {'native-interactions': 7}
+          elif scope == 'search-home-navigation':
+              required = ('native-interactions',)
+              expected_ui_counts = {'native-interactions': 1}
           else:
               raise gate.GateError('Unknown validation scope: ' + scope)
           for result in required:

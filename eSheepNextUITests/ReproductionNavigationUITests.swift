@@ -66,15 +66,20 @@ final class ReproductionNavigationUITests: XCTestCase {
     func testHomeHerdProfileHistoryReturnsWithoutDuplicateDetails() {
         let app = launch(search: false)
         let herd = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "在场羊只")).firstMatch
+        // The home destination supplies 在场羊只 while the list supplies 羊只.
+        // Accept either native title, but still require the actual sheep row.
+        let herdNavigation = app.navigationBars.matching(
+            NSPredicate(format: "identifier IN %@", ["羊只", "在场羊只"])).firstMatch
         XCTAssertTrue(herd.waitForExistence(timeout: 60))
         herd.tap()
-        XCTAssertTrue(app.navigationBars["羊只"].waitForExistence(timeout: 20))
+        XCTAssertTrue(herdNavigation.waitForExistence(timeout: 20))
         let sheep = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "QA-001")).firstMatch
         XCTAssertTrue(sheep.waitForExistence(timeout: 20))
         sheep.tap()
         exerciseHistory(app)
         back(app, to: ["羊只", "在场羊只"])
-        XCTAssertTrue(app.navigationBars["羊只"].waitForExistence(timeout: 15), "A single back must return to the herd list")
+        XCTAssertTrue(herdNavigation.waitForExistence(timeout: 15), "A single back must return to the herd list")
+        XCTAssertTrue(sheep.isHittable)
         back(app, to: ["首页", "设计验收 · 本机测试场"])
         XCTAssertTrue(herd.waitForExistence(timeout: 15))
         XCTAssertTrue(herd.isHittable)

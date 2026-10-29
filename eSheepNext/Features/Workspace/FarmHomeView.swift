@@ -142,7 +142,11 @@ struct FarmHomeView: View {
             FarmOperationalAlertCenterView(account: account, farm: farm)
         }
         .onChange(of: selectedMetric) { _, destination in
-            isMetricDetailPresented = destination != nil
+            // On iOS 17 the native destination already controls the tab bar.
+            // Do not invalidate the parent TabView during its navigation push.
+            if #available(iOS 18, *) {
+                isMetricDetailPresented = destination != nil
+            }
         }
         .onDisappear {
             if selectedMetric == nil {
@@ -553,3 +557,4 @@ struct StatusRow: View {
         .background(.background, in: .rect(cornerRadius: 16))
     }
 }
+
