@@ -129,8 +129,10 @@ struct FarmHomeView: View {
         }
         .scrollIndicators(.hidden)
         .background(AppTheme.pageBackground)
-        .navigationDestination(item: $selectedMetric) { destination in
-            metricDestination(destination)
+        .navigationDestination(item: $selectedMetric) { [account, farm, metricTransition, metricTransitionSpec] destination in
+            // Do not capture FarmHomeView's Query/Environment/State wrappers in
+            // this closure: iOS 17 can repeatedly invalidate the destination.
+            Self.metricDestination(destination, account: account, farm: farm)
                 .motionTransitionDestination(
                     id: MotionTransitionID(destination.id),
                     in: metricTransition,
@@ -289,7 +291,11 @@ struct FarmHomeView: View {
     }
 
     @ViewBuilder
-    private func metricDestination(_ destination: HomeMetricDestination) -> some View {
+    private static func metricDestination(
+        _ destination: HomeMetricDestination,
+        account: AccountProfile,
+        farm: FarmRecord
+    ) -> some View {
         switch destination {
         case .sheep:
             HerdManagementView(account: account, farm: farm)
