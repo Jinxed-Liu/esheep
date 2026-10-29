@@ -129,10 +129,8 @@ struct FarmHomeView: View {
         }
         .scrollIndicators(.hidden)
         .background(AppTheme.pageBackground)
-        .navigationDestination(item: $selectedMetric) { [account, farm, metricTransition, metricTransitionSpec] destination in
-            // Do not capture FarmHomeView's Query/Environment/State wrappers in
-            // this closure: iOS 17 can repeatedly invalidate the destination.
-            Self.metricDestination(destination, account: account, farm: farm)
+        .navigationDestination(item: $selectedMetric) { destination in
+            metricDestination(destination)
                 .motionTransitionDestination(
                     id: MotionTransitionID(destination.id),
                     in: metricTransition,
@@ -265,22 +263,42 @@ struct FarmHomeView: View {
     }
 
     private func metricButton(_ destination: HomeMetricDestination, value: Int) -> some View {
-        Button {
-            selectedMetric = destination
-        } label: {
-            HomeMetric(title: destination.title, value: homeLoadedAt == nil ? "—" : "\(value)", symbol: destination.symbol)
-                .contentShape(.rect(cornerRadius: 20))
-                .motionTransitionSource(
-                    id: MotionTransitionID(destination.id),
-                    in: metricTransition,
-                    spec: metricTransitionSpec,
-                    background: AppTheme.pageBackground
-                )
+        metricLink(destination, value: value)
+            .buttonStyle(MotionSurfaceButtonStyle())
+            .frame(maxWidth: .infinity)
+            .accessibilityLabel(homeLoadedAt == nil ? "\(destination.title)，尚未读取" : "\(destination.title)，\(value)")
+            .accessibilityHint("打开完整页面")
+    }
+
+    @ViewBuilder
+    private func metricLink(_ destination: HomeMetricDestination, value: Int) -> some View {
+        if #available(iOS 18, *) {
+            Button {
+                selectedMetric = destination
+            } label: {
+                metricLabel(destination, value: value)
+            }
+        } else {
+            // iOS 17's item-driven presentation stalls while installing the
+            // queried herd destination. Let NavigationLink own the push/pop.
+            NavigationLink {
+                metricDestination(destination)
+                    .compatibilityToolbarVisibility(.hidden, for: .tabBar)
+            } label: {
+                metricLabel(destination, value: value)
+            }
         }
-        .buttonStyle(MotionSurfaceButtonStyle())
-        .frame(maxWidth: .infinity)
-        .accessibilityLabel(homeLoadedAt == nil ? "\(destination.title)，尚未读取" : "\(destination.title)，\(value)")
-        .accessibilityHint("打开完整页面")
+    }
+
+    private func metricLabel(_ destination: HomeMetricDestination, value: Int) -> some View {
+        HomeMetric(title: destination.title, value: homeLoadedAt == nil ? "—" : "\(value)", symbol: destination.symbol)
+            .contentShape(.rect(cornerRadius: 20))
+            .motionTransitionSource(
+                id: MotionTransitionID(destination.id),
+                in: metricTransition,
+                spec: metricTransitionSpec,
+                background: AppTheme.pageBackground
+            )
     }
 
     private var metricTransitionSpec: MotionTransitionSpec {
@@ -291,11 +309,7 @@ struct FarmHomeView: View {
     }
 
     @ViewBuilder
-    private static func metricDestination(
-        _ destination: HomeMetricDestination,
-        account: AccountProfile,
-        farm: FarmRecord
-    ) -> some View {
+    private func metricDestination(_ destination: HomeMetricDestination) -> some View {
         switch destination {
         case .sheep:
             HerdManagementView(account: account, farm: farm)
