@@ -295,7 +295,8 @@ struct FarmHomeView: View {
     private func metricDestination(_ destination: HomeMetricDestination) -> some View {
         switch destination {
         case .sheep:
-            HerdManagementView(account: account, farm: farm, title: "在场羊只")
+            HerdManagementView(account: account, farm: farm)
+                .navigationTitle("在场羊只")
         case .pens:
             PenManagementView(account: account, farm: farm, initialScope: .occupied)
         case .feeding:

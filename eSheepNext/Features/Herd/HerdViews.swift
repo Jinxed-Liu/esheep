@@ -9,7 +9,6 @@ struct HerdManagementView: View {
 
     let account: AccountProfile
     let farm: FarmRecord
-    var title: LocalizedStringKey = "羊只"
 
     @Query private var labelCatalog: [SheepLabelRecord]
     @Query private var labelAssignments: [SheepLabelAssignmentRecord]
@@ -119,7 +118,7 @@ struct HerdManagementView: View {
                 }
             }
         }
-        .navigationTitle(title)
+        .navigationTitle("羊只")
         .sheet(isPresented: $isEditingLabels) { NavigationStack { SheepLabelsEditor(account: account, farm: farm, sheepIDs: selection) } }
         .onChange(of: selectedLabelIDs) { selection.removeAll(); visibleLimit = 100 }
         .onChange(of: matchAllLabels) { selection.removeAll(); visibleLimit = 100 }
