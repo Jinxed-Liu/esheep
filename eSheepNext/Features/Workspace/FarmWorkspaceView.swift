@@ -91,13 +91,7 @@ struct FarmWorkspaceView: View {
 
     private func homeNavigationStack(for farm: FarmRecord) -> some View {
         NavigationStack {
-            FarmHomeView(
-                account: account,
-                farm: farm,
-                isWeatherDetailPresented: $isWeatherDetailPresented,
-                isMetricDetailPresented: $isMetricDetailPresented,
-                sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
-            )
+            homeRoot(for: farm)
             .navigationBarTitleDisplayMode(.inline)
             .modifier(FarmNavigationToolbarModifier(
                 account: account,
@@ -108,6 +102,25 @@ struct FarmWorkspaceView: View {
         }
         .compatibilityToolbarVisibility(isWeatherDetailPresented ? .hidden : .visible, for: .navigationBar)
         .compatibilityToolbarVisibility(isWeatherDetailPresented || isMetricDetailPresented ? .hidden : .visible, for: .tabBar)
+    }
+
+    @ViewBuilder
+    private func homeRoot(for farm: FarmRecord) -> some View {
+        if #available(iOS 18, *) {
+            FarmHomeView(
+                account: account, farm: farm,
+                isWeatherDetailPresented: $isWeatherDetailPresented,
+                isMetricDetailPresented: $isMetricDetailPresented,
+                sharedFarmAdmissionStatus: sharedFarmAdmissionStatus
+            )
+        } else {
+            LegacyFarmHomeEntry(
+                account: account, farm: farm,
+                weatherPresented: $isWeatherDetailPresented,
+                metricPresented: $isMetricDetailPresented,
+                admissionStatus: sharedFarmAdmissionStatus
+            ).equatable()
+        }
     }
 
     private func workbench(for farm: FarmRecord) -> some View {
@@ -420,5 +433,47 @@ private extension View {
         } else {
             self
         }
+    }
+}
+
+/// Prevent parent navigation layout from reinstalling identical home queries on
+/// iOS 17. The child's State, Query, and model observations still update normally.
+private struct LegacyFarmHomeEntry: View, Equatable {
+    let account: AccountProfile
+    let farm: FarmRecord
+    let weatherPresented: Binding<Bool>
+    let metricPresented: Binding<Bool>
+    let admissionStatus: SharedFarmAdmissionStatus?
+    private let accountIdentity: ObjectIdentifier
+    private let farmIdentity: ObjectIdentifier
+    private let farmID: UUID
+    private let weatherValue: Bool
+    private let metricValue: Bool
+
+    init(account: AccountProfile, farm: FarmRecord, weatherPresented: Binding<Bool>,
+         metricPresented: Binding<Bool>, admissionStatus: SharedFarmAdmissionStatus?) {
+        self.account = account
+        self.farm = farm
+        self.weatherPresented = weatherPresented
+        self.metricPresented = metricPresented
+        self.admissionStatus = admissionStatus
+        accountIdentity = ObjectIdentifier(account)
+        farmIdentity = ObjectIdentifier(farm)
+        farmID = farm.id
+        weatherValue = weatherPresented.wrappedValue
+        metricValue = metricPresented.wrappedValue
+    }
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.accountIdentity == rhs.accountIdentity && lhs.farmIdentity == rhs.farmIdentity &&
+            lhs.farmID == rhs.farmID && lhs.admissionStatus == rhs.admissionStatus &&
+            lhs.weatherValue == rhs.weatherValue && lhs.metricValue == rhs.metricValue
+    }
+
+    var body: some View {
+        FarmHomeView(account: account, farm: farm,
+                     isWeatherDetailPresented: weatherPresented,
+                     isMetricDetailPresented: metricPresented,
+                     sharedFarmAdmissionStatus: admissionStatus)
     }
 }

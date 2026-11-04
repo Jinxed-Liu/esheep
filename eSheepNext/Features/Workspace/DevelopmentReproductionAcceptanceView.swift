@@ -55,13 +55,22 @@ enum DevelopmentReproductionAcceptance {
             .sorted { $0.earTag < $1.earTag }
         let pens = try context.fetch(FetchDescriptor<PenRecord>(predicate: #Predicate { $0.farmID == farmID }))
         guard sheep.count == 12, let adultPen = pens.first else { throw FarmCommandError.sourceRecordNotFound }
+        let searchReady = ProcessInfo.processInfo.arguments.contains("--design-search")
+        if searchReady {
+            // Only the UUID-scoped offline search fixture needs a profile old
+            // ear tag; production records and the other fixture routes stay intact.
+            sheep[0].legacyEarTag = "QA-OLD-001"
+        }
         let youngPen = PenRecord(farmID: farmID, name: "青年母羊舍")
         context.insert(youngPen)
         context.insert(PenRecord(farmID: farmID, name: "空舍（繁殖验收）"))
         let days = [0, 30, 31, 60, 180, 181, 210, 211]
         for (index, postpartum) in days.enumerated() {
+            // Keep the search fixture's day-zero record inside today's date
+            // filter in both the simulator's and the farm's time zones.
             let birth = ReproductionRecord(farmID: farmID, eweID: sheep[index].id, kind: .lambing,
-                occurredAt: ago(postpartum), lambCount: 1, parity: index < 4 ? 1 : 2, birthDeadCount: 0,
+                occurredAt: searchReady && index == 0 ? .now : ago(postpartum),
+                lambCount: 1, parity: index < 4 ? 1 : 2, birthDeadCount: 0,
                 note: "隔离繁殖验收样本")
             context.insert(birth)
             context.insert(LambingOffspringRecord(farmID: farmID, lambingRecordID: birth.id, sheepID: nil,
@@ -157,3 +166,4 @@ enum DevelopmentReproductionAcceptance {
     }
 }
 #endif
+
