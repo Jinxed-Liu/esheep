@@ -3,7 +3,7 @@ name: Single sheep XLSX integrity
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'codex/**']
+    branches: [main, 'codex/**', '!codex/ios17-ios18-compatibility']
     paths:
       - 'eSheepNext/Services/FarmDataInterchange.swift'
       - 'eSheepNext/Services/SingleSheepArchiveFacts.swift'
