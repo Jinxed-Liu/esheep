@@ -19,6 +19,7 @@ on:
           - search-recovery
           - search-home-navigation
           - platform-core
+          - avatar-layout
       runtimes:
         description: Runtime coverage; default preserves each scope's existing matrix
         type: choice
@@ -28,6 +29,7 @@ on:
           - ios17
           - ios18
           - ios17-ios18
+          - ios17-ios18-ios26
 
 run-name: iOS compatibility ${{ inputs.scope || 'composer-pen' }} / ${{ inputs.runtimes || 'default' }} (${{ github.ref_name }})
 
@@ -45,7 +47,7 @@ jobs:
       matrix:
         # Explicit older-system coverage must never silently select iOS 26.
         # The default preserves prior search-only and 17/26 scope behavior.
-        include: ${{ fromJSON(inputs.runtimes == 'ios17-ios18' && '[{"runtime":"17","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"},{"runtime":"18","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"}]' || inputs.runtimes == 'ios18' && '[{"runtime":"18","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"}]' || (inputs.runtimes == 'ios17' || startsWith(inputs.scope, 'search-')) && '[{"runtime":"17","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"}]' || '[{"runtime":"17","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"},{"runtime":"26","host":"macos-26","xcode":"Xcode_26.6","scheme":"eSheepNextUI"}]') }}
+        include: ${{ fromJSON(inputs.runtimes == 'ios17-ios18-ios26' && '[{"runtime":"17","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"},{"runtime":"18","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"},{"runtime":"26","host":"macos-26","xcode":"Xcode_26.6","scheme":"eSheepNextUI"}]' || inputs.runtimes == 'ios17-ios18' && '[{"runtime":"17","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"},{"runtime":"18","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"}]' || inputs.runtimes == 'ios18' && '[{"runtime":"18","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"}]' || (inputs.runtimes == 'ios17' || startsWith(inputs.scope, 'search-')) && '[{"runtime":"17","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"}]' || '[{"runtime":"17","host":"macos-15","xcode":"Xcode_26.3","scheme":"eSheepNextUI"},{"runtime":"26","host":"macos-26","xcode":"Xcode_26.6","scheme":"eSheepNextUI"}]') }}
     runs-on: ${{ matrix.host }}
     timeout-minutes: 45
     env:
@@ -72,7 +74,7 @@ jobs:
                                         'postmerge-ui': 10, 'template-pen': 3, 'composer-pen': 2,
                                         'search-navigation': 9, 'search-normalization': 1,
                                         'search-recovery': 7, 'search-home-navigation': 1,
-                                        'platform-core': 6}[scope]}
+                                        'platform-core': 6, 'avatar-layout': 1}[scope]}
           (Path(os.environ['RUNNER_TEMP']) / 'compatibility-validation.json').write_text(json.dumps(report, indent=2))
           print(json.dumps(report))
           PYSCOPE
@@ -308,14 +310,19 @@ jobs:
               -only-testing:eSheepNextUITests/InsightAssistantEntryUITests/testBriefBackgroundSwitchPreservesTheRunningReply
             )
           fi
-          if [[ "$COMPATIBILITY_SCOPE" = search-* ]] || [ "$COMPATIBILITY_SCOPE" = platform-core ]; then
+          if [ "$COMPATIBILITY_SCOPE" = avatar-layout ]; then
+            gesture_diagnostic_filters=(
+              -only-testing:eSheepNextUITests/PlatformCompatibilityUITests/testAvatarPullViewerDismissalRestoresLayoutAndNavigation
+            )
+          fi
+          if [[ "$COMPATIBILITY_SCOPE" = search-* ]] || [ "$COMPATIBILITY_SCOPE" = platform-core ] || [ "$COMPATIBILITY_SCOPE" = avatar-layout ]; then
             python3 - "${gesture_diagnostic_filters[@]}" <<'PYSELECTION'
           import json, os, sys
           from pathlib import Path
           selections = [value.removeprefix('-only-testing:') for value in sys.argv[1:]]
           expected = {'search-navigation': 9, 'search-normalization': 1,
                       'search-recovery': 7, 'search-home-navigation': 1,
-                      'platform-core': 6}[os.environ['COMPATIBILITY_SCOPE']]
+                      'platform-core': 6, 'avatar-layout': 1}[os.environ['COMPATIBILITY_SCOPE']]
           if len(selections) != expected or len(set(selections)) != expected:
               raise SystemExit('Unexpected number of distinct UI cases for the focused search scope.')
           (Path(os.environ['RUNNER_TEMP']) / 'search-test-selection.json').write_text(json.dumps(selections, indent=2))
@@ -468,6 +475,9 @@ jobs:
           elif scope == 'platform-core':
               required = ('native-interactions',)
               expected_ui_counts = {'native-interactions': 6}
+          elif scope == 'avatar-layout':
+              required = ('native-interactions',)
+              expected_ui_counts = {'native-interactions': 1}
           else:
               raise gate.GateError('Unknown validation scope: ' + scope)
           for result in required:
@@ -524,7 +534,7 @@ jobs:
             ${{ runner.temp }}/search-runtime-stall.png
             ${{ runner.temp }}/gesture-screenshots
       - name: Preserve the original search result bundle
-        if: ${{ always() && (startsWith(inputs.scope, 'search-') || inputs.scope == 'platform-core') }}
+        if: ${{ always() && (startsWith(inputs.scope, 'search-') || inputs.scope == 'platform-core' || inputs.scope == 'avatar-layout') }}
         uses: actions/upload-artifact@v6
         with:
           name: ${{ inputs.scope }}-xcresult-iOS-${{ matrix.runtime }}-${{ github.sha }}
