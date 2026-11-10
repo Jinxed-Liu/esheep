@@ -11,7 +11,7 @@ const request=(method='POST')=>new Request(`https://app.test/api/assistant/agent
 test('two running container slots reject a third scope as busy without retries or hiding normal status',async()=>{
  let starts=0;const slots=new Set();let userID='one';
  let membership={provider:'esheep_cloud',initial_sync_ready:true};
- const route=createAgentRouter({verifyAccess:async()=>({userID,membership})});
+ const route=createAgentRouter({verifyAccess:async()=>({userID,membership}),verifyCheckpoint:async()=>true});
  const env={SUPABASE_URL:'https://test.supabase.co',SUPABASE_PUBLISHABLE_KEY:'public',AGENT_RUNTIME_VERIFIED:'true',HARNESS_CONTAINER:{getByName:name=>({fetch:async()=>{starts++;if(!slots.has(name)&&slots.size===2)throw new Error('max_instances limit exceeded');slots.add(name);return new Response('ok');}})}};
  assert.equal((await route(request(),env)).status,200);userID='two';assert.equal((await route(request(),env)).status,200);
  userID='three';const busy=await route(request(),env);assert.equal(busy.status,503);assert.equal((await busy.json()).code,'AGENT_BUSY');assert.equal(starts,3);

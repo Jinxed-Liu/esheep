@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAgentRouter } from "../container/agent-router.mjs";
+import { createAgentRouter, hasAgentCheckpoint } from "../container/agent-router.mjs";
 
 const farm = "00000000-0000-4000-8000-000000000001";
 function request(user = "alice", headers = {}) {
@@ -11,7 +11,7 @@ function request(user = "alice", headers = {}) {
 }
 function fixture() {
   const calls = [];
-  const route = createAgentRouter({ verifyAccess: async ({ request }) => {
+  const route = createAgentRouter({ verifyCheckpoint: async () => true, verifyAccess: async ({ request }) => {
     const userID = request.headers.get("authorization").split(" ")[1];
     if (userID === "denied") throw { status: 403 };
     return { userID, membership: { provider: "esheep_cloud", initial_sync_ready: true } };
@@ -27,6 +27,31 @@ test("Agent gateway rejects missing consent, authorization and unverified deploy
   assert.equal((await route(request("alice", { "x-agent-consent": "" }), env)).status, 403);
   assert.equal((await route(request(), { ...env, AGENT_RUNTIME_VERIFIED: "false" })).status, 503);
   assert.equal(calls.length, 0);
+});
+
+test("V2-ready farms without a matching verified checkpoint are unavailable before container or model use", async () => {
+  const { env, calls } = fixture();
+  let ready = false;
+  const route = createAgentRouter({ verifyAccess: async () => ({ userID: "alice", membership: { provider: "esheep_cloud", initial_sync_ready: true } }), verifyCheckpoint: async () => ready });
+  for (const req of [request(), new Request(`https://app.esheepplus.com/api/assistant/agent/status?farm_id=${farm}`, { headers: { authorization: "Bearer alice" } })]) {
+    const response = await route(req, env); const body = await response.json();
+    assert.equal(response.status, 503); assert.equal(body.configured, false); assert.equal(body.code, "AGENT_FARM_NOT_READY"); assert.equal(body.recovery, "farm");
+  }
+  assert.equal(calls.length, 0);
+  ready = true; assert.equal((await route(request(), env)).status, 200); assert.equal(calls.length, 1);
+});
+
+test("checkpoint availability uses caller authorization and rejects absent or foreign-generation metadata", async () => {
+  const manifest = { checkpointID: "00000000-0000-4000-8000-000000000002", farmID: farm, farmGeneration: 3, boundaryEventSequence: 42 };
+  const { env } = fixture(); let value = manifest;
+  const check = () => hasAgentCheckpoint({ request: request(), farmID: farm, membership: { authority_generation: 3 }, env,
+    fetchImpl: async (url, options) => {
+      assert.equal(url.origin, env.SUPABASE_URL); assert.equal(options.headers.authorization, "Bearer alice"); assert.equal(options.headers.apikey, "test");
+      assert.deepEqual(JSON.parse(options.body), { p_farm_id: farm, p_farm_generation: 3, p_checkpoint_id: null });
+      return Response.json({ manifest: value });
+    } });
+  assert.equal(await check(), true);
+  for (value of [null, { ...manifest, farmGeneration: 2 }, { ...manifest, farmID: manifest.checkpointID }]) assert.equal(await check(), false);
 });
 test("Agent container affinity is bound to verified account and farm, with the body forwarded intact", async () => {
   const { route, env, calls } = fixture();

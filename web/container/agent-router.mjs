@@ -4,9 +4,25 @@ import { AGENT_CONSENT_VERSION, AGENT_MODELS } from "../server/agent-contract.mj
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const json = (body, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 
+export async function hasAgentCheckpoint({ request, farmID, membership, env, fetchImpl = fetch }) {
+  // V2 readiness alone does not guarantee the verified business checkpoint
+  // required by this reader. Keep this small metadata read under the caller JWT.
+  const response = await fetchImpl(new URL("/rest/v1/rpc/esheep_cloud_checkpoint_manifest_v1", env.SUPABASE_URL), {
+    method: "POST", redirect: "error", signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
+    headers: { "content-type": "application/json", apikey: env.SUPABASE_PUBLISHABLE_KEY, authorization: request.headers.get("authorization") },
+    body: JSON.stringify({ p_farm_id: farmID, p_farm_generation: membership.authority_generation, p_checkpoint_id: null }),
+  });
+  if (!response.ok) throw Object.assign(new Error("Checkpoint availability lookup failed"), { status: response.status });
+  const { manifest } = await response.json();
+  return Boolean(manifest && uuid.test(manifest.checkpointID) &&
+    String(manifest.farmID).toLowerCase() === farmID.toLowerCase() &&
+    manifest.farmGeneration === membership.authority_generation &&
+    Number.isSafeInteger(manifest.boundaryEventSequence) && manifest.boundaryEventSequence >= 0);
+}
+
 // Keep large checkpoint decoding, projection and model loops in Node. The edge
 // authenticates before a billable container start and streams the body unchanged.
-export function createAgentRouter({ verifyAccess }) {
+export function createAgentRouter({ verifyAccess, verifyCheckpoint = hasAgentCheckpoint }) {
   return async (request, env) => {
     try {
       const url = new URL(request.url);
@@ -24,6 +40,9 @@ export function createAgentRouter({ verifyAccess }) {
         return json({ configured: false, ...errorBody(agentFailure("AGENT_FARM_NOT_READY", 503, "此牧场的 Cloud V2 数据尚未准备完成，请待云端初始化完成后重新检查。", "farm")) }, 503);
       }
       if (env.AGENT_RUNTIME_VERIFIED !== "true") return json({ configured: false, ...errorBody(agentFailure("AGENT_NOT_VERIFIED", 503, "云端 Agent 新版本尚未部署并完成验证。", "deployment")) }, 503);
+      if (!await verifyCheckpoint({ request, farmID, membership, env })) {
+        return json({ configured: false, ...errorBody(agentFailure("AGENT_FARM_NOT_READY", 503, "此牧场尚无可供助手读取的已验证资料，请联系管理员完成云端检查点后重新检查。", "farm")) }, 503);
+      }
       if (status) return json({ configured: true, availability: "ready", credentialStatus: "checked_on_request", execution: "farm-agent-responses", models: AGENT_MODELS,
         consentVersion: AGENT_CONSENT_VERSION, capabilities: ["supabase_authorized_read", "questions", "image", "client_drafts"] });
       if (request.headers.get("x-agent-consent") !== AGENT_CONSENT_VERSION) return json({ error: "请先同意牧场 Agent 数据处理说明。" }, 403);

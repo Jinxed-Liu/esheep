@@ -49,3 +49,13 @@ Cloudflare 只读检查：正式 app 与 staging 入口为代理 Worker；无自
 构建使用锁文件；先 `npm ci`，再构建与 `prepare-sites-build`，发布前运行生产配置校验与 Wrangler dry-run。只有直接受影响的检查需要重跑。发布后核对线上入口、缓存头、旧资源、接口状态与浏览器行为。
 
 本机 Git HTTPS 没有可用的推送凭据；已改用连接的 GitHub 服务保存发布基线到 `codex/web-next-phase-20261110`。远程提交 `fe4e105a2c850241a6d850413483034861b60481` 与本地发布源码 `7b04e617` 的 Git tree 完全一致，均为 `aa6761ae009d7b517246a44e6a7d6f6c0f18eaae`，已重新 fetch 校验。远程提交元数据不同，因此记录等价映射，不冒充同一个 SHA。另有本轮分支增量 `web-next-phase-branches.bundle`；未创建 PR 或触发全量 CI。
+
+## Agent 候选保全与容器构建
+
+独立远程分支 `codex/web-agent-20261110` 已保存候选源码。远程提交 `8886ef105879a522af922140753bf0160e3750b4` 与本地 `bf025f2c698e525eb02c543201071659092d3fb1` 的 Git tree 均为 `458eeb2fcde4c00348f6a158f71a37d24b8bcd7a`，重新 fetch 校验一致；尚未合并主分支。
+
+Linux AMD64 镜像已构建，清单摘要 `sha256:255f8afff6e9bda8fe94364722c8adbacfdcebc44f2323f11d4abf4a8f1a413b`。1 GiB / 0.25 vCPU 本机容器的 Node 启动、健康检查、检查点解码与损坏拒绝、投影、旧 MiMo 状态接口、追问立即结束均通过。真实模型和牧场未包含在此检查内。旧 SDK 沙箱在本机 Rosetta 环境受 seccomp 限制，须在云端 x86 环境再验。
+
+镜像推送遇到大文件层请求超时，已改用 OCI 可恢复分块上传并逐层核对摘要。外置盘中途断开后已重接，隔离 Lima 恢复，镜像摘要未变；上传状态文件采用原子替换，避免再次断开留下空状态。上传及云端验收完成前，不启用 `AGENT_RUNTIME_VERIFIED`，生产助手仍保持旧版本。
+
+真实云端只读预检发现，V2-ready 不保证存在已验证业务检查点。`94e2b566` 在启动容器或报告可用前，使用调用者 JWT 检查所选牧场/代际的检查点；缺失时给出可恢复的 `AGENT_FARM_NOT_READY`。8 个直接受影响路由/恢复检查通过，未重跑无变化测试。预发布配置锁定上述镜像摘要，Wrangler dry-run 通过；镜像必须登记并回读确认后才能执行部署。网关变化不改变容器运行文件。
