@@ -13,6 +13,14 @@ export function requireMetricPeriod(request, timeZone, now) {
   return { start: +start, end: Math.min(+end, +now + 1) };
 }
 
+// Swift imports use distantPast for an unknown business date. It is a finite
+// JavaScript timestamp; null also converts to the Unix epoch if left unchecked.
+function businessTime(value) {
+  if (value == null || value === "") return NaN;
+  const at = new Date(value);
+  return at.getUTCFullYear() > 1 ? +at : NaN;
+}
+
 // Incidence proportions for explicitly selected populations, not a guessed
 // herd denominator. A birth-date profile cohort is never labelled all born lambs.
 export function mortalityAnalysis(snapshot, request) {
@@ -35,25 +43,39 @@ export function mortalityAnalysis(snapshot, request) {
   }
   for (const list of histories.values()) list.sort((a, b) => time(a) - time(b) || String(a.id).localeCompare(String(b.id)));
   function presentAt(s, at) {
-    const entry = +new Date(s.enteredAt);
-    if (!Number.isFinite(entry)) { issues.push({ sheepID: s.id, reason: "缺少入场日期" }); return false; }
-    if (entry > at || s.isHistoricalArchive) return false;
+    if (s.isHistoricalArchive) return false;
     const history = histories.get(s.id) ?? [];
-    if (s.legacyStatusSnapshotIsAuthoritative && !history.length && s.status !== "active") {
-      issues.push({ sheepID: s.id, reason: "历史状态缺少可重建的离场事实" }); return false;
+    const events = history.filter(r => time(r) <= at);
+    const exit = events.find(r => r.removal);
+    const recordedExit = businessTime(s.removedAt);
+    if (exit || recordedExit <= at) {
+      const exitAt = Math.min(exit ? time(exit) : Infinity, Number.isFinite(recordedExit) ? recordedExit : Infinity);
+      if (events.some(r => !r.removal && time(r) >= exitAt)) {
+        issues.push({ sheepID: s.id, reason: "离群后有转舍记录，在场状态待核对" });
+      }
+      return false;
     }
-    const last = history.filter(r => time(r) <= at).at(-1);
-    if (last) return last.removal !== true;
-    return s.removedAt == null || +new Date(s.removedAt) > at;
+    const entry = businessTime(s.enteredAt);
+    if (!Number.isFinite(entry)) {
+      issues.push({ sheepID: s.id, reason: "入群日期缺失或为占位日期" });
+      return false;
+    }
+    if (entry > at) return false;
+    if (s.legacyStatusSnapshotIsAuthoritative && s.status !== "active" &&
+        !history.some(r => r.removal) && !Number.isFinite(recordedExit)) {
+      issues.push({ sheepID: s.id, reason: "历史状态缺少可重建的离场事实" });
+      return false;
+    }
+    return true;
   }
   const candidates = sheep.filter(s => (request.sex === "all" || s.sex === request.sex) && (!request.breed || s.breed === request.breed));
   const cohort = candidates.filter(s => {
-    if (request.denominator === "registered_birth_cohort") { const birth = +new Date(s.birthAt); return s.birthAt != null && birth >= start && birth < end; }
+    if (request.denominator === "registered_birth_cohort") { const birth = businessTime(s.birthAt); return s.birthAt != null && birth >= start && birth < end; }
     const opening = presentAt(s, start - 1);
     if (request.denominator === "opening_cohort") return opening;
-    const entered = +new Date(s.enteredAt);
+    const entered = businessTime(s.enteredAt);
     return opening || (!s.isHistoricalArchive && entered >= start && entered < end) ||
-      (histories.get(s.id) ?? []).some(r => !r.removal && inPeriod(r));
+      (histories.get(s.id) ?? []).some(r => !r.removal && inPeriod(r) && presentAt(s, time(r)));
   });
   const cohortIDs = new Set(cohort.map(s => s.id));
   const selected = removals.filter(r => inPeriod(r) && cohortIDs.has(r.sheepID));
@@ -70,6 +92,8 @@ export function mortalityAnalysis(snapshot, request) {
   if ([...groups.deceased].some(id => groups.culled.has(id))) issues.push({ reason: "同一羊只同时有死亡与淘汰记录" });
   const denominator = cohort.length;
   const uniqueIssues = [...new Map(issues.map(i => [JSON.stringify(i), i])).values()];
+  const issueCounts = {};
+  for (const issue of uniqueIssues) issueCounts[issue.reason] = (issueCounts[issue.reason] ?? 0) + (issue.count ?? 1);
   const rate = count => denominator > 0 && !uniqueIssues.length ? count / denominator : null;
   const combined = new Set([...groups.deceased, ...groups.culled]);
   return {
@@ -79,9 +103,25 @@ export function mortalityAnalysis(snapshot, request) {
     soldCount: groups.sold.size, transferredOutCount: groups.transferredOut.size,
     deathRate: rate(groups.deceased.size), cullRate: rate(groups.culled.size), deathAndCullRate: rate(combined.size),
     rateUnit: "proportion", formula: "所选队列期间死亡/淘汰去重头数 ÷ 所选队列头数；出售和转出不计入死淘",
-    issues: uniqueIssues, missingLinkedRemovalCount: missing.length,
+    issueCounts, issues: uniqueIssues.slice(0, 20), issueDetailTruncated: uniqueIssues.length > 20, missingLinkedRemovalCount: missing.length,
     coverage: "依据当前云端可重建档案与业务记录；没有记录不代表实际未发生。不能将档案样本外推为全牧场。",
     rows: selected.slice(0, 100).map(r => ({ id: r.id, sheepID: r.sheepID, kind: r.kind, at: r.at ?? r.occurredAt })),
     recordsTruncated: selected.length > 100,
   };
+}
+
+// Mortality values and withheld rates must survive to the UI without a model
+// recalculating the fraction or turning an unresolved roster into a census.
+export function renderMortalityEvidence(evidence) {
+  const { result, filters_applied: f, time_zone: zone, completeness } = evidence;
+  const basis = { opening_cohort: "期初在场档案", period_exposed: "期间曾在场档案", registered_birth_cohort: "期间登记出生档案" }[f.denominator];
+  const scope = [{ all: "全部性别", ewe: "母羊", ram: "公羊" }[f.sex], f.breed].filter(Boolean).join("，");
+  const pending = Object.entries(result.issueCounts);
+  const counted = `按档案可纳入 ${result.denominator} 只，其中期间登记死亡 ${result.deathCount} 只、淘汰 ${result.cullCount} 只，死淘去重 ${result.deathAndCullCount} 只。出售 ${result.soldCount} 只、转出 ${result.transferredOutCount} 只另列。`;
+  const rate = result.deathAndCullRate === null
+    ? "本期死淘率无法核定。" : `上述档案队列的死淘比例为 ${(100 * result.deathAndCullRate).toFixed(2)}%。`;
+  return [`${f.startDate} 至 ${f.endDate}（${zone}），${scope}，按${basis}逐只核对。`,
+    rate, counted, ...pending.map(([reason, count]) => `待核对：${reason}（${count}）。`),
+    f.denominator === "opening_cohort" ? "期初取开始日零点前一刻，逐只核对入群日期、离群日期和转舍记录。此名单由业务档案重建，现场盘点数须以当日盘点记录核对。" : result.coverage,
+    `云端版本 ${completeness.projection?.verifiedCloudHead ?? "未提供"}。`].join("\n");
 }

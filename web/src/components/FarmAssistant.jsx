@@ -115,6 +115,10 @@ function FarmAssistantWorkspace({ workspace, onBack, onCreateRecord, provider, s
   const sessionStorageKey = useMemo(() => storageKey(workspace) + (provider === "openai" ? ":openai" : ""), [workspace.profile?.accountID, workspace.farm?.id, provider]);
   const historyKey = assistantHistoryKey(workspace.profile?.accountID, workspace.farm?.id) + (provider === "openai" ? ":openai" : "");
   const consentKey = `esheepplus.assistant.agent-consent:${credentialAccountID}:${provider}`;
+  const modelKey = `esheepplus.assistant.model:${credentialAccountID}:${provider}`;
+  const [preferredModel, setPreferredModel] = useState(() => {
+    try { return localStorage.getItem(modelKey) || ""; } catch { return ""; }
+  });
   const [openAIConsent, setOpenAIConsent] = useState(() => { try { return localStorage.getItem(consentKey) === OPENAI_CONSENT_VERSION; } catch { return false; } });
   const [initialHistory] = useState(() => readAssistantHistory(historyKey));
   const [conversations, setConversations] = useState(initialHistory.conversations);
@@ -140,6 +144,13 @@ function FarmAssistantWorkspace({ workspace, onBack, onCreateRecord, provider, s
   const [sessionID, setSessionID] = useState(initialSession);
   const [status, setStatus] = useState(null);
   const [statusError, setStatusError] = useState("");
+  const defaultModel = status?.model || (provider === "openai" ? "gpt-5.4" : "mimo-v2.6-pro");
+  const modelOptions = status?.modelOptions?.[provider] ?? [defaultModel];
+  const model = modelOptions.includes(preferredModel) ? preferredModel : defaultModel;
+  function selectModel(value) {
+    setPreferredModel(value);
+    try { localStorage.setItem(modelKey, value); } catch { /* selection remains in memory */ }
+  }
   const [statusAttempt, setStatusAttempt] = useState(0);
   const [failedRequest, setFailedRequest] = useState(null);
   const [text, setText] = useState(initialConversation?.draft ?? "");
@@ -384,7 +395,7 @@ function FarmAssistantWorkspace({ workspace, onBack, onCreateRecord, provider, s
       };
       while (true) {
         try {
-          await streamOpenAITurn({ accessToken, apiKey: mimoAPIKey, provider, farmID: workspace.farm.id, prompt,
+          await streamOpenAITurn({ accessToken, apiKey: mimoAPIKey, provider, model, farmID: workspace.farm.id, prompt,
             history: messages, attachments: sentAttachments, signal: controller.signal, onEvent: handleEvent,
             clientTools: onCreateRecord ? [{ type: "function", name: "prepare_record", strict: false,
               description: `生成待用户核对的录入草稿，不写入云端。只使用下列真实表单与字段，不确定字段留空并询问用户：${JSON.stringify(recordSchemas.map(s => ({ name: s.name, columns: s.columns, required: s.required })))}`,
@@ -433,7 +444,7 @@ function FarmAssistantWorkspace({ workspace, onBack, onCreateRecord, provider, s
       if (abortRef.current === controller) abortRef.current = null;
       setRunning(false);
     }
-  }, [attachments, credentialAccountID, credentialReady, isCloud, running, sessionID, sessionStorageKey, status?.configured, text, workspace, provider, messages, onCreateRecord]);
+  }, [attachments, credentialAccountID, credentialReady, isCloud, running, sessionID, sessionStorageKey, status?.configured, text, workspace, provider, model, messages, onCreateRecord]);
 
   const closeHistory = () => {
     setHistoryOpen(false);
@@ -511,7 +522,7 @@ function FarmAssistantWorkspace({ workspace, onBack, onCreateRecord, provider, s
         <section className="assistant-workspace" inert={isNarrow && historyOpen ? true : undefined}>
           <header className="assistant-toolbar">
             <button ref={historyToggleRef} className="assistant-tool-button" type="button" aria-label="切换聊天记录" aria-controls="assistant-history" aria-expanded={isNarrow ? historyOpen : !historyCollapsed} onClick={() => { if (isNarrow) setHistoryOpen(!historyOpen); else setHistoryCollapsed(!historyCollapsed); }}><SidebarSimple size={22} /></button>
-            <div className="assistant-toolbar-title"><Sparkle size={25} weight="fill" /><h1>牧场助手</h1><span>{status?.model || (provider === "openai" ? "gpt-5.4" : "mimo-v2.6-pro")}</span></div>
+            <div className="assistant-toolbar-title"><Sparkle size={25} weight="fill" /><h1>牧场助手</h1><span>{model}</span></div>
             <span className={`assistant-connection${status?.configured && credentialReady ? " ready" : ""}`} title={configurationMessage || activity}><i />{running ? "回答中" : statusError ? "连接失败" : credentialReady && status?.configured ? "就绪" : "待配置"}</span>
             <button className="assistant-tool-button assistant-mobile-new" type="button" aria-label="新对话" onClick={newConversation} disabled={running}><Plus size={22} /></button>
             <button className="assistant-tool-button assistant-settings-button" type="button" onClick={openSettings} aria-label="助手设置"><Gear size={22} /><span>设置</span></button>
@@ -547,8 +558,11 @@ function FarmAssistantWorkspace({ workspace, onBack, onCreateRecord, provider, s
         </section>
       </section>
       <dialog className="assistant-settings" ref={settingsRef} onCancel={() => setSettingsOpen(false)} onClose={() => setSettingsOpen(false)} onClick={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false); }}>
-        <div className="assistant-settings-content"><header><div><h2>助手设置</h2><p>{providerTitle} · {status?.model || (provider === "openai" ? "gpt-5.4" : "mimo-v2.6-pro")}</p></div><button type="button" className="assistant-tool-button" aria-label="关闭设置" onClick={() => setSettingsOpen(false)}><X size={22} /></button></header>
+        <div className="assistant-settings-content"><header><div><h2>助手设置</h2><p>{providerTitle} · {model}</p></div><button type="button" className="assistant-tool-button" aria-label="关闭设置" onClick={() => setSettingsOpen(false)}><X size={22} /></button></header>
       <label className="assistant-provider-select">AI 服务 <select aria-label="AI 服务" value={provider} onChange={(event) => selectProvider(event.target.value)} disabled={running || savingCredential}><option value="mimo">MiMo</option><option value="openai">OpenAI</option></select></label>
+      {provider === "openai" && <label className="assistant-provider-select">模型 <select aria-label="OpenAI 模型" value={model} onChange={event => selectModel(event.target.value)} disabled={running || savingCredential || modelOptions.length < 2}>
+        {modelOptions.map(id => <option key={id} value={id}>{id}</option>)}
+      </select></label>}
       <p className="assistant-readonly-note">分别使用自己的 API Key；两家服务的密钥和聊天记录分开保存。</p>
       <section className="assistant-settings-about"><h3>云端 Agent 数据处理</h3><p>Agent 使用当前登录权限直接读取 Supabase，核验后将完成任务所需的数据、问题、上下文和附件发送给你选择的 {providerTitle} 服务，处理可能发生在境外。费用由你自己的 API 账号承担。Key 在浏览器加密保存，仅随本次任务转发，服务端不持久保存。OpenAI 请求使用 store=false，服务方安全日志仍按其政策处理。</p><label><input type="checkbox" checked={openAIConsent} onChange={(event) => { const enabled = event.target.checked; setOpenAIConsent(enabled); try { if (enabled) localStorage.setItem(consentKey, OPENAI_CONSENT_VERSION); else localStorage.removeItem(consentKey); } catch { /* consent remains page-local */ } }} disabled={running} />我已阅读并同意云端 Agent 数据处理说明</label>{provider === "openai" ? <p><a href="https://platform.openai.com/usage" target="_blank" rel="noreferrer">查看我的 OpenAI API 用量</a></p> : null}</section>
       {isCloud ? (

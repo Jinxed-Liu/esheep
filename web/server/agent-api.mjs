@@ -3,6 +3,8 @@ import { validateOpenAIKey, OpenAIRequestError, openAIPayload } from "./openai-a
 import { loadAgentCloudSnapshot } from "./agent-cloud.mjs";
 import { AGENT_CONSENT_VERSION, AGENT_MODELS, runFarmAgent } from "./agent-runtime.mjs";
 
+import { AGENT_MODEL_OPTIONS } from "./agent-contract.mjs";
+
 const json = (body, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 async function readJSON(request) {
   if (!request.body) throw new OpenAIRequestError("请求为空。");
@@ -24,6 +26,8 @@ export function validateAgentBody(body) {
   // Explicitly accept MiMo's text reasoning envelope, never arbitrary inputs
   // or hosted/network tools. OpenAI encrypted state remains provider-specific.
   if (!Array.isArray(body.input) || body.input.some(item => !item || typeof item !== "object")) throw new OpenAIRequestError("对话上下文格式无效。");
+  const model = body.model === undefined ? AGENT_MODELS[body.provider] : body.model;
+  if (!AGENT_MODEL_OPTIONS[body.provider].includes(model)) throw new OpenAIRequestError("此服务不支持所选模型，请在助手设置中重新选择。");
   const input = body.input.map(item => {
     if (item.type === "reasoning" && body.provider === "mimo") return { role: "assistant", content: "[模型工具调用上下文]" };
     return item;
@@ -41,7 +45,7 @@ export function validateAgentBody(body) {
   const outputLimit = Math.min(24000, Math.max(128, Math.floor(Number(body.limits?.outputTokens) || 24000)));
   const requestedTools = Number(body.limits?.toolCalls ?? 24);
   const toolLimit = Number.isFinite(requestedTools) ? Math.min(24, Math.max(0, Math.floor(requestedTools))) : 24;
-  return { provider: body.provider, input: payload.input, clientTools: payload.tools, instructions: payload.instructions, roundLimit, outputLimit, toolLimit,
+  return { provider: body.provider, model, input: payload.input, clientTools: payload.tools, instructions: payload.instructions, roundLimit, outputLimit, toolLimit,
     additionalReviews: Math.min(2, Math.max(0, Math.floor(Number(body.limits?.additionalReviews) || 0))), thinkingEnabled: body.thinkingEnabled !== false };
 }
 
@@ -56,7 +60,7 @@ export function createAgentAPI({ environment = {}, authVerifier = verifyFarmAcce
       const farmID = url.searchParams.get("farm_id") ?? "";
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(farmID)) throw new OpenAIRequestError("牧场标识无效。");
       const authorization = await authVerifier({ request, farmID, config });
-      if (request.method === "GET" && url.pathname.endsWith("/status")) return json({ configured: true, execution: "farm-agent-responses", models: AGENT_MODELS, consentVersion: AGENT_CONSENT_VERSION, capabilities: ["supabase_authorized_read", "questions", "image", "client_drafts"] });
+      if (request.method === "GET" && url.pathname.endsWith("/status")) return json({ configured: true, execution: "farm-agent-responses", models: AGENT_MODELS, modelOptions: AGENT_MODEL_OPTIONS, consentVersion: AGENT_CONSENT_VERSION, capabilities: ["supabase_authorized_read", "questions", "image", "client_drafts"] });
       if (request.method !== "POST" || !url.pathname.endsWith("/turn")) return json({ error: "未找到接口。" }, 404);
       if (request.headers.get("x-agent-consent") !== AGENT_CONSENT_VERSION) return json({ error: "请先同意牧场 Agent 数据处理说明。" }, 403);
       const body = validateAgentBody(await readJSON(request));
@@ -76,7 +80,7 @@ export function createAgentAPI({ environment = {}, authVerifier = verifyFarmAcce
             const result = await runFarmAgent({ ...body, apiKey: key, signal, emit, ...(modelTurn ? { modelTurn } : {}), ...(reviewAnswer ? { reviewAnswer } : {}),
               loadSnapshot: () => snapshotLoader({ request, authorization, config, signal, onProgress: message => emit({ type: "status", message }) }) });
             signal.throwIfAborted();
-            emit({ type: "result", ...result, model: AGENT_MODELS[body.provider] });
+            emit({ type: "result", ...result, model: body.model });
           } catch (error) {
             emit({ type: "error", code: error.code ?? "AGENT_TURN_FAILED", recovery: error.recovery ?? "retry", message: error instanceof Error ? error.message : "牧场助手未完成本次任务。" });
           } finally { clearInterval(heartbeat); closed = true; if (!cancelled) controller.close(); }

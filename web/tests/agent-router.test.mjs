@@ -46,6 +46,7 @@ test("checkpoint availability uses caller authorization and rejects absent or fo
   const { env } = fixture(); let value = manifest;
   const check = () => hasAgentCheckpoint({ request: request(), farmID: farm, membership: { authority_generation: 3 }, env,
     fetchImpl: async (url, options) => {
+      assert.equal(options.redirect, "manual"); // Workers supports manual redirects; authenticated RPCs must not follow them.
       assert.equal(url.origin, env.SUPABASE_URL); assert.equal(options.headers.authorization, "Bearer alice"); assert.equal(options.headers.apikey, "test");
       assert.deepEqual(JSON.parse(options.body), { p_farm_id: farm, p_farm_generation: 3, p_checkpoint_id: null });
       return Response.json({ manifest: value });

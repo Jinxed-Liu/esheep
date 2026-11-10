@@ -1,4 +1,3 @@
-export const OPENAI_MODEL = "gpt-5.4";
 export const OPENAI_CONSENT_VERSION = "2026-11-05";
 
 export class OpenAIRequestError extends Error {
@@ -51,7 +50,7 @@ export function openAIPayload(body) {
   count(body.instructions); count(JSON.stringify(tools));
   if (images > 4 || textBytes > 4_000_000) throw new OpenAIRequestError("上下文超过本次请求上限，请新建对话或减少附件。", 413);
   return {
-    model: OPENAI_MODEL, store: false, stream: true,
+    store: false, stream: true,
     instructions: typeof body.instructions === "string" ? body.instructions : "",
     input, tools: tools.map(({ name, description, parameters }) => ({ type: "function", name, description, parameters, strict: false })),
     max_output_tokens: Math.min(8192, Math.max(128, Number(body.max_output_tokens) || 4096)),

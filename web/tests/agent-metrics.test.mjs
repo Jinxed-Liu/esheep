@@ -46,3 +46,15 @@ test("unsupported filters fail instead of silently narrowing or widening scope",
   assert.throws(() => run(data(), { kind: "mortality_summary", ...definition, penID: "one" }), /不能执行筛选/);
   assert.throws(() => run(data(), { kind: "weight_summary", scope: "all" }), error => error.code === "NEEDS_USER_INPUT");
 });
+test("unknown entry dates and a transfer after exit cannot establish opening membership", () => {
+  const s = data();
+  s.analyticsSource.sheep[0].enteredAt = "0000-12-30T00:00:00.000Z";
+  s.analyticsSource.sheep[1].enteredAt = null;
+  s.analyticsSource.removals.push({ id: "prior", sheepID: "c", kind: "sold", at: "2026-09-02T00:00:00Z" });
+  s.analyticsSource.transfers.push({ id: "moved", sheepID: "c", at: "2026-09-05T00:00:00Z" });
+  const r = mortalityAnalysis(s, definition);
+  assert.equal(r.denominator, 1);
+  assert.equal(r.deathAndCullRate, null);
+  assert.equal(r.issueCounts["入群日期缺失或为占位日期"], 2);
+  assert.equal(r.issueCounts["离群后有转舍记录，在场状态待核对"], 1);
+});

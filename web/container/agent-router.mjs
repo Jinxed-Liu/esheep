@@ -1,5 +1,5 @@
 import { agentFailure, containerFailure, errorBody } from "../server/agent-errors.mjs";
-import { AGENT_CONSENT_VERSION, AGENT_MODELS } from "../server/agent-contract.mjs";
+import { AGENT_CONSENT_VERSION, AGENT_MODELS, AGENT_MODEL_OPTIONS } from "../server/agent-contract.mjs";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const json = (body, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
@@ -8,7 +8,7 @@ export async function hasAgentCheckpoint({ request, farmID, membership, env, fet
   // V2 readiness alone does not guarantee the verified business checkpoint
   // required by this reader. Keep this small metadata read under the caller JWT.
   const response = await fetchImpl(new URL("/rest/v1/rpc/esheep_cloud_checkpoint_manifest_v1", env.SUPABASE_URL), {
-    method: "POST", redirect: "error", signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
+    method: "POST", redirect: "manual", signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
     headers: { "content-type": "application/json", apikey: env.SUPABASE_PUBLISHABLE_KEY, authorization: request.headers.get("authorization") },
     body: JSON.stringify({ p_farm_id: farmID, p_farm_generation: membership.authority_generation, p_checkpoint_id: null }),
   });
@@ -43,7 +43,7 @@ export function createAgentRouter({ verifyAccess, verifyCheckpoint = hasAgentChe
       if (!await verifyCheckpoint({ request, farmID, membership, env })) {
         return json({ configured: false, ...errorBody(agentFailure("AGENT_FARM_NOT_READY", 503, "此牧场尚无可供助手读取的已验证资料，请联系管理员完成云端检查点后重新检查。", "farm")) }, 503);
       }
-      if (status) return json({ configured: true, availability: "ready", credentialStatus: "checked_on_request", execution: "farm-agent-responses", models: AGENT_MODELS,
+      if (status) return json({ configured: true, availability: "ready", credentialStatus: "checked_on_request", execution: "farm-agent-responses", models: AGENT_MODELS, modelOptions: AGENT_MODEL_OPTIONS,
         consentVersion: AGENT_CONSENT_VERSION, capabilities: ["supabase_authorized_read", "questions", "image", "client_drafts"] });
       if (request.headers.get("x-agent-consent") !== AGENT_CONSENT_VERSION) return json({ error: "请先同意牧场 Agent 数据处理说明。" }, 403);
       if (!/^(sk-|tp-)[A-Za-z0-9_-]{9,508}$/.test(request.headers.get("x-assistant-api-key") || "")) return json({ error: "请输入所选服务的个人 API Key。" }, 400);

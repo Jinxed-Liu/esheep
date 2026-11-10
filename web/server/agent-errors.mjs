@@ -6,7 +6,7 @@ export function agentFailure(code, status, message, recovery = 'retry') {
 
 export function modelFailure(status, providerCode = '') {
   if (status === 401) return agentFailure('AGENT_KEY_INVALID', 401, 'API Key 无效或已失效，请在助手设置中重新填写。', 'credentials');
-  if (status === 403) return agentFailure('AGENT_MODEL_FORBIDDEN', 403, '当前 Key 无权使用所选模型，请检查服务账号的模型权限。', 'credentials');
+  if (status === 403 || providerCode === 'model_not_found') return agentFailure('AGENT_MODEL_FORBIDDEN', 403, '当前 Key 无权使用所选模型，请在助手设置中更换模型或检查服务账号权限。', 'credentials');
   if (status === 402 || ['insufficient_quota', 'billing_hard_limit_reached', 'balance_not_enough'].includes(providerCode)) return agentFailure('AGENT_QUOTA_EXHAUSTED', 429, '模型 API 额度不足，请检查个人账号的用量与余额后手动重试。', 'quota');
   if (status === 429) return agentFailure('AGENT_RATE_LIMITED', 429, '模型请求暂时受限，请稍后手动重试。');
   return agentFailure('AGENT_MODEL_UNAVAILABLE', 503, `模型服务未完成请求（${status}），请稍后手动重试。`);

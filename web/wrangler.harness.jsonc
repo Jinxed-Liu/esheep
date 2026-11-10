@@ -8,7 +8,7 @@
   "preview_urls": false,
   "containers": [{
     "class_name": "HarnessContainer",
-    "image": "registry.cloudflare.com/19903f0d75fedc224e6e398c6eaa5cbe/esheepplus-agent@sha256:255f8afff6e9bda8fe94364722c8adbacfdcebc44f2323f11d4abf4a8f1a413b",
+    "image": "registry.cloudflare.com/19903f0d75fedc224e6e398c6eaa5cbe/esheepplus-agent@sha256:5745d00a6ff7d833f3bf9a01edf19ee07b27ce9c548a6706ffacccd120a0bb7a",
     "image_build_context": "..",
     "instance_type": "basic",
     "max_instances": 2

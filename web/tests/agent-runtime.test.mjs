@@ -132,3 +132,29 @@ test("API ignores a supplied snapshot and sends only scoped server evidence", as
   assert.equal(response.status, 200); const events = (await response.text()).trim().split("\n").map(JSON.parse);
   assert.equal(events.at(-1).type, "result"); assert.equal(reads, 1);
 });
+test("a withheld mortality rate reaches the user without another inference or arithmetic", async () => {
+  const fixture = { ...snapshot, analyticsSource: { sheep: [{ id: "legacy", enteredAt: null }] } };
+  let calls = 0;
+  const result = await runFarmAgent({ ...options, loadSnapshot: async () => fixture,
+    modelTurn: async () => { calls++; return turn([call("query_cloud_farm", { kind: "mortality_summary", filtersJSON: JSON.stringify({ startDate: "2026-10-01", endDate: "2026-10-31", sex: "all", denominator: "opening_cohort" }) })]); },
+    reviewAnswer: () => { throw new Error("withheld metric must not be rewritten"); } });
+  assert.equal(calls, 1);
+  assert.match(result.text, /死淘率无法核定/);
+  assert.doesNotMatch(result.text, /%/);
+});
+test("the selected OpenAI model reaches inference and review; unsupported choices fail", async () => {
+  const { validateAgentBody } = await import("../server/agent-api.mjs");
+  const body = { provider: "openai", model: "gpt-5.4-mini", input: options.input };
+  assert.equal(validateAgentBody(body).model, body.model);
+  assert.throws(() => validateAgentBody({ ...body, provider: "mimo" }), /不支持所选模型/);
+  assert.equal(validateAgentBody({ ...body, model: undefined }).model, "gpt-5.4");
+  const models = [];
+  await runFarmAgent({ ...options, ...validateAgentBody(body),
+    modelTurn: async args => { models.push(args.model); return turn([text("完成")]); },
+    reviewAnswer: async args => { models.push(args.model); return { verdict: "accept" }; } });
+  assert.deepEqual(models, [body.model, body.model]);
+  await responsesTurn({ ...body, apiKey: "sk-test-not-a-real-key", tools: [], fetchImpl: async (_, init) => {
+    assert.equal(JSON.parse(init.body).model, body.model);
+    return new Response('data: '+JSON.stringify({type:"response.completed",response:turn([text("好")])})+'\n\n');
+  } });
+});

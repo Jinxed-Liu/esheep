@@ -12,7 +12,7 @@ export async function getOpenAIStatus({ accessToken, farmID, provider = "openai"
   return { ...status, model: status.models?.[provider] };
 }
 
-export async function streamOpenAITurn({ accessToken, apiKey, farmID, provider = "openai", prompt, history = [], attachments = [], clientTools = [], executeClientTool, signal, onEvent, fetchImpl = fetch }) {
+export async function streamOpenAITurn({ accessToken, apiKey, farmID, provider = "openai", model, prompt, history = [], attachments = [], clientTools = [], executeClientTool, signal, onEvent, fetchImpl = fetch }) {
   let modelRequests = 0, outputTokens = 0, toolCalls = 0;
   let input = history.filter(m => ["user", "assistant"].includes(m.role) && !m.error && !m.pending && m.text).slice(-30)
     .map(m => ({ role: m.role, content: m.text }));
@@ -23,7 +23,7 @@ export async function streamOpenAITurn({ accessToken, apiKey, farmID, provider =
     const response = await fetchImpl(`/api/assistant/agent/turn?farm_id=${encodeURIComponent(farmID)}`, {
       method: "POST", signal,
       headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}`, "x-assistant-api-key": apiKey, "x-agent-consent": OPENAI_CONSENT_VERSION },
-      body: JSON.stringify({ provider, input, clientTools, limits: { modelRequests: 8 - modelRequests, outputTokens: 24000 - outputTokens, toolCalls: Math.max(0, 24 - toolCalls) } }),
+      body: JSON.stringify({ provider, model, input, clientTools, limits: { modelRequests: 8 - modelRequests, outputTokens: 24000 - outputTokens, toolCalls: Math.max(0, 24 - toolCalls) } }),
     });
     if (!response.ok) { let value; try { value = await response.json(); } catch {} throw requestError(value, "云端 Agent 请求失败。"); }
     if (!response.body) throw new Error("服务器未返回回答流。");
