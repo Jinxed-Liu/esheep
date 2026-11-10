@@ -65,6 +65,7 @@ function useOutsideDismiss(ref, dismiss) {
 export function AppHeader({
   activePage,
   onNavigate,
+  onPreloadPage,
   workspace,
   onFarmChange,
   onSignOut,
@@ -109,6 +110,8 @@ export function AppHeader({
               className={activePrimaryPage === id ? "active" : ""}
               aria-current={activePrimaryPage === id ? "page" : undefined}
               onClick={() => onNavigate(id)}
+              onPointerEnter={() => { void onPreloadPage?.(id); }}
+              onFocus={() => { void onPreloadPage?.(id); }}
             >
               <Icon size={24} weight={activePrimaryPage === id ? "fill" : "regular"} />
               <span>{label}</span>

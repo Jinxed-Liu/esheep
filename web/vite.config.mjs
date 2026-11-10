@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { handleNodeRequest } from "./server/node-adapter.mjs";
 import { proxyCloudRequest } from "./worker/cloud-proxy.js";
 import { nodeCloudFetch } from "./server/cloud-fetch.mjs";
+import { generatedAssetHeaders } from "./server/static-asset-cache.mjs";
 
 export default defineConfig({
   build: {
@@ -79,6 +80,11 @@ export default defineConfig({
     },
   },
   plugins: [react(), {
+    name: "versioned-static-asset-cache",
+    generateBundle(_options, bundle) {
+      this.emitFile({ type: "asset", fileName: "_headers", source: generatedAssetHeaders(Object.keys(bundle)) });
+    },
+  }, {
     name: "cloud-transport-dev-proxy",
     configureServer(server) {
       const environment = { ...loadEnv(server.config.mode, server.config.root, ""), ...process.env };

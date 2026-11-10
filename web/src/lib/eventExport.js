@@ -15,7 +15,7 @@ export function matchingEvents(events, { scope = "all", start = "", end = "", qu
   const bounds = [start, end].filter(Boolean).sort();
   return events.filter((event) => {
     if (event.status !== "synced") return false;
-    if (scope !== "all" && event.scope !== scope) return false;
+    if (scope !== "all" && event.scope !== scope && event.recordScope !== scope) return false;
     const day = start||end?farmDateText(event.at, timeZone, false):"";
     if (start && end ? day < bounds[0] || day > bounds[1] : start ? day < start : end ? day > end : false) return false;
     return !query || [event.object, event.label, event.detail, event.note, ...(event.fields ?? []).map((f) => f.value)].join(" ").toLowerCase().includes(query.trim().toLowerCase());
