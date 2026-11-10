@@ -1,0 +1,26 @@
+{
+  "sourceCommit": "7b04e6173f8cc9dab227c953a248a2d56eaa03a8",
+  "baseMain": "1a666989",
+  "includedPerformanceCommit": "2756cb19",
+  "equivalentReleasedPerformance": "1f08a2a5",
+  "webVersion": "196f7c92-c9c5-4af6-bda3-ef9681f84660",
+  "rollbackWebVersion": "60bacdbc-6eea-4f41-9748-ff0a4dc6de5b",
+  "entry": "assets/index-BnMZMYJi.js",
+  "entrySHA256": "ef8ba24abf7bde280e151487c3ffd24989406778055638fd63783746968d5386",
+  "containerImage": "registry.cloudflare.com/19903f0d75fedc224e6e398c6eaa5cbe/esheepplus-harness@sha256:eae93a1235b1f81ea97abea5cddc5759ed6439afb6e854ef8b5738f15f8ea6db",
+  "containerChange": false,
+  "scope": "retained-asset-cache",
+  "checks": {
+    "cacheTests": 2,
+    "retainedAndCurrentHeaders": "passed",
+    "dryRun": "passed",
+    "liveOldBundle": "200, immutable",
+    "reusedAppEvidence": "post-release-browser-qa.json; main bundle unchanged"
+  },
+  "productionWrites": false,
+  "artifactArchive": "retained-cache-dist-7b04e617.tar.gz",
+  "artifactArchiveSHA256": "03b99b9e634ed15aec021c85444ea7988e74b88c3a1ece0b467919b6194e13c3",
+  "remoteEquivalentCommit": "fe4e105a2c850241a6d850413483034861b60481",
+  "sourceTreeSHA": "aa6761ae009d7b517246a44e6a7d6f6c0f18eaae",
+  "remoteBranch": "codex/web-next-phase-20261110"
+}

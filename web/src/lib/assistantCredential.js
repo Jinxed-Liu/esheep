@@ -162,3 +162,20 @@ export async function removeMiMoCredential(accountID) {
   const owner = await ownerKey(ownerID);
   await deleteRecord(owner).catch(() => {});
 }
+
+// Provider is part of the credential owner, so neither key can overwrite the other.
+export function normalizeOpenAIAPIKey(value) {
+  const key = String(value ?? "").trim();
+  if (!/^sk-[A-Za-z0-9_-]{9,508}$/.test(key)) throw new Error("请输入你自己的 OpenAI API Key（sk- 开头）。");
+  return key;
+}
+export function loadAssistantCredential(accountID, provider) {
+  return loadMiMoCredential(provider === "openai" ? `${normalizedAccountID(accountID)}:openai` : accountID);
+}
+export function saveAssistantCredential(accountID, provider, value) {
+  return saveMiMoCredential(provider === "openai" ? `${normalizedAccountID(accountID)}:openai` : accountID,
+    provider === "openai" ? normalizeOpenAIAPIKey(value) : value);
+}
+export function removeAssistantCredential(accountID, provider) {
+  return removeMiMoCredential(provider === "openai" ? `${normalizedAccountID(accountID)}:openai` : accountID);
+}

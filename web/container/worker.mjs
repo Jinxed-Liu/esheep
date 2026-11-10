@@ -4,8 +4,10 @@ import { verifyFarmAccess } from "../server/auth.mjs";
 import { validateMiMoAPIKey } from "../server/config.mjs";
 import { createContainerRouter } from "./router.mjs";
 import { createWeatherAPI } from "../server/weather-api.mjs";
+import { createAgentRouter } from "./agent-router.mjs";
 
 const weatherAPI = createWeatherAPI();
+const agentAPI = createAgentRouter({ verifyAccess: verifyFarmAccess });
 
 export class HarnessContainer extends Container {
   defaultPort = 8080;
@@ -18,6 +20,13 @@ export class HarnessContainer extends Container {
   async runtimeCheck() {
     await this.startAndWaitForPorts();
     const process = await this.ctx.container.exec(["node", "/app/server/runtime-check.mjs"]);
+    const result = await process.output();
+    const decoder = new TextDecoder();
+    return { exitCode: result.exitCode, stdout: decoder.decode(result.stdout), stderr: decoder.decode(result.stderr) };
+  }
+  async agentRuntimeCheck() {
+    await this.startAndWaitForPorts();
+    const process = await this.ctx.container.exec(["node", "/app/server/agent-runtime-check.mjs"]);
     const result = await process.output();
     const decoder = new TextDecoder();
     return { exitCode: result.exitCode, stdout: decoder.decode(result.stdout), stderr: decoder.decode(result.stderr) };
@@ -53,6 +62,7 @@ export class HarnessContainer extends Container {
 
 const assistantRouter = createContainerRouter({ verifyAccess: verifyFarmAccess, validateKey: validateMiMoAPIKey });
 export default { fetch(request, runtimeEnv) {
+  if (new URL(request.url).pathname.startsWith("/api/assistant/agent/")) return agentAPI(request, runtimeEnv);
   return new URL(request.url).pathname.startsWith("/api/weather/")
     ? weatherAPI(request, runtimeEnv)
     : assistantRouter(request, runtimeEnv);

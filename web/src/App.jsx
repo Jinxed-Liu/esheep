@@ -579,7 +579,7 @@ export function App() {
     case "tmr-plans":
     case "tmr-formulas": content = <TMRPage workspace={workspace} mode={activePage} onCreateRecord={openRecord} onNavigate={navigate} />; break;
     case "insights":
-    case "assistant": content = <InsightsPage workspace={workspace} mode={activePage} onNavigate={navigate} onReproductionSubmit={(record,id,onProgress)=>sendPenAction(record,id,onProgress,"繁殖")} />; break;
+    case "assistant": content = <InsightsPage workspace={workspace} mode={activePage} onNavigate={navigate} onCreateRecord={openRecord} onReproductionSubmit={(record,id,onProgress)=>sendPenAction(record,id,onProgress,"繁殖")} />; break;
     case "search": content = <SearchPage searchIndex={searchIndex} onOpenResult={selectSearchResult} />; break;
     case "events": content = <EventsPage workspace={workspace} selectedID={routeContext.selectedID} exportHint={routeContext.exportHint} />; break;
     case "settings": content = <SettingsPage workspace={workspace} authState={authState} isConfigured={isSupabaseConfigured} onSignIn={handleSignIn} onAppleSignIn={handleAppleSignIn} onSignOut={handleSignOut} onReloadCloud={reloadCloud} environmentPreferences={environmentPreferences} />; break;

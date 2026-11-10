@@ -52,6 +52,7 @@ export function createAssistantAPI({
   harness = null,
   codexFactory,
 } = {}) {
+  let agentAPI;
   const inspection = inspectHarnessEnvironment(environment);
   let config = null;
   let activeHarness = harness;
@@ -63,6 +64,10 @@ export function createAssistantAPI({
   return async function assistantAPI(request) {
     const url = new URL(request.url);
     const pathname = url.pathname;
+    if (pathname.startsWith("/api/assistant/agent/")) {
+      agentAPI ??= (await import("./agent-api.mjs")).createAgentAPI({ environment, authVerifier });
+      return agentAPI(request);
+    }
     if (request.method === "GET" && pathname === "/api/assistant/status") {
       return jsonResponse({
         ...inspection,

@@ -532,7 +532,7 @@ function FeedAnalysis({ source, now, timeZone }) {
   );
 }
 
-export default function InsightsPage({ workspace, mode = "insights", onNavigate, onReproductionSubmit }) {
+export default function InsightsPage({ workspace, mode = "insights", onNavigate, onCreateRecord, onReproductionSubmit }) {
   const [view, setView] = useState("overview");
   const isCloud = workspace.mode === "cloud";
   const timeZone = workspace.farm?.timeZoneIdentifier || "Asia/Shanghai";
@@ -540,7 +540,7 @@ export default function InsightsPage({ workspace, mode = "insights", onNavigate,
   const now = useMemo(() => new Date(), [workspace.farm?.id, workspace.lastSyncedAt]);
   const currentView = reportCards.find((card) => card.id === view);
   const data = workspace.insightData ?? {};
-  if (mode === "assistant") return <FarmAssistant workspace={workspace} onBack={() => onNavigate("insights")} />;
+  if (mode === "assistant") return <FarmAssistant workspace={workspace} onBack={() => onNavigate("insights")} onCreateRecord={onCreateRecord} />;
   if (currentView) {
     return (
       <main className="page feature-page insights-page analysis-page">

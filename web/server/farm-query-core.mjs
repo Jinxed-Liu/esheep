@@ -1,4 +1,5 @@
 import { resolveReproductionState, pregnancyNames } from "../src/lib/reproductionCycles.js";
+import { mortalityAnalysis, requireMetricPeriod } from "./agent-mortality.mjs";
 const SUPPORTED_KINDS = [
   "available_data",
   "farm_overview",
@@ -10,6 +11,7 @@ const SUPPORTED_KINDS = [
   "reproduction_summary",
   "reproduction_state",
   "feed_intake_summary",
+  "mortality_summary",
 ];
 
 function text(value) {
@@ -17,8 +19,10 @@ function text(value) {
 }
 
 function normalized(value) {
-  return text(value).toLocaleLowerCase("zh-CN");
+  return text(value).normalize("NFKC").toLocaleLowerCase("zh-CN");
 }
+
+const earKey = value => normalized(value).replace(/[\s\-‐‑–—_]/g, "");
 
 function finiteLimit(value, fallback = 20, maximum = 100) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -60,6 +64,13 @@ function eventView(event) {
 
 function compactWeight(result) {
   return {
+    startDate: result.startDate, endDate: result.endDate,
+    methodology: "统一体重时间线、范围内同羊真实相邻区间；先逐羊合计增重/实际天数，再逐羊等权平均；零和负值保留；圈舍按分析结束时归属。",
+    averageDailyGainGrams: result.latestAverageADG == null ? null : result.latestAverageADG * 1000,
+    rows: (result.rows ?? []).slice(0, 100), rowsTruncated: (result.rows?.length ?? 0) > 100,
+    intervalCount: result.intervals?.length ?? 0,
+    crossPenIntervalCount: result.crossPenIntervalCount,
+    transferSheepCount: result.transferSheepCount,
     cutoff: result.cutoff,
     boundary: result.boundary,
     eligibleSheepCount: result.sheepIDs?.length ?? 0,
@@ -175,6 +186,22 @@ export function createFarmQueryEngine(analytics) {
     const source = snapshot.analyticsSource ?? {};
     const timeZone = snapshot.farm.timeZoneIdentifier || "Asia/Shanghai";
     const now = asDate(snapshot.capturedAt) ?? new Date();
+    const allowed = {
+      available_data: [], farm_overview: [], sheep_search: ["query", "earTag", "breed", "purpose", "sex", "penID", "limit", "scope"],
+      pen_summary: ["penID"], event_search: ["query", "types", "startAt", "endAt", "limit"],
+      weight_summary: ["scope", "penID", "batchID", "cutoff", "startDate", "endDate", "allHistory"],
+      lamb_summary: ["selectedYear", "selectedWeaningMonth"], reproduction_state: ["earTag", "penID", "breed", "state", "limit"],
+      reproduction_summary: ["startDate", "endDate", "penScope", "penID", "breed"],
+      feed_intake_summary: ["startDate", "endDateExclusive", "selectedPenIDs"],
+      mortality_summary: ["startDate", "endDate", "denominator", "sex", "breed"],
+    };
+    const unsupported = Object.keys(request).filter(key => key !== "kind" && !allowed[kind].includes(key));
+    if (unsupported.length) throw new Error(`此查询不能执行筛选 ${unsupported.join("、")}；请更换工具或向用户说明，不能省略筛选。`);
+
+    if (kind === "mortality_summary") {
+      const result = mortalityAnalysis(snapshot, request);
+      return envelope(snapshot, kind, request, result.denominator, result, { issues: result.issues });
+    }
 
     if (kind === "available_data") {
       return envelope(snapshot, kind, {}, 1, {
@@ -206,18 +233,25 @@ export function createFarmQueryEngine(analytics) {
         sex: text(request.sex),
         penID: text(request.penID),
         limit: finiteLimit(request.limit),
+        scope: request.scope ?? "all",
       };
+      if (!["all", "active", "removed"].includes(filters.scope)) throw new Error("scope 应为 all、active 或 removed。");
       const queryText = normalized(filters.query);
-      const rows = (snapshot.activeSheep ?? []).filter((sheep) => {
-        if (filters.earTag && !normalized(sheep.earTag).includes(normalized(filters.earTag))) return false;
+      const activeIDs = new Set((snapshot.activeSheep ?? []).map(s => s.id));
+      const candidates = source.sheep ?? snapshot.activeSheep ?? [];
+      const rows = candidates.map(s => ({ ...s, penID: s.penID ?? s.currentPenID, pen: s.pen ?? snapshot.pens?.find(p => p.id === s.currentPenID)?.name })).filter((sheep) => {
+        if (filters.scope === "active" && !activeIDs.has(sheep.id)) return false;
+        if (filters.scope === "removed" && activeIDs.has(sheep.id)) return false;
+        if (filters.earTag && !earKey(sheep.earTag).includes(earKey(filters.earTag))) return false;
         if (filters.breed && normalized(sheep.breed) !== normalized(filters.breed)) return false;
         if (filters.purpose && normalized(sheep.purpose) !== normalized(filters.purpose)) return false;
         if (filters.sex && normalized(sheep.sex) !== normalized(filters.sex)) return false;
         if (filters.penID && normalized(sheep.penID) !== normalized(filters.penID)) return false;
-        return !queryText || normalized([sheep.earTag, sheep.breed, sheep.purpose, sheep.pen, sheep.status].join(" ")).includes(queryText);
-      });
+        return !queryText || earKey(sheep.earTag).includes(earKey(queryText)) || normalized([sheep.earTag, sheep.breed, sheep.purpose, sheep.pen, sheep.status].join(" ")).includes(queryText);
+      }).sort((a, b) => Number(earKey(b.earTag) === earKey(filters.earTag || filters.query)) - Number(earKey(a.earTag) === earKey(filters.earTag || filters.query)) || String(a.earTag).localeCompare(String(b.earTag)));
       return envelope(snapshot, kind, filters, rows.length, {
         totalMatches: rows.length,
+        identityWarning: "标准化与模糊匹配只供查找候选；多匹配须由用户确认，不能据此合并或录入。",
         rows: rows.slice(0, filters.limit),
       }, { returnedRows: Math.min(rows.length, filters.limit), resultTruncated: rows.length > filters.limit });
     }
@@ -262,6 +296,7 @@ export function createFarmQueryEngine(analytics) {
     }
 
     if (kind === "weight_summary") {
+      if (snapshot.source?.kind === "supabase-authorized-server-read" && request.allHistory !== true) requireMetricPeriod(request, timeZone, now);
       const options = weightFilterOptions(source, { now, timeZone });
       const scope = ["all", "inHerdOnly", "removedOnly"].includes(request.scope) ? request.scope : "all";
       const filters = {
@@ -269,6 +304,7 @@ export function createFarmQueryEngine(analytics) {
         penID: text(request.penID) || null,
         batchID: text(request.batchID) || null,
         cutoff: asDate(request.cutoff)?.toISOString() ?? options.cutoff,
+        startDate: day(request.startDate), endDate: day(request.endDate),
       };
       const result = calculateWeightAnalytics(source, { ...filters, now, timeZone });
       return envelope(snapshot, kind, filters, result.canonicalSampleCount ?? 0, compactWeight(result));
@@ -296,6 +332,7 @@ export function createFarmQueryEngine(analytics) {
     }
 
     if (kind === "reproduction_summary") {
+      if (snapshot.source?.kind === "supabase-authorized-server-read") requireMetricPeriod(request, timeZone, now);
       const defaults = defaultReproductionFilter({ now, timeZone });
       const filter = {
         ...defaults,
@@ -309,6 +346,7 @@ export function createFarmQueryEngine(analytics) {
       return envelope(snapshot, kind, result.filter, result.recordCount ?? 0, compactReproduction(result));
     }
 
+    if (snapshot.projectionCoverage?.feedingAvailable === false) throw new Error("当前云端分析通道尚未提供完整采食投影，请使用投喂分析页面；不能按空数据计算。");
     const defaults = defaultFeedRange({ now, timeZone });
     const filters = {
       startDate: day(request.startDate) ?? defaults.startDate,

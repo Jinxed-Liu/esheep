@@ -85,9 +85,13 @@ for (const asset of new Set(priorGenerations.flat())) {
   }
 }
 
-const manifest = {
-  generations: [[...currentAssets].sort(), ...priorGenerations].slice(0, 2),
-};
+// Header-only releases can have the same bundle set as the previous release.
+// Do not let those duplicates evict a distinct generation used by open tabs.
+const generations = new Map([[...currentAssets], ...priorGenerations].map(assets => {
+  const sorted = [...new Set(assets)].sort();
+  return [JSON.stringify(sorted), sorted];
+}));
+const manifest = { generations: [...generations.values()].slice(0, 2) };
 await writeFile(localPath(manifestPath), JSON.stringify(manifest));
 // The Vite manifest predates the compatibility copies. Apply the same immutable
 // policy to retained hashed bundles; mutable manifests still revalidate.

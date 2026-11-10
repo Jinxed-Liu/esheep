@@ -1,0 +1,32 @@
+// Operator-only synthetic runtime check. No real credentials or farm writes.
+import assert from 'node:assert/strict';
+import { gzipSync } from 'node:zlib';
+import { decodeCheckpointChunk, sha256 } from '../src/lib/cloudV2Checkpoint.js';
+import { createV2Projection, finishV2Projection } from '../src/lib/cloudV2Projection.js';
+import schema from '../../tools/esheep_cloud_checkpoint_schema_v1.json' with { type:'json' };
+import { snapshotFromCloudProjection } from './agent-cloud.mjs';
+import { createAssistantAPI } from './api.mjs';
+import { createAgentAPI } from './agent-api.mjs';
+import { AGENT_CONSENT_VERSION } from './agent-contract.mjs';
+
+const farmID='00000000-0000-4000-8000-000000000001';
+const record=(model,fields)=>({model,values:{...Object.fromEntries(Object.entries(schema[model].fields).map(([k,t])=>[k,t.endsWith('?')?null:t==='UUID'?farmID:t==='Date'?800000000:t==='Bool'?false:t==='String'?'':t==='Data'?{json:{}}:0])),...fields}});
+const rows=[record('FarmRecord',{id:farmID,name:'容器隔离验收牧场',timeZoneIdentifier:'Asia/Shanghai'})];
+const raw=Buffer.from(JSON.stringify(rows)), zipped=gzipSync(raw);
+const descriptor={compressedBytes:zipped.length,uncompressedBytes:raw.length,compressedSHA256:await sha256(zipped),contentSHA256:await sha256(raw),recordCount:1,modelNames:['FarmRecord']};
+assert.deepEqual(await decodeCheckpointChunk(zipped,descriptor),rows);
+await assert.rejects(()=>decodeCheckpointChunk(zipped,{...descriptor,compressedSHA256:'0'.repeat(64)}));
+const manifest={farmID,farmGeneration:1,checkpointID:'00000000-0000-4000-8000-000000000002',boundaryEventSequence:0,modelCounts:{FarmRecord:1}};
+const projection={...finishV2Projection(createV2Projection(rows,manifest)),manifest,revision:0};
+const snapshot=await snapshotFromCloudProjection(projection,{id:farmID,generation:1});
+assert.equal(snapshot.farm.name,'容器隔离验收牧场');
+const environment={SUPABASE_URL:'https://synthetic.supabase.co',SUPABASE_PUBLISHABLE_KEY:'synthetic-public',CODEX_HARNESS_STATE_DIR:'/state/runtime-agent-check'};
+const legacy=createAssistantAPI({environment});
+const status=await (await legacy(new Request('http://localhost/api/assistant/status'))).json();
+assert.equal(status.configured,true);assert.equal(status.model,'mimo-v2.6-pro');
+let modelCalls=0,cloudReads=0;
+const api=createAgentAPI({environment,authVerifier:async()=>({userID:'synthetic',membership:{farm_id:farmID}}),snapshotLoader:async()=>{cloudReads++;return snapshot;},modelTurn:async()=>{modelCalls++;return {output:[{type:'function_call',name:'ask_user_question',call_id:'q',arguments:JSON.stringify({questions:[{title:'请选择统计日期',options:[]}]})}],usage:{output_tokens:5}};}});
+const response=await api(new Request(`http://localhost/api/assistant/agent/turn?farm_id=${farmID}`,{method:'POST',headers:{'x-assistant-api-key':'sk-synthetic-runtime-only','x-agent-consent':AGENT_CONSENT_VERSION},body:JSON.stringify({provider:'openai',input:[{role:'user',content:'统计增重'}]})}));
+const events=(await response.text()).trim().split('\n').map(JSON.parse);
+assert.equal(events.at(-1).needsUserInput,true);assert.equal(modelCalls,1);assert.equal(cloudReads,0);
+console.log(JSON.stringify({passed:true,node:process.version,architecture:process.arch,checkpointDecode:true,tamperedCheckpointRejected:true,projection:true,legacyMiMoStatus:true,questionStopsModelLoop:true,realModel:false,realFarm:false}));
