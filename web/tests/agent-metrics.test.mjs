@@ -56,5 +56,5 @@ test("unknown entry dates and a transfer after exit cannot establish opening mem
   assert.equal(r.denominator, 1);
   assert.equal(r.deathAndCullRate, null);
   assert.equal(r.issueCounts["入群日期缺失或为占位日期"], 2);
-  assert.equal(r.issueCounts["离群后有转舍记录，在场状态待核对"], 1);
+  assert.equal(r.issueCounts["离群同一时刻或之后仍有圈舍记录，需核对原始记录"], 1);
 });

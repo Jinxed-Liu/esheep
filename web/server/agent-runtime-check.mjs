@@ -7,7 +7,8 @@ import schema from '../../tools/esheep_cloud_checkpoint_schema_v1.json' with { t
 import { snapshotFromCloudProjection } from './agent-cloud.mjs';
 import { createAssistantAPI } from './api.mjs';
 import { createAgentAPI } from './agent-api.mjs';
-import { AGENT_CONSENT_VERSION } from './agent-contract.mjs';
+import { mortalityAnalysis } from './agent-mortality.mjs';
+import { AGENT_CONSENT_VERSION, AGENT_MODEL_OPTIONS } from './agent-contract.mjs';
 
 const farmID='00000000-0000-4000-8000-000000000001';
 const record=(model,fields)=>({model,values:{...Object.fromEntries(Object.entries(schema[model].fields).map(([k,t])=>[k,t.endsWith('?')?null:t==='UUID'?farmID:t==='Date'?800000000:t==='Bool'?false:t==='String'?'':t==='Data'?{json:{}}:0])),...fields}});
@@ -29,4 +30,14 @@ const api=createAgentAPI({environment,authVerifier:async()=>({userID:'synthetic'
 const response=await api(new Request(`http://localhost/api/assistant/agent/turn?farm_id=${farmID}`,{method:'POST',headers:{'x-assistant-api-key':'sk-synthetic-runtime-only','x-agent-consent':AGENT_CONSENT_VERSION},body:JSON.stringify({provider:'openai',input:[{role:'user',content:'统计增重'}]})}));
 const events=(await response.text()).trim().split('\n').map(JSON.parse);
 assert.equal(events.at(-1).needsUserInput,true);assert.equal(modelCalls,1);assert.equal(cloudReads,0);
-console.log(JSON.stringify({passed:true,node:process.version,architecture:process.arch,checkpointDecode:true,tamperedCheckpointRejected:true,projection:true,legacyMiMoStatus:true,questionStopsModelLoop:true,realModel:false,realFarm:false}));
+assert.ok(AGENT_MODEL_OPTIONS.openai.includes('gpt-5.4-mini'));
+const fixture = { id: 'fixture', sex: 'ewe', enteredAt: '2026-01-01T00:00:00Z' };
+const instant = '2026-09-01T00:00:00Z';
+const metric = mortalityAnalysis({ ...snapshot, capturedAt:'2026-11-01T00:00:00Z', analyticsSource: {
+  sheep:[fixture], transfers:[{id:'move', sheepID:fixture.id, at:instant}],
+  removals:[{id:'out', sheepID:fixture.id, kind:'sold', at:instant}],
+}}, {startDate:'2026-10-01', endDate:'2026-10-31', sex:'all', denominator:'opening_cohort'});
+assert.equal(metric.denominator, 0);
+assert.equal(metric.deathAndCullRate, null);
+assert.equal(metric.issueCounts['离群同一时刻或之后仍有圈舍记录，需核对原始记录'], 1);
+console.log(JSON.stringify({passed:true,withheldMortality:true,modelSelection:true,node:process.version,architecture:process.arch,checkpointDecode:true,tamperedCheckpointRejected:true,projection:true,legacyMiMoStatus:true,questionStopsModelLoop:true,realModel:false,realFarm:false}));

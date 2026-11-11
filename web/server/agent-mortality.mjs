@@ -51,7 +51,7 @@ export function mortalityAnalysis(snapshot, request) {
     if (exit || recordedExit <= at) {
       const exitAt = Math.min(exit ? time(exit) : Infinity, Number.isFinite(recordedExit) ? recordedExit : Infinity);
       if (events.some(r => !r.removal && time(r) >= exitAt)) {
-        issues.push({ sheepID: s.id, reason: "离群后有转舍记录，在场状态待核对" });
+        issues.push({ sheepID: s.id, reason: "离群同一时刻或之后仍有圈舍记录，需核对原始记录" });
       }
       return false;
     }
