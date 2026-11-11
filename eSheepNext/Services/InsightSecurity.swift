@@ -5,6 +5,7 @@ import Security
 enum MiMoCredentialKind: String, Codable, Sendable {
     case payAsYouGo
     case tokenPlan
+    case openAI
 
     var baseURL: URL {
         switch self {
@@ -12,15 +13,29 @@ enum MiMoCredentialKind: String, Codable, Sendable {
             URL(string: "https://api.xiaomimimo.com/v1")!
         case .tokenPlan:
             URL(string: "https://token-plan-cn.xiaomimimo.com/v1")!
+        case .openAI:
+            URL(string: "https://api.openai.com/v1")!
         }
     }
 }
 
 struct MiMoCredential: Codable, Equatable, Sendable {
     static let model = "mimo-v2.6-pro"
+    static let openAIModel = "gpt-5.4"
 
     let apiKey: String
     let kind: MiMoCredentialKind
+
+    var modelName: String { kind == .openAI ? Self.openAIModel : Self.model }
+
+    init(openAIKey: String) throws {
+        let value = openAIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.range(of: "^sk-[A-Za-z0-9_-]{9,508}$", options: .regularExpression) != nil else {
+            throw InsightOpenAIError.invalidKey
+        }
+        apiKey = value
+        kind = .openAI
+    }
 
     init(apiKey: String) throws {
         let normalized = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)

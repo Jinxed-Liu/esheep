@@ -84,7 +84,7 @@ final class InsightSessionCoordinator {
             controller.errorMessage = "账号身份已变更，原会话不会转入新账号。"
             return
         }
-        if AIPrivacyConsentStore.hasCurrentConsent(for: controller.conversationScope.accountID) {
+        if controller.hasProviderConsent {
             do { try await draftStore.enableAccount(accountID: controller.conversationScope.accountID) }
             catch { controller.errorMessage = "草稿安全存储暂时不可用：\(error.localizedDescription)" }
         }

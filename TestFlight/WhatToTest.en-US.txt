@@ -1,3 +1,5 @@
+Farm Insights supports OpenAI and MiMo. Choose a provider and model in AI settings, then ask for a month's death and cull rate or the herd count on a date. Check the opening roster, deaths and culls. In a test farm, review a text or photo draft before confirming it.
+
 Adds a dedicated search tab for sheep, pens, and existing events, with categorized results and detail navigation. Fixes repeated sheep detail pages when opening reproduction evidence and history.
 
 1. Search by current or previous ear tag, pen name, event type, date, or note. Check category counts, category selection, and Show All.

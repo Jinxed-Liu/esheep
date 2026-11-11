@@ -384,6 +384,7 @@ private final class DesignAcceptanceFixture {
                 client, account: account, farm: farm
             )
         }
+        AgentServerConsent.setConsent(true, for: accountID)
         try AIPrivacyConsentStore.saveCurrentConsent(for: accountID)
         _ = try await MiMoCredentialVault.shared.save(
             apiKey: "sk-design-acceptance-fixture-not-a-real-key", for: accountID

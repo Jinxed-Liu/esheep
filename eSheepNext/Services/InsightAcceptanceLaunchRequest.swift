@@ -22,6 +22,17 @@ enum InsightAcceptanceLaunchRequest {
         return value.isEmpty ? nil : value
     }()
 
+    // Fixed temporary file installed into the Dev container for visual acceptance.
+    // Photos, the pasteboard and business records are never accessed by this hook.
+    static func fixtureImages() throws -> [PendingInsightImage] {
+        guard ProcessInfo.processInfo.arguments.contains("--insight-acceptance-image") else { return [] }
+        let url = FileManager.default.temporaryDirectory.appending(path: "assistant-acceptance.png")
+        guard let bytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize, bytes <= 4 * 1024 * 1024 else {
+            throw MiMoClientError.invalidRequest
+        }
+        return [try InsightImageOptimizer.optimize(Data(contentsOf: url))]
+    }
+
     static func takePrompt() -> String? {
         guard !didSubmit, let prompt else { return nil }
         didSubmit = true

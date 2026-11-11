@@ -194,6 +194,15 @@ final class InsightRunBudget {
         toolRoundTrips += 1
     }
 
+    func recordRemoteUsage(input: Int, output: Int) throws {
+        modelRequests += 1
+        inputTokens += max(0, input)
+        outputTokens += max(0, output)
+        try checkActiveTime()
+        if modelRequests > configuration.maximumModelRequests { throw InsightRunPause(reason: .modelRequests, snapshot: snapshot) }
+        if outputTokens > configuration.maximumOutputTokens { throw InsightRunPause(reason: .outputTokens, snapshot: snapshot) }
+    }
+
     /// Wrap the real provider stream so every attempt, including failed or
     /// retried requests, consumes the shared allowance and deadline.
     func stream(

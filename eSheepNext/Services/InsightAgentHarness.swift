@@ -15,17 +15,20 @@ struct InsightAgentHarness {
         let exchanges: [MiMoFunctionExchange]
         let successfulToolNames: Set<String>
         let reasoningRecords: [MiMoReasoningRecord]
+        let needsUserInput: Bool
 
         init(
             text: String,
             exchanges: [MiMoFunctionExchange],
             successfulToolNames: Set<String>,
-            reasoningRecords: [MiMoReasoningRecord] = []
+            reasoningRecords: [MiMoReasoningRecord] = [],
+            needsUserInput: Bool = false
         ) {
             self.text = text
             self.exchanges = exchanges
             self.successfulToolNames = successfulToolNames
             self.reasoningRecords = reasoningRecords
+            self.needsUserInput = needsUserInput
         }
     }
 
@@ -38,17 +41,20 @@ struct InsightAgentHarness {
     private let maximumToolRoundTrips: Int
     private let maximumCandidateRepairs: Int
     private let maximumTransportRecoveries: Int
+    private let server: InsightServerAgentHarness?
 
     init(
         client: any MiMoResponding,
         maximumToolRoundTrips: Int = 8,
         maximumCandidateRepairs: Int = 3,
-        maximumTransportRecoveries: Int = 2
+        maximumTransportRecoveries: Int = 2,
+        server: InsightServerAgentHarness? = nil
     ) {
         self.client = client
         self.maximumToolRoundTrips = maximumToolRoundTrips
         self.maximumCandidateRepairs = max(1, maximumCandidateRepairs)
         self.maximumTransportRecoveries = max(0, maximumTransportRecoveries)
+        self.server = server
     }
 
     func run(
@@ -75,6 +81,12 @@ struct InsightAgentHarness {
         onEvent: @escaping @MainActor (InsightHarnessEvent) -> Void = { _ in },
         onCheckpoint: @MainActor ([MiMoFunctionExchange]) async throws -> Void = { _ in }
     ) async throws -> Result {
+        if let server {
+            return try await server.run(model: model, instructions: instructions, messages: messages, tools: tools,
+                credential: credential, initialExchanges: initialExchanges, execute: execute,
+                budget: budget ?? InsightRunBudget(configuration: configuration ?? InsightRunConfiguration()),
+                onEvent: onEvent, onCheckpoint: onCheckpoint)
+        }
         // A local typed planner may seed an authoritative observation before
         // the model turn. Keeping it in the same exchange format means the
         // model still sees normal tool evidence, while the caller can remove

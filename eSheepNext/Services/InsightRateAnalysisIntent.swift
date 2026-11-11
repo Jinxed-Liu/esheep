@@ -183,7 +183,8 @@ struct InsightRateAnalysisIntent: Equatable, Sendable {
         let text = question as NSString
         let matches = expression.matches(in: question, range: NSRange(location: 0, length: text.length))
         guard !matches.isEmpty else {
-            return containsExplicitDateFilter(question) ? nil : DateFilter(from: "", to: "", phrase: "")
+            let allHistory = ["全部历史", "所有历史", "整个历史", "allhistory"].first(where: question.contains)
+            return allHistory.map { DateFilter(from: "", to: "", phrase: $0) }
         }
         guard matches.count == 1, let match = matches.first else { return nil }
         let remainder = text.replacingCharacters(in: match.range, with: "")
