@@ -341,6 +341,14 @@ actor SupabaseAccountIdentityClient: AccountIdentityClient {
             service: "com.sheepfarm.esheepnext.supabase",
             accessGroup: nil
         )
+        let session: URLSession
+        if AccountLoginRoute.isProductionProject(credentials.url) {
+            let config = URLSessionConfiguration.default
+            config.protocolClasses = [AccountLoginURLProtocol.self] + (config.protocolClasses ?? [])
+            session = URLSession(configuration: config)
+        } else {
+            session = .shared
+        }
         let options = SupabaseClientOptions(
             auth: .init(
                 storage: storage,
@@ -348,7 +356,8 @@ actor SupabaseAccountIdentityClient: AccountIdentityClient {
                 flowType: .pkce,
                 autoRefreshToken: true,
                 emitLocalSessionAsInitialSession: true
-            )
+            ),
+            global: .init(session: session)
         )
         self.supabase = SupabaseClient(
             supabaseURL: credentials.url,

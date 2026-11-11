@@ -30073,6 +30073,26 @@
         }
       }
     },
+    "暂时无法连接网络。请检查无线局域网或蜂窝数据，并在系统设置中允许 eSheep+ 联网。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Check your Wi-Fi or cellular connection and allow eSheep+ to use the network in Settings."
+          }
+        }
+      }
+    },
+    "暂时无法连接登录服务，请重试。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The sign-in service is unavailable. Please try again."
+          }
+        }
+      }
+    },
     "暂时无法读取" : {
       "localizations" : {
         "en" : {

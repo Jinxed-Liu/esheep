@@ -89,8 +89,10 @@ struct WelcomeView: View {
                         Text(message).font(.footnote).foregroundStyle(.secondary)
                         HStack {
                             Button("重试连接") { Task { await connectionCheck.check() } }
-                            Button("系统设置") {
-                                if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                            if connectionCheck.showSettings {
+                                Button("系统设置") {
+                                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                                }
                             }
                         }
                         .font(.footnote)
