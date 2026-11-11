@@ -94,13 +94,27 @@ export async function nativeEventSnapshots(models, { timeZone = "Asia/Shanghai",
     if (row.removalBatchID) { fields.push(["同批离场数量", `${batchCounts.get(row.removalBatchID)} 只`]);
       if (row.kindRawValue === "sold") fields.push(["同批总售卖金额", row.batchTotalAmountText ?? "未填写"]);
     } else fields.push(["售卖金额", row.amountText ?? "未填写"]);
-    add(row, "removal", "removal", "herd", name, tag(row.sheepID), row.reason, fields);
+    add(row, "removal", "removal", "herd", name, tag(row.sheepID), row.reason, fields, { recordScope: Object.hasOwn(removalNames, row.kindRawValue) ? row.kindRawValue : null });
   }
-  const batches = index(rows("ProductionBatchRecord").filter((r) => r.sourceRawValue === "manual"));
+  const allBatches = index((models.ProductionBatchRecord ?? []).filter((r) => r.sourceRawValue === "manual"));
+  const batches = index([...allBatches.values()].filter((r) => r.deletedAt == null));
+  for (const row of allBatches.values()) add({ ...row, occurredAt: row.createdAt, recordedAt: row.createdAt },
+    "productionBatch", "batch", "herd", "建立生产批次", row.name, row.purpose,
+    [["生产目的", row.purpose], ["开始时间", farmDateText(row.startedAt, timeZone)], ["当前状态", row.deletedAt == null ? "保留中" : "已删除"]],
+    { isDerived: true, productionBatchID: row.id, recordScope: "batchCreated" });
+  for (const deletion of models.TombstoneRecord ?? []) {
+    const batch = allBatches.get(deletion.entityID);
+    if (deletion.entityType !== "productionBatch" || !batch) continue;
+    const undone = deletion.restoredAt != null;
+    add({ ...deletion, occurredAt: deletion.deletedAt, recordedAt: deletion.deletedAt, note: deletion.reason },
+      "productionBatch", "batch", "herd", "删除生产批次", batch.name, undone ? "已撤回删除" : "可撤回删除",
+      [["生产目的", batch.purpose], ["删除状态", undone ? "已撤回" : "待撤回"], ["删除账号ID", deletion.deletedByAccountID?.toLowerCase()]],
+      { isDerived: true, productionBatchID: batch.id, recordScope: "batchDeleted" });
+  }
   for (const row of rows("BatchMembershipRecord")) if (row.leftAt != null && batches.has(row.batchID)) {
     const batch = batches.get(row.batchID), reason = row.leaveReason?.trim() || "手工移出批次";
-    add({ ...row, occurredAt: row.leftAt, recordedAt: row.updatedAt }, "batchMembership", "all", "herd", "移出批次", tag(row.sheepID), `${batch.name} · ${reason}`,
-      [["生产批次", batch.name], ["生产目的", batch.purpose], ["加入时间", farmDateText(row.joinedAt, timeZone)], ["移出时间", farmDateText(row.leftAt, timeZone)], ["移出原因", reason]]);
+    add({ ...row, occurredAt: row.leftAt, recordedAt: row.updatedAt }, "batchMembership", "batch", "herd", "移出批次", tag(row.sheepID), `${batch.name} · ${reason}`,
+      [["生产批次", batch.name], ["生产目的", batch.purpose], ["加入时间", farmDateText(row.joinedAt, timeZone)], ["移出时间", farmDateText(row.leftAt, timeZone)], ["移出原因", reason]], { recordScope: "batchDeparture", note: "" });
   }
   const linesByFeed = new Map();
   for (const line of rows("FeedRecordLine")) { const group = linesByFeed.get(line.feedRecordID) ?? []; group.push(line); linesByFeed.set(line.feedRecordID, group); }
@@ -115,7 +129,7 @@ export async function nativeEventSnapshots(models, { timeZone = "Asia/Shanghai",
       ["顿次", row.mealName || "未填写"], ["原料明细", lines], ["剩料kg", row.remainingKilogramsText], ["废弃kg", row.discardedKilogramsText]];
     if (run) fields.push(["TMR批次", run.batchCodeSnapshot], ["TMR配方", `${run.formulaNameSnapshot} v${run.formulaRevision}`], ["实际TMR kg", allocation.actualKilogramsText], ["目标TMR kg", allocation.targetKilogramsTextSnapshot]);
     else fields.push(["旧位置备注", row.feederName || "无"]);
-    add(row, "feed", "feed", "feeding", run ? "TMR 投喂" : "直接投喂", pen(row.penID, "未知圈舍"), row.mealName || mode, fields);
+    add(row, "feed", "feed", "feeding", run ? "TMR 投喂" : "直接投喂", pen(row.penID, "未知圈舍"), row.mealName || mode, fields, { recordScope: run ? "tmrFeed" : "directFeed" });
   }
   const links = rows("HealthSubjectLink");
   for (const row of rows("HealthRecord")) {
@@ -124,12 +138,12 @@ export async function nativeEventSnapshots(models, { timeZone = "Asia/Shanghai",
     const subject = names.length > 1 ? `${names.length} 只羊` : names[0] ?? (row.sheepID ? tag(row.sheepID) : row.penID ? pen(row.penID, "未知圈舍") : "未关联对象");
     add(row, "health", "health", "health", row.kindRawValue === "vaccination" ? "疫苗" : "治疗", subject, row.itemNameSnapshot,
       [["项目", row.itemNameSnapshot], ["对象", names.length ? names.join("、") : subject], ["剂量", [row.quantityText, row.unit].filter(Boolean).join(" ")], ["途径", row.route || "未填写"]],
-      { relatedSheepIDs: [...new Set([...ids, row.sheepID].filter(Boolean))] });
+      { relatedSheepIDs: [...new Set([...ids, row.sheepID].filter(Boolean))], recordScope: row.kindRawValue === "vaccination" ? "vaccination" : "treatment" });
   }
   for (const row of rows("ReproductionRecord")) add(row, "reproduction", "reproduction", "reproduction", reproNames[row.kindRawValue] ?? row.kindRawValue,
     tag(row.eweID, "未知母羊"), row.kindRawValue === "lambing" ? `产羔 ${row.lambCount} 只` : row.result || row.semenNameSnapshot || tag(row.sireID, "已录入"),
     [["母羊", tag(row.eweID, "未知母羊")], ["公羊", tag(row.sireID, "未关联")], ["冻精", row.semenNameSnapshot ?? "未使用"], ["冻精供体", row.semenDonorNameSnapshot],
-      ["胎次", row.parity], ["产羔数", row.kindRawValue === "lambing" ? row.lambCount : ""], ["死胎数", row.birthDeadCount], ["结果", row.result || "未填写"], ["繁殖周期",cycleLabel(row)], ["配种轮次",({newRound:"新一轮配种",supplement:"本轮补配"})[row.breedingIntentRawValue]??"历史轮次待核对"], ["关联配种",breedingLabel(row)]]);
+      ["胎次", row.parity], ["产羔数", row.kindRawValue === "lambing" ? row.lambCount : ""], ["死胎数", row.birthDeadCount], ["结果", row.result || "未填写"], ["繁殖周期",cycleLabel(row)], ["配种轮次",({newRound:"新一轮配种",supplement:"本轮补配"})[row.breedingIntentRawValue]??"历史轮次待核对"], ["关联配种",breedingLabel(row)]], { recordScope: Object.hasOwn(reproNames, row.kindRawValue) ? row.kindRawValue : null });
   for (const row of rows("NoteRecord")) add({ ...row, note: "" }, "note", "note", "note", "备注", row.sheepID ? tag(row.sheepID) : row.penID ? pen(row.penID) : "未关联对象", row.text, [["内容", row.text]]);
   for (const [model, entity, targetModel, fk, nameKey, label, reversal] of [
     ["InventoryTransactionRecord", "inventoryTransaction", "InventoryLotRecord", "inventoryLotID", "catalogName", "药品疫苗", "删除健康记录反向恢复库存："],
@@ -139,7 +153,7 @@ export async function nativeEventSnapshots(models, { timeZone = "Asia/Shanghai",
     for (const row of rows(model).filter((r) => r.kindRawValue !== "consumption" && !r.note?.startsWith(reversal))) {
       const target = targets.get(row[fk]), quantity = row.kindRawValue === "receipt" && !row.quantityText.startsWith("-") ? `+${row.quantityText}` : row.quantityText;
       const name = target ? target[nameKey] + (target.batchNumber ? ` · ${target.batchNumber}` : "") : "未知批次";
-      add(row, entity, "inventory", "inventory", label + (row.kindRawValue === "receipt" ? "入库" : "盘点"), name, quantity, [["数量变化", quantity]]);
+      add(row, entity, "inventory", "inventory", label + (row.kindRawValue === "receipt" ? "入库" : "盘点"), name, quantity, [["数量变化", quantity]], { recordScope: `${entity === "semenTransaction" ? "semen" : "inventory"}${row.kindRawValue === "receipt" ? "Receipt" : "Adjustment"}` });
     }
   }
   return events.sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || Date.parse(b.recordedAt) - Date.parse(a.recordedAt) || b.id.localeCompare(a.id));

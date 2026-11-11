@@ -49,7 +49,7 @@ final class ESheepCloudIntegratedTests: XCTestCase {
         let concurrency = await transport.maxConcurrentDownloads
         let calls = await transport.downloadCount
         XCTAssertGreaterThan(concurrency, 1)
-        XCTAssertLessThanOrEqual(concurrency, 3)
+        XCTAssertLessThanOrEqual(concurrency, 6)
         XCTAssertEqual(calls, manifest.chunks.count)
     }
 

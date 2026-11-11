@@ -1,0 +1,18 @@
+{
+  "date": "2026-11-11",
+  "change": "网页助手按牧场当地日期读取在群名册",
+  "source": "a3b90b3c",
+  "frontendVersion": "0530e73c-2db5-48f2-8e94-d731e1f3cd87",
+  "productionWorker": "81783b55-b0e8-4e5a-baaa-86808f7adb7f",
+  "stagingWorker": "ccf138df-3780-4a69-8971-45c004a28923",
+  "containerImage": "sha256:9a8ae8405ec5d367b67965df358791679619b45061ddaf5468f8f71878c0fd2b",
+  "maxInstances": 2,
+  "schemaMigration": "20261111005841_daily_herd_roster_boundary",
+  "previousProductionWorker": "5bdea9c8-212f-412d-8f0c-28fd1b390990",
+  "previousImage": "sha256:274597bc130a0a908e842a8c522eff6e915b468f88beeb5b7ff85843d4d79743",
+  "validation": {
+    "focusedChecks": 25,
+    "stagingSafari": "登录账号，通过普通网页提问，历史期初和当前的回复均与同一牧场对应日期的云端名册一致。",
+    "production": "同一摘要的实际容器通过每日名册及旧版 SDK 自检，正式网页 HTTP 200，未登录状态接口 HTTP 401。"
+  }
+}

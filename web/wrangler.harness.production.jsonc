@@ -8,8 +8,8 @@
   "preview_urls": false,
   "containers": [{
     "class_name": "HarnessContainer",
-    "image": "registry.cloudflare.com/19903f0d75fedc224e6e398c6eaa5cbe/esheepplus-harness@sha256:eae93a1235b1f81ea97abea5cddc5759ed6439afb6e854ef8b5738f15f8ea6db",
-    "image_build_context": ".",
+    "image": "registry.cloudflare.com/19903f0d75fedc224e6e398c6eaa5cbe/esheepplus-agent@sha256:d5600968250c6424db0bb8fe35ca36ad7f0283d6b1b4124f1f07f7995d337bb3",
+    "image_build_context": "..",
     "instance_type": "basic",
     "max_instances": 2
   }],

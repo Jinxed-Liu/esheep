@@ -4,7 +4,7 @@ import Foundation
 /// byte. The response cannot allocate beyond the manifest's compressed size.
 final class ESheepCloudBoundedDownload: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let expectedBytes: Int
-    private let configuration: URLSessionConfiguration
+    private let session: URLSession
     private let lock = NSLock()
     private var task: URLSessionDataTask?
     private var cancelled = false
@@ -13,9 +13,9 @@ final class ESheepCloudBoundedDownload: NSObject, URLSessionDataDelegate, @unche
     private var failure: Error?
     private var continuation: CheckedContinuation<Data, Error>?
 
-    init(expectedBytes: Int, configuration: URLSessionConfiguration = .default) {
+    init(expectedBytes: Int, session: URLSession) {
         self.expectedBytes = expectedBytes
-        self.configuration = configuration
+        self.session = session
     }
 
     func receive(_ url: URL) async throws -> Data {
@@ -23,10 +23,10 @@ final class ESheepCloudBoundedDownload: NSObject, URLSessionDataDelegate, @unche
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
                 data.reserveCapacity(expectedBytes)
-                let queue = OperationQueue()
-                queue.maxConcurrentOperationCount = 1
-                let session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
-                let task = session.dataTask(with: url)
+                var request = URLRequest(url: url)
+                request.assumesHTTP3Capable = true
+                let task = session.dataTask(with: request)
+                task.delegate = self
                 lock.lock()
                 self.task = task
                 let cancelled = self.cancelled
@@ -69,7 +69,6 @@ final class ESheepCloudBoundedDownload: NSObject, URLSessionDataDelegate, @unche
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        defer { session.finishTasksAndInvalidate() }
         guard let continuation else { return }
         self.continuation = nil
         if let failure = failure ?? error { continuation.resume(throwing: failure) }

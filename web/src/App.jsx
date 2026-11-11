@@ -24,6 +24,11 @@ import {
 
 import { reportCloudReadProgress, subscribeCloudReadProgress } from "./lib/cloudReadProgress.js";
 import * as supabaseModule from "./lib/supabase.js";
+import {
+  EntryPage, EventsPage, FeedingPage, FlockPage, InsightsPage,
+  AlertsPage, CarePage, ProductionBatchesPage, SearchPage, SettingsPage, TMRPage,
+  preloadPage,
+} from "./lib/pageModules.js";
 
 function loadSupabaseModule() {
   // Cloud access is required on every entry. Static imports let the browser
@@ -42,18 +47,7 @@ const workspaceDataSource = new WorkspaceDataSource({
   },
 });
 
-const EntryPage = lazy(() => import("./components/pages/EntryPage.jsx"));
-const EventsPage = lazy(() => import("./components/pages/EventsPage.jsx"));
-const FeedingPage = lazy(() => import("./components/pages/FeedingPage.jsx"));
-const FlockPage = lazy(() => import("./components/pages/FlockPage.jsx"));
-const InsightsPage = lazy(() => import("./components/pages/InsightsPage.jsx"));
-const AlertsPage = lazy(() => import("./components/pages/AppAlignedPages.jsx").then((module) => ({ default: module.AlertsPage })));
-const CarePage = lazy(() => import("./components/pages/AppAlignedPages.jsx").then((module) => ({ default: module.CarePage })));
-const ProductionBatchesPage = lazy(() => import("./components/pages/AppAlignedPages.jsx").then((module) => ({ default: module.ProductionBatchesPage })));
-const SearchPage = lazy(() => import("./components/pages/AppAlignedPages.jsx").then((module) => ({ default: module.SearchPage })));
 const RecordDialog = lazy(() => import("./components/RecordDialog.jsx").then((module) => ({ default: module.RecordDialog })));
-const SettingsPage = lazy(() => import("./components/pages/SettingsPage.jsx"));
-const TMRPage = lazy(() => import("./components/pages/TMRPage.jsx"));
 
 function createID() {
   return globalThis.crypto?.randomUUID?.() ?? `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -212,6 +206,7 @@ export function App() {
     return sheep.concat(pens, events);
   }, [workspace]);
   const navigate = useCallback((page, context = {}) => {
+    void preloadPage(page);
     setRouteRequest({ page, context });
   }, []);
 
@@ -584,7 +579,7 @@ export function App() {
     case "tmr-plans":
     case "tmr-formulas": content = <TMRPage workspace={workspace} mode={activePage} onCreateRecord={openRecord} onNavigate={navigate} />; break;
     case "insights":
-    case "assistant": content = <InsightsPage workspace={workspace} mode={activePage} onNavigate={navigate} onReproductionSubmit={(record,id,onProgress)=>sendPenAction(record,id,onProgress,"繁殖")} />; break;
+    case "assistant": content = <InsightsPage workspace={workspace} mode={activePage} onNavigate={navigate} onCreateRecord={openRecord} onReproductionSubmit={(record,id,onProgress)=>sendPenAction(record,id,onProgress,"繁殖")} />; break;
     case "search": content = <SearchPage searchIndex={searchIndex} onOpenResult={selectSearchResult} />; break;
     case "events": content = <EventsPage workspace={workspace} selectedID={routeContext.selectedID} exportHint={routeContext.exportHint} />; break;
     case "settings": content = <SettingsPage workspace={workspace} authState={authState} isConfigured={isSupabaseConfigured} onSignIn={handleSignIn} onAppleSignIn={handleAppleSignIn} onSignOut={handleSignOut} onReloadCloud={reloadCloud} environmentPreferences={environmentPreferences} />; break;
@@ -611,6 +606,7 @@ export function App() {
       <AppHeader
         activePage={routeRequest.page}
         onNavigate={navigate}
+        onPreloadPage={preloadPage}
         workspace={workspace}
         onFarmChange={changeFarm}
         onSignOut={handleSignOut}

@@ -1,0 +1,62 @@
+// Operator-only synthetic runtime check. No real credentials or farm writes.
+import assert from 'node:assert/strict';
+import { gzipSync } from 'node:zlib';
+import { decodeCheckpointChunk, sha256 } from '../src/lib/cloudV2Checkpoint.js';
+import { createV2Projection, finishV2Projection } from '../src/lib/cloudV2Projection.js';
+import schema from '../../tools/esheep_cloud_checkpoint_schema_v1.json' with { type:'json' };
+import { snapshotFromCloudProjection } from './agent-cloud.mjs';
+import { createAssistantAPI } from './api.mjs';
+import { createAgentAPI } from './agent-api.mjs';
+import { dailyRosterEvidence, rosterFilters } from "./agent-roster.mjs";
+import { verifyLegacyWitness } from './agent-legacy-roster.mjs';
+import { readFile } from 'node:fs/promises';
+import { mortalityAnalysis } from './agent-mortality.mjs';
+import { AGENT_CONSENT_VERSION, AGENT_MODEL_OPTIONS } from './agent-contract.mjs';
+
+const farmID='00000000-0000-4000-8000-000000000001';
+const record=(model,fields)=>({model,values:{...Object.fromEntries(Object.entries(schema[model].fields).map(([k,t])=>[k,t.endsWith('?')?null:t==='UUID'?farmID:t==='Date'?800000000:t==='Bool'?false:t==='String'?'':t==='Data'?{json:{}}:0])),...fields}});
+const rows=[record('FarmRecord',{id:farmID,name:'容器隔离验收牧场',timeZoneIdentifier:'Asia/Shanghai'})];
+const raw=Buffer.from(JSON.stringify(rows)), zipped=gzipSync(raw);
+const descriptor={compressedBytes:zipped.length,uncompressedBytes:raw.length,compressedSHA256:await sha256(zipped),contentSHA256:await sha256(raw),recordCount:1,modelNames:['FarmRecord']};
+assert.deepEqual(await decodeCheckpointChunk(zipped,descriptor),rows);
+await assert.rejects(()=>decodeCheckpointChunk(zipped,{...descriptor,compressedSHA256:'0'.repeat(64)}));
+const manifest={farmID,farmGeneration:1,checkpointID:'00000000-0000-4000-8000-000000000002',boundaryEventSequence:0,modelCounts:{FarmRecord:1}};
+const projection={...finishV2Projection(createV2Projection(rows,manifest)),manifest,revision:0};
+const snapshot=await snapshotFromCloudProjection(projection,{id:farmID,generation:1});
+assert.equal(snapshot.farm.name,'容器隔离验收牧场');
+const environment={SUPABASE_URL:'https://synthetic.supabase.co',SUPABASE_PUBLISHABLE_KEY:'synthetic-public',CODEX_HARNESS_STATE_DIR:'/state/runtime-agent-check'};
+const legacy=createAssistantAPI({environment});
+const status=await (await legacy(new Request('http://localhost/api/assistant/status'))).json();
+assert.equal(status.configured,true);assert.equal(status.model,'mimo-v2.6-pro');
+let modelCalls=0,cloudReads=0;
+const api=createAgentAPI({environment,authVerifier:async()=>({userID:'synthetic',membership:{farm_id:farmID}}),snapshotLoader:async()=>{cloudReads++;return snapshot;},modelTurn:async()=>{modelCalls++;return {output:[{type:'function_call',name:'ask_user_question',call_id:'q',arguments:JSON.stringify({questions:[{title:'请选择统计日期',options:[]}]})}],usage:{output_tokens:5}};}});
+const response=await api(new Request(`http://localhost/api/assistant/agent/turn?farm_id=${farmID}`,{method:'POST',headers:{'x-assistant-api-key':'sk-synthetic-runtime-only','x-agent-consent':AGENT_CONSENT_VERSION},body:JSON.stringify({provider:'openai',input:[{role:'user',content:'统计增重'}]})}));
+const events=(await response.text()).trim().split('\n').map(JSON.parse);
+assert.equal(events.at(-1).needsUserInput,true);assert.equal(modelCalls,1);assert.equal(cloudReads,0);
+assert.ok(AGENT_MODEL_OPTIONS.openai.includes('gpt-5.4-mini'));
+const fixture = { id: 'fixture', sex: 'ewe', enteredAt: '2026-01-01T00:00:00Z' };
+const instant = '2026-09-01T00:00:00Z';
+const metric = mortalityAnalysis({ ...snapshot, capturedAt:'2026-11-01T00:00:00Z', analyticsSource: {
+  sheep:[fixture], transfers:[{id:'move', sheepID:fixture.id, at:instant}],
+  removals:[{id:'out', sheepID:fixture.id, kind:'sold', at:instant}],
+}}, {startDate:'2026-10-01', endDate:'2026-10-31', sex:'all', denominator:'period_exposed'});
+assert.equal(metric.denominator, 0);
+assert.equal(metric.deathAndCullRate, null);
+assert.equal(metric.issueCounts['离群同一时刻或之后仍有圈舍记录，需核对原始记录'], 1);
+const roster = dailyRosterEvidence(projection, {id:farmID}, {day:"2026-09-30",zone:"Asia/Shanghai",head:0}, rosterFilters({}));
+assert.equal(roster.count, 0);
+assert.match(roster.text, /日末在群名册共 0 只/);
+const day = "2026-10-01";
+const opening = dailyRosterEvidence({ ...projection, models: { ...projection.models,
+  SheepRecord: ["one", "two"].map(id => ({ id, statusRawValue: "active" })) } },
+  snapshot.farm, {day, zone:"Asia/Shanghai", head:0}, rosterFilters({day, opening:true}), {includeMembers:true});
+const matched = mortalityAnalysis({ ...snapshot, capturedAt:"2026-11-01T00:00:00Z", analyticsSource:{
+  removals:["one", "ONE", "outsider"].map(sheepID => ({ sheepID, kind:"culled", at:"2026-10-15T00:00:00Z" })) } },
+  { month:10 }, opening);
+assert.equal(matched.denominator, 2);
+assert.equal(matched.cullCount, 1);
+assert.equal(matched.deathAndCullRate, 0.5);
+const wasm = await WebAssembly.instantiate(await readFile(new URL("../public/lzfse.wasm",import.meta.url)),{});
+assert.equal(typeof wasm.instance.exports.decode,"function");
+assert.throws(() => verifyLegacyWitness([{id:"one"}],{models:{SheepRecord:[{id:"other",statusRawValue:"active"}]}}));
+console.log(JSON.stringify({passed:true,archivedHerdRoster:true,openingRosterMortality:true,dailyHerdRoster:true,withheldMortality:true,modelSelection:true,node:process.version,architecture:process.arch,checkpointDecode:true,tamperedCheckpointRejected:true,projection:true,legacyMiMoStatus:true,questionStopsModelLoop:true,realModel:false,realFarm:false}));

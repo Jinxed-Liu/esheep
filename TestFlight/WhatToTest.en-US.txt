@@ -1,12 +1,8 @@
-Farm Insights supports OpenAI and MiMo. Choose a provider and model in AI settings, then ask for a month's death and cull rate or the herd count on a date. Check the opening roster, deaths and culls. In a test farm, review a text or photo draft before confirming it.
+Please test first sync and the first few interactions after entering a farm.
 
-Adds a dedicated search tab for sheep, pens, and existing events, with categorized results and detail navigation. Fixes repeated sheep detail pages when opening reproduction evidence and history.
+1. On a device that has not downloaded the farm, sign in and open it. Check downloaded bytes, imported chunks and progress while fetching recent changes.
+2. Briefly interrupt the connection while recent changes are loading, then reconnect. Check that sync resumes automatically and opens the farm.
+3. On iOS 17, open the active sheep list and the workbench from Home, then tap the weather card for the hourly forecast. Check taps, back navigation and weather loading.
+4. In the farm assistant settings, select a configured provider and model, then ask a question about farm data and check the answer.
 
-1. Search by current or previous ear tag, pen name, event type, date, or note. Check category counts, category selection, and Show All.
-2. Open sheep, pen, and event details, then return to search. The query and filters should be retained.
-3. With the keyboard visible, scroll to the bottom and verify the final result and Show All remain visible and tappable. Horizontal filters should use the screen width.
-4. From the Home herd count, open a ewe and enter reproduction evidence and history three times. Open a lambing record and return one level at a time. Each tap should open the intended page without adding duplicate sheep details.
-5. Repeat the same journey from search and confirm the query is retained on return.
-6. Export a single-sheep archive and check historical dates, event details, and related offspring. Also check large-screen layouts and avatar display.
-
-Please report the entry point, ear tag, steps, and screenshots. Viewing details in a real farm does not require changing business records.
+Please include the iOS version, the step where you got stuck, the displayed progress and how long you waited.

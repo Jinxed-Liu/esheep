@@ -22,7 +22,10 @@ struct SettingsAvatarHeader: View, Animatable {
     }
 
     var body: some View {
-        let width = metrics.width > 0 ? metrics.width : max(100, motion.availableWidth)
+        // The overlay measures the stationary viewport. Measuring this header
+        // after assigning its own width locks the first 100pt proposal in place
+        // on older SwiftUI, while the visible photo expands to the full viewport.
+        let width = max(100, motion.availableWidth)
         let expandedSide = settingsAvatarExpandedSide(width: width, height: motion.availableHeight)
         let status = metrics.statusBarHeight
         let progress = boundedSettingsAvatarProgress(expansion)
@@ -61,11 +64,6 @@ struct SettingsAvatarHeader: View, Animatable {
         .frame(width: width, height: height, alignment: .topLeading)
         .accessibilityElement(children: .contain)
         .accessibilityValue(Text(account.displayName + " · " + farm.name))
-        .onGeometryChange(for: CGFloat.self) { geometry in
-            geometry.size.width
-        } action: { width in
-            motion.updateAvailableWidth(width)
-        }
         .background {
             SettingsAvatarWindowProbe { value in
                 let stable = SettingsAvatarWindowMetrics(

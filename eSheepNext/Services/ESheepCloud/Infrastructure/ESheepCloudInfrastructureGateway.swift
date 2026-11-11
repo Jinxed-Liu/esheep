@@ -5,6 +5,9 @@ import Supabase
 /// The only V2 client component that knows which database and object-storage
 /// SDK backs eSheep+ Cloud. No SDK type crosses this adapter boundary.
 actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTransferTransport, ESheepCloudCheckpointGateway {
+    // A single multiplexed HTTP/2 connection can stall every chunk. Reuse a
+    // small number of independent connections across the ordered download window.
+    private static let checkpointSessions = (0..<3).map { _ in URLSession(configuration: .ephemeral) }
     private let client: SupabaseClient
     private let transferSession: URLSession
 
@@ -37,12 +40,13 @@ actor ESheepCloudInfrastructureGateway: ESheepCloudGateway, ESheepCloudAssetTran
 
     func downloadCheckpointChunk(_ download: ESheepCloudCheckpointTicket.Download,
                                  descriptor: ESheepCloudCheckpointManifest.Chunk) async throws -> Data {
-        guard download.index == descriptor.index, download.url.scheme == "https" else {
+        guard download.index >= 0, download.index == descriptor.index, download.url.scheme == "https" else {
             throw ESheepCloudCheckpointError.malformedRecord
         }
         let phase = ESheepCloudDiagnostics.Phase("checkpoint-download")
         defer { phase.end(items: descriptor.compressedBytes) }
-        let data = try await ESheepCloudBoundedDownload(expectedBytes: descriptor.compressedBytes)
+        let session = Self.checkpointSessions[download.index % Self.checkpointSessions.count]
+        let data = try await ESheepCloudBoundedDownload(expectedBytes: descriptor.compressedBytes, session: session)
             .receive(download.url)
         guard data.count == descriptor.compressedBytes,
               ESheepCloudCheckpointArchive.digest(data) == descriptor.compressedSHA256 else {

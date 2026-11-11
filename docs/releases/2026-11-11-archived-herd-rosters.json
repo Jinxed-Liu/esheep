@@ -1,0 +1,31 @@
+{
+  "date": "2026-11-11",
+  "change": "使用迁移前已验证的备份和完整登记流水还原期初名册，并与迁移后的名册按个体核对。",
+  "code": "f6e58ee227410b72f917b60f7a0abc8c72c5cfd6",
+  "frontendVersion": "7611f935-1aee-44e8-9685-2cbca9b2842c",
+  "previousImage": "sha256:673d6164a17f4282faa2a8ef727609c44241162a2e9637961a6b35c00b46351b",
+  "schemaMigration": "20261111090826_archived_herd_roster_source",
+  "deployments": {
+    "staging": {
+      "worker": "b9a14900-4994-470b-ae6d-fda07149dff3",
+      "previousWorker": "b38a33a3-3bf6-4b77-9cd9-25920f40ccc7",
+      "image": "registry.cloudflare.com/19903f0d75fedc224e6e398c6eaa5cbe/esheepplus-agent@sha256:d5600968250c6424db0bb8fe35ca36ad7f0283d6b1b4124f1f07f7995d337bb3",
+      "maxInstances": 2,
+      "runtimeProbe": true
+    },
+    "prod": {
+      "worker": "761780c5-cbfd-4f1d-a0a8-f0a87b7f635d",
+      "previousWorker": "2012053e-4d71-46ae-9d2a-c89edb6110ab",
+      "image": "registry.cloudflare.com/19903f0d75fedc224e6e398c6eaa5cbe/esheepplus-agent@sha256:d5600968250c6424db0bb8fe35ca36ad7f0283d6b1b4124f1f07f7995d337bb3",
+      "maxInstances": 2,
+      "runtimeProbe": true
+    }
+  },
+  "checks": {
+    "targetedTests": 33,
+    "checkpointJournalComparedAgainstIndependentReverseRoster": true,
+    "stagingAuthenticatedBrowser": true,
+    "productionAuthenticatedBrowser": "Fresh chat, one month-only question, registered opening cohort and monthly incidence matched the independent reconciliation.",
+    "productionBusinessRecordWrites": 0
+  }
+}

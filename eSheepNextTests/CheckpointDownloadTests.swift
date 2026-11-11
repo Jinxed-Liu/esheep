@@ -6,23 +6,33 @@ final class CheckpointDownloadTests: XCTestCase {
     func testBufferedDownloadRejectsTruncationAndOversize() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [CheckpointDownloadProtocol.self]
-        let bytes = try await ESheepCloudBoundedDownload(expectedBytes: 6, configuration: config)
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let bytes = try await ESheepCloudBoundedDownload(expectedBytes: 6, session: session)
             .receive(URL(string: "https://checkpoint.invalid/ok")!)
         XCTAssertEqual(bytes, Data("abcdef".utf8))
         for path in ["short", "large", "denied"] {
             do {
-                _ = try await ESheepCloudBoundedDownload(expectedBytes: 6, configuration: config)
+                _ = try await ESheepCloudBoundedDownload(expectedBytes: 6, session: session)
                     .receive(URL(string: "https://checkpoint.invalid/\(path)")!)
                 XCTFail("Invalid download must fail: \(path)")
             } catch { }
         }
+        async let first = ESheepCloudBoundedDownload(expectedBytes: 6, session: session)
+            .receive(URL(string: "https://checkpoint.invalid/ok")!)
+        async let second = ESheepCloudBoundedDownload(expectedBytes: 6, session: session)
+            .receive(URL(string: "https://checkpoint.invalid/also-ok")!)
+        let results = try await [first, second]
+        XCTAssertEqual(results, [bytes, bytes])
     }
 
     func testCancelledDownloadCannotReturnData() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [CheckpointDownloadProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
         let task = Task {
-            try await ESheepCloudBoundedDownload(expectedBytes: 6, configuration: config)
+            try await ESheepCloudBoundedDownload(expectedBytes: 6, session: session)
                 .receive(URL(string: "https://checkpoint.invalid/wait")!)
         }
         task.cancel()

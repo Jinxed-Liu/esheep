@@ -1,7 +1,8 @@
 // Keep the previous production bundles available to already-open web apps.
 // Vite's hashed dynamic imports can outlive index.html in Safari web apps.
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { generatedAssetHeaders } from "../server/static-asset-cache.mjs";
 
 const origin = "https://app.esheepplus.com";
 const assetRoot = path.resolve("dist/client");
@@ -84,8 +85,18 @@ for (const asset of new Set(priorGenerations.flat())) {
   }
 }
 
-const manifest = {
-  generations: [[...currentAssets].sort(), ...priorGenerations].slice(0, 2),
-};
+// Header-only releases can have the same bundle set as the previous release.
+// Do not let those duplicates evict a distinct generation used by open tabs.
+const generations = new Map([[...currentAssets], ...priorGenerations].map(assets => {
+  const sorted = [...new Set(assets)].sort();
+  return [JSON.stringify(sorted), sorted];
+}));
+const manifest = { generations: [...generations.values()].slice(0, 2) };
 await writeFile(localPath(manifestPath), JSON.stringify(manifest));
+// The Vite manifest predates the compatibility copies. Apply the same immutable
+// policy to retained hashed bundles; mutable manifests still revalidate.
+const assetFiles = await readdir(path.join(assetRoot, "assets"), { withFileTypes: true });
+await writeFile(path.join(assetRoot, "_headers"), generatedAssetHeaders(
+  assetFiles.filter(entry => entry.isFile()).map(entry => `assets/${entry.name}`),
+));
 console.log(`Preserved ${currentAssets.size} current production assets (${copied} copied), plus ${priorGenerations.length} earlier generations.`);

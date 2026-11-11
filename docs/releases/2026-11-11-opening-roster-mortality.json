@@ -1,0 +1,50 @@
+{
+  "date": "2026-11-11",
+  "change": "按期初在群名册中的羊只 ID 匹配期间死亡、淘汰，按只去重。",
+  "sourceCommit": "c451c59af6fbf6fb49b50aa3d0975d5b19e4106a",
+  "image": "registry.cloudflare.com/19903f0d75fedc224e6e398c6eaa5cbe/esheepplus-agent@sha256:673d6164a17f4282faa2a8ef727609c44241162a2e9637961a6b35c00b46351b",
+  "previousImage": "sha256:9a8ae8405ec5d367b67965df358791679619b45061ddaf5468f8f71878c0fd2b",
+  "maxInstances": 2,
+  "webArtifact": "web-c451c59a.tar.gz",
+  "webArtifactSHA256": "76f4b9b2f6bb9cbebb05075c2a5db499ebdb84187d96a0ee7384ae98eeae1fe1",
+  "deployments": {
+    "staging": {
+      "worker": "b38a33a3-3bf6-4b77-9cd9-25920f40ccc7",
+      "previousWorker": "ccf138df-3780-4a69-8971-45c004a28923",
+      "web": "4207218c-045c-488d-8301-3f6d54665b18",
+      "previousWeb": "3d4ab721-5503-42ce-bdc5-8a5dd3ec3382",
+      "runtimeProbe": true,
+      "webChecks": {
+        "home": 200,
+        "unauthenticatedStatus": 401,
+        "assets": {
+          "/assets/index-BC-WVCz-.js": "5046eb1254e431c735fe1e110b1735e671e7e08c0ae45eaa278991145b063f3e",
+          "/assets/InsightsPage-y6lElbRW.js": "326b24ef9ffe95fa46417498a6f4d06775a7435d729840cdec63c5bbf113cabf",
+          "/assets/index-DNKOWdsc.js": "4abe6f2c87cc0f27f39f7be622ea70e386e73b6248f7621d8ecb1fb12004dc2d"
+        }
+      }
+    },
+    "production": {
+      "worker": "2012053e-4d71-46ae-9d2a-c89edb6110ab",
+      "previousWorker": "81783b55-b0e8-4e5a-baaa-86808f7adb7f",
+      "web": "7611f935-1aee-44e8-9685-2cbca9b2842c",
+      "previousWeb": "0530e73c-2db5-48f2-8e94-d731e1f3cd87",
+      "runtimeProbe": true,
+      "webChecks": {
+        "home": 200,
+        "unauthenticatedStatus": 401,
+        "assets": {
+          "/assets/index-BC-WVCz-.js": "5046eb1254e431c735fe1e110b1735e671e7e08c0ae45eaa278991145b063f3e",
+          "/assets/InsightsPage-y6lElbRW.js": "326b24ef9ffe95fa46417498a6f4d06775a7435d729840cdec63c5bbf113cabf",
+          "/assets/index-DNKOWdsc.js": "4abe6f2c87cc0f27f39f7be622ea70e386e73b6248f7621d8ecb1fb12004dc2d"
+        }
+      }
+    }
+  },
+  "validation": {
+    "focusedTests": 35,
+    "authenticatedBrowser": "Safari, staging, new chat, one unprompted monthly mortality query. Result agreed with the independent checkpoint and event replay.",
+    "openingRosterMatched": true,
+    "productionBusinessWrites": 0
+  }
+}

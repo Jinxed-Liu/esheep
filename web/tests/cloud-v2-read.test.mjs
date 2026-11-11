@@ -480,3 +480,24 @@ test("reproduction revoke preserves signed operation time and advances revision 
   assert.equal(result.models.ReproductionRecord[0].deletedAt, null);
   assert.equal(result.models.ReproductionRecord[0].revision, 9);
 });
+
+test("dated roster replays to the day boundary independently of the latest open farm", async () => {
+  const { client, options, manifest, read, addEvent } = await incrementalFixture();
+  const rpc = client.rpc;
+  client.rpc = (name, args) => {
+    if (name !== "esheep_cloud_checkpoint_manifest_v1") return rpc(name, args);
+    assert.equal(args.p_checkpoint_id, manifest.checkpointID);
+    return { data: { manifest } };
+  };
+  await addEvent(11, false);
+  await addEvent(12, true);
+  assert.equal((await read()).revision, 12);
+  const readAt = atMillis => loadCloudV2Projection(client, { id: farmID, generation: 3 }, {
+    ...options, historicalBoundary: { checkpointID: manifest.checkpointID, head: 11, atMillis },
+  });
+  const historical = await readAt(at + 11000);
+  assert.equal(historical.revision, 11);
+  assert.equal(historical.models.PenRecord.find(p => p.id === penB).isActive, false);
+  await assert.rejects(() => readAt(at + 10000));
+  assert.equal((await read()).models.PenRecord.find(p => p.id === penB).isActive, true);
+});

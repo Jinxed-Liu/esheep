@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowUp } from "@phosphor-icons/react/ArrowUp";
 import { ArrowLeft } from "@phosphor-icons/react/ArrowLeft";
 import { ChatCircleDots } from "@phosphor-icons/react/ChatCircleDots";
@@ -12,17 +12,16 @@ import { Sparkle } from "@phosphor-icons/react/Sparkle";
 import { X } from "@phosphor-icons/react/X";
 import { assistantHistoryKey, conversationGroup, conversationTitle, historyMessages, readAssistantHistory, writeAssistantHistory } from "../lib/assistantHistory.js";
 import "./FarmAssistant.css";
-import { buildAssistantSnapshot } from "../lib/assistantSnapshot.js";
 import {
-  getAssistantStatus,
-  streamAssistantTurn,
-} from "../lib/assistantClient.js";
-import {
-  loadMiMoCredential,
+  loadAssistantCredential,
+  normalizeOpenAIAPIKey,
   normalizeMiMoAPIKey,
-  removeMiMoCredential,
-  saveMiMoCredential,
+  removeAssistantCredential,
+  saveAssistantCredential,
 } from "../lib/assistantCredential.js";
+import { getOpenAIStatus, streamOpenAITurn, OPENAI_CONSENT_VERSION } from "../lib/openaiAssistant.js";
+import { recordSchemas } from "./RecordDialog.jsx";
+import { saveDraft, listDrafts } from "../lib/draftStore.js";
 import { getAssistantAccessToken } from "../lib/supabase.js";
 
 const MAX_IMAGES = 4;
@@ -30,9 +29,9 @@ const MAX_IMAGE_BYTES = 5 * 1_048_576;
 const SESSION_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACCEPTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const suggestions = [
-  "当前有效体重样本有多少？请说明截止日和样本边界。",
-  "完整产羔的出生死亡率是多少？分母是什么？",
-  "近 7 个完整自然日的采食分析里，哪些数据是估算？",
+  "分析牧场日增重，先帮我明确时间和羊群范围。",
+  "分析牧场繁殖效率，先确认需要看哪些指标。",
+  "上个月的死淘率是多少？",
 ];
 
 function storageKey(workspace) {
@@ -73,8 +72,8 @@ function introMessage(workspace, resumed = false) {
     return "请先登录并进入你有权访问的云端牧场，然后再使用牧场助手。";
   }
   return resumed
-    ? "已恢复这座牧场的 Codex harness 上下文。文字和图片均由 mimo-v2.6-pro 回答。"
-    : "这是围绕 Codex harness 建立的只读牧场助手。文字和图片均使用 mimo-v2.6-pro；所有牧场数字都通过 App 同口径查询工具核对。";
+    ? "已恢复这座牧场的 牧场 Agent 上下文。文字和图片均由 mimo-v2.6-pro 回答。"
+    : "这是围绕 牧场 Agent 建立的只读牧场助手。文字和图片均使用 mimo-v2.6-pro；所有牧场数字都通过 App 同口径查询工具核对。";
 }
 
 function formattedMessage(text) {
@@ -85,16 +84,42 @@ function formattedMessage(text) {
   });
 }
 
-export default function FarmAssistant(props) {
-  // Remount across account/farm boundaries so a late stream cannot enter another farm's history.
-  return <FarmAssistantWorkspace key={`${storageKey(props.workspace)}:${props.workspace.mode}`} {...props} />;
+function AgentQuestionCard({ questions, disabled, onAnswer }) {
+  const [answers, setAnswers] = useState({});
+  const questionGroupID = useId();
+  return <div className="assistant-question-card" aria-label="补充分析口径">
+    {questions.map((question, index) => <fieldset key={`${index}-${question.title}`} disabled={disabled}>
+      <legend>{question.title}</legend>
+      {question.options?.map(option => <label key={option}><input type="radio" name={`${questionGroupID}-${index}`} checked={answers[index] === option} onChange={() => setAnswers(value => ({ ...value, [index]: option }))} />{option}</label>)}
+      <input aria-label={`补充：${question.title}`} placeholder="也可以填写自己的口径" value={answers[index] ?? ""} onChange={event => setAnswers(value => ({ ...value, [index]: event.target.value }))} />
+    </fieldset>)}
+    <button type="button" className="assistant-key-prompt" disabled={disabled || questions.some((_, i) => !answers[i]?.trim())} onClick={() => onAnswer(questions.map((q, i) => `${q.title}：${answers[i]}`).join("\n"))}>按这些条件继续</button>
+  </div>;
 }
 
-function FarmAssistantWorkspace({ workspace, onBack }) {
+export default function FarmAssistant(props) {
+  const account = String(props.workspace.profile?.accountID ?? "unknown");
+  return <ProviderWorkspace key={`${account}:${props.workspace.farm?.id}:${props.workspace.mode}`} {...props} />;
+}
+function ProviderWorkspace(props) {
+  const key = `esheepplus.assistant.provider:${props.workspace.profile?.accountID ?? "unknown"}`;
+  const [provider, setProvider] = useState(() => { try { return localStorage.getItem(key) === "openai" ? "openai" : "mimo"; } catch { return "mimo"; } });
+  const selectProvider = (value) => { try { localStorage.setItem(key, value); } catch { /* selection remains in memory */ } setProvider(value); };
+  return <FarmAssistantWorkspace key={provider} {...props} provider={provider} selectProvider={selectProvider} />;
+}
+
+function FarmAssistantWorkspace({ workspace, onBack, onCreateRecord, provider, selectProvider }) {
+  const providerTitle = provider === "openai" ? "OpenAI" : "MiMo";
   const isCloud = workspace.mode === "cloud";
   const credentialAccountID = isCloud ? String(workspace.profile?.accountID ?? "").trim() : "";
-  const sessionStorageKey = useMemo(() => storageKey(workspace), [workspace.profile?.accountID, workspace.farm?.id]);
-  const historyKey = assistantHistoryKey(workspace.profile?.accountID, workspace.farm?.id);
+  const sessionStorageKey = useMemo(() => storageKey(workspace) + (provider === "openai" ? ":openai" : ""), [workspace.profile?.accountID, workspace.farm?.id, provider]);
+  const historyKey = assistantHistoryKey(workspace.profile?.accountID, workspace.farm?.id) + (provider === "openai" ? ":openai" : "");
+  const consentKey = `esheepplus.assistant.agent-consent:${credentialAccountID}:${provider}`;
+  const modelKey = `esheepplus.assistant.model:${credentialAccountID}:${provider}`;
+  const [preferredModel, setPreferredModel] = useState(() => {
+    try { return localStorage.getItem(modelKey) || ""; } catch { return ""; }
+  });
+  const [openAIConsent, setOpenAIConsent] = useState(() => { try { return localStorage.getItem(consentKey) === OPENAI_CONSENT_VERSION; } catch { return false; } });
   const [initialHistory] = useState(() => readAssistantHistory(historyKey));
   const [conversations, setConversations] = useState(initialHistory.conversations);
   const [activeID, setActiveID] = useState(() => initialHistory.activeID ?? crypto.randomUUID());
@@ -119,10 +144,19 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
   const [sessionID, setSessionID] = useState(initialSession);
   const [status, setStatus] = useState(null);
   const [statusError, setStatusError] = useState("");
+  const defaultModel = status?.model || (provider === "openai" ? "gpt-5.4" : "mimo-v2.6-pro");
+  const modelOptions = status?.modelOptions?.[provider] ?? [defaultModel];
+  const model = modelOptions.includes(preferredModel) ? preferredModel : defaultModel;
+  function selectModel(value) {
+    setPreferredModel(value);
+    try { localStorage.setItem(modelKey, value); } catch { /* selection remains in memory */ }
+  }
+  const [statusAttempt, setStatusAttempt] = useState(0);
+  const [failedRequest, setFailedRequest] = useState(null);
   const [text, setText] = useState(initialConversation?.draft ?? "");
   const [attachments, setAttachments] = useState([]);
   const [messages, setMessages] = useState(initialConversation?.messages ?? []);
-  const [activity, setActivity] = useState("正在检查 Codex harness");
+  const [activity, setActivity] = useState("正在检查 牧场 Agent");
   const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
   const [credential, setCredential] = useState({ phase: isCloud ? "loading" : "unavailable", keyType: null, persistence: null });
@@ -136,22 +170,22 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
 
   useEffect(() => {
     const controller = new AbortController();
-    getAssistantStatus({ signal: controller.signal })
+    (isCloud ? getAssistantAccessToken().then((accessToken) => getOpenAIStatus({ accessToken, provider, farmID: workspace.farm.id, signal: controller.signal })) : Promise.resolve({ configured: false }))
       .then((nextStatus) => {
         setStatus(nextStatus);
         setStatusError("");
         const hasCurrentCredential = credentialRef.current?.accountID === credentialAccountID;
         setActivity(nextStatus.configured
-          ? (isCloud ? (hasCurrentCredential ? "个人 MiMo Key 已就绪" : "等待输入个人 MiMo Key") : "Codex harness 已就绪")
+          ? (isCloud ? (hasCurrentCredential ? `${providerTitle} Key 已就绪` : `等待输入个人 ${providerTitle} Key`) : "牧场 Agent 已就绪")
           : "等待服务端 Supabase 配置");
       })
       .catch((requestError) => {
         if (requestError.name === "AbortError") return;
         setStatusError(requestError.message);
-        setActivity("Codex harness 连接失败");
+        setActivity("牧场 Agent 连接失败");
       });
     return () => controller.abort();
-  }, [credentialAccountID, isCloud]);
+  }, [credentialAccountID, isCloud, provider, workspace.farm?.id, statusAttempt]);
 
   useEffect(() => {
     let active = true;
@@ -164,19 +198,19 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
       return () => { active = false; };
     }
     setCredential({ phase: "loading", keyType: null, persistence: null });
-    loadMiMoCredential(credentialAccountID)
+    loadAssistantCredential(credentialAccountID, provider)
       .then((stored) => {
         if (!active) return;
         credentialRef.current = stored ? { accountID: credentialAccountID, apiKey: stored.apiKey } : null;
         setCredential(stored
           ? { phase: "ready", keyType: stored.keyType, persistence: stored.persistence }
           : { phase: "missing", keyType: null, persistence: null });
-        setActivity(stored ? "个人 MiMo Key 已就绪" : "等待输入个人 MiMo Key");
+        setActivity(stored ? `${providerTitle} Key 已就绪` : `等待输入个人 ${providerTitle} Key`);
       })
       .catch(() => {
         if (!active) return;
         setCredential({ phase: "missing", keyType: null, persistence: null });
-        setActivity("等待输入个人 MiMo Key");
+        setActivity(`等待输入个人 ${providerTitle} Key`);
       });
     return () => { active = false; };
   }, [credentialAccountID, isCloud]);
@@ -227,9 +261,13 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
     try { localStorage.setItem(`${historyKey}:collapsed`, String(historyCollapsed)); } catch { /* Current page remains usable. */ }
   }, [historyKey, historyCollapsed]);
 
-  useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => {
+    const offline = () => abortRef.current?.abort();
+    window.addEventListener("offline", offline);
+    return () => { window.removeEventListener("offline", offline); abortRef.current?.abort(); };
+  }, []);
 
-  const credentialReady = credential.phase === "ready" && credentialRef.current?.accountID === credentialAccountID;
+  const credentialReady = credential.phase === "ready" && credentialRef.current?.accountID === credentialAccountID && openAIConsent;
 
   const saveCredential = useCallback(async (event) => {
     event.preventDefault();
@@ -237,32 +275,33 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
     setCredentialError("");
     setSavingCredential(true);
     try {
-      const apiKey = normalizeMiMoAPIKey(credentialInput);
-      const stored = await saveMiMoCredential(credentialAccountID, apiKey);
+      if (!openAIConsent) throw new Error("请先同意云端 Agent 数据处理说明。");
+      const apiKey = (provider === "openai" ? normalizeOpenAIAPIKey(credentialInput) : normalizeMiMoAPIKey(credentialInput));
+      const stored = await saveAssistantCredential(credentialAccountID, provider, apiKey);
       credentialRef.current = { accountID: credentialAccountID, apiKey: stored.apiKey };
       setCredential({ phase: "ready", keyType: stored.keyType, persistence: stored.persistence });
       setCredentialInput("");
       setEditingCredential(false);
       setSettingsOpen(false);
-      setActivity("个人 MiMo Key 已就绪");
+      setActivity(`${providerTitle} Key 已就绪`);
     } catch (saveError) {
       setCredentialError(saveError.message);
     } finally {
       setSavingCredential(false);
     }
-  }, [credentialAccountID, credentialInput, running, savingCredential]);
+  }, [credentialAccountID, credentialInput, running, savingCredential, provider, openAIConsent]);
 
   const removeCredential = useCallback(async () => {
     if (!credentialAccountID || savingCredential || running) return;
     setCredentialError("");
     setSavingCredential(true);
     try {
-      await removeMiMoCredential(credentialAccountID);
+      await removeAssistantCredential(credentialAccountID, provider);
       credentialRef.current = null;
       setCredential({ phase: "missing", keyType: null, persistence: null });
       setCredentialInput("");
       setEditingCredential(false);
-      setActivity("等待输入个人 MiMo Key");
+      setActivity(`等待输入个人 ${providerTitle} Key`);
     } catch (removeError) {
       setCredentialError(removeError.message);
     } finally {
@@ -299,9 +338,9 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
     setAttachments((current) => current.filter((attachment) => attachment.id !== id));
   }, []);
 
-  const send = useCallback(async (requestedPrompt = null) => {
+  const send = useCallback(async (requestedPrompt = null, requestedAttachments = null) => {
     const prompt = String(requestedPrompt ?? text).trim();
-    const selectedAttachments = attachments;
+    const selectedAttachments = requestedAttachments ?? attachments;
     const mimoAPIKey = credentialRef.current?.accountID === credentialAccountID ? credentialRef.current.apiKey : null;
     if ((!prompt && !selectedAttachments.length) || running || !isCloud || status?.configured !== true || !credentialReady || !mimoAPIKey) return;
     followScrollRef.current = true;
@@ -316,19 +355,19 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
     setText("");
     setAttachments([]);
     setError("");
+    setFailedRequest(null);
     setRunning(true);
-    setActivity(selectedAttachments.length ? "正在上传所选图片" : "正在连接 Codex harness");
+    setActivity(selectedAttachments.length ? "正在上传所选图片" : "正在连接云端牧场 Agent");
     const controller = new AbortController();
     abortRef.current = controller;
     const responseItemIDs = new Map();
     let requestSessionID = sessionID;
     let recoveredExpiredSession = false;
     try {
-      const [accessToken, snapshot] = await Promise.all([
-        getAssistantAccessToken(),
-        Promise.resolve().then(() => buildAssistantSnapshot(workspace)),
-      ]);
+      const accessToken = await getAssistantAccessToken();
+      controller.signal.throwIfAborted();
       const handleEvent = (event) => {
+        if (controller.signal.aborted) return;
         if (event.type === "session") {
           setSessionID(event.sessionID);
           storeSession(sessionStorageKey, event.sessionID);
@@ -340,7 +379,7 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
           if (!responseItemIDs.size) {
             responseItemIDs.set(event.itemID, event.itemID);
             setMessages((current) => current.map((message) => message.id === pendingID
-              ? { id: event.itemID, role: "assistant", text: event.text }
+              ? { id: event.itemID, role: "assistant", text: event.text, questions: event.questions }
               : message));
           } else if (existingID) {
             setMessages((current) => current.map((message) => message.id === existingID
@@ -351,21 +390,28 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
             setMessages((current) => [...current, { id: event.itemID, role: "assistant", text: event.text }]);
           }
         } else if (event.type === "done") {
-          setActivity(`${event.model} · 回答完成`);
+          setActivity(`${event.model} · ${event.needsUserInput ? "等待你补充信息" : "回答完成"}`);
         }
       };
       while (true) {
         try {
-          await streamAssistantTurn({
-            accessToken,
-            mimoAPIKey,
-            farmID: workspace.farm.id,
-            prompt,
-            sessionID: requestSessionID,
-            snapshot,
-            attachments: sentAttachments,
-            signal: controller.signal,
-            onEvent: handleEvent,
+          await streamOpenAITurn({ accessToken, apiKey: mimoAPIKey, provider, model, farmID: workspace.farm.id, prompt,
+            history: messages, attachments: sentAttachments, signal: controller.signal, onEvent: handleEvent,
+            clientTools: onCreateRecord ? [{ type: "function", name: "prepare_record", strict: false,
+              description: `生成待用户核对的录入草稿，不写入云端。只使用下列真实表单与字段，不确定字段留空并询问用户：${JSON.stringify(recordSchemas.map(s => ({ name: s.name, columns: s.columns, required: s.required })))}`,
+              parameters: { type: "object", properties: { sheet: { type: "string", enum: recordSchemas.map(s => s.name) }, valuesJSON: { type: "string", description: "表单字段名到文本值的 JSON 对象" } }, required: ["sheet", "valuesJSON"], additionalProperties: false } }] : [],
+            executeClientTool: async (name, args) => {
+              const schema = recordSchemas.find(s => s.name === args.sheet);
+              const values = JSON.parse(args.valuesJSON);
+              if (name !== "prepare_record" || !schema || !values || Array.isArray(values) || typeof values !== "object" || Object.keys(values).some(k => !schema.columns.includes(k)) || Object.values(values).some(v => typeof v !== "string" || v.length > 10000)) throw new Error("录入草稿字段无效，请核对表单结构。");
+              const record = { sheet: args.sheet, values };
+              const existing = await listDrafts(workspace.profile.accountID, workspace.farm.id);
+              if (controller.signal.aborted) throw new DOMException("已停止", "AbortError");
+              const draft = existing.find(d => !d.signed && d.status === "draft" && JSON.stringify(d.record) === JSON.stringify(record))
+                ?? await saveDraft(workspace.profile.accountID, workspace.farm, record);
+              setMessages(current => [...current, { id: crypto.randomUUID(), role: "assistant", text: "录入草稿已保存在本浏览器，请打开表单逐项核对。尚未写入云端。", draft }]);
+              return { ok: true, status: "awaiting_user_confirmation", draftID: draft.id, sheet: args.sheet, message: "仅保存了本机草稿，用户须点击核对并在现有表单提交。" };
+            },
           });
           break;
         } catch (requestError) {
@@ -389,13 +435,16 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
       setMessages((current) => current.map((message) => message.id === pendingID
         ? { ...message, pending: false, error: true, text: stopped ? "本次回答已停止。" : requestError.message }
         : message));
-      if (!stopped) setError(requestError.message);
+      if (!stopped) {
+        setError(requestError.message);
+        if (!requestError.recovery || requestError.recovery === "retry") setFailedRequest({ prompt, attachments: selectedAttachments });
+      }
       setActivity(stopped ? "已停止" : "回答失败");
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
       setRunning(false);
     }
-  }, [attachments, credentialAccountID, credentialReady, isCloud, running, sessionID, sessionStorageKey, status?.configured, text, workspace]);
+  }, [attachments, credentialAccountID, credentialReady, isCloud, running, sessionID, sessionStorageKey, status?.configured, text, workspace, provider, model, messages, onCreateRecord]);
 
   const closeHistory = () => {
     setHistoryOpen(false);
@@ -427,7 +476,7 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
     setError("");
     setRenaming(false);
     followScrollRef.current = true;
-    setActivity(credentialReady ? "新对话已就绪" : "等待输入个人 MiMo Key");
+    setActivity(credentialReady ? "新对话已就绪" : `等待输入个人 ${providerTitle} Key`);
     if (historyOpen) closeHistory();
   };
 
@@ -473,7 +522,7 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
         <section className="assistant-workspace" inert={isNarrow && historyOpen ? true : undefined}>
           <header className="assistant-toolbar">
             <button ref={historyToggleRef} className="assistant-tool-button" type="button" aria-label="切换聊天记录" aria-controls="assistant-history" aria-expanded={isNarrow ? historyOpen : !historyCollapsed} onClick={() => { if (isNarrow) setHistoryOpen(!historyOpen); else setHistoryCollapsed(!historyCollapsed); }}><SidebarSimple size={22} /></button>
-            <div className="assistant-toolbar-title"><Sparkle size={25} weight="fill" /><h1>牧场助手</h1><span>{status?.model || "mimo-v2.6-pro"}</span></div>
+            <div className="assistant-toolbar-title"><Sparkle size={25} weight="fill" /><h1>牧场助手</h1><span>{model}</span></div>
             <span className={`assistant-connection${status?.configured && credentialReady ? " ready" : ""}`} title={configurationMessage || activity}><i />{running ? "回答中" : statusError ? "连接失败" : credentialReady && status?.configured ? "就绪" : "待配置"}</span>
             <button className="assistant-tool-button assistant-mobile-new" type="button" aria-label="新对话" onClick={newConversation} disabled={running}><Plus size={22} /></button>
             <button className="assistant-tool-button assistant-settings-button" type="button" onClick={openSettings} aria-label="助手设置"><Gear size={22} /><span>设置</span></button>
@@ -486,13 +535,17 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
                 <div className="assistant-message-body">
                   {message.attachments?.length ? <div className="assistant-message-images">{message.attachments.map((attachment, index) => attachment.dataURL ? <img key={attachment.id ?? index} src={attachment.dataURL} alt={attachment.name} /> : <span className="assistant-image-reference" key={index}><Paperclip size={16} />{attachment.name} · 图片未保留</span>)}</div> : null}
                   {message.pending ? <span className="assistant-thinking" aria-label="正在回答"><i /><i /><i /></span> : <p>{formattedMessage(message.text)}</p>}
+                  {message.questions?.length ? <AgentQuestionCard questions={message.questions} disabled={running} onAnswer={send} /> : null}
+                  {message.draft?.record?.sheet && onCreateRecord ? <button type="button" className="assistant-key-prompt" onClick={() => onCreateRecord(message.draft.record.sheet, { draft: message.draft })} disabled={running}>核对{message.draft.record.sheet}草稿</button> : null}
                 </div>
               </article>
-            ))}</div> : <div className="assistant-welcome"><span className="assistant-welcome-mark"><Sparkle size={35} weight="fill" /></span><h2>今天想了解牧场的什么？</h2><p>查询记录、核对数据，一起看懂牧场的变化。</p>{sessionID ? <small>已连接此前的会话，早期消息未保存在此浏览器。</small> : null}<div className="assistant-suggestions">{suggestions.map((suggestion, index) => <button type="button" key={suggestion} onClick={() => { setText(suggestion); if (!credentialReady) openSettings(); }} disabled={!isCloud || running}><span>{["体重与增重", "产羔与繁殖", "采食与营养"][index]}</span><small>{suggestion}</small><ArrowUp size={16} /></button>)}</div></div>}
+            ))}</div> : <div className="assistant-welcome"><span className="assistant-welcome-mark"><Sparkle size={35} weight="fill" /></span><h2>今天想了解牧场的什么？</h2><p>查询记录、核对数据，一起看懂牧场的变化。</p>{sessionID ? <small>已连接此前的会话，早期消息未保存在此浏览器。</small> : null}<div className="assistant-suggestions">{suggestions.map((suggestion, index) => <button type="button" key={suggestion} onClick={() => { setText(suggestion); if (!credentialReady) openSettings(); }} disabled={!isCloud || running}><span>{["体重与增重", "产羔与繁殖", "死亡与淘汰"][index]}</span><small>{suggestion}</small><ArrowUp size={16} /></button>)}</div></div>}
           </div>
           <div className="assistant-composer-dock">
             {!isCloud ? <p className="assistant-inline-error">{introMessage(workspace)}</p> : null}
-            {isCloud && !credentialReady && credential.phase !== "loading" ? <button className="assistant-key-prompt" type="button" onClick={openSettings}><Gear size={17} />设置我的 MiMo Key，开始对话<span>→</span></button> : null}
+            {statusError ? <button type="button" className="assistant-key-prompt" disabled={running} onClick={() => setStatusAttempt(value => value + 1)}>重新检查服务连接</button> : null}
+            {failedRequest ? <button type="button" className="assistant-key-prompt" disabled={running} onClick={() => send(failedRequest.prompt, failedRequest.attachments)}>手动重试本次请求</button> : null}
+            {isCloud && !credentialReady && credential.phase !== "loading" ? <button className="assistant-key-prompt" type="button" onClick={openSettings}><Gear size={17} />设置我的 {providerTitle} Key，开始对话<span>→</span></button> : null}
             {error || configurationMessage || historyError ? <p className="assistant-inline-error" role="alert">{error || configurationMessage || historyError}</p> : null}
             <form className="assistant-composer" onSubmit={(event) => { event.preventDefault(); send(); }}>
               {attachments.length ? <div className="assistant-attachment-tray">{attachments.map((attachment) => <figure key={attachment.id}><img src={attachment.dataURL} alt={attachment.name} /><figcaption>{attachment.name}</figcaption><button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => removeImage(attachment.id)}><X size={14} /></button></figure>)}</div> : null}
@@ -500,16 +553,22 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
               <textarea key={activeID} aria-label="提问内容" value={text} onChange={(event) => { setText(event.target.value); event.target.style.height = "auto"; event.target.style.height = `${Math.min(event.target.scrollHeight, 160)}px`; }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(); } }} placeholder="询问牧场数据，或添加图片…" disabled={!isCloud || running} rows="1" />
               <div className="assistant-composer-actions"><button className="assistant-attach-button" type="button" onClick={() => fileInputRef.current?.click()} disabled={!isCloud || !credentialReady || running || attachments.length >= MAX_IMAGES}><Paperclip size={20} />图片</button><span>{running ? activity : "Enter 发送 · Shift + Enter 换行"}</span>{running ? <button className="assistant-stop-button" type="button" onClick={() => abortRef.current?.abort()} aria-label="停止回答"><span /></button> : <button className="assistant-send-button" type="submit" aria-label="发送" disabled={!canSend}><ArrowUp size={23} weight="bold" /></button>}</div>
             </form>
-            <p className="assistant-readonly-note">只读牧场数据 · AI 建议请结合实际判断</p>
+            <p className="assistant-readonly-note">云端查询与分析 · 录入草稿须确认</p>
           </div>
         </section>
       </section>
       <dialog className="assistant-settings" ref={settingsRef} onCancel={() => setSettingsOpen(false)} onClose={() => setSettingsOpen(false)} onClick={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false); }}>
-        <div className="assistant-settings-content"><header><div><h2>助手设置</h2><p>文字和图片均使用 mimo-v2.6-pro</p></div><button type="button" className="assistant-tool-button" aria-label="关闭设置" onClick={() => setSettingsOpen(false)}><X size={22} /></button></header>
+        <div className="assistant-settings-content"><header><div><h2>助手设置</h2><p>{providerTitle} · {model}</p></div><button type="button" className="assistant-tool-button" aria-label="关闭设置" onClick={() => setSettingsOpen(false)}><X size={22} /></button></header>
+      <label className="assistant-provider-select">AI 服务 <select aria-label="AI 服务" value={provider} onChange={(event) => selectProvider(event.target.value)} disabled={running || savingCredential}><option value="mimo">MiMo</option><option value="openai">OpenAI</option></select></label>
+      {provider === "openai" && <label className="assistant-provider-select">模型 <select aria-label="OpenAI 模型" value={model} onChange={event => selectModel(event.target.value)} disabled={running || savingCredential || modelOptions.length < 2}>
+        {modelOptions.map(id => <option key={id} value={id}>{id}</option>)}
+      </select></label>}
+      <p className="assistant-readonly-note">分别使用自己的 API Key；两家服务的密钥和聊天记录分开保存。</p>
+      <section className="assistant-settings-about"><h3>云端 Agent 数据处理</h3><p>Agent 使用当前登录权限直接读取 Supabase，核验后将完成任务所需的数据、问题、上下文和附件发送给你选择的 {providerTitle} 服务，处理可能发生在境外。费用由你自己的 API 账号承担。Key 在浏览器加密保存，仅随本次任务转发，服务端不持久保存。OpenAI 请求使用 store=false，服务方安全日志仍按其政策处理。</p><label><input type="checkbox" checked={openAIConsent} onChange={(event) => { const enabled = event.target.checked; setOpenAIConsent(enabled); try { if (enabled) localStorage.setItem(consentKey, OPENAI_CONSENT_VERSION); else localStorage.removeItem(consentKey); } catch { /* consent remains page-local */ } }} disabled={running} />我已阅读并同意云端 Agent 数据处理说明</label>{provider === "openai" ? <p><a href="https://platform.openai.com/usage" target="_blank" rel="noreferrer">查看我的 OpenAI API 用量</a></p> : null}</section>
       {isCloud ? (
-        <section className={`assistant-credential-card${credentialReady ? " saved" : ""}`} aria-label="个人 MiMo API Key">
+        <section className={`assistant-credential-card${credentialReady ? " saved" : ""}`} aria-label={`个人 ${providerTitle} API Key`}>
           <div className="assistant-credential-copy">
-            <strong>我的 MiMo API Key</strong>
+            <strong>我的 {providerTitle} API Key</strong>
             <small>每台浏览器首次填写一次，之后自动使用；Key 不写入牧场数据或 Codex 会话。</small>
           </div>
           {credential.phase === "loading" ? <span className="assistant-credential-loading">正在读取本机凭据…</span> : null}
@@ -522,7 +581,7 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
           ) : null}
           {(credential.phase === "missing" || editingCredential) ? (
             <form className="assistant-credential-form" onSubmit={saveCredential}>
-              <label htmlFor="assistant-mimo-key">MiMo API Key</label>
+              <label htmlFor="assistant-mimo-key">{providerTitle} API Key</label>
               <input
                 id="assistant-mimo-key"
                 name="mimo-api-key"
@@ -531,13 +590,13 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
                 spellCheck="false"
                 value={credentialInput}
                 onChange={(event) => setCredentialInput(event.target.value)}
-                placeholder="sk-… 或 tp-…"
+                placeholder={provider === "openai" ? "OpenAI sk-…" : "MiMo sk-… 或 tp-…"}
                 minLength="12"
                 maxLength="512"
                 disabled={running || savingCredential}
                 required
               />
-              <button type="submit" disabled={running || savingCredential || !credentialInput.trim()}>{savingCredential ? "正在保存" : "保存并使用"}</button>
+              <button type="submit" disabled={running || savingCredential || !credentialInput.trim() || !openAIConsent}>{savingCredential ? "正在保存" : "保存并使用"}</button>
               {credentialReady ? <button className="secondary" type="button" onClick={() => { setCredentialInput(""); setCredentialError(""); setEditingCredential(false); }} disabled={savingCredential}>取消</button> : null}
             </form>
           ) : null}
@@ -545,7 +604,7 @@ function FarmAssistantWorkspace({ workspace, onBack }) {
         </section>
       ) : null}
 
-          <div className="assistant-settings-about"><h3>关于对话与数据</h3><p>助手只读当前已授权的云端牧场快照，数字使用与 App 一致的查询口径。AI 结论不会自动写入牧场。</p><p>聊天文字保存在当前浏览器，按账号与牧场区分，不跨设备同步。图片仅随本次提问发送，重新打开记录时只显示文件名。</p><p>服务端会话可能休眠或过期，届时会保留聊天文字，并自动新建上下文重试本次提问。</p></div>
+          <div className="assistant-settings-about"><h3>关于对话与数据</h3><p>助手按当前账号权限直接读取 Supabase 并核对云端版本。识别和录入会生成待核对草稿，确认后通过现有审计流程提交。</p><p>聊天文字保存在当前浏览器，按账号与牧场区分，不跨设备同步。图片仅随本次提问发送，重新打开记录时只显示文件名。</p><p>缺少口径时会暂停并询问你。停止或网络中断后，本轮不再继续调用；你可以在原会话补充信息或重新提问。</p></div>
         </div>
       </dialog>
     </main>

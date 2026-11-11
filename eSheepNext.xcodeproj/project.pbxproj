@@ -10,9 +10,9 @@
 		E5A100302FC6000100A00001 /* eSheepNextWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E5A100312FC6000100A00001 /* eSheepNextWidget.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		E5A200012FC7000100A00001 /* ESMotion in Frameworks */ = {isa = PBXBuildFile; productRef = E5A200042FC7000100A00001 /* ESMotion */; };
 		E5A300012FC8000100A00001 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = E5A300042FC8000100A00001 /* Supabase */; };
-		E5B922000000000000000101 /* FarmWidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B922000000000000000001 /* FarmWidgetSnapshot.swift */; };
-		E5B922000000000000000102 /* FarmWidgetCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B922000000000000000002 /* FarmWidgetCatalog.swift */; };
-		E5B922000000000000000103 /* FarmWidgetCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B922000000000000000003 /* FarmWidgetCardView.swift */; };
+		E5B922000000000000000101 /* eSheepNext/Models/FarmWidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B922000000000000000001 /* eSheepNext/Models/FarmWidgetSnapshot.swift */; };
+		E5B922000000000000000102 /* eSheepNext/Models/FarmWidgetCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B922000000000000000002 /* eSheepNext/Models/FarmWidgetCatalog.swift */; };
+		E5B922000000000000000103 /* eSheepNext/Features/Shared/FarmWidgetCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B922000000000000000003 /* eSheepNext/Features/Shared/FarmWidgetCardView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -71,9 +71,9 @@
 		E5A500012FCA000100A00001 /* eSheepNextUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = eSheepNextUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E5A600012FCB000100A00001 /* ModernUI.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = ModernUI.xctestplan; sourceTree = "<group>"; };
 		E5A600022FCB000100A00001 /* Legacy17.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = Legacy17.xctestplan; sourceTree = "<group>"; };
-		E5B922000000000000000001 /* FarmWidgetSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eSheepNext/Models/FarmWidgetSnapshot.swift; sourceTree = SOURCE_ROOT; };
-		E5B922000000000000000002 /* FarmWidgetCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eSheepNext/Models/FarmWidgetCatalog.swift; sourceTree = SOURCE_ROOT; };
-		E5B922000000000000000003 /* FarmWidgetCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eSheepNext/Features/Shared/FarmWidgetCardView.swift; sourceTree = SOURCE_ROOT; };
+		E5B922000000000000000001 /* eSheepNext/Models/FarmWidgetSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eSheepNext/Models/FarmWidgetSnapshot.swift; sourceTree = SOURCE_ROOT; };
+		E5B922000000000000000002 /* eSheepNext/Models/FarmWidgetCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eSheepNext/Models/FarmWidgetCatalog.swift; sourceTree = SOURCE_ROOT; };
+		E5B922000000000000000003 /* eSheepNext/Features/Shared/FarmWidgetCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = eSheepNext/Features/Shared/FarmWidgetCardView.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -168,6 +168,16 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		B77891F530A4865D00B0CED3 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				E5B922000000000000000003 /* eSheepNext/Features/Shared/FarmWidgetCardView.swift */,
+				E5B922000000000000000002 /* eSheepNext/Models/FarmWidgetCatalog.swift */,
+				E5B922000000000000000001 /* eSheepNext/Models/FarmWidgetSnapshot.swift */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
 		E5A100022FC6000100A00001 = {
 			isa = PBXGroup;
 			children = (
@@ -181,16 +191,8 @@
 				E5A600032FCB000100A00001 /* TestPlans */,
 				E5A100342FC6000100A00001 /* eSheepNextWidget */,
 				E5A100072FC6000100A00001 /* Products */,
+				B77891F530A4865D00B0CED3 /* Recovered References */,
 			);
-			sourceTree = "<group>";
-		};
-		E5A600032FCB000100A00001 /* TestPlans */ = {
-			isa = PBXGroup;
-			children = (
-				E5A600012FCB000100A00001 /* ModernUI.xctestplan */,
-				E5A600022FCB000100A00001 /* Legacy17.xctestplan */,
-			);
-			path = TestPlans;
 			sourceTree = "<group>";
 		};
 		E5A100072FC6000100A00001 /* Products */ = {
@@ -203,6 +205,15 @@
 				E5A100312FC6000100A00001 /* eSheepNextWidget.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		E5A600032FCB000100A00001 /* TestPlans */ = {
+			isa = PBXGroup;
+			children = (
+				E5A600012FCB000100A00001 /* ModernUI.xctestplan */,
+				E5A600022FCB000100A00001 /* Legacy17.xctestplan */,
+			);
+			path = TestPlans;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -279,29 +290,6 @@
 			productReference = E5A100312FC6000100A00001 /* eSheepNextWidget.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
-		E5A500032FCA000100A00001 /* eSheepNextUITests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = E5A5000C2FCA000100A00001 /* Build configuration list for PBXNativeTarget "eSheepNextUITests" */;
-			buildPhases = (
-				E5A500042FCA000100A00001 /* Sources */,
-				E5A500052FCA000100A00001 /* Frameworks */,
-				E5A500062FCA000100A00001 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				E5A500082FCA000100A00001 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				E5A500022FCA000100A00001 /* eSheepNextUITests */,
-			);
-			name = eSheepNextUITests;
-			packageProductDependencies = (
-			);
-			productName = eSheepNextUITests;
-			productReference = E5A500012FCA000100A00001 /* eSheepNextUITests.xctest */;
-			productType = "com.apple.product-type.bundle.ui-testing";
-		};
 		E5A400032FC9000100A00001 /* eSheepNextPerformanceTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = E5A4000C2FC9000100A00001 /* Build configuration list for PBXNativeTarget "eSheepNextPerformanceTests" */;
@@ -324,6 +312,29 @@
 			productName = eSheepNextPerformanceTests;
 			productReference = E5A400012FC9000100A00001 /* eSheepNextPerformanceTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		E5A500032FCA000100A00001 /* eSheepNextUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E5A5000C2FCA000100A00001 /* Build configuration list for PBXNativeTarget "eSheepNextUITests" */;
+			buildPhases = (
+				E5A500042FCA000100A00001 /* Sources */,
+				E5A500052FCA000100A00001 /* Frameworks */,
+				E5A500062FCA000100A00001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E5A500082FCA000100A00001 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E5A500022FCA000100A00001 /* eSheepNextUITests */,
+			);
+			name = eSheepNextUITests;
+			packageProductDependencies = (
+			);
+			productName = eSheepNextUITests;
+			productReference = E5A500012FCA000100A00001 /* eSheepNextUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
 
@@ -440,9 +451,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				E5B922000000000000000103 /* FarmWidgetCardView.swift in Sources */,
-				E5B922000000000000000102 /* FarmWidgetCatalog.swift in Sources */,
-				E5B922000000000000000101 /* FarmWidgetSnapshot.swift in Sources */,
+				E5B922000000000000000103 /* eSheepNext/Features/Shared/FarmWidgetCardView.swift in Sources */,
+				E5B922000000000000000102 /* eSheepNext/Models/FarmWidgetCatalog.swift in Sources */,
+				E5B922000000000000000101 /* eSheepNext/Models/FarmWidgetSnapshot.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -521,12 +532,11 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = "eSheep+";
 				CODE_SIGN_ENTITLEMENTS = eSheepNext/eSheepNext.entitlements;
 				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 36;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				COPY_PHASE_STRIP = NO;
-				STRIP_INSTALLED_PRODUCT = NO;
 				INFOPLIST_FILE = eSheepNext/Info.plist;
 				INFOPLIST_KEY_APP_ENVIRONMENT = "$(APP_ENVIRONMENT)";
 				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
@@ -559,6 +569,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				STRIP_INSTALLED_PRODUCT = NO;
 				SUBSCRIPTIONS_ENABLED = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -587,9 +598,9 @@
 				INFOPLIST_KEY_APP_ENVIRONMENT = "$(APP_ENVIRONMENT)";
 				INFOPLIST_KEY_CAPABILITY_SIGNING_PUBLIC_KEY_PEM = "$(CAPABILITY_SIGNING_PUBLIC_KEY_PEM)";
 				INFOPLIST_KEY_CFBundleDisplayName = "eSheep+";
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_CFBundleURLTypes = "{ CFBundleURLName = \"com.sheepfarm.esheep.deep-link\"; CFBundleURLSchemes = (esheep); }";
 				INFOPLIST_KEY_IDENTITY_WORKER_URL = "$(IDENTITY_WORKER_URL)";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "用于在您确认 AI 草案后，将牧场安排写入系统日历。";
 				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄羊只、病症、耳标和业务凭证照片，或扫描耳号、文档与牧场邀请二维码。";
@@ -754,10 +765,9 @@
 				APP_GROUP_IDENTIFIER = group.com.sheepfarm.next.dev;
 				CODE_SIGN_ENTITLEMENTS = eSheepNextWidget/eSheepNextWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 36;
 				DEVELOPMENT_TEAM = 7BBQMZ87SM;
-				COPY_PHASE_STRIP = NO;
-				STRIP_INSTALLED_PRODUCT = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = eSheepNextWidget/Info.plist;
 				INFOPLIST_KEY_APP_GROUP_IDENTIFIER = "$(APP_GROUP_IDENTIFIER)";
@@ -774,6 +784,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
+				STRIP_INSTALLED_PRODUCT = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;

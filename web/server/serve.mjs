@@ -9,6 +9,7 @@ import { handleNodeRequest } from "./node-adapter.mjs";
 import { createWeatherAPI } from "./weather-api.mjs";
 import { proxyCloudRequest } from "../worker/cloud-proxy.js";
 import { nodeCloudFetch } from "./cloud-fetch.mjs";
+import { staticAssetCacheControl } from "./static-asset-cache.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const clientRoot = path.join(root, "dist", "client");
@@ -57,7 +58,7 @@ const server = http.createServer(async (request, response) => {
     }
     response.statusCode = 200;
     response.setHeader("Content-Type", mimeTypes.get(path.extname(filePath).toLowerCase()) ?? "application/octet-stream");
-    response.setHeader("Cache-Control", filePath.endsWith("index.html") ? "no-cache" : "public, max-age=31536000, immutable");
+    response.setHeader("Cache-Control", staticAssetCacheControl(`/${path.relative(clientRoot, filePath)}`));
     if (request.method === "HEAD") response.end();
     else createReadStream(filePath).pipe(response);
   } catch {
