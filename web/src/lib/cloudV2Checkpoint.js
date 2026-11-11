@@ -154,20 +154,26 @@ function validateDownloads(ticket, manifest) {
     ticket.downloads.every((download, index) => download.index === index));
 }
 
-export async function loadCloudV2Projection(client, farm, { accountID, storageOrigin, signal, onProgress = () => {}, fetchImpl = fetch, persistentCache = browserCheckpointChunkCache } = {}) {
+export async function loadCloudV2Projection(client, farm, { accountID, storageOrigin, signal, onProgress = () => {}, fetchImpl = fetch, persistentCache = browserCheckpointChunkCache, historicalBoundary } = {}) {
   const epoch = cacheEpoch;
   const verifiedKey = `${storageOrigin}:${accountID}:${farm.id.toLowerCase()}:${farm.generation}`;
-  const verified = verifiedProjections.get(verifiedKey);
+  const verified = historicalBoundary ? null : verifiedProjections.get(verifiedKey);
   onProgress("正在确认牧场最新版本…");
   // These independent reads both enforce current membership. Overlap them so
   // first-time downloads do not wait for another control-plane round trip.
   const [status, initialSource] = await Promise.all([
     rpc(client, "esheep_cloud_fetch_status_v2", { p_farm_id: farm.id }, signal),
-    verified ? null : checkpointSource(client, farm, signal, persistentCache, `${verifiedKey}:`),
+    historicalBoundary ? rpc(client, "esheep_cloud_checkpoint_manifest_v1", {
+      p_farm_id: farm.id, p_farm_generation: farm.generation, p_checkpoint_id: historicalBoundary.checkpointID,
+    }, signal) : verified ? null : checkpointSource(client, farm, signal, persistentCache, `${verifiedKey}:`),
   ]);
   requireValue(status?.farm_generation === farm.generation && sameID(status.farm_id, farm.id), "牧场云同步版本已变化，请刷新重试。");
   requireValue(status.v2_ready === true, "牧场正在准备云端资料，请稍后重试。");
-  const targetHead = status.cloud_head;
+  const targetHead = historicalBoundary?.head ?? status.cloud_head;
+  if (historicalBoundary) {
+    requireValue(Number.isSafeInteger(historicalBoundary.atMillis) && targetHead <= status.cloud_head &&
+      sameID(initialSource?.manifest?.checkpointID, historicalBoundary.checkpointID));
+  }
   requireValue(Number.isSafeInteger(targetHead) && targetHead >= 0);
   const pullEvents = (after) => rpc(client, "esheep_cloud_pull_events_v2", {
     p_farm_id: farm.id, p_farm_generation: farm.generation, p_after_event_sequence: after, p_limit: 1000,
@@ -268,6 +274,7 @@ export async function loadCloudV2Projection(client, farm, { accountID, storageOr
       for (const event of page.events) {
         if (cursor === targetHead) break;
         const body = await validateV2Event(event, farm, cursor + 1);
+        if (historicalBoundary) requireValue(event.received_at_millis <= historicalBoundary.atMillis);
         if (!await applyExtendedV2Event(projection, event, body)) applyV2Event(projection, event, body);
         cursor = event.event_sequence;
       }
@@ -280,6 +287,9 @@ export async function loadCloudV2Projection(client, farm, { accountID, storageOr
       "牧场云同步版本已变化，请刷新重试。");
     applyFarmIdentity(projection, finalStatus.farm_identity, farm);
     signal?.throwIfAborted();
+    if (historicalBoundary) {
+      return { ...finishV2Projection(projection, { now: historicalBoundary.atMillis }), manifest, revision: targetHead };
+    }
     const verifiedProjection = structuredClone(projection);
     const result = { ...finishV2Projection(projection), manifest, revision: targetHead };
     if (!verified) await persistentCache.prune?.(`${storageOrigin}:${accountID}:${farm.id.toLowerCase()}:${farm.generation}:`, persistentScope);

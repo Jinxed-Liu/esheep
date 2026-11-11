@@ -1,0 +1,26 @@
+{
+  "sourceCommit": "f07fd06b9f77242a7096bcb110b8c09eb1f56d2c",
+  "baseMain": "1a666989",
+  "includedPerformanceCommit": "2756cb19",
+  "equivalentReleasedPerformance": "1f08a2a5",
+  "webVersion": "60bacdbc-6eea-4f41-9748-ff0a4dc6de5b",
+  "rollbackWebVersion": "647747a4-fcfb-473b-b06f-b2630ae6fc44",
+  "entry": "assets/index-BnMZMYJi.js",
+  "entrySHA256": "ef8ba24abf7bde280e151487c3ffd24989406778055638fd63783746968d5386",
+  "containerImage": "registry.cloudflare.com/19903f0d75fedc224e6e398c6eaa5cbe/esheepplus-harness@sha256:eae93a1235b1f81ea97abea5cddc5759ed6439afb6e854ef8b5738f15f8ea6db",
+  "containerChange": false,
+  "scope": "event-export",
+  "checks": {
+    "exportTests": 4,
+    "affectedBusinessTests": 3,
+    "cacheAndSitesTests": 13,
+    "browserFixture": [
+      "desktop",
+      "390px"
+    ],
+    "liveBrowser": "post-release-browser-qa.json"
+  },
+  "productionWrites": false,
+  "artifactArchive": "export-dist-f07fd06b.tar.gz",
+  "artifactArchiveSHA256": "a7f239c27a456c78e8d0e4dee542ec74e9131fd24da2ab070f75ab50dfb3a256"
+}

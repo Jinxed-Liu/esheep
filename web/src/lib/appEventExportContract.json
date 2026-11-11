@@ -70,6 +70,86 @@
     {
       "id": "note",
       "name": "备注记录"
+    },
+    {
+      "id": "lambing",
+      "name": "产羔"
+    },
+    {
+      "id": "breeding",
+      "name": "配种"
+    },
+    {
+      "id": "pregnancyCheck",
+      "name": "孕检"
+    },
+    {
+      "id": "abortion",
+      "name": "流产"
+    },
+    {
+      "id": "parityBaseline",
+      "name": "胎次确认"
+    },
+    {
+      "id": "sold",
+      "name": "出售"
+    },
+    {
+      "id": "deceased",
+      "name": "死亡"
+    },
+    {
+      "id": "culled",
+      "name": "淘汰"
+    },
+    {
+      "id": "transferredOut",
+      "name": "转出"
+    },
+    {
+      "id": "treatment",
+      "name": "治疗"
+    },
+    {
+      "id": "vaccination",
+      "name": "疫苗"
+    },
+    {
+      "id": "directFeed",
+      "name": "直接投喂"
+    },
+    {
+      "id": "tmrFeed",
+      "name": "TMR 投喂"
+    },
+    {
+      "id": "inventoryReceipt",
+      "name": "药品疫苗入库"
+    },
+    {
+      "id": "inventoryAdjustment",
+      "name": "药品疫苗盘点"
+    },
+    {
+      "id": "semenReceipt",
+      "name": "冻精入库"
+    },
+    {
+      "id": "semenAdjustment",
+      "name": "冻精盘点"
+    },
+    {
+      "id": "batchCreated",
+      "name": "建立生产批次"
+    },
+    {
+      "id": "batchDeleted",
+      "name": "删除生产批次"
+    },
+    {
+      "id": "batchDeparture",
+      "name": "移出批次"
     }
   ],
   "categories": [

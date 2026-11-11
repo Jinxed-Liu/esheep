@@ -7,14 +7,18 @@ import argparse
 import hashlib
 import shutil
 import json
+import os
 from pathlib import Path
 import plistlib
 import subprocess
 import uuid
 
+from checkpoint_source_cli import query as source_query
+
 ROOT = Path(__file__).resolve().parents[1]
 
 def main():
+    os.umask(0o077)
     p = argparse.ArgumentParser()
     p.add_argument('--project', required=True)
     p.add_argument('--farm', type=uuid.UUID, required=True)
@@ -32,10 +36,10 @@ def main():
             subprocess.run(args, cwd=ROOT, stdout=output, stderr=subprocess.STDOUT, check=True)
     if a.only_if_due:
         query = f"select s.event_head, c.boundary_event_sequence, c.verified_at, (s.event_head>coalesce(c.boundary_event_sequence,-1) and (c.verified_at is null or c.verified_at<now()-interval '24 hours' or s.event_head-c.boundary_event_sequence>5000)) due from esheep_cloud.farm_state s left join lateral (select boundary_event_sequence,verified_at from esheep_cloud.business_checkpoints c where c.farm_id=s.farm_id and c.farm_generation=s.farm_generation and c.status='verified' order by boundary_event_sequence desc limit 1) c on true where s.farm_id='{a.farm}' and s.v2_ready"
-        result = subprocess.run(['supabase','db','query','--project-ref',a.project,'--linked',query,'-o','json'],capture_output=True,check=True)
-        rows = json.loads(result.stdout)['rows']
+        rows = source_query(a.project, query, work/'due-query.log')
         if len(rows) != 1: raise RuntimeError('Expected one eligible farm')
-        if not rows[0]['due']:
+        if type(rows[0].get('due')) is not bool: raise RuntimeError('Expected an explicit due boolean')
+        if rows[0]['due'] is False:
             (work/'not-due.json').write_text(json.dumps(rows[0])); return
     if a.sealed_source:
         source=a.sealed_source.resolve()

@@ -532,7 +532,7 @@ function FeedAnalysis({ source, now, timeZone }) {
   );
 }
 
-export default function InsightsPage({ workspace, mode = "insights", onNavigate, onReproductionSubmit }) {
+export default function InsightsPage({ workspace, mode = "insights", onNavigate, onCreateRecord, onReproductionSubmit }) {
   const [view, setView] = useState("overview");
   const isCloud = workspace.mode === "cloud";
   const timeZone = workspace.farm?.timeZoneIdentifier || "Asia/Shanghai";
@@ -540,7 +540,7 @@ export default function InsightsPage({ workspace, mode = "insights", onNavigate,
   const now = useMemo(() => new Date(), [workspace.farm?.id, workspace.lastSyncedAt]);
   const currentView = reportCards.find((card) => card.id === view);
   const data = workspace.insightData ?? {};
-  if (mode === "assistant") return <FarmAssistant workspace={workspace} onBack={() => onNavigate("insights")} />;
+  if (mode === "assistant") return <FarmAssistant workspace={workspace} onBack={() => onNavigate("insights")} onCreateRecord={onCreateRecord} />;
   if (currentView) {
     return (
       <main className="page feature-page insights-page analysis-page">
@@ -567,7 +567,7 @@ export default function InsightsPage({ workspace, mode = "insights", onNavigate,
       <section className="insight-overview-strip insight-overview-four">{overviewStats.map(({ label, value, unit, icon: Icon }) => <article key={label}><Icon size={25} /><span><small>{label}</small><strong>{numberText(value, 0)}<em>{unit}</em></strong></span></article>)}</section>
       <section className="insight-destination-grid">
         {reportCards.map(({ id, title, detail, icon: Icon }) => <button type="button" key={id} onClick={() => setView(id)}><Icon size={28} /><span><strong>{title}</strong><small>{detail}</small></span><CaretRight size={19} weight="bold" /></button>)}
-        <button className="assistant-entry" type="button" onClick={() => onNavigate("assistant")}><Robot size={28} /><span><strong>Codex 牧场助手</strong><small>MiMo 双模型 · App 同口径工具 · 图片理解</small></span><CaretRight size={19} weight="bold" /></button>
+        <button className="assistant-entry" type="button" onClick={() => onNavigate("assistant")}><Robot size={28} /><span><strong>Codex 牧场助手</strong><small>OpenAI 或 MiMo · 查牧场记录、看图、准备录入草稿</small></span><CaretRight size={19} weight="bold" /></button>
       </section>
       <section className="insight-principle"><ChartLineUp size={25} /><span><strong>所有比例显示分母，所有均值保留有效样本</strong><small>体重按事件日归并；繁殖固定截止日母羊群；采食只用完整自然日和真实盘槽边界。</small></span></section>
     </main>

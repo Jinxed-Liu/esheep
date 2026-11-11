@@ -184,3 +184,9 @@
 @media (prefers-reduced-motion: reduce) {
   .assistant-page *, .assistant-page *::before, .assistant-page *::after { scroll-behavior: auto; transition: none; animation: none; }
 }
+.assistant-question-card { display: grid; gap: 12px; margin-top: 14px; }
+.assistant-message-body:has(.assistant-question-card) { flex: 1; }
+.assistant-question-card fieldset { display: grid; gap: 9px; min-width: 0; padding: 12px; border: 1px solid #dbe2ea; border-radius: 12px; }
+.assistant-question-card legend { font-size: 14px; padding: 0 5px; }
+.assistant-question-card label { display: flex; align-items: center; gap: 8px; font-size: 14px; min-height: 32px; }
+.assistant-question-card input:not([type="radio"]) { width: 100%; min-height: 42px; padding: 8px; border: 1px solid #dbe2ea; border-radius: 8px; font-size: 16px; box-sizing: border-box; }

@@ -436,7 +436,7 @@ actor ESheepCloudInitialSyncCoordinator {
                 var verifierAlreadyThrough = existingProjectionSequence
                 while true {
                     try Task.checkCancellation()
-                    let page = try await gateway.pullEvents(
+                    let page = try await gateway.pullInitialSyncEvents(
                         farmID: farmID,
                         farmGeneration: manifest.farmGeneration,
                         after: after,

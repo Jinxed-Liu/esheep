@@ -1,0 +1,15 @@
+**
+!web/
+!web/package.json
+!web/package-lock.json
+!web/server/
+!web/server/**
+!web/src/
+!web/src/lib/
+!web/src/lib/**
+!tools/
+!tools/esheep_cloud_checkpoint_schema_v1.json
+
+!web/public/
+web/public/*
+!web/public/lzfse.wasm

@@ -1,0 +1,30 @@
+{
+  "date": "2026-11-11",
+  "web": "0530e73c-2db5-48f2-8e94-d731e1f3cd87",
+  "runtimeWorker": "5bdea9c8-212f-412d-8f0c-28fd1b390990",
+  "workerBeforeRuntimeFlag": "5ec52978-0f37-42d5-bf9e-8f86a51cf6e2",
+  "containerImage": "sha256:274597bc130a0a908e842a8c522eff6e915b468f88beeb5b7ff85843d4d79743",
+  "containerSource": "7d4392be",
+  "rolloutSource": "c09a674f",
+  "webSource": "6b78b289",
+  "entry": "/assets/index-DNKOWdsc.js",
+  "entrySHA256": "4abe6f2c87cc0f27f39f7be622ea70e386e73b6248f7621d8ecb1fb12004dc2d",
+  "archive": "agent-dist-6b78b289.tar.gz",
+  "archiveSHA256": "9a86ed7c04248756a91c8ffcf737ee8f00da161ae2c346c6cf39e02e324a1cd3",
+  "stagingWeb": "3d4ab721-5503-42ce-bdc5-8a5dd3ec3382",
+  "stagingBackend": "6213c17d-7874-4364-ae51-574190b41bf5",
+  "previousWeb": "196f7c92-c9c5-4af6-bda3-ef9681f84660",
+  "previousLegacyBackend": "4c18669d-9769-4eec-bd0c-a2d957f31593",
+  "previousLegacyImage": "sha256:eae93a1235b1f81ea97abea5cddc5759ed6439afb6e854ef8b5738f15f8ea6db",
+  "maxInstances": 2,
+  "focusedTests": 32,
+  "realModelAcceptance": "staging with live personal keys on preceding builds: MiMo, GPT-5.4, GPT-5.4 mini; final image changed wording and synthetic runtime assertions only",
+  "productionRuntimeProbe": "passed on final image; SDK and Agent; model selection and withheld rates confirmed",
+  "productionWebChecks": [
+    "current and retained asset hashes/cache",
+    "legacy status 200",
+    "unauthenticated Agent status 401",
+    "desktop and 390px login plus cached revisit"
+  ],
+  "productionBusinessWrites": 0
+}

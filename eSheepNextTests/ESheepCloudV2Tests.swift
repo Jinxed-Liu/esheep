@@ -947,6 +947,8 @@ final class ESheepCloudV2Tests: XCTestCase {
                 expiresAt: .now.addingTimeInterval(1_800)
             ),
             tailEvents: Array(events.dropFirst()),
+            maximumPageSize: 1,
+            loseConnectionOnceAfter: 2,
             checkpointManifest: checkpointManifest,
             checkpointChunkDataByIndex: checkpointChunkDataByIndex
         )
@@ -966,6 +968,8 @@ final class ESheepCloudV2Tests: XCTestCase {
             expectedAccountID: memberAccountID
         )
 
+        let pullCursors = await gateway.pullCursors
+        XCTAssertEqual(pullCursors, [1, 2, 2, 3], "Retry only the interrupted page after the last committed event")
         XCTAssertEqual(report.snapshotID, checkpointManifest.checkpointID)
         XCTAssertEqual(report.appliedEventHead, 4)
         let context = ModelContext(container)
@@ -3558,6 +3562,9 @@ actor InitialSyncGatewayStub: ESheepCloudGateway, ESheepCloudCheckpointGateway {
     let tailEvents: [ESheepCloudEventEnvelopeV2]
     let checkpointManifest: ESheepCloudCheckpointManifest?
     let checkpointChunkDataByIndex: [Int: Data]
+    private let maximumPageSize: Int
+    private var loseConnectionOnceAfter: Int64?
+    private(set) var pullCursors: [Int64] = []
     private var cancelNextPull = false
     func cancelOnePull() { cancelNextPull = true }
 
@@ -3566,6 +3573,8 @@ actor InitialSyncGatewayStub: ESheepCloudGateway, ESheepCloudCheckpointGateway {
         chunkDataByIndex: [Int: Data] = [:],
         cancelChunkIndices: Set<Int> = [],
         tailEvents: [ESheepCloudEventEnvelopeV2] = [],
+        maximumPageSize: Int = .max,
+        loseConnectionOnceAfter: Int64? = nil,
         checkpointManifest: ESheepCloudCheckpointManifest? = nil,
         checkpointChunkDataByIndex: [Int: Data] = [:]
     ) {
@@ -3573,6 +3582,8 @@ actor InitialSyncGatewayStub: ESheepCloudGateway, ESheepCloudCheckpointGateway {
         self.chunkDataByIndex = chunkDataByIndex
         self.cancelChunkIndices = cancelChunkIndices
         self.tailEvents = tailEvents
+        self.maximumPageSize = maximumPageSize
+        self.loseConnectionOnceAfter = loseConnectionOnceAfter
         self.checkpointManifest = checkpointManifest
         self.checkpointChunkDataByIndex = checkpointChunkDataByIndex
     }
@@ -3648,6 +3659,11 @@ actor InitialSyncGatewayStub: ESheepCloudGateway, ESheepCloudCheckpointGateway {
         after eventSequence: Int64,
         limit: Int
     ) async throws -> ESheepCloudEventPageV2 {
+        pullCursors.append(eventSequence)
+        if eventSequence == loseConnectionOnceAfter {
+            loseConnectionOnceAfter = nil
+            throw URLError(.networkConnectionLost)
+        }
         if cancelNextPull { cancelNextPull = false; throw CancellationError() }
         guard farmID == ticket.manifest.farmID,
               farmGeneration == ticket.manifest.farmGeneration,
@@ -3655,7 +3671,7 @@ actor InitialSyncGatewayStub: ESheepCloudGateway, ESheepCloudCheckpointGateway {
             throw StubError.unexpectedCall
         }
         let head = tailEvents.last?.eventSequence ?? ticket.manifest.boundaryEventSequence
-        let page = Array(tailEvents.filter { $0.eventSequence > eventSequence }.prefix(limit))
+        let page = Array(tailEvents.filter { $0.eventSequence > eventSequence }.prefix(min(limit, maximumPageSize)))
         return .init(events: page, cloudHead: head, hasMore: (page.last?.eventSequence ?? eventSequence) < head)
     }
 

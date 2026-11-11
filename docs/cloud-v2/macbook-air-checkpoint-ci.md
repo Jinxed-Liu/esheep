@@ -1,33 +1,65 @@
-# 当前 MacBook Air 检查点 CI
+# Apple silicon Mac 检查点候选 CI
 
-用户于 2026-09-06 指定使用当前 MacBook Air。该配置用于候选构建，不代表允许跳过统一发布门禁。
+本文路径保留以兼容旧链接。2026-09-06 的 MacBook Air 配置属于历史记录，不证明当前机器已接管。2026-11-10 本地核查确认 M6 Mac、Xcode 27.2 和 Swift 6.4.2 可用；本地修复尚未部署，未注册/启动 Runner、审批 GitHub 任务或读取生产源。
 
-## 已配置
+## 执行边界
 
-- 仓库：`Jinxed-Liu/esheep`，当前为公开仓库。
-- 环境：`esheep-cloud-checkpoints`，仅 `main` 分支，审核者为仓库所有者。
-- 外部贡献者 Actions 运行均要求审核。
-- Runner：`esheep-macbook-air-checkpoints`，标签 `self-hosted, macOS, ARM64, esheep-checkpoints`，一次性执行。
-- 当前安装：`~/Library/Application Support/eSheepCheckpointCI/runner-2.337.0`，官方 ARM64 安装包 SHA-256 为 `5a2cd92908a93d7276a194e1de6008099f3e7946f3f8e14aa7a1a7b4a31fdec2`。
-- 已配置生产项目、牧场、模拟器、批准历史证据路径、ESMotion 仓库与固定 commit 六项环境变量。
+- 仓库 `Jinxed-Liu/esheep` 是公开仓库。仅经审核的 main 代码使用 `esheep-cloud-checkpoints` 受保护环境；不得绕过环境审批。
+- 工作流要求标签 `self-hosted, macOS, ARM64, esheep-checkpoints`。使用一次性 Runner，不安装 `svc.sh` 常驻服务。新增机器建议使用独立名称 `esheep-macbook-pro-m6-checkpoints`，不要覆盖旧设备注册。
+- 环境审批不提供主机隔离。执行机器可能保存开发凭据和真实数据，不接收未审核代码。
+- 只构建候选、核对三份证明；不发布、不修改牧场记录、不配置发布凭据。
+- 原有每日 schedule 和人工审批保留；一次性 Runner 不代表无人值守日更。旧待批运行使用旧提交，不能通过批准旧任务来验收新修复。
 
-Runner 当前离线，未安装登录启动或常驻服务，未向 GitHub 复制源读取凭据或发布凭据。环境审核不是主机隔离；这台机器同时保存开发凭据和真实数据，不接收未审核代码。
+## 受保护配置
 
-## 首次受控运行条件
+GitHub 会显示普通 env 的值。运行入口改为读取两个 **environment secrets**，避免把牧场标识、历史路径等直接写进公开步骤头：
 
-1. 完整实现经审查后，将确定的工作流与匹配源码提交到允许的主分支；不能让工作流使用另一份旧客户端代码。
-2. 校验 ESMotion 固定提交、批准历史文件哈希、Xcode 与指定模拟器可用性。
-3. 为源读取准备经确认的最小权限凭据；候选任务不配置发布凭据。
-4. 核对待执行任务的仓库、事件类型、分支、提交与环境审核结果，再启动一次性 runner。不要安装 `svc.sh` 常驻服务。
-5. 执行后核对本机候选、独立 SQLite 对账、批准历史对账和源封存证明；一次性 runner 完成任务后注销。
+1. `ESHEEP_CHECKPOINT_SOURCE_TOKEN`：限定目标项目和数据库读取权限的显式凭据。缺失时拒绝执行，不回退到主机上已有登录。不能以只读 SQL 为由使用具有不必要写入权限的凭据。
+2. `ESHEEP_CHECKPOINT_WORKER_CONFIG`：以下六个字段的 JSON 对象。值须经审核确定；此示例是占位模板，不可直接用于运行。
 
-手动触发和每日检查已写入工作流，但当前尚未在 GitHub 实际执行。离线的一次性 runner 不能被算作已经提供无人值守每日构建；该运行管理仍需在首次受控任务中验证。
+```json
+{
+  "project": "<20-character project ref>",
+  "farm": "<approved farm UUID>",
+  "destination": "platform=iOS Simulator,id=<installed simulator UUID>",
+  "approved_source": "<absolute path to the complete sealed approval directory>",
+  "approved_sha256": "<SHA-256 of the reviewed semantic-reconciliation.json>",
+  "evidence_root": "/Users/jinx/Library/Application Support/eSheepCheckpointCI/evidence"
+}
+```
 
-## 证据保留
+必须固定批准证明本身的哈希，不能只在运行时对任意找到的文件计算哈希后自动信任。原来的六项普通环境变量不再被此工作流读取；ESMotion 已位于仓库内 `Packages/ESMotion`，不再检出另一仓库。新增 secrets 与生产读取授权仍需单独批准，本地修改不会创建它们。
 
-公开 GitHub 任务摘要只记录各项通过/失败，不上传完整业务对账、分片或云源。完整文件保留在本机受保护输出目录中，按候选身份和运行号管理。
+## 本地依赖和前置检查
 
-本轮配置证据：`backups/cloud-v2-integrated-20260906-153230/verification/macbook-air-ci-configuration.json`。
+- 完整 Xcode，首次启动组件已就绪，Swift 至少 6.2，arm64 架构。
+- Python 3.9+ 标准库、Git；指定 UUID 的 iOS Simulator 已安装且可用。检查不启动模拟器。
+- Supabase CLI **3.0.0**，由 `tools/checkpoint_source_cli.py` 固定并核对版本及查询参数。2026-11-10 已核验官方 macOS ARM64 归档 SHA-256 `3b0bfc4602cd7d55ffc78a6b72443d3b8e5fdd856b777e75977978dceb3e44cc`，在任务临时目录运行了版本和帮助；没有安装到全局 PATH，也没有验证生产查询。
+- 查询显式指定 `--remote=<project>`、`--read-only`、JSON 输出，关闭交互 stdin；兼容普通数组与 agent 模式 `rows` 对象。不得加 `--yes` 代替只读参数。
+- 私有证据根目录须预先存在、由执行用户拥有、权限为 0700，且不在仓库、`RUNNER_TEMP`、`GITHUB_WORKSPACE` 或 `RUNNER_WORKSPACE` 内。入口不自动创建/重定向证据根。
+- 五项历史文件须齐全：`semantic-reconciliation.json`、`post-repair-field-audit.json`、`commands.json`、`expected-sheep.json`、`expected-business.json`。检查固定批准证明哈希、四项输入哈希、通过状态、牧场及 generation 一致性、命令身份；缺失、重名哈希或不一致均在生产读取前失败。
+
+配置通过后，把已验证的同一批文件字节复制到本次私有运行目录，构建只使用该副本，防止检查后的原目录变更影响输入。源抓取后的原有核验继续验证 generation 和批准命令是否位于所捕获的不可变事件前缀中；离线检查不能替代这一步。
+
+```bash
+# 在显式提供上述配置、凭据和运行标识的进程环境中执行。
+# 只读本机工具和批准文件；不查询数据库，不运行候选。
+python3 tools/run_esheep_checkpoint_candidate.py --preflight-only
+
+# 纯离线回归；只使用合成数据，截获所有可能执行候选的子进程。
+python3 -m unittest discover -s tools -p 'test_checkpoint_candidate_worker.py' -v
+```
+
+## 首次受控执行与证据保留
+
+1. 找回完整批准证据、核实封存哈希与历史边界；不能拿其他批次的同名文件或手机缓存替代。
+2. 在独立审查中固定工作流与源码提交、Runner 安装包、环境配置、凭据权限、数据范围及证据保留路径。
+3. 获得对应操作批准后，才配置/注册 Runner、审批目标任务、启动一次性 Runner。不要直接批准仍使用旧工作流的待批任务。
+4. 输出位于 `evidence_root/esheep-checkpoint-<run-id>-<attempt>/`：`worker.log` 为完整入口日志，`approved-source/` 为批准输入封存副本，`build/` 保存云源、构建日志及候选，`outcome.json` 为状态。文件默认 0600；既有同名运行目录拒绝覆盖。
+5. 公开日志只输出固定阶段名、状态和退出码；摘要仅显示通过/失败/未生成/格式错误。完整 SQL、CLI 返回值、异常与业务对账不上传 artifacts，也不打印到公开日志。
+6. 任务结束后核对源封存证明和独立 SQLite、批准历史、用途历史三份报告，再单独考虑发布。一次性 Runner 注销不会清理此持久证据目录；清理需另行审核，工作流不自动删除证据。
+
+历史配置曾引用 `backups/cloud-v2-integrated-20260906-153230/verification/macbook-air-ci-configuration.json`。本机尚未找到该文件，不能据此恢复旧配置或认定迁移完整。
 
 ## 检查点功能回退
 

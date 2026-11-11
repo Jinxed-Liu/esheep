@@ -29,8 +29,8 @@ function ensureMemory(memory, requiredBytes) {
   memory.grow(pages);
 }
 
-async function decodeLZFSE(compressed, outputSize) {
-  const { instance } = await loadDecoder();
+async function decodeLZFSE(compressed, outputSize, decoder) {
+  const { instance } = await decoder();
   const memory = instance.exports.memory;
   const heapBase = Number(instance.exports.__heap_base?.value ?? 131072);
   const sourceOffset = aligned(heapBase + 64 * 1024);
@@ -60,7 +60,7 @@ function hasMagic(bytes) {
   return archiveMagic.every((value, index) => bytes[index] === value);
 }
 
-export async function decodeCompactCheckpoint(blob) {
+export async function decodeCompactCheckpoint(blob, decoder = loadDecoder) {
   const archive = new Uint8Array(await blob.arrayBuffer());
   if (archive.byteLength <= archiveHeaderSize || !hasMagic(archive)) {
     throw new Error("紧凑基线文件头无效。");
@@ -69,6 +69,6 @@ export async function decodeCompactCheckpoint(blob) {
   if (!Number.isSafeInteger(uncompressedSize) || uncompressedSize <= 0 || uncompressedSize > maximumUncompressedBytes) {
     throw new Error("紧凑基线原始大小无效。");
   }
-  const clear = await decodeLZFSE(archive.subarray(archiveHeaderSize), uncompressedSize);
+  const clear = await decodeLZFSE(archive.subarray(archiveHeaderSize), uncompressedSize, decoder);
   return JSON.parse(new TextDecoder().decode(clear));
 }

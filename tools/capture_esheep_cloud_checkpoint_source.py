@@ -7,13 +7,16 @@ the explicitly selected private output directory; stdout contains counts only.
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import re
-import subprocess
 import uuid
+
+from checkpoint_source_cli import query as source_query
 
 
 def main():
+    os.umask(0o077)
     parser = argparse.ArgumentParser()
     parser.add_argument('--project', required=True)
     parser.add_argument('--farm', required=True, type=uuid.UUID)
@@ -26,10 +29,7 @@ def main():
     root.chmod(0o700)
 
     def query(sql):
-        assert sql.lstrip().lower().startswith('select ')
-        result = subprocess.run(['supabase', 'db', 'query', '--project-ref', args.project,
-                                 '--linked', sql, '-o', 'json'], capture_output=True, check=True, timeout=180)
-        return json.loads(result.stdout)['rows']
+        return source_query(args.project, sql, root/'query-errors.log')
 
     def save(name, value):
         path = root / name

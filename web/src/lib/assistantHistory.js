@@ -12,6 +12,8 @@ export function historyMessages(messages) {
     ...(message.error ? { error: true } : {}),
     ...(message.pending ? { text: message.text || "上次回答未完成，请重新提问。", error: true } : {}),
     ...(message.attachments?.length ? { attachments: message.attachments.map(({ name }) => ({ name: String(name ?? "图片") })) } : {}),
+    ...(message.questions?.length ? { questions: message.questions.slice(0, 3).map(q => ({ title: String(q.title), options: (q.options ?? []).slice(0, 4).map(String) })) } : {}),
+    ...(message.draft ? { draft: message.draft } : {}),
   }));
 }
 

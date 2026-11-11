@@ -186,8 +186,17 @@ final class AppBootstrapController {
     }
 
     private func prepareStore() async throws {
+        let container: ModelContainer
+        if #available(iOS 18, *) {
+            container = try await Task.detached(priority: .userInitiated) { try AppSchema.makeContainer() }.value
+        } else {
+            // iOS 17 can bind the view context to the queue where the container
+            // is opened. SwiftUI must never wait on a private context that is
+            // itself delivering a query observation back to SwiftUI.
+            container = try AppSchema.makeContainer()
+            _ = container.mainContext
+        }
         let prepared = try await Task.detached(priority: .userInitiated) {
-            let container = try AppSchema.makeContainer()
             let retiredCloudCleanup = try RetiredCloudFarmRemovalService
                 .removeRetiredCloudFarms(from: container)
             let cloudPreparation = CloudCollaborationStore.prepareStartup(

@@ -261,7 +261,7 @@ struct ESheepCloudCenterView: View {
                 migrationPreparationSection
             } else if currentFarmState == nil || currentFarmState?.activityState == .preparing {
                 ESheepCloudPreparationSection(
-                    session: latestInitialSession,
+                    source: latestInitialSession,
                     isRetrying: isReceivingInitialSync,
                     onRetry: retryInitialReceive
                 )
@@ -587,7 +587,7 @@ struct ESheepCloudInitialSyncProgressView: View {
                 }
 
                 ESheepCloudPreparationSection(
-                    session: session,
+                    source: session,
                     isRetrying: isRetrying,
                     onRetry: retry
                 )
@@ -635,10 +635,81 @@ struct ESheepCloudInitialSyncProgressView: View {
     }
 }
 
+/// Immutable display values from one committed session revision. A SwiftData
+/// object already registered in the view context can lag behind background saves.
+private struct InitialSyncProgress {
+    let id: UUID
+    let updatedAt: Date
+    let state: ESheepCloudInitialSyncState
+    let usesBusinessCheckpoint: Bool
+    let receivedByteCount, expectedByteCount: Int64
+    let boundaryEventSequence, targetEventHead: Int64
+    let verifiedProjectionEventSequence, activationProjectionEventSequence: Int64
+    let retryCount: Int
+    let lastErrorTraceID: String?
+    let chunks: (completed: Int, total: Int)?
+
+    init(_ session: ESheepCloudInitialSyncSession) {
+        id = session.id
+        updatedAt = session.updatedAt
+        state = session.state
+        usesBusinessCheckpoint = session.usesBusinessCheckpoint
+        receivedByteCount = session.receivedByteCount
+        expectedByteCount = session.expectedByteCount
+        boundaryEventSequence = session.boundaryEventSequence
+        targetEventHead = session.targetEventHead
+        verifiedProjectionEventSequence = session.verifiedProjectionEventSequence
+        activationProjectionEventSequence = session.activationProjectionEventSequence
+        retryCount = session.retryCount
+        lastErrorTraceID = session.lastErrorTraceID
+        chunks = Self.chunkProgress(session)
+    }
+    private static func chunkProgress(
+        _ session: ESheepCloudInitialSyncSession
+    ) -> (completed: Int, total: Int)? {
+        if session.usesBusinessCheckpoint,
+           let data = session.manifestData,
+           let manifest = try? ESheepCloudCanonicalCodec.decode(ESheepCloudCheckpointManifest.self, from: data),
+           let indexes = try? ESheepCloudCanonicalCodec.decode([Int].self, from: session.verifiedChunkIndexesData) {
+            return (Set(indexes).intersection(Set(manifest.chunks.indices)).count, manifest.chunks.count)
+        }
+        guard let manifestData = session.manifestData,
+              let manifest = try? ESheepCloudCanonicalCodec.decode(
+                  ESheepCloudSnapshotManifestV2.self,
+                  from: manifestData
+              ),
+              let indexes = try? ESheepCloudCanonicalCodec.decode(
+                  [Int].self,
+                  from: session.verifiedChunkIndexesData
+              ) else {
+            return nil
+        }
+        return (Set(indexes).intersection(Set(manifest.chunks.map(\.index))).count, manifest.chunks.count)
+    }
+}
+
 private struct ESheepCloudPreparationSection: View {
-    let session: ESheepCloudInitialSyncSession?
+    @Environment(\.modelContext) private var modelContext
+    @State private var committed: InitialSyncProgress?
+    let source: ESheepCloudInitialSyncSession?
     let isRetrying: Bool
     let onRetry: () -> Void
+
+    private var session: InitialSyncProgress? {
+        guard let source else { return nil }
+        if let committed, committed.id == source.id, committed.updatedAt >= source.updatedAt { return committed }
+        return InitialSyncProgress(source)
+    }
+
+    private func refreshProgress() {
+        guard let id = source?.id else { committed = nil; return }
+        let reader = ModelContext(modelContext.container)
+        guard let latest = try? reader.fetch(FetchDescriptor<ESheepCloudInitialSyncSession>(
+            predicate: #Predicate { $0.id == id })).first else { return }
+        if committed?.id != id || committed?.updatedAt != latest.updatedAt {
+            committed = InitialSyncProgress(latest)
+        }
+    }
 
     private var currentStep: Int {
         guard let session else { return 1 }
@@ -649,6 +720,9 @@ private struct ESheepCloudPreparationSection: View {
         case .applyingRecentChanges, .buildingIndexes, .readyToActivate: return 4
         case .activating, .active: return 5
         case .paused, .failed:
+            if session.usesBusinessCheckpoint, session.targetEventHead > session.verifiedProjectionEventSequence,
+               session.verifiedProjectionEventSequence >= session.boundaryEventSequence,
+               session.chunks.map({ $0.completed == $0.total }) == true { return 4 }
             if isActivationPhase(session) {
                 return 5
             }
@@ -668,7 +742,7 @@ private struct ESheepCloudPreparationSection: View {
         }
     }
 
-    private func isActivationPhase(_ session: ESheepCloudInitialSyncSession) -> Bool {
+    private func isActivationPhase(_ session: InitialSyncProgress) -> Bool {
         if session.state == .activating || session.activationProjectionEventSequence > 0 {
             return true
         }
@@ -714,6 +788,15 @@ private struct ESheepCloudPreparationSection: View {
 
             if let session {
                 switch session.state {
+                case .receiving where session.usesBusinessCheckpoint && session.expectedByteCount > 0:
+                    ProgressView(value: Double(session.receivedByteCount), total: Double(session.expectedByteCount)) {
+                        Text("已下载 \(formattedBytes(session.receivedByteCount)) / \(formattedBytes(session.expectedByteCount))")
+                    }
+                    if let chunks = session.chunks, chunks.total > 0 {
+                        ProgressView(value: Double(chunks.completed), total: Double(chunks.total)) {
+                            Text("已导入 \(chunks.completed) / \(chunks.total) 个分片")
+                        }
+                    }
                 case .receiving, .connecting, .paused, .failed:
                     if session.expectedByteCount > 0 &&
                         session.receivedByteCount < session.expectedByteCount &&
@@ -777,20 +860,36 @@ private struct ESheepCloudPreparationSection: View {
         } footer: {
             Text("校验和写入需要保持 eSheep+ 在前台；离开后会安全暂停，返回时继续。资料完整之前不会打开半成品牧场。")
         }
+        .task(id: source?.id) {
+            guard source != nil else { return }
+            // iOS 17 does not reliably deliver didSave from these background
+            // contexts. Read the single committed row while its progress is visible.
+            repeat {
+                refreshProgress()
+                do { try await Task.sleep(for: .milliseconds(500)) }
+                catch { return }
+            } while !Task.isCancelled && committed?.state != .active
+        }
     }
 
     @ViewBuilder
-    private func eventProgress(_ session: ESheepCloudInitialSyncSession) -> some View {
+    private func eventProgress(_ session: InitialSyncProgress) -> some View {
         let target = max(session.targetEventHead, session.verifiedProjectionEventSequence)
         let current = isActivationPhase(session)
             ? session.activationProjectionEventSequence
             : session.verifiedProjectionEventSequence
         if session.usesBusinessCheckpoint {
-            if session.state == .applyingRecentChanges, target > session.boundaryEventSequence {
+            if session.state == .applyingRecentChanges && session.retryCount > 0 {
+                Text("本次请求未收到响应，正在自动重试（第 \(session.retryCount) 次）")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if currentStep == 4, target > session.boundaryEventSequence {
                 ProgressView(value: Double(max(0, current - session.boundaryEventSequence)),
                              total: Double(target - session.boundaryEventSequence))
                 Text("正在接收最近的变更：\(max(0, current - session.boundaryEventSequence)) / \(target - session.boundaryEventSequence)")
                     .font(.footnote).foregroundStyle(.secondary)
+            } else if session.state == .applyingRecentChanges {
+                ProgressView("正在查询最近的变更")
             } else {
                 ProgressView()
                 Text(isActivationPhase(session) ? "正在启用已核对的离线牧场资料" : "正在核对全部业务历史；已接收的资料会保留")
@@ -813,7 +912,7 @@ private struct ESheepCloudPreparationSection: View {
     }
 
     private func progressDescription(
-        _ session: ESheepCloudInitialSyncSession,
+        _ session: InitialSyncProgress,
         current: Int64,
         target: Int64
     ) -> String {
@@ -840,41 +939,19 @@ private struct ESheepCloudPreparationSection: View {
     }
 
     private func downloadProgressDescription(
-        _ session: ESheepCloudInitialSyncSession
+        _ session: InitialSyncProgress
     ) -> String {
-        let chunks = downloadChunkProgress(session)
+        let chunks = session.chunks
         let chunkText = chunks.map { "已整理 \($0.completed) / \($0.total) 个分片，" } ?? ""
         return "\(chunkText)已下载 \(formattedBytes(session.receivedByteCount))；本次预计下载 \(formattedBytes(session.expectedByteCount))。尚未计入后续新增变更。"
     }
 
     private func downloadAccessibilityLabel(
-        _ session: ESheepCloudInitialSyncSession
+        _ session: InitialSyncProgress
     ) -> String {
         "牧场资料接收进度，\(downloadProgressDescription(session))"
     }
 
-    private func downloadChunkProgress(
-        _ session: ESheepCloudInitialSyncSession
-    ) -> (completed: Int, total: Int)? {
-        if session.usesBusinessCheckpoint,
-           let data = session.manifestData,
-           let manifest = try? ESheepCloudCanonicalCodec.decode(ESheepCloudCheckpointManifest.self, from: data),
-           let indexes = try? ESheepCloudCanonicalCodec.decode([Int].self, from: session.verifiedChunkIndexesData) {
-            return (Set(indexes).intersection(Set(manifest.chunks.indices)).count, manifest.chunks.count)
-        }
-        guard let manifestData = session.manifestData,
-              let manifest = try? ESheepCloudCanonicalCodec.decode(
-                  ESheepCloudSnapshotManifestV2.self,
-                  from: manifestData
-              ),
-              let indexes = try? ESheepCloudCanonicalCodec.decode(
-                  [Int].self,
-                  from: session.verifiedChunkIndexesData
-              ) else {
-            return nil
-        }
-        return (Set(indexes).intersection(Set(manifest.chunks.map(\.index))).count, manifest.chunks.count)
-    }
 }
 
 private struct ESheepCloudAttentionDetailView: View {

@@ -1,96 +1,228 @@
 {
-  "sourceLanguage": "zh-Hans",
-  "strings": {
-    "%@": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@"
+  "sourceLanguage" : "zh-Hans",
+  "strings" : {
+    "%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@"
           }
         }
       }
     },
-    "%lld": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld"
+    "%lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld"
           }
         }
       }
     },
-    "%lld 项待同步": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld items pending sync"
+    "%lld 项待同步" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld items pending sync"
           }
         }
       }
     },
-    "打开 eSheep+ 后配置小组件。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open eSheep+ to configure the widget."
+    "%lld月%lld日，%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld/%lld, %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld月%2$lld日，%3$@"
           }
         }
       }
     },
-    "查看所选牧场的羊只、圈舍、今日投喂和待同步数量。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "View sheep, pens, today’s feedings, and pending sync items for the selected farm."
+    "使用配置" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Use Configuration"
           }
         }
       }
     },
-    "牧场": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Farm"
+    "先在 App 的小组件设置中新建配置，再在这里选择。配置独立保存圈舍、批次、周期与配色。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Create a configuration in the app's widget settings, then select it here. Each configuration stores its own pens, batch, period and color scheme."
           }
         }
       }
     },
-    "牧场概览": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Farm Overview"
+    "最近更新于 %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Last updated %@"
           }
         }
       }
     },
-    "选择牧场": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Select Farm"
+    "可计算 %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calculable: %@"
           }
         }
       }
     },
-    "选择要在小组件中显示的牧场。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Select the farm to display in the widget."
+    "小组件设置" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Widget settings"
+          }
+        }
+      }
+    },
+    "小组件配置" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Widget configuration"
+          }
+        }
+      }
+    },
+    "已有投喂量" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Existing feed amount"
+          }
+        }
+      }
+    },
+    "打开 eSheep+ 后配置小组件。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open eSheep+ to configure the widget."
+          }
+        }
+      }
+    },
+    "数据可能已过时，最近更新于 %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Data may be out of date. Last updated %@"
+          }
+        }
+      }
+    },
+    "更新于 %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Updated %@"
+          }
+        }
+      }
+    },
+    "查看所选牧场的羊只、圈舍、今日投喂和待同步数量。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View sheep, pens, today’s feedings, and pending sync items for the selected farm."
+          }
+        }
+      }
+    },
+    "牧场" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Farm"
+          }
+        }
+      }
+    },
+    "牧场（未选择配置时使用）" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Farm (used when no configuration is selected)"
+          }
+        }
+      }
+    },
+    "牧场概览" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Farm Overview"
+          }
+        }
+      }
+    },
+    "记录覆盖比例" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Record coverage"
+          }
+        }
+      }
+    },
+    "选择牧场" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select Farm"
+          }
+        }
+      }
+    },
+    "选择要在小组件中显示的牧场。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select the farm to display in the widget."
           }
         }
       }
     }
   },
-  "version": "1.0"
+  "version" : "1.0"
 }

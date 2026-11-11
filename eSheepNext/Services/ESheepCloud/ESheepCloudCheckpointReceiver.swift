@@ -115,10 +115,14 @@ actor ESheepCloudCheckpointReceiver {
         do {
             let importer = try ESheepCloudCheckpointImporter(manifest: manifest,
                 accountID: seed.memberAccountID, storeURL: directory.appending(path: "verification.store"))
-            var received = 0
+            let imported = try await importer.importedChunkCount()
+            guard (0...manifest.chunks.count).contains(imported) else { throw ESheepCloudCheckpointError.incomplete }
+            var received = manifest.chunks.prefix(imported).reduce(0) { $0 + $1.compressedBytes }
+            try progress(sessionID: sessionID, state: .receiving, received: Int64(received),
+                         importedCount: imported, retryCount: 0)
             try await withThrowingTaskGroup(of: (Int, Data).self) { group in
-                var nextDownload = 0
-                var nextImport = 0
+                var nextDownload = imported
+                var nextImport = imported
                 var ready: [Int: Data] = [:]
                 func enqueue() {
                     guard nextDownload < manifest.chunks.count else { return }
@@ -130,7 +134,9 @@ actor ESheepCloudCheckpointReceiver {
                         return (descriptor.index, data)
                     }
                 }
-                for _ in 0..<min(3, manifest.chunks.count) { enqueue() }
+                // Keep an ordered, bounded window. At most six chunks can
+                // be in flight or waiting for an earlier index to import.
+                for _ in 0..<min(6, manifest.chunks.count - imported) { enqueue() }
                 while let (index, data) = try await group.next() {
                     ready[index] = data
                     received += data.count
@@ -143,19 +149,25 @@ actor ESheepCloudCheckpointReceiver {
                         try await importer.importChunk(compressed, index: nextImport)
                         phase.end(items: manifest.chunks[nextImport].recordCount)
                         try progress(sessionID: sessionID, state: .receiving,
-                            received: Int64(received), chunkIndex: nextImport)
+                            received: Int64(received), importedCount: nextImport + 1)
                         nextImport += 1
                     }
                 }
             }
             try progress(sessionID: sessionID, state: .verifying)
             try await importer.finish()
-            try progress(sessionID: sessionID, state: .applyingRecentChanges, head: manifest.boundaryEventSequence)
+            let verifiedHead = try await importer.currentHead()
+            try progress(sessionID: sessionID, state: .applyingRecentChanges, head: verifiedHead)
             while true {
                 try Task.checkCancellation()
                 let after = try await importer.currentHead()
-                let page = try await gateway.pullEvents(farmID: seed.id, farmGeneration: manifest.farmGeneration,
-                                                       after: after, limit: 500)
+                let page = try await gateway.pullInitialSyncEvents(farmID: seed.id, farmGeneration: manifest.farmGeneration,
+                                                                  after: after, limit: 100) { attempt in
+                    try self.progress(sessionID: sessionID, state: .applyingRecentChanges,
+                                            head: after, retryCount: attempt)
+                }
+                try progress(sessionID: sessionID, state: .applyingRecentChanges, head: after,
+                             target: page.cloudHead, retryCount: 0)
                 try await importer.applyRecentPage(page)
                 let head = try await importer.currentHead()
                 try progress(sessionID: sessionID, state: .applyingRecentChanges, head: head, target: page.cloudHead)
@@ -298,7 +310,7 @@ actor ESheepCloudCheckpointReceiver {
         session.manifestData = try ESheepCloudCanonicalCodec.encode(manifest)
         session.manifestDigest = try ESheepCloudCanonicalCodec.digest(manifest)
         session.boundaryEventSequence = manifest.boundaryEventSequence
-        session.targetEventHead = manifest.boundaryEventSequence
+        session.targetEventHead = max(session.targetEventHead, manifest.boundaryEventSequence)
         session.expectedByteCount = Int64(manifest.chunks.reduce(0) { $0 + $1.compressedBytes })
         session.state = .receiving
         try context.save()
@@ -312,14 +324,15 @@ actor ESheepCloudCheckpointReceiver {
         return row
     }
 
-    private func progress(sessionID: UUID, state: ESheepCloudInitialSyncState, received: Int64? = nil, head: Int64? = nil, target: Int64? = nil, chunkIndex: Int? = nil) throws {
+    private func progress(sessionID: UUID, state: ESheepCloudInitialSyncState, received: Int64? = nil, head: Int64? = nil, target: Int64? = nil, importedCount: Int? = nil, retryCount: Int? = nil) throws {
         let context = ModelContext(container)
         let value = try session(sessionID, context: context)
         value.state = state
         if let received { value.receivedByteCount = received }
         if let head { value.verifiedProjectionEventSequence = head }
         if let target { value.targetEventHead = max(value.targetEventHead, target) }
-        if let chunkIndex { value.verifiedChunkIndexesData = try ESheepCloudCanonicalCodec.encode(Array(0...chunkIndex)) }
+        if let importedCount { value.verifiedChunkIndexesData = try ESheepCloudCanonicalCodec.encode(Array(0..<importedCount)) }
+        if let retryCount { value.retryCount = retryCount }
         value.lastProgressAt = .now
         try context.save()
     }
