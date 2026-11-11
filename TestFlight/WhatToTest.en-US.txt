@@ -1,8 +1,5 @@
-Please test first sync and the first few interactions after entering a farm.
+This build addresses a secure connection (SSL) error during sign-in on some cellular networks.
 
-1. On a device that has not downloaded the farm, sign in and open it. Check downloaded bytes, imported chunks and progress while fetching recent changes.
-2. Briefly interrupt the connection while recent changes are loading, then reconnect. Check that sync resumes automatically and opens the farm.
-3. On iOS 17, open the active sheep list and the workbench from Home, then tap the weather card for the hourly forecast. Check taps, back navigation and weather loading.
-4. In the farm assistant settings, select a configured provider and model, then ask a question about farm data and check the answer.
+On an iPhone, turn off Wi-Fi and sign in with your existing account over LTE or 5G. Check that you reach the farm list or enter your farm. If this is the first download on this device, wait for the home screen to show your sheep records. You can also check sign-in on Wi-Fi.
 
-Please include the iOS version, the step where you got stuck, the displayed progress and how long you waited.
+If sign-in fails, report your carrier, iOS version, local time, the step that failed, and the error message. Hide email addresses and personal details in screenshots. Never include a password or verification code.
