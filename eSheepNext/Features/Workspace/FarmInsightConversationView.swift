@@ -2622,12 +2622,16 @@ private struct InsightDraftConfirmationView: View {
                     Text(LocalizedStringKey(draft.summary))
                     LabeledContent("所需权限", value: draft.requiredCapabilityRawValue)
                 }
-                Section {
-                    InsightDraftFields(toolName: draft.toolName, payloadText: $payloadText)
-                } header: {
-                    Text("可编辑字段")
-                } footer: {
-                    Text("请核对羊只、日期和录入内容。确认后才提交。")
+                if draft.risk != .high {
+                    Section {
+                        InsightDraftFields(toolName: draft.toolName, payloadText: $payloadText)
+                    } header: {
+                        Text("可编辑字段")
+                    } footer: {
+                        Text("请核对羊只、日期和录入内容。确认后才提交。")
+                    }
+                } else if !draft.reason.isEmpty {
+                    Section("操作依据") { Text(draft.reason) }
                 }
                 if reviewedBatch.count > 1 {
                     Section("本次同时提交 \(reviewedBatch.count) 条") {
@@ -2650,7 +2654,7 @@ private struct InsightDraftConfirmationView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("确认执行", action: confirm)
                         .disabled(
-                            payloadText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            reviewedBatch.isEmpty || (draft.risk != .high && payloadText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         )
                 }
             }
@@ -2672,7 +2676,9 @@ private struct InsightDraftConfirmationView: View {
                 payloadError = "草稿在核对期间已变更。请取消并重新打开核对。"
                 return
             }
-            try InsightToolRegistry().updateDraftPayload(payloadText, for: draft)
+            if draft.risk != .high {
+                try InsightToolRegistry().updateDraftPayload(payloadText, for: draft)
+            }
             onConfirm()
         } catch {
             payloadError = error.localizedDescription
