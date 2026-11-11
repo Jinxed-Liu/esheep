@@ -96,7 +96,12 @@ struct FarmInsightConversationListView: View, Equatable {
         let matches = searchMatches
         let lastMessages = lastAssistantMessages
         let deviceIDs = currentDeviceConversationIDs
+        let activeProvider = draftController.provider.rawValue
+        let otherServiceConversations = Set(messages.lazy.filter {
+            $0.provider != "local" && $0.provider != activeProvider
+        }.map(\.conversationID))
         let filteredConversations = conversations.filter {
+            !otherServiceConversations.contains($0.id) &&
             (!currentDeviceOnly || deviceIDs.contains($0.id)) &&
                 (normalizedSearch.isEmpty || $0.title.localizedStandardContains(normalizedSearch) || matches[$0.id] != nil)
         }
@@ -119,7 +124,7 @@ struct FarmInsightConversationListView: View, Equatable {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             InsightConversationListToolbar(
-                farmName: farm.name,
+                farmName: farm.name, provider: draftController.provider,
                 showSettings: $showSettings,
                 showSearch: $showSearch,
                 composerFocused: $composerFocused
@@ -145,7 +150,14 @@ struct FarmInsightConversationListView: View, Equatable {
                 .id(route.id)
         }
         .sheet(isPresented: $showSettings, onDismiss: { Task { await draftController.refreshCredential() } }) {
-            InsightAssistantSettingsView(account: account, farm: farm)
+            NavigationStack {
+                InsightAssistantSettingsView(account: account, farm: farm)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("完成") { showSettings = false }
+                        }
+                    }
+            }
         }
         .task(id: draft.draftID) {
             do { try await coordinator.draftStore.restore(scope: sessionScope, conversationID: nil) }
@@ -187,7 +199,7 @@ struct FarmInsightConversationListView: View, Equatable {
             audioRecorder: composerAudioRecorder, pendingAudio: nil, isPlayingAudio: false,
             isGenerating: controller.isGenerating, isSubmitting: isSubmitting,
             isEnabled: isReady && !isSubmitting,
-            isAudioEnabled: controller.canUseAssistant && coordinator.allowsWork(scope: scope),
+            isAudioEnabled: controller.supportsAudio && controller.canUseAssistant && coordinator.allowsWork(scope: scope),
             isListEntry: true, analysisEffort: controller.analysisEffort,
             hasAttachments: hasDraftAttachments,
             attachmentsReady: draft.documents.allSatisfy(\.isReadyToSend),
@@ -276,7 +288,7 @@ struct FarmInsightConversationListView: View, Equatable {
             EmptyView()
         case .missingCredential:
             InsightAvailabilityNotice(
-                title: "配置 MiMo API Key",
+                title: "配置 \(draftController.provider.title) API Key",
                 detail: "请在 AI 助手设置中连接服务后发送。eSheep 不内置公共 Key。",
                 action: openAssistantSettings
             )
@@ -520,6 +532,7 @@ private struct InsightConversationListContent: View {
 @MainActor
 private struct InsightConversationListToolbar: ToolbarContent {
     let farmName: String
+    let provider: InsightProvider
     @Binding var showSettings: Bool
     @Binding var showSearch: Bool
     @FocusState.Binding var composerFocused: Bool
@@ -534,15 +547,15 @@ private struct InsightConversationListToolbar: ToolbarContent {
         }
         ToolbarItem(placement: .principal) {
             Menu {
-                Label("MiMo · 本机执行", systemImage: "checkmark")
+                Button("选择服务和模型") { showSettings = true }
             } label: {
                 HStack(spacing: 5) {
-                    Text("MiMo").font(.headline)
+                    Text(verbatim: provider.title).font(.headline)
                     Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
                 }
                 .foregroundStyle(.primary)
             }
-            .accessibilityLabel("当前服务 MiMo")
+            .accessibilityLabel("当前服务 \(provider.title)")
         }
         ToolbarItem(placement: .topBarTrailing) {
             Button { composerFocused = false; showSearch = true } label: { Image(systemName: "magnifyingglass") }

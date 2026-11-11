@@ -190,7 +190,10 @@ struct FarmInsightConversationView: View {
 #if DEBUG
                 if case .ready = controller.availability,
                    let prompt = InsightAcceptanceLaunchRequest.takePrompt() {
-                    await controller.send(text: prompt)
+                    do {
+                        let images = try InsightAcceptanceLaunchRequest.fixtureImages()
+                        await controller.send(text: prompt, images: images, origin: images.isEmpty ? .text : .image)
+                    } catch { controller.errorMessage = error.localizedDescription }
                 }
 #endif
             }
@@ -365,6 +368,8 @@ struct FarmInsightConversationView: View {
                 InsightDraftConfirmationView(
                     draft: draft,
                     farmName: farm.name,
+                    reviewedBatch: controller.confirmationSnapshots(for: draft),
+                    currentBatch: { controller.confirmationSnapshots(for: draft) },
                     initialPayloadText: presentation.editablePayloadText,
                     initialPayloadError: presentation.editablePayloadError,
                     onConfirm: {
@@ -1058,7 +1063,7 @@ struct FarmInsightConversationView: View {
                 EmptyView()
             case .missingCredential:
                 InsightAvailabilityNotice(
-                    title: "配置 MiMo API Key",
+                    title: "配置 \(controller.provider.title) API Key",
                     detail: "请在 AI 助手设置中连接服务后发送。eSheep 不内置公共 Key。",
                     action: openAssistantSettings
                 )
@@ -1098,7 +1103,7 @@ struct FarmInsightConversationView: View {
     }
 
     private var isAudioEnabled: Bool {
-        isControllerBoundToFarm && controller.canUseAssistant &&
+        controller.supportsAudio && isControllerBoundToFarm && controller.canUseAssistant &&
             InsightSessionCoordinator.shared.allowsWork(scope: boundScope)
     }
 
@@ -1372,12 +1377,7 @@ struct FarmInsightConversationView: View {
     }
 
     private func review(_ draft: InsightActionDraftRecord) {
-        if draft.risk == .high {
-            let approved = controller.confirmationSnapshots(for: draft)
-            Task { await controller.execute(draft, confirmedSnapshots: approved) }
-        } else {
-            selectedDraft = draft
-        }
+        selectedDraft = draft
     }
 
     private func reject(_ draft: InsightActionDraftRecord) {
@@ -2435,7 +2435,7 @@ private struct InsightActionDraftCard: View {
 
     private var primaryActionTitle: String {
         guard draft.risk == .high else { return "检查并确认" }
-        return executionCount > 1 ? "执行同批 \(executionCount) 条" : "执行操作"
+        return executionCount > 1 ? "核对同批 \(executionCount) 条" : "检查并确认"
     }
 
     private var deviceSymbol: String {
@@ -2446,7 +2446,7 @@ private struct InsightActionDraftCard: View {
 
     private var statusText: String {
         switch draft.status {
-        case .proposed: "待确认"
+        case .proposed: draft.toolName == "draft_reminder" || draft.toolName == "draft_calendar_event" ? "待确认" : "草稿，未入云"
         case .approved: "已批准"
         case .executed: "本机已执行"
         case .rejected: "已拒绝"
@@ -2592,10 +2592,14 @@ private struct InsightDraftConfirmationView: View {
     let onConfirm: () -> Void
     @State private var payloadText: String
     @State private var payloadError: String?
+    @State private var reviewedBatch: [InsightDraftApprovalSnapshot]
+    let currentBatch: () -> [InsightDraftApprovalSnapshot]
 
     init(
         draft: InsightActionDraftRecord,
         farmName: String,
+        reviewedBatch: [InsightDraftApprovalSnapshot],
+        currentBatch: @escaping () -> [InsightDraftApprovalSnapshot],
         initialPayloadText: String?,
         initialPayloadError: String?,
         onConfirm: @escaping () -> Void
@@ -2603,6 +2607,8 @@ private struct InsightDraftConfirmationView: View {
         self.draft = draft
         self.farmName = farmName
         self.onConfirm = onConfirm
+        _reviewedBatch = State(initialValue: reviewedBatch)
+        self.currentBatch = currentBatch
         _payloadText = State(initialValue: initialPayloadText ?? "")
         _payloadError = State(initialValue: initialPayloadError)
     }
@@ -2617,15 +2623,18 @@ private struct InsightDraftConfirmationView: View {
                     LabeledContent("所需权限", value: draft.requiredCapabilityRawValue)
                 }
                 Section {
-                    TextEditor(text: $payloadText)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(minHeight: 180)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                    InsightDraftFields(toolName: draft.toolName, payloadText: $payloadText)
                 } header: {
                     Text("可编辑字段")
                 } footer: {
-                    Text("这里修改的是真实结构化草案。确认前 App 会重新解析，并再次校验命令类型、牧场归属、权限、revision 和风险。")
+                    Text("请核对羊只、日期和录入内容。确认后才提交。")
+                }
+                if reviewedBatch.count > 1 {
+                    Section("本次同时提交 \(reviewedBatch.count) 条") {
+                        ForEach(reviewedBatch, id: \.id) { item in
+                            LabeledContent(item.title, value: item.summary)
+                        }
+                    }
                 }
                 Section("影响与风险") {
                     Text(draft.risk == .high
@@ -2659,10 +2668,61 @@ private struct InsightDraftConfirmationView: View {
 
     private func confirm() {
         do {
+            guard currentBatch() == reviewedBatch else {
+                payloadError = "草稿在核对期间已变更。请取消并重新打开核对。"
+                return
+            }
             try InsightToolRegistry().updateDraftPayload(payloadText, for: draft)
             onConfirm()
         } catch {
             payloadError = error.localizedDescription
+        }
+    }
+}
+
+private struct InsightDraftFields: View {
+    let toolName: String
+    @Binding var payloadText: String
+    @FocusState private var weightFocused: Bool
+
+    private var fields: [String: String]? {
+        guard ["draft_record_weight", "draft_record_weaning", "draft_add_note", "draft_transfer_sheep"].contains(toolName),
+              let data = payloadText.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode([String: String].self, from: data)
+    }
+
+    private func binding(_ key: String) -> Binding<String> {
+        Binding(get: { fields?[key] ?? "" }, set: { value in
+            guard var fields else { return }
+            fields[key] = value
+            if let data = try? JSONEncoder().encode(fields) { payloadText = String(decoding: data, as: UTF8.self) }
+        })
+    }
+
+    var body: some View {
+        if let fields {
+            if let tag = fields["earTag"] { LabeledContent("耳号", value: tag) }
+            if let pen = fields["penName"] { LabeledContent("目标羊舍", value: pen) }
+            if let subject = fields["subject"] { LabeledContent("对象", value: subject) }
+            if fields["kilogramsText"] != nil {
+                ProductionValueField(title: "体重", text: binding("kilogramsText"), unit: "千克", focus: $weightFocused)
+            }
+            if fields["weanWeightText"] != nil {
+                ProductionValueField(title: "断奶重", text: binding("weanWeightText"), unit: "千克", focus: $weightFocused)
+            }
+            if let value = fields["occurredAt"], let date = ISO8601DateFormatter().date(from: value) {
+                DatePicker("发生时间", selection: Binding(get: { date }, set: {
+                    binding("occurredAt").wrappedValue = ISO8601DateFormatter().string(from: $0)
+                }))
+            }
+            if fields["text"] != nil { TextField("记录内容", text: binding("text"), axis: .vertical) }
+            if fields["note"] != nil { TextField("备注", text: binding("note"), axis: .vertical) }
+        } else {
+            TextEditor(text: $payloadText)
+                .font(.system(.caption, design: .monospaced))
+                .frame(minHeight: 180)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
         }
     }
 }

@@ -11,13 +11,15 @@ struct MiMoInputAudio: Sendable, Equatable {
 }
 
 struct MiMoReasoningRecord: Codable, Sendable, Equatable, Identifiable {
-    enum Source: String, Codable, Sendable { case responses, chat }
+    enum Source: String, Codable, Sendable { case responses, chat, openAI }
     let id: String
     let text: String
     let source: Source
     let contentTexts: [String]
+    let encryptedContent: String?
 
-    init(id: String, text: String, source: Source = .responses, contentTexts: [String]? = nil) {
+    init(id: String, text: String, source: Source = .responses, contentTexts: [String]? = nil, encryptedContent: String? = nil) {
+        self.encryptedContent = encryptedContent
         self.id = id
         self.text = text
         self.source = source
@@ -25,7 +27,12 @@ struct MiMoReasoningRecord: Codable, Sendable, Equatable, Identifiable {
     }
 
     var responsesObject: [String: Any] {
-        [
+        if source == .openAI {
+            var item: [String: Any] = ["id": id, "type": "reasoning", "summary": contentTexts.filter { !$0.isEmpty }.map { ["type": "summary_text", "text": $0] }]
+            if let encryptedContent { item["encrypted_content"] = encryptedContent }
+            return item
+        }
+        return [
             "id": id,
             "type": "reasoning",
             "content": contentTexts.map { ["type": "reasoning_text", "text": $0] },
@@ -445,6 +452,7 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
             let task = Task {
                 do {
                     let containsAudio = request.messages.contains { !$0.audios.isEmpty }
+                    if containsAudio && credential.kind == .openAI { throw InsightOpenAIError.unsupportedAudio }
                     let urlRequest = try containsAudio
                         ? makeChatURLRequest(request: request, credential: credential)
                         : makeResponsesURLRequest(request: request, credential: credential, stream: true)
@@ -499,6 +507,7 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
 
     func validate(credential: MiMoCredential) async throws {
         let request = MiMoConversationRequest(
+            model: credential.modelName,
             instructions: "Return exactly OK.",
             messages: [MiMoInputMessage(role: .user, text: "OK")],
             maximumOutputTokens: 128,
@@ -534,14 +543,14 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
         urlRequest.setValue("application/json", forHTTPHeaderField: "content-type")
         urlRequest.setValue(stream ? "text/event-stream" : "application/json", forHTTPHeaderField: "accept")
         urlRequest.setValue("Bearer \(credential.apiKey)", forHTTPHeaderField: "authorization")
-        urlRequest.setValue(credential.apiKey, forHTTPHeaderField: "api-key")
+        if credential.kind != .openAI { urlRequest.setValue(credential.apiKey, forHTTPHeaderField: "api-key") }
         urlRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
 
         var input: [[String: Any]] = []
         var replayedReasoningIDs: Set<String> = []
         for message in request.messages {
             if message.role == .assistant {
-                for record in message.reasoningRecords where replayedReasoningIDs.insert(record.id).inserted {
+                for record in message.reasoningRecords where (record.source == .openAI) == (credential.kind == .openAI) && replayedReasoningIDs.insert(record.id).inserted {
                     input.append(record.responsesObject)
                 }
             }
@@ -551,7 +560,7 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
             // Keep the actual reasoning item immediately before the matching
             // function-call turn. Multiple calls share one reasoning item.
             for exchange in turn {
-                for record in exchange.reasoningRecords where replayedReasoningIDs.insert(record.id).inserted {
+                for record in exchange.reasoningRecords where (record.source == .openAI) == (credential.kind == .openAI) && replayedReasoningIDs.insert(record.id).inserted {
                     input.append(record.responsesObject)
                 }
             }
@@ -572,13 +581,17 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
             }
         }
         var body: [String: Any] = [
-            "model": request.model,
+            "model": credential.kind == .openAI ? credential.modelName : request.model,
             "instructions": request.instructions,
             "input": input,
             "max_output_tokens": request.maximumOutputTokens,
             "stream": stream,
             "reasoning": ["effort": request.thinkingEnabled ? "high" : "none"],
         ]
+        if credential.kind == .openAI {
+            body["store"] = false
+            body["reasoning"] = ["effort": request.thinkingEnabled ? "medium" : "none", "summary": "auto"]
+        }
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map {
                 [
@@ -586,7 +599,7 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
                     "name": $0.name,
                     "description": $0.description,
                     "parameters": $0.parameters.mapValues(\.foundationValue),
-                    "strict": true,
+                    "strict": credential.kind != .openAI,
                 ] as [String: Any]
             }
             body["tool_choice"] = "auto"
@@ -606,7 +619,7 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
         urlRequest.setValue("application/json", forHTTPHeaderField: "content-type")
         urlRequest.setValue("text/event-stream", forHTTPHeaderField: "accept")
         urlRequest.setValue("Bearer \(credential.apiKey)", forHTTPHeaderField: "authorization")
-        urlRequest.setValue(credential.apiKey, forHTTPHeaderField: "api-key")
+        if credential.kind != .openAI { urlRequest.setValue(credential.apiKey, forHTTPHeaderField: "api-key") }
         urlRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
 
         var messages: [[String: Any]] = [
@@ -646,7 +659,7 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
             }
         }
         var body: [String: Any] = [
-            "model": request.model,
+            "model": credential.kind == .openAI ? credential.modelName : request.model,
             "messages": messages,
             "max_completion_tokens": request.maximumOutputTokens,
             "stream": true,
@@ -835,7 +848,7 @@ enum MiMoSSEParser {
                 throw MiMoClientError.invalidResponse
             }
             return .textDelta(delta)
-        case "response.reasoning_text.delta":
+        case "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
             guard let delta = object["delta"] as? String else {
                 throw MiMoClientError.invalidResponse
             }
@@ -849,6 +862,12 @@ enum MiMoSSEParser {
         case "response.output_item.done":
             guard let item = object["item"] as? [String: Any] else { return nil }
             if item["type"] as? String == "reasoning" {
+                if let id = item["id"] as? String, let encrypted = item["encrypted_content"] as? String {
+                    let summary = (item["summary"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
+                    return .reasoningRecorded(.init(id: id, text: summary.joined(separator: "\n"), source: .openAI, contentTexts: summary, encryptedContent: encrypted))
+                }
+                // OpenAI may omit reasoning content when no summary was requested.
+                if item["summary"] != nil && item["content"] == nil { return nil }
                 guard let id = item["id"] as? String,
                       let content = item["content"] as? [[String: Any]] else {
                     throw MiMoClientError.invalidResponse

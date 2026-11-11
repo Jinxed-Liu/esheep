@@ -8,7 +8,7 @@ final class InsightRateAnalysisIntentTests: XCTestCase {
     ]
 
     func testDefaultPlanUsesAppWeightTimelineAndEndCohort() throws {
-        let intent = try XCTUnwrap(detect("大棚十二舍日增重多少"))
+        let intent = try XCTUnwrap(detect("大棚十二舍全部历史日增重多少"))
         XCTAssertEqual(intent.penNames, ["大棚十二舍"])
         XCTAssertEqual(intent.penName, "大棚十二舍")
         let arguments = intent.calculationArguments
@@ -51,7 +51,7 @@ final class InsightRateAnalysisIntentTests: XCTestCase {
 
     func testPenMatchingPreservesUserOrderAndShieldsShorterNames() throws {
         let intent = try XCTUnwrap(InsightRateAnalysisIntent.detect(
-            question: "大棚十五舍、大棚十二舍、大棚十五舍称重数据分析一下",
+            question: "大棚十五舍、大棚十二舍、大棚十五舍全部历史称重数据分析一下",
             availablePenNames: ["十二舍", "大棚十二舍", "大棚十五舍"],
             now: referenceDate,
             timeZone: shanghai
@@ -137,7 +137,7 @@ final class InsightRateAnalysisIntentTests: XCTestCase {
 
     func testAFilterWordInsideAnExactPenNameDoesNotNarrowThePopulation() throws {
         let intent = try XCTUnwrap(InsightRateAnalysisIntent.detect(
-            question: "母羊舍日增重多少",
+            question: "母羊舍全部历史日增重多少",
             availablePenNames: ["母羊舍"],
             now: referenceDate,
             timeZone: shanghai
@@ -157,7 +157,7 @@ final class InsightRateAnalysisIntentTests: XCTestCase {
             "全场日增重分析", "牧场日增重分析", "羊群日增重分析", "大棚十二舍日增重多少",
             "牧场 daily gain", "大棚十二舍 average daily gain", "Please calculate daily gain for the farm",
         ] {
-            XCTAssertNotNil(detect(question), question)
+            XCTAssertNil(detect(question), "没有时间范围应交给 Agent 追问：\(question)")
         }
     }
 

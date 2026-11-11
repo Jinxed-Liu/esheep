@@ -34,6 +34,7 @@ struct InsightAssistantSettingsView: View {
     @State private var selectedLegalDocument: LegalDocument?
     @State private var isUpdatingAIConsent = false
     @State private var analysisConfiguration: InsightRunConfiguration
+    @State private var serverConsent = false
 
     init(account: AccountProfile, farm: FarmRecord) {
         self.account = account
@@ -58,19 +59,42 @@ struct InsightAssistantSettingsView: View {
 
     var body: some View {
         Form {
-            consentSection
+            providerSection
+            Section("云端牧场 Agent") {
+                Text(AgentServerConsent.notice).font(.footnote).foregroundStyle(.secondary)
+                Toggle("我同意云端 Agent 数据处理说明", isOn: Binding(
+                    get: { serverConsent },
+                    set: { enabled in
+                        serverConsent = enabled
+                        AgentServerConsent.setConsent(enabled, for: account.effectiveAccountID)
+                        if !enabled { InsightSessionCoordinator.shared.pauseAll(reason: "已撤回云端 Agent 同意") }
+                        Task { await controller.refreshCredential() }
+                    }
+                ))
+            }
+            if controller.provider == .mimo { consentSection } else { openAIConsentSection }
             modelSection
             analysisSection
             advancedSection
             contextSection
-            officialUsageSection
+            if controller.provider == .mimo { officialUsageSection }
             credentialSection
-            privacySection
-            devicesSection
-            recoverySection
+            if controller.provider == .mimo {
+                privacySection
+                devicesSection
+                recoverySection
+            }
         }
         .navigationTitle("AI 助手")
+        .onAppear { serverConsent = AgentServerConsent.hasConsent(for: account.effectiveAccountID) }
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: controller.provider) { _, _ in
+            apiKey = ""
+            savedCredentialMask = nil
+            hasReadAIPrivacy = false
+            hasAcceptedAIPrivacy = controller.provider == .mimo ? AIPrivacyConsentStore.hasCurrentConsent(for: account.effectiveAccountID) : OpenAIConsent.hasConsent(for: account.effectiveAccountID)
+            Task { await loadCredentialStatus() }
+        }
         .alert("AI 助手设置", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -92,7 +116,7 @@ struct InsightAssistantSettingsView: View {
             Text("撤回后不会再向 MiMo 发送新请求。已保存的 API Key 和历史会话不会自动删除，你仍可分别删除。")
         }
         .confirmationDialog(
-            "删除 MiMo API Key？",
+            "删除 \(controller.provider.title) API Key？",
             isPresented: $isDeleteConfirmationPresented,
             titleVisibility: .visible
         ) {
@@ -152,7 +176,49 @@ struct InsightAssistantSettingsView: View {
             await controller.connect(to: modelContext)
             await loadCredentialStatus()
             await loadSecurityDevices()
-            await loadOfficialUsage(silent: true)
+            if controller.provider == .mimo { await loadOfficialUsage(silent: true) }
+        }
+    }
+
+    private var providerSection: some View {
+        Section("服务") {
+            Picker("AI 服务", selection: Binding(
+                get: { controller.provider },
+                set: { value in
+                    InsightSessionCoordinator.shared.pauseAll(reason: "已切换 AI 服务")
+                    Task { await controller.selectProvider(value) }
+                }
+            )) {
+                ForEach(InsightProvider.allCases) { value in Text(value.title).tag(value) }
+            }
+            .disabled(isSaving || isUpdatingAIConsent)
+            Text("分别保存你自己的 API Key，费用和额度由所选服务的账号承担。切换服务会开始新对话，原会话保留，旧上下文不会发送给另一家服务。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private var openAIConsentSection: some View {
+        Section("OpenAI 数据处理") {
+            Text(OpenAIConsent.notice).font(.footnote)
+            if hasAcceptedAIPrivacy {
+                Label("已同意 OpenAI 数据处理说明", systemImage: "checkmark.shield.fill")
+                Button("撤回 OpenAI 同意", role: .destructive) {
+                    OpenAIConsent.setConsent(false, for: account.effectiveAccountID)
+                    hasAcceptedAIPrivacy = false
+                    InsightSessionCoordinator.shared.pauseAll(reason: "已撤回 OpenAI 同意")
+                    Task { await controller.refreshCredential() }
+                }
+            } else {
+                Toggle("我已阅读并同意 OpenAI 数据处理说明", isOn: $hasReadAIPrivacy)
+                Button("同意并启用 OpenAI") {
+                    OpenAIConsent.setConsent(true, for: account.effectiveAccountID)
+                    hasAcceptedAIPrivacy = true
+                    hasReadAIPrivacy = false
+                    Task { await controller.refreshCredential() }
+                }.disabled(!hasReadAIPrivacy)
+            }
+            Link("OpenAI API 数据使用说明", destination: URL(string: "https://developers.openai.com/api/docs/guides/your-data")!)
+            Link("查看我的 OpenAI API 用量", destination: URL(string: "https://platform.openai.com/usage")!)
         }
     }
 
@@ -190,13 +256,22 @@ struct InsightAssistantSettingsView: View {
     }
 
     private var modelSection: some View {
-        Section {
-            LabeledContent("服务商", value: "MiMo")
-            LabeledContent("文字、图片与语音", value: MiMoCredential.model)
-        } header: {
-            Text("模型")
-        } footer: {
-            Text("所有输入均使用 MiMo-V2.6-Pro，不开放自定义模型或第三方地址。")
+        Section("模型") {
+            if !controller.availableModels.isEmpty {
+                Picker("当前模型", selection: Binding(
+                    get: { controller.selectedModel ?? "" },
+                    set: { controller.selectModel($0) }
+                )) {
+                    if controller.selectedModel == nil { Text("请选择模型").tag("") }
+                    ForEach(controller.availableModels, id: \.self) { Text(verbatim: $0).tag($0) }
+                }
+            }
+            if let message = controller.modelStatusError {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+                Button("重新获取模型") { Task { await controller.refreshAgentStatus() } }
+            } else if controller.availableModels.isEmpty {
+                ProgressView("正在读取可用模型")
+            }
         }
     }
 
@@ -338,9 +413,9 @@ struct InsightAssistantSettingsView: View {
             HStack {
                 Group {
                     if isRevealed {
-                        TextField("sk- 或 tp- 开头", text: $apiKey)
+                        TextField(controller.provider == .mimo ? "sk- 或 tp- 开头" : "OpenAI sk- 开头", text: $apiKey)
                     } else {
-                        SecureField("sk- 或 tp- 开头", text: $apiKey)
+                        SecureField(controller.provider == .mimo ? "sk- 或 tp- 开头" : "OpenAI sk- 开头", text: $apiKey)
                     }
                 }
                 .textInputAutocapitalization(.never)
@@ -362,19 +437,19 @@ struct InsightAssistantSettingsView: View {
             Button {
                 save()
             } label: {
-                if isSaving || controller.isTestingCredential {
+                if isSaving {
                     HStack {
                         ProgressView()
-                        Text("正在测试连接")
+                        Text("正在保存")
                     }
                 } else {
-                    Text(savedCredentialMask == nil ? LocalizedStringKey("测试连接并保存") : LocalizedStringKey("测试连接并替换"))
+                    Text(savedCredentialMask == nil ? LocalizedStringKey("保存并使用") : LocalizedStringKey("替换并使用"))
                 }
             }
             .disabled(
                 apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || isSaving
-                    || controller.isTestingCredential
+                    || !serverConsent
                     || !hasAcceptedAIPrivacy
             )
 
@@ -384,9 +459,11 @@ struct InsightAssistantSettingsView: View {
                 }
             }
         } header: {
-            Text("MiMo API Key")
+            Text("\(controller.provider.title) API Key")
         } footer: {
-            Text("sk- 使用标准地址，tp- 使用 Token Plan 地址。Key 通过连接测试后保存在本机钥匙串。")
+            Text(controller.provider == .mimo
+                 ? "MiMo Key 保存在本机钥匙串；启用个人加密同步时，沿用原有同步设置。首次提问时核验模型权限和额度。"
+                 : "OpenAI Key 保存在这台 iPhone 的钥匙串中。首次提问时核验 Key、模型权限和额度。")
         }
     }
 
@@ -610,7 +687,7 @@ struct InsightAssistantSettingsView: View {
     }
 
     private func save() {
-        guard !isSaving, !controller.isTestingCredential else { return }
+        guard !isSaving else { return }
         guard hasAcceptedAIPrivacy else {
             errorMessage = InsightSecurityError.privacyConsentRequired.localizedDescription
             return
@@ -643,7 +720,8 @@ struct InsightAssistantSettingsView: View {
 
     private func loadCredentialStatus() async {
         do {
-            savedCredentialMask = try await MiMoCredentialVault.shared
+            hasAcceptedAIPrivacy = controller.provider == .mimo ? AIPrivacyConsentStore.hasCurrentConsent(for: account.effectiveAccountID) : OpenAIConsent.hasConsent(for: account.effectiveAccountID)
+            savedCredentialMask = try await controller.provider
                 .credential(for: account.effectiveAccountID)?
                 .maskedValue
         } catch {
