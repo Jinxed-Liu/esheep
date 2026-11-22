@@ -636,7 +636,8 @@ struct InsightAnalysisFocusedSelector: View {
                 if controller.provider == .openai {
                     Menu {
                         Picker("模型", selection: Binding(
-                            get: { controller.selectedModel ?? "" }, set: controller.selectModel
+                            get: { controller.selectedModel ?? "" },
+                            set: { controller.selectModel($0) }
                         )) {
                             ForEach(controller.provider.availableModels, id: \.self) { Text(verbatim: $0).tag($0) }
                         }
@@ -715,7 +716,8 @@ struct InsightAnalysisFocusedSelector: View {
                     if controller.provider == .openai {
                         Section("OpenAI") {
                             Picker("模型", selection: Binding(
-                                get: { controller.selectedModel ?? "" }, set: controller.selectModel
+                                get: { controller.selectedModel ?? "" },
+                                set: { controller.selectModel($0) }
                             )) {
                                 if controller.selectedModel == nil { Text("请选择模型").tag("") }
                                 ForEach(controller.provider.availableModels, id: \.self) { Text(verbatim: $0).tag($0) }
