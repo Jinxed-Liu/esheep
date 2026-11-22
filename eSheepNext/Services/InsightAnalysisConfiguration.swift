@@ -21,10 +21,44 @@ enum InsightAnalysisEffort: String, Codable, CaseIterable, Identifiable, Sendabl
     }
 }
 
+enum OpenAIReasoningEffort: String, Codable, CaseIterable, Sendable {
+    case off = "none", low, medium, high, xhigh, maximum = "max"
+
+    var title: String {
+        switch self {
+        case .off: "关闭思考"
+        case .low: "低"
+        case .medium: "中"
+        case .high: "高"
+        case .xhigh: "很高"
+        case .maximum: "最高"
+        }
+    }
+
+    static func options(for model: String) -> [Self] {
+        switch model {
+        case "gpt-6-astra", "gpt-6.1-sol": [.low, .medium, .high, .xhigh, .maximum]
+        case "gpt-6-luna", "gpt-6.1-terra": Self.allCases
+        default: [.off, .low, .medium, .high, .xhigh]
+        }
+    }
+
+    func supported(by model: String) -> Self {
+        let options = Self.options(for: model)
+        if options.contains(self) { return self }
+        return self == .off ? .low : .xhigh
+    }
+}
+
 struct InsightRunConfiguration: Codable, Equatable, Sendable {
     var effort: InsightAnalysisEffort
     var thinkingEnabled: Bool
     var showReasoning: Bool
+    var openAIReasoningEffort: OpenAIReasoningEffort?
+
+    func openAIEffort(for model: String) -> OpenAIReasoningEffort {
+        (openAIReasoningEffort ?? (thinkingEnabled ? .medium : .off)).supported(by: model)
+    }
 
     init(
         effort: InsightAnalysisEffort = .medium,
@@ -192,15 +226,6 @@ final class InsightRunBudget {
             throw InsightRunPause(reason: .toolRoundTrips, snapshot: snapshot)
         }
         toolRoundTrips += 1
-    }
-
-    func recordRemoteUsage(input: Int, output: Int) throws {
-        modelRequests += 1
-        inputTokens += max(0, input)
-        outputTokens += max(0, output)
-        try checkActiveTime()
-        if modelRequests > configuration.maximumModelRequests { throw InsightRunPause(reason: .modelRequests, snapshot: snapshot) }
-        if outputTokens > configuration.maximumOutputTokens { throw InsightRunPause(reason: .outputTokens, snapshot: snapshot) }
     }
 
     /// Wrap the real provider stream so every attempt, including failed or

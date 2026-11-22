@@ -270,22 +270,24 @@ struct InsightToolDefinition: Sendable, Equatable {
 }
 
 struct MiMoConversationRequest: Sendable {
-    let model: String
+    let model: String?
     let instructions: String
     let messages: [MiMoInputMessage]
     let functionExchanges: [MiMoFunctionExchange]
     let tools: [InsightToolDefinition]
     let maximumOutputTokens: Int
     let thinkingEnabled: Bool
+    let openAIReasoningEffort: OpenAIReasoningEffort?
 
     init(
-        model: String = MiMoCredential.model,
+        model: String? = nil,
         instructions: String,
         messages: [MiMoInputMessage],
         functionExchanges: [MiMoFunctionExchange] = [],
         tools: [InsightToolDefinition] = [],
         maximumOutputTokens: Int = 1_200,
-        thinkingEnabled: Bool = true
+        thinkingEnabled: Bool = true,
+        openAIReasoningEffort: OpenAIReasoningEffort? = nil
     ) {
         self.model = model
         self.instructions = instructions
@@ -294,6 +296,7 @@ struct MiMoConversationRequest: Sendable {
         self.tools = tools
         self.maximumOutputTokens = min(max(128, maximumOutputTokens), 8_192)
         self.thinkingEnabled = thinkingEnabled
+        self.openAIReasoningEffort = openAIReasoningEffort
     }
 
     func withMaximumOutputTokens(_ maximum: Int) -> Self {
@@ -304,7 +307,8 @@ struct MiMoConversationRequest: Sendable {
             functionExchanges: functionExchanges,
             tools: tools,
             maximumOutputTokens: maximum,
-            thinkingEnabled: thinkingEnabled
+            thinkingEnabled: thinkingEnabled,
+            openAIReasoningEffort: openAIReasoningEffort
         )
     }
 }
@@ -581,7 +585,7 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
             }
         }
         var body: [String: Any] = [
-            "model": credential.kind == .openAI ? credential.modelName : request.model,
+            "model": request.model ?? credential.modelName,
             "instructions": request.instructions,
             "input": input,
             "max_output_tokens": request.maximumOutputTokens,
@@ -590,7 +594,10 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
         ]
         if credential.kind == .openAI {
             body["store"] = false
-            body["reasoning"] = ["effort": request.thinkingEnabled ? "medium" : "none", "summary": "auto"]
+            body["include"] = ["reasoning.encrypted_content"]
+            let preferred = request.openAIReasoningEffort ?? (request.thinkingEnabled ? .medium : .off)
+            let effort = preferred.supported(by: request.model ?? credential.modelName)
+            body["reasoning"] = ["effort": effort.rawValue, "summary": "auto"]
         }
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map {
@@ -659,7 +666,7 @@ final class MiMoClient: MiMoResponding, @unchecked Sendable {
             }
         }
         var body: [String: Any] = [
-            "model": credential.kind == .openAI ? credential.modelName : request.model,
+            "model": request.model ?? credential.modelName,
             "messages": messages,
             "max_completion_tokens": request.maximumOutputTokens,
             "stream": true,

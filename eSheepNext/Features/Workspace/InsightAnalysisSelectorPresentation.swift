@@ -8,10 +8,7 @@ import UIKit
 @MainActor
 struct InsightAnalysisSelectorPresentation: UIViewControllerRepresentable {
     @Binding var isPresented: Bool
-    @Binding var effortIndex: Double
-    @Binding var thinkingEnabled: Bool
-    @Binding var showReasoning: Bool
-    let modelName: String
+    let controller: InsightConversationController
     var gaugeFrame = CGRect.zero
     var contextIsPresented: Binding<Bool>? = nil
     var contextUsage: InsightContextWindowUsage? = nil
@@ -173,10 +170,7 @@ struct InsightAnalysisSelectorPresentation: UIViewControllerRepresentable {
 
         private var rootView: InsightAnalysisSelectorRoot {
             InsightAnalysisSelectorRoot(
-                layout: layout, effortIndex: configuration.$effortIndex,
-                thinkingEnabled: configuration.$thinkingEnabled,
-                showReasoning: configuration.$showReasoning,
-                modelName: configuration.modelName,
+                layout: layout, controller: configuration.controller,
                 contextUsage: presentsContext ? configuration.contextUsage : nil,
                 onDismiss: { [weak self] in self?.dismiss() },
                 onReopen: { [weak self] in
@@ -383,10 +377,7 @@ struct InsightAnalysisSelectorPresentation: UIViewControllerRepresentable {
 private struct InsightAnalysisSelectorRoot: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let layout: InsightAnalysisSelectorPresentation.Layout
-    @Binding var effortIndex: Double
-    @Binding var thinkingEnabled: Bool
-    @Binding var showReasoning: Bool
-    let modelName: String
+    let controller: InsightConversationController
     let contextUsage: InsightContextWindowUsage?
     let onDismiss: () -> Void
     let onReopen: () -> Void
@@ -452,11 +443,10 @@ private struct InsightAnalysisSelectorRoot: View {
     @ViewBuilder
     private var focusedPanel: some View {
         if let contextUsage {
-            InsightContextUsageFocusedPanel(usage: contextUsage, modelName: modelName, isExpanded: layout.isExpanded)
+            InsightContextUsageFocusedPanel(usage: contextUsage, modelName: controller.modelDisplayName, isExpanded: layout.isExpanded)
         } else {
             InsightAnalysisFocusedSelector(
-                effortIndex: $effortIndex, thinkingEnabled: $thinkingEnabled,
-                showReasoning: $showReasoning, modelName: modelName, onDismiss: onDismiss,
+                controller: controller, onDismiss: onDismiss,
                 isExpanded: layout.isExpanded
             )
         }

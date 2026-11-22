@@ -34,7 +34,6 @@ struct InsightAssistantSettingsView: View {
     @State private var selectedLegalDocument: LegalDocument?
     @State private var isUpdatingAIConsent = false
     @State private var analysisConfiguration: InsightRunConfiguration
-    @State private var serverConsent = false
 
     init(account: AccountProfile, farm: FarmRecord) {
         self.account = account
@@ -60,18 +59,6 @@ struct InsightAssistantSettingsView: View {
     var body: some View {
         Form {
             providerSection
-            Section("云端牧场 Agent") {
-                Text(AgentServerConsent.notice).font(.footnote).foregroundStyle(.secondary)
-                Toggle("我同意云端 Agent 数据处理说明", isOn: Binding(
-                    get: { serverConsent },
-                    set: { enabled in
-                        serverConsent = enabled
-                        AgentServerConsent.setConsent(enabled, for: account.effectiveAccountID)
-                        if !enabled { InsightSessionCoordinator.shared.pauseAll(reason: "已撤回云端 Agent 同意") }
-                        Task { await controller.refreshCredential() }
-                    }
-                ))
-            }
             if controller.provider == .mimo { consentSection } else { openAIConsentSection }
             modelSection
             analysisSection
@@ -86,7 +73,6 @@ struct InsightAssistantSettingsView: View {
             }
         }
         .navigationTitle("AI 助手")
-        .onAppear { serverConsent = AgentServerConsent.hasConsent(for: account.effectiveAccountID) }
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: controller.provider) { _, _ in
             apiKey = ""
@@ -257,20 +243,12 @@ struct InsightAssistantSettingsView: View {
 
     private var modelSection: some View {
         Section("模型") {
-            if !controller.availableModels.isEmpty {
-                Picker("当前模型", selection: Binding(
-                    get: { controller.selectedModel ?? "" },
-                    set: { controller.selectModel($0) }
-                )) {
-                    if controller.selectedModel == nil { Text("请选择模型").tag("") }
-                    ForEach(controller.availableModels, id: \.self) { Text(verbatim: $0).tag($0) }
-                }
-            }
-            if let message = controller.modelStatusError {
-                Text(message).font(.footnote).foregroundStyle(.secondary)
-                Button("重新获取模型") { Task { await controller.refreshAgentStatus() } }
-            } else if controller.availableModels.isEmpty {
-                ProgressView("正在读取可用模型")
+            Picker("当前模型", selection: Binding(
+                get: { controller.selectedModel ?? "" },
+                set: { controller.selectModel($0) }
+            )) {
+                if controller.selectedModel == nil { Text("请选择模型").tag("") }
+                ForEach(controller.provider.availableModels, id: \.self) { Text(verbatim: $0).tag($0) }
             }
         }
     }
@@ -313,11 +291,18 @@ struct InsightAssistantSettingsView: View {
 
     private var advancedSection: some View {
         Section {
-            Toggle("启用模型思考", isOn: $analysisConfiguration.thinkingEnabled)
+            if controller.provider == .openai {
+                OpenAIReasoningEffortPicker(model: controller.modelDisplayName, selection: Binding(
+                    get: { analysisConfiguration.openAIEffort(for: controller.modelDisplayName) },
+                    set: { analysisConfiguration.openAIReasoningEffort = $0 }
+                ))
+            } else {
+                Toggle("启用模型思考", isOn: $analysisConfiguration.thinkingEnabled)
+            }
         } header: {
             Text("高级设置")
         } footer: {
-            Text("关闭后模型直接生成回答，仍会执行必要的证据核对与事实校验。")
+            if controller.provider == .mimo { Text("关闭后模型直接生成回答，仍会执行必要的证据核对与事实校验。") }
         }
     }
 
@@ -449,7 +434,6 @@ struct InsightAssistantSettingsView: View {
             .disabled(
                 apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || isSaving
-                    || !serverConsent
                     || !hasAcceptedAIPrivacy
             )
 

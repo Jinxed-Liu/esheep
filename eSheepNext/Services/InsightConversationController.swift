@@ -793,69 +793,26 @@ final class InsightConversationController {
         set { reloadAnalysisPreference(); runConfiguration.showReasoning = newValue; saveAnalysisPreference() }
     }
     private(set) var provider: InsightProvider
-    private var statusRequestID: UUID?
-    private(set) var agentStatus: InsightAgentStatus?
-    private(set) var modelStatusError: String?
     private(set) var selectedModel: String?
     var modelDisplayName: String { selectedModel ?? "请选择模型" }
-    var availableModels: [String] { agentStatus?.modelOptions[provider.rawValue] ?? [] }
-
-    private var usesOfflineResponder: Bool {
-#if DEBUG
-        return !(client is MiMoClient) && account.serverAccountID == nil && farm.ownerAccountID == account.id
-#else
-        return false
-#endif
-    }
-
-    private func loadStatus() async throws -> InsightAgentStatus {
-#if DEBUG
-        if usesOfflineResponder {
-            return InsightAgentStatus(configured: true, models: ["mimo": MiMoCredential.model],
-                                      modelOptions: ["mimo": [MiMoCredential.model]], consentVersion: AgentServerConsent.version)
-        }
-#endif
-        return try await InsightServerAgentHarness(accountID: boundScope.accountID, farmID: boundScope.farmID).status()
-    }
-
-    func refreshAgentStatus() async {
-        let target = provider
-        let requestID = UUID()
-        statusRequestID = requestID
-        do {
-            let status = try await loadStatus()
-            guard provider == target, statusRequestID == requestID, canUseAssistant, !Task.isCancelled else { return }
-            agentStatus = status
-            do {
-                selectedModel = try status.model(for: target, saved: target.savedModel(for: boundScope.accountID))
-                modelStatusError = nil
-            } catch {
-                selectedModel = nil
-                modelStatusError = error.localizedDescription
-            }
-        } catch {
-            guard provider == target, statusRequestID == requestID, !Task.isCancelled else { return }
-            agentStatus = nil
-            selectedModel = nil
-            modelStatusError = error.localizedDescription
-        }
-    }
 
     func selectModel(_ model: String) {
-        guard let status = agentStatus, (try? status.model(for: provider, saved: model)) == model else { return }
+        guard provider.availableModels.contains(model) else { return }
         provider.selectModel(model, for: boundScope.accountID)
         selectedModel = model
-        modelStatusError = nil
     }
-    var supportsAudio: Bool { provider.supportsAudio }
-    var hasProviderConsent: Bool {
-#if DEBUG
-        if usesOfflineResponder && provider == .mimo {
-            return AIPrivacyConsentStore.hasCurrentConsent(for: boundScope.accountID)
+
+    var openAIReasoningEffort: OpenAIReasoningEffort {
+        get { runConfiguration.openAIEffort(for: modelDisplayName) }
+        set {
+            reloadAnalysisPreference()
+            runConfiguration.openAIReasoningEffort = newValue.supported(by: modelDisplayName)
+            saveAnalysisPreference()
         }
-#endif
-        return provider.hasConsent(for: boundScope.accountID)
     }
+
+    var supportsAudio: Bool { provider.supportsAudio }
+    var hasProviderConsent: Bool { provider.hasConsent(for: boundScope.accountID) }
 
     func selectProvider(_ value: InsightProvider) async {
         guard value != provider else { return }
@@ -1151,7 +1108,7 @@ final class InsightConversationController {
             availability = .unavailable("当前牧场角色没有读取牧场的权限。")
             return
         }
-        await refreshAgentStatus()
+        selectedModel = try? provider.model(for: boundScope.accountID)
         guard hasProviderConsent else {
             availability = .unavailable("请先在 AI 助手设置中阅读并单独同意 AI 数据处理说明。")
             return
@@ -1253,23 +1210,8 @@ final class InsightConversationController {
         isGenerating = true
         activeRequestID = registrationID
         do {
-            let turnModel: String
-            if audio != nil {
-                turnModel = MiMoCredential.model
-            } else {
-                let status: InsightAgentStatus
-                if let agentStatus { status = agentStatus }
-                else {
-                    status = try await loadStatus()
-                }
-                guard activeRequestID == registrationID, provider == submittedProvider,
-                      provider == InsightProvider.selected(for: submittedScope.accountID),
-                      InsightSessionCoordinator.shared.allowsWork(scope: submittedScope) else { throw CancellationError() }
-                turnModel = try status.model(for: provider, saved: provider.savedModel(for: submittedScope.accountID))
-                agentStatus = status
-                selectedModel = turnModel
-                modelStatusError = nil
-            }
+            guard InsightSessionCoordinator.shared.allowsWork(scope: submittedScope) else { throw CancellationError() }
+            let turnModel = try audio == nil ? submittedProvider.model(for: submittedScope.accountID) : MiMoCredential.model
             try InsightDocumentAnalysis.validate(documents)
             _ = try InsightDocumentAnalysis.combinedModelContextText(documents)
             guard images.count <= 4 else { throw MiMoClientError.invalidRequest }
@@ -2067,6 +2009,7 @@ final class InsightConversationController {
     func reloadAnalysisPreference() {
         guard canUseAssistant else { return }
         runConfiguration = InsightAnalysisPreference.load(for: boundScope.accountID)
+        selectedModel = try? provider.model(for: boundScope.accountID)
     }
 
     private func startTurn(
@@ -2276,9 +2219,9 @@ final class InsightConversationController {
                 最终只输出完整 JSON：{"analysis":"真实证据和核验说明","completed":true或false,"remaining":[]}
                 completed=true只可在全部条件有证据且remaining为空时使用，缺口必须写remaining并返回false。
                 """ : goalStepInstruction(goal)
-                guard let model = selectedModel,
-                      provider.acceptsHistory(providers: messages.filter { $0.role == .assistant }.map(\.provider)) else {
-                    throw InsightServerAgentError("请切回原服务并选择可用模型后继续。")
+                let model = try provider.model(for: boundScope.accountID)
+                guard provider.acceptsHistory(providers: messages.filter { $0.role == .assistant }.map(\.provider)) else {
+                    throw InsightProviderError.incompatibleHistory
                 }
                 let message = InsightMessageRecord(
                     conversationID: conversationID, accountID: account.effectiveAccountID,
@@ -2483,7 +2426,7 @@ final class InsightConversationController {
             guard assistantMessage.provider == provider.rawValue,
                   provider == InsightProvider.selected(for: boundScope.accountID),
                   provider.acceptsHistory(providers: messages.filter { $0.role == .assistant }.map(\.provider)) else {
-                throw InsightServerAgentError("本轮原服务与当前选择不同，已停止恢复。请切回原服务后继续，或新建对话。")
+                throw InsightProviderError.incompatibleHistory
             }
             if !documents.isEmpty {
                 try await InsightLocalDocumentStore.shared.save(
@@ -2585,6 +2528,7 @@ final class InsightConversationController {
                     audios: [MiMoInputAudio(mimeType: audio.mimeType, data: audio.data)]
                 )
             }
+            let reviewImages = inputMessages.last(where: { $0.role == .user })?.images ?? []
             var createdDraftCount = drafts(forMessageID: assistantMessage.id).count
             var generatedFile: InsightGeneratedFile?
             var earTagMatchEvidence: InsightEarTagMatchEvidence?
@@ -2597,12 +2541,6 @@ final class InsightConversationController {
             var seededHarnessExchanges = checkpoint.exchanges
             var harnessTools = toolDefinitions
             var harnessInstructions = modelInstructions
-            // Audio retains MiMo's existing audio transport. Text and images
-            // use the shared cloud Agent, whose facts come directly from Supabase.
-            let useCloudAgent = audio == nil && !usesOfflineResponder
-            if useCloudAgent {
-                harnessInstructions = "当前为 iOS 客户端。牧场事实使用服务端 Supabase 工具；客户端只提供操作结构、待确认草稿及设备能力。生成草稿不代表已写入或已同步。"
-            }
             if planning { harnessInstructions += "\n\n" + InsightPlan.outputInstruction }
             if checkpoint.goalID != nil { harnessInstructions += "\n\n" + text }
             var rateAnalysisIntent: InsightRateAnalysisIntent?
@@ -2616,7 +2554,7 @@ final class InsightConversationController {
             )) ?? [])
                 .filter { $0.farmID == farm.id && $0.deletedAt == nil }
                 .map(\.name)
-            if !useCloudAgent, let rateIntent = InsightRateAnalysisIntent.detect(
+            if let rateIntent = InsightRateAnalysisIntent.detect(
                 question: checkpoint.goalID.flatMap { id in runtime?.goals.values.first(where: { $0.id == id })?.currentStepDescription } ?? text,
                 availablePenNames: availablePenNames,
                 now: .now,
@@ -2736,8 +2674,7 @@ final class InsightConversationController {
             }
             let harness = InsightAgentHarness(
                 client: client,
-                maximumToolRoundTrips: checkpoint.configuration.maximumToolRoundTrips,
-                server: useCloudAgent ? InsightServerAgentHarness(accountID: account.effectiveAccountID, farmID: farm.id) : nil
+                maximumToolRoundTrips: checkpoint.configuration.maximumToolRoundTrips
             )
             let harnessResult: InsightAgentHarness.Result
             do {
@@ -2877,6 +2814,7 @@ final class InsightConversationController {
                         let review = try await InsightGroundedAnswerReviewer.review(
                             question: checkpoint.goalID == nil ? groundingContextText :
                                 groundingContextText + "\n本轮步骤与完成条件：\n" + checkpoint.text,
+                            images: reviewImages,
                             candidate: planning || checkpoint.goalID != nil ? candidate : reviewedCandidate,
                             exchanges: exchanges,
                             successfulToolNames: successfulToolNames,
@@ -3104,7 +3042,6 @@ final class InsightConversationController {
     }
 
     static func generationFailureDescription(_ error: Error) -> String {
-        if let serverError = error as? InsightServerAgentError { return serverError.localizedDescription }
         guard let mimoError = error as? MiMoClientError else {
             return error.localizedDescription
                 .replacingOccurrences(of: "请重试", with: "")

@@ -29,8 +29,21 @@ enum InsightProvider: String, CaseIterable, Identifiable, Sendable {
         UserDefaults.standard.set(model, forKey: modelKey(accountID))
     }
 
+    var availableModels: [String] {
+        switch self {
+        case .mimo: [MiMoCredential.model]
+        case .openai: [MiMoCredential.openAIModel, "gpt-5.4-mini", "gpt-5.5", "gpt-6-luna", "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra"]
+        }
+    }
+
+    func model(for accountID: UUID) throws -> String {
+        let model = savedModel(for: accountID) ?? (self == .openai ? MiMoCredential.openAIModel : MiMoCredential.model)
+        guard availableModels.contains(model) else { throw InsightProviderError.unavailableModel }
+        return model
+    }
+
     func hasConsent(for accountID: UUID) -> Bool {
-        AgentServerConsent.hasConsent(for: accountID) && (self == .mimo ? AIPrivacyConsentStore.hasCurrentConsent(for: accountID) : OpenAIConsent.hasConsent(for: accountID))
+        self == .mimo ? AIPrivacyConsentStore.hasCurrentConsent(for: accountID) : OpenAIConsent.hasConsent(for: accountID)
     }
     func credential(for accountID: UUID) async throws -> MiMoCredential? {
         if self == .mimo { return try await MiMoCredentialVault.shared.credential(for: accountID) }
@@ -66,7 +79,7 @@ enum InsightOpenAIError: LocalizedError {
 
 enum OpenAIConsent {
     static let version = "2026-11-05"
-    static let notice = "使用你自己的 OpenAI API Key 和 API 额度。本次问题、会话上下文、主动添加的图片和经授权查询的牧场结果，经 eSheep 服务端发送给 OpenAI；处理可能发生在境外。请求设置 store=false，OpenAI 仍可能按其数据政策保留安全日志。Key 单独保存在本机钥匙串，仅用于本次服务请求，服务端不持久保存。AI 生成的录入草稿须由你确认。"
+    static let notice = "使用你自己的 OpenAI API Key 和 API 额度。本次问题、会话上下文、主动添加的图片和经授权查询的牧场结果，由这台 iPhone 直接发送给 OpenAI；处理可能发生在境外。请求设置 store=false，OpenAI 仍可能按其数据政策保留安全日志。Key 单独保存在本机钥匙串，用于直接验证 OpenAI 请求。AI 生成的录入草稿须由你确认。"
     static func hasConsent(for id: UUID) -> Bool { UserDefaults.standard.string(forKey: key(id)) == version }
     static func setConsent(_ enabled: Bool, for id: UUID) {
         if enabled { UserDefaults.standard.set(version, forKey: key(id)) }
@@ -75,13 +88,13 @@ enum OpenAIConsent {
     private static func key(_ id: UUID) -> String { "insights.openai-consent.\(id.uuidString.lowercased())" }
 }
 
-enum AgentServerConsent {
-    static let version = "2026-11-05-agent-v1"
-    static let notice = "牧场 Agent 在 eSheep 服务端运行，使用当前登录身份直接读取你有权访问的 Supabase 牧场，校验云端版本后，将完成任务所需的查询结果发送给你选择的模型服务。你的问题、上下文、附件及个人 API Key 会随本次任务发送到服务端；API Key 和附件不在服务端持久保存。手机待同步数据不代表云端事实，录入仍须确认并通过现有审计流程。"
-    static func hasConsent(for id: UUID) -> Bool { UserDefaults.standard.string(forKey: key(id)) == version }
-    static func setConsent(_ enabled: Bool, for id: UUID) {
-        if enabled { UserDefaults.standard.set(version, forKey: key(id)) }
-        else { UserDefaults.standard.removeObject(forKey: key(id)) }
+enum InsightProviderError: LocalizedError {
+    case unavailableModel, incompatibleHistory
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailableModel: "请在 AI 助手设置中选择可用模型。"
+        case .incompatibleHistory: "请切回这个会话原来使用的 AI 服务，或新建对话。"
+        }
     }
-    private static func key(_ id: UUID) -> String { "insights.server-agent-consent.\(id.uuidString.lowercased())" }
 }

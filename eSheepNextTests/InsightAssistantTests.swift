@@ -1228,6 +1228,34 @@ final class InsightAssistantTests: XCTestCase {
         XCTAssertFalse(result.text.contains("重试"))
     }
 
+    func testImageTranscriptionReviewRequiresTheAttachedImage() async throws {
+        let image = MiMoInputImage(mimeType: "image/jpeg", data: Data([1, 2, 3]))
+        let reviewCall = InsightFunctionCall(
+            callID: "review-photo",
+            name: "review_grounded_farm_answer",
+            argumentsJSON: #"{"verdict":"accept","claim_scope":"image_transcription","evidence_sufficient":true,"issue":"","corrective_instruction":""}"#
+        )
+        let credential = try MiMoCredential(apiKey: "sk-1234567890-reviewer")
+        for images in [[image], []] {
+            let client = ScriptedMiMoResponder(scripts: [[
+                .functionCall(reviewCall),
+                .completed(responseID: "photo-review", usage: nil),
+            ]])
+            let review = try await InsightGroundedAnswerReviewer.review(
+                question: "读出照片上的数字。",
+                images: images,
+                candidate: "照片上写着 74.5。",
+                exchanges: [],
+                successfulToolNames: [],
+                model: MiMoCredential.model,
+                credential: credential,
+                client: client
+            )
+            XCTAssertEqual(client.capturedRequests().first?.messages.first?.images, images)
+            XCTAssertEqual(review.isAccepted, !images.isEmpty)
+        }
+    }
+
     func testSemanticReviewerCannotAcceptFarmSpecificClaimWithoutSuccessfulEvidence() async throws {
         let reviewCall = InsightFunctionCall(
             callID: "review-1",

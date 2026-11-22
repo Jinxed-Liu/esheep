@@ -26,6 +26,7 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
     var isListEntry: Bool = false
     var placeholder = "信息"
     var analysisEffort: InsightAnalysisEffort = .medium
+    var openAIEffort: OpenAIReasoningEffort?
     let hasAttachments: Bool
     let attachmentsReady: Bool
     let modeTitle: String?
@@ -213,14 +214,15 @@ struct InsightComposerView<Attachments: View, Context: View>: View {
             Spacer(minLength: 0)
             HStack(spacing: 4) {
                 Button(action: onSettings) {
-                    InsightAnalysisGauge(effort: analysisEffort)
+                    InsightAnalysisGauge(progress: openAIEffort?.sliderProgress ?? analysisEffort.sliderProgress)
                         .frame(width: 44, height: 44)
                         .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("思考与分析设置")
-                .accessibilityValue("\(analysisEffort.title)分析强度")
-                .accessibilityHint("选择下一次请求的分析强度")
+                .accessibilityValue(openAIEffort.map { Text("思考深度：\(Text(LocalizedStringKey($0.title)))") }
+                    ?? Text("\(analysisEffort.title)分析强度"))
+                .accessibilityHint(openAIEffort == nil ? Text("选择下一次请求的分析强度") : Text("调整下一次 OpenAI 请求的思考深度"))
                 .accessibilityIdentifier("insight.reasoning.settings")
                 .onGeometryChange(for: CGRect.self) { [space = composerCoordinateSpace] geometry in
                     geometry.frame(in: .named(space))
@@ -580,44 +582,98 @@ private struct InsightComposerWaveform: View {
     }
 }
 
+struct OpenAIReasoningEffortPicker: View {
+    let model: String
+    @Binding var selection: OpenAIReasoningEffort
+
+    var body: some View {
+        LabeledContent("思考深度") {
+            Picker("思考深度", selection: $selection) {
+                ForEach(OpenAIReasoningEffort.options(for: model), id: \.self) { effort in
+                    Text(LocalizedStringKey(effort.title)).tag(effort)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("insight.openai.reasoningEffort")
+        }
+        .frame(minHeight: 44)
+    }
+}
+
 struct InsightAnalysisFocusedSelector: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Binding var effortIndex: Double
-    @Binding var thinkingEnabled: Bool
-    @Binding var showReasoning: Bool
-    let modelName: String
+    @Bindable var controller: InsightConversationController
     let onDismiss: () -> Void
     var isExpanded = true
     @State private var showsAdvanced = false
     @State private var selectionFeedback = 0
 
     private var selectedEffort: InsightAnalysisEffort {
-        .from(sliderValue: effortIndex)
+        controller.analysisEffort
+    }
+
+    private var displayedLevelTitle: String {
+        controller.provider == .openai ? controller.openAIReasoningEffort.title : selectedEffort.title
+    }
+
+    private var modelAndEffortLabel: some View {
+        HStack(spacing: 5) {
+            Text(controller.modelDisplayName).fontWeight(.semibold)
+            Text(LocalizedStringKey(displayedLevelTitle))
+                .foregroundStyle(.secondary)
+            Image(systemName: "chevron.right")
+                .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+        }
+        .font(.title3)
+        .lineLimit(2)
+        .frame(minHeight: 44)
     }
 
     var body: some View {
         VStack(spacing: 20) {
-            Button { showsAdvanced = true } label: {
-                HStack(spacing: 5) {
-                    Text(modelName).fontWeight(.semibold)
-                    Text(selectedEffort.title)
-                        .foregroundStyle(.secondary)
-                    Image(systemName: "chevron.right")
-                        .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            Group {
+                if controller.provider == .openai {
+                    Menu {
+                        Picker("模型", selection: Binding(
+                            get: { controller.selectedModel ?? "" }, set: controller.selectModel
+                        )) {
+                            ForEach(controller.provider.availableModels, id: \.self) { Text(verbatim: $0).tag($0) }
+                        }
+                        .pickerStyle(.inline)
+                        Divider()
+                        Button("分析设置") { showsAdvanced = true }
+                    } label: {
+                        modelAndEffortLabel
+                    }
+                    .menuIndicator(.hidden)
+                    .accessibilityLabel("模型")
+                    .accessibilityValue(Text(verbatim: controller.modelDisplayName))
+                    .accessibilityIdentifier("insight.openai.modelMenu")
+                } else {
+                    Button { showsAdvanced = true } label: { modelAndEffortLabel }
+                        .accessibilityLabel("\(controller.modelDisplayName)，\(selectedEffort.title)分析强度，高级设置")
+                        .accessibilityIdentifier("insight.analysis.advanced")
                 }
-                .font(.title3)
-                .lineLimit(2)
-                .frame(minHeight: 44)
             }
             .buttonStyle(.plain)
             .opacity(isExpanded ? 1 : 0)
             .accessibilityHidden(!isExpanded)
-            .accessibilityLabel("\(modelName)，\(selectedEffort.title)分析强度，高级设置")
-            .accessibilityIdentifier("insight.analysis.advanced")
 
-            InsightDiscreteEffortSlider(effort: selectedEffort, onSelect: selectEffort)
-                .padding(12)
-                .modifier(InsightAnalysisSelectorSurface(opaque: reduceTransparency))
+            Group {
+                if controller.provider == .openai {
+                    InsightDiscreteEffortSlider(effort: controller.openAIReasoningEffort,
+                                                supportedLevels: OpenAIReasoningEffort.options(for: controller.modelDisplayName)) { effort in
+                        guard effort != controller.openAIReasoningEffort else { return }
+                        controller.openAIReasoningEffort = effort
+                        selectionFeedback += 1
+                    }
+                } else {
+                    InsightDiscreteEffortSlider(effort: selectedEffort, onSelect: selectEffort)
+                }
+            }
+            .padding(12)
+            .modifier(InsightAnalysisSelectorSurface(opaque: reduceTransparency))
         }
         // Give the presentation its own accessibility container. A plain
         // stack's identifier can otherwise be inherited by its descendants,
@@ -631,7 +687,7 @@ struct InsightAnalysisFocusedSelector: View {
                 Form {
                     Section("分析强度") {
                         Picker("下一次请求", selection: Binding(
-                            get: { effortIndex },
+                            get: { selectedEffort.sliderValue },
                             set: { selectEffort(.from(sliderValue: $0)) }
                         )) {
                             ForEach(InsightAnalysisEffort.allCases) { effort in
@@ -643,10 +699,30 @@ struct InsightAnalysisFocusedSelector: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Section {
-                        Toggle("开启模型思考", isOn: $thinkingEnabled)
-                        Toggle("显示思考步骤", isOn: $showReasoning)
+                        if controller.provider == .openai {
+                            Toggle("开启模型思考", isOn: Binding(
+                                get: { controller.openAIReasoningEffort != .off },
+                                set: { controller.openAIReasoningEffort = $0 ? .medium : .off }
+                            ))
+                            .disabled(!OpenAIReasoningEffort.options(for: controller.modelDisplayName).contains(.off))
+                        } else {
+                            Toggle("开启模型思考", isOn: $controller.thinkingEnabled)
+                        }
+                        Toggle("显示思考步骤", isOn: $controller.showReasoning)
                     } footer: {
                         Text("显示思考状态与实际查询、计算和复核步骤；过程记录只保存在本机。")
+                    }
+                    if controller.provider == .openai {
+                        Section("OpenAI") {
+                            Picker("模型", selection: Binding(
+                                get: { controller.selectedModel ?? "" }, set: controller.selectModel
+                            )) {
+                                if controller.selectedModel == nil { Text("请选择模型").tag("") }
+                                ForEach(controller.provider.availableModels, id: \.self) { Text(verbatim: $0).tag($0) }
+                            }
+                            .accessibilityIdentifier("insight.openai.model")
+                            OpenAIReasoningEffortPicker(model: controller.modelDisplayName, selection: $controller.openAIReasoningEffort)
+                        }
                     }
                 }
                 .navigationTitle("分析设置")
@@ -662,43 +738,45 @@ struct InsightAnalysisFocusedSelector: View {
 
     private func selectEffort(_ effort: InsightAnalysisEffort) {
         guard effort != selectedEffort else { return }
-        effortIndex = effort.sliderValue
+        controller.analysisEffort = effort
         // Only an explicit selection changes this trigger. Restoring the
         // preference or receiving a programmatic binding update stays silent.
         selectionFeedback += 1
     }
 }
 
-/// The slider and dial share the actual analysis-policy catalogue. The lower
-/// endpoint means the low policy; model thinking has its own separate switch.
-private enum InsightAnalysisEffortScale {
-    static let levels = InsightAnalysisEffort.allCases
-    private static var lastIndex: Int { levels.count - 1 }
+/// Positions stay fixed when a model disables an endpoint.
+private protocol InsightSliderLevel: CaseIterable, Equatable, RawRepresentable
+    where AllCases == [Self], RawValue == String {
+    var title: String { get }
+    var levelAccessibilityLabel: Text { get }
+    static var sliderLabel: LocalizedStringKey { get }
+    static var sliderHint: LocalizedStringKey { get }
+}
 
-    static func clamped(_ progress: Double) -> Double {
-        min(1, max(0, progress))
-    }
+extension InsightAnalysisEffort: InsightSliderLevel {
+    fileprivate var levelAccessibilityLabel: Text { Text("\(title)分析强度") }
+    fileprivate static var sliderLabel: LocalizedStringKey { "分析强度" }
+    fileprivate static var sliderHint: LocalizedStringKey { "上下滑动调整下一次请求的分析投入" }
+}
 
-    static func progress(for effort: InsightAnalysisEffort) -> Double {
-        Double(levels.firstIndex(of: effort) ?? 0) / Double(max(1, lastIndex))
-    }
+extension OpenAIReasoningEffort: InsightSliderLevel {
+    fileprivate var levelAccessibilityLabel: Text { Text("思考深度：\(Text(LocalizedStringKey(title)))") }
+    fileprivate static var sliderLabel: LocalizedStringKey { "思考深度" }
+    fileprivate static var sliderHint: LocalizedStringKey { "调整下一次 OpenAI 请求的思考深度" }
+}
 
-    static func effort(at progress: Double) -> InsightAnalysisEffort {
-        levels[Int((clamped(progress) * Double(lastIndex)).rounded())]
-    }
-
-    static func adjacent(to effort: InsightAnalysisEffort, offset: Int) -> InsightAnalysisEffort {
-        let index = levels.firstIndex(of: effort) ?? 0
-        return levels[min(lastIndex, max(0, index + offset))]
+private extension InsightSliderLevel {
+    var sliderProgress: Double {
+        Double(Self.allCases.firstIndex(of: self) ?? 0) / Double(Self.allCases.count - 1)
     }
 }
 
 private struct InsightAnalysisGauge: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let effort: InsightAnalysisEffort
+    let progress: Double
 
     var body: some View {
-        let progress = InsightAnalysisEffortScale.progress(for: effort)
         ZStack {
             InsightAnalysisGaugeArc()
                 .stroke(.primary.opacity(0.25), style: StrokeStyle(lineWidth: 2, lineCap: .round))
@@ -747,45 +825,49 @@ private struct InsightAnalysisGaugeNeedle: Shape {
     }
 }
 
-private struct InsightDiscreteEffortSlider: View {
+private struct InsightDiscreteEffortSlider<Level: InsightSliderLevel>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let effort: InsightAnalysisEffort
-    let onSelect: (InsightAnalysisEffort) -> Void
+    let effort: Level
+    var supportedLevels: [Level] = Level.allCases
+    let onSelect: (Level) -> Void
     @State private var dragProgress: Double?
     @State private var dragStartProgress: Double?
     @GestureState private var isDragging = false
 
     private var displayedProgress: Double {
-        dragProgress ?? InsightAnalysisEffortScale.progress(for: effort)
+        dragProgress ?? effort.sliderProgress
     }
 
     var body: some View {
         GeometryReader { geometry in
             let usableWidth = max(1, geometry.size.width - 48)
+            let hitWidth = min(44, usableWidth / CGFloat(Level.allCases.count - 1))
             ZStack(alignment: .leading) {
                 Capsule().fill(.primary.opacity(0.025)).accessibilityHidden(true)
                 Capsule().fill(.blue)
                     .frame(width: 48 + usableWidth * CGFloat(displayedProgress))
                     .accessibilityHidden(true)
                 HStack(spacing: 0) {
-                    ForEach(Array(InsightAnalysisEffortScale.levels.enumerated()), id: \.element.id) { index, level in
+                    ForEach(Array(Level.allCases.enumerated()), id: \.element.rawValue) { index, level in
                         if index > 0 { Spacer(minLength: 0) }
                         Button { onSelect(level) } label: {
-                            Circle().fill(InsightAnalysisEffortScale.progress(for: level) <= displayedProgress
+                            Circle().fill(level.sliderProgress <= displayedProgress
                                           ? Color.white.opacity(0.32) : Color.primary.opacity(0.20))
                                 .frame(width: 10, height: 10)
-                                .frame(width: 44, height: 48)
+                                .frame(width: hitWidth, height: 48)
                                 .contentShape(.rect)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("\(level.title)分析强度")
+                        .disabled(!supportedLevels.contains(level))
+                        .opacity(supportedLevels.contains(level) ? 1 : 0.35)
+                        .accessibilityLabel(level.levelAccessibilityLabel)
                         .accessibilityIdentifier("insight.analysis.level.\(level.rawValue)")
                         .accessibilityAddTraits(effort == level ? .isSelected : [])
                     }
                 }
                 // The 40pt thumb sits 4pt inside the 48pt blue cap. Keep
                 // actual buttons in the layout so their hit frames stay valid.
-                .padding(.horizontal, 2)
+                .padding(.horizontal, 24 - hitWidth / 2)
                 Circle().fill(.white)
                     .frame(width: 40, height: 40)
                     .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
@@ -798,23 +880,23 @@ private struct InsightDiscreteEffortSlider: View {
                 .updating($isDragging) { _, dragging, _ in dragging = true }
                 .onChanged { gesture in
                     if dragStartProgress == nil {
-                        let selectedProgress = InsightAnalysisEffortScale.progress(for: effort)
+                        let selectedProgress = effort.sliderProgress
                         let thumbCenter = 24 + usableWidth * CGFloat(selectedProgress)
                         // A thumb grab retains its offset; the first drag event
                         // must not jump the thumb centre underneath the finger.
                         dragStartProgress = abs(gesture.startLocation.x - thumbCenter) <= 24
                             ? selectedProgress : Double((gesture.startLocation.x - 24) / usableWidth)
                     }
-                    let progress = InsightAnalysisEffortScale.clamped(
+                    let progress = clamped(
                         (dragStartProgress ?? 0) + Double(gesture.translation.width / usableWidth)
                     )
                     dragProgress = progress
-                    onSelect(InsightAnalysisEffortScale.effort(at: progress))
+                    onSelect(level(at: progress))
                 }
                 .onEnded { gesture in
                     if let dragStartProgress {
                         let progress = dragStartProgress + Double(gesture.translation.width / usableWidth)
-                        onSelect(InsightAnalysisEffortScale.effort(at: progress))
+                        onSelect(level(at: progress))
                     }
                     finishDrag()
                 }
@@ -826,20 +908,33 @@ private struct InsightDiscreteEffortSlider: View {
             if !dragging { finishDrag() }
         }
         .focusable()
-        .onKeyPress(.leftArrow) { onSelect(InsightAnalysisEffortScale.adjacent(to: effort, offset: -1)); return .handled }
-        .onKeyPress(.rightArrow) { onSelect(InsightAnalysisEffortScale.adjacent(to: effort, offset: 1)); return .handled }
+        .onKeyPress(.leftArrow) { selectAdjacent(-1); return .handled }
+        .onKeyPress(.rightArrow) { selectAdjacent(1); return .handled }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("分析强度")
-        .accessibilityValue(effort.title)
-        .accessibilityHint("上下滑动调整下一次请求的分析投入")
+        .accessibilityLabel(Text(Level.sliderLabel))
+        .accessibilityValue(Text(LocalizedStringKey(effort.title)))
+        .accessibilityHint(Text(Level.sliderHint))
         .accessibilityAdjustableAction { direction in
             switch direction {
-            case .increment: onSelect(InsightAnalysisEffortScale.adjacent(to: effort, offset: 1))
-            case .decrement: onSelect(InsightAnalysisEffortScale.adjacent(to: effort, offset: -1))
+            case .increment: selectAdjacent(1)
+            case .decrement: selectAdjacent(-1)
             @unknown default: break
             }
         }
         .accessibilityIdentifier("insight.analysis.slider")
+    }
+
+    private func clamped(_ progress: Double) -> Double {
+        min(supportedLevels.last?.sliderProgress ?? 1, max(supportedLevels.first?.sliderProgress ?? 0, progress))
+    }
+
+    private func level(at progress: Double) -> Level {
+        Level.allCases[Int((clamped(progress) * Double(Level.allCases.count - 1)).rounded())]
+    }
+
+    private func selectAdjacent(_ offset: Int) {
+        guard let index = supportedLevels.firstIndex(of: effort) else { return }
+        onSelect(supportedLevels[min(supportedLevels.count - 1, max(0, index + offset))])
     }
 
     private func finishDrag() {

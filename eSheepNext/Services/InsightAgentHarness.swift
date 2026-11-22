@@ -41,20 +41,17 @@ struct InsightAgentHarness {
     private let maximumToolRoundTrips: Int
     private let maximumCandidateRepairs: Int
     private let maximumTransportRecoveries: Int
-    private let server: InsightServerAgentHarness?
 
     init(
         client: any MiMoResponding,
         maximumToolRoundTrips: Int = 8,
         maximumCandidateRepairs: Int = 3,
-        maximumTransportRecoveries: Int = 2,
-        server: InsightServerAgentHarness? = nil
+        maximumTransportRecoveries: Int = 2
     ) {
         self.client = client
         self.maximumToolRoundTrips = maximumToolRoundTrips
         self.maximumCandidateRepairs = max(1, maximumCandidateRepairs)
         self.maximumTransportRecoveries = max(0, maximumTransportRecoveries)
-        self.server = server
     }
 
     func run(
@@ -81,12 +78,6 @@ struct InsightAgentHarness {
         onEvent: @escaping @MainActor (InsightHarnessEvent) -> Void = { _ in },
         onCheckpoint: @MainActor ([MiMoFunctionExchange]) async throws -> Void = { _ in }
     ) async throws -> Result {
-        if let server {
-            return try await server.run(model: model, instructions: instructions, messages: messages, tools: tools,
-                credential: credential, initialExchanges: initialExchanges, execute: execute,
-                budget: budget ?? InsightRunBudget(configuration: configuration ?? InsightRunConfiguration()),
-                onEvent: onEvent, onCheckpoint: onCheckpoint)
-        }
         // A local typed planner may seed an authoritative observation before
         // the model turn. Keeping it in the same exchange format means the
         // model still sees normal tool evidence, while the caller can remove
@@ -129,7 +120,8 @@ struct InsightAgentHarness {
                     functionExchanges: exchanges,
                     tools: runBudget.toolRoundTrips < toolRoundLimit ? tools : [],
                     maximumOutputTokens: maximumOutputTokens,
-                    thinkingEnabled: runConfiguration.thinkingEnabled
+                    thinkingEnabled: runConfiguration.thinkingEnabled,
+                    openAIReasoningEffort: runConfiguration.openAIReasoningEffort
                 )
                 do {
                     onEvent(.phase(.preparing))
@@ -450,6 +442,7 @@ enum InsightGroundedAnswerReviewer {
 
     static func review(
         question: String,
+        images: [MiMoInputImage] = [],
         candidate: String,
         exchanges: [MiMoFunctionExchange],
         successfulToolNames: Set<String>,
@@ -493,13 +486,14 @@ enum InsightGroundedAnswerReviewer {
                         "enum": .array([
                             .string("general"),
                             .string("farm_specific"),
+                            .string("image_transcription"),
                             .string("clarification"),
                         ]),
-                        "description": .string("待展示答案是否声称当前牧场事实、仅为通用知识，或只询问必要缺失字段"),
+                        "description": .string("区分牧场事实、所附图片转录、通用回答与澄清问题"),
                     ]),
                     "evidence_sufficient": .object([
                         "type": .string("boolean"),
-                        "description": .string("本轮成功工具结果是否直接足以支持待展示答案中的全部当前牧场事实"),
+                        "description": .string("牧场事实须由成功工具结果支持，图像转录须由本轮所附原图支持"),
                     ]),
                     "issue": .object([
                         "type": .string("string"),
@@ -522,9 +516,10 @@ enum InsightGroundedAnswerReviewer {
             instructions: """
             你是 agent harness 的最终语义复核器，不负责重新回答问题。
             比较最近对话、当前用户消息、每个工具的调用参数、工具结果和待展示答案。先按自然语言语义判断答案是否声称当前牧场、具体羊只、圈舍、日期、数量、状态、记录或计算结果；这类事实必须有本轮成功工具结果直接支持，不能因为句子没有出现“查询”“耳号”等固定词就放行。工具报错、空结果和不相关结果都不能证明结论。普通闲聊或通用养殖知识若没有声称当前牧场事实，可以在无工具证据时通过。若确实缺少用户才能提供的必要字段，可以通过一个只询问该字段的明确问题；不能用泛泛的“请重试”代替内部修复。
+            逐项对照本轮所附原图检查转录的字和数字，保留模糊处。仅描述图上可见内容时用 image_transcription，按原图判断 evidence_sufficient。若声称耳号已匹配牧场档案、称重已入库或其他牧场事实，仍用 farm_specific 并核对工具证据。
             必须如实填写 claim_scope；只要答案包含当前牧场或具体记录事实就用 farm_specific。farm_specific 只有在本轮成功工具结果能直接支持全部结论时 evidence_sufficient 才能为 true。检查答案是否回答了用户实际询问的量，而不是只返回相关原始记录；对象、圈舍、耳号、日期、单位、分组、公式和完整性必须一致。若计算证据包含 analysis_contract，必须检查候选答案是否真实覆盖其 required_dimensions 和 required_answer_sections：总体、真实相邻称重区间、生产批次、生命周期以及数据完整性，且清楚说明样本/羊只数与统计口径；一个跨期首末平均值或一个最新区间都不能冒充完整群体分析。不能因为主题相关就通过，也不能凭常识补足工具没有证明的数字。若证据或计算不足，verdict=retry，并给出可执行的内部纠正说明，让 agent 补查、重算或重写；不要要求用户重新发送同一个问题。若完全一致，verdict=accept。必须调用 review_grounded_farm_answer 一次，不输出其他文字。
             """ + (workflowEvaluation ? "\n\n" + workflowEvaluationInstruction : ""),
-            messages: [MiMoInputMessage(role: .user, text: payload)],
+            messages: [MiMoInputMessage(role: .user, text: payload, images: images)],
             tools: [definition],
             maximumOutputTokens: 2_048,
             thinkingEnabled: false
@@ -561,7 +556,7 @@ enum InsightGroundedAnswerReviewer {
               let verdict = values["verdict"] as? String,
               ["accept", "retry"].contains(verdict),
               let claimScope = values["claim_scope"] as? String,
-              ["general", "farm_specific", "clarification"].contains(claimScope),
+              ["general", "farm_specific", "image_transcription", "clarification"].contains(claimScope),
               let evidenceSufficient = values["evidence_sufficient"] as? Bool,
               let issue = values["issue"] as? String,
               let correctiveInstruction = values["corrective_instruction"] as? String else {
@@ -577,8 +572,20 @@ enum InsightGroundedAnswerReviewer {
             || workflowClaim?["completed"] as? Bool == true
         let workflowClaimIsGrounded = !assertsWorkflowCompletion ||
             (claimScope == "farm_specific" && evidenceSufficient && !groundedToolNames.isEmpty && evidence.isComplete)
-        let isAccepted = verdict == "accept" && farmClaimIsGrounded && workflowClaimIsGrounded
+        let imageClaimIsGrounded = claimScope != "image_transcription" || (!images.isEmpty && evidenceSufficient)
+        let isAccepted = verdict == "accept" && farmClaimIsGrounded && imageClaimIsGrounded && workflowClaimIsGrounded
         let missingWorkflowGrounding = assertsWorkflowCompletion && !workflowClaimIsGrounded
+        if !imageClaimIsGrounded && !missingWorkflowGrounding {
+            return InsightGroundedAnswerReview(
+                isAccepted: false,
+                claimScope: claimScope,
+                evidenceSufficient: false,
+                issue: issue.isEmpty ? "本轮原图不足以证实转录结果。" : issue,
+                correctiveInstruction: correctiveInstruction.isEmpty
+                    ? "只转录原图上能看清的内容，标出无法辨认的位置；缺少原图时请用户补充图片。"
+                    : correctiveInstruction
+            )
+        }
         return InsightGroundedAnswerReview(
             isAccepted: isAccepted,
             claimScope: claimScope,

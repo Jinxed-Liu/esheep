@@ -201,6 +201,7 @@ struct FarmInsightConversationListView: View, Equatable {
             isEnabled: isReady && !isSubmitting,
             isAudioEnabled: controller.supportsAudio && controller.canUseAssistant && coordinator.allowsWork(scope: scope),
             isListEntry: true, analysisEffort: controller.analysisEffort,
+            openAIEffort: controller.provider == .openai ? controller.openAIReasoningEffort : nil,
             hasAttachments: hasDraftAttachments,
             attachmentsReady: draft.documents.allSatisfy(\.isReadyToSend),
             modeTitle: mode == .conversation ? nil : mode.title,
@@ -224,10 +225,7 @@ struct FarmInsightConversationListView: View, Equatable {
         .background(
             InsightAnalysisSelectorPresentation(
                 isPresented: $isAnalysisSettingsPresented,
-                effortIndex: Binding(get: { controller.analysisEffort.sliderValue }, set: { controller.analysisEffort = .from(sliderValue: $0) }),
-                thinkingEnabled: Binding(get: { controller.thinkingEnabled }, set: { controller.thinkingEnabled = $0 }),
-                showReasoning: Binding(get: { controller.showReasoning }, set: { controller.showReasoning = $0 }),
-                modelName: controller.modelDisplayName,
+                controller: controller,
                 gaugeFrame: analysisGaugeFrame,
                 contextIsPresented: $isContextUsagePresented,
                 contextUsage: controller.contextWindowUsage,

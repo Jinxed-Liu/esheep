@@ -732,6 +732,7 @@ struct FarmInsightConversationView: View {
             isAudioEnabled: isAudioEnabled,
             placeholder: displayMessages.isEmpty ? "信息" : "跟进",
             analysisEffort: controller.analysisEffort,
+            openAIEffort: controller.provider == .openai ? controller.openAIReasoningEffort : nil,
             hasAttachments: !pendingImages.isEmpty || !pendingDocuments.isEmpty || isProcessingPhotos || !processingDocumentNames.isEmpty,
             attachmentsReady: attachmentsReady,
             modeTitle: submissionMode == .conversation ? nil : submissionMode.title,
@@ -766,13 +767,7 @@ struct FarmInsightConversationView: View {
         .background(
             InsightAnalysisSelectorPresentation(
                 isPresented: $isAnalysisSettingsPresented,
-                effortIndex: Binding(
-                    get: { controller.analysisEffort.sliderValue },
-                    set: { controller.analysisEffort = .from(sliderValue: $0) }
-                ),
-                thinkingEnabled: Binding(get: { controller.thinkingEnabled }, set: { controller.thinkingEnabled = $0 }),
-                showReasoning: Binding(get: { controller.showReasoning }, set: { controller.showReasoning = $0 }),
-                modelName: controller.modelDisplayName,
+                controller: controller,
                 gaugeFrame: analysisGaugeFrame,
                 contextIsPresented: $isContextUsagePresented,
                 contextUsage: controller.contextWindowUsage,
@@ -799,10 +794,7 @@ struct FarmInsightConversationView: View {
         }
         .onChange(of: isAssistantSettingsPresented) { _, presented in
             guard !presented else { return }
-            let configuration = InsightAnalysisPreference.load(for: account.effectiveAccountID)
-            controller.analysisEffort = configuration.effort
-            controller.thinkingEnabled = configuration.thinkingEnabled
-            controller.showReasoning = configuration.showReasoning
+            controller.reloadAnalysisPreference()
             Task { await controller.refreshCredential() }
         }
     }

@@ -1,5 +1,5 @@
-This build addresses a secure connection (SSL) error during sign-in on some cellular networks.
+The iPhone AI assistant now connects directly to your selected OpenAI or MiMo service. You can send a message without waiting for the Mac mini.
 
-On an iPhone, turn off Wi-Fi and sign in with your existing account over LTE or 5G. Check that you reach the farm list or enter your farm. If this is the first download on this device, wait for the home screen to show your sheep records. You can also check sign-in on Wi-Fi.
+Open the gauge at the bottom of the composer. Tap the OpenAI model name to choose a different model, then adjust reasoning with the six-stop slider. Stops that the selected model does not support are dimmed. Switching to MiMo should show its original Low, Medium, and High settings.
 
-If sign-in fails, report your carrier, iOS version, local time, the step that failed, and the error message. Hide email addresses and personal details in screenshots. Never include a password or verification code.
+Try a short arithmetic question, then attach a test image containing a number and ask the assistant to read it. If you report a problem, include the provider, model, slider setting, and error message. Please leave out API keys and private farm information.

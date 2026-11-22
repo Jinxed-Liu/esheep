@@ -133,6 +133,66 @@
         }
       }
     },
+    "思考深度：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reasoning depth: %@"
+          }
+        }
+      }
+    },
+    "调整下一次 OpenAI 请求的思考深度" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Set the reasoning depth for your next OpenAI request"
+          }
+        }
+      }
+    },
+    "思考深度" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reasoning depth"
+          }
+        }
+      }
+    },
+    "很高" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Extra high"
+          }
+        }
+      }
+    },
+    "最高" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Maximum"
+          }
+        }
+      }
+    },
+    "关闭思考" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Off"
+          }
+        }
+      }
+    },
     "；" : {
       "localizations" : {
         "en" : {
