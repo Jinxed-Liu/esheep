@@ -125,7 +125,7 @@ private enum MiniAppleAcceptance {
         let remaining = expiry - Date.now.timeIntervalSince1970
         guard remaining > 0, remaining <= 1800 else { throw Failure.window }
         let client = AuthClient(
-            url: origin, headers: ["apikey": mini.publishableKey],
+            url: origin, headers: ["apikey": mini.publishableKey, "X-ESheep-Acceptance": "16pro-170"],
             storageKey: "esheep-apple-acceptance", localStorage: PilotSessionMemory(),
             fetch: { request in
                 guard let url = request.url, url.scheme == "https", url.host == origin.host,
