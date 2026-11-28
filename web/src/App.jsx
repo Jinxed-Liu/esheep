@@ -545,6 +545,7 @@ export function App() {
           isConfigured={isSupabaseConfigured}
           onSignIn={handleSignIn}
           onSignUp={handleSignUp}
+          onRecover={async (email) => (await loadSupabaseModule()).sendRecoveryEmail(email)}
           onAppleSignIn={handleAppleSignIn}
         />
       );

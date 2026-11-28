@@ -1,3 +1,4 @@
+import { isCloudRoute } from "./worker/backend-status.js";
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import { handleNodeRequest } from "./server/node-adapter.mjs";
@@ -8,6 +9,7 @@ import { generatedAssetHeaders } from "./server/static-asset-cache.mjs";
 export default defineConfig({
   build: {
     outDir: "dist/client",
+    manifest: true,
     rollupOptions: {
       output: {
         manualChunks(id) {
@@ -89,7 +91,7 @@ export default defineConfig({
     configureServer(server) {
       const environment = { ...loadEnv(server.config.mode, server.config.root, ""), ...process.env };
       server.middlewares.use(async (request, response, next) => {
-        if (!(request.url ?? "").startsWith("/api/cloud/")) return next();
+        if (!isCloudRoute(request.url)) return next();
         try {
           await handleNodeRequest(request, response, (cloudRequest) => proxyCloudRequest(cloudRequest, environment, { fetchImpl: nodeCloudFetch }));
         } catch {

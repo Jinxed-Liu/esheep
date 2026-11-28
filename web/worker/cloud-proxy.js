@@ -1,3 +1,5 @@
+import { activeBackend, backendStatusResponse, miniOrigin } from "./backend-status.js";
+
 const prefix = "/api/cloud";
 const requestHeaders = [
   "accept", "accept-profile", "apikey", "authorization", "content-type",
@@ -70,12 +72,22 @@ function forwardBody(body, controller, cleanup, resetDeadline) {
 
 export async function proxyCloudRequest(request, environment, { fetchImpl = globalThis.fetch, timeoutMs = 20000 } = {}) {
   const address = new URL(request.url);
+  if (address.pathname === "/api/backend-status") {
+    if (["GET", "HEAD"].includes(request.method) && environment.BACKEND_STATUS) {
+      return environment.BACKEND_STATUS.fetch(new Request("https://app.esheepplus.com/api/backend-status", { method: request.method }));
+    }
+    return backendStatusResponse(request, environment);
+  }
   if (!address.pathname.startsWith(`${prefix}/`)) return null;
   // A fixed deployment binding; no caller-controlled target or service key.
   // Supabase continues to authenticate the original user token.
+  const state = await activeBackend(environment);
+  if (!state || state === "maintenance") {
+    return failure(503, "BACKEND_UNAVAILABLE", "维护中，请保留草稿，稍后再提交。");
+  }
   let upstream;
   try {
-    upstream = new URL(environment.SUPABASE_URL ?? environment.VITE_SUPABASE_URL);
+    upstream = new URL(state === "mini" ? miniOrigin : (environment.SUPABASE_URL ?? environment.VITE_SUPABASE_URL));
     if (upstream.protocol !== "https:" || upstream.username || upstream.password ||
         upstream.pathname !== "/" || upstream.search || upstream.hash) throw new Error("Invalid upstream");
   } catch {

@@ -33,8 +33,8 @@ class CloudReleasePreparationTests(unittest.TestCase):
             "CI_START_CONDITION": "manual",
             "CI_BUILD_NUMBER": "60",
             "CI_PRIMARY_REPOSITORY_PATH": str(self.root),
-            "ESHEEP_RELEASE_SUPABASE_URL": "https://fixture.supabase.co",
-            "ESHEEP_RELEASE_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_fixture",
+            "ESHEEP_RELEASE_SUPABASE_URL": "https://rnqrvthbunrzqtprquqx.supabase.co",
+            "ESHEEP_RELEASE_SUPABASE_PUBLISHABLE_KEY": "sb_publishable_bePHSQqefqMacwUKZqH1VA_rcXU_CGw",
         }
 
     def prepare(self, **overrides):
@@ -55,10 +55,10 @@ class CloudReleasePreparationTests(unittest.TestCase):
                 self.assertGreaterEqual(len(numbers), 2)
                 self.assertEqual(set(numbers), {number})
                 content = self.config.read_text()
-                self.assertIn("https:$(XC_SLASH)$(XC_SLASH)fixture.supabase.co", content)
-                self.assertIn("sb_publishable_fixture", content)
+                self.assertIn("https:$(XC_SLASH)$(XC_SLASH)rnqrvthbunrzqtprquqx.supabase.co", content)
+                self.assertIn("sb_publishable_bePHSQqefqMacwUKZqH1VA_rcXU_CGw", content)
                 self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
-                self.assertNotIn("sb_publishable_fixture", result.stdout + result.stderr)
+                self.assertNotIn("sb_publishable_bePHSQqefqMacwUKZqH1VA_rcXU_CGw", result.stdout + result.stderr)
 
     def test_unapproved_runs_fail_before_writing_configuration(self):
         cases = (
@@ -70,7 +70,7 @@ class CloudReleasePreparationTests(unittest.TestCase):
             {"CI_BUILD_NUMBER": "0"},
             {"CI_BUILD_NUMBER": "60; echo unsafe"},
             {"ESHEEP_RELEASE_SUPABASE_PUBLISHABLE_KEY": "sb_secret_fixture"},
-            {"ESHEEP_RELEASE_SUPABASE_URL": "https://fixture.supabase.co/other"},
+            {"ESHEEP_RELEASE_SUPABASE_URL": "https://rnqrvthbunrzqtprquqx.supabase.co/other"},
         )
         for overrides in cases:
             with self.subTest(overrides=overrides):

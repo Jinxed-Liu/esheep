@@ -1,3 +1,4 @@
+import { isCloudRoute } from "../worker/backend-status.js";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,7 +23,7 @@ const host = environment.HOST ?? "0.0.0.0";
 
 const server = http.createServer(async (request, response) => {
   try {
-    if ((request.url ?? "").startsWith("/api/cloud/")) {
+    if (isCloudRoute(request.url)) {
       await handleNodeRequest(request, response, (cloudRequest) => proxyCloudRequest(cloudRequest, environment, { fetchImpl: nodeCloudFetch }));
       return;
     }

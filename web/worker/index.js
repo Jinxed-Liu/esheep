@@ -1,11 +1,19 @@
+import { activeBackend, isCloudRoute } from "./backend-status.js";
 import { proxyCloudRequest } from "./cloud-proxy.js";
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname.startsWith("/api/cloud/")) return proxyCloudRequest(request, env);
+    if (url.hostname === "app.esheepplus.com" && env.ASSETS && !env.BACKEND_STATUS && url.pathname.startsWith("/api/")) {
+      return Response.json({ error: "暂时无法确认云端状态。" }, { status: 503, headers: { "cache-control": "no-store" } });
+    }
+    if (isCloudRoute(url.pathname)) return proxyCloudRequest(request, env);
     if (url.pathname.startsWith("/api/assistant/") || url.pathname.startsWith("/api/weather/")) {
       try {
+        const state = await activeBackend(env);
+        if (state === "mini" && env.MINI_CODEX_HARNESS?.fetch) return env.MINI_CODEX_HARNESS.fetch(request);
+        if (state !== "hosted") return Response.json({ error: "牧场服务维护中。", code: "BACKEND_UNAVAILABLE" },
+          { status: 503, headers: { "cache-control": "no-store" } });
         if (env.CODEX_HARNESS?.fetch) return env.CODEX_HARNESS.fetch(request);
         if (env.CODEX_HARNESS_URL) {
           const base = new URL(env.CODEX_HARNESS_URL);

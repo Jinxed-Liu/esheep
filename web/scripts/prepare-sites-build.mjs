@@ -20,6 +20,7 @@ mkdirSync(path.join(dist, "server"), { recursive: true });
 mkdirSync(path.join(dist, ".openai"), { recursive: true });
 copyFileSync(worker, path.join(dist, "server", "index.js"));
 copyFileSync(path.join(root, "worker", "cloud-proxy.js"), path.join(dist, "server", "cloud-proxy.js"));
+copyFileSync(path.join(root, "worker", "backend-status.js"), path.join(dist, "server", "backend-status.js"));
 copyFileSync(hosting, path.join(dist, ".openai", "hosting.json"));
 
 console.log("Prepared Sites build: dist/server/index.js and dist/.openai/hosting.json");

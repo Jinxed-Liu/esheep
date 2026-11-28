@@ -1,3 +1,4 @@
+import { activeBackend, hostedOrigin, isCloudRoute, miniOrigin } from "../worker/backend-status.js";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import http from "node:http";
@@ -14,6 +15,13 @@ import { staticAssetCacheControl } from "./static-asset-cache.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const clientRoot = path.join(root, "dist", "client");
 const environment = { ...loadEnv("production", root, ""), ...process.env };
+const serviceOrigin = environment.SUPABASE_URL ?? environment.VITE_SUPABASE_URL;
+if ([hostedOrigin, miniOrigin].includes(serviceOrigin)) {
+  environment.BACKEND_STATUS = { fetch: async (input) => fetch("https://app.esheepplus.com/api/backend-status", {
+    method: input instanceof Request ? input.method : "GET",
+    redirect: "error", cache: "no-store", signal: AbortSignal.timeout(6000),
+  }) };
+}
 const assistantAPI = createAssistantAPI({ environment });
 const weatherAPI = createWeatherAPI({ environment });
 const port = Number.parseInt(environment.PORT ?? "4173", 10);
@@ -38,11 +46,19 @@ async function existingFile(urlPath) {
 
 const server = http.createServer(async (request, response) => {
   try {
-    if ((request.url ?? "").startsWith("/api/cloud/")) {
+    if (isCloudRoute(request.url)) {
       await handleNodeRequest(request, response, (cloudRequest) => proxyCloudRequest(cloudRequest, environment, { fetchImpl: nodeCloudFetch }));
       return;
     }
     if ((request.url ?? "").startsWith("/api/assistant/") || (request.url ?? "").startsWith("/api/weather/")) {
+      if (environment.BACKEND_STATUS) {
+        const active = await activeBackend(environment);
+        if ((active === "hosted" ? hostedOrigin : active === "mini" ? miniOrigin : null) !== serviceOrigin) {
+          response.writeHead(503, { "cache-control": "no-store", "content-type": "application/json" });
+          response.end(JSON.stringify({ error: "牧场服务维护中。" }));
+          return;
+        }
+      }
       await handleNodeRequest(request, response, (request.url ?? "").startsWith("/api/weather/") ? weatherAPI : assistantAPI);
       return;
     }
