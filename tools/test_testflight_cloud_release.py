@@ -92,6 +92,17 @@ class CloudReleasePreparationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.config.exists())
 
+    def test_apple_pilot_is_limited_to_one_external_archive(self):
+        for workflow, number, expected in (
+            ("TestFlight 3.2 External Candidate", "166", True),
+            ("TestFlight 3.2 Internal", "166", False),
+            ("TestFlight 3.2 External Candidate", "167", False),
+        ):
+            with self.subTest(workflow=workflow, number=number):
+                result = self.prepare(CI_WORKFLOW=workflow, CI_BRANCH="main", CI_BUILD_NUMBER=number)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual("ESHEEP_APPLE_PILOT" in self.config.read_text(), expected)
+
     def test_external_release_does_not_expand_internal_or_automatic_access(self):
         cases = (
             {"CI_WORKFLOW": "TestFlight 3.2 External Candidate", "CI_BRANCH": "codex/external-testflight-3-2"},

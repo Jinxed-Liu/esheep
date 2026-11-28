@@ -45,6 +45,11 @@ temporary_config="$(mktemp "$repo_root/Config/.ReleaseEnvironment.local.xcconfig
 trap 'rm -f "$temporary_config"' EXIT HUP INT TERM
 printf 'SUPABASE_URL = https:$(XC_SLASH)$(XC_SLASH)%s\nSUPABASE_PUBLISHABLE_KEY = %s\nSUPABASE_ENABLED = YES\n' \
   "$host" "$key" > "$temporary_config"
+# This individual acceptance archive uses the standard external signing workflow.
+# Its test screen is compiled out of all other releases.
+if [ "$CI_WORKFLOW" = "TestFlight 3.2 External Candidate" ] && [ "$build_number" = "166" ]; then
+  printf '%s\n' 'SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) ESHEEP_APPLE_PILOT' >> "$temporary_config"
+fi
 mv -f "$temporary_config" "$repo_root/Config/ReleaseEnvironment.local.xcconfig"
 
 # Change only the ephemeral Cloud checkout. Local project versions stay intact.
