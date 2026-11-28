@@ -2,6 +2,7 @@ import { createV2Projection, applyV2Event, finishV2Projection, webCheckpointMode
 import { applyExtendedV2Event } from "./cloudV2BusinessReplay.js";
 import { concurrentRead } from "./concurrentRead.js";
 import { browserCheckpointChunkCache } from "./checkpointChunkCache.js";
+import { receiveCheckpointBytes } from "./checkpointDownload.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -205,14 +206,26 @@ export async function loadCloudV2Projection(client, farm, { accountID, storageOr
     prefetchEvents(manifest.boundaryEventSequence);
     const cacheKey = `${accountID}:${farm.id.toLowerCase()}:${farm.generation}:${manifest.checkpointID.toLowerCase()}`;
     const manifestFingerprint = await sha256(JSON.stringify(manifest));
-    let ticketPromise = source.downloads ? Promise.resolve(source) : null;
-    const downloads = () => ticketPromise ??= checkpointTicket(client, farm, signal, manifest.checkpointID).then(async (ticket) => {
-      // Repair missing/corrupt chunks from this exact immutable checkpoint,
-      // never mix a newly published checkpoint into the in-progress receive.
-      requireValue(ticket?.manifest && await sha256(JSON.stringify(ticket.manifest)) === manifestFingerprint);
-      validateDownloads(ticket, manifest);
-      return ticket;
-    });
+    let currentTicket = source.downloads ? source : null;
+    let ticketPromise = currentTicket ? Promise.resolve(currentTicket) : null;
+    let ticketReceivedAt = Date.now();
+    const downloads = (rejectedTicket) => {
+      // Coalesce concurrent renewals. Five-minute URLs are refreshed before
+      // expiry, without changing the immutable checkpoint being received.
+      if (currentTicket && (currentTicket === rejectedTicket || Date.now() - ticketReceivedAt >= 240000)) {
+        currentTicket = null;
+        ticketPromise = null;
+      }
+      return ticketPromise ??= checkpointTicket(client, farm, signal, manifest.checkpointID).then(async (ticket) => {
+        // Repair missing/corrupt chunks from this exact immutable checkpoint,
+        // never mix a newly published checkpoint into the in-progress receive.
+        requireValue(ticket?.manifest && await sha256(JSON.stringify(ticket.manifest)) === manifestFingerprint);
+        validateDownloads(ticket, manifest);
+        currentTicket = ticket;
+        ticketReceivedAt = Date.now();
+        return ticket;
+      });
+    };
     persistentScope = `${storageOrigin}:${cacheKey}:${manifestFingerprint}`;
     let cached = checkpointCache.get(cacheKey);
     if (cached) requireValue(cached.fingerprint === manifestFingerprint);
@@ -221,6 +234,18 @@ export async function loadCloudV2Projection(client, farm, { accountID, storageOr
       const descriptors = manifest.chunks.filter(needsChunk);
       // Six bounded slots overlap network waits without the old batch barrier.
       let completed = 0;
+      const receiving = new Map();
+      const totalBytes = descriptors.reduce((sum, descriptor) => sum + descriptor.compressedBytes, 0);
+      let lastProgressAt = 0;
+      const receiveProgress = (descriptor, count) => {
+        receiving.set(descriptor.index, count);
+        // Stream callbacks can arrive many times per frame. Keep feedback
+        // responsive without forcing a React render for every network packet.
+        if (Date.now() - lastProgressAt < 200) return;
+        lastProgressAt = Date.now();
+        const bytes = [...receiving.values()].reduce((sum, value) => sum + value, 0);
+        onProgress(`正在接收牧场资料：${(bytes / 1000000).toFixed(1)} / ${(totalBytes / 1000000).toFixed(1)} MB，已核对 ${completed} / ${descriptors.length} 份`);
+      };
       onProgress(`正在读取牧场资料：0 / ${descriptors.length}`);
       const pages = await concurrentRead(descriptors, async (descriptor, readSignal) => {
           let bytes = await persistentCache.read(persistentScope, descriptor);
@@ -228,6 +253,7 @@ export async function loadCloudV2Projection(client, farm, { accountID, storageOr
             try {
               const records = (await decodeCheckpointChunk(bytes, descriptor, readSignal))
                 .filter((row) => webCheckpointModels.has(row.model));
+              receiving.set(descriptor.index, descriptor.compressedBytes);
               onProgress(`正在核对本地牧场资料：${++completed} / ${descriptors.length}`);
               return records;
             } catch (error) {
@@ -236,13 +262,20 @@ export async function loadCloudV2Projection(client, farm, { accountID, storageOr
               bytes = null;
             }
           }
-          const ticket = await downloads();
-          const address = new URL(ticket.downloads[descriptor.index].url);
-          requireValue(address.protocol === "https:" && address.origin === storageOrigin &&
-            decodeURIComponent(address.pathname) === `/storage/v1/object/sign/esheep-cloud-checkpoints/${descriptor.objectKey}`);
-          const response = await fetchImpl(address, { signal: readSignal, credentials: "omit", cache: "no-store" });
-          if (!response.ok) throw new CloudV2ReadError("牧场资料下载失败，请刷新重试。", "CLOUD_V2_DOWNLOAD_FAILED");
-          bytes = await readBounded(response.body, descriptor.compressedBytes, readSignal);
+          let previousTicket;
+          bytes = await receiveCheckpointBytes(async (downloadSignal, refresh) => {
+            const ticket = await downloads(refresh ? previousTicket : null);
+            previousTicket = ticket;
+            downloadSignal.throwIfAborted();
+            const address = new URL(ticket.downloads[descriptor.index].url);
+            requireValue(address.protocol === "https:" && address.origin === storageOrigin &&
+              decodeURIComponent(address.pathname) === `/storage/v1/object/sign/esheep-cloud-checkpoints/${descriptor.objectKey}`);
+            return fetchImpl(address, { signal: downloadSignal, credentials: "omit", cache: "no-store" });
+          }, descriptor.compressedBytes, {
+            signal: readSignal,
+            onBytes: (count) => receiveProgress(descriptor, count),
+            onRetry: (attempt) => onProgress(`连接暂时中断，正在重试未完成资料（${attempt} / 3）；已核对 ${completed} / ${descriptors.length} 份`),
+          });
           const records = (await decodeCheckpointChunk(bytes, descriptor, readSignal))
             .filter((row) => webCheckpointModels.has(row.model));
           await persistentCache.write(persistentScope, descriptor, bytes);

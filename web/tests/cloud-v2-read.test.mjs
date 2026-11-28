@@ -421,7 +421,68 @@ test("failed checkpoint verification cannot publish prefetched events or leak re
   client.rpc = (name,args)=>name==='esheep_cloud_pull_events_v2'
     ? Promise.resolve({error:new Error('tail denied')}) : originalRPC(name,args);
   options.fetchImpl = async()=>new Response(Uint8Array.of(1,2,3));
-  await assert.rejects(read(),error=>error.code==='CLOUD_V2_INTEGRITY');
+  await assert.rejects(read(),error=>error.code==='CLOUD_V2_DOWNLOAD_FAILED');
+});
+
+test("an expired download renews the same checkpoint and verifies it before publication", async () => {
+  const { read, client, options, bytes, manifest, state } = await incrementalFixture();
+  const originalInvoke = client.functions.invoke;
+  client.functions.invoke = async (name, args) => {
+    if (state.tickets > 0) assert.equal(args.body.checkpoint_id, manifest.checkpointID);
+    return originalInvoke(name, args);
+  };
+  let downloads = 0;
+  options.fetchImpl = async () => ++downloads === 1 ? new Response("expired", {status: 403}) : new Response(bytes);
+  assert.equal((await read()).rowsByType.get("sheep").length, 1);
+  assert.equal(downloads, 2);
+  assert.equal(state.tickets, 2);
+  assert.equal(state.checks, 2);
+});
+
+test("one failed chunk is retried without redownloading its verified siblings", async () => {
+  const { read, client, options, manifest, bytes, state } = await incrementalFixture();
+  const extraRows = [record("NoteRecord", { id: id(72), text: "read retry fixture" })];
+  const raw = Buffer.from(JSON.stringify(extraRows)), extraBytes = gzipSync(raw);
+  const extra = {index: 1, objectKey: `${farmID}/${manifest.checkpointID}/00001.json.gz`,
+    compressedBytes: extraBytes.length, uncompressedBytes: raw.length,
+    compressedSHA256: await sha256(extraBytes), contentSHA256: await sha256(raw),
+    recordCount: 1, modelNames: ["NoteRecord"]};
+  manifest.chunks.push(extra);
+  manifest.modelCounts.NoteRecord = 1;
+  const originalInvoke = client.functions.invoke;
+  client.functions.invoke = async (...args) => {
+    const result = await originalInvoke(...args);
+    result.data.downloads.push({index: 1, url: `${options.storageOrigin}/storage/v1/object/sign/esheep-cloud-checkpoints/${extra.objectKey}`});
+    return result;
+  };
+  const requests = [0,0], saved = [];
+  options.persistentCache.write = async (_scope, chunk) => saved.push(chunk.index);
+  options.fetchImpl = async address => {
+    const index = String(address).endsWith("00001.json.gz") ? 1 : 0;
+    requests[index]++;
+    if (index === 1 && requests[index] === 1) return new Response("busy", {status: 503});
+    return new Response(index === 1 ? extraBytes : bytes);
+  };
+  assert.equal((await read()).rowsByType.get("sheep").length, 1);
+  assert.deepEqual(requests, [1,2]);
+  assert.deepEqual(saved.sort(), [0,1]);
+  assert.equal(state.tickets, 1);
+  assert.equal(state.checks, 2);
+});
+
+test("ticket renewal cannot replace the checkpoint with a different manifest", async () => {
+  const { read, client, options, manifest, state } = await incrementalFixture();
+  const originalInvoke = client.functions.invoke;
+  client.functions.invoke = async (...args) => {
+    const result = await originalInvoke(...args);
+    if (state.tickets > 1) result.data.manifest = {...manifest, checkpointID: id(999)};
+    return result;
+  };
+  let downloads = 0;
+  options.fetchImpl = async () => { downloads++; return new Response("expired", {status: 403}); };
+  await assert.rejects(read(), e => e.code === "CLOUD_V2_INTEGRITY");
+  assert.equal(downloads, 1);
+  assert.equal(state.checks, 1, "an unverified replacement cannot reach final publication");
 });
 
 test("incremental reuse rejects corrupted events and a permission change without publishing partial state", async () => {
