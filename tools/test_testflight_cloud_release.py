@@ -94,8 +94,8 @@ class CloudReleasePreparationTests(unittest.TestCase):
 
     def test_apple_pilot_is_limited_to_one_external_archive(self):
         for workflow, number, expected in (
-            ("TestFlight 3.2 External Candidate", "166", True),
-            ("TestFlight 3.2 Internal", "166", False),
+            ("TestFlight 3.2 External Candidate", "168", True),
+            ("TestFlight 3.2 Internal", "168", False),
             ("TestFlight 3.2 External Candidate", "167", False),
         ):
             with self.subTest(workflow=workflow, number=number):
