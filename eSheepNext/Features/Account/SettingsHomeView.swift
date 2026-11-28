@@ -101,7 +101,7 @@ struct SettingsHomeView: View {
                         #if ESHEEP_APPLE_PILOT
                         if MiniAppleAcceptanceView.supportsDevice, account.authenticationMethod == .apple {
                             SettingsCardDivider()
-                            SettingsNavigationRow(title: "Mac mini 登录验收", subtitle: "18 Pro 个人测试",
+                            SettingsNavigationRow(title: "Mac mini 登录验收", subtitle: "16 Pro 个人测试",
                                                   systemImage: "apple.logo", iconColor: .blue) {
                                 MiniAppleAcceptanceView()
                             }

@@ -47,7 +47,7 @@ printf 'SUPABASE_URL = https:$(XC_SLASH)$(XC_SLASH)%s\nSUPABASE_PUBLISHABLE_KEY 
   "$host" "$key" > "$temporary_config"
 # This individual acceptance archive uses the standard external signing workflow.
 # Its test screen is compiled out of all other releases.
-if [ "$CI_WORKFLOW" = "TestFlight 3.2 External Candidate" ] && [ "$build_number" = "168" ]; then
+if [ "$CI_WORKFLOW" = "TestFlight 3.2 External Candidate" ] && [ "$build_number" = "170" ]; then
   printf '%s\n' 'SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) ESHEEP_APPLE_PILOT' >> "$temporary_config"
 fi
 mv -f "$temporary_config" "$repo_root/Config/ReleaseEnvironment.local.xcconfig"

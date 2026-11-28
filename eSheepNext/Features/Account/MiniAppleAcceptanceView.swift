@@ -17,7 +17,7 @@ struct MiniAppleAcceptanceView: View {
         let model = withUnsafeBytes(of: &system.machine) {
             String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self)
         }
-        return model == "iPhone19,2"
+        return model == "iPhone17,1"
         #endif
     }
 
@@ -97,9 +97,10 @@ struct MiniAppleAcceptanceView: View {
 
 private enum MiniAppleAcceptance {
     enum Failure: Error {
-        case login, identity, refresh
+        case window, login, identity, refresh
         var message: String {
             switch self {
+            case .window: "验收入口尚未开放或已到期。请等收到通知后再继续。"
             case .login: "mini 未接受本次 Apple 登录。请核对入口开放时间及账号映射。"
             case .identity: "mini 返回的账号与手机原账号不一致，本次验收停止。"
             case .refresh: "Apple 登录通过，mini 会话刷新尚未通过。"
@@ -108,11 +109,24 @@ private enum MiniAppleAcceptance {
     }
 
     static func verify(_ payload: AppleAuthorizationPayload, originalUser: UUID) async throws {
-        let origin = URL(string: "https://apple-pilot.esheepplus.com/auth/v1")!
+        guard let mini = SupabaseAccountConfiguration.credentials(for: .mini) else { throw Failure.login }
+        let origin = mini.url.appendingPathComponent("auth/v1")
         let transport = URLSession(configuration: .ephemeral, delegate: PilotRedirectPolicy(), delegateQueue: nil)
         defer { transport.invalidateAndCancel() }
+        // The regular API may later serve the whole farm. This build works only during its own window.
+        var check = URLRequest(url: mini.url.appendingPathComponent(".well-known/esheep-apple-16pro-170"))
+        check.cachePolicy = .reloadIgnoringLocalCacheData
+        check.timeoutInterval = 8
+        guard let (_, response) = try? await transport.data(for: check),
+              let http = response as? HTTPURLResponse, http.statusCode == 204,
+              http.value(forHTTPHeaderField: "X-ESheep-Acceptance") == "16pro-170",
+              let value = http.value(forHTTPHeaderField: "X-ESheep-Expires"),
+              let expiry = TimeInterval(value) else { throw Failure.window }
+        let remaining = expiry - Date.now.timeIntervalSince1970
+        guard remaining > 0, remaining <= 1800 else { throw Failure.window }
         let client = AuthClient(
-            url: origin, storageKey: "esheep-apple-acceptance", localStorage: PilotSessionMemory(),
+            url: origin, headers: ["apikey": mini.publishableKey],
+            storageKey: "esheep-apple-acceptance", localStorage: PilotSessionMemory(),
             fetch: { request in
                 guard let url = request.url, url.scheme == "https", url.host == origin.host,
                       url.port == nil, url.user == nil, url.password == nil,
