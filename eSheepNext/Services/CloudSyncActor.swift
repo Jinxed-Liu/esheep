@@ -132,6 +132,7 @@ final class CloudCollaborationStore {
     private var isSyncWakeDrainRunning = false
     @ObservationIgnored private var supabaseCursorPollTask: Task<Void, Never>?
     @ObservationIgnored private var supabaseRealtimeTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var realtimeFeeds: [UUID: FarmRealtimeFeed] = [:]
     private var supabaseAccessibleFarmDiscoveryAccountIDs = Set<UUID>()
     private var eSheepCloudFarmDiscoveryAccountIDs = Set<UUID>()
     /// A local initial-sync row is not enough to render or resume a receive.
@@ -758,70 +759,66 @@ final class CloudCollaborationStore {
     private func refreshSupabaseRealtimeSubscriptions() {
         guard let supabaseTransport else { return }
         let context = ModelContext(modelContainer)
-        let idleFarmIDs = Set(
-            ((try? context.fetch(FetchDescriptor<FarmStorageProfile>())) ?? [])
-                .filter { $0.mode == .supabase && $0.transitionState == .idle }
-                .map(\.farmID)
-        )
-        let activeFarmIDs = Set(
-            ((try? context.fetch(FetchDescriptor<FarmRemoteBinding>())) ?? [])
-                .filter {
-                    $0.provider == .supabase && $0.state == .active &&
-                        idleFarmIDs.contains($0.farmID)
+        let profiles = (try? context.fetch(FetchDescriptor<FarmStorageProfile>())) ?? []
+        let bindings = (try? context.fetch(FetchDescriptor<FarmRemoteBinding>())) ?? []
+        let members = (try? context.fetch(FetchDescriptor<FarmMembershipBinding>())) ?? []
+        let accountID = activeESheepCloudAccountID()
+        let memberFarms = Set(members.filter { $0.accountID == accountID && $0.status == .active }.map(\.farmID))
+        let idleProfiles = Dictionary(grouping: profiles.filter { $0.transitionState == .idle }, by: \.farmID)
+        var feeds: [UUID: FarmRealtimeFeed] = [:]
+        for binding in bindings {
+            guard let profiles = idleProfiles[binding.farmID], profiles.count == 1,
+                  let profile = profiles.first, profile.mode.deliveryProvider == binding.provider else { continue }
+            switch binding.provider {
+            case .supabase where binding.state == .active:
+                feeds[binding.farmID] = .legacy
+            case .eSheepCloud where binding.state == .active || binding.state == .readOnly:
+                if let accountID, memberFarms.contains(binding.farmID),
+                   profile.authorityGeneration == binding.authorityGeneration {
+                    feeds[binding.farmID] = .cloud(accountID: accountID, generation: binding.authorityGeneration)
                 }
-                .map(\.farmID)
-        )
-        if DevelopmentSupabaseNetworkGate.isForcedOffline ||
-            DevelopmentSupabaseRealtimeGate.isDisabled {
-            supabaseRealtimeTasks.values.forEach { $0.cancel() }
-            supabaseRealtimeTasks.removeAll()
-            for farmID in activeFarmIDs {
+            default:
+                continue
+            }
+        }
+        let disabled = DevelopmentSupabaseNetworkGate.isForcedOffline || DevelopmentSupabaseRealtimeGate.isDisabled
+        for (farmID, task) in supabaseRealtimeTasks where disabled || realtimeFeeds[farmID] != feeds[farmID] {
+            task.cancel()
+        }
+        for farmID in Array(supabaseRealtimeHealthByFarmID.keys) where feeds[farmID] == nil {
+            supabaseRealtimeHealthByFarmID.removeValue(forKey: farmID)
+        }
+        if disabled {
+            for farmID in feeds.keys {
                 supabaseRealtimeHealthByFarmID[farmID] = .cursorFallback(
-                    errorCode: DevelopmentSupabaseNetworkGate.isForcedOffline
-                        ? "developmentForcedOffline"
-                        : "developmentDisabled"
+                    errorCode: DevelopmentSupabaseNetworkGate.isForcedOffline ? "developmentForcedOffline" : "developmentDisabled"
                 )
             }
             return
         }
-
-        let staleFarmIDs = supabaseRealtimeTasks.keys.filter {
-            !activeFarmIDs.contains($0)
-        }
-        for farmID in staleFarmIDs {
-            supabaseRealtimeTasks[farmID]?.cancel()
-            supabaseRealtimeTasks.removeValue(forKey: farmID)
-            supabaseRealtimeHealthByFarmID.removeValue(forKey: farmID)
-        }
-        for farmID in activeFarmIDs where supabaseRealtimeTasks[farmID] == nil {
+        for (farmID, feed) in feeds where supabaseRealtimeTasks[farmID] == nil {
+            realtimeFeeds[farmID] = feed
             supabaseRealtimeHealthByFarmID[farmID] = .connecting
             supabaseRealtimeTasks[farmID] = Task { @MainActor [weak self] in
+                // Removing a channel is asynchronous. Keep its slot until the
+                // old listener has finished removing this exact farm topic.
+                defer {
+                    self?.supabaseRealtimeTasks.removeValue(forKey: farmID)
+                    self?.realtimeFeeds.removeValue(forKey: farmID)
+                }
                 do {
-                    for try await notification in await supabaseTransport
-                        .revisionNotifications(farmID: farmID) {
-                        guard !Task.isCancelled else { return }
-                        switch notification {
-                        case .subscribed:
-                            self?.supabaseRealtimeHealthByFarmID[farmID] =
-                                .realtimeHealthy
-                        case .revision:
-                            self?.supabaseRealtimeHealthByFarmID[farmID] =
-                                .realtimeHealthy
-                            self?.scheduleSyncWake(farmID: farmID)
-                        }
+                    try await supabaseTransport.listenForRevisions(farmID: farmID, feed: feed) { @MainActor [weak self] notification in
+                        guard let self, !Task.isCancelled else { return }
+                        if case let .cloud(accountID, _) = feed, self.activeESheepCloudAccountID() != accountID { return }
+                        self.supabaseRealtimeHealthByFarmID[farmID] = .realtimeHealthy
+                        if case .revision = notification { self.scheduleSyncWake(farmID: farmID) }
                     }
                     guard !Task.isCancelled else { return }
-                    self?.supabaseRealtimeHealthByFarmID[farmID] =
-                        .cursorFallback(errorCode: "streamEnded")
-                } catch is CancellationError {
-                    return
+                    self?.supabaseRealtimeHealthByFarmID[farmID] = .cursorFallback(errorCode: "streamEnded")
                 } catch {
-                    self?.supabaseRealtimeHealthByFarmID[farmID] =
-                        .cursorFallback(
-                            errorCode: Self.supabaseRealtimeErrorCode(error)
-                        )
+                    guard !Task.isCancelled else { return }
+                    self?.supabaseRealtimeHealthByFarmID[farmID] = .cursorFallback(errorCode: Self.supabaseRealtimeErrorCode(error))
                 }
-                self?.supabaseRealtimeTasks.removeValue(forKey: farmID)
             }
         }
     }

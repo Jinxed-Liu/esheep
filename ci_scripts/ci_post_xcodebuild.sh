@@ -38,6 +38,7 @@ if [ "${ESHEEP_TESTFLIGHT_RELEASE:-0}" = "1" ]; then
   require_plist_value "$app_info" ITSAppUsesNonExemptEncryption false
   require_plist_value "$app_info" SUPABASE_URL "${ESHEEP_RELEASE_SUPABASE_URL:?}"
   require_plist_value "$app_info" SUPABASE_PUBLISHABLE_KEY "${ESHEEP_RELEASE_SUPABASE_PUBLISHABLE_KEY:?}"
+  require_plist_value "$app_info" MINI_SUPABASE_PUBLISHABLE_KEY "sb_publishable_mCtOQIg_1QFyu4bUv1giBK_Fp8VsNyK"
   require_plist_value "$app_info" SUBSCRIPTIONS_ENABLED NO
   require_plist_value "$widget_info" CFBundleIdentifier com.sheepfarm.ios.widget
   require_plist_value "$widget_info" CFBundleShortVersionString "$expected_version"

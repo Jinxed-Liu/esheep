@@ -1536,7 +1536,24 @@ actor ESheepCloudCore {
                 guard snapshot.readyCommands.allSatisfy({ $0.deviceID == identity.deviceID }) else {
                     throw ESheepCloudCoreError.deviceIdentityChanged
                 }
-                let commands = try await sign(snapshot.readyCommands)
+                var ready = snapshot.readyCommands
+                if AppEnvironment.current == .production && ProductionBackend.selected == .mini {
+                    let ids = ready.map { $0.commandID }
+                    let known = try await gateway.queryCommandStatus(farmID: farmID, commandIDs: ids)
+                    guard Set(known.keys).isSubset(of: Set(ids)) else {
+                        throw ESheepCloudContractError.malformedPayload
+                    }
+                    queried += ids.count
+                    try await localStore.recordCommandResults(known, farmID: farmID, farmGeneration: snapshot.farmGeneration)
+                    if let controlError = controlPlaneError(in: known.values) { throw controlError }
+                    let acknowledgedBundles = Set(ready.filter { known[$0.commandID] != nil }.compactMap(\.bundleID))
+                    guard !ready.contains(where: { command in
+                        known[command.commandID] == nil && command.bundleID.map(acknowledgedBundles.contains) == true
+                    }) else { throw ESheepCloudContractError.malformedPayload }
+                    ready.removeAll { known[$0.commandID] != nil }
+                    if ready.isEmpty { break }
+                }
+                let commands = try await sign(ready)
                 let ids = commands.map { $0.command.commandID }
                 try await localStore.markSending(commandIDs: ids)
                 let results: [UUID: ESheepCloudCommandResultV2]

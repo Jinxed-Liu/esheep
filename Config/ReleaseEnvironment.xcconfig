@@ -7,4 +7,6 @@ SUPABASE_PUBLISHABLE_KEY =
 SUPABASE_ENABLED = YES
 XC_SLASH = /
 
+MINI_SUPABASE_PUBLISHABLE_KEY = sb_publishable_mCtOQIg_1QFyu4bUv1giBK_Fp8VsNyK
+
 #include? "ReleaseEnvironment.local.xcconfig"

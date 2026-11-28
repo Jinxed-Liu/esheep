@@ -4,6 +4,7 @@ import SwiftUI
 
 @main
 struct eSheepNextApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var bootstrap = AppBootstrapController()
     @State private var session = AppSession()
     @State private var subscription = SubscriptionService()
@@ -23,6 +24,18 @@ struct eSheepNextApp: App {
                 #else
                 applicationContent
                 #endif
+            }
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                guard phase == .active, AppEnvironment.current == .production else { return }
+                Task { _ = await ProductionBackendStatus.shared.refresh() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: ProductionBackend.changed)) { note in
+                guard let raw = note.object as? String, let previous = ProductionBackend(rawValue: raw) else { return }
+                if let old = AccountIdentityClients.client(for: previous)?.supabase {
+                    Task { await old.auth.stopAutoRefresh(); await old.removeAllChannels() }
+                }
+                bootstrap.rebindBackend()
+                session.requestAuthenticationRefresh()
             }
             .environment(\.locale, preferences.language.locale)
             .task {
