@@ -1,6 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { App } from "./App.jsx";
+import { initializeBackendSelection } from "./lib/backendSelection.js";
 import "./styles.css";
 import "./skyglass.css";
 import "./farmEnvironment.css";
@@ -23,8 +23,17 @@ if (import.meta.env.PROD) {
   });
 }
 
-createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+async function start() {
+  await initializeBackendSelection();
+  if (location.pathname === "/account/recovery") {
+    const { PasswordRecovery, openRecoveryLink } = await import("./components/PasswordRecovery.jsx");
+    let error = "";
+    try { await openRecoveryLink(new URL(location.href)); } catch (failure) { error = failure.message; }
+    createRoot(document.getElementById("root")).render(<PasswordRecovery error={error} />);
+    return;
+  }
+  const { App } = await import("./App.jsx");
+  createRoot(document.getElementById("root")).render(<React.StrictMode><App /></React.StrictMode>);
+}
+
+void start();

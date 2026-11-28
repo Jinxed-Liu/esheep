@@ -2,6 +2,23 @@ import XCTest
 @testable import eSheepNext
 
 final class AccountLoginTransportTests: XCTestCase {
+    func testProductionSelectorRequiresFreshJSONFromThePinnedEndpoint() throws {
+        let endpoint = ProductionBackendStatus.endpoint
+        func state(_ name: String, url: URL, mime: String = "application/json", status: Int = 200) throws -> ProductionBackend? {
+            let response = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: status, httpVersion: nil,
+                                                         headerFields: ["Content-Type": mime]))
+            return ProductionBackendStatus.decode(try JSONEncoder().encode(["state": name]), response)
+        }
+        XCTAssertEqual(try state("maintenance", url: endpoint), .maintenance)
+        XCTAssertEqual(try state("mini", url: endpoint), .mini)
+        XCTAssertNil(try state("hosted", url: endpoint, mime: "text/html"))
+        XCTAssertNil(try state("hosted", url: endpoint, status: 503))
+        XCTAssertNil(try state("other", url: endpoint))
+        XCTAssertNil(try state("hosted", url: URL(string: "https://other.invalid/api/backend-status")!))
+        XCTAssertFalse(ProductionBackend.hosted.matches(URL(string: ProductionBackend.miniOrigin)!))
+        XCTAssertFalse(ProductionBackend.maintenance.matches(URL(string: ProductionBackend.hostedOrigin)!))
+    }
+
     func testHealthyGatewayCompletesAfterDirectTLSFailure() async throws {
         let route = try await AccountLoginRoute.firstAvailable { candidate in
             if candidate == .direct { throw URLError(.secureConnectionFailed) }

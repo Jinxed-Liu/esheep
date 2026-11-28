@@ -22,13 +22,17 @@ esac
 url="${ESHEEP_RELEASE_SUPABASE_URL:?Missing Release Supabase URL}"
 key="${ESHEEP_RELEASE_SUPABASE_PUBLISHABLE_KEY:?Missing Release publishable key}"
 case "$url" in
-  https://*.supabase.co) ;;
+  https://rnqrvthbunrzqtprquqx.supabase.co) ;;
   *) echo 'Invalid Release Supabase URL.' >&2; exit 1 ;;
 esac
 host="${url#https://}"
 case "$host" in
   ''|*/*|*[!A-Za-z0-9.-]*) echo 'Invalid Release Supabase host.' >&2; exit 1 ;;
 esac
+if [ "$key" != "sb_publishable_bePHSQqefqMacwUKZqH1VA_rcXU_CGw" ]; then
+  echo "Release key does not match the hosted project." >&2
+  exit 1
+fi
 if ! printf '%s' "$key" | grep -Eq '^sb_publishable_[A-Za-z0-9_-]+$'; then
   echo 'Invalid Release publishable key.' >&2
   exit 1

@@ -101,21 +101,36 @@ private final class AccountLoginNetwork: NSObject, URLSessionTaskDelegate {
     }
 }
 
-/// Installed only on the production project's SDK session. Realtime, storage and farm writes
-/// keep their own transport. The SDK remains responsible for tokens, refresh and Keychain storage.
+/// Gate SDK HTTP requests on their pinned backend. Only hosted login requests use the
+/// first-party gateway fallback. The SDK owns session refresh and Keychain storage.
 final class AccountLoginURLProtocol: URLProtocol, @unchecked Sendable {
     private var operation: Task<Void, Never>?
 
-    override class func canInit(with request: URLRequest) -> Bool { AccountLoginRoute.isAccountRequest(request) }
+    override class func canInit(with request: URLRequest) -> Bool {
+        guard let url = request.url else { return false }
+        if AppEnvironment.current == .production {
+            return ProductionBackend.hosted.matches(url) || ProductionBackend.mini.matches(url)
+        }
+        return AccountLoginRoute.isAccountRequest(request)
+    }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
         operation = Task {
             do {
-                guard let key = request.value(forHTTPHeaderField: "apikey") else { throw URLError(.badServerResponse) }
-                let route = try await AccountLoginRoute.available(publicKey: key)
+                guard let url = request.url else { throw URLError(.badURL) }
+                if AppEnvironment.current == .production {
+                    try await ProductionBackendStatus.shared.authorize(url, method: request.httpMethod)
+                }
+                let outbound: URLRequest
+                if AccountLoginRoute.isAccountRequest(request) {
+                    guard let key = request.value(forHTTPHeaderField: "apikey") else { throw URLError(.badServerResponse) }
+                    let route = try await AccountLoginRoute.available(publicKey: key)
+                    outbound = try route.routed(request)
+                } else {
+                    outbound = request
+                }
                 try Task.checkCancellation()
-                let outbound = try route.routed(request)
                 let (data, response) = try await AccountLoginNetwork.session.data(for: outbound)
                 guard let http = response as? HTTPURLResponse, !(300..<400).contains(http.statusCode)
                 else { throw URLError(.badServerResponse) }

@@ -159,7 +159,15 @@ enum SupabaseAccountConfiguration {
     }
 
     static var credentials: Credentials? {
-        guard isEnabled else { return nil }
+        credentials(for: AppEnvironment.current == .production ? ProductionBackend.selected : .hosted)
+    }
+
+    static func credentials(for backend: ProductionBackend) -> Credentials? {
+        guard isEnabled, backend != .maintenance else { return nil }
+        if backend == .mini {
+            return validatedCredentials(rawURL: ProductionBackend.miniOrigin,
+                rawKey: Bundle.main.object(forInfoDictionaryKey: "MINI_SUPABASE_PUBLISHABLE_KEY") as? String)
+        }
         return validatedCredentials(
             rawURL: Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as? String,
             rawKey: Bundle.main.object(forInfoDictionaryKey: "SUPABASE_PUBLISHABLE_KEY") as? String
@@ -342,7 +350,7 @@ actor SupabaseAccountIdentityClient: AccountIdentityClient {
             accessGroup: nil
         )
         let session: URLSession
-        if AccountLoginRoute.isProductionProject(credentials.url) {
+        if AccountLoginRoute.isProductionProject(credentials.url) || ProductionBackend.mini.matches(credentials.url) {
             let config = URLSessionConfiguration.default
             config.protocolClasses = [AccountLoginURLProtocol.self] + (config.protocolClasses ?? [])
             session = URLSession(configuration: config)
@@ -352,7 +360,7 @@ actor SupabaseAccountIdentityClient: AccountIdentityClient {
         let options = SupabaseClientOptions(
             auth: .init(
                 storage: storage,
-                storageKey: "eSheepNext.supabase.session",
+                storageKey: ProductionBackend.mini.matches(credentials.url) ? "eSheepNext.supabase.session.mini" : "eSheepNext.supabase.session",
                 flowType: .pkce,
                 autoRefreshToken: true,
                 emitLocalSessionAsInitialSession: true
@@ -619,16 +627,25 @@ actor SupabaseAccountIdentityClient: AccountIdentityClient {
 enum AccountIdentityClients {
     static let cloudBase: any AccountIdentityClient = CloudBaseAccountIdentityClient.shared
 
-    private static let concreteSupabase: SupabaseAccountIdentityClient? = {
-        guard let credentials = SupabaseAccountConfiguration.credentials else { return nil }
-        return SupabaseAccountIdentityClient(credentials: credentials)
-    }()
+    private static let hosted = SupabaseAccountConfiguration.credentials(for: .hosted)
+        .map(SupabaseAccountIdentityClient.init(credentials:))
+    private static let mini = SupabaseAccountConfiguration.credentials(for: .mini)
+        .map(SupabaseAccountIdentityClient.init(credentials:))
 
-    static let supabase: (any AccountIdentityClient)? = concreteSupabase
-
-    static var supabaseClient: SupabaseClient? {
-        concreteSupabase?.supabase
+    static func client(for backend: ProductionBackend) -> SupabaseAccountIdentityClient? {
+        switch backend {
+        case .hosted: return hosted
+        case .mini: return mini
+        case .maintenance: return nil
+        }
     }
+
+    private static var concreteSupabase: SupabaseAccountIdentityClient? {
+        client(for: AppEnvironment.current == .production ? ProductionBackend.selected : .hosted)
+    }
+
+    static var supabase: (any AccountIdentityClient)? { concreteSupabase }
+    static var supabaseClient: SupabaseClient? { concreteSupabase?.supabase }
 
     static var activeProvider: AccountIdentityProvider {
         SupabaseAccountConfiguration.isEnabled ? .supabase : .cloudBaseLegacy

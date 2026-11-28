@@ -23,7 +23,7 @@ async function uploadBlob(request) {
 }
 
 // Keep the canonical URL in the SDK so session keys and OAuth stay compatible.
-export function createCloudFetch({ supabaseURL, siteOrigin, fetchImpl = globalThis.fetch }) {
+export function createCloudFetch({ supabaseURL, siteOrigin, authorize, fetchImpl = globalThis.fetch }) {
   const upstream = new URL(supabaseURL);
   const site = new URL(siteOrigin);
   return async (input, init) => {
@@ -32,6 +32,7 @@ export function createCloudFetch({ supabaseURL, siteOrigin, fetchImpl = globalTh
     if (address.origin !== upstream.origin || !/^\/(auth|rest|storage|functions)\/v1(?:\/|$)/.test(address.pathname)) {
       return fetchImpl(request);
     }
+    if (authorize) await authorize(upstream.origin, request.method);
     const target = new URL(`${CLOUD_PROXY_PREFIX}${address.pathname}${address.search}`, site);
     const headers = new Headers(request.headers);
     headers.set("x-esheep-cloud-host", upstream.host);

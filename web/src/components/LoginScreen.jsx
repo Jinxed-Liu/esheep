@@ -5,7 +5,7 @@ import { CloudCheck } from "@phosphor-icons/react/CloudCheck";
 import { SignIn } from "@phosphor-icons/react/SignIn";
 import { UserPlus } from "@phosphor-icons/react/UserPlus";
 
-export function LoginScreen({ authState, isConfigured, onSignIn, onSignUp, onAppleSignIn }) {
+export function LoginScreen({ authState, isConfigured, onSignIn, onSignUp, onRecover, onAppleSignIn }) {
   const [mode, setMode] = useState("sign-in");
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
@@ -79,6 +79,15 @@ export function LoginScreen({ authState, isConfigured, onSignIn, onSignUp, onApp
             {mode === "register" ? <UserPlus size={20} /> : <SignIn size={20} />}
             {busy ? (mode === "register" ? "正在注册…" : "正在登录…") : (mode === "register" ? "注册免费账号" : "登录 eSheep+")}
           </button>
+          {mode === "sign-in" && <button type="button" disabled={disabled} onClick={async () => {
+            if (!email.trim()) { setMessageTone("warning"); setMessage("请先输入账号邮箱。"); return; }
+            setBusy(true);
+            try {
+              await onRecover(email);
+              setMessageTone("success"); setMessage("如果该邮箱已注册，您会收到找回密码邮件。");
+            } catch (failure) { setMessageTone("warning"); setMessage(cloudConnectionErrorMessage(failure)); }
+            finally { setBusy(false); }
+          }}>忘记密码</button>}
           <div className="auth-divider" aria-hidden="true"><span>或</span></div>
           <button className="apple-auth-button" type="button" onClick={submitApple} disabled={disabled}>
             <AppleLogo size={20} weight="fill" />

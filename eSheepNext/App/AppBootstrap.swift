@@ -140,6 +140,11 @@ final class AppBootstrapController {
         return (collaboration, modelContainer)
     }
 
+    func rebindBackend() {
+        guard let modelContainer else { return }
+        collaboration = CloudCollaborationStore(container: modelContainer)
+    }
+
     func retry() {
         beginOpeningStore()
     }

@@ -186,6 +186,17 @@ final class FarmDomainTests: XCTestCase {
         )
     }
 
+    func testRealtimeUsesTheSubscribedFarmAndGeneration() {
+        let farm = UUID()
+        let feed = FarmRealtimeFeed.cloud(accountID: UUID(), generation: 3)
+        XCTAssertEqual(feed.eventName, "event_head_changed")
+        XCTAssertEqual(feed.revision(from: ["payload": ["farm_id": .string(farm.uuidString), "farm_generation": 3, "event_head": 7]], farmID: farm), 7)
+        XCTAssertNil(feed.revision(from: ["payload": ["farm_id": .string(UUID().uuidString), "farm_generation": 3, "event_head": 7]], farmID: farm))
+        XCTAssertNil(feed.revision(from: ["payload": ["farm_id": .string(farm.uuidString), "farm_generation": 4, "event_head": 7]], farmID: farm))
+        XCTAssertEqual(FarmRealtimeFeed.legacy.revision(from: ["payload": ["revision": 23]], farmID: farm), 23)
+        XCTAssertEqual(FarmRealtimeFeed.legacy.revision(from: ["revision": 24], farmID: farm), 24)
+    }
+
     func testSupabaseRealtimeHealthSeparatesRealtimeFromCursorFallback() {
         XCTAssertEqual(
             SupabaseRealtimeHealth.realtimeHealthy.displayTitle,

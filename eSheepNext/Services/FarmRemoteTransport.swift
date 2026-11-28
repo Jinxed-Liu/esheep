@@ -144,6 +144,31 @@ struct FarmRemoteMember: Sendable, Equatable {
     let status: FarmMembershipStatus
 }
 
+enum FarmRealtimeFeed: Equatable, Sendable {
+    case legacy
+    case cloud(accountID: UUID, generation: Int)
+
+    var eventName: String {
+        switch self {
+        case .legacy: "revision_available"
+        case .cloud: "event_head_changed"
+        }
+    }
+
+    func revision(from envelope: JSONObject, farmID: UUID) -> Int? {
+        let body = envelope["payload"]?.objectValue ?? envelope
+        switch self {
+        case .legacy:
+            return body["revision"]?.intValue
+        case let .cloud(_, generation):
+            guard let id = body["farm_id"]?.stringValue, UUID(uuidString: id) == farmID,
+                  body["farm_generation"]?.intValue == generation,
+                  let head = body["event_head"]?.intValue, head > 0 else { return nil }
+            return head
+        }
+    }
+}
+
 enum SupabaseRealtimeNotification: Sendable, Equatable {
     case subscribed
     case revision(Int)
@@ -1564,39 +1589,32 @@ actor SupabaseFarmTransport: FarmRemoteTransport {
         ).execute()
     }
 
-    /// Realtime is only a low-latency hint. Callers must always use
-    /// `pullOperations` with the durable cursor after every event and on a
-    /// periodic timer, because broadcasts are intentionally not authoritative.
-    func revisionNotifications(
-        farmID: UUID
-    ) -> AsyncThrowingStream<SupabaseRealtimeNotification, any Error> {
-        let client = self.client
-        return AsyncThrowingStream { continuation in
-            let task = Task {
-                let topic = "farm:\(farmID.uuidString.lowercased())"
-                let channel = client.channel(topic) { configuration in
-                    configuration.isPrivate = true
+    /// Broadcasts wake the authoritative cursor pull. The event number never
+    /// advances the local projection by itself.
+    func listenForRevisions(
+        farmID: UUID,
+        feed: FarmRealtimeFeed,
+        onNotification: @Sendable (SupabaseRealtimeNotification) async -> Void
+    ) async throws {
+        try Task.checkCancellation()
+        let topic = "farm:\(farmID.uuidString.lowercased())"
+        let channel = client.channel(topic) { $0.isPrivate = true }
+        let events = channel.broadcastStream(event: feed.eventName)
+        do {
+            try await channel.subscribeWithError()
+            try Task.checkCancellation()
+            await onNotification(.subscribed)
+            for await envelope in events {
+                try Task.checkCancellation()
+                if let revision = feed.revision(from: envelope, farmID: farmID) {
+                    await onNotification(.revision(revision))
                 }
-                let events = channel.broadcastStream(event: "revision_available")
-                do {
-                    try await channel.subscribeWithError()
-                    continuation.yield(.subscribed)
-                    for await payload in events {
-                        try Task.checkCancellation()
-                        if let revision = payload["revision"]?.intValue {
-                            continuation.yield(.revision(revision))
-                        }
-                    }
-                    continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-                await client.removeChannel(channel)
             }
-            continuation.onTermination = { _ in task.cancel() }
+        } catch {
+            await client.removeChannel(channel)
+            throw error
         }
+        await client.removeChannel(channel)
     }
 
     private static func envelope(from row: OperationRow) throws -> CloudOperationEnvelope {

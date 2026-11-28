@@ -3,6 +3,7 @@ import { managementProjection } from "./managementProjection.js";
 import { createClient } from "@supabase/supabase-js";
 import { decodeCompactCheckpoint } from "./lzfse";
 import { isSupabaseConfigured, supabaseBrowserConfiguration } from "./supabaseConfig.js";
+import { authorizeCloudRequest, usesProductionSelector } from "./backendSelection.js";
 import { createCloudFetch } from "./cloudTransport.js";
 import {
   countByNormalizedIdentifier,
@@ -30,7 +31,7 @@ import { createVerifiedUserHandoff } from "./verifiedUserHandoff.js";
 
 const { url, publishableKey } = supabaseBrowserConfiguration;
 const cloudFetch = isSupabaseConfigured
-  ? createCloudFetch({ supabaseURL: url, siteOrigin: window.location.origin })
+  ? createCloudFetch({ supabaseURL: url, siteOrigin: window.location.origin, authorize: authorizeCloudRequest })
   : null;
 
 const browserClientKey = "__esheepnextSupabaseClient";
@@ -39,7 +40,7 @@ export const supabase = isSupabaseConfigured
   ? globalThis[browserClientKey] ?? (globalThis[browserClientKey] = createClient(url, publishableKey, {
       auth: {
         autoRefreshToken: true,
-        detectSessionInUrl: true,
+        detectSessionInUrl: window.location.pathname !== "/account/recovery",
         persistSession: true,
       },
       global: {
@@ -48,6 +49,14 @@ export const supabase = isSupabaseConfigured
       },
     }))
   : null;
+
+if (supabase && usesProductionSelector()) {
+  window.addEventListener("esheep-backend-state", (event) => {
+    if (event.detail.changed) void supabase.removeAllChannels();
+    else if (!event.detail.active) supabase.realtime.disconnect();
+    else if (supabase.getChannels().length) supabase.realtime.connect();
+  });
+}
 
 const roleNames = {
   owner: "所有者",
@@ -782,6 +791,14 @@ export function watchAuth(callback) {
     callback({ event, session });
   });
   return () => data.subscription.unsubscribe();
+}
+
+export async function sendRecoveryEmail(email) {
+  if (!supabase) throw new Error("云端尚未配置。");
+  const redirect = new URL("/account/recovery", window.location.origin);
+  redirect.searchParams.set("backend", new URL(url).host);
+  const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: redirect.href });
+  if (error) throw error;
 }
 
 export async function signInWithPassword(email, password) {
